@@ -5,7 +5,7 @@ import math
 from pathlib import Path
 
 from loguru import logger
-from pipecat.frames.frames import InputAudioRawFrame, StartFrame, EndFrame
+from pipecat.frames.frames import EndFrame, InputAudioRawFrame, StartFrame
 from pipecat.transports.base_transport import TransportParams
 
 from src.runtime.ffmpeg_commands import pcm_pipe_decode_args
@@ -43,11 +43,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
         self._max_queued_frames = max(
             1,
             int(
-                math.ceil(
-                    max(1.0, float(max_queued_audio_secs))
-                    * max(1, int(sample_rate))
-                    / max(1, self._block_size)
-                )
+                math.ceil(max(1.0, float(max_queued_audio_secs)) * max(1, int(sample_rate)) / max(1, self._block_size))
             ),
         )
         self._done = asyncio.Event()
@@ -198,4 +194,3 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 stderr_task.cancel()
             if stderr_task is not None:
                 await asyncio.gather(stderr_task, return_exceptions=True)
-

@@ -14,16 +14,15 @@ import pytest
 from scripts.installer_research.inventory import (
     InventoryError,
     _build_tree_inventory,
-    _normalize_unbundled_console_launcher_records,
     _normalize_sidecar_build_metadata,
     _normalize_tauri_bundle_type,
-    build_root_identity_sha256,
+    _normalize_unbundled_console_launcher_records,
     build_inventory,
+    build_root_identity_sha256,
     inspect_pyinstaller_executable,
     load_component_map,
     select_installer,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_MAP = REPO_ROOT / "packaging" / "installer-component-map-v1.json"
@@ -38,9 +37,7 @@ def _sha256(path: Path) -> str:
 
 
 def _record_digest(content: bytes) -> str:
-    return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode(
-        "ascii"
-    ).rstrip("=")
+    return base64.urlsafe_b64encode(hashlib.sha256(content).digest()).decode("ascii").rstrip("=")
 
 
 def _write_console_record_fixture(
@@ -61,8 +58,7 @@ def _write_console_record_fixture(
     )
     record = dist_info / "RECORD"
     record.write_text(
-        f"{launcher_path},sha256={launcher_digest},{launcher_length}\n"
-        f"{retained_row}\n",
+        f"{launcher_path},sha256={launcher_digest},{launcher_length}\n{retained_row}\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -74,11 +70,7 @@ def _write_console_record_fixture(
 
 
 def _bundled_relative_paths(root: Path) -> frozenset[str]:
-    return frozenset(
-        path.relative_to(root).as_posix().casefold()
-        for path in root.rglob("*")
-        if path.is_file()
-    )
+    return frozenset(path.relative_to(root).as_posix().casefold() for path in root.rglob("*") if path.is_file())
 
 
 def _sidecar_metadata(
@@ -223,9 +215,7 @@ def test_real_pyinstaller_620_payload_has_exact_physical_and_virtual_partitions(
     inventory = _inventory(staged, installer)
     tree = inventory["payload"]["staged"]
     backend = inventory["backendExecutable"]
-    backend_file = next(
-        item for item in tree["files"] if item["path"] == "backend/scriber-backend.exe"
-    )
+    backend_file = next(item for item in tree["files"] if item["path"] == "backend/scriber-backend.exe")
 
     assert inventory["ok"] is True
     assert tree["totalBytes"] == sum(item["length"] for item in tree["files"])
@@ -239,17 +229,11 @@ def test_real_pyinstaller_620_payload_has_exact_physical_and_virtual_partitions(
     assert backend_file["componentAllocations"] == backend["componentAllocations"]
     for component, allocated_bytes in backend["componentAllocations"].items():
         assert tree["components"][component]["rawBytes"] >= allocated_bytes
-    assert (
-        tree["components"]["backend-executable"]["rawBytes"]
-        < backend["length"]
-    )
+    assert tree["components"]["backend-executable"]["rawBytes"] < backend["length"]
     assert backend["pyzDiagnostics"]["countedInStagedPayload"] is False
     assert backend["pyzDiagnostics"]["entryCount"] > 0
     assert (
-        sum(
-            item["compressedBytes"]
-            for item in backend["pyzDiagnostics"]["entries"]
-        )
+        sum(item["compressedBytes"] for item in backend["pyzDiagnostics"]["entries"])
         == backend["pyzDiagnostics"]["compressedModuleBytes"]
     )
     for module in backend["pyzDiagnostics"]["entries"]:
@@ -268,9 +252,7 @@ def test_inventory_rejects_forged_build_root_provenance(
             replica_id="packet-forged-root",
             build_root_sha256="b" * 64,
             staged_root=minimal_pyinstaller_payload,
-            backend_exe=minimal_pyinstaller_payload
-            / "backend"
-            / "scriber-backend.exe",
+            backend_exe=minimal_pyinstaller_payload / "backend" / "scriber-backend.exe",
             component_map_path=COMPONENT_MAP,
             installer=_make_installer(tmp_path),
             compression="bzip2",
@@ -357,12 +339,8 @@ def test_installed_tree_normalizes_only_the_tauri_nsis_bundle_marker(
     shutil.copytree(minimal_pyinstaller_payload, staged)
     shutil.copytree(minimal_pyinstaller_payload, installed)
     prefix = b"__TAURI_BUNDLE_TYPE_VAR_"
-    (staged / "scriber-desktop.exe").write_bytes(
-        b"MZbefore" + prefix + b"UNK\xc0\x00after"
-    )
-    (installed / "scriber-desktop.exe").write_bytes(
-        b"MZbefore" + prefix + b"NSS\xc0\x00after"
-    )
+    (staged / "scriber-desktop.exe").write_bytes(b"MZbefore" + prefix + b"UNK\xc0\x00after")
+    (installed / "scriber-desktop.exe").write_bytes(b"MZbefore" + prefix + b"NSS\xc0\x00after")
     (installed / "uninstall.exe").write_bytes(b"uninstaller")
 
     inventory = _inventory(
@@ -372,14 +350,10 @@ def test_installed_tree_normalizes_only_the_tauri_nsis_bundle_marker(
     )
 
     staged_entry = next(
-        item
-        for item in inventory["payload"]["staged"]["files"]
-        if item["path"] == "scriber-desktop.exe"
+        item for item in inventory["payload"]["staged"]["files"] if item["path"] == "scriber-desktop.exe"
     )
     installed_entry = next(
-        item
-        for item in inventory["payload"]["installed"]["files"]
-        if item["path"] == "scriber-desktop.exe"
+        item for item in inventory["payload"]["installed"]["files"] if item["path"] == "scriber-desktop.exe"
     )
     assert staged_entry["sha256"] != installed_entry["sha256"]
     assert staged_entry["semanticSha256"] == installed_entry["semanticSha256"]
@@ -387,16 +361,12 @@ def test_installed_tree_normalizes_only_the_tauri_nsis_bundle_marker(
 
 
 def test_tauri_bundle_marker_normalization_is_fail_closed() -> None:
-    marker = load_component_map(COMPONENT_MAP)[0]["semanticNormalization"][
-        "tauriBundleTypeMarker"
-    ]
+    marker = load_component_map(COMPONENT_MAP)[0]["semanticNormalization"]["tauriBundleTypeMarker"]
     prefix = marker["prefix"].encode("ascii")
 
     staged = b"MZbefore" + prefix + b"UNK\xc0\x00after"
     installed = b"MZbefore" + prefix + b"NSS\xc0\x00after"
-    assert _normalize_tauri_bundle_type(staged, marker) == _normalize_tauri_bundle_type(
-        installed, marker
-    )
+    assert _normalize_tauri_bundle_type(staged, marker) == _normalize_tauri_bundle_type(installed, marker)
     assert _normalize_tauri_bundle_type(staged, marker) != _normalize_tauri_bundle_type(
         installed.replace(b"after", b"other"), marker
     )
@@ -423,12 +393,8 @@ def test_semantic_metadata_normalization_is_narrow_and_schema_validated(
     meaningful_change = _sidecar_metadata(backend_exe, stable_marker="changed")
 
     first_bytes = _normalize_sidecar_build_metadata(json.dumps(first).encode())
-    volatile_bytes = _normalize_sidecar_build_metadata(
-        json.dumps(volatile_change).encode()
-    )
-    meaningful_bytes = _normalize_sidecar_build_metadata(
-        json.dumps(meaningful_change).encode()
-    )
+    volatile_bytes = _normalize_sidecar_build_metadata(json.dumps(volatile_change).encode())
+    meaningful_bytes = _normalize_sidecar_build_metadata(json.dumps(meaningful_change).encode())
 
     assert first_bytes == volatile_bytes
     assert first_bytes != meaningful_bytes
@@ -445,9 +411,7 @@ def test_semantic_metadata_accepts_an_explicitly_disabled_sidecar_cache(
     metadata = _sidecar_metadata(backend_exe)
     metadata["cache"] = {"enabled": False, "hit": False, "key": ""}
 
-    normalized = json.loads(
-        _normalize_sidecar_build_metadata(json.dumps(metadata).encode())
-    )
+    normalized = json.loads(_normalize_sidecar_build_metadata(json.dumps(metadata).encode()))
 
     assert normalized["cache"] == {"enabled": False, "hit": False, "key": ""}
 
@@ -630,16 +594,12 @@ def test_dist_info_record_semantics_preserve_every_non_launcher_row(tmp_path: Pa
     first_record = _write_console_record_fixture(
         first_root,
         launcher_digest=_record_digest(b"first launcher"),
-        retained_row=(
-            "yt_dlp/__init__.py,sha256=" + _record_digest(b"first retained") + ",123"
-        ),
+        retained_row=("yt_dlp/__init__.py,sha256=" + _record_digest(b"first retained") + ",123"),
     )
     second_record = _write_console_record_fixture(
         second_root,
         launcher_digest=_record_digest(b"second launcher"),
-        retained_row=(
-            "yt_dlp/__init__.py,sha256=" + _record_digest(b"second retained") + ",123"
-        ),
+        retained_row=("yt_dlp/__init__.py,sha256=" + _record_digest(b"second retained") + ",123"),
     )
 
     first_semantic = _normalize_unbundled_console_launcher_records(
@@ -815,6 +775,4 @@ def test_inventory_cli_writes_the_canonical_inventory_contract(
         "replicaId": "packet-cli-test",
         "buildRootSha256": build_root_identity_sha256(minimal_pyinstaller_payload),
     }
-    assert inventory["payload"]["staged"]["componentBytesSum"] == inventory["payload"][
-        "staged"
-    ]["totalBytes"]
+    assert inventory["payload"]["staged"]["componentBytesSum"] == inventory["payload"]["staged"]["totalBytes"]

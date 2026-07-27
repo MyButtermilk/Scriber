@@ -85,11 +85,7 @@ async def test_celeris_transport_uses_documented_request_contract() -> None:
         [
             _FakeResponse(
                 status=200,
-                payload={
-                    "choices": [
-                        {"message": {"role": "assistant", "content": "Celeris ready"}}
-                    ]
-                },
+                payload={"choices": [{"message": {"role": "assistant", "content": "Celeris ready"}}]},
                 headers={"Server-Timing": "model;dur=75"},
             )
         ]
@@ -229,10 +225,7 @@ async def test_long_transcript_uses_hierarchical_celeris_summary(
         del max_output_tokens, timeout_seconds, api_key, session
         prompts.append(prompt)
         if "Output contract (mandatory" in prompt:
-            return (
-                "<section><h2>Ergebnis</h2>"
-                "<p>Faktenbasierte Zusammenfassung.</p></section>"
-            )
+            return "<section><h2>Ergebnis</h2><p>Faktenbasierte Zusammenfassung.</p></section>"
         return "Kompakte Teilanalyse mit Fakten, Entscheidungen und offenen Punkten."
 
     monkeypatch.setattr(summarization, "celeris_chat_completion", fake)
@@ -333,12 +326,8 @@ def _segment_ids_from_prompt(prompt: str) -> list[str]:
 
 def test_frontend_and_settings_contract_expose_celeris_without_a_key() -> None:
     root = Path(__file__).resolve().parents[1]
-    settings = (root / "Frontend/client/src/pages/Settings.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_types = (root / "Frontend/client/src/lib/api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    settings = (root / "Frontend/client/src/pages/Settings.tsx").read_text(encoding="utf-8")
+    api_types = (root / "Frontend/client/src/lib/api-types.ts").read_text(encoding="utf-8")
     web_api = (root / "src/web_api.py").read_text(encoding="utf-8")
     config = (root / "src/config.py").read_text(encoding="utf-8")
     assert 'value: "celeris-1"' in settings

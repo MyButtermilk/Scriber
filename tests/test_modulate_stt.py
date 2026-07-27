@@ -4,12 +4,11 @@ import asyncio
 import json
 import wave
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
 from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import aiohttp
 import pytest
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     EndFrame,
@@ -210,12 +209,7 @@ async def test_modulate_batch_provider_error_redacts_the_credential():
 
 def test_modulate_top_level_text_parser_never_falls_back_to_utterances():
     assert modulate_transcript_payload_to_text({"text": " final "}) == "final"
-    assert (
-        modulate_transcript_payload_to_text(
-            {"utterances": [{"text": "do not expose this utterance"}]}
-        )
-        == ""
-    )
+    assert modulate_transcript_payload_to_text({"utterances": [{"text": "do not expose this utterance"}]}) == ""
 
 
 @pytest.mark.asyncio
@@ -365,9 +359,7 @@ def test_modulate_lifecycle_diagnostics_reject_exception_messages():
 
     meta = service._lifecycle_meta(
         status="closed_before_done",
-        error_type=(
-            "ServerTimeoutError: wss://example.invalid/api?api_key=secret-key"
-        ),
+        error_type=("ServerTimeoutError: wss://example.invalid/api?api_key=secret-key"),
     )
 
     assert meta["errorType"] == "WebSocketError"
@@ -435,11 +427,7 @@ async def test_modulate_terminal_send_failure_is_emitted_once():
         await service.process_frame(frame, FrameDirection.DOWNSTREAM)
         await service.process_frame(frame, FrameDirection.DOWNSTREAM)
 
-    emitted = [
-        call.args[0]
-        for call in service.push_frame.await_args_list
-        if isinstance(call.args[0], ErrorFrame)
-    ]
+    emitted = [call.args[0] for call in service.push_frame.await_args_list if isinstance(call.args[0], ErrorFrame)]
     assert len(emitted) == 1
     assert service._terminal_error_emitted is True
     assert service._connect_failed is True
@@ -547,9 +535,7 @@ async def test_modulate_error_is_forwarded_before_terminal_waiters_are_released(
         await release_push.wait()
 
     service.push_frame = slow_push  # type: ignore[method-assign]
-    emit_task = asyncio.create_task(
-        service._emit_error("provider failure", FrameDirection.DOWNSTREAM)
-    )
+    emit_task = asyncio.create_task(service._emit_error("provider failure", FrameDirection.DOWNSTREAM))
     await asyncio.sleep(0)
 
     assert service._terminal_error_emitted is True
@@ -661,11 +647,7 @@ async def test_modulate_final_timeout_emits_once_and_reclaims_receiver():
         wait_for_final=True,
     )
 
-    errors = [
-        call.args[0]
-        for call in service.push_frame.await_args_list
-        if isinstance(call.args[0], ErrorFrame)
-    ]
+    errors = [call.args[0] for call in service.push_frame.await_args_list if isinstance(call.args[0], ErrorFrame)]
     assert len(errors) == 1
     assert "timed out waiting for the final transcript" in errors[0].error
     assert receiver.done()
@@ -757,16 +739,12 @@ def test_modulate_user_errors_are_provider_specific():
     assert "Modulate" in auth.provider_label
     assert auth.retryable is False
 
-    credits = provider_user_error(
-        "modulate_async", "websocket close 4029 insufficient credits"
-    )
+    credits = provider_user_error("modulate_async", "websocket close 4029 insufficient credits")
     assert credits.provider == "modulate_async"
     assert credits.retryable is True
     assert "credits" in credits.message.lower()
 
-    audio = provider_user_error(
-        "modulate", "websocket closed before done (close code 1003)"
-    )
+    audio = provider_user_error("modulate", "websocket closed before done (close code 1003)")
     assert audio.provider == "modulate"
     assert audio.retryable is False
     assert "audio" in audio.message.lower()
@@ -783,9 +761,7 @@ async def test_pipeline_direct_modulate_uses_batch_adapter(monkeypatch, tmp_path
         calls.append(kwargs)
         return {"text": "Only final text.", "duration_ms": 1000}
 
-    monkeypatch.setattr(
-        "src.modulate_stt.transcribe_with_modulate_multilingual", _fake_transcribe
-    )
+    monkeypatch.setattr("src.modulate_stt.transcribe_with_modulate_multilingual", _fake_transcribe)
     received: list[tuple[str, bool]] = []
     pipeline = ScriberPipeline(
         service_name="modulate_async",

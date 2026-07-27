@@ -2,14 +2,13 @@ import ctypes
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
 from pipecat.frames.frames import EndFrame, TranscriptionFrame
 
 from src.config import Config
 from src.injector import (
+    _CLIPBOARD_ACCESS_FAILED,
     InjectionTargetGuard,
     TextInjector,
-    _CLIPBOARD_ACCESS_FAILED,
     _ClipboardFormatSnapshot,
     _ClipboardSnapshot,
     _ForegroundTargetSnapshot,
@@ -17,8 +16,8 @@ from src.injector import (
     _windows_clipboard_format_is_restorable,
     _windows_clipboard_get_text,
     _windows_clipboard_restore_snapshot,
-    _windows_clipboard_snapshot,
     _windows_clipboard_set_text,
+    _windows_clipboard_snapshot,
 )
 
 
@@ -356,9 +355,7 @@ def test_windows_clipboard_set_text_configures_64_bit_handle_signature():
     user32 = _User32()
     windll = type("_Windll", (), {"user32": user32, "kernel32": _Kernel32()})()
 
-    with patch("src.injector.sys.platform", "win32"), patch(
-        "src.injector.ctypes.windll", windll, create=True
-    ):
+    with patch("src.injector.sys.platform", "win32"), patch("src.injector.ctypes.windll", windll, create=True):
         result = _windows_clipboard_set_text("new text")
 
     assert result is True

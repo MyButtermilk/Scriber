@@ -5,7 +5,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -171,11 +170,11 @@ def test_frontend_browser_smoke_exercises_mobile_navigation() -> None:
     assert "exercise_mobile_navigation" in script
     assert "exercise_mobile_route_layouts" in script
     assert "Emulation.setDeviceMetricsOverride" in script
-    assert "button[aria-label=\"Open navigation\"]" in script
+    assert 'button[aria-label="Open navigation"]' in script
     assert "mobileNavigationCheck" in script
     assert "mobileRouteLayoutsCheck" in script
-    assert "\"mobile-navigation\"" in script
-    assert "\"mobile-route-layouts\"" in script
+    assert '"mobile-navigation"' in script
+    assert '"mobile-route-layouts"' in script
     assert "overflowX" in script
 
 
@@ -206,7 +205,7 @@ def test_frontend_browser_smoke_exercises_fast_tab_switch() -> None:
     assert "routeReadyMs" in script
     assert "blankSampleCount" in script
     assert "--fast-tab-switch" in script
-    assert "\"fast-tab-switch\"" in script
+    assert '"fast-tab-switch"' in script
 
 
 def test_frontend_browser_smoke_exercises_meeting_end_to_end() -> None:
@@ -223,7 +222,10 @@ def test_frontend_browser_smoke_exercises_meeting_end_to_end() -> None:
     assert '"dark-boot-shell"' in script
     assert 'window.localStorage.setItem("scriber-theme", "dark")' in script
     assert '"*/src/main.tsx*"' in script
-    assert 'expected_requests = ["dismiss-detection", "device-test", "start", "resume", "pause", "resume", "stop", "analyze", "action-item", "segment-edit", "segment-undo", "speaker", "note", "chat", "webhook", "delete"]' in script
+    assert (
+        'expected_requests = ["dismiss-detection", "device-test", "start", "resume", "pause", "resume", "stop", "analyze", "action-item", "segment-edit", "segment-undo", "speaker", "note", "chat", "webhook", "delete"]'
+        in script
+    )
     assert '"transcriptCorrection": transcript_correction' in script
     assert '"transcriptUndo": transcript_undo' in script
     assert "Export meeting as" in script
@@ -264,7 +266,7 @@ def test_frontend_browser_smoke_exercises_command_palette() -> None:
     assert "Debug Console" in script
     assert "Synthetic Recording 00003" in script
     assert "commandPaletteCheck" in script
-    assert "\"command-palette\"" in script
+    assert '"command-palette"' in script
 
 
 def test_frontend_browser_smoke_exercises_debug_console_actions() -> None:
@@ -282,7 +284,7 @@ def test_frontend_browser_smoke_exercises_debug_console_actions() -> None:
     assert "Download support bundle" in script
     assert "synthetic-support-bundle.zip" in script
     assert "support_bundle_count" in script
-    assert "\"debug-console-actions\"" in script
+    assert '"debug-console-actions"' in script
 
 
 def test_frontend_browser_smoke_exercises_youtube_history_actions() -> None:
@@ -293,7 +295,7 @@ def test_frontend_browser_smoke_exercises_youtube_history_actions() -> None:
     assert "#youtube-source-search" in script
     assert "Copy transcript Synthetic Video 00002" in script
     assert "Delete transcript Synthetic Video 00002" in script
-    assert "\"youtube-history-actions\"" in script
+    assert '"youtube-history-actions"' in script
 
 
 def test_frontend_browser_smoke_exercises_youtube_start_transcription() -> None:
@@ -304,7 +306,7 @@ def test_frontend_browser_smoke_exercises_youtube_start_transcription() -> None:
     assert "Synthetic Queued YouTube Transcription" in script
     assert "Start transcription for Synthetic YouTube Result" in script
     assert "youtube_transcribe_requests" in script
-    assert "\"youtube-start-transcription\"" in script
+    assert '"youtube-start-transcription"' in script
 
 
 def test_frontend_browser_smoke_exercises_file_actions() -> None:
@@ -320,8 +322,8 @@ def test_frontend_browser_smoke_exercises_file_actions() -> None:
     assert "Copy transcript Synthetic File 00002" in script
     assert "Delete transcript Synthetic File 00002" in script
     assert "Synthetic upload limit exceeded" in script
-    assert "\"file-history-actions\"" in script
-    assert "\"file-upload-error\"" in script
+    assert '"file-history-actions"' in script
+    assert '"file-upload-error"' in script
 
 
 def test_frontend_browser_smoke_exercises_history_interactions() -> None:
@@ -338,7 +340,7 @@ def test_frontend_browser_smoke_exercises_history_interactions() -> None:
     assert script.count("button.click();\n    button.click();") >= 3
     assert script.count("writes.length === 1") >= 3
     assert "/transcript/mic-00001" in script
-    assert "\"history-search-copy-navigation\"" in script
+    assert '"history-search-copy-navigation"' in script
     assert "if index > 0:" in benchmark_script
     assert 'item["preview"] = f"{title} preview"' in benchmark_script
 
@@ -356,9 +358,9 @@ def test_frontend_browser_smoke_exercises_transcript_detail_actions() -> None:
     assert "async def transcript_export" in script
     assert "__scriberSmokeDetailDownloads" in script
     assert "__scriberSmokeOpenedUrls" not in script
-    assert 'backend.transcript_exports != expected_exports' in script
+    assert "backend.transcript_exports != expected_exports" in script
     assert "Retry Summary" in script
-    assert "\"transcript-detail-actions\"" in script
+    assert '"transcript-detail-actions"' in script
 
 
 def test_frontend_browser_smoke_exercises_transcript_cancel_action() -> None:
@@ -369,7 +371,7 @@ def test_frontend_browser_smoke_exercises_transcript_cancel_action() -> None:
     assert "Synthetic Cancel Processing" in script
     assert "Task cancellation requested." in script
     assert "cancel_counts" in script
-    assert "\"transcript-cancel-action\"" in script
+    assert '"transcript-cancel-action"' in script
 
 
 def test_frontend_browser_smoke_exercises_settings_persistence() -> None:
@@ -391,7 +393,7 @@ def test_frontend_browser_smoke_exercises_settings_persistence() -> None:
     assert "Set USB Smoke Microphone as favorite" in script
     assert "usb-smoke-mic" in script
     assert "Scriber, Gemini 3.5, Quality Loop" in script
-    assert "\"settings-persistence\"" in script
+    assert '"settings-persistence"' in script
 
 
 def test_frontend_browser_smoke_exercises_settings_desktop_controls() -> None:
@@ -406,7 +408,7 @@ def test_frontend_browser_smoke_exercises_settings_desktop_controls() -> None:
     assert "Check for updates" in script
     assert "Desktop updates are available in the installed Windows app." in script
     assert "desktopUpdateElapsedMs" in script
-    assert "\"settings-desktop-controls\"" in script
+    assert '"settings-desktop-controls"' in script
 
 
 def test_frontend_browser_smoke_uses_local_date_for_debug_filter() -> None:

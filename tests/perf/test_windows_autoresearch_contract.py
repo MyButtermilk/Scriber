@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import subprocess
 import sys
@@ -9,7 +9,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -27,8 +26,7 @@ from scripts.perf.evaluator.local_wux import (
 PERF_ROOT = REPO_ROOT / "scripts" / "perf"
 if str(PERF_ROOT) not in sys.path:
     sys.path.insert(0, str(PERF_ROOT))
-from scripts.perf import doctor
-from scripts.perf import runtime_attestation
+from scripts.perf import doctor, runtime_attestation
 
 
 def valid_lint_metric_value(name: str) -> int:
@@ -80,24 +78,12 @@ def test_autoresearch_config_matches_goal_contract():
 
 
 def test_benchmark_lint_accepts_complete_finite_metric_package():
-    output = "\n".join(
-        f"METRIC {name}={valid_lint_metric_value(name)}"
-        for name in REQUIRED_METRICS
-    )
+    output = "\n".join(f"METRIC {name}={valid_lint_metric_value(name)}" for name in REQUIRED_METRICS)
     assert lint(output) == []
     assert "microsoft_local_tail_p95_ms" not in REQUIRED_METRICS
-    assert (
-        "microsoft_local_60s_activation_received_to_final_text_observed_p95_ms"
-        in REQUIRED_METRICS
-    )
-    assert (
-        "soniox_local_15s_stop_requested_to_final_text_observed_failure_rate"
-        in REQUIRED_METRICS
-    )
-    assert (
-        "speechmatics_local_30s_activation_received_to_final_text_observed_capture_attested"
-        in REQUIRED_METRICS
-    )
+    assert "microsoft_local_60s_activation_received_to_final_text_observed_p95_ms" in REQUIRED_METRICS
+    assert "soniox_local_15s_stop_requested_to_final_text_observed_failure_rate" in REQUIRED_METRICS
+    assert "speechmatics_local_30s_activation_received_to_final_text_observed_capture_attested" in REQUIRED_METRICS
 
 
 def test_endpoint_dotenv_preserves_explicit_candidate_overrides(
@@ -238,10 +224,7 @@ def test_process_generation_match_rejects_restarts_and_webview_replacement() -> 
     backend_restarted = json.loads(json.dumps(baseline))
     backend_restarted["backend"]["creationTime100ns"] += 1
     _refresh_runtime_generation_fingerprint(endpoint_probe, backend_restarted)
-    assert (
-        endpoint_probe.process_generation_matches(baseline, backend_restarted)
-        is False
-    )
+    assert endpoint_probe.process_generation_matches(baseline, backend_restarted) is False
 
     webview_lost = json.loads(json.dumps(baseline))
     webview_lost["webViewProcesses"] = []
@@ -251,10 +234,7 @@ def test_process_generation_match_rejects_restarts_and_webview_replacement() -> 
     webview_replaced = json.loads(json.dumps(baseline))
     webview_replaced["webViewProcesses"][0]["creationTime100ns"] += 1
     _refresh_runtime_generation_fingerprint(endpoint_probe, webview_replaced)
-    assert (
-        endpoint_probe.process_generation_matches(baseline, webview_replaced)
-        is False
-    )
+    assert endpoint_probe.process_generation_matches(baseline, webview_replaced) is False
 
 
 def test_process_generation_match_rejects_tampered_structured_snapshot() -> None:
@@ -298,8 +278,7 @@ def test_benchmark_lint_rejects_invalid_canonical_series_guards(
     error_fragment,
 ):
     output = "\n".join(
-        f"METRIC {name}={value if name == metric else valid_lint_metric_value(name)}"
-        for name in REQUIRED_METRICS
+        f"METRIC {name}={value if name == metric else valid_lint_metric_value(name)}" for name in REQUIRED_METRICS
     )
     assert any(error_fragment in error for error in lint(output))
 
@@ -445,9 +424,7 @@ def test_raw_packages_share_complete_provenance_and_endpoint_drift_guards():
         "backendSha256",
         "audioSidecarSha256",
     }
-    provenance_block = source.split("$rawProvenance = [ordered]@{", 1)[1].split(
-        "function Add-RawProvenance", 1
-    )[0]
+    provenance_block = source.split("$rawProvenance = [ordered]@{", 1)[1].split("function Add-RawProvenance", 1)[0]
     for field in required_fields:
         assert field in provenance_block
     assert "function Write-RawPayload" in source
@@ -460,7 +437,7 @@ def test_raw_packages_share_complete_provenance_and_endpoint_drift_guards():
     assert "baseline_drift" in source
     assert "$endpointPostAttestation = Invoke-RuntimeAttestationVerification" in source
     assert "$endpointPostPayload.attestationId -eq [string]$endpointPrePayload.attestationId" in source
-    assert "& $pythonExecutable (Join-Path $RepoRoot \"benchmarks\\windows\\endpoint_probe.py\")" in source
+    assert '& $pythonExecutable (Join-Path $RepoRoot "benchmarks\\windows\\endpoint_probe.py")' in source
 
 
 def _git(repo_root: Path, *args: str) -> None:
@@ -556,8 +533,7 @@ def test_runtime_attestation_rejects_missing_audio_sidecar(tmp_path):
 
     assert result["ok"] is False
     assert any(
-        error["code"] == "missing_component" and error.get("component") == "audioSidecar"
-        for error in result["errors"]
+        error["code"] == "missing_component" and error.get("component") == "audioSidecar" for error in result["errors"]
     )
 
 
@@ -597,10 +573,7 @@ def test_doctor_blocks_a_desktop_binary_from_an_older_source_version(monkeypatch
 
 def test_doctor_passes_explicit_install_root_to_fastlocal(monkeypatch, tmp_path):
     captured: list[str] = []
-    metric_output = "\n".join(
-        f"METRIC {name}={valid_lint_metric_value(name)}"
-        for name in REQUIRED_METRICS
-    )
+    metric_output = "\n".join(f"METRIC {name}={valid_lint_metric_value(name)}" for name in REQUIRED_METRICS)
 
     def fake_run_capture(args, _cwd, timeout=120):
         captured.extend(args)
@@ -630,8 +603,8 @@ def test_fastlocal_staged_build_writes_runtime_attestation_after_build():
     assert 'Invoke-Checked -Label "FastLocal runtime attestation"' in build_script
     assert "scripts\\perf\\runtime_attestation.py write" in build_script
     assert "--install-root $targetRelease" in build_script
-    assert 'if ($LASTEXITCODE -ne 0)' in build_script
-    assert 'runtimeAttested = [bool]$runtimeAttestationPath' in build_script
+    assert "if ($LASTEXITCODE -ne 0)" in build_script
+    assert "runtimeAttested = [bool]$runtimeAttestationPath" in build_script
 
 
 def test_trace_collector_keeps_missing_endpoint_metrics_unknown(tmp_path):
@@ -678,8 +651,17 @@ def test_trace_collector_outputs_finite_local_wux_for_complete_trace(tmp_path):
     }
     for index, (scenario, (start, end)) in enumerate(overlay_scenarios.items(), start=1):
         events.append({"session_id": str(index), "scenario": scenario, "marker": start, "qpc_ticks": 100 * freq})
-        events.append({"session_id": str(index), "scenario": scenario, "marker": "mic_ready", "qpc_ticks": int(100.2 * freq)})
-        events.append({"session_id": str(index), "scenario": scenario, "marker": "first_audio_frame", "qpc_ticks": int(100.3 * freq)})
+        events.append(
+            {"session_id": str(index), "scenario": scenario, "marker": "mic_ready", "qpc_ticks": int(100.2 * freq)}
+        )
+        events.append(
+            {
+                "session_id": str(index),
+                "scenario": scenario,
+                "marker": "first_audio_frame",
+                "qpc_ticks": int(100.3 * freq),
+            }
+        )
         events.append({"session_id": str(index), "scenario": scenario, "marker": end, "qpc_ticks": 101 * freq})
     session_index = len(overlay_scenarios)
     for provider in PROVIDER_REPLAY_WEIGHTS:
@@ -843,7 +825,7 @@ def test_endpoint_probe_uses_real_text_receiver_and_uia_observer():
     assert "installed_backend_provider_replay" in script
     assert '"-KeepAppOpen"' in script
     assert "request_runtime_json" in script
-    assert 'payload={' in script
+    assert "payload={" in script
     assert "provider_response_complete" in script
     assert "last_final_token_received" in script
     assert "installed_backend_provider_event" in script
@@ -950,9 +932,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     fixture_pcm_path = tmp_path / "provider-replay-5s.pcm"
     fixture_pcm_path.write_bytes(fixture_pcm)
     zero_tail_frames = 0
-    captured_pcm_sha256 = hashlib.sha256(
-        fixture_pcm + (b"\x00\x00" * zero_tail_frames)
-    ).hexdigest()
+    captured_pcm_sha256 = hashlib.sha256(fixture_pcm + (b"\x00\x00" * zero_tail_frames)).hexdigest()
     audio_fixture = {
         "sha256": hashlib.sha256(fixture_pcm).hexdigest(),
         "durationMs": 5_000.0,
@@ -989,12 +969,8 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
             "targetGenerationSha256": target,
             "activationKind": activation_kind,
             "errorCode": None,
-            "audioPreparationImplementationExpected": (
-                expected_audio_preparation
-            ),
-            "audioPreparationImplementationActual": (
-                expected_audio_preparation if state == "completed" else None
-            ),
+            "audioPreparationImplementationExpected": (expected_audio_preparation),
+            "audioPreparationImplementationActual": (expected_audio_preparation if state == "completed" else None),
             "markers": markers or [],
         }
 
@@ -1104,9 +1080,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         expected_target_generation_sha256=target_fingerprint,
         expected_fixture_duration_ms=5_000,
         expected_audio_fixture=audio_fixture,
-        expected_audio_preparation_implementation=(
-            expected_audio_preparation
-        ),
+        expected_audio_preparation_implementation=(expected_audio_preparation),
     )
 
     assert result["ok"] is True
@@ -1119,9 +1093,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     assert result["fixtureTextSha256"] == fixture_hash
     assert result["expectedVisibleTextSha256"] == visible_fixture_hash
     assert result["expectedVisibleTextLength"] == len(visible_fixture)
-    assert result["audioPreparationImplementationActual"] == (
-        expected_audio_preparation
-    )
+    assert result["audioPreparationImplementationActual"] == (expected_audio_preparation)
     assert result["canonicalKpis"] == {
         "activation_received_to_final_text_observed_ms": 1000.0,
         "hotkey_received_to_final_text_observed_ms": 1000.0,
@@ -1166,9 +1138,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     assert "observer_length_mismatch" in raw_fixture_result["reasons"]
 
     preparation_mismatch_payload = dict(completed_payload)
-    preparation_mismatch_payload["audioPreparationImplementationActual"] = (
-        "capture_time_ffmpeg_mp3_v1"
-    )
+    preparation_mismatch_payload["audioPreparationImplementationActual"] = "capture_time_ffmpeg_mp3_v1"
     preparation_mismatch = endpoint_probe.validate_provider_replay_sample(
         provider="microsoft",
         run_id=run_id,
@@ -1189,14 +1159,10 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         expected_target_generation_sha256=target_fingerprint,
         expected_fixture_duration_ms=5_000,
         expected_audio_fixture=audio_fixture,
-        expected_audio_preparation_implementation=(
-            expected_audio_preparation
-        ),
+        expected_audio_preparation_implementation=(expected_audio_preparation),
     )
     assert preparation_mismatch["ok"] is False
-    assert "completed_audio_preparation_actual_mismatch" in (
-        preparation_mismatch["reasons"]
-    )
+    assert "completed_audio_preparation_actual_mismatch" in (preparation_mismatch["reasons"])
 
     missing_capture_payload = dict(completed_payload)
     missing_capture_payload.pop("captureAttestation")
@@ -1220,9 +1186,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         expected_target_generation_sha256=target_fingerprint,
         expected_fixture_duration_ms=5_000,
         expected_audio_fixture=audio_fixture,
-        expected_audio_preparation_implementation=(
-            expected_audio_preparation
-        ),
+        expected_audio_preparation_implementation=(expected_audio_preparation),
     )
     assert missing_capture["ok"] is False
     assert missing_capture["captureFixtureAttested"] is False
@@ -1233,11 +1197,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         session=session_id,
         target=target_fingerprint,
         activation_kind="hotkey",
-        markers=[
-            marker
-            for marker in markers
-            if marker["marker"] not in {"activation_received", "hotkey_received"}
-        ],
+        markers=[marker for marker in markers if marker["marker"] not in {"activation_received", "hotkey_received"}],
     )
     missing_activation_payload["captureAttestation"] = capture_attestation
     missing_activation = endpoint_probe.validate_provider_replay_sample(
@@ -1260,9 +1220,7 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         expected_target_generation_sha256=target_fingerprint,
         expected_fixture_duration_ms=5_000,
         expected_audio_fixture=audio_fixture,
-        expected_audio_preparation_implementation=(
-            expected_audio_preparation
-        ),
+        expected_audio_preparation_implementation=(expected_audio_preparation),
     )
     assert missing_activation["ok"] is False
     assert "marker_missing:activation_received" in missing_activation["reasons"]
@@ -1270,11 +1228,9 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     assert missing_activation["activationReceivedToFinalTextObservedMs"] == "unknown"
     assert missing_activation["nativeActivationToFinalTextObservedMs"] == "unknown"
 
-    next(
-        marker
-        for marker in markers
-        if marker["marker"] == "provider_response_complete"
-    )["source"] = "fabricated_harness_event"
+    next(marker for marker in markers if marker["marker"] == "provider_response_complete")["source"] = (
+        "fabricated_harness_event"
+    )
     tampered_completed = response(
         "completed",
         session=session_id,
@@ -1306,16 +1262,12 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         expected_target_generation_sha256=target_fingerprint,
         expected_fixture_duration_ms=5_000,
         expected_audio_fixture=audio_fixture,
-        expected_audio_preparation_implementation=(
-            expected_audio_preparation
-        ),
+        expected_audio_preparation_implementation=(expected_audio_preparation),
     )
     assert tampered["ok"] is False
     assert "marker_source_invalid:provider_response_complete" in tampered["reasons"]
     assert "completed_fixture_duration_mismatch" in tampered["reasons"]
-    assert (
-        "capture_attestation_captured_pcm_sha256_mismatch" in tampered["reasons"]
-    )
+    assert "capture_attestation_captured_pcm_sha256_mismatch" in tampered["reasons"]
     assert tampered["fixtureDurationAttested"] is False
     assert tampered["captureFixtureAttested"] is False
 
@@ -1341,8 +1293,9 @@ def test_provider_replay_launches_once_and_cleans_up_per_installed_provider(
     monkeypatch.setattr(
         endpoint_probe,
         "terminate_runtime",
-        lambda app, backend, port, token: cleanups.append((app, backend, port, token))
-        or {"ok": True, "appExited": True, "backendExited": True},
+        lambda app, backend, port, token: (
+            cleanups.append((app, backend, port, token)) or {"ok": True, "appExited": True, "backendExited": True}
+        ),
     )
     install_root = tmp_path / "installed"
 
@@ -1363,21 +1316,17 @@ def test_provider_replay_launches_once_and_cleans_up_per_installed_provider(
     assert len(cleanups) == 3
     for launch in launches:
         args = launch["args"]
-        assert args[args.index("-ExePath") + 1] == str(
-            install_root / "scriber-desktop.exe"
-        )
+        assert args[args.index("-ExePath") + 1] == str(install_root / "scriber-desktop.exe")
         assert "-KeepAppOpen" in args
         assert "-OccupyDefaultPort" in args
         assert "-VerifyFrontend" in args
         assert "-SessionToken" in args
         run_id = launch["env"]["SCRIBER_B7_PROVIDER_REPLAY_RUN_ID"]
         assert endpoint_probe._canonical_non_nil_uuid(run_id) == run_id
-        assert launch["env"][
-            "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
-        ].endswith("provider-replay-fixture-s16le-48000-mono.pcm")
-        assert len(
-            launch["env"]["SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"]
-        ) == 64
+        assert launch["env"]["SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"].endswith(
+            "provider-replay-fixture-s16le-48000-mono.pcm"
+        )
+        assert len(launch["env"]["SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"]) == 64
         assert launch["env"]["SCRIBER_SPEECHMATICS_BATCH_BASE_URL"] == (
             endpoint_probe.SPEECHMATICS_BATCH_DEFAULT_BASE_URL
         )
@@ -1421,17 +1370,18 @@ def test_provider_replay_button_activation_restores_bound_external_target(
     monkeypatch.setattr(
         endpoint_probe,
         "focus_receiver_window",
-        lambda title: calls.append(("focus", title))
-        or {"ok": True, "targetHwndHash": "b" * 64},
+        lambda title: calls.append(("focus", title)) or {"ok": True, "targetHwndHash": "b" * 64},
     )
     monkeypatch.setattr(
         endpoint_probe,
         "_provider_replay_target_attestation",
-        lambda **kwargs: calls.append(("attest", kwargs))
-        or {
-            "ok": True,
-            "targetGenerationSha256": target_generation,
-        },
+        lambda **kwargs: (
+            calls.append(("attest", kwargs))
+            or {
+                "ok": True,
+                "targetGenerationSha256": target_generation,
+            }
+        ),
     )
 
     result = endpoint_probe.ensure_provider_replay_target_focus_after_activation(
@@ -1545,32 +1495,36 @@ def test_provider_replay_audio_fixture_is_byte_identical_and_duration_bound(tmp_
     assert first_path.read_bytes() == second_path.read_bytes()
     assert first["durationMs"] == 350.0
     assert first["frameCount"] == 16_800
-    assert endpoint_probe.attest_provider_replay_audio_fixture(
-        first_path,
-        first,
-        expected_duration_ms=350.0,
-    ) is True
+    assert (
+        endpoint_probe.attest_provider_replay_audio_fixture(
+            first_path,
+            first,
+            expected_duration_ms=350.0,
+        )
+        is True
+    )
     first_path.write_bytes(first_path.read_bytes()[:-2])
-    assert endpoint_probe.attest_provider_replay_audio_fixture(
-        first_path,
-        first,
-        expected_duration_ms=350.0,
-    ) is False
+    assert (
+        endpoint_probe.attest_provider_replay_audio_fixture(
+            first_path,
+            first,
+            expected_duration_ms=350.0,
+        )
+        is False
+    )
 
 
 def test_provider_replay_full_suite_declares_required_duration_matrix(tmp_path):
     from benchmarks.windows import endpoint_probe
 
-    assert tuple(
-        endpoint_probe.SAMPLE_PLANS["FullLocal"][
-            "providerReplayDurationsSeconds"
-        ]
-    ) == endpoint_probe.PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
-    assert tuple(
-        endpoint_probe.SAMPLE_PLANS["FastLocal"][
-            "providerReplayDurationsSeconds"
-        ]
-    ) == endpoint_probe.PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
+    assert (
+        tuple(endpoint_probe.SAMPLE_PLANS["FullLocal"]["providerReplayDurationsSeconds"])
+        == endpoint_probe.PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
+    )
+    assert (
+        tuple(endpoint_probe.SAMPLE_PLANS["FastLocal"]["providerReplayDurationsSeconds"])
+        == endpoint_probe.PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
+    )
     assert endpoint_probe.SAMPLE_PLANS["ProviderReplay"] == {
         "providerReplay": 5,
         "providerReplayDurationsSeconds": (5, 15, 30, 60),
@@ -1660,10 +1614,7 @@ def test_provider_replay_suite_skips_ui_probes_and_has_scoped_success_contract(
         "fixtureDurationsMs": (5_000, 15_000, 30_000, 60_000),
     }
     assert payload["status"] == "PROVIDER_REPLAY_MEASURED"
-    assert (
-        payload["reason"]
-        == "installed_provider_replay_measured_not_general_promotion_gate"
-    )
+    assert payload["reason"] == "installed_provider_replay_measured_not_general_promotion_gate"
     assert payload["scope"] == "installed_provider_replay_only"
     assert payload["promotionEligible"] is False
     assert payload["promotionEvaluation"] == {
@@ -1738,9 +1689,7 @@ def test_provider_replay_suite_fails_closed_with_clean_status_and_exit(
 
 
 def test_provider_replay_powershell_suite_keeps_attestation_and_cli_overrides():
-    source = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
 
     assert '"FullLocal", "ProviderReplay", "LiveMicrosoft"' in source
     assert source.index("$importedEnvNames = @(Import-DotEnvIntoProcess") < source.index(
@@ -1753,7 +1702,7 @@ def test_provider_replay_powershell_suite_keeps_attestation_and_cli_overrides():
         'if ($Suite -eq "ProviderReplay") {'
     )
     assert '[string]$endpointProbe.status -eq "PROVIDER_REPLAY_MEASURED"' in source
-    assert '-not [bool]$endpointProbe.promotionEligible' in source
+    assert "-not [bool]$endpointProbe.promotionEligible" in source
     assert '$localWux -eq "unknown"' in source
 
 
@@ -1788,10 +1737,7 @@ def test_provider_replay_expands_each_provider_across_requested_durations(
 
     assert result["metricEligible"] is False
     assert len(launches) == len(endpoint_probe.PROVIDER_REPLAY_SCENARIOS) * 2
-    assert {
-        launch["SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"]
-        for launch in launches
-    } == {"5000", "15000"}
+    assert {launch["SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"] for launch in launches} == {"5000", "15000"}
     assert [item["durationMs"] for item in result["audioFixtures"]] == [
         5_000.0,
         15_000.0,
@@ -1804,15 +1750,10 @@ def test_provider_replay_expands_each_provider_across_requested_durations(
         "speechmatics_local_5s",
         "speechmatics_local_15s",
     }
-    assert "activation_received_to_final_text_observed_p50_ms" not in result[
-        "metrics"
-    ]
-    assert "stop_requested_to_final_text_observed_p95_ms" not in result[
-        "metrics"
-    ]
+    assert "activation_received_to_final_text_observed_p50_ms" not in result["metrics"]
+    assert "stop_requested_to_final_text_observed_p95_ms" not in result["metrics"]
     assert all(
-        series["captureFixtureAttested"] is False
-        and series["kpis"]["non_speech_overhead"]["p50Ms"] == "unknown"
+        series["captureFixtureAttested"] is False and series["kpis"]["non_speech_overhead"]["p50Ms"] == "unknown"
         for series in result["stageZeroDistributions"].values()
     )
     assert canonical_provider_replay_promotion_eligible(result["metrics"], {}) is False
@@ -1839,20 +1780,23 @@ def test_provider_replay_rejects_durations_outside_short_issue18_matrix(
 def test_live_provider_baseline_output_stays_under_tmp():
     script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
     assert '$liveWorkDir = Join-Path $RepoRoot "tmp\\autoresearch-live-provider"' in script
-    assert '$benchmarkPath = Join-Path $liveWorkDir' in script
+    assert "$benchmarkPath = Join-Path $liveWorkDir" in script
     assert '"-OutputPath", $benchmarkPath' in script
     assert '$ok = $providerTranscriptStatus -eq "measured" -and $textTargetStatus -eq "measured"' in script
-    assert '$ok = $providerTranscriptStatus -eq "measured" -and $textTargetStatus -eq "measured" -and $focusErrors -eq 0' in script
-    assert '$ok = $benchmarkExit -eq 0 -and $providerTranscriptStatus' not in script
+    assert (
+        '$ok = $providerTranscriptStatus -eq "measured" -and $textTargetStatus -eq "measured" -and $focusErrors -eq 0'
+        in script
+    )
+    assert "$ok = $benchmarkExit -eq 0 -and $providerTranscriptStatus" not in script
     assert '$Reason -like "*measured*"' in script
     assert "function Get-TextTargetFocusErrors" in script
-    assert 'Get-TextTargetFocusErrors -Report $report' in script
+    assert "Get-TextTargetFocusErrors -Report $report" in script
     assert "live_text_target_focus_unverified" in script
     assert "textTargetFocusErrors" in script
     assert 'focus_errors = $(if ($textTargetStatus -eq "measured" -and $focusErrors -eq 0) { 0 } else { 1 })' in script
-    assert "SCRIBER_INJECT_TARGET_TITLE" in (
-        REPO_ROOT / "scripts" / "measure_hybrid_baseline.ps1"
-    ).read_text(encoding="utf-8")
+    assert "SCRIBER_INJECT_TARGET_TITLE" in (REPO_ROOT / "scripts" / "measure_hybrid_baseline.ps1").read_text(
+        encoding="utf-8"
+    )
     assert '"--text-target-title", $RecordingHotPathTextTargetTitle' in (
         REPO_ROOT / "scripts" / "measure_hybrid_baseline.ps1"
     ).read_text(encoding="utf-8")
@@ -1936,27 +1880,17 @@ def test_endpoint_probe_can_emit_metric_eligible_overlay_app_and_resource_metric
 def test_fastlocal_imports_repo_dotenv_without_logging_values():
     script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
     assert "Import-DotEnvIntoProcess" in script
-    assert "[Environment]::SetEnvironmentVariable($name, $value, \"Process\")" in script
+    assert '[Environment]::SetEnvironmentVariable($name, $value, "Process")' in script
     assert "importedEnvNames" in script
 
 
 def test_fastlocal_candidate_override_is_applied_after_dotenv_import():
-    script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
 
-    import_offset = script.index(
-        "$importedEnvNames = @(Import-DotEnvIntoProcess -Path $repoEnvPath)"
-    )
-    override_offset = script.index(
-        '"SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3"', import_offset
-    )
-    speechmatics_override_offset = script.index(
-        '"SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV"', override_offset
-    )
-    profile_offset = script.index(
-        "benchmarks\\windows\\profile.ps1", speechmatics_override_offset
-    )
+    import_offset = script.index("$importedEnvNames = @(Import-DotEnvIntoProcess -Path $repoEnvPath)")
+    override_offset = script.index('"SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3"', import_offset)
+    speechmatics_override_offset = script.index('"SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV"', override_offset)
+    profile_offset = script.index("benchmarks\\windows\\profile.ps1", speechmatics_override_offset)
 
     assert override_offset > import_offset
     assert speechmatics_override_offset > override_offset
@@ -1967,8 +1901,8 @@ def test_fastlocal_candidate_override_is_applied_after_dotenv_import():
 def test_fastlocal_and_doctor_prefer_current_release_build_when_available():
     run_script = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
     doctor = (REPO_ROOT / "scripts" / "perf" / "doctor.py").read_text(encoding="utf-8")
-    assert 'Frontend\\src-tauri\\target\\release' in run_script
-    assert "release_root = repo_root / \"Frontend\" / \"src-tauri\" / \"target\" / \"release\"" in doctor
+    assert "Frontend\\src-tauri\\target\\release" in run_script
+    assert 'release_root = repo_root / "Frontend" / "src-tauri" / "target" / "release"' in doctor
     assert "default_install_root(repo_root)" in doctor
     assert '"-InstallRoot"' in doctor
     assert "binary_version_mismatch" in run_script

@@ -1,4 +1,5 @@
 """Outlook public-desktop OAuth/PKCE and incremental calendar context."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,10 +12,12 @@ import secrets
 import threading
 import time
 import webbrowser
+from collections.abc import Callable
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
-from datetime import datetime, time as time_type, timedelta, timezone
-from typing import Any, Callable
+from datetime import time as time_type
+from typing import Any
 from urllib.parse import urlencode, urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -22,7 +25,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from aiohttp import ClientSession
 
 from src import database as db
-
 
 AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 GRAPH_DELTA = "https://graph.microsoft.com/v1.0/me/calendarView/delta"
@@ -50,9 +52,7 @@ class OutlookReauthorizationRequired(ValueError):
     """The cached Outlook credential exists but can no longer authorize Graph."""
 
     def __init__(self) -> None:
-        super().__init__(
-            "Outlook access expired or was revoked. Reconnect Outlook in Settings."
-        )
+        super().__init__("Outlook access expired or was revoked. Reconnect Outlook in Settings.")
 
 
 def _normalize_public_client_id(value: Any) -> str:
@@ -93,13 +93,13 @@ def _graph_datetime_utc(value: Any) -> str:
         return ""
     if parsed.tzinfo is None:
         if zone.upper() in {"UTC", "ETC/UTC", "GMT"}:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
         else:
             try:
                 parsed = parsed.replace(tzinfo=ZoneInfo(WINDOWS_TIMEZONE_TO_IANA.get(zone, zone)))
             except ZoneInfoNotFoundError:
                 return ""
-    return parsed.astimezone(timezone.utc).isoformat()
+    return parsed.astimezone(UTC).isoformat()
 
 
 def _delta_window_needs_reseed(window_end: str, now: datetime) -> bool:
@@ -108,10 +108,10 @@ def _delta_window_needs_reseed(window_end: str, now: datetime) -> bool:
     try:
         parsed = datetime.fromisoformat(window_end.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
+            parsed = parsed.replace(tzinfo=UTC)
     except ValueError:
         return True
-    return parsed.astimezone(timezone.utc) <= now + timedelta(days=7)
+    return parsed.astimezone(UTC) <= now + timedelta(days=7)
 
 
 class OutlookCalendarService:
@@ -163,18 +163,10 @@ class OutlookCalendarService:
                 );
                 CREATE INDEX IF NOT EXISTS idx_outlook_events_start ON outlook_calendar_events(start_at);
             """)
-            state_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(outlook_calendar_state)")
-            }
+            state_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_state)")}
             if "account_json" not in state_columns:
-                conn.execute(
-                    "ALTER TABLE outlook_calendar_state ADD COLUMN account_json TEXT NOT NULL DEFAULT '{}'"
-                )
-            event_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(outlook_calendar_events)")
-            }
+                conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN account_json TEXT NOT NULL DEFAULT '{}'")
+            event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_events)")}
             for name, declaration in (
                 ("location", "TEXT NOT NULL DEFAULT ''"),
                 ("is_all_day", "INTEGER NOT NULL DEFAULT 0"),
@@ -182,9 +174,7 @@ class OutlookCalendarService:
                 ("synced_at", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if name not in event_columns:
-                    conn.execute(
-                        f"ALTER TABLE outlook_calendar_events ADD COLUMN {name} {declaration}"
-                    )
+                    conn.execute(f"ALTER TABLE outlook_calendar_events ADD COLUMN {name} {declaration}")
             conn.commit()
 
     @property
@@ -201,9 +191,7 @@ class OutlookCalendarService:
         """Drop expired PKCE states while ``_pending_lock`` is held."""
         deadline = time.monotonic() if now is None else now
         expired = [
-            key
-            for key, pending in self._pending.items()
-            if pending[2] < deadline and key not in self._claimed_pending
+            key for key, pending in self._pending.items() if pending[2] < deadline and key not in self._claimed_pending
         ]
         for key in expired:
             self._pending.pop(key, None)
@@ -221,9 +209,7 @@ class OutlookCalendarService:
             self._claimed_pending.discard(state)
             return removed
 
-    def _claim_pending_state(
-        self, state: str, expected: tuple[str, str, float]
-    ) -> bool:
+    def _claim_pending_state(self, state: str, expected: tuple[str, str, float]) -> bool:
         """Atomically claim a still-current PKCE state after code exchange.
 
         Claimed states remain visible as pending until the account-cache reset
@@ -280,9 +266,7 @@ class OutlookCalendarService:
                 state, (verifier, redirect_uri, expires_at) = reusable
                 reused = True
             elif self._claimed_pending:
-                raise ValueError(
-                    "Outlook sign-in is being completed. Return to Scriber in a moment."
-                )
+                raise ValueError("Outlook sign-in is being completed. Return to Scriber in a moment.")
             else:
                 verifier, _challenge = create_pkce_pair()
                 state = secrets.token_urlsafe(32)
@@ -295,16 +279,22 @@ class OutlookCalendarService:
         # state that could keep Settings stuck in "authorization pending" after
         # the user completed the first tab.
         challenge = _b64url(hashlib.sha256(verifier.encode("ascii")).digest())
-        url = AUTHORITY + "?" + urlencode({
-            "client_id": self.client_id,
-            "response_type": "code",
-            "redirect_uri": redirect_uri,
-            "response_mode": "query",
-            "scope": SCOPES,
-            "state": state,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-        })
+        url = (
+            AUTHORITY
+            + "?"
+            + urlencode(
+                {
+                    "client_id": self.client_id,
+                    "response_type": "code",
+                    "redirect_uri": redirect_uri,
+                    "response_mode": "query",
+                    "scope": SCOPES,
+                    "state": state,
+                    "code_challenge": challenge,
+                    "code_challenge_method": "S256",
+                }
+            )
+        )
         if open_browser:
             webbrowser.open(url, new=2)
         return {
@@ -330,8 +320,7 @@ class OutlookCalendarService:
                 response = await asyncio.to_thread(
                     self.shell_call,
                     "outlookAuthorizationCodeExchange",
-                    {"clientId": self.client_id, "code": code, "codeVerifier": verifier,
-                     "redirectUri": redirect_uri},
+                    {"clientId": self.client_id, "code": code, "codeVerifier": verifier, "redirectUri": redirect_uri},
                     timeout_seconds=25.0,
                 )
                 if not response.get("success"):
@@ -351,12 +340,8 @@ class OutlookCalendarService:
                         timeout_seconds=3.0,
                     )
                     if not cleanup.get("success"):
-                        raise ValueError(
-                            "Outlook authorization was canceled and credential cleanup failed."
-                        )
-                    raise ValueError(
-                        "Outlook authorization state is invalid or expired."
-                    )
+                        raise ValueError("Outlook authorization was canceled and credential cleanup failed.")
+                    raise ValueError("Outlook authorization state is invalid or expired.")
                 self._remember_access_token(response.get("payload", {}))
                 # Treat every successful authorization as a potential account
                 # switch. The pending flag stays set until this transaction
@@ -434,7 +419,9 @@ class OutlookCalendarService:
         if self._access_token and time.monotonic() < self._access_token_expires_at:
             return self._access_token
         response = await asyncio.to_thread(
-            self.shell_call, "outlookTokenAcquire", {"clientId": self.client_id},
+            self.shell_call,
+            "outlookTokenAcquire",
+            {"clientId": self.client_id},
             timeout_seconds=25.0,
         )
         if not response.get("success"):
@@ -473,9 +460,7 @@ class OutlookCalendarService:
                 # from a fresh bounded calendarView snapshot.
                 raise _GraphDeltaExpired()
             if response.status != 200:
-                raise ValueError(
-                    f"Microsoft Graph request failed (HTTP {response.status})."
-                )
+                raise ValueError(f"Microsoft Graph request failed (HTTP {response.status}).")
             payload = await response.json()
         if not isinstance(payload, dict):
             raise ValueError("Microsoft Graph returned an invalid JSON object.")
@@ -511,22 +496,25 @@ class OutlookCalendarService:
         force_reseed: bool = False,
     ) -> int:
         row = db._get_connection().execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         start, end = now - timedelta(days=1), now + timedelta(days=30)
-        reseeding = force_reseed or _delta_window_needs_reseed(
-            str(row["window_end"] or ""), now
-        )
+        reseeding = force_reseed or _delta_window_needs_reseed(str(row["window_end"] or ""), now)
         url = "" if reseeding else str(row["delta_link"] or "")
         if not url:
-            url = GRAPH_DELTA + "?" + urlencode({
-                "startDateTime": start.isoformat(), "endDateTime": end.isoformat(),
-            })
+            url = (
+                GRAPH_DELTA
+                + "?"
+                + urlencode(
+                    {
+                        "startDateTime": start.isoformat(),
+                        "endDateTime": end.isoformat(),
+                    }
+                )
+            )
 
         account_response = await self._graph_json(
             session,
-            GRAPH_ME + "?" + urlencode(
-                {"$select": "id,displayName,mail,userPrincipalName"}
-            ),
+            GRAPH_ME + "?" + urlencode({"$select": "id,displayName,mail,userPrincipalName"}),
             token,
         )
         account = self._account_payload(account_response)
@@ -542,9 +530,7 @@ class OutlookCalendarService:
             if url in visited_urls or len(visited_urls) >= 100:
                 raise ValueError("Microsoft Graph calendar pagination did not terminate.")
             visited_urls.add(url)
-            payload = await self._graph_json(
-                session, url, token, delta_request=True
-            )
+            payload = await self._graph_json(session, url, token, delta_request=True)
             values = payload.get("value", [])
             if not isinstance(values, list):
                 raise ValueError("Microsoft Graph calendar payload is invalid.")
@@ -565,25 +551,15 @@ class OutlookCalendarService:
             for event in changes:
                 event_id = str(event["id"])
                 if "@removed" in event:
-                    conn.execute(
-                        "DELETE FROM outlook_calendar_events WHERE id=?", (event_id,)
-                    )
+                    conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (event_id,))
                     changed += 1
                     continue
                 start_at = _graph_datetime_utc(event.get("start"))
                 end_at = _graph_datetime_utc(event.get("end"))
                 if not start_at or not end_at:
                     continue
-                online = (
-                    event.get("onlineMeeting")
-                    if isinstance(event.get("onlineMeeting"), dict)
-                    else {}
-                )
-                location = (
-                    event.get("location")
-                    if isinstance(event.get("location"), dict)
-                    else {}
-                )
+                online = event.get("onlineMeeting") if isinstance(event.get("onlineMeeting"), dict) else {}
+                location = event.get("location") if isinstance(event.get("location"), dict) else {}
                 conn.execute(
                     """INSERT INTO outlook_calendar_events
                        (id,subject,start_at,end_at,organizer_json,attendees_json,
@@ -602,11 +578,7 @@ class OutlookCalendarService:
                         end_at,
                         json.dumps(event.get("organizer") or {}, ensure_ascii=False),
                         json.dumps(event.get("attendees") or [], ensure_ascii=False),
-                        str(
-                            online.get("joinUrl")
-                            or event.get("onlineMeetingUrl")
-                            or ""
-                        )[:2048],
+                        str(online.get("joinUrl") or event.get("onlineMeetingUrl") or "")[:2048],
                         str(location.get("displayName") or "")[:500],
                         int(bool(event.get("isAllDay"))),
                         int(bool(event.get("isCancelled"))),
@@ -621,8 +593,7 @@ class OutlookCalendarService:
                 # window. Reconcile only after all pages succeeded so a network
                 # failure cannot destroy the last usable calendar cache.
                 cached_ids = {
-                    str(item["id"])
-                    for item in conn.execute("SELECT id FROM outlook_calendar_events").fetchall()
+                    str(item["id"]) for item in conn.execute("SELECT id FROM outlook_calendar_events").fetchall()
                 }
                 for stale_id in cached_ids - snapshot_ids:
                     conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (stale_id,))
@@ -652,9 +623,7 @@ class OutlookCalendarService:
                 while True:
                     token = await self.acquire_access_token()
                     try:
-                        return await self._sync_with_token(
-                            session, token, force_reseed=force_reseed
-                        )
+                        return await self._sync_with_token(session, token, force_reseed=force_reseed)
                     except _GraphUnauthorized:
                         if retried_unauthorized:
                             raise self._reauthorization_required()
@@ -669,9 +638,7 @@ class OutlookCalendarService:
 
     async def disconnect(self) -> None:
         async with self._mutation_lock:
-            response = await asyncio.to_thread(
-                self.shell_call, "outlookCredentialDelete", {}, timeout_seconds=3.0
-            )
+            response = await asyncio.to_thread(self.shell_call, "outlookCredentialDelete", {}, timeout_seconds=3.0)
             if not response.get("success"):
                 raise ValueError(str(response.get("fallbackReason") or "Outlook credential deletion failed."))
             payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
@@ -704,24 +671,18 @@ class OutlookCalendarService:
     async def status(self) -> dict[str, Any]:
         credential_status_available = True
         try:
-            shell = await asyncio.to_thread(
-                self.shell_call, "outlookCredentialStatus", {}, timeout_seconds=2.0
-            )
+            shell = await asyncio.to_thread(self.shell_call, "outlookCredentialStatus", {}, timeout_seconds=2.0)
         except Exception:
             shell = {}
             credential_status_available = False
         credential_stored = bool(
-            shell.get("success")
-            and isinstance(shell.get("payload"), dict)
-            and shell["payload"].get("credentialStored")
+            shell.get("success") and isinstance(shell.get("payload"), dict) and shell["payload"].get("credentialStored")
         )
         with self._pending_lock:
             self._prune_pending_locked()
             authorization_pending = bool(self._pending)
             with self._read_snapshot() as conn:
-                state = conn.execute(
-                    "SELECT * FROM outlook_calendar_state WHERE id=1"
-                ).fetchone()
+                state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
                 account = self._load_json(state["account_json"], {})
                 if not isinstance(account, dict) or not account.get("address"):
                     account = None
@@ -733,11 +694,9 @@ class OutlookCalendarService:
                         """SELECT *
                            FROM outlook_calendar_events
                            WHERE is_cancelled=0 AND end_at>=? ORDER BY start_at LIMIT 1""",
-                        (datetime.now(timezone.utc).isoformat(),),
+                        (datetime.now(UTC).isoformat(),),
                     ).fetchone()
-        reauthorization_required = (
-            str(state["last_error"] or "") == REAUTHORIZATION_REQUIRED_ERROR
-        )
+        reauthorization_required = str(state["last_error"] or "") == REAUTHORIZATION_REQUIRED_ERROR
         return {
             "configured": self.configured,
             # Credential Manager only proves that a refresh token exists. A
@@ -751,15 +710,11 @@ class OutlookCalendarService:
             "lastSyncAt": "" if authorization_pending else state["last_sync_at"],
             "lastError": state["last_error"],
             "account": account,
-            "nextEvent": (
-                self._calendar_event_payload(next_event, account=account)
-                if next_event
-                else None
-            ),
+            "nextEvent": (self._calendar_event_payload(next_event, account=account) if next_event else None),
         }
 
     def current_event(self) -> dict[str, Any] | None:
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         now_value = now.isoformat()
         lower = (now - timedelta(minutes=15)).isoformat()
         upper = (now + timedelta(minutes=10)).isoformat()
@@ -768,9 +723,7 @@ class OutlookCalendarService:
             if self._pending:
                 return None
             with self._read_snapshot() as conn:
-                state = conn.execute(
-                    "SELECT account_json FROM outlook_calendar_state WHERE id=1"
-                ).fetchone()
+                state = conn.execute("SELECT account_json FROM outlook_calendar_state WHERE id=1").fetchone()
                 row = conn.execute(
                     """SELECT *
                        FROM outlook_calendar_events
@@ -826,7 +779,7 @@ class OutlookCalendarService:
         account = self._load_json(state["account_json"], {}) if state else {}
         payload = self._calendar_event_payload(row, account=account)
         payload["calendarSyncedAt"] = str(state["last_sync_at"] or "") if state else ""
-        payload["snapshotCreatedAt"] = datetime.now(timezone.utc).isoformat()
+        payload["snapshotCreatedAt"] = datetime.now(UTC).isoformat()
         return payload
 
     @staticmethod
@@ -837,10 +790,7 @@ class OutlookCalendarService:
         end_value: str = "",
     ) -> tuple[date_type, str, datetime, datetime]:
         requested_zone = str(time_zone_name or "").strip()
-        if requested_zone and (
-            len(requested_zone) > 100
-            or not re.fullmatch(r"[A-Za-z0-9._+\-/]+", requested_zone)
-        ):
+        if requested_zone and (len(requested_zone) > 100 or not re.fullmatch(r"[A-Za-z0-9._+\-/]+", requested_zone)):
             raise ValueError("timeZone is invalid.")
         zone_label = requested_zone
 
@@ -857,6 +807,7 @@ class OutlookCalendarService:
         if bool(start_raw) != bool(end_raw):
             raise ValueError("start and end must be provided together.")
         if start_raw:
+
             def parse_boundary(raw: str) -> datetime:
                 try:
                     parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
@@ -864,7 +815,7 @@ class OutlookCalendarService:
                     raise ValueError("start and end must be ISO-8601 timestamps.") from exc
                 if parsed.tzinfo is None:
                     raise ValueError("start and end must include a UTC offset.")
-                return parsed.astimezone(timezone.utc)
+                return parsed.astimezone(UTC)
 
             start_utc = parse_boundary(start_raw)
             end_utc = parse_boundary(end_raw)
@@ -881,16 +832,14 @@ class OutlookCalendarService:
         # Never let development-machine tzdata make an explicit request behave
         # differently from the frozen Windows sidecar, which excludes tzdata.
         if requested_day or requested_zone:
-            raise ValueError(
-                "start and end are required when date or timeZone is provided."
-            )
+            raise ValueError("start and end are required when date or timeZone is provided.")
         # Parameterless callers retain a best-effort local-today fallback.
-        zone = datetime.now().astimezone().tzinfo or timezone.utc
+        zone = datetime.now().astimezone().tzinfo or UTC
         day = datetime.now(zone).date()
         zone_label = zone_label or getattr(zone, "key", None) or str(zone)
         start_local = datetime.combine(day, time_type.min, tzinfo=zone)
         end_local = datetime.combine(day + timedelta(days=1), time_type.min, tzinfo=zone)
-        return day, zone_label, start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+        return day, zone_label, start_local.astimezone(UTC), end_local.astimezone(UTC)
 
     def events_for_day(
         self,
@@ -919,9 +868,7 @@ class OutlookCalendarService:
                 ).fetchall()
         account = self._load_json(state["account_json"], {}) if state else {}
         truncated = len(rows) > 500
-        items = [
-            self._calendar_event_payload(row, account=account) for row in rows[:500]
-        ]
+        items = [self._calendar_event_payload(row, account=account) for row in rows[:500]]
         return {
             "date": day.isoformat(),
             "timeZone": zone_label,
@@ -939,9 +886,7 @@ class OutlookCalendarService:
             return fallback
 
     @classmethod
-    def _calendar_event_payload(
-        cls, row: Any, *, account: Any = None
-    ) -> dict[str, Any]:
+    def _calendar_event_payload(cls, row: Any, *, account: Any = None) -> dict[str, Any]:
         account_address = ""
         account_aliases: set[str] = set()
         if isinstance(account, dict):
@@ -953,27 +898,19 @@ class OutlookCalendarService:
                 if re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", normalized):
                     account_aliases.add(normalized)
 
-        def contact(
-            value: Any, *, attendee: bool = False
-        ) -> dict[str, Any] | None:
+        def contact(value: Any, *, attendee: bool = False) -> dict[str, Any] | None:
             if not isinstance(value, dict):
                 return None
             email = value.get("emailAddress") if isinstance(value.get("emailAddress"), dict) else value
             address = str(email.get("address", "")).strip().lower()
-            if (
-                not address
-                or len(address) > 320
-                or not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", address)
-            ):
+            if not address or len(address) > 320 or not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", address):
                 return None
             is_current_user = address in account_aliases
-            participant_identity_address = (
-                account_address if is_current_user and account_address else address
-            )
+            participant_identity_address = account_address if is_current_user and account_address else address
             result: dict[str, Any] = {
-                "participantId": hashlib.sha256(
-                    f"{row['id']}\0{participant_identity_address}".encode("utf-8")
-                ).hexdigest()[:20],
+                "participantId": hashlib.sha256(f"{row['id']}\0{participant_identity_address}".encode()).hexdigest()[
+                    :20
+                ],
                 "name": str(email.get("name", "")).strip()[:200],
                 "address": address,
                 "isCurrentUser": is_current_user,
@@ -985,9 +922,7 @@ class OutlookCalendarService:
                 if attendee_type not in {"required", "optional", "resource"}:
                     attendee_type = "required"
                 status = value.get("status") if isinstance(value.get("status"), dict) else {}
-                response = re.sub(
-                    r"[^A-Za-z]", "", str(status.get("response") or "none")
-                )[:40]
+                response = re.sub(r"[^A-Za-z]", "", str(status.get("response") or "none"))[:40]
                 result["type"] = attendee_type
                 result["response"] = response or "none"
             return result
@@ -1010,9 +945,7 @@ class OutlookCalendarService:
             "participants": participants,
             "currentUser": (
                 {
-                    "participantId": hashlib.sha256(
-                        f"{row['id']}\0{account_address}".encode("utf-8")
-                    ).hexdigest()[:20],
+                    "participantId": hashlib.sha256(f"{row['id']}\0{account_address}".encode()).hexdigest()[:20],
                     "name": str(account.get("name") or "")[:200],
                     "address": account_address,
                     "aliases": sorted(account_aliases),

@@ -9,7 +9,6 @@ from pathlib import Path
 from scripts.new_meeting_release_evidence import PROFILE_COVERAGE, build_template
 from scripts.validate_meeting_release_matrix import validate_matrix
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 INSTALLER_SHA = "a" * 64
 
@@ -86,9 +85,7 @@ def _write_complete_matrix(root: Path) -> list[Path]:
             automatedRegressionSuitePassed=True,
             releaseAssetsVerified=True,
         )
-        payload["outlookResults"] = {
-            key: True for key in payload["coverage"]["outlookScenarios"]
-        }
+        payload["outlookResults"] = {key: True for key in payload["coverage"]["outlookScenarios"]}
         payload["artifacts"] = [
             {
                 "kind": "redacted-scenario-report",

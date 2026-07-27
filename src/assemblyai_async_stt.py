@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import io
 import re
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 import aiohttp
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -136,11 +136,7 @@ def format_assemblyai_utterances_to_scriber_text(utterances: list[dict[str, Any]
         if not text:
             continue
         speaker_value = utterance.get("speaker")
-        speaker_key = (
-            "_unknown"
-            if speaker_value in (None, "")
-            else str(speaker_value).strip() or "_unknown"
-        )
+        speaker_key = "_unknown" if speaker_value in (None, "") else str(speaker_value).strip() or "_unknown"
         speaker_num = speaker_map.get(speaker_key)
         if speaker_num is None:
             speaker_num = next_index
@@ -158,9 +154,7 @@ def assemblyai_transcript_payload_to_text(
     utterances = payload.get("utterances")
     utterance_list = utterances if isinstance(utterances, list) else []
     if prefer_speaker_labels and utterance_list:
-        formatted = format_assemblyai_utterances_to_scriber_text(
-            [u for u in utterance_list if isinstance(u, dict)]
-        )
+        formatted = format_assemblyai_utterances_to_scriber_text([u for u in utterance_list if isinstance(u, dict)])
         if formatted:
             return formatted
 
@@ -169,9 +163,7 @@ def assemblyai_transcript_payload_to_text(
         return text
 
     if utterance_list:
-        return format_assemblyai_utterances_to_scriber_text(
-            [u for u in utterance_list if isinstance(u, dict)]
-        )
+        return format_assemblyai_utterances_to_scriber_text([u for u in utterance_list if isinstance(u, dict)])
     return ""
 
 
@@ -239,9 +231,7 @@ async def transcribe_with_assemblyai_pre_recorded(
     if keyterms:
         submit_payload["keyterms_prompt"] = keyterms
     elif str(custom_vocab or "").strip():
-        logger.warning(
-            "AssemblyAI keyterms_prompt omitted because no valid keyterms remained after sanitization"
-        )
+        logger.warning("AssemblyAI keyterms_prompt omitted because no valid keyterms remained after sanitization")
 
     _report_progress(on_progress, "Processing transcription...")
     async with session.post(

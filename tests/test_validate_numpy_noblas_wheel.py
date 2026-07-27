@@ -8,22 +8,14 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate_numpy_noblas_wheel.py"
 LOCK_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-noblas-wheel-lock-v1.json"
-WHEEL_PATH = (
-    REPO_ROOT
-    / "packaging"
-    / "wheels"
-    / "numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"
-)
+WHEEL_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"
 
 
 def _load_validator():
-    spec = importlib.util.spec_from_file_location(
-        "validate_numpy_noblas_wheel", VALIDATOR_PATH
-    )
+    spec = importlib.util.spec_from_file_location("validate_numpy_noblas_wheel", VALIDATOR_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -45,9 +37,7 @@ def test_repository_numpy_noblas_wheel_matches_lock() -> None:
 
     assert summary["ok"] is True
     assert summary["version"] == "2.4.6+scriber.noblas.1"
-    assert summary["sha256"] == (
-        "e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c"
-    )
+    assert summary["sha256"] == ("e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c")
     assert summary["blas"] == "none"
     assert summary["lapack"] == "none"
 
@@ -62,11 +52,7 @@ def test_validated_wheel_extracts_to_empty_overlay(tmp_path: Path) -> None:
     assert summary["ok"] is True
     assert extracted == 930
     assert (destination / "numpy" / "__init__.py").is_file()
-    assert (
-        destination
-        / "numpy-2.4.6+scriber.noblas.1.dist-info"
-        / "METADATA"
-    ).is_file()
+    assert (destination / "numpy-2.4.6+scriber.noblas.1.dist-info" / "METADATA").is_file()
     assert not list(destination.rglob("*openblas*"))
     assert not list(destination.rglob("*.dll"))
 
@@ -91,15 +77,11 @@ def test_validator_rejects_lock_sha_mismatch(tmp_path: Path) -> None:
 def test_static_runtime_version_must_match_metadata() -> None:
     with zipfile.ZipFile(WHEEL_PATH) as archive:
         source = archive.read("numpy/version.py")
-    changed = source.replace(
-        b'version = "2.4.6+scriber.noblas.1"', b'version = "2.4.6"', 1
-    )
+    changed = source.replace(b'version = "2.4.6+scriber.noblas.1"', b'version = "2.4.6"', 1)
     assert changed != source
 
     with pytest.raises(validator.ValidationError, match="runtime version"):
-        validator._validate_static_runtime_version(
-            changed, expected_version="2.4.6+scriber.noblas.1"
-        )
+        validator._validate_static_runtime_version(changed, expected_version="2.4.6+scriber.noblas.1")
 
 
 def test_validator_rejects_dll_archive_member() -> None:

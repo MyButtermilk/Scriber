@@ -29,4 +29,3 @@ def test_golden_trace_fails_on_regression():
     assert result.passed is False
     assert result.target_ok is True
     assert result.regression_ok is False
-

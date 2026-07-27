@@ -8,10 +8,9 @@ import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -92,7 +91,7 @@ NETWORK_PROTOCOLS = {"http", "https", "tls", "tcp", "udp", "rtmp", "rtmps"}
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def resolve_tool(names: list[str], *, media_tools_dir: Path | None = None, explicit: Path | None = None) -> Path | None:

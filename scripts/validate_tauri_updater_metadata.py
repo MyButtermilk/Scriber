@@ -106,11 +106,7 @@ def validate_metadata(
         if not isinstance(artifact, dict):
             raise ValueError(f"artifacts[{index}] must be an object.")
         artifact_name = artifact.get("name")
-        if (
-            not isinstance(artifact_name, str)
-            or not artifact_name.strip()
-            or Path(artifact_name).name != artifact_name
-        ):
+        if not isinstance(artifact_name, str) or not artifact_name.strip() or Path(artifact_name).name != artifact_name:
             raise ValueError(f"artifacts[{index}].name must be a filename without path separators.")
         if artifact_name in seen_names:
             raise ValueError(f"latest.json contains duplicate artifact name: {artifact_name}")
@@ -141,13 +137,9 @@ def validate_metadata(
     if artifacts:
         platform_matches = [artifact for artifact in artifacts if artifact.get("url") == url]
         if len(platform_matches) != 1:
-            raise ValueError(
-                f"platforms.{platform}.url must match exactly one artifacts[].url entry."
-            )
+            raise ValueError(f"platforms.{platform}.url must match exactly one artifacts[].url entry.")
         if platform_matches[0].get("signature", "") != signature:
-            raise ValueError(
-                f"platforms.{platform}.signature must match the selected artifact signature."
-            )
+            raise ValueError(f"platforms.{platform}.signature must match the selected artifact signature.")
 
 
 def validate_local_artifacts(

@@ -13,10 +13,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.validate_microphone_hardware_matrix import validate_matrix as validate_microphone_matrix
 from scripts.validate_meeting_release_matrix import validate_matrix as validate_meeting_matrix
-from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_file, validate_local_artifacts, validate_metadata
-
+from scripts.validate_microphone_hardware_matrix import validate_matrix as validate_microphone_matrix
+from scripts.validate_tauri_updater_metadata import (
+    DEFAULT_METADATA,
+    sha256_file,
+    validate_local_artifacts,
+    validate_metadata,
+)
 
 SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 RUST_AUDIO_ENGINE = "rust-wasapi"
@@ -104,14 +108,10 @@ def validate_release_readiness(
     expected_signed_artifact_identities = read_updater_artifact_identities(updater_metadata)
     expected_signed_artifact_names = list(expected_signed_artifact_identities)
     effective_require_rust_endpoint_inventory = (
-        require_rust_endpoint_inventory
-        or require_rust_audio_sidecar_smoke
-        or require_rust_audio_app_prewarm_smoke
+        require_rust_endpoint_inventory or require_rust_audio_sidecar_smoke or require_rust_audio_app_prewarm_smoke
     )
     effective_require_device_refresh_evidence = (
-        require_device_refresh_evidence
-        or require_rust_audio_sidecar_smoke
-        or require_rust_audio_app_prewarm_smoke
+        require_device_refresh_evidence or require_rust_audio_sidecar_smoke or require_rust_audio_app_prewarm_smoke
     )
     checks = [
         validate_physical_microphone_matrix(
@@ -492,8 +492,7 @@ def validate_runtime_dependency_footprint_report(report_path: Path | None) -> Re
         failures.append("runtime dependency footprint unexpectedPresentDependencies must be a list")
     elif unexpected_present:
         failures.append(
-            "runtime dependency footprint has unexpected dependencies: "
-            + ", ".join(map(str, unexpected_present))
+            "runtime dependency footprint has unexpected dependencies: " + ", ".join(map(str, unexpected_present))
         )
     total_mb = summary.get("totalMb")
     if not isinstance(total_mb, (int, float)) or total_mb <= 0:
@@ -562,9 +561,7 @@ def validate_rust_audio_sidecar_report(
     report = read_json_object(report_path, failures, "Rust audio sidecar smoke report")
     if not report:
         return ReadinessCheck("rustAudioSidecarSmoke", False, failures, details)
-    failures.extend(
-        find_rust_audio_redaction_failures(report, "Rust audio sidecar smoke")
-    )
+    failures.extend(find_rust_audio_redaction_failures(report, "Rust audio sidecar smoke"))
 
     summary = report.get("summary")
     if not isinstance(summary, dict):
@@ -604,19 +601,13 @@ def validate_rust_audio_sidecar_report(
         failures.append(
             "Rust audio sidecar smoke requested.prewarmBeforeCapture must be true when prewarm adoption is required"
         )
-    if min_duration_sec > 0 and (
-        not isinstance(duration, (int, float)) or float(duration) < min_duration_sec
-    ):
-        failures.append(
-            f"Rust audio sidecar smoke durationSec must be at least {min_duration_sec:g}"
-        )
+    if min_duration_sec > 0 and (not isinstance(duration, (int, float)) or float(duration) < min_duration_sec):
+        failures.append(f"Rust audio sidecar smoke durationSec must be at least {min_duration_sec:g}")
     if summary.get("failedCaptureCount") != 0:
         failures.append("Rust audio sidecar smoke failedCaptureCount must be 0")
     if summary.get("totalFramesRead", 0) <= 0:
         failures.append("Rust audio sidecar smoke totalFramesRead must be positive")
-    if prebuffer_required and summary.get("totalFramesWritten", 0) < summary.get(
-        "totalFramesRead", 0
-    ):
+    if prebuffer_required and summary.get("totalFramesWritten", 0) < summary.get("totalFramesRead", 0):
         failures.append(
             "Rust audio sidecar smoke totalFramesWritten must be at least totalFramesRead when prebufferMs is requested"
         )
@@ -632,9 +623,7 @@ def validate_rust_audio_sidecar_report(
         failures.append(
             "Rust audio sidecar smoke totalPrebufferFramesWritten must be at least totalPrebufferFramesRead when prebufferMs is requested"
         )
-    if prebuffer_required and summary.get("totalLiveFramesWritten", 0) < summary.get(
-        "totalLiveFramesRead", 0
-    ):
+    if prebuffer_required and summary.get("totalLiveFramesWritten", 0) < summary.get("totalLiveFramesRead", 0):
         failures.append(
             "Rust audio sidecar smoke totalLiveFramesWritten must be at least totalLiveFramesRead when prebufferMs is requested"
         )
@@ -645,11 +634,7 @@ def validate_rust_audio_sidecar_report(
     if summary.get("selectedHashVerified") is not True:
         failures.append("Rust audio sidecar smoke must verify selected native endpoint hash capture")
 
-    captures_by_name = {
-        str(capture.get("name") or ""): capture
-        for capture in captures
-        if isinstance(capture, dict)
-    }
+    captures_by_name = {str(capture.get("name") or ""): capture for capture in captures if isinstance(capture, dict)}
     default_capture = captures_by_name.get("default")
     selected_capture = captures_by_name.get("selected-native-endpoint-hash")
     if not isinstance(default_capture, dict):
@@ -720,9 +705,7 @@ def validate_rust_audio_prewarm_sidecar_report(
     report = read_json_object(report_path, failures, "Rust audio prewarm sidecar smoke report")
     if not report:
         return ReadinessCheck("rustAudioPrewarmSidecarSmoke", False, failures, details)
-    failures.extend(
-        find_rust_audio_redaction_failures(report, "Rust audio prewarm sidecar smoke")
-    )
+    failures.extend(find_rust_audio_redaction_failures(report, "Rust audio prewarm sidecar smoke"))
 
     requested = report.get("requested")
     if not isinstance(requested, dict):
@@ -813,11 +796,7 @@ def validate_rust_audio_prewarm_sidecar_report(
             failures.append(
                 "Rust audio prewarm sidecar smoke bufferedAudioFrames must be positive when prebufferMs is requested"
             )
-        if (
-            prebuffer_target is not None
-            and buffered_blocks is not None
-            and buffered_blocks > prebuffer_target
-        ):
+        if prebuffer_target is not None and buffered_blocks is not None and buffered_blocks > prebuffer_target:
             failures.append("Rust audio prewarm sidecar smoke bufferedBlocks must not exceed prebufferFrameTarget")
     summary_total_blocks = numeric_field(summary, "totalBlocksObserved")
     summary_buffered_frames = numeric_field(summary, "bufferedAudioFrames")
@@ -841,10 +820,7 @@ def validate_rust_audio_app_prewarm_report(
 ) -> ReadinessCheck:
     failures: list[str] = []
     effective_required = bool(
-        required
-        or min_duration_sec > 0
-        or min_prewarm_duration_sec > 0
-        or min_capture_cycles > 0
+        required or min_duration_sec > 0 or min_prewarm_duration_sec > 0 or min_capture_cycles > 0
     )
     details: dict[str, Any] = {
         "report": str(report_path) if report_path else "",
@@ -862,9 +838,7 @@ def validate_rust_audio_app_prewarm_report(
     report = read_json_object(report_path, failures, "Rust audio app prewarm smoke report")
     if not report:
         return ReadinessCheck("rustAudioAppPrewarmSmoke", False, failures, details)
-    failures.extend(
-        find_rust_audio_redaction_failures(report, "Rust audio app prewarm smoke")
-    )
+    failures.extend(find_rust_audio_redaction_failures(report, "Rust audio app prewarm smoke"))
 
     requested = report.get("requested")
     if not isinstance(requested, dict):
@@ -886,9 +860,7 @@ def validate_rust_audio_app_prewarm_report(
         manager_start = {}
     manager_pre_adoption_health = report.get("managerPreAdoptionHealth")
     if not isinstance(manager_pre_adoption_health, dict):
-        failures.append(
-            "Rust audio app prewarm smoke managerPreAdoptionHealth must be an object"
-        )
+        failures.append("Rust audio app prewarm smoke managerPreAdoptionHealth must be an object")
         manager_pre_adoption_health = {}
     manager_adoption = report.get("managerAdoption")
     if not isinstance(manager_adoption, dict):
@@ -930,13 +902,9 @@ def validate_rust_audio_app_prewarm_report(
         failures.append("Rust audio app prewarm smoke must use the stable default endpoint path")
     duration = numeric_field(requested, "durationSec")
     if min_duration_sec > 0 and (duration is None or duration < min_duration_sec):
-        failures.append(
-            f"Rust audio app prewarm smoke durationSec must be at least {min_duration_sec:g}"
-        )
+        failures.append(f"Rust audio app prewarm smoke durationSec must be at least {min_duration_sec:g}")
     prewarm_duration = numeric_field(requested, "prewarmDurationSec")
-    if min_prewarm_duration_sec > 0 and (
-        prewarm_duration is None or prewarm_duration < min_prewarm_duration_sec
-    ):
+    if min_prewarm_duration_sec > 0 and (prewarm_duration is None or prewarm_duration < min_prewarm_duration_sec):
         failures.append(
             f"Rust audio app prewarm smoke prewarmDurationSec must be at least {min_prewarm_duration_sec:g}"
         )
@@ -947,17 +915,13 @@ def validate_rust_audio_app_prewarm_report(
                 f"Rust audio app prewarm smoke requested.captureCycles must be at least {min_capture_cycles}"
             )
         if len(cycles) < min_capture_cycles:
-            failures.append(
-                f"Rust audio app prewarm smoke cycles must include at least {min_capture_cycles} entries"
-            )
+            failures.append(f"Rust audio app prewarm smoke cycles must include at least {min_capture_cycles} entries")
     if manager_start.get("active") is not True:
         failures.append("Rust audio app prewarm smoke managerStart.active must be true")
     if not str(manager_start.get("prewarmIdHash") or ""):
         failures.append("Rust audio app prewarm smoke managerStart.prewarmIdHash is required")
     if report.get("managerPreAdoptionHealthReturned") is not True:
-        failures.append(
-            "Rust audio app prewarm smoke managerPreAdoptionHealthReturned must be true"
-        )
+        failures.append("Rust audio app prewarm smoke managerPreAdoptionHealthReturned must be true")
     failures.extend(
         validate_rust_audio_app_prewarm_health_snapshot(
             manager_pre_adoption_health,
@@ -1032,30 +996,20 @@ def validate_rust_audio_app_prewarm_report(
     if numeric_field(summary, "protocolErrorCount") != 0:
         failures.append("Rust audio app prewarm smoke summary.protocolErrorCount must be 0")
     summary_cycle_count = numeric_field(summary, "captureCycleCount")
-    if min_capture_cycles > 0 and (
-        summary_cycle_count is None or summary_cycle_count < min_capture_cycles
-    ):
-        failures.append(
-            f"Rust audio app prewarm smoke summary.captureCycleCount must be at least {min_capture_cycles}"
-        )
+    if min_capture_cycles > 0 and (summary_cycle_count is None or summary_cycle_count < min_capture_cycles):
+        failures.append(f"Rust audio app prewarm smoke summary.captureCycleCount must be at least {min_capture_cycles}")
 
     for index, cycle in enumerate(cycles, start=1):
         if not isinstance(cycle, dict):
             failures.append(f"Rust audio app prewarm smoke cycles[{index - 1}] must be an object")
             continue
         cycle_label = f"cycles[{index - 1}]"
-        cycle_pre_reason = (
-            "smoke_pre_adoption" if index == 1 else f"smoke_pre_adoption_cycle_{index}"
-        )
+        cycle_pre_reason = "smoke_pre_adoption" if index == 1 else f"smoke_pre_adoption_cycle_{index}"
         if cycle.get("managerPreAdoptionHealthReturned") is not True:
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealthReturned must be true"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealthReturned must be true")
         cycle_pre_health = cycle.get("managerPreAdoptionHealth")
         if not isinstance(cycle_pre_health, dict):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealth must be an object"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerPreAdoptionHealth must be an object")
             cycle_pre_health = {}
         failures.extend(
             validate_rust_audio_app_prewarm_health_snapshot(
@@ -1070,18 +1024,14 @@ def validate_rust_audio_app_prewarm_report(
             failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerAdoption must be an object")
             cycle_adoption = {}
         if not str(cycle_adoption.get("prewarmIdHash") or ""):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerAdoption.prewarmIdHash is required"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerAdoption.prewarmIdHash is required")
         cycle_source = cycle.get("sourceFinal")
         if not isinstance(cycle_source, dict):
             failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal must be an object")
             cycle_source = {}
         cycle_adopted = cycle_source.get("adoptedPrewarm")
         if not isinstance(cycle_adopted, dict):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm must be an object"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm must be an object")
             cycle_adopted = {}
         if cycle_adopted.get("adopted") is not True:
             failures.append(
@@ -1092,22 +1042,22 @@ def validate_rust_audio_app_prewarm_report(
                 f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.adoptedPrewarm.blocks must be positive"
             )
         if not str(cycle_source.get("nativeEndpointIdHash") or ""):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.nativeEndpointIdHash is required"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.nativeEndpointIdHash is required")
         if cycle_source.get("lastError") not in (None, ""):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.lastError must be empty"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.lastError must be empty")
         if numeric_field(cycle_source, "callbackCount") is None or numeric_field(cycle_source, "callbackCount") <= 0:
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.callbackCount must be positive"
-            )
-        if numeric_field(cycle_source, "framePipePrebufferFramesRead") is None or numeric_field(cycle_source, "framePipePrebufferFramesRead") <= 0:
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.callbackCount must be positive")
+        if (
+            numeric_field(cycle_source, "framePipePrebufferFramesRead") is None
+            or numeric_field(cycle_source, "framePipePrebufferFramesRead") <= 0
+        ):
             failures.append(
                 f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipePrebufferFramesRead must be positive"
             )
-        if numeric_field(cycle_source, "framePipeLiveFramesRead") is None or numeric_field(cycle_source, "framePipeLiveFramesRead") <= 0:
+        if (
+            numeric_field(cycle_source, "framePipeLiveFramesRead") is None
+            or numeric_field(cycle_source, "framePipeLiveFramesRead") <= 0
+        ):
             failures.append(
                 f"Rust audio app prewarm smoke {cycle_label}.sourceFinal.framePipeLiveFramesRead must be positive"
             )
@@ -1125,29 +1075,17 @@ def validate_rust_audio_app_prewarm_report(
             )
         cycle_resume = cycle.get("managerResume")
         if not isinstance(cycle_resume, dict):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerResume must be an object"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerResume must be an object")
             cycle_resume = {}
         if cycle_resume.get("active") is not True:
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerResume.active must be true"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerResume.active must be true")
         if cycle.get("managerPostResumeHealthReturned") is not True:
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealthReturned must be true"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealthReturned must be true")
         cycle_post_health = cycle.get("managerPostResumeHealth")
         if not isinstance(cycle_post_health, dict):
-            failures.append(
-                f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealth must be an object"
-            )
+            failures.append(f"Rust audio app prewarm smoke {cycle_label}.managerPostResumeHealth must be an object")
             cycle_post_health = {}
-        cycle_post_reason = (
-            "smoke_post_resume"
-            if index == len(cycles)
-            else f"smoke_post_resume_cycle_{index}"
-        )
+        cycle_post_reason = "smoke_post_resume" if index == len(cycles) else f"smoke_post_resume_cycle_{index}"
         failures.extend(
             validate_rust_audio_app_prewarm_health_snapshot(
                 cycle_post_health,
@@ -1204,16 +1142,10 @@ def validate_rust_audio_app_prewarm_health_snapshot(
         if not isinstance(recent_events, list):
             failures.append(f"{prefix}.recentEvents must be a list")
         else:
-            event_names = {
-                str(event.get("event") or "")
-                for event in recent_events
-                if isinstance(event, dict)
-            }
+            event_names = {str(event.get("event") or "") for event in recent_events if isinstance(event, dict)}
             for required_event in required_recent_events:
                 if required_event not in event_names:
-                    failures.append(
-                        f"{prefix}.recentEvents must include {required_event}"
-                    )
+                    failures.append(f"{prefix}.recentEvents must include {required_event}")
     if "resume_active_capture" in required_recent_events:
         resume_ready_count = numeric_field(snapshot, "activeCaptureResumeReadyCount")
         if resume_ready_count is None or resume_ready_count <= 0:
@@ -1268,9 +1200,7 @@ def validate_installed_live_recording_smoke_report(
     if not isinstance(stability, dict):
         failures.append("installed live recording smoke liveRecording.stability must be an object")
         stability = {}
-    failures.extend(
-        find_rust_audio_redaction_failures(smoke, "installed live recording smoke")
-    )
+    failures.extend(find_rust_audio_redaction_failures(smoke, "installed live recording smoke"))
 
     details.update(
         {
@@ -1355,15 +1285,9 @@ def validate_installed_live_recording_smoke_report(
     if stability_duration is None or stability_duration <= 0:
         failures.append("installed live recording smoke stability.durationSec must be positive")
     elif min_duration_sec > 0 and stability_duration < min_duration_sec:
-        failures.append(
-            f"installed live recording smoke stability.durationSec must be at least {min_duration_sec:g}"
-        )
+        failures.append(f"installed live recording smoke stability.durationSec must be at least {min_duration_sec:g}")
     stability_backend_pid = numeric_field(stability, "backendPid")
-    if (
-        backend_pid is not None
-        and stability_backend_pid is not None
-        and stability_backend_pid != backend_pid
-    ):
+    if backend_pid is not None and stability_backend_pid is not None and stability_backend_pid != backend_pid:
         failures.append("installed live recording smoke stability.backendPid must match backendPid")
     probe_interval = numeric_field(stability, "probeIntervalSec") or numeric_field(
         live_recording,
@@ -1396,11 +1320,7 @@ def validate_installed_live_recording_smoke_report(
                 failures.append(f"installed live recording smoke sample {index} healthReady must be true")
                 break
             sample_backend_pid = numeric_field(sample, "backendPid")
-            if (
-                backend_pid is not None
-                and sample_backend_pid is not None
-                and sample_backend_pid != backend_pid
-            ):
+            if backend_pid is not None and sample_backend_pid is not None and sample_backend_pid != backend_pid:
                 failures.append(f"installed live recording smoke sample {index} backendPid must match backendPid")
                 break
             sample_elapsed = numeric_field(sample, "elapsedSec")
@@ -1416,7 +1336,9 @@ def validate_installed_live_recording_smoke_report(
             last_sample = samples[-1]
             last_elapsed = numeric_field(last_sample, "elapsedSec") if isinstance(last_sample, dict) else None
             if last_elapsed is None or last_elapsed < stability_duration * 0.75:
-                failures.append("installed live recording smoke samples must span at least 75% of stability.durationSec")
+                failures.append(
+                    "installed live recording smoke samples must span at least 75% of stability.durationSec"
+                )
         if require_rust_audio:
             failures.extend(validate_installed_live_recording_rust_audio_samples(samples))
             failures.extend(validate_installed_live_recording_post_stop_prewarm(live_recording))
@@ -1436,9 +1358,7 @@ def validate_installed_live_recording_post_stop_prewarm(
         return ["installed live recording smoke postStopAudioDiagnostics.audioDiagnostics must be an object"]
     microphone = diagnostics.get("microphone")
     if not isinstance(microphone, dict):
-        return [
-            "installed live recording smoke postStopAudioDiagnostics.audioDiagnostics.microphone must be an object"
-        ]
+        return ["installed live recording smoke postStopAudioDiagnostics.audioDiagnostics.microphone must be an object"]
     if microphone.get("micAlwaysOn") is not True:
         failures.append("installed live recording smoke post-stop micAlwaysOn must be true")
     if microphone.get("idlePrewarmActive") is not True:
@@ -1446,9 +1366,7 @@ def validate_installed_live_recording_post_stop_prewarm(
     if microphone.get("prewarmActive") is not True:
         failures.append("installed live recording smoke post-stop prewarmActive must be true")
     if str(microphone.get("prewarmEngine") or "") != RUST_AUDIO_ENGINE:
-        failures.append(
-            f"installed live recording smoke post-stop prewarmEngine must be {RUST_AUDIO_ENGINE}"
-        )
+        failures.append(f"installed live recording smoke post-stop prewarmEngine must be {RUST_AUDIO_ENGINE}")
     resume_ready_count = numeric_field(microphone, "prewarmActiveCaptureResumeReadyCount")
     if resume_ready_count is None or resume_ready_count <= 0:
         failures.append(
@@ -1456,9 +1374,7 @@ def validate_installed_live_recording_post_stop_prewarm(
         )
     resume_failed_count = numeric_field(microphone, "prewarmActiveCaptureResumeFailedCount")
     if resume_failed_count != 0:
-        failures.append(
-            "installed live recording smoke post-stop prewarmActiveCaptureResumeFailedCount must be 0"
-        )
+        failures.append("installed live recording smoke post-stop prewarmActiveCaptureResumeFailedCount must be 0")
     for field in (
         "prewarmLastActiveCaptureResumeGapMs",
         "prewarmLastActiveCaptureStopToReadyMs",
@@ -1535,19 +1451,14 @@ def summarize_installed_live_recording_rust_audio_evidence(samples: Any) -> dict
                 source.get("framePipeReaderEndReason") if isinstance(source, dict) else None,
             )
             if any(str(value or "").strip() for value in mid_session_values) or any(
-                str(value or "").strip() not in {"", "running"}
-                for value in reader_end_values
+                str(value or "").strip() not in {"", "running"} for value in reader_end_values
             ):
                 mid_session_failure_count += 1
             rust_prewarm_adoption = active_capture.get("rustPrewarmAdoption")
             if (
                 isinstance(rust_prewarm_adoption, dict)
                 and rust_prewarm_adoption.get("adopted") is True
-                and str(
-                    rust_prewarm_adoption.get("prewarmIdHash")
-                    or rust_prewarm_adoption.get("prewarm_idHash")
-                    or ""
-                )
+                and str(rust_prewarm_adoption.get("prewarmIdHash") or rust_prewarm_adoption.get("prewarm_idHash") or "")
             ):
                 rust_prewarm_adoption_count += 1
 
@@ -1581,11 +1492,15 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             break
         feature_flags = diagnostics.get("featureFlags")
         if not isinstance(feature_flags, dict):
-            failures.append(f"installed live recording smoke sample {index} audioDiagnostics.featureFlags must be an object")
+            failures.append(
+                f"installed live recording smoke sample {index} audioDiagnostics.featureFlags must be an object"
+            )
             break
         microphone = diagnostics.get("microphone")
         if not isinstance(microphone, dict):
-            failures.append(f"installed live recording smoke sample {index} audioDiagnostics.microphone must be an object")
+            failures.append(
+                f"installed live recording smoke sample {index} audioDiagnostics.microphone must be an object"
+            )
             break
         if microphone.get("micAlwaysOn") is not True:
             failures.append(
@@ -1593,9 +1508,7 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             )
             break
         if feature_flags.get("audioEngine") != RUST_AUDIO_ENGINE:
-            failures.append(
-                f"installed live recording smoke sample {index} audioEngine must be {RUST_AUDIO_ENGINE}"
-            )
+            failures.append(f"installed live recording smoke sample {index} audioEngine must be {RUST_AUDIO_ENGINE}")
             break
         if feature_flags.get("rustAudioRequested") is not True:
             failures.append(f"installed live recording smoke sample {index} rustAudioRequested must be true")
@@ -1635,28 +1548,19 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
                 f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption.adopted must be true"
             )
             break
-        if not str(
-            rust_prewarm_adoption.get("prewarmIdHash")
-            or rust_prewarm_adoption.get("prewarm_idHash")
-            or ""
-        ):
+        if not str(rust_prewarm_adoption.get("prewarmIdHash") or rust_prewarm_adoption.get("prewarm_idHash") or ""):
             failures.append(
                 f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption.prewarmIdHash is required"
             )
             break
-        if (
-            rust_prewarm_adoption.get("prewarmId") is not None
-            or rust_prewarm_adoption.get("prewarm_id") is not None
-        ):
+        if rust_prewarm_adoption.get("prewarmId") is not None or rust_prewarm_adoption.get("prewarm_id") is not None:
             failures.append(
                 f"installed live recording smoke sample {index} activeCapture.rustPrewarmAdoption must not expose raw prewarmId"
             )
             break
         health_restart_count = numeric_field(active_capture, "healthRestartCount")
         if health_restart_count != 0:
-            failures.append(
-                f"installed live recording smoke sample {index} activeCapture.healthRestartCount must be 0"
-            )
+            failures.append(f"installed live recording smoke sample {index} activeCapture.healthRestartCount must be 0")
             break
         health_restart_throttle_count = numeric_field(active_capture, "healthRestartThrottleCount")
         if health_restart_throttle_count != 0:
@@ -1710,7 +1614,9 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             break
         callback_count = numeric_field(active_capture, "callbackCount")
         if callback_count is None or callback_count <= 0:
-            failures.append(f"installed live recording smoke sample {index} activeCapture.callbackCount must be positive")
+            failures.append(
+                f"installed live recording smoke sample {index} activeCapture.callbackCount must be positive"
+            )
             break
         frame_pipe_frames_read = numeric_field(active_capture, "framePipeFramesRead")
         if frame_pipe_frames_read is None or frame_pipe_frames_read <= 0:
@@ -1730,12 +1636,17 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
                 f"installed live recording smoke sample {index} framePipeFramesRead must increase between stability samples"
             )
             break
-        if previous_frame_pipe_audio_frames_read is not None and frame_pipe_audio_frames_read <= previous_frame_pipe_audio_frames_read:
+        if (
+            previous_frame_pipe_audio_frames_read is not None
+            and frame_pipe_audio_frames_read <= previous_frame_pipe_audio_frames_read
+        ):
             failures.append(
                 f"installed live recording smoke sample {index} framePipeAudioFramesRead must increase between stability samples"
             )
             break
-        if not str(active_capture.get("nativeEndpointIdHash") or active_capture.get("sourceNativeEndpointIdHash") or ""):
+        if not str(
+            active_capture.get("nativeEndpointIdHash") or active_capture.get("sourceNativeEndpointIdHash") or ""
+        ):
             failures.append(f"installed live recording smoke sample {index} nativeEndpointIdHash is required")
             break
         if active_capture.get("sourceEndpointSelectionMode") != "default":
@@ -1749,19 +1660,13 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             )
             break
         if numeric_field(active_capture, "framePipeSequenceErrorCount") != 0:
-            failures.append(
-                f"installed live recording smoke sample {index} framePipeSequenceErrorCount must be 0"
-            )
+            failures.append(f"installed live recording smoke sample {index} framePipeSequenceErrorCount must be 0")
             break
         if numeric_field(active_capture, "framePipeProtocolErrorCount") != 0:
-            failures.append(
-                f"installed live recording smoke sample {index} framePipeProtocolErrorCount must be 0"
-            )
+            failures.append(f"installed live recording smoke sample {index} framePipeProtocolErrorCount must be 0")
             break
         if numeric_field(active_capture, "framePipePrebufferAfterLiveCount") != 0:
-            failures.append(
-                f"installed live recording smoke sample {index} framePipePrebufferAfterLiveCount must be 0"
-            )
+            failures.append(f"installed live recording smoke sample {index} framePipePrebufferAfterLiveCount must be 0")
             break
 
         fallback_circuit = diagnostics.get("rustAudioFallbackCircuit")
@@ -1769,10 +1674,14 @@ def validate_installed_live_recording_rust_audio_samples(samples: Any) -> list[s
             failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit must be an object")
             break
         if fallback_circuit.get("available") is not True:
-            failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit.available must be true")
+            failures.append(
+                f"installed live recording smoke sample {index} rustAudioFallbackCircuit.available must be true"
+            )
             break
         if fallback_circuit.get("open") is True:
-            failures.append(f"installed live recording smoke sample {index} rustAudioFallbackCircuit.open must be false")
+            failures.append(
+                f"installed live recording smoke sample {index} rustAudioFallbackCircuit.open must be false"
+            )
             break
         previous_callback_count = callback_count
         previous_frame_pipe_frames_read = frame_pipe_frames_read
@@ -1901,9 +1810,7 @@ def validate_tauri_text_injection_payload(
                 or isinstance(pre_delay, bool)
                 or pre_delay <= 0
             ):
-                failures.append(
-                    f"{label} timing preDelay must be positive for Word/Outlook scenario"
-                )
+                failures.append(f"{label} timing preDelay must be positive for Word/Outlook scenario")
 
     return {
         "schemaVersion": report.get("schemaVersion"),
@@ -2020,11 +1927,7 @@ def _looks_like_unredacted_token_field(path: str, value: str) -> bool:
 
 
 def _looks_like_unredacted_endpoint_id_field(path: str, value: str) -> bool:
-    tokens = [
-        token
-        for token in re.split(r"[.\[\]]+", path.lower())
-        if token
-    ]
+    tokens = [token for token in re.split(r"[.\[\]]+", path.lower()) if token]
     if not any(token.endswith("endpointid") and not token.endswith("hash") for token in tokens):
         return False
     normalized = str(value).strip()
@@ -2045,13 +1948,9 @@ def find_tauri_text_injection_redaction_failures(value: Any, label: str) -> list
                 walk(item, f"{path}[{index}]")
         elif isinstance(node, str):
             if _looks_like_raw_shell_pipe(node):
-                failures.append(
-                    f"{label} contains raw Shell IPC pipe name at {path}"
-                )
+                failures.append(f"{label} contains raw Shell IPC pipe name at {path}")
             if _looks_like_unredacted_token_field(path, node):
-                failures.append(
-                    f"{label} contains unredacted token-like value at {path}"
-                )
+                failures.append(f"{label} contains unredacted token-like value at {path}")
 
     walk(value, "")
     return failures
@@ -2170,14 +2069,10 @@ def validate_tauri_text_injection_matrix_report(
             valid_count += 1
 
     missing = [
-        scenario_id
-        for scenario_id in REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS
-        if scenario_id not in covered_ids
+        scenario_id for scenario_id in REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS if scenario_id not in covered_ids
     ]
     if missing:
-        failures.append(
-            "Tauri text injection matrix is missing required scenario(s): " + ", ".join(missing)
-        )
+        failures.append("Tauri text injection matrix is missing required scenario(s): " + ", ".join(missing))
 
     details.update(
         {
@@ -2223,11 +2118,7 @@ def validate_recording_hot_path_comparison_report(
     if not isinstance(checks, list):
         failures.append("recording hot-path comparison checks must be a list")
         checks = []
-    checks_by_name = {
-        str(check.get("name") or ""): check
-        for check in checks
-        if isinstance(check, dict)
-    }
+    checks_by_name = {str(check.get("name") or ""): check for check in checks if isinstance(check, dict)}
 
     details.update(
         {
@@ -2329,9 +2220,7 @@ def validate_rust_audio_capture(
                 f"Rust audio capture {name} prebufferFramesRead must be positive when prebufferMs is requested"
             )
         if frames.get("liveFramesRead", 0) <= 0:
-            failures.append(
-                f"Rust audio capture {name} liveFramesRead must be positive when prebufferMs is requested"
-            )
+            failures.append(f"Rust audio capture {name} liveFramesRead must be positive when prebufferMs is requested")
         first_live_frame_ms = frames.get("firstLiveFrameReadMs")
         if not isinstance(first_live_frame_ms, (int, float)) or first_live_frame_ms < 0:
             failures.append(
@@ -2347,12 +2236,9 @@ def validate_rust_audio_capture(
         failures.append(f"Rust audio capture {name} firstFrameReadMs must be non-negative")
     observed_duration = frames.get("observedDurationSec")
     if min_observed_duration_sec > 0 and (
-        not isinstance(observed_duration, (int, float))
-        or float(observed_duration) < min_observed_duration_sec
+        not isinstance(observed_duration, (int, float)) or float(observed_duration) < min_observed_duration_sec
     ):
-        failures.append(
-            f"Rust audio capture {name} observedDurationSec must be at least {min_observed_duration_sec:g}"
-        )
+        failures.append(f"Rust audio capture {name} observedDurationSec must be at least {min_observed_duration_sec:g}")
 
     stop = capture.get("stop")
     if not isinstance(stop, dict):
@@ -2399,9 +2285,7 @@ def validate_rust_audio_capture(
         if not isinstance(selection, dict):
             failures.append(f"Rust audio capture {name} endpointSelection must be an object")
         elif selection.get("mode") != expected_selection_mode:
-            failures.append(
-                f"Rust audio capture {name} endpointSelection.mode must be {expected_selection_mode}"
-            )
+            failures.append(f"Rust audio capture {name} endpointSelection.mode must be {expected_selection_mode}")
     return failures
 
 
@@ -2475,9 +2359,7 @@ def validate_authenticode_report(
         normalized_name = expected_name.casefold()
         existing_identity = expected_identities_by_name.get(normalized_name)
         if existing_identity is not None and existing_identity != expected_identity:
-            failures.append(
-                "latest.json contains conflicting artifact identities that differ only by case"
-            )
+            failures.append("latest.json contains conflicting artifact identities that differ only by case")
         expected_identities_by_name[normalized_name] = expected_identity
     if report_path is None:
         failures.append("Authenticode validation report is required")
@@ -2512,9 +2394,7 @@ def validate_authenticode_report(
             reported_artifact_names.add(artifact_name.casefold())
         status = artifact.get("status")
         if status not in {"Valid", "NotSigned"}:
-            failures.append(
-                f"Authenticode artifacts[{index}].status must be Valid or NotSigned"
-            )
+            failures.append(f"Authenticode artifacts[{index}].status must be Valid or NotSigned")
         if status == "NotSigned" and (expected_publisher or require_timestamp):
             failures.append(
                 f"Authenticode artifacts[{index}] cannot be NotSigned when publisher or timestamp policy is required"
@@ -2534,23 +2414,13 @@ def validate_authenticode_report(
         expected_identity = expected_identities_by_name.get(artifact_name.casefold())
         if expected_identity:
             if size_bytes != expected_identity["sizeBytes"]:
-                failures.append(
-                    f"Authenticode artifacts[{index}].sizeBytes does not match latest.json"
-                )
+                failures.append(f"Authenticode artifacts[{index}].sizeBytes does not match latest.json")
             if sha256 != expected_identity["sha256"]:
-                failures.append(
-                    f"Authenticode artifacts[{index}].sha256 does not match latest.json"
-                )
+                failures.append(f"Authenticode artifacts[{index}].sha256 does not match latest.json")
 
-    missing_expected = [
-        name
-        for name in expected_artifact_names
-        if name.casefold() not in reported_artifact_names
-    ]
+    missing_expected = [name for name in expected_artifact_names if name.casefold() not in reported_artifact_names]
     if missing_expected:
-        failures.append(
-            "Authenticode report is missing release artifact(s): " + ", ".join(missing_expected)
-        )
+        failures.append("Authenticode report is missing release artifact(s): " + ", ".join(missing_expected))
 
     return ReadinessCheck("authenticodeSignatures", not failures, failures, details)
 

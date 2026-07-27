@@ -36,22 +36,21 @@ def test_ws_broadcast_baseline_script_writes_benchmark_artifact(tmp_path: Path):
     assert payload["ok"] is True
     assert payload["summary"]["jsonSerialize"]["iterations"] == 2
     assert payload["summary"]["broadcastNoClients"]["clientCount"] == 0
-    assert [
-        item["clientCount"] for item in payload["summary"]["broadcastWithClients"]
-    ] == [1, 2]
+    assert [item["clientCount"] for item in payload["summary"]["broadcastWithClients"]] == [1, 2]
     assert payload["summary"]["broadcastWithClients"][0]["sendCalls"] == 3
     assert payload["summary"]["broadcastWithClients"][1]["sendCalls"] == 6
 
 
 def test_hybrid_baseline_runner_wires_websocket_benchmark():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     assert "measure_ws_broadcast_baseline.py" in script
     assert "Invoke-WebSocketBroadcastBenchmark" in script
     assert "websocket_events_and_json_serialize_cost" in script
-    assert "not_automated_yet" not in script.split(
-        "websocket_events_and_json_serialize_cost", maxsplit=1
-    )[1].split("history_scroll_many_transcripts", maxsplit=1)[0]
+    assert (
+        "not_automated_yet"
+        not in script.split("websocket_events_and_json_serialize_cost", maxsplit=1)[1].split(
+            "history_scroll_many_transcripts", maxsplit=1
+        )[0]
+    )

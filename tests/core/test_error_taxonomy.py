@@ -14,18 +14,14 @@ def test_classify_network_timeout():
 
 
 def test_classify_aiohttp_cannot_connect_as_retryable_network_failure():
-    category = classify_error_message(
-        "Cannot connect to host modulate-developer-apis.com:443 ssl:default"
-    )
+    category = classify_error_message("Cannot connect to host modulate-developer-apis.com:443 ssl:default")
 
     assert category is ErrorCategory.TRANSIENT_NETWORK
     assert is_retryable(category) is True
 
 
 def test_classify_incomplete_youtube_download_as_retryable_network_failure():
-    category = classify_error_message(
-        "Downloaded YouTube media is incomplete or corrupted"
-    )
+    category = classify_error_message("Downloaded YouTube media is incomplete or corrupted")
 
     assert category is ErrorCategory.TRANSIENT_NETWORK
     assert is_retryable(category) is True
@@ -46,4 +42,3 @@ def test_user_message_exists_for_all_categories():
         message = user_message_for_category(category)
         assert isinstance(message, str)
         assert message
-

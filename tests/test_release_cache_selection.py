@@ -7,7 +7,6 @@ import subprocess
 import uuid
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SELECT_BACKEND_CACHE = REPO_ROOT / "scripts" / "ci" / "select_backend_sidecar_cache_entry.ps1"
 
@@ -38,9 +37,7 @@ def test_backend_sidecar_cache_selection_keeps_only_attested_entry() -> None:
         )
         stale.mkdir(parents=True)
         (stale / "stale.bin").write_bytes(b"stale")
-        metadata_path.write_text(
-            json.dumps({"cache": {"key": selected_key}}), encoding="utf-8"
-        )
+        metadata_path.write_text(json.dumps({"cache": {"key": selected_key}}), encoding="utf-8")
 
         result = subprocess.run(
             [
@@ -93,9 +90,7 @@ def test_backend_sidecar_cache_selection_rejects_prefix_collision_before_pruning
         )
         stale.mkdir(parents=True)
         (stale / "stale.bin").write_bytes(b"stale")
-        metadata_path.write_text(
-            json.dumps({"cache": {"key": selected_key}}), encoding="utf-8"
-        )
+        metadata_path.write_text(json.dumps({"cache": {"key": selected_key}}), encoding="utf-8")
 
         result = subprocess.run(
             [

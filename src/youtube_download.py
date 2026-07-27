@@ -8,9 +8,10 @@ import re
 import shutil
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 from uuid import uuid4
 
 from loguru import logger
@@ -55,12 +56,13 @@ _CAPTION_FORMAT_PRIORITY = {"json3": 0, "vtt": 1, "srv3": 2, "ttml": 3}
 
 def _apply_youtube_only_runtime_policy() -> None:
     policy = importlib.import_module("backend_runtime.yt_dlp_policy")
-    apply_policy = getattr(policy, "apply_youtube_only_runtime_policy")
+    apply_policy = policy.apply_youtube_only_runtime_policy
     apply_policy()
 
 
 class DownloadProgress:
     """Progress information for YouTube download."""
+
     def __init__(self):
         self.percent: float = 0.0
         self.downloaded_bytes: int = 0
@@ -74,7 +76,7 @@ class DownloadProgress:
 
 def _format_bytes(num_bytes: float) -> str:
     """Format bytes into human-readable string."""
-    for unit in ['B', 'KiB', 'MiB', 'GiB']:
+    for unit in ["B", "KiB", "MiB", "GiB"]:
         if abs(num_bytes) < 1024.0:
             return f"{num_bytes:.1f}{unit}"
         num_bytes /= 1024.0
@@ -119,11 +121,7 @@ def _caption_language_candidates(
     source_language: str,
     automatic: bool,
 ) -> list[str]:
-    available = [
-        str(key)
-        for key, value in tracks.items()
-        if key != "live_chat" and isinstance(value, list) and value
-    ]
+    available = [str(key) for key, value in tracks.items() if key != "live_chat" and isinstance(value, list) and value]
     normalized = {key: _normalize_caption_language(key) for key in available}
     preferred = _normalize_caption_language(preferred_language)
     source = _normalize_caption_language(source_language)
@@ -138,12 +136,8 @@ def _caption_language_candidates(
             return
         exact = [key for key in available if normalized[key] == language]
         originals = [key for key in available if normalized[key] == f"{language}-orig"]
-        regional = [
-            key
-            for key in available
-            if normalized[key].startswith(f"{language}-") and key not in originals
-        ]
-        for key in (originals + exact + regional if original_first else exact + originals + regional):
+        regional = [key for key in available if normalized[key].startswith(f"{language}-") and key not in originals]
+        for key in originals + exact + regional if original_first else exact + originals + regional:
             if key not in ranked:
                 ranked.append(key)
 
@@ -180,11 +174,7 @@ def _select_caption_track(
             formats = tracks.get(language)
             if not isinstance(formats, list):
                 continue
-            candidates = [
-                item
-                for item in formats
-                if isinstance(item, dict) and str(item.get("url") or "").strip()
-            ]
+            candidates = [item for item in formats if isinstance(item, dict) and str(item.get("url") or "").strip()]
             if not candidates:
                 continue
             candidates.sort(
@@ -215,11 +205,7 @@ def _caption_text_from_json3_bytes(payload: bytes) -> str:
         segments = event.get("segs")
         if not isinstance(segments, list):
             continue
-        raw_text = "".join(
-            str(segment.get("utf8") or "")
-            for segment in segments
-            if isinstance(segment, dict)
-        )
+        raw_text = "".join(str(segment.get("utf8") or "") for segment in segments if isinstance(segment, dict))
         for raw_line in raw_text.splitlines() or [raw_text]:
             line = _clean_caption_text(raw_line)
             if line and (not lines or line != lines[-1]):
@@ -273,10 +259,7 @@ def _caption_milliseconds(value: Any, *, allow_zero: bool) -> int | None:
 
 def _clean_caption_cue_text(value: str) -> str:
     """Normalize transport markup while retaining the spoken word order."""
-    cleaned_lines = [
-        _clean_caption_text(line)
-        for line in str(value or "").splitlines()
-    ]
+    cleaned_lines = [_clean_caption_text(line) for line in str(value or "").splitlines()]
     return " ".join(line for line in cleaned_lines if line).strip()
 
 
@@ -349,11 +332,7 @@ def _caption_cues_from_json3_bytes(payload: bytes) -> tuple[YouTubeCaptionCue, .
         segments = event.get("segs")
         if not isinstance(segments, list):
             continue
-        raw_text = "".join(
-            str(segment.get("utf8") or "")
-            for segment in segments
-            if isinstance(segment, dict)
-        )
+        raw_text = "".join(str(segment.get("utf8") or "") for segment in segments if isinstance(segment, dict))
         text = _clean_caption_cue_text(raw_text)
         if not text:
             continue
@@ -561,9 +540,7 @@ async def _has_video_stream(path: Path) -> bool:
     """Validate downloaded media and report whether it also contains video."""
     ffprobe = find_media_tool("ffprobe")
     if not ffprobe:
-        raise YouTubeDownloadError(
-            "ffprobe is required to validate downloaded YouTube audio."
-        )
+        raise YouTubeDownloadError("ffprobe is required to validate downloaded YouTube audio.")
 
     proc = await asyncio.create_subprocess_exec(
         *ffprobe_video_stream_args(ffprobe, path, include_all_streams=True),
@@ -590,9 +567,7 @@ async def _has_video_stream(path: Path) -> bool:
         if line.strip()
     }
     if "audio" not in stream_types:
-        raise YouTubeDownloadError(
-            "Downloaded YouTube media does not contain an audio stream."
-        )
+        raise YouTubeDownloadError("Downloaded YouTube media does not contain an audio stream.")
     return "video" in stream_types
 
 
@@ -633,9 +608,7 @@ async def _is_exact_webm_opus(path: Path) -> bool:
     try:
         probe = await asyncio.to_thread(probe_audio_input_file, path)
     except (AudioFormatProbeError, RuntimeError) as exc:
-        raise YouTubeDownloadError(
-            "Downloaded YouTube audio has an unverified container/codec pair."
-        ) from exc
+        raise YouTubeDownloadError("Downloaded YouTube audio has an unverified container/codec pair.") from exc
     return probe.audio_format == AudioInputFormat.WEBM_OPUS
 
 
@@ -661,14 +634,10 @@ async def _ensure_audio_only_file(path: Path) -> Path:
     audio_path = await _extract_audio_track(path)
     if await _has_video_stream(audio_path):
         audio_path.unlink(missing_ok=True)
-        raise YouTubeDownloadError(
-            "Normalized YouTube audio unexpectedly still contains a video stream."
-        )
+        raise YouTubeDownloadError("Normalized YouTube audio unexpectedly still contains a video stream.")
     if not await _is_exact_webm_opus(audio_path):
         audio_path.unlink(missing_ok=True)
-        raise YouTubeDownloadError(
-            "Normalized YouTube audio is not the required WebM/Opus representation."
-        )
+        raise YouTubeDownloadError("Normalized YouTube audio is not the required WebM/Opus representation.")
     try:
         if path != audio_path:
             path.unlink(missing_ok=True)
@@ -677,12 +646,11 @@ async def _ensure_audio_only_file(path: Path) -> Path:
     return audio_path
 
 
-
 async def download_youtube_audio(
     url: str,
     *,
     output_dir: str | Path,
-    on_progress: Optional[Callable[[DownloadProgress], None]] = None,
+    on_progress: Callable[[DownloadProgress], None] | None = None,
 ) -> Path:
     """Download a YouTube source and return an audio-only local file path.
 
@@ -709,8 +677,9 @@ async def download_youtube_audio(
 
     # Try to use yt-dlp as a library first (better progress hooks)
     try:
-        import yt_dlp
         import time
+
+        import yt_dlp
 
         _apply_youtube_only_runtime_policy()
 
@@ -820,7 +789,9 @@ async def download_youtube_audio(
                             # Retry on transient 403 errors
                             if _is_forbidden_error(error_str) and attempt < max_retries - 1:
                                 delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
-                                logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
+                                logger.warning(
+                                    f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})..."
+                                )
                                 time.sleep(delay)
                                 continue
 
@@ -870,10 +841,10 @@ async def download_youtube_audio(
         except BaseException:
             shutil.rmtree(library_out_dir, ignore_errors=True)
             raise
-        
+
     except ImportError:
         logger.warning("yt-dlp library not available, falling back to subprocess")
-    
+
     # Fallback to subprocess if library import fails
     exe = find_media_tool("yt-dlp")
     if not exe:
@@ -939,9 +910,7 @@ async def download_youtube_audio(
                 continue
 
             if _is_format_unavailable_error(last_error_msg):
-                logger.warning(
-                    f"YouTube format selector unavailable ({format_selector}); trying fallback selector."
-                )
+                logger.warning(f"YouTube format selector unavailable ({format_selector}); trying fallback selector.")
                 break
 
             raise YouTubeDownloadError(last_error_msg)

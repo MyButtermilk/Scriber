@@ -11,8 +11,7 @@ from src.pipeline import ConnectionErrorHandlerProcessor, ScriberPipeline
 async def test_provider_error_frame_is_terminal_for_stop():
     pipe = ScriberPipeline(service_name="azure_mai")
     pipe._record_terminal_error(
-        "azure mai error: Azure MAI transcription failed (503): "
-        "ServiceUnavailable - no healthy upstream"
+        "azure mai error: Azure MAI transcription failed (503): ServiceUnavailable - no healthy upstream"
     )
 
     with pytest.raises(RuntimeError) as exc_info:
@@ -52,17 +51,13 @@ async def test_error_handler_records_non_connection_provider_errors():
 
     await processor.process_frame(
         ErrorFrame(
-            error=(
-                "azure mai error: Azure MAI transcription failed (503): "
-                "ServiceUnavailable - no healthy upstream"
-            )
+            error=("azure mai error: Azure MAI transcription failed (503): ServiceUnavailable - no healthy upstream")
         ),
         MagicMock(),
     )
 
     assert recorded == [
-        "azure mai error: Azure MAI transcription failed (503): "
-        "ServiceUnavailable - no healthy upstream"
+        "azure mai error: Azure MAI transcription failed (503): ServiceUnavailable - no healthy upstream"
     ]
     assert user_errors == []
     assert cleanup_calls == 0
@@ -84,10 +79,7 @@ async def test_error_handler_treats_aiohttp_cannot_connect_as_terminal_network_e
         on_provider_error=recorded.append,
     )
     processor.push_frame = AsyncMock()
-    error = (
-        "modulate realtime error: Cannot connect to host "
-        "modulate-developer-apis.com:443 ssl:default"
-    )
+    error = "modulate realtime error: Cannot connect to host modulate-developer-apis.com:443 ssl:default"
 
     await processor.process_frame(ErrorFrame(error=error), MagicMock())
     await processor.process_frame(ErrorFrame(error=error), MagicMock())
@@ -105,7 +97,4 @@ def test_azure_mai_no_healthy_upstream_gets_friendly_provider_message():
     )
 
     assert category is ErrorCategory.TRANSIENT_PROVIDER
-    assert (
-        user_message_for_category(category)
-        == "STT service is temporarily unavailable. Please try again shortly."
-    )
+    assert user_message_for_category(category) == "STT service is temporarily unavailable. Please try again shortly."

@@ -31,10 +31,7 @@ def test_parse_iso8601_duration():
 
 
 def test_extract_youtube_video_id_supports_live_urls():
-    assert (
-        extract_youtube_video_id("https://www.youtube.com/live/-Ppvp4uM7Kw?si=S_S3vpkqR6rw5t5T")
-        == "-Ppvp4uM7Kw"
-    )
+    assert extract_youtube_video_id("https://www.youtube.com/live/-Ppvp4uM7Kw?si=S_S3vpkqR6rw5t5T") == "-Ppvp4uM7Kw"
     assert extract_youtube_video_id("https://www.youtube.com/live/-Ppvp4uM7Kw") == "-Ppvp4uM7Kw"
     assert extract_youtube_video_id("youtube.com/live/-Ppvp4uM7Kw") == "-Ppvp4uM7Kw"
 
@@ -163,4 +160,3 @@ async def test_get_video_by_id_rejects_invalid_id_before_network():
     async with ClientSession() as session:
         with pytest.raises(ValueError, match="Invalid YouTube video ID"):
             await get_video_by_id("k", "not-valid", session=session)
-

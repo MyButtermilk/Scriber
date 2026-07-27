@@ -2,6 +2,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
 from src.data.latency_metrics_store import LatencyMetricsStore
 from src.web_api import ScriberWebController
 
@@ -319,9 +320,7 @@ async def test_hot_path_metrics_expose_request_bound_tauri_marker_only_for_its_s
 
     out = ctl.get_hot_path_metrics(limit=10, include_active=True)
     active = next(item for item in out["activeItems"] if item["sessionId"] == session_id)
-    ordinary = next(
-        item for item in out["activeItems"] if item["sessionId"] == "ordinary-session"
-    )
+    ordinary = next(item for item in out["activeItems"] if item["sessionId"] == "ordinary-session")
 
     assert active["tauriHotkeyReceived"] == marker
     assert active["segments"]["hotkey_received_to_mic_ready_ms"] == 125.0

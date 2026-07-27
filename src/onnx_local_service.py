@@ -1,21 +1,21 @@
 """
 OnnxLocalSTTService: Pipecat-compatible STT service using local ONNX models.
 """
+
 from __future__ import annotations
 
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
     EndFrame,
     ErrorFrame,
     Frame,
+    StopFrame,
     STTMuteFrame,
     STTUpdateSettingsFrame,
-    StopFrame,
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -28,7 +28,7 @@ from pipecat.utils.time import time_now_iso8601
 from src.onnx_stt import is_onnx_available, transcribe_audio_bytes
 
 
-def _language_to_code(language: Optional[Language] | str | None) -> str:
+def _language_to_code(language: Language | None | str | None) -> str:
     if not language:
         return "auto"
     if isinstance(language, Language):
@@ -43,14 +43,12 @@ class OnnxLocalSTTService(SegmentedSTTService):
         self,
         *,
         model_name: str,
-        language: Optional[str] = "auto",
+        language: str | None = "auto",
         quantization: str = "int8",
         **kwargs,
     ):
         if not is_onnx_available():
-            raise ImportError(
-                "onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]"
-            )
+            raise ImportError("onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]")
 
         resolved_language = _language_to_code(language)
         super().__init__(
@@ -69,15 +67,13 @@ class OnnxLocalSTTService(SegmentedSTTService):
             "quantization": self._quantization,
         }
 
-        logger.info(
-            f"OnnxLocalSTTService initialized (model={self._model_name}, quantization={self._quantization})"
-        )
+        logger.info(f"OnnxLocalSTTService initialized (model={self._model_name}, quantization={self._quantization})")
 
     async def set_language(self, language: Language):
         self._language = _language_to_code(language)
         self._local_settings["language"] = self._language
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame]:
         try:
             text = await transcribe_audio_bytes(
                 audio,
@@ -107,7 +103,7 @@ class OnnxLocalBufferedSTTService(STTService):
         self,
         *,
         model_name: str,
-        language: Optional[str] = "auto",
+        language: str | None = "auto",
         quantization: str = "int8",
         sample_rate: int = 16000,
         channels: int = 1,
@@ -116,9 +112,7 @@ class OnnxLocalBufferedSTTService(STTService):
         **kwargs,
     ):
         if not is_onnx_available():
-            raise ImportError(
-                "onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]"
-            )
+            raise ImportError("onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]")
 
         resolved_language = _language_to_code(language)
         super().__init__(
@@ -234,7 +228,7 @@ class OnnxLocalBufferedSTTService(STTService):
 
         await self.push_frame(frame, direction)
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame]:
         try:
             text = await transcribe_audio_bytes(
                 audio,

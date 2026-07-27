@@ -1,9 +1,9 @@
-from pathlib import Path
 import subprocess
 import sys
-import types
 import threading
 import time
+import types
+from pathlib import Path
 
 import src.device_monitor as device_monitor
 
@@ -73,8 +73,7 @@ def test_concurrent_enumeration_imports_sounddevice_once(monkeypatch):
 
     results: list[list[dict[str, str]]] = []
     workers = [
-        threading.Thread(target=lambda: results.append(device_monitor._enumerate_microphones()))
-        for _ in range(4)
+        threading.Thread(target=lambda: results.append(device_monitor._enumerate_microphones())) for _ in range(4)
     ]
     for worker in workers:
         worker.start()
@@ -99,9 +98,7 @@ def test_unavailable_sounddevice_keeps_default_only_without_import(monkeypatch):
         lambda _name: (_ for _ in ()).throw(AssertionError("must not import")),
     )
 
-    assert device_monitor._enumerate_microphones() == [
-        {"deviceId": "default", "label": "Default"}
-    ]
+    assert device_monitor._enumerate_microphones() == [{"deviceId": "default", "label": "Default"}]
 
 
 def test_device_monitor_loads_sounddevice_on_its_worker_thread(monkeypatch):

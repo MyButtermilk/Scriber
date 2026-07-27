@@ -20,12 +20,12 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 from urllib.parse import parse_qs, urlparse
-
 
 EVIDENCE_CONTRACT = "ScriberQuickJsYoutubeRuntimeSmokeV1"
 FROZEN_PROBE_CONTRACT = "InstallerYoutubeFrozenHoldoutProbeV1"
@@ -126,7 +126,7 @@ CommandRunner = Callable[..., CommandResult]
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -176,9 +176,7 @@ def _load_json_object(path: Path, *, code: str) -> tuple[dict[str, Any], bytes]:
 
 def _is_reparse(path: Path) -> bool:
     info = path.lstat()
-    return path.is_symlink() or bool(
-        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
-    )
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT)
 
 
 def _plain_directory(path: Path, *, code: str) -> Path:
@@ -213,9 +211,7 @@ def _plain_child(root: Path, relative: Path, *, directory: bool, code: str) -> P
 
 
 def _same_entry(left: Path, right: Path) -> bool:
-    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(
-        os.path.abspath(right)
-    )
+    return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
 
 def _parse_video_id(url: str) -> str:
@@ -224,8 +220,7 @@ def _parse_video_id(url: str) -> str:
     parsed = urlparse(url)
     if (
         parsed.scheme != "https"
-        or parsed.hostname
-        not in {"www.youtube.com", "youtube.com", "music.youtube.com", "youtu.be"}
+        or parsed.hostname not in {"www.youtube.com", "youtube.com", "music.youtube.com", "youtu.be"}
         or parsed.username
         or parsed.password
         or parsed.fragment
@@ -304,9 +299,7 @@ def _load_cases(path: Path) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     }
 
 
-def _manifest_runtime_files(
-    payload_root: Path, explicit_runtime: Path
-) -> CandidateBundle:
+def _manifest_runtime_files(payload_root: Path, explicit_runtime: Path) -> CandidateBundle:
     backend = _plain_child(
         payload_root,
         Path("backend/scriber-backend.exe"),
@@ -459,9 +452,7 @@ def _attach_windows_kill_on_close_job(
         raise OSError(ctypes.get_last_error(), "CreateJobObjectW failed")
     information = JobObjectExtendedLimitInformation()
     information.BasicLimitInformation.LimitFlags = 0x00002000
-    if not kernel32.SetInformationJobObject(
-        job, 9, ctypes.byref(information), ctypes.sizeof(information)
-    ):
+    if not kernel32.SetInformationJobObject(job, 9, ctypes.byref(information), ctypes.sizeof(information)):
         error = ctypes.get_last_error()
         kernel32.CloseHandle(job)
         raise OSError(error, "SetInformationJobObject failed")
@@ -503,9 +494,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         raise SmokeError("process-cleanup-failed") from exc
 
 
-def _close_process_scope(
-    process: subprocess.Popen[bytes], windows_job: tuple[int, Any] | None
-) -> bool:
+def _close_process_scope(process: subprocess.Popen[bytes], windows_job: tuple[int, Any] | None) -> bool:
     if windows_job is not None:
         handle, close_handle = windows_job
         closed = bool(close_handle(handle))
@@ -577,10 +566,7 @@ def _run_bounded(
                     status = "timeout"
                     _terminate_process_tree(process)
                     break
-                if (
-                    stdout_path.stat().st_size > MAX_STDOUT_BYTES
-                    or stderr_path.stat().st_size > MAX_STDERR_BYTES
-                ):
+                if stdout_path.stat().st_size > MAX_STDOUT_BYTES or stderr_path.stat().st_size > MAX_STDERR_BYTES:
                     status = "output_limit"
                     _terminate_process_tree(process)
                     break
@@ -594,9 +580,7 @@ def _run_bounded(
         stderr = stderr[: MAX_STDERR_BYTES + 1]
         return_code = process.returncode
     finally:
-        cleanup_verified = (
-            _close_process_scope(process, windows_job) if process is not None else False
-        )
+        cleanup_verified = _close_process_scope(process, windows_job) if process is not None else False
     return CommandResult(
         status=status,
         return_code=return_code,
@@ -763,10 +747,7 @@ def _parse_probe_result(
         or not isinstance(capabilities, list)
         or not capabilities
         or capabilities != sorted(set(capabilities))
-        or any(
-            not isinstance(value, str) or not CASE_ID_RE.fullmatch(value)
-            for value in capabilities
-        )
+        or any(not isinstance(value, str) or not CASE_ID_RE.fullmatch(value) for value in capabilities)
     ):
         return (
             _failure_row(
@@ -840,13 +821,16 @@ def _assert_redacted(value: Any) -> None:
 
 
 def _write_atomic(path: Path, value: Mapping[str, Any]) -> None:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        indent=2,
-        allow_nan=False,
-    ).encode("utf-8") + b"\n"
+    encoded = (
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            indent=2,
+            allow_nan=False,
+        ).encode("utf-8")
+        + b"\n"
+    )
     path = Path(os.path.abspath(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
@@ -913,13 +897,7 @@ def run_smoke(args: argparse.Namespace, *, runner: CommandRunner | None = None) 
             if row["status"] == "pass":
                 row["status"] = "fail"
                 row["failureCode"] = "probe_contract_invalid"
-    reason_codes = sorted(
-        {
-            str(row["failureCode"])
-            for row in rows
-            if row["failureCode"] is not None
-        }
-    )
+    reason_codes = sorted({str(row["failureCode"]) for row in rows if row["failureCode"] is not None})
     status = "pass" if not reason_codes and len(rows) == EXPECTED_CASE_COUNT else "fail"
     runtime_manifest = bundle.manifest["runtime"]
     evidence: dict[str, Any] = {

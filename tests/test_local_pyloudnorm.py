@@ -9,7 +9,6 @@ import numpy as np
 
 import pyloudnorm
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 

@@ -18,7 +18,6 @@ from scripts.installer_research.comparator import (
 )
 from scripts.perf.autoresearch_profiles import canonical_run_id
 
-
 RESULT_CONTRACT = "InstallerResearchResultV1"
 SCHEMA_VERSION = 1
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -112,7 +111,9 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
         findings.append(_finding("result_comparison_kind_invalid", "comparisonKind must be payload or compression"))
     source_commit = str(payload.get("sourceCommit") or "")
     if not (COMMIT_PATTERN.fullmatch(source_commit) or re.fullmatch(r"^[0-9a-f]{64}$", source_commit)):
-        findings.append(_finding("result_source_commit_invalid", "sourceCommit must be a lowercase 40- or 64-hex source identity"))
+        findings.append(
+            _finding("result_source_commit_invalid", "sourceCommit must be a lowercase 40- or 64-hex source identity")
+        )
     for field in ("evaluatorHash", "toolchainHash"):
         if not SHA256_PATTERN.fullmatch(str(payload.get(field) or "")):
             findings.append(_finding("result_hash_invalid", f"{field} must be a SHA-256", field=field))
@@ -125,7 +126,9 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
     else:
         name = installer.get("name")
         if not isinstance(name, str) or not name.startswith("Scriber_") or not name.endswith("_x64-setup.exe"):
-            findings.append(_finding("result_installer_name_invalid", "installer name is not the explicit NSIS setup artifact"))
+            findings.append(
+                _finding("result_installer_name_invalid", "installer name is not the explicit NSIS setup artifact")
+            )
         if not _valid_nonnegative_int(installer.get("length")) or installer.get("length") == 0:
             findings.append(_finding("result_installer_length_invalid", "installer length must be a positive integer"))
         if not SHA256_PATTERN.fullmatch(str(installer.get("sha256") or "")):
@@ -146,10 +149,14 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
             findings.append(_finding("result_staged_bytes_invalid", "payload stagedBytes must be positive"))
         installed = payload_result.get("installedBytes")
         if installed is not None and (not _valid_nonnegative_int(installed) or installed == 0):
-            findings.append(_finding("result_installed_bytes_invalid", "payload installedBytes must be positive or null"))
+            findings.append(
+                _finding("result_installed_bytes_invalid", "payload installedBytes must be positive or null")
+            )
         for field in ("exactTreeSha256", "semanticTreeSha256", "fileListSha256"):
             if not SHA256_PATTERN.fullmatch(str(payload_result.get(field) or "")):
-                findings.append(_finding("result_payload_hash_invalid", f"payload {field} is invalid", field=f"payload.{field}"))
+                findings.append(
+                    _finding("result_payload_hash_invalid", f"payload {field} is invalid", field=f"payload.{field}")
+                )
 
     attribution = payload.get("attribution")
     if not isinstance(attribution, dict):
@@ -173,8 +180,10 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
             findings.extend(_validate_gate_value(str(name), value))
         for name in MANDATORY_EXTERNAL_GATES:
             gate = gates.get(name)
-            if isinstance(gate, dict) and gate.get("status") == "pass" and not SHA256_PATTERN.fullmatch(
-                str(gate.get("evidenceSha256") or "")
+            if (
+                isinstance(gate, dict)
+                and gate.get("status") == "pass"
+                and not SHA256_PATTERN.fullmatch(str(gate.get("evidenceSha256") or ""))
             ):
                 findings.append(
                     _finding(
@@ -185,7 +194,9 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
                 )
     measurements = payload.get("installMeasurements")
     if measurements is not None and not isinstance(measurements, dict):
-        findings.append(_finding("result_install_measurements_invalid", "installMeasurements must be an object or null"))
+        findings.append(
+            _finding("result_install_measurements_invalid", "installMeasurements must be an object or null")
+        )
     elif isinstance(measurements, dict):
         expected_measurement_bindings = {
             "runId": run_id,
@@ -195,11 +206,20 @@ def validate_result(payload: dict[str, Any], *, expected_run_id: str | None = No
         }
         for field, expected in expected_measurement_bindings.items():
             if measurements.get(field) != expected:
-                findings.append(_finding("result_install_measurement_binding_mismatch", f"installMeasurements {field} differs from the result"))
+                findings.append(
+                    _finding(
+                        "result_install_measurement_binding_mismatch",
+                        f"installMeasurements {field} differs from the result",
+                    )
+                )
         if not SHA256_PATTERN.fullmatch(str(measurements.get("evidenceSha256") or "")):
-            findings.append(_finding("result_install_measurement_hash_invalid", "installMeasurements evidenceSha256 is invalid"))
+            findings.append(
+                _finding("result_install_measurement_hash_invalid", "installMeasurements evidenceSha256 is invalid")
+            )
         if measurements.get("apiVersion") != "1" or measurements.get("kind") != "installer-ab-timing":
-            findings.append(_finding("result_install_measurement_contract_invalid", "installMeasurements contract is invalid"))
+            findings.append(
+                _finding("result_install_measurement_contract_invalid", "installMeasurements contract is invalid")
+            )
         if (
             isinstance(measurements.get("pairCount"), bool)
             or not isinstance(measurements.get("pairCount"), int)

@@ -35,14 +35,14 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.parser import BytesParser
 from email.policy import default as email_policy
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 from urllib.parse import parse_qs, urlparse
-
 
 EVIDENCE_CONTRACT = "InstallerSizeYoutubeCandidateHoldoutsV2"
 FROZEN_PROBE_CONTRACT = "InstallerYoutubeFrozenHoldoutProbeV1"
@@ -108,12 +108,8 @@ SUPPORTED_RUNTIME_KINDS = {"deno", "quickjs"}
 RUNTIME_MANIFEST_RELATIVE = "backend/tools/ffmpeg/js-runtime-manifest.json"
 PROVENANCE_LOCK_RELATIVE = "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json"
 PROVENANCE_LOCK_PATH = Path(__file__).resolve().parent.parent / PROVENANCE_LOCK_RELATIVE
-DENORT_PROVENANCE_LOCK_RELATIVE = (
-    "scripts/perf/profiles/installer-size/denort-runtime-lock-v1.json"
-)
-DENORT_PROVENANCE_LOCK_PATH = (
-    Path(__file__).resolve().parent.parent / DENORT_PROVENANCE_LOCK_RELATIVE
-)
+DENORT_PROVENANCE_LOCK_RELATIVE = "scripts/perf/profiles/installer-size/denort-runtime-lock-v1.json"
+DENORT_PROVENANCE_LOCK_PATH = Path(__file__).resolve().parent.parent / DENORT_PROVENANCE_LOCK_RELATIVE
 DENORT_IMPLEMENTATION = "compiled-denort-wrapper"
 DENORT_PROTOCOL = "ScriberYtDlpDenoStdinV1"
 DENORT_RUN_OPTIONS = (
@@ -262,12 +258,7 @@ def _sha256_file(path: Path) -> str:
 
 
 def _utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _is_reparse(info: os.stat_result) -> bool:
@@ -346,9 +337,7 @@ def _write_immutable(path: Path, payload: Mapping[str, Any]) -> None:
     parent = entry.parent
     parent.mkdir(parents=True, exist_ok=True)
     parent = _plain_directory(parent, label="evidence parent")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{entry.name}.", suffix=".tmp", dir=str(parent)
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{entry.name}.", suffix=".tmp", dir=str(parent))
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
@@ -364,13 +353,9 @@ def _write_immutable(path: Path, payload: Mapping[str, Any]) -> None:
         try:
             os.link(temporary, entry, follow_symlinks=False)
         except FileExistsError as exc:
-            raise HoldoutError(
-                "immutable candidate holdout evidence appeared concurrently"
-            ) from exc
+            raise HoldoutError("immutable candidate holdout evidence appeared concurrently") from exc
         except OSError as exc:
-            raise HoldoutError(
-                "cannot atomically publish immutable candidate holdout evidence"
-            ) from exc
+            raise HoldoutError("cannot atomically publish immutable candidate holdout evidence") from exc
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -439,9 +424,7 @@ def _validate_inventory(
         raise HoldoutError(f"{label} staged/installed parity is not proven")
 
 
-def _inventory_entries(
-    inventory: Mapping[str, Any], *, installed: bool
-) -> dict[str, Mapping[str, Any]]:
+def _inventory_entries(inventory: Mapping[str, Any], *, installed: bool) -> dict[str, Mapping[str, Any]]:
     files = _inventory_tree(inventory, installed=installed).get("files")
     if not isinstance(files, list):
         raise HoldoutError("inventory files are missing")
@@ -506,13 +489,10 @@ def _validate_replica_bindings(
         raise HoldoutError("parent inventory does not match parent champion id")
 
 
-def _is_youtube_distribution_input(
-    relative: str, item: Mapping[str, Any]
-) -> bool:
+def _is_youtube_distribution_input(relative: str, item: Mapping[str, Any]) -> bool:
     folded = relative.casefold()
     return item.get("component") == "yt-dlp-ejs" or any(
-        marker in f"/{folded}"
-        for marker in ("/yt_dlp/", "/yt_dlp_ejs/", "/yt_dlp-", "/yt_dlp_ejs-")
+        marker in f"/{folded}" for marker in ("/yt_dlp/", "/yt_dlp_ejs/", "/yt_dlp-", "/yt_dlp_ejs-")
     )
 
 
@@ -522,11 +502,7 @@ def _is_distribution_metadata(relative: str, distribution: str) -> bool:
     parent = entry.parent.name.casefold().replace("-", "_")
     if normalized == "yt_dlp" and parent.startswith("yt_dlp_ejs_"):
         return False
-    return (
-        entry.name == "METADATA"
-        and parent.startswith(normalized + "_")
-        and parent.endswith(".dist_info")
-    )
+    return entry.name == "METADATA" and parent.startswith(normalized + "_") and parent.endswith(".dist_info")
 
 
 def _hash_inventory_bound_entry(
@@ -569,9 +545,7 @@ def _hash_inventory_bound_entry(
     return int(after.st_size), actual_sha256
 
 
-def _capture_bound_inputs(
-    stack: StackIdentity, *, installed: bool
-) -> BoundInputSnapshot:
+def _capture_bound_inputs(stack: StackIdentity, *, installed: bool) -> BoundInputSnapshot:
     entries = _inventory_entries(stack.inventory, installed=installed)
     try:
         runtime_relative = stack.runtime.executable.relative_to(stack.root).as_posix()
@@ -597,13 +571,9 @@ def _capture_bound_inputs(
             if _is_distribution_metadata(str(item["path"]), distribution)
         ]
         if len(metadata) != 1:
-            raise HoldoutError(
-                f"{stack.label} {distribution} METADATA input binding is incomplete"
-            )
+            raise HoldoutError(f"{stack.label} {distribution} METADATA input binding is incomplete")
     rows: list[tuple[str, int, str]] = []
-    for item in sorted(
-        selected.values(), key=lambda value: str(value["path"]).encode("utf-8")
-    ):
+    for item in sorted(selected.values(), key=lambda value: str(value["path"]).encode("utf-8")):
         relative = str(item["path"])
         length, sha256 = _hash_inventory_bound_entry(
             root=stack.root,
@@ -614,10 +584,7 @@ def _capture_bound_inputs(
         rows.append((relative, length, sha256))
     if not rows:
         raise HoldoutError(f"{stack.label} holdout input set is empty")
-    public_rows = [
-        {"relative": relative, "length": length, "sha256": sha256}
-        for relative, length, sha256 in rows
-    ]
+    public_rows = [{"relative": relative, "length": length, "sha256": sha256} for relative, length, sha256 in rows]
     return BoundInputSnapshot(
         file_count=len(rows),
         content_sha256=_canonical_sha256(public_rows),
@@ -643,9 +610,7 @@ def _verify_inventory_file(
         candidate.relative_to(root)
     except ValueError as exc:
         raise HoldoutError(f"{label} escaped its payload") from exc
-    if candidate.stat().st_size != item.get("length") or _sha256_file(candidate) != item.get(
-        "sha256"
-    ):
+    if candidate.stat().st_size != item.get("length") or _sha256_file(candidate) != item.get("sha256"):
         raise HoldoutError(f"{label} differs from the bound inventory")
     return candidate
 
@@ -718,9 +683,7 @@ def _metadata_identity(
     name = str(message.get("Name") or "").casefold().replace("_", "-")
     version = str(message.get("Version") or "")
     license_value = str(message.get("License-Expression") or message.get("License") or "")
-    if name != distribution or not VERSION_RE.fullmatch(version) or not SPDX_RE.fullmatch(
-        license_value
-    ):
+    if name != distribution or not VERSION_RE.fullmatch(version) or not SPDX_RE.fullmatch(license_value):
         raise HoldoutError(f"{distribution} metadata identity is incomplete")
     origins: list[tuple[int, str]] = []
     for raw in message.get_all("Project-URL", []):
@@ -844,9 +807,7 @@ def _positive_length(value: Any, *, label: str) -> int:
     return value
 
 
-def _quickjs_manifest_for_entry(
-    entry: Mapping[str, Any], executable_file: Mapping[str, Any]
-) -> dict[str, Any]:
+def _quickjs_manifest_for_entry(entry: Mapping[str, Any], executable_file: Mapping[str, Any]) -> dict[str, Any]:
     asset = entry["asset"]
     license_value = entry["license"]
     return {
@@ -958,8 +919,7 @@ def _load_quickjs_provenance_lock(
         asset_sha256 = str(asset.get("sha256") or "")
         published_sha256 = asset.get("upstreamPublishedSha256")
         if not SHA256_RE.fullmatch(asset_sha256) or (
-            published_sha256 is not None
-            and not SHA256_RE.fullmatch(str(published_sha256))
+            published_sha256 is not None and not SHA256_RE.fullmatch(str(published_sha256))
         ):
             raise HoldoutError("QuickJS asset digest is invalid")
 
@@ -973,18 +933,12 @@ def _load_quickjs_provenance_lock(
             "archivePath",
         }:
             raise HoldoutError("QuickJS license source is invalid")
-        license_name = _safe_leaf_name(
-            license_value.get("installedFileName"), label="installed QuickJS license"
-        )
-        license_length = _positive_length(
-            license_value.get("length"), label="QuickJS license length"
-        )
+        license_name = _safe_leaf_name(license_value.get("installedFileName"), label="installed QuickJS license")
+        license_length = _positive_length(license_value.get("length"), label="QuickJS license length")
         license_sha256 = str(license_value.get("sha256") or "")
         source_url = _safe_origin(source.get("url"))
         source_name = _safe_leaf_name(source.get("fileName"), label="QuickJS license source")
-        source_length = _positive_length(
-            source.get("length"), label="QuickJS license source length"
-        )
+        source_length = _positive_length(source.get("length"), label="QuickJS license source length")
         source_sha256 = str(source.get("sha256") or "")
         if (
             license_value.get("spdx") != "MIT"
@@ -1007,12 +961,8 @@ def _load_quickjs_provenance_lock(
                 raise HoldoutError("QuickJS runtime file entry is invalid")
             role = raw_file.get("role")
             _safe_archive_path(raw_file.get("assetPath"), label="QuickJS asset member")
-            installed_name = _safe_leaf_name(
-                raw_file.get("installedFileName"), label="installed QuickJS runtime file"
-            )
-            file_length = _positive_length(
-                raw_file.get("length"), label="QuickJS runtime file length"
-            )
+            installed_name = _safe_leaf_name(raw_file.get("installedFileName"), label="installed QuickJS runtime file")
+            file_length = _positive_length(raw_file.get("length"), label="QuickJS runtime file length")
             file_sha256 = str(raw_file.get("sha256") or "")
             if (
                 role not in {"executable", "dependency"}
@@ -1032,19 +982,16 @@ def _load_quickjs_provenance_lock(
             if (
                 release_id != f"v{version}"
                 or not re.fullmatch(r"[0-9a-f]{40}", source_revision)
-                or release_url
-                != f"https://github.com/quickjs-ng/quickjs/releases/tag/{release_id}"
+                or release_url != f"https://github.com/quickjs-ng/quickjs/releases/tag/{release_id}"
                 or asset_name != "qjs-windows-x86_64.exe"
                 or asset.get("format") != "executable"
-                or asset_url
-                != f"https://github.com/quickjs-ng/quickjs/releases/download/{release_id}/{asset_name}"
+                or asset_url != f"https://github.com/quickjs-ng/quickjs/releases/download/{release_id}/{asset_name}"
                 or published_sha256 != asset_sha256
                 or len(locked_files) != 1
                 or executable_file.get("assetPath") != asset_name
                 or executable_file.get("length") != asset_length
                 or executable_file.get("sha256") != asset_sha256
-                or source_url
-                != f"https://raw.githubusercontent.com/quickjs-ng/quickjs/{release_id}/LICENSE"
+                or source_url != f"https://raw.githubusercontent.com/quickjs-ng/quickjs/{release_id}/LICENSE"
                 or source_name != "LICENSE"
                 or source.get("format") != "file"
                 or source.get("archivePath") is not None
@@ -1061,8 +1008,7 @@ def _load_quickjs_provenance_lock(
                 or release_url != "https://bellard.org/quickjs/"
                 or asset_name != expected_asset_name
                 or asset.get("format") != "zip"
-                or asset_url
-                != f"https://bellard.org/quickjs/binary_releases/{expected_asset_name}"
+                or asset_url != f"https://bellard.org/quickjs/binary_releases/{expected_asset_name}"
                 or published_sha256 is not None
                 or source_url != f"https://bellard.org/quickjs/{expected_source_name}"
                 or source_name != expected_source_name
@@ -1077,8 +1023,7 @@ def _load_quickjs_provenance_lock(
         if (
             manifest != expected_manifest
             or not SHA256_RE.fullmatch(manifest_sha256)
-            or hashlib.sha256(_canonical_manifest_bytes(expected_manifest)).hexdigest()
-            != manifest_sha256
+            or hashlib.sha256(_canonical_manifest_bytes(expected_manifest)).hexdigest() != manifest_sha256
         ):
             raise HoldoutError("QuickJS locked manifest is not canonical")
         result[entry_id] = raw_entry
@@ -1089,9 +1034,7 @@ def _load_denort_provenance_lock(
     path: Path | None = None,
 ) -> tuple[Mapping[str, Any], str]:
     lock_path = DENORT_PROVENANCE_LOCK_PATH if path is None else path
-    payload, lock_sha256 = _load_object(
-        lock_path, label="protected denort provenance lock"
-    )
+    payload, lock_sha256 = _load_object(lock_path, label="protected denort provenance lock")
     if set(payload) != {"contract", "schemaVersion", "campaign", "target", "entry"}:
         raise HoldoutError("denort provenance lock fields are not exact")
     if (
@@ -1137,8 +1080,7 @@ def _load_denort_provenance_lock(
         not isinstance(compiler, dict)
         or set(compiler) != {"version", "length", "sha256"}
         or compiler.get("version") != "2.9.2"
-        or _positive_length(compiler.get("length"), label="denort compiler length")
-        != 99_115_808
+        or _positive_length(compiler.get("length"), label="denort compiler length") != 99_115_808
         or not SHA256_RE.fullmatch(str(compiler.get("sha256") or ""))
         or not isinstance(denort_asset, dict)
         or set(denort_asset)
@@ -1155,25 +1097,19 @@ def _load_denort_provenance_lock(
         != "https://github.com/denoland/deno/releases/download/v2.9.2/denort-x86_64-pc-windows-msvc.zip"
         or denort_asset.get("fileName") != "denort-x86_64-pc-windows-msvc.zip"
         or denort_asset.get("format") != "zip"
-        or _positive_length(denort_asset.get("length"), label="denort asset length")
-        != 32_599_311
+        or _positive_length(denort_asset.get("length"), label="denort asset length") != 32_599_311
         or not SHA256_RE.fullmatch(str(denort_asset.get("sha256") or ""))
-        or _positive_length(
-            denort_asset.get("executableLength"), label="denort executable length"
-        )
-        != 80_402_432
+        or _positive_length(denort_asset.get("executableLength"), label="denort executable length") != 80_402_432
         or not SHA256_RE.fullmatch(str(denort_asset.get("executableSha256") or ""))
         or not isinstance(wrapper, dict)
         or set(wrapper) != {"relativePath", "length", "sha256"}
-        or wrapper.get("relativePath")
-        != "packaging/deno-youtube-runtime/yt_dlp_runtime_wrapper.ts"
+        or wrapper.get("relativePath") != "packaging/deno-youtube-runtime/yt_dlp_runtime_wrapper.ts"
         or _positive_length(wrapper.get("length"), label="denort wrapper length") != 5_002
         or not SHA256_RE.fullmatch(str(wrapper.get("sha256") or ""))
         or not isinstance(output, dict)
         or set(output) != {"installedFileName", "length", "sha256"}
         or output.get("installedFileName") != "deno.exe"
-        or _positive_length(output.get("length"), label="compiled denort length")
-        != 80_416_159
+        or _positive_length(output.get("length"), label="compiled denort length") != 80_416_159
         or not SHA256_RE.fullmatch(str(output.get("sha256") or ""))
         or license_value
         != {
@@ -1245,8 +1181,7 @@ def _load_denort_provenance_lock(
     if (
         manifest != expected_manifest
         or not SHA256_RE.fullmatch(manifest_sha256)
-        or hashlib.sha256(_canonical_manifest_bytes(expected_manifest)).hexdigest()
-        != manifest_sha256
+        or hashlib.sha256(_canonical_manifest_bytes(expected_manifest)).hexdigest() != manifest_sha256
     ):
         raise HoldoutError("denort locked manifest is not canonical")
     return entry, lock_sha256
@@ -1280,9 +1215,7 @@ def _runtime_manifest_identity(
         raise HoldoutError("candidate JS-runtime manifest lacks a runtime identity")
     executable_name = PurePosixPath(relative).name
     if runtime.get("implementation") == DENORT_IMPLEMENTATION:
-        lock_entry, lock_sha256 = _load_denort_provenance_lock(
-            denort_provenance_lock_path
-        )
+        lock_entry, lock_sha256 = _load_denort_provenance_lock(denort_provenance_lock_path)
         locked_manifest = lock_entry["manifest"]
         if (
             manifest != locked_manifest
@@ -1294,9 +1227,7 @@ def _runtime_manifest_identity(
             or runtime.get("length") != executable_item.get("length")
             or runtime.get("sha256") != executable_item.get("sha256")
         ):
-            raise HoldoutError(
-                "candidate compiled denort manifest does not match its executable"
-            )
+            raise HoldoutError("candidate compiled denort manifest does not match its executable")
         return RuntimeIdentity(
             kind="deno",
             version=str(lock_entry["version"]),
@@ -1340,11 +1271,7 @@ def _runtime_manifest_identity(
     for locked_file in lock_entry["runtimeFiles"]:
         locked_relative = str(runtime_parent / locked_file["installedFileName"])
         item = entries.get(locked_relative.casefold())
-        if (
-            item is None
-            or item.get("length") != locked_file["length"]
-            or item.get("sha256") != locked_file["sha256"]
-        ):
+        if item is None or item.get("length") != locked_file["length"] or item.get("sha256") != locked_file["sha256"]:
             raise HoldoutError("candidate QuickJS runtime files differ from the protected lock")
         _verify_inventory_file(
             root=root,
@@ -1385,9 +1312,7 @@ def _runtime_manifest_identity(
     )
 
 
-def _baseline_runtime_provenance(
-    *, environment_root: Path, expected_version: str
-) -> tuple[str, str]:
+def _baseline_runtime_provenance(*, environment_root: Path, expected_version: str) -> tuple[str, str]:
     metadata_files = list(environment_root.glob(".venv/Lib/site-packages/deno-*.dist-info/METADATA"))
     if len(metadata_files) != 1:
         raise HoldoutError("baseline Deno distribution metadata is not unique")
@@ -1525,15 +1450,11 @@ def _directory_object_identity(path: Path) -> tuple[int, int]:
     return int(info.st_dev), int(info.st_ino)
 
 
-def _remove_created_private_root(
-    *, scratch_root: Path, root: Path, identity: tuple[int, int]
-) -> bool:
+def _remove_created_private_root(*, scratch_root: Path, root: Path, identity: tuple[int, int]) -> bool:
     """Remove only the exact validated directory created by this constructor."""
 
     try:
-        current = _assert_plain_descendant(
-            scratch_root, root, label="failed private holdout root cleanup"
-        )
+        current = _assert_plain_descendant(scratch_root, root, label="failed private holdout root cleanup")
         relative = current.relative_to(scratch_root)
         if len(relative.parts) != 1 or _directory_object_identity(current) != identity:
             return False
@@ -1623,9 +1544,7 @@ class PrivateWorkspaceFactory:
         with self._lock:
             if self._active:
                 raise HoldoutError("private invocation directories remain active")
-        root = _assert_plain_descendant(
-            self.scratch_root, self.root, label="private holdout root cleanup"
-        )
+        root = _assert_plain_descendant(self.scratch_root, self.root, label="private holdout root cleanup")
         shutil.rmtree(root)
         if root.exists():
             raise HoldoutError("private holdout root cleanup was incomplete")
@@ -1667,9 +1586,7 @@ def _run_bounded(
 ) -> CommandResult:
     if not command or any(not isinstance(item, str) or not item or "\0" in item for item in command):
         raise HoldoutError("holdout command is invalid")
-    if stdin_bytes is not None and (
-        not isinstance(stdin_bytes, bytes) or len(stdin_bytes) > 16 * 1024
-    ):
+    if stdin_bytes is not None and (not isinstance(stdin_bytes, bytes) or len(stdin_bytes) > 16 * 1024):
         raise HoldoutError("holdout stdin payload is invalid")
     workspace = factory.create(purpose)
     process: subprocess.Popen[bytes] | None = None
@@ -1704,9 +1621,7 @@ def _run_bounded(
                 "TMP": str(workspace / "temp"),
                 "TMPDIR": str(workspace / "temp"),
                 "XDG_CACHE_HOME": str(cache_path),
-                "DENO_DIR": str(
-                    shared_cache / "deno" if shared_cache else workspace / "deno"
-                ),
+                "DENO_DIR": str(shared_cache / "deno" if shared_cache else workspace / "deno"),
                 "DENO_NO_UPDATE_CHECK": "1",
                 "YTDLP_NO_PLUGINS": "1",
                 "PYTHONNOUSERSITE": "1",
@@ -1749,12 +1664,8 @@ def _run_bounded(
                     status = "timeout"
                     _terminate_process_tree(process)
                     break
-                if (
-                    stdout_path.exists()
-                    and stdout_path.stat().st_size > MAX_STDOUT_BYTES
-                ) or (
-                    stderr_path.exists()
-                    and stderr_path.stat().st_size > MAX_STDERR_BYTES
+                if (stdout_path.exists() and stdout_path.stat().st_size > MAX_STDOUT_BYTES) or (
+                    stderr_path.exists() and stderr_path.stat().st_size > MAX_STDERR_BYTES
                 ):
                     status = "output_limit"
                     _terminate_process_tree(process)
@@ -2005,9 +1916,7 @@ def nearest_rank_p95(values: Sequence[int]) -> int:
     return ordered[math.ceil(0.95 * len(ordered)) - 1]
 
 
-def performance_gate(
-    baseline_ns: Sequence[int], candidate_ns: Sequence[int]
-) -> tuple[bool, dict[str, int]]:
+def performance_gate(baseline_ns: Sequence[int], candidate_ns: Sequence[int]) -> tuple[bool, dict[str, int]]:
     if len(baseline_ns) != len(candidate_ns) or len(baseline_ns) < 1:
         raise HoldoutError("paired performance samples are incomplete")
     baseline_p95 = nearest_rank_p95(baseline_ns)
@@ -2053,9 +1962,7 @@ def _stack_public(identity: StackIdentity) -> dict[str, Any]:
     }
 
 
-def _runtime_self_tests(
-    runtime: RuntimeIdentity, factory: PrivateWorkspaceFactory
-) -> dict[str, Any]:
+def _runtime_self_tests(runtime: RuntimeIdentity, factory: PrivateWorkspaceFactory) -> dict[str, Any]:
     _require_runtime_security_boundary(runtime)
     success = _run_bounded(
         _runtime_success_command(runtime),
@@ -2118,13 +2025,16 @@ def _runtime_self_tests(
             for _ in range(2)
         ]
         parallel = [future.result() for future in futures]
-    if any(
-        item.status != "completed"
-        or not _runtime_version_return_code_ok(runtime, item.return_code)
-        or not _runtime_version_from_output(runtime, item.stdout + b"\n" + item.stderr)
-        or not item.cleanup_verified
-        for item in parallel
-    ) or len({item.workspace_fingerprint for item in parallel}) != 2:
+    if (
+        any(
+            item.status != "completed"
+            or not _runtime_version_return_code_ok(runtime, item.return_code)
+            or not _runtime_version_from_output(runtime, item.stdout + b"\n" + item.stderr)
+            or not item.cleanup_verified
+            for item in parallel
+        )
+        or len({item.workspace_fingerprint for item in parallel}) != 2
+    ):
         raise HoldoutError("candidate runtime parallel isolation is unproven")
     return {
         "successCleanup": True,
@@ -2241,9 +2151,7 @@ def _pair_attempt(
             "reasonCode": reason,
             "baselineDurationNs": baseline_probe.duration_ns,
             "candidateDurationNs": candidate_probe.duration_ns,
-            "semanticCapabilities": list(
-                baseline_probe.semantic_capabilities if status == "pass" else ()
-            ),
+            "semanticCapabilities": list(baseline_probe.semantic_capabilities if status == "pass" else ()),
             "capabilityDiagnostics": _capability_diagnostics(
                 baseline_probe,
                 candidate_probe,
@@ -2251,9 +2159,7 @@ def _pair_attempt(
             ),
             "baselineFailureCode": _public_failure_code(baseline_probe),
             "candidateFailureCode": _public_failure_code(candidate_probe),
-            "cleanupVerified": (
-                baseline_probe.cleanup_verified and candidate_probe.cleanup_verified
-            ),
+            "cleanupVerified": (baseline_probe.cleanup_verified and candidate_probe.cleanup_verified),
         },
         baseline_probe,
         candidate_probe,
@@ -2289,9 +2195,7 @@ def _logical_pair(
     attempts = [original]
     selected_attempt: dict[str, Any] | None = original if original["status"] == "pass" else None
     selected_outcomes: tuple[ProbeOutcome, ProbeOutcome] | None = (
-        (original_baseline, original_candidate)
-        if original["status"] == "pass"
-        else None
+        (original_baseline, original_candidate) if original["status"] == "pass" else None
     )
     final_status = str(original["status"])
     final_reason = original["reasonCode"]
@@ -2301,11 +2205,7 @@ def _logical_pair(
         "accepted": False,
         "budgetOrdinal": None,
         "budgetExhausted": False,
-        "triggerReasonCode": (
-            "candidate_probe_failed"
-            if original["reasonCode"] == "candidate_probe_failed"
-            else None
-        ),
+        "triggerReasonCode": ("candidate_probe_failed" if original["reasonCode"] == "candidate_probe_failed" else None),
         "confirmationReasonCode": None,
     }
     if original["reasonCode"] == "candidate_probe_failed":
@@ -2352,20 +2252,10 @@ def _logical_pair(
         "order": ["baseline", "candidate"],
         "status": final_status,
         "reasonCode": final_reason,
-        "selectedAttempt": (
-            selected_attempt["attemptKind"] if selected_attempt is not None else None
-        ),
-        "baselineDurationNs": (
-            selected_baseline.duration_ns if selected_baseline is not None else None
-        ),
-        "candidateDurationNs": (
-            selected_candidate.duration_ns if selected_candidate is not None else None
-        ),
-        "semanticCapabilities": list(
-            selected_baseline.semantic_capabilities
-            if selected_baseline is not None
-            else ()
-        ),
+        "selectedAttempt": (selected_attempt["attemptKind"] if selected_attempt is not None else None),
+        "baselineDurationNs": (selected_baseline.duration_ns if selected_baseline is not None else None),
+        "candidateDurationNs": (selected_candidate.duration_ns if selected_candidate is not None else None),
+        "semanticCapabilities": list(selected_baseline.semantic_capabilities if selected_baseline is not None else ()),
         "capabilityDiagnostics": diagnostic_attempt["capabilityDiagnostics"],
         "baselineFailureCode": (
             _public_failure_code(selected_baseline)
@@ -2377,11 +2267,7 @@ def _logical_pair(
             if selected_candidate is not None
             else attempts[-1]["candidateFailureCode"]
         ),
-        "cleanupVerified": (
-            bool(diagnostic_attempt["cleanupVerified"])
-            if selected_attempt is not None
-            else False
-        ),
+        "cleanupVerified": (bool(diagnostic_attempt["cleanupVerified"]) if selected_attempt is not None else False),
         "attempts": attempts,
         "recovery": recovery,
     }
@@ -2427,9 +2313,7 @@ def _case_rows(
             )
             if prime["status"] != "pass":
                 overall_reasons.append(
-                    "external_invalid"
-                    if prime["status"] == "external_invalid"
-                    else str(prime["reasonCode"])
+                    "external_invalid" if prime["status"] == "external_invalid" else str(prime["reasonCode"])
                 )
             for mode, count in (("cold", MIN_COLD_PAIRS), ("warm", MIN_WARM_PAIRS)):
                 for pair_index in range(1, count + 1):
@@ -2453,9 +2337,7 @@ def _case_rows(
                         candidate_timings.append(candidate_ns)
                     else:
                         overall_reasons.append(
-                            "external_invalid"
-                            if pair["status"] == "external_invalid"
-                            else str(pair["reasonCode"])
+                            "external_invalid" if pair["status"] == "external_invalid" else str(pair["reasonCode"])
                         )
                     pairs.append(pair)
         finally:
@@ -2528,8 +2410,7 @@ def _validate_fixture(
         or snapshot.get("runId") != run_id
         or snapshot.get("fixtureId") != fixture.get("fixtureId")
         or not isinstance(snapshot_cases, list)
-        or [item.get("id") for item in snapshot_cases if isinstance(item, dict)]
-        != [item["id"] for item in cases]
+        or [item.get("id") for item in snapshot_cases if isinstance(item, dict)] != [item["id"] for item in cases]
         or any(item.get("status") != "validated" for item in snapshot_cases if isinstance(item, dict))
     ):
         raise HoldoutError("run-local baseline YouTube snapshot is invalid")
@@ -2547,9 +2428,7 @@ def _build_stack(
     environment_root: Path,
 ) -> StackIdentity:
     root = _plain_directory(root, label=f"{label} payload root")
-    internal_root = _plain_directory(
-        root / PurePosixPath(INTERNAL_RELATIVE), label=f"{label} installed module root"
-    )
+    internal_root = _plain_directory(root / PurePosixPath(INTERNAL_RELATIVE), label=f"{label} installed module root")
     relative, kind, executable, executable_item = _find_runtime(
         root=root, inventory=inventory, installed=installed, label=label
     )
@@ -2648,9 +2527,7 @@ def _parallel_probe_attempt(
         ]
         outcomes = [future.result() for future in futures]
     required = set(_normalize_required(case["requiredCapabilities"]))
-    missing_required = [
-        sorted(required - set(outcome.semantic_capabilities)) for outcome in outcomes
-    ]
+    missing_required = [sorted(required - set(outcome.semantic_capabilities)) for outcome in outcomes]
     if any(outcome.status != "pass" for outcome in outcomes):
         status, reason = "fail", "candidate_parallel_probe_failed"
     elif any(missing_required):
@@ -2718,9 +2595,7 @@ def _parallel_candidate_probe(
         "budgetOrdinal": None,
         "budgetExhausted": False,
         "triggerReasonCode": (
-            "candidate_parallel_probe_failed"
-            if original["reasonCode"] == "candidate_parallel_probe_failed"
-            else None
+            "candidate_parallel_probe_failed" if original["reasonCode"] == "candidate_parallel_probe_failed" else None
         ),
         "confirmationReasonCode": None,
     }
@@ -2758,19 +2633,13 @@ def _parallel_candidate_probe(
         "logicalSampleId": "parallel:two-worker",
         "status": final_status,
         "reasonCode": final_reason,
-        "selectedAttempt": (
-            selected_attempt["attemptKind"] if selected_attempt is not None else None
-        ),
+        "selectedAttempt": (selected_attempt["attemptKind"] if selected_attempt is not None else None),
         "workerCount": 2,
         "distinctPrivateWorkspaces": True,
         "capabilityParity": bool(diagnostic_attempt["capabilityParity"]),
         "capabilityComparisonPolicy": CAPABILITY_COMPARISON_POLICY,
         "capabilityDiagnostics": diagnostic_attempt["capabilityDiagnostics"],
-        "cleanupVerified": (
-            bool(diagnostic_attempt["cleanupVerified"])
-            if selected_attempt is not None
-            else False
-        ),
+        "cleanupVerified": (bool(diagnostic_attempt["cleanupVerified"]) if selected_attempt is not None else False),
         "attempts": attempts,
         "recovery": recovery,
     }
@@ -2795,14 +2664,9 @@ def _assert_redacted(value: Any) -> None:
             if (
                 folded_key.endswith("failurecode")
                 and child is not None
-                and (
-                    not isinstance(child, str)
-                    or child not in PUBLIC_FAILURE_CODES
-                )
+                and (not isinstance(child, str) or child not in PUBLIC_FAILURE_CODES)
             ):
-                raise HoldoutError(
-                    "candidate evidence contains a non-allowlisted failure code"
-                )
+                raise HoldoutError("candidate evidence contains a non-allowlisted failure code")
             _assert_redacted(child)
     elif isinstance(value, list):
         for child in value:
@@ -2827,9 +2691,7 @@ def _scientific_status(reasons: Sequence[str], performance_ok: bool) -> tuple[st
 def run_validator(args: argparse.Namespace) -> dict[str, Any]:
     run_id = _canonical_run_id(args.run_id)
     packet_id = _safe_id(args.packet_id, label="packet id")
-    parent_id = _safe_id(
-        args.parent_champion_id, label="parent champion id", allow_baseline=True
-    )
+    parent_id = _safe_id(args.parent_champion_id, label="parent champion id", allow_baseline=True)
     source_commit = _source_commit(args.source_commit)
     if not 30 <= args.timeout_seconds <= 300:
         raise HoldoutError("probe timeout must be between 30 and 300 seconds")
@@ -2847,18 +2709,10 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
         label="run-local baseline YouTube snapshot",
     )
     cases = _validate_fixture(fixture, snapshot, run_id=run_id)
-    baseline_inventory, baseline_inventory_sha = _load_object(
-        args.baseline_inventory, label="baseline inventory"
-    )
-    candidate_inventory, candidate_inventory_sha = _load_object(
-        args.candidate_inventory, label="candidate inventory"
-    )
-    parent_inventory, parent_inventory_sha = _load_object(
-        args.parent_inventory, label="parent inventory"
-    )
-    _validate_inventory(
-        baseline_inventory, run_id=run_id, source_commit=None, label="baseline"
-    )
+    baseline_inventory, baseline_inventory_sha = _load_object(args.baseline_inventory, label="baseline inventory")
+    candidate_inventory, candidate_inventory_sha = _load_object(args.candidate_inventory, label="candidate inventory")
+    parent_inventory, parent_inventory_sha = _load_object(args.parent_inventory, label="parent inventory")
+    _validate_inventory(baseline_inventory, run_id=run_id, source_commit=None, label="baseline")
     _validate_inventory(
         candidate_inventory,
         run_id=run_id,
@@ -2880,8 +2734,7 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
     python_executable = _plain_file(Path(sys.executable), label="research Python")
     python_identity = environment_manifest.get("python")
     if (
-        environment_manifest.get("kind")
-        != "scriber-installer-research-python-environment"
+        environment_manifest.get("kind") != "scriber-installer-research-python-environment"
         or environment_manifest.get("runId") != run_id
         or environment_manifest.get("environmentName") != "baseline"
         or not isinstance(python_identity, dict)
@@ -2889,9 +2742,7 @@ def run_validator(args: argparse.Namespace) -> dict[str, Any]:
         or python_identity.get("sha256") != _sha256_file(python_executable)
     ):
         raise HoldoutError("active research Python is not the run-local baseline environment")
-    environment_root = _plain_directory(
-        run_root / "environments" / "baseline", label="baseline environment root"
-    )
+    environment_root = _plain_directory(run_root / "environments" / "baseline", label="baseline environment root")
     baseline = _build_stack(
         label="baseline",
         root=args.baseline_root,

@@ -53,13 +53,10 @@ def celeris_request_max_tokens(prompt: str, requested: int) -> int:
     available = CELERIS_CONTEXT_TOKENS - prompt_tokens
     available_quantized = (available // CELERIS_TOKEN_QUANTUM) * CELERIS_TOKEN_QUANTUM
     if available_quantized < CELERIS_TOKEN_QUANTUM:
-        raise ValueError(
-            "Celeris prompt exceeds the supported context window; split the input before generation."
-        )
+        raise ValueError("Celeris prompt exceeds the supported context window; split the input before generation.")
     requested_quantized = max(
         CELERIS_TOKEN_QUANTUM,
-        math.ceil(max(1, int(requested)) / CELERIS_TOKEN_QUANTUM)
-        * CELERIS_TOKEN_QUANTUM,
+        math.ceil(max(1, int(requested)) / CELERIS_TOKEN_QUANTUM) * CELERIS_TOKEN_QUANTUM,
     )
     return min(
         CELERIS_PRODUCT_OUTPUT_CAP_TOKENS,
@@ -73,8 +70,7 @@ def celeris_prompt_fits(prompt: str, requested: int) -> bool:
         CELERIS_PRODUCT_OUTPUT_CAP_TOKENS,
         max(
             CELERIS_TOKEN_QUANTUM,
-            math.ceil(max(1, int(requested)) / CELERIS_TOKEN_QUANTUM)
-            * CELERIS_TOKEN_QUANTUM,
+            math.ceil(max(1, int(requested)) / CELERIS_TOKEN_QUANTUM) * CELERIS_TOKEN_QUANTUM,
         ),
     )
     try:
@@ -94,11 +90,7 @@ def _response_text(data: Any) -> str:
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        return "".join(
-            str(item.get("text") or "")
-            for item in content
-            if isinstance(item, dict)
-        ).strip()
+        return "".join(str(item.get("text") or "") for item in content if isinstance(item, dict)).strip()
     return ""
 
 
@@ -110,9 +102,7 @@ def _error_code(raw: str) -> str:
     error = payload.get("error") if isinstance(payload, dict) else None
     code = error.get("code") if isinstance(error, dict) else None
     normalized = str(code or "").strip().lower()
-    if normalized and len(normalized) <= 80 and all(
-        value.isalnum() or value in "._-" for value in normalized
-    ):
+    if normalized and len(normalized) <= 80 and all(value.isalnum() or value in "._-" for value in normalized):
         return normalized
     return "unknown"
 
@@ -188,9 +178,7 @@ async def celeris_chat_completion(
                         if response.status in _RETRYABLE_STATUSES and attempt < 2:
                             await asyncio.sleep(_retry_after_seconds(response, attempt))
                             continue
-                        raise RuntimeError(
-                            f"Celeris API error {response.status} (code={code})."
-                        )
+                        raise RuntimeError(f"Celeris API error {response.status} (code={code}).")
                     try:
                         data = json.loads(raw)
                     except json.JSONDecodeError as exc:
@@ -205,14 +193,12 @@ async def celeris_chat_completion(
                         output_tokens,
                     )
                     return content
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 raise
             except aiohttp.ClientError as exc:
                 # A connection failure after request transmission may have
                 # consumed provider work. Do not automatically duplicate it.
-                raise RuntimeError(
-                    f"Celeris request failed ({type(exc).__name__})."
-                ) from exc
+                raise RuntimeError(f"Celeris request failed ({type(exc).__name__}).") from exc
     finally:
         if owned_session is not None:
             await owned_session.close()

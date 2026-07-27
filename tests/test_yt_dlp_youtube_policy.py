@@ -17,7 +17,6 @@ from backend_runtime.yt_dlp_policy import (
     partition_yt_dlp_modules,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -29,12 +28,8 @@ def test_pinned_yt_dlp_inventory_keeps_only_youtube_extractors() -> None:
 
     assert len(retained) + len(excluded) == EXPECTED_YT_DLP_MODULE_COUNT
     assert len(excluded) == EXPECTED_EXCLUDED_EXTRACTOR_MODULE_COUNT
-    assert sum(name.startswith("yt_dlp.extractor") for name in retained) == (
-        EXPECTED_RETAINED_EXTRACTOR_MODULE_COUNT
-    )
-    assert sum(not name.startswith("yt_dlp.extractor") for name in retained) == (
-        EXPECTED_NON_EXTRACTOR_MODULE_COUNT
-    )
+    assert sum(name.startswith("yt_dlp.extractor") for name in retained) == (EXPECTED_RETAINED_EXTRACTOR_MODULE_COUNT)
+    assert sum(not name.startswith("yt_dlp.extractor") for name in retained) == (EXPECTED_NON_EXTRACTOR_MODULE_COUNT)
     assert "yt_dlp.extractor.youtube._video" in retained
     assert "yt_dlp.extractor.generic" in excluded
     assert "yt_dlp.extractor.vimeo" in excluded
@@ -113,9 +108,7 @@ print(json.dumps({
 
 
 def test_spec_wires_fail_closed_pruning_and_runtime_hook() -> None:
-    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
 
     assert spec.count('collect_submodules("yt_dlp")') == 1
     assert "partition_yt_dlp_modules" in spec

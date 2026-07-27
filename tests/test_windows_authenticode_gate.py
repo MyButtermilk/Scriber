@@ -140,9 +140,7 @@ def test_release_cache_restore_treats_missing_artifact_as_cache_miss(tmp_path: P
         ),
     ],
 )
-def test_cache_publishers_refuse_public_app_release_tags(
-    script: Path, extra_args: list[str], expected: str
-) -> None:
+def test_cache_publishers_refuse_public_app_release_tags(script: Path, extra_args: list[str], expected: str) -> None:
     result = run_powershell(
         "-NoProfile",
         "-File",
@@ -317,9 +315,7 @@ def test_tag_release_preflight_rejects_non_https_updater_endpoint() -> None:
         ),
     ],
 )
-def test_tag_release_preflight_rejects_inconsistent_policy(
-    overrides: dict[str, str], expected_error: str
-) -> None:
+def test_tag_release_preflight_rejects_inconsistent_policy(overrides: dict[str, str], expected_error: str) -> None:
     policy = {
         "SCRIBER_TAURI_UPDATER_PUBLIC_KEY": "PUBLIC_KEY",
         "TAURI_SIGNING_PRIVATE_KEY": "PRIVATE_KEY",

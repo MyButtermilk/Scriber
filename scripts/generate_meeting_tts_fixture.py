@@ -12,7 +12,6 @@ import tempfile
 from array import array
 from pathlib import Path
 
-
 DEFAULT_TEXT = (
     "Dies ist ein automatischer Scriber Mikrofontest. "
     "Heute prüfen wir Aufnahme, Pause, Fortsetzen und Transkription. "
@@ -27,10 +26,7 @@ MAX_FIXTURE_BYTES = 64 * 1024 * 1024
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Generate a deterministic, raw 48 kHz mono PCM fixture with the local "
-            "open-source Piper runtime."
-        )
+        description=("Generate a deterministic, raw 48 kHz mono PCM fixture with the local open-source Piper runtime.")
     )
     parser.add_argument("--runtime-dir", required=True, type=Path)
     parser.add_argument("--voice-model", required=True, type=Path)
@@ -89,8 +85,7 @@ def _run_checked(
     if completed.returncode != 0:
         executable = Path(command[0]).name
         raise RuntimeError(
-            f"{executable} failed while generating the synthetic fixture "
-            f"(exit code {completed.returncode})"
+            f"{executable} failed while generating the synthetic fixture (exit code {completed.returncode})"
         )
 
 
@@ -142,9 +137,7 @@ def main() -> int:
 
     piper_env = os.environ.copy()
     existing_pythonpath = piper_env.get("PYTHONPATH", "")
-    piper_env["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(runtime_dir), existing_pythonpath) if part
-    )
+    piper_env["PYTHONPATH"] = os.pathsep.join(part for part in (str(runtime_dir), existing_pythonpath) if part)
 
     with tempfile.TemporaryDirectory(prefix="scriber-meeting-tts-") as temp_dir_raw:
         temp_dir = Path(temp_dir_raw)
@@ -195,11 +188,7 @@ def main() -> int:
         )
         resampled = _require_file(pcm_path, "resampled PCM output").read_bytes()
 
-    payload = (
-        _silence_bytes(args.leading_silence_ms)
-        + resampled
-        + _silence_bytes(args.trailing_silence_ms)
-    )
+    payload = _silence_bytes(args.leading_silence_ms) + resampled + _silence_bytes(args.trailing_silence_ms)
     if not payload or len(payload) % (CHANNELS * SAMPLE_WIDTH_BYTES) != 0:
         raise RuntimeError("generated fixture is empty or sample-unaligned")
     if len(payload) > MAX_FIXTURE_BYTES:
@@ -209,9 +198,7 @@ def main() -> int:
     temporary_output.write_bytes(payload)
     os.replace(temporary_output, output)
 
-    duration_ms = round(
-        len(payload) * 1_000 / (SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH_BYTES)
-    )
+    duration_ms = round(len(payload) * 1_000 / (SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH_BYTES))
     peak, rms = _pcm_statistics(payload)
     result = {
         "schemaVersion": 1,
@@ -234,9 +221,7 @@ def main() -> int:
     if args.result_json is not None:
         result_path = args.result_json.expanduser().resolve()
         result_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_result = result_path.with_name(
-            f".{result_path.name}.{os.getpid()}.tmp"
-        )
+        temporary_result = result_path.with_name(f".{result_path.name}.{os.getpid()}.tmp")
         temporary_result.write_text(encoded + "\n", encoding="utf-8")
         os.replace(temporary_result, result_path)
     print(encoded)

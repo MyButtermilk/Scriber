@@ -13,18 +13,19 @@ import asyncio
 import json
 import math
 import subprocess
+from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncIterator, Mapping
+from typing import Any
 from uuid import uuid4
 
 from src.core.provider_audio_formats import (
     AudioInputFormat,
     AudioInputSelection,
     AudioSelectionMode,
-    ProviderAudioRouteKind,
     ProviderAudioInputCapabilities,
+    ProviderAudioRouteKind,
     UnsupportedAudioInputFormat,
     require_exact_audio_input_format,
     resolve_batch_provider_audio_capabilities,
@@ -44,7 +45,6 @@ from src.runtime.subprocess_utils import (
     communicate_or_kill_on_cancel,
     hidden_subprocess_kwargs,
 )
-
 
 _PROBE_MAX_BYTES = 64 * 1024
 _PROBE_TIMEOUT_SECONDS = 20.0
@@ -143,9 +143,7 @@ def audio_preparation_implementation(
         return "original_passthrough"
     implementation = _GENERATED_IMPLEMENTATIONS.get(selection.audio_format, "")
     if not implementation:
-        raise ProviderAudioPreparationError(
-            "Selected provider format has no promoted local implementation."
-        )
+        raise ProviderAudioPreparationError("Selected provider format has no promoted local implementation.")
     return implementation
 
 
@@ -193,9 +191,7 @@ def _format_from_probe_payload(
     }
     claimed_containers = claimed_container_groups.get(suffix)
     if claimed_containers is not None and not containers & claimed_containers:
-        raise AudioFormatProbeError(
-            "Audio filename container does not match the probed container."
-        )
+        raise AudioFormatProbeError("Audio filename container does not match the probed container.")
 
     if codec == "pcm_s16le" and "wav" in containers:
         return AudioInputFormat.WAV_PCM16, container, codec
@@ -211,11 +207,7 @@ def _format_from_probe_payload(
         return AudioInputFormat.AAC, container, codec
     iso_media_containers = {"mov", "mp4", "m4a", "3gp", "3g2", "mj2"}
     if codec == "aac" and containers & iso_media_containers:
-        return (
-            AudioInputFormat.M4A_AAC
-            if suffix == ".m4a"
-            else AudioInputFormat.MP4_AUDIO
-        ), container, codec
+        return (AudioInputFormat.M4A_AAC if suffix == ".m4a" else AudioInputFormat.MP4_AUDIO), container, codec
     if codec == "alac" and containers & iso_media_containers:
         return AudioInputFormat.M4A_ALAC, container, codec
     if codec.startswith("pcm_") and "aiff" in containers:
@@ -225,20 +217,14 @@ def _format_from_probe_payload(
             return AudioInputFormat.OGG_OPUS, container, codec
         if codec == "vorbis":
             return AudioInputFormat.OGG_VORBIS, container, codec
-        raise AudioFormatProbeError(
-            "OGG container uses an unverified codec for this STT route."
-        )
+        raise AudioFormatProbeError("OGG container uses an unverified codec for this STT route.")
     if "webm" in containers:
         if codec == "opus":
             return AudioInputFormat.WEBM_OPUS, container, codec
         if codec == "vorbis":
             return AudioInputFormat.WEBM_VORBIS, container, codec
-        raise AudioFormatProbeError(
-            "WebM container uses an unverified codec for this STT route."
-        )
-    raise AudioFormatProbeError(
-        "Audio container/codec pair is not recognized as an exact input format."
-    )
+        raise AudioFormatProbeError("WebM container uses an unverified codec for this STT route.")
+    raise AudioFormatProbeError("Audio container/codec pair is not recognized as an exact input format.")
 
 
 def probe_audio_input_file(
@@ -310,14 +296,11 @@ def resolve_provider_audio_selection(
         model,
         custom_endpoint=custom_endpoint,
     )
-    effective_limit = min(
-        value
-        for value in (capability.max_upload_bytes, max_bytes)
-        if isinstance(value, int) and value > 0
-    ) if any(
-        isinstance(value, int) and value > 0
-        for value in (capability.max_upload_bytes, max_bytes)
-    ) else None
+    effective_limit = (
+        min(value for value in (capability.max_upload_bytes, max_bytes) if isinstance(value, int) and value > 0)
+        if any(isinstance(value, int) and value > 0 for value in (capability.max_upload_bytes, max_bytes))
+        else None
+    )
     original = probe.audio_format if effective_limit is None or probe.byte_length <= effective_limit else None
     selection = select_audio_input_format(
         capability,
@@ -344,9 +327,7 @@ def _generated_command(
         return ogg_opus_transcode_args(ffmpeg, source, target)
     if audio_format == AudioInputFormat.WEBM_OPUS:
         return webm_opus_transcode_args(ffmpeg, source, target)
-    raise UnsupportedAudioInputFormat(
-        "Selected provider format has no promoted local preparation implementation."
-    )
+    raise UnsupportedAudioInputFormat("Selected provider format has no promoted local preparation implementation.")
 
 
 async def _run_generated_preparation(command: list[str], target: Path) -> None:
@@ -362,16 +343,10 @@ async def _run_generated_preparation(command: list[str], target: Path) -> None:
         max_stderr_bytes=1024 * 1024,
     )
     if process.returncode != 0:
-        detail = classify_ffmpeg_stderr(
-            stderr.decode("utf-8", errors="replace") if stderr else ""
-        )
-        raise ProviderAudioPreparationError(
-            detail or "Provider audio preparation failed."
-        )
+        detail = classify_ffmpeg_stderr(stderr.decode("utf-8", errors="replace") if stderr else "")
+        raise ProviderAudioPreparationError(detail or "Provider audio preparation failed.")
     if not target.is_file() or target.stat().st_size <= 0:
-        raise ProviderAudioPreparationError(
-            "Provider audio preparation did not create an artifact."
-        )
+        raise ProviderAudioPreparationError("Provider audio preparation did not create an artifact.")
 
 
 @asynccontextmanager
@@ -401,9 +376,7 @@ async def prepare_provider_audio_file(
             frozen_selection.capability_id != capability.capability_id
             or frozen_selection.capability_revision != capability.revision
         ):
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio capability no longer matches the route."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio capability no longer matches the route.")
         require_exact_audio_input_format(
             capability,
             frozen_selection.audio_format,
@@ -413,9 +386,7 @@ async def prepare_provider_audio_file(
             frozen_selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
             and frozen_selection.audio_format != probe.audio_format
         ):
-            raise ProviderAudioPreparationError(
-                "Frozen pass-through format does not match the probed source."
-            )
+            raise ProviderAudioPreparationError("Frozen pass-through format does not match the probed source.")
         selected = frozen_selection
 
     generated = selected.mode != AudioSelectionMode.ORIGINAL_PASSTHROUGH
@@ -426,9 +397,7 @@ async def prepare_provider_audio_file(
         if generated:
             suffix = _GENERATED_SUFFIXES.get(selected.audio_format)
             if not suffix or not implementation:
-                raise ProviderAudioPreparationError(
-                    "Selected provider format has no promoted local implementation."
-                )
+                raise ProviderAudioPreparationError("Selected provider format has no promoted local implementation.")
             destination = Path(work_dir) if work_dir is not None else source.parent
             destination = destination.resolve()
             destination.mkdir(parents=True, exist_ok=True)
@@ -451,18 +420,13 @@ async def prepare_provider_audio_file(
             output_path = generated_path
 
         byte_length = output_path.stat().st_size
-        effective_limit = min(
-            value
-            for value in (capability.max_upload_bytes, max_bytes)
-            if isinstance(value, int) and value > 0
-        ) if any(
-            isinstance(value, int) and value > 0
-            for value in (capability.max_upload_bytes, max_bytes)
-        ) else None
+        effective_limit = (
+            min(value for value in (capability.max_upload_bytes, max_bytes) if isinstance(value, int) and value > 0)
+            if any(isinstance(value, int) and value > 0 for value in (capability.max_upload_bytes, max_bytes))
+            else None
+        )
         if effective_limit is not None and byte_length > effective_limit:
-            raise ProviderAudioPreparationError(
-                "Prepared provider audio exceeds the verified upload limit."
-            )
+            raise ProviderAudioPreparationError("Prepared provider audio exceeds the verified upload limit.")
         yield PreparedProviderAudio(
             path=output_path,
             source_format=probe.audio_format,

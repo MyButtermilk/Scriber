@@ -12,10 +12,10 @@ import pytest
 from src.audio_prepare import PreparedProviderAudio
 from src.config import Config
 from src.core.provider_audio_formats import (
-    AudioInputFormat,
-    AudioSelectionMode,
     SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
     SPEECHMATICS_REALTIME_DEFAULT_BASE_URL,
+    AudioInputFormat,
+    AudioSelectionMode,
 )
 from src.data.job_store import JobStore, JobType
 from src.runtime.provider_http import ProviderRequestAcceptanceUnknown
@@ -190,19 +190,17 @@ async def test_speechmatics_realtime_and_batch_freeze_distinct_endpoints(
         language="en",
     )
 
-    assert realtime.provider_endpoint_sha256 == hashlib.sha256(
-        SPEECHMATICS_REALTIME_DEFAULT_BASE_URL.encode("utf-8")
-    ).hexdigest()
-    assert batch.provider_endpoint_sha256 == hashlib.sha256(
-        SPEECHMATICS_BATCH_DEFAULT_BASE_URL.encode("utf-8")
-    ).hexdigest()
+    assert (
+        realtime.provider_endpoint_sha256
+        == hashlib.sha256(SPEECHMATICS_REALTIME_DEFAULT_BASE_URL.encode("utf-8")).hexdigest()
+    )
+    assert (
+        batch.provider_endpoint_sha256
+        == hashlib.sha256(SPEECHMATICS_BATCH_DEFAULT_BASE_URL.encode("utf-8")).hexdigest()
+    )
     assert realtime.provider_endpoint_sha256 != batch.provider_endpoint_sha256
-    assert realtime.provider_audio_capability_id == (
-        "speechmatics:realtime_v2:enhanced"
-    )
-    assert batch.provider_audio_capability_id == (
-        "speechmatics_async:batch_v2:enhanced"
-    )
+    assert realtime.provider_audio_capability_id == ("speechmatics:realtime_v2:enhanced")
+    assert batch.provider_audio_capability_id == ("speechmatics_async:batch_v2:enhanced")
 
 
 @pytest.mark.asyncio

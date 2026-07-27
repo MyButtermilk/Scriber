@@ -9,7 +9,6 @@ import stat
 import tempfile
 from pathlib import Path
 
-
 REQUIRED_FILES = (
     "scriber-desktop.exe",
     "scriber-audio-sidecar.exe",
@@ -24,9 +23,7 @@ class StagingError(RuntimeError):
 
 def _is_reparse(path: Path) -> bool:
     info = path.lstat()
-    return path.is_symlink() or bool(
-        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
-    )
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT)
 
 
 def _validate_plain_tree(root: Path, *, label: str) -> None:
@@ -80,9 +77,7 @@ def stage_payload(*, release_root: Path, notices: Path, output: Path) -> None:
         if not source.is_file() or _is_reparse(source):
             raise StagingError(f"required release payload is missing: {name}")
 
-    temporary = Path(
-        tempfile.mkdtemp(prefix=f".{output.name}.", dir=str(output.parent))
-    )
+    temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=str(output.parent)))
     try:
         shutil.copy2(release_root / "scriber-desktop.exe", temporary)
         shutil.copy2(release_root / "scriber-audio-sidecar.exe", temporary)

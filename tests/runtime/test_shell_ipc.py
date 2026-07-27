@@ -336,9 +336,7 @@ def test_shell_ipc_serializes_commands_within_audio_ownership_domain(monkeypatch
 
     threads = [
         threading.Thread(
-            target=lambda command=command: responses.append(
-                shell_ipc.call_shell_ipc(command, timeout_seconds=0.5)
-            )
+            target=lambda command=command: responses.append(shell_ipc.call_shell_ipc(command, timeout_seconds=0.5))
         )
         for command in ("audioPrewarmStop", "audioCaptureStart")
     ]
@@ -438,9 +436,7 @@ def test_shell_ipc_response_ack_is_request_bound_for_success_and_failure():
     }
 
     failure = success.replace('"success": true', '"success": false')
-    assert json.loads(
-        shell_ipc._response_ack_line(request, failure, newline_received=True)
-    ) == {
+    assert json.loads(shell_ipc._response_ack_line(request, failure, newline_received=True)) == {
         "apiVersion": "1",
         "requestId": "request-123",
         "type": "responseAck",
@@ -459,13 +455,16 @@ def test_shell_ipc_response_ack_is_request_bound_for_success_and_failure():
         )
 
     non_lifecycle_request = request.replace("audioCaptureStart", "overlayShow")
-    assert json.loads(
-        shell_ipc._response_ack_line(
-            non_lifecycle_request,
-            success,
-            newline_received=True,
-        )
-    )["requestId"] == "request-123"
+    assert (
+        json.loads(
+            shell_ipc._response_ack_line(
+                non_lifecycle_request,
+                success,
+                newline_received=True,
+            )
+        )["requestId"]
+        == "request-123"
+    )
 
 
 def test_shell_ipc_windows_transport_writes_bounded_response_ack(monkeypatch):
@@ -562,14 +561,8 @@ def test_shell_ipc_windows_transport_cancels_and_drains_timed_out_ack(monkeypatc
         def __call__(self, *args):
             return self.func(*args)
 
-    request_line = (
-        '{"apiVersion":"1","requestId":"ack-timeout",'
-        '"command":"audioMeetingResume"}\n'
-    )
-    response_line = (
-        '{"apiVersion":"1","requestId":"ack-timeout","success":true,'
-        '"payload":{"captureId":"meeting-1"}}\n'
-    ).encode("utf-8")
+    request_line = '{"apiVersion":"1","requestId":"ack-timeout","command":"audioMeetingResume"}\n'
+    response_line = b'{"apiVersion":"1","requestId":"ack-timeout","success":true,"payload":{"captureId":"meeting-1"}}\n'
 
     class FakeKernel32:
         def __init__(self):
@@ -599,9 +592,7 @@ def test_shell_ipc_windows_transport_cancels_and_drains_timed_out_ack(monkeypatc
         @staticmethod
         def _read_file(_handle, buffer, _buffer_len, bytes_read_ptr, _overlapped):
             ctypes.memmove(buffer, response_line, len(response_line))
-            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(
-                response_line
-            )
+            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(response_line)
             return True
 
         def _cancel_io(self, handle, _overlapped):
@@ -676,9 +667,7 @@ def test_shell_ipc_windows_transport_reads_large_overlapped_response(monkeypatch
 
         def _read_file(self, _handle, buffer, _buffer_len, bytes_read_ptr, _overlapped):
             ctypes.memmove(buffer, self.response, len(self.response))
-            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(
-                self.response
-            )
+            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(self.response)
             return True
 
     response_line = (
@@ -734,10 +723,7 @@ def test_shell_ipc_windows_transport_retries_create_file_pipe_busy(monkeypatch):
             self.last_error = 0
             self.wait_calls = 0
             self.create_calls = 0
-            self.response = (
-                b'{"apiVersion":"1","requestId":"pipe-busy",'
-                b'"success":true,"payload":{}}\n'
-            )
+            self.response = b'{"apiVersion":"1","requestId":"pipe-busy","success":true,"payload":{}}\n'
             self.WaitNamedPipeW = FakeCall(self._wait_named_pipe)
             self.CreateFileW = FakeCall(self._create_file)
             self.CreateEventW = FakeCall(lambda *_args: 456)
@@ -769,9 +755,7 @@ def test_shell_ipc_windows_transport_retries_create_file_pipe_busy(monkeypatch):
 
         def _read_file(self, _handle, buffer, _buffer_len, bytes_read_ptr, _overlapped):
             ctypes.memmove(buffer, self.response, len(self.response))
-            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(
-                self.response
-            )
+            ctypes.cast(bytes_read_ptr, ctypes.POINTER(wintypes.DWORD)).contents.value = len(self.response)
             return True
 
     fake_kernel32 = FakeKernel32()
@@ -898,9 +882,7 @@ def test_shell_ipc_windows_transport_drains_timed_out_write_before_cleanup(monke
             self.CreateFileW = FakeCall(lambda *_args: 123)
             self.CreateEventW = FakeCall(lambda *_args: 456)
             self.WriteFile = FakeCall(self._write_file)
-            self.ReadFile = FakeCall(
-                lambda *_args: pytest.fail("ReadFile must not run after write timeout")
-            )
+            self.ReadFile = FakeCall(lambda *_args: pytest.fail("ReadFile must not run after write timeout"))
             self.ResetEvent = FakeCall(lambda *_args: True)
             self.WaitForSingleObject = FakeCall(lambda *_args: 258)
             self.GetOverlappedResult = FakeCall(self._get_overlapped_result)

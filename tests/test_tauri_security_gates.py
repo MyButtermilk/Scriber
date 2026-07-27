@@ -5,7 +5,6 @@ import re
 import tomllib
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TAURI_DIR = REPO_ROOT / "Frontend" / "src-tauri"
 
@@ -113,7 +112,7 @@ def test_frontend_entrypoint_is_compatible_with_tauri_csp() -> None:
 
     assert "fonts.googleapis.com" not in index_html
     assert "fonts.gstatic.com" not in index_html
-    assert "<script type=\"module\" src=\"/src/main.tsx\"></script>" in index_html
+    assert '<script type="module" src="/src/main.tsx"></script>' in index_html
     assert not re.search(r"<script(?![^>]*\bsrc=)[^>]*>", index_html)
     assert "ui-sans-serif" in css
     assert "--font-sans:" in css

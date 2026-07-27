@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -12,7 +12,7 @@ from src.data.audio_admission_store import (
 
 class Clock:
     def __init__(self) -> None:
-        self.value = datetime(2026, 7, 12, tzinfo=timezone.utc)
+        self.value = datetime(2026, 7, 12, tzinfo=UTC)
 
     def now(self) -> datetime:
         return self.value
@@ -32,14 +32,10 @@ def stores(tmp_path):
 
 def test_active_lease_blocks_a_second_controller(tmp_path):
     _clock, first, second = stores(tmp_path)
-    claim = first.acquire(
-        owner_kind="live_mic", owner_id="session-1", controller_id="controller-a"
-    )
+    claim = first.acquire(owner_kind="live_mic", owner_id="session-1", controller_id="controller-a")
 
     with pytest.raises(AudioAdmissionConflict) as raised:
-        second.acquire(
-            owner_kind="meeting", owner_id="meeting-1", controller_id="controller-b"
-        )
+        second.acquire(owner_kind="meeting", owner_id="meeting-1", controller_id="controller-b")
 
     assert raised.value.active == claim
     assert second.active() == claim
@@ -110,6 +106,4 @@ def test_claim_identifiers_are_opaque_and_bounded(tmp_path, field):
     store = AudioAdmissionStore(tmp_path / "audio-admission.db")
     store.initialize()
     with pytest.raises(ValueError, match="opaque safe identifier"):
-        store.acquire(
-            owner_kind="meeting", owner_id=field, controller_id="controller-a"
-        )
+        store.acquire(owner_kind="meeting", owner_id=field, controller_id="controller-a")

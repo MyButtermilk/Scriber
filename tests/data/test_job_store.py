@@ -1,8 +1,8 @@
 import gc
 import sqlite3
 import weakref
-from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
@@ -54,9 +54,7 @@ def test_job_store_claim_is_atomic_across_workers(tmp_path):
     db_path = tmp_path / "jobs.db"
     first = JobStore(db_path=db_path)
     second = JobStore(db_path=db_path)
-    job = first.enqueue(
-        transcript_id="tx-claim", job_type=JobType.FILE, payload={"path": "meeting.wav"}
-    )
+    job = first.enqueue(transcript_id="tx-claim", job_type=JobType.FILE, payload={"path": "meeting.wav"})
     barrier = Barrier(2)
 
     def claim(store):
@@ -89,9 +87,7 @@ def test_job_store_freezes_and_finalizes_execution_route_once(tmp_path):
         "transport": "direct_upload",
         "language": "de",
         "audioInputFormat": None,
-        "providerAudioCapabilityId": (
-            "azure_mai:audio_transcriptions:mai-transcribe-1.5"
-        ),
+        "providerAudioCapabilityId": ("azure_mai:audio_transcriptions:mai-transcribe-1.5"),
         "providerAudioCapabilityRevision": "provider-audio-formats-v1",
         "audioInputFormatVerified": None,
     }
@@ -215,9 +211,7 @@ def test_job_store_route_payloads_are_allowlisted_at_enqueue(tmp_path):
 
 def test_job_store_terminal_transitions_are_idempotent_but_not_overwritable(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
-    job = store.enqueue(
-        transcript_id="tx-cancel", job_type=JobType.YOUTUBE, payload={"url": "https://example.com"}
-    )
+    job = store.enqueue(transcript_id="tx-cancel", job_type=JobType.YOUTUBE, payload={"url": "https://example.com"})
     assert store.mark_running(job.id)
     assert store.mark_canceled(job.id, last_error="stopped")
     assert store.mark_canceled(job.id, last_error="stopped")
@@ -230,9 +224,7 @@ def test_job_store_terminal_transitions_are_idempotent_but_not_overwritable(tmp_
     assert persisted.status == JobStatus.CANCELED
     assert persisted.attempts == 1
 
-    direct = store.enqueue(
-        transcript_id="tx-direct", job_type=JobType.FILE, payload={"path": "direct.wav"}
-    )
+    direct = store.enqueue(transcript_id="tx-direct", job_type=JobType.FILE, payload={"path": "direct.wav"})
     assert store.mark_completed(direct.id) is True
     assert store.mark_completed(direct.id) is True
     assert store.get(direct.id).status == JobStatus.COMPLETED
@@ -311,11 +303,14 @@ def test_job_store_provider_request_fence_blocks_retry_and_restart_replay(tmp_pa
     assert fenced is not None
     assert fenced.provider_request_state == PROVIDER_REQUEST_MAY_BE_COMMITTED
     assert fenced.provider_request_attempt == fenced.attempts == 1
-    assert store.set_retry(
-        job.id,
-        retry_at=datetime.now().isoformat(),
-        last_error="connection lost",
-    ) is False
+    assert (
+        store.set_retry(
+            job.id,
+            retry_at=datetime.now().isoformat(),
+            last_error="connection lost",
+        )
+        is False
+    )
     assert store.reset_running_to_queued() == 0
     assert [item.id for item in store.list_running_provider_outcomes()] == [job.id]
     assert store.get(job.id).status == JobStatus.RUNNING
@@ -481,7 +476,7 @@ def test_job_store_normalizes_offset_aware_retry_timestamps(tmp_path):
         job_type=JobType.FILE,
         payload={"path": "C:/tmp/retry.wav"},
     )
-    retry_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
+    retry_at = (datetime.now(UTC) + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
 
     assert store.set_retry(job.id, retry_at=retry_at, last_error="temporary")
 

@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = REPO_ROOT / "scripts" / "run_recording_hot_path_comparison.ps1"
 
@@ -161,9 +160,7 @@ def test_recording_hot_path_comparison_runner_plan_only_can_select_synthetic_cap
     assert "-RecordingHotPathIterations 3" in commands["pythonRecordingHotPath"]["command"]
     assert "--min-samples-per-report 3" in commands["comparisonValidation"]["command"]
     assert "--max-audio-owned-p95-regression-ms 50" in commands["comparisonValidation"]["command"]
-    rust_env = next(entry for entry in payload["commands"] if entry["name"] == "rustRecordingHotPath")[
-        "environment"
-    ]
+    rust_env = next(entry for entry in payload["commands"] if entry["name"] == "rustRecordingHotPath")["environment"]
     assert rust_env["SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"] == ""
     assert rust_env["SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE"] == "1"
 

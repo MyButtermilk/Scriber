@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +12,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.validate_meeting_release_matrix import REPORT_KIND, REQUIRED_COVERAGE, SCHEMA_VERSION
-
 
 PROFILE_COVERAGE: dict[str, dict[str, list[str]]] = {
     "teams-laptop-speakerphone": {
@@ -106,9 +105,7 @@ def build_template(
         "scenarioId": profile,
         "completed": False,
         "operatorConfirmed": False,
-        "capturedAtUtc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace(
-            "+00:00", "Z"
-        ),
+        "capturedAtUtc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "appVersion": app_version,
         "build": {
             "installedApp": True,

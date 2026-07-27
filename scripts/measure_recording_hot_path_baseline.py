@@ -22,7 +22,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from scripts.process_utils import terminate_process
 
-
 SEGMENTS_BY_REQUIREMENT = {
     "hotkey_to_recording_state": "hotkey_received_to_mic_ready_ms",
     "hotkey_to_first_audio_frame": "hotkey_received_to_first_audio_frame_ms",
@@ -150,9 +149,7 @@ def try_focus_text_target_window(title: str) -> bool:
     target_thread = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), None))
     foreground_hwnd = int(user32.GetForegroundWindow() or 0)
     foreground_thread = (
-        int(user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground_hwnd), None))
-        if foreground_hwnd
-        else 0
+        int(user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground_hwnd), None)) if foreground_hwnd else 0
     )
     attached_threads: list[int] = []
     for thread_id in {target_thread, foreground_thread}:
@@ -504,11 +501,7 @@ def requirement_values(
 
 
 def text_target_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
-    target_samples = [
-        sample.get("textTarget") or {}
-        for sample in samples
-        if sample.get("textTarget") is not None
-    ]
+    target_samples = [sample.get("textTarget") or {} for sample in samples if sample.get("textTarget") is not None]
     focus_checks = [
         check
         for sample in samples
@@ -517,14 +510,10 @@ def text_target_summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     focus_errors = sum(1 for check in focus_checks if not check.get("ok"))
     captured_chars = [
-        int(target.get("capturedChars") or 0)
-        for target in target_samples
-        if int(target.get("capturedChars") or 0) > 0
+        int(target.get("capturedChars") or 0) for target in target_samples if int(target.get("capturedChars") or 0) > 0
     ]
     capture_elapsed_values = [
-        float(target.get("captureElapsedMs"))
-        for target in target_samples
-        if target.get("captureElapsedMs") is not None
+        float(target.get("captureElapsedMs")) for target in target_samples if target.get("captureElapsedMs") is not None
     ]
     return {
         "configuredSamples": len(target_samples),
@@ -654,9 +643,7 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
             record_text_target_focus(sample, text_target, "recording_started")
 
         try:
-            sample["audioDiagnosticsDuringRecording"] = client.get(
-                "/api/runtime/audio-diagnostics"
-            )
+            sample["audioDiagnosticsDuringRecording"] = client.get("/api/runtime/audio-diagnostics")
         except Exception as exc:
             sample["audioDiagnosticsDuringRecording"] = {
                 "ok": False,
@@ -708,9 +695,7 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
             sample["textTarget"]["captureElapsedMs"] = capture_elapsed_ms
             sample["textTarget"]["captured"] = captured_chars > 0
             record_text_target_focus(sample, text_target, "after_capture")
-        sample["focusOk"] = all(
-            bool(check.get("ok")) for check in sample.get("textTargetFocus", [])
-        )
+        sample["focusOk"] = all(bool(check.get("ok")) for check in sample.get("textTargetFocus", []))
         sample["ok"] = any(name in segments for name in SEGMENTS_BY_REQUIREMENT.values())
     except Exception as exc:
         sample["error"] = str(exc)
@@ -772,13 +757,8 @@ def rust_audio_requirement(
     raw_prewarm_id_samples = 0
     mid_session_failure_samples = 0
     report_microphone = (audio_diagnostics or {}).get("microphone") or {}
-    report_mic_always_on = (
-        isinstance(report_microphone, dict)
-        and report_microphone.get("micAlwaysOn") is True
-    )
-    report_circuit = ((audio_diagnostics or {}).get("microphone") or {}).get(
-        "rustAudioFallbackCircuit"
-    )
+    report_mic_always_on = isinstance(report_microphone, dict) and report_microphone.get("micAlwaysOn") is True
+    report_circuit = ((audio_diagnostics or {}).get("microphone") or {}).get("rustAudioFallbackCircuit")
     if isinstance(report_circuit, dict):
         fallback_circuits.append(
             {
@@ -865,10 +845,7 @@ def rust_audio_requirement(
                 or next((str(value or "") for value in reader_end_values if str(value or "").strip()), ""),
             }
         )
-        if (
-            active.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
-            and active.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
-        ):
+        if active.get("engine") == RUST_AUDIO_ACTIVE_ENGINE and active.get("frameSource") == RUST_AUDIO_FRAME_SOURCE:
             matching_samples += 1
             if mid_session_failure or unexpected_reader_end:
                 mid_session_failure_samples += 1
@@ -994,11 +971,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         require_rust_audio_engine=args.require_rust_audio_engine,
         audio_diagnostics=audio_diagnostics,
     )
-    strict_requirements = (
-        args.require_text_target
-        or args.require_provider_transcript
-        or args.require_rust_audio_engine
-    )
+    strict_requirements = args.require_text_target or args.require_provider_transcript or args.require_rust_audio_engine
     return {
         "schemaVersion": 1,
         "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -1020,8 +993,7 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
             "pid": health.get("pid"),
         },
         "audioDiagnostics": audio_diagnostics,
-        "ok": summary["successfulSamples"] > 0
-        and (summary["complete"] if strict_requirements else True),
+        "ok": summary["successfulSamples"] > 0 and (summary["complete"] if strict_requirements else True),
         "summary": summary,
         "samples": samples,
     }

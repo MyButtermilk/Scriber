@@ -3,15 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import zipfile
+from pathlib import Path
 
 import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RELEASE_CONSTRAINTS = REPO_ROOT / "requirements-release-constraints.txt"

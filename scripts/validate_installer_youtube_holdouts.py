@@ -14,11 +14,11 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import parse_qs, urlparse
-
 
 SNAPSHOT_CONTRACT = "InstallerSizeYoutubeHoldoutsV1"
 PROBE_CONTRACT = "InstallerSizeYoutubeHoldoutProbeV1"
@@ -64,14 +64,10 @@ def pinned_deno_version(stdout: str) -> str:
 def require_baseline_environment_root(run_root: Path, active_prefix: Path) -> Path:
     """Bind the probe process to this run's exact baseline environment."""
 
-    expected = (run_root / "environments" / "baseline" / ".venv").resolve(
-        strict=True
-    )
+    expected = (run_root / "environments" / "baseline" / ".venv").resolve(strict=True)
     active = Path(active_prefix).resolve(strict=True)
     if active != expected:
-        raise HoldoutError(
-            "holdout probe must run inside this RunId's baseline environment"
-        )
+        raise HoldoutError("holdout probe must run inside this RunId's baseline environment")
     return active
 
 
@@ -98,14 +94,14 @@ def _plain_file(path: Path, *, label: str) -> Path:
     # make a symlink look like the plain file it targets and defeat this gate.
     candidate = Path(os.path.abspath(path))
     candidate_info = candidate.lstat()
-    if candidate.is_symlink() or bool(
-        getattr(candidate_info, "st_file_attributes", 0) & REPARSE_POINT
-    ):
+    if candidate.is_symlink() or bool(getattr(candidate_info, "st_file_attributes", 0) & REPARSE_POINT):
         raise HoldoutError(f"{label} must be a plain file")
     resolved = candidate.resolve(strict=True)
     resolved_info = resolved.lstat()
-    if not resolved.is_file() or resolved.is_symlink() or bool(
-        getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT
+    if (
+        not resolved.is_file()
+        or resolved.is_symlink()
+        or bool(getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT)
     ):
         raise HoldoutError(f"{label} must be a plain file")
     return resolved
@@ -125,9 +121,7 @@ def _write_immutable(path: Path, payload: dict[str, Any]) -> None:
     if path.exists():
         raise HoldoutError(f"immutable evidence already exists: {path.name}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
-    )
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
@@ -211,7 +205,7 @@ def observed_capabilities(
     if audio_formats:
         capabilities.add("audio-format-url")
     lower_debug = debug_log.casefold()
-    if "downloading player" in lower_debug or "forcing \"main\" player js" in lower_debug:
+    if "downloading player" in lower_debug or 'forcing "main" player js' in lower_debug:
         capabilities.add("player-js")
     if "[jsc:deno] solving js challenges using deno" in lower_debug:
         capabilities.add("deno-jsc")
@@ -284,10 +278,7 @@ def _probe_policy(
         runtime_value = command[runtime_index + 1]
     except (ValueError, IndexError) as exc:
         raise HoldoutError("yt-dlp Deno runtime policy is missing") from exc
-    if (
-        command.count("--js-runtimes") != 1
-        or runtime_value != f"deno:{deno_executable}"
-    ):
+    if command.count("--js-runtimes") != 1 or runtime_value != f"deno:{deno_executable}":
         raise HoldoutError("yt-dlp Deno runtime policy is not exact")
     if any(name in environment for name in PROBE_ENVIRONMENT_REMOVALS):
         raise HoldoutError("yt-dlp Deno probe inherited an unsafe environment")
@@ -297,10 +288,7 @@ def _probe_policy(
         "PYTHONSAFEPATH": "1",
         "YTDLP_NO_PLUGINS": "1",
     }
-    if any(
-        environment.get(name) != value
-        for name, value in required_environment.items()
-    ):
+    if any(environment.get(name) != value for name, value in required_environment.items()):
         raise HoldoutError("yt-dlp Deno probe environment policy is not exact")
     return {
         "configDiscovery": False,
@@ -403,12 +391,9 @@ def main(argv: list[str] | None = None) -> int:
             run_root / "environments" / "baseline" / "environment-manifest.json",
             label="baseline environment manifest",
         )
-        environment_manifest = _load_object(
-            environment_manifest_path, label="baseline environment manifest"
-        )
+        environment_manifest = _load_object(environment_manifest_path, label="baseline environment manifest")
         if (
-            environment_manifest.get("kind")
-            != "scriber-installer-research-python-environment"
+            environment_manifest.get("kind") != "scriber-installer-research-python-environment"
             or environment_manifest.get("runId") != run_id
             or environment_manifest.get("environmentName") != "baseline"
         ):
@@ -462,7 +447,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_cases: list[dict[str, Any]] = []
         pending_probes: list[tuple[str, dict[str, Any]]] = []
         snapshot_policy: dict[str, bool] | None = None
-        captured_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        captured_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         probes_dir = run_root / "preflight" / "youtube-holdout-probes"
         for row in rows:
             if not isinstance(row, dict):
@@ -495,14 +480,10 @@ def main(argv: list[str] | None = None) -> int:
             if info.get("id") != expected_video_id:
                 raise HoldoutError(f"yt-dlp returned another video for {case_id}")
             video_ids.add(expected_video_id)
-            observed, observations = observed_capabilities(
-                family=family, url=url, info=info, debug_log=debug_log
-            )
+            observed, observations = observed_capabilities(family=family, url=url, info=info, debug_log=debug_log)
             missing = sorted(set(required) - set(observed))
             if missing:
-                raise HoldoutError(
-                    f"Deno probe lacks required capabilities for {case_id}: {', '.join(missing)}"
-                )
+                raise HoldoutError(f"Deno probe lacks required capabilities for {case_id}: {', '.join(missing)}")
             probe = {
                 "probeContract": PROBE_CONTRACT,
                 "schemaVersion": 1,
@@ -535,9 +516,7 @@ def main(argv: list[str] | None = None) -> int:
         if probes_dir.exists():
             raise HoldoutError("immutable holdout probe directory already exists")
         probes_dir.parent.mkdir(parents=True, exist_ok=True)
-        temporary_probes = Path(
-            tempfile.mkdtemp(prefix=".youtube-holdout-probes.", dir=str(probes_dir.parent))
-        )
+        temporary_probes = Path(tempfile.mkdtemp(prefix=".youtube-holdout-probes.", dir=str(probes_dir.parent)))
         try:
             for case_id, probe in pending_probes:
                 _write_immutable(temporary_probes / f"{case_id}.json", probe)
@@ -547,9 +526,7 @@ def main(argv: list[str] | None = None) -> int:
                 shutil.rmtree(temporary_probes)
         snapshot_by_id = {item["id"]: item for item in snapshot_cases}
         for case_id, _probe in pending_probes:
-            snapshot_by_id[case_id]["probeEvidenceSha256"] = _sha256_file(
-                probes_dir / f"{case_id}.json"
-            )
+            snapshot_by_id[case_id]["probeEvidenceSha256"] = _sha256_file(probes_dir / f"{case_id}.json")
         snapshot = {
             "holdoutSnapshotContract": SNAPSHOT_CONTRACT,
             "schemaVersion": 1,

@@ -24,8 +24,7 @@ from src.azure_mai_stt import (
 from src.config import Config
 from src.core.provider_audio_formats import ProviderAudioCapabilityError
 from src.pipeline import ScriberPipeline
-from src.runtime.capture_time_encoder import CaptureTimeEncoderError
-from src.runtime.capture_time_encoder import CaptureTimeFfmpegEncoder
+from src.runtime.capture_time_encoder import CaptureTimeEncoderError, CaptureTimeFfmpegEncoder
 from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
 from src.runtime.media_tools import find_media_tool
 
@@ -103,10 +102,7 @@ def test_azure_mai_model_can_be_overridden(monkeypatch):
     assert azure_mai_model("") == "mai-transcribe-1.5"
 
     monkeypatch.setattr("src.azure_mai_stt.Config.AZURE_MAI_MODEL", "mai-transcribe-1")
-    assert (
-        build_azure_mai_definition("en", custom_vocab="")["enhancedMode"]["model"]
-        == "mai-transcribe-1"
-    )
+    assert build_azure_mai_definition("en", custom_vocab="")["enhancedMode"]["model"] == "mai-transcribe-1"
     assert (
         build_azure_mai_definition("en", model="custom-model", custom_vocab="")["enhancedMode"]["model"]
         == "custom-model"
@@ -165,10 +161,7 @@ async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatc
         custom_vocab="Frozen term",
     )
 
-    fields = {
-        str(field[0].get("name")): field[2]
-        for field in session.posts[0][1]["data"]._fields
-    }
+    fields = {str(field[0].get("name")): field[2] for field in session.posts[0][1]["data"]._fields}
     assert payload["combinedPhrases"][0]["text"] == "done"
     assert '"model": "mai-transcribe-1.5"' in fields["definition"]
     assert '"phrases": ["Frozen term"]' in fields["definition"]
@@ -446,9 +439,7 @@ async def test_azure_mai_raw_transport_receives_actual_preparation(
     processor.push_frame = capture_push
     await processor._flush_transcription(None)
 
-    assert captured["audio_preparation_implementation"] == (
-        expected_implementation
-    )
+    assert captured["audio_preparation_implementation"] == (expected_implementation)
 
 
 @pytest.mark.asyncio

@@ -19,13 +19,13 @@ import json
 import math
 import re
 import time
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 from urllib.parse import urlencode
 
 import aiohttp
 from aiohttp import WSMsgType
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -49,18 +49,13 @@ from src.runtime.audio_spool import (
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
-
 MODULATE_BATCH_MODEL = "velma-2-stt-batch"
 MODULATE_STREAMING_MODEL = "velma-2-stt-streaming"
 # Keep these hosts aligned with Modulate's public API reference.  The account
 # dashboard lives on platform.modulate.ai, but provider traffic is served by
 # modulate-developer-apis.com.
-MODULATE_BATCH_URL = (
-    f"https://modulate-developer-apis.com/api/{MODULATE_BATCH_MODEL}"
-)
-MODULATE_STREAMING_URL = (
-    f"wss://modulate-developer-apis.com/api/{MODULATE_STREAMING_MODEL}"
-)
+MODULATE_BATCH_URL = f"https://modulate-developer-apis.com/api/{MODULATE_BATCH_MODEL}"
+MODULATE_STREAMING_URL = f"wss://modulate-developer-apis.com/api/{MODULATE_STREAMING_MODEL}"
 MODULATE_BATCH_MAX_BYTES = 100 * 1024 * 1024
 _MAX_RESPONSE_BYTES = 64 * 1024 * 1024
 _MAX_PUBLIC_ERROR_CHARS = 500
@@ -179,19 +174,13 @@ async def transcribe_with_modulate_multilingual(
             raw = await read_response_text_limited(response, _MAX_RESPONSE_BYTES)
             if response.status >= 400:
                 detail = redact_modulate_error(raw, key)
-                raise RuntimeError(
-                    f"Modulate batch transcription failed ({response.status}): {detail}"
-                )
+                raise RuntimeError(f"Modulate batch transcription failed ({response.status}): {detail}")
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        if isinstance(exc, RuntimeError) and str(exc).startswith(
-            "Modulate batch transcription failed"
-        ):
+        if isinstance(exc, RuntimeError) and str(exc).startswith("Modulate batch transcription failed"):
             raise
-        raise RuntimeError(
-            f"Modulate batch transcription failed: {redact_modulate_error(exc, key)}"
-        ) from exc
+        raise RuntimeError(f"Modulate batch transcription failed: {redact_modulate_error(exc, key)}") from exc
 
     if not raw:
         raise RuntimeError("Modulate returned an empty transcription response.")
@@ -266,9 +255,7 @@ class ModulateAsyncProcessor(FrameProcessor):
                 if self._buffer_size + len(frame.audio) + 44 > MODULATE_BATCH_MAX_BYTES:
                     self._oversized = True
                     await self.push_frame(
-                        ErrorFrame(
-                            error="modulate async error: recording exceeds the 100MB batch upload limit"
-                        ),
+                        ErrorFrame(error="modulate async error: recording exceeds the 100MB batch upload limit"),
                         direction,
                     )
                 else:
@@ -283,9 +270,7 @@ class ModulateAsyncProcessor(FrameProcessor):
         if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
                 if getattr(self, "_skip_terminal_transcription", False):
-                    logger.info(
-                        "Modulate async: skipping terminal transcription for silent recording"
-                    )
+                    logger.info("Modulate async: skipping terminal transcription for silent recording")
                 elif self._oversized:
                     logger.warning("Modulate async recording exceeded the provider upload limit")
                 elif self._buffer_size:
@@ -318,9 +303,7 @@ class ModulateAsyncProcessor(FrameProcessor):
             except Exception as exc:
                 safe_error = redact_modulate_error(exc, self._api_key)
                 logger.error(f"Modulate async transcription failed: {safe_error}")
-                await self.push_frame(
-                    ErrorFrame(error=f"modulate async error: {safe_error}"), direction
-                )
+                await self.push_frame(ErrorFrame(error=f"modulate async error: {safe_error}"), direction)
             finally:
                 self._reset_buffer()
             await self.push_frame(frame, direction)
@@ -471,9 +454,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
         direction: FrameDirection,
     ) -> None:
         try:
-            await self.push_frame(
-                ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction
-            )
+            await self.push_frame(ErrorFrame(error=f"modulate realtime error: {safe_error}"), direction)
         finally:
             # This event means either a provider ``done`` was received or the
             # terminal ErrorFrame finished traversing this processor.  It must
@@ -499,52 +480,38 @@ class ModulateRealtimeSTTService(FrameProcessor):
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.debug(
-                "Modulate terminal error delivery warning: "
-                f"{redact_modulate_error(exc, self._api_key)}"
-            )
+            logger.debug(f"Modulate terminal error delivery warning: {redact_modulate_error(exc, self._api_key)}")
         return True
 
     async def _prepare_for_start(self) -> None:
         """Reset a fully closed stream before a first or post-Stop start."""
 
-        async with self._close_lock:
-            async with self._connect_lock:
-                if self._ws and not self._ws.closed:
-                    # A duplicate StartFrame for an already active stream does
-                    # not create a second provider connection.
-                    return
-                self._eos_sent = False
-                self._done_received = False
-                self._connect_failed = False
-                self._terminal_error_emitted = False
-                self._audio_bytes_sent = 0
-                self._connected_at_monotonic = None
-                self._eos_sent_at_monotonic = None
-                self._last_provider_message_at_monotonic = None
-                self._provider_message_count = 0
-                self._final_utterance_count = 0
-                self._close_requested = False
-                self._local_close_requested = False
-                self._stream_closed = False
-                self._error_publish_task = None
-                self._terminal_event.clear()
+        async with self._close_lock, self._connect_lock:
+            if self._ws and not self._ws.closed:
+                # A duplicate StartFrame for an already active stream does
+                # not create a second provider connection.
+                return
+            self._eos_sent = False
+            self._done_received = False
+            self._connect_failed = False
+            self._terminal_error_emitted = False
+            self._audio_bytes_sent = 0
+            self._connected_at_monotonic = None
+            self._eos_sent_at_monotonic = None
+            self._last_provider_message_at_monotonic = None
+            self._provider_message_count = 0
+            self._final_utterance_count = 0
+            self._close_requested = False
+            self._local_close_requested = False
+            self._stream_closed = False
+            self._error_publish_task = None
+            self._terminal_event.clear()
 
     async def _ensure_connected(self, direction: FrameDirection) -> bool:
-        if (
-            self._connect_failed
-            or self._stream_closed
-            or self._close_requested
-            or self._local_close_requested
-        ):
+        if self._connect_failed or self._stream_closed or self._close_requested or self._local_close_requested:
             return False
         async with self._connect_lock:
-            if (
-                self._connect_failed
-                or self._stream_closed
-                or self._close_requested
-                or self._local_close_requested
-            ):
+            if self._connect_failed or self._stream_closed or self._close_requested or self._local_close_requested:
                 return False
             if self._ws and not self._ws.closed:
                 return True
@@ -552,14 +519,8 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 # A connection that has already started is never silently
                 # replaced.  Reconnecting would lose unfinalized audio and let
                 # the old receiver mutate the new connection's terminal state.
-                if (
-                    not self._terminal_error_emitted
-                    and not self._done_received
-                    and not self._local_close_requested
-                ):
-                    await self._emit_error(
-                        "websocket closed before the final done message", direction
-                    )
+                if not self._terminal_error_emitted and not self._done_received and not self._local_close_requested:
+                    await self._emit_error("websocket closed before the final done message", direction)
                 return False
             if not self._api_key:
                 self._connect_failed = True
@@ -625,11 +586,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
         if message_type == "utterance":
             self._final_utterance_count += 1
             utterance = payload.get("utterance")
-            text = (
-                str(utterance.get("text") or "").strip()
-                if isinstance(utterance, dict)
-                else ""
-            )
+            text = str(utterance.get("text") or "").strip() if isinstance(utterance, dict) else ""
             if text:
                 # Deliberately omit the provider utterance object.  Scriber
                 # receives only finalized transcript text.
@@ -702,11 +659,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
                     if isinstance(message.data, int) and 1000 <= message.data <= 4999:
                         close_code = int(message.data)
                     break
-            if (
-                not self._done_received
-                and not self._terminal_error_emitted
-                and not self._local_close_requested
-            ):
+            if not self._done_received and not self._terminal_error_emitted and not self._local_close_requested:
                 if close_code is None:
                     candidate = getattr(ws, "close_code", None)
                     if isinstance(candidate, int) and 1000 <= candidate <= 4999:
@@ -791,8 +744,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 # remain authoritative.
                 if wait_for_final and self._audio_bytes_sent == 0:
                     logger.debug(
-                        "Modulate realtime stream closed without final wait "
-                        "because no audio reached the provider"
+                        "Modulate realtime stream closed without final wait because no audio reached the provider"
                     )
                 should_wait = (
                     should_finalize
@@ -803,10 +755,8 @@ class ModulateRealtimeSTTService(FrameProcessor):
                 )
                 if should_wait:
                     try:
-                        await asyncio.wait_for(
-                            self._terminal_event.wait(), timeout=self._final_timeout_secs
-                        )
-                    except asyncio.TimeoutError:
+                        await asyncio.wait_for(self._terminal_event.wait(), timeout=self._final_timeout_secs)
+                    except TimeoutError:
                         logger.bind(
                             component="pipeline",
                             event="modulate.realtime.final_timeout",
@@ -815,12 +765,8 @@ class ModulateRealtimeSTTService(FrameProcessor):
                             provider="modulate",
                             outcome="failure",
                             meta=self._lifecycle_meta(status="final_timeout"),
-                        ).warning(
-                            "Modulate realtime final response timed out"
-                        )
-                        await self._emit_error(
-                            "timed out waiting for the final transcript", direction
-                        )
+                        ).warning("Modulate realtime final response timed out")
+                        await self._emit_error("timed out waiting for the final transcript", direction)
             finally:
                 # From this point on an expected local close must not be turned
                 # back into a second remote-close ErrorFrame by the receiver.
@@ -836,8 +782,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
                             raise
                         except Exception as exc:
                             logger.debug(
-                                "Modulate websocket cleanup warning: "
-                                f"{redact_modulate_error(exc, self._api_key)}"
+                                f"Modulate websocket cleanup warning: {redact_modulate_error(exc, self._api_key)}"
                             )
                     if self._owned_session and not self._owned_session.closed:
                         try:
@@ -846,8 +791,7 @@ class ModulateRealtimeSTTService(FrameProcessor):
                             raise
                         except Exception as exc:
                             logger.debug(
-                                "Modulate session cleanup warning: "
-                                f"{redact_modulate_error(exc, self._api_key)}"
+                                f"Modulate session cleanup warning: {redact_modulate_error(exc, self._api_key)}"
                             )
                 finally:
                     self._receive_task = None

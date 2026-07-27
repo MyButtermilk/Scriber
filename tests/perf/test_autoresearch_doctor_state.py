@@ -6,7 +6,6 @@ from pathlib import Path
 from scripts.perf import doctor
 from scripts.perf.evaluator.local_wux import PROVIDER_REPLAY_SCENARIO_WEIGHTS
 
-
 SEGMENT = "B7-user-endpoint-p50-p95-baseline"
 PROFILE_ID = "profile-b7"
 BASELINE_ID = "baseline-b7"
@@ -25,18 +24,9 @@ def b7_metrics() -> dict[str, float]:
     return {
         "local_wux": 1.0,
         **{name: 100.0 for name in doctor.B7_REQUIRED_BASELINE_METRICS},
-        **{
-            f"{scenario}_failure_rate": 0.0
-            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
-        },
-        **{
-            f"{scenario}_sample_count": 30
-            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
-        },
-        **{
-            f"{scenario}_capture_attested": 1
-            for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS
-        },
+        **{f"{scenario}_failure_rate": 0.0 for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS},
+        **{f"{scenario}_sample_count": 30 for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS},
+        **{f"{scenario}_capture_attested": 1 for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS},
     }
 
 
@@ -45,9 +35,7 @@ def write_evaluator_surface(repo_root: Path) -> tuple[str, str]:
         path = repo_root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"evaluator surface {index}\n", encoding="utf-8")
-    scorer_hash = doctor.file_sha256(
-        repo_root / "scripts" / "perf" / "evaluator" / "local_wux.py"
-    )
+    scorer_hash = doctor.file_sha256(repo_root / "scripts" / "perf" / "evaluator" / "local_wux.py")
     evaluator_hash, missing = doctor.current_evaluator_hash(repo_root)
     assert missing == []
     return scorer_hash, evaluator_hash
@@ -162,9 +150,7 @@ def coherent_b7_state(repo_root: Path) -> dict[str, Path | str]:
 
 def blocking_codes(repo_root: Path) -> list[str]:
     return [
-        str(item.get("code"))
-        for item in doctor.check_autoresearch_state(repo_root)
-        if item.get("level") == "block"
+        str(item.get("code")) for item in doctor.check_autoresearch_state(repo_root) if item.get("level") == "block"
     ]
 
 
@@ -252,9 +238,7 @@ def test_doctor_rejects_baseline_without_capture_attested_provider_series(
 ) -> None:
     paths = coherent_b7_state(tmp_path)
     baseline = read_json(paths["baseline"])
-    baseline["metrics"].pop(
-        "microsoft_local_5s_activation_received_to_final_text_observed_capture_attested"
-    )
+    baseline["metrics"].pop("microsoft_local_5s_activation_received_to_final_text_observed_capture_attested")
     write_json(paths["baseline"], baseline)
 
     assert "autoresearch_b7_baseline_metrics_incomplete" in blocking_codes(tmp_path)
@@ -269,14 +253,9 @@ def test_doctor_rejects_stale_resume_segment_and_last_run_binding(tmp_path: Path
 
     findings = doctor.check_autoresearch_state(tmp_path)
     assert any(
-        item.get("code") == "autoresearch_segment_mismatch"
-        and item.get("artifact") == "progress"
-        for item in findings
+        item.get("code") == "autoresearch_segment_mismatch" and item.get("artifact") == "progress" for item in findings
     )
-    assert any(
-        item.get("code") == "autoresearch_resume_last_run_sha_mismatch"
-        for item in findings
-    )
+    assert any(item.get("code") == "autoresearch_resume_last_run_sha_mismatch" for item in findings)
 
 
 def test_doctor_rejects_b6_config_for_the_b7_evaluator(tmp_path: Path) -> None:

@@ -6,15 +6,15 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
 import shutil
 import stat
 import sys
 import tempfile
-from typing import Any, Sequence
 import urllib.request
 import zipfile
-
+from collections.abc import Sequence
+from pathlib import Path, PurePosixPath
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_LOCK = REPO_ROOT / "packaging" / "nltk-punkt-tab-lock-v1.json"
@@ -110,10 +110,7 @@ def prepare(
             archive_path = archive_path.resolve(strict=True)
         _verify_archive(archive_path, lock)
 
-        selected_members = {
-            (ARCHIVE_PREFIX / PurePosixPath(asset)).as_posix(): asset
-            for asset in lock["assets"]
-        }
+        selected_members = {(ARCHIVE_PREFIX / PurePosixPath(asset)).as_posix(): asset for asset in lock["assets"]}
         extracted: list[str] = []
         with zipfile.ZipFile(archive_path) as archive:
             infos = archive.infolist()

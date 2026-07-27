@@ -6,13 +6,13 @@ import asyncio
 import io
 import json
 import re
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 from urllib.parse import urlencode
 
 import aiohttp
 from aiohttp import WSMsgType
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -31,7 +31,6 @@ from pipecat.utils.time import time_now_iso8601
 from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
-
 
 _SMALLEST_PULSE_HTTP_URL = "https://api.smallest.ai/waves/v1/pulse/get_text"
 _SMALLEST_PULSE_WS_URL = "wss://api.smallest.ai/waves/v1/pulse/get_text"
@@ -121,9 +120,7 @@ def smallest_transcript_payload_to_text(
     utterances = payload.get("utterances")
     utterance_list = utterances if isinstance(utterances, list) else []
     if prefer_speaker_labels and utterance_list:
-        formatted = format_smallest_utterances_to_scriber_text(
-            [u for u in utterance_list if isinstance(u, dict)]
-        )
+        formatted = format_smallest_utterances_to_scriber_text([u for u in utterance_list if isinstance(u, dict)])
         if formatted:
             return formatted
 
@@ -133,9 +130,7 @@ def smallest_transcript_payload_to_text(
             return text
 
     if utterance_list:
-        return format_smallest_utterances_to_scriber_text(
-            [u for u in utterance_list if isinstance(u, dict)]
-        )
+        return format_smallest_utterances_to_scriber_text([u for u in utterance_list if isinstance(u, dict)])
     return ""
 
 
@@ -485,7 +480,9 @@ class SmallestRealtimeSTTService(FrameProcessor):
 
         text = str(payload.get("transcript") or payload.get("transcription") or "").strip()
         if text:
-            frame_cls = TranscriptionFrame if payload.get("is_final") or payload.get("is_last") else InterimTranscriptionFrame
+            frame_cls = (
+                TranscriptionFrame if payload.get("is_final") or payload.get("is_last") else InterimTranscriptionFrame
+            )
             await self.push_frame(
                 frame_cls(
                     text=text,
@@ -517,7 +514,7 @@ class SmallestRealtimeSTTService(FrameProcessor):
         if wait_for_last and task and not task.done():
             try:
                 await asyncio.wait_for(asyncio.shield(task), timeout=15.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("Timed out waiting for Smallest AI final realtime transcript")
             except asyncio.CancelledError:
                 pass

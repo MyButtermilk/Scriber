@@ -3,13 +3,15 @@
 Durable audio persistence is intentionally upstream of this module. Queue
 overflow may sacrifice live preview frames, but can never affect recorded audio.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any
 from uuid import uuid4
 
 from websockets.asyncio.client import connect as websocket_connect
@@ -108,9 +110,7 @@ class SonioxMeetingStream:
         self.connect_factory = connect_factory
         self.session_id = session_id or uuid4().hex
         self.timeline_offset_ms = max(0, int(timeline_offset_ms))
-        self.queue: asyncio.Queue[_QueuedAudio | None] = asyncio.Queue(
-            maxsize=max(16, queue_frames)
-        )
+        self.queue: asyncio.Queue[_QueuedAudio | None] = asyncio.Queue(maxsize=max(16, queue_frames))
         self.websocket: Any = None
         self.supervisor_task: asyncio.Task | None = None
         self.send_task: asyncio.Task | None = None
@@ -121,9 +121,7 @@ class SonioxMeetingStream:
         self.reconnect_count = 0
         self.reconnect_attempts = 0
         self._reconnect_initial_delay_s = max(0.01, reconnect_initial_delay_s)
-        self._reconnect_max_delay_s = max(
-            self._reconnect_initial_delay_s, reconnect_max_delay_s
-        )
+        self._reconnect_max_delay_s = max(self._reconnect_initial_delay_s, reconnect_max_delay_s)
         self._stop_event = asyncio.Event()
         self._stopping = False
         self._stop_sentinel_queued = False
@@ -163,19 +161,23 @@ class SonioxMeetingStream:
         websocket = await self.connect_factory(self.realtime_url)
         language_hints = [] if not self.language or self.language == "auto" else [self.language.split("-", 1)[0]]
         try:
-            await websocket.send(json.dumps({
-                "api_key": self.api_key,
-                "model": self.model,
-                "audio_format": "pcm_s16le",
-                "num_channels": 1,
-                "sample_rate": 16_000,
-                "enable_endpoint_detection": True,
-                "max_endpoint_delay_ms": 500,
-                "language_hints": language_hints or None,
-                "enable_speaker_diarization": self.diarization,
-                "enable_language_identification": self.language == "auto",
-                "client_reference_id": f"scriber-meeting-{self.meeting_id[:24]}-{self.source}",
-            }))
+            await websocket.send(
+                json.dumps(
+                    {
+                        "api_key": self.api_key,
+                        "model": self.model,
+                        "audio_format": "pcm_s16le",
+                        "num_channels": 1,
+                        "sample_rate": 16_000,
+                        "enable_endpoint_detection": True,
+                        "max_endpoint_delay_ms": 500,
+                        "language_hints": language_hints or None,
+                        "enable_speaker_diarization": self.diarization,
+                        "enable_language_identification": self.language == "auto",
+                        "client_reference_id": f"scriber-meeting-{self.meeting_id[:24]}-{self.source}",
+                    }
+                )
+            )
         except Exception:
             await websocket.close()
             raise
@@ -257,11 +259,7 @@ class SonioxMeetingStream:
         deadline: float,
         force: bool,
     ) -> None:
-        supervised_tasks = {
-            task
-            for task in (supervisor_task, self.send_task, self.receive_task)
-            if task is not None
-        }
+        supervised_tasks = {task for task in (supervisor_task, self.send_task, self.receive_task) if task is not None}
         if force:
             for task in supervised_tasks:
                 if not task.done():
@@ -308,9 +306,7 @@ class SonioxMeetingStream:
             report_timeout = max(0.0, graceful_deadline - loop.time())
             if report_timeout > 0:
                 try:
-                    await asyncio.wait_for(
-                        self._report_backpressure(), timeout=report_timeout
-                    )
+                    await asyncio.wait_for(self._report_backpressure(), timeout=report_timeout)
                 except Exception:
                     # Preview degradation reporting is best-effort. A callback
                     # failure must never bypass supervised task/WebSocket cleanup.
@@ -321,10 +317,10 @@ class SonioxMeetingStream:
         try:
             remaining = max(0.0, graceful_deadline - loop.time())
             if remaining <= 0:
-                raise asyncio.TimeoutError
+                raise TimeoutError
             await asyncio.wait_for(asyncio.shield(task), timeout=remaining)
             graceful = True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         except BaseException as exc:
             task_error = exc
@@ -400,9 +396,7 @@ class SonioxMeetingStream:
                     outage_reported = True
                     self.reconnect_count += 1
                     if self.on_status is not None:
-                        await self.on_status(
-                            self.source, "reconnecting", self.reconnect_count
-                        )
+                        await self.on_status(self.source, "reconnecting", self.reconnect_count)
 
                 websocket = None
                 while websocket is None and not self._stopping:
@@ -416,7 +410,7 @@ class SonioxMeetingStream:
                     except Exception:
                         try:
                             await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             pass
                         delay = min(delay * 2.0, self._reconnect_max_delay_s)
                 if websocket is None:
@@ -476,12 +470,14 @@ class SonioxMeetingStream:
                 meeting_end_ms=meeting_end,
             )
         else:
-            self._sent_timeline_spans.append(_SentTimelineSpan(
-                provider_start_ms=provider_start,
-                provider_end_ms=provider_end,
-                meeting_start_ms=meeting_start,
-                meeting_end_ms=meeting_end,
-            ))
+            self._sent_timeline_spans.append(
+                _SentTimelineSpan(
+                    provider_start_ms=provider_start,
+                    provider_end_ms=provider_end,
+                    meeting_start_ms=meeting_start,
+                    meeting_end_ms=meeting_end,
+                )
+            )
         self._provider_audio_cursor_ms = provider_end
 
     def _meeting_time_for_provider_ms(self, value: int, *, endpoint: str) -> int:
@@ -498,17 +494,11 @@ class SonioxMeetingStream:
         if endpoint == "start":
             for span in spans:
                 if span.provider_start_ms <= provider_ms < span.provider_end_ms:
-                    return round(
-                        span.meeting_start_ms
-                        + provider_ms - span.provider_start_ms
-                    )
+                    return round(span.meeting_start_ms + provider_ms - span.provider_start_ms)
         else:
             for span in spans:
                 if span.provider_start_ms < provider_ms <= span.provider_end_ms:
-                    return round(
-                        span.meeting_start_ms
-                        + provider_ms - span.provider_start_ms
-                    )
+                    return round(span.meeting_start_ms + provider_ms - span.provider_start_ms)
             if provider_ms == spans[0].provider_start_ms:
                 return round(spans[0].meeting_start_ms)
         if provider_ms < spans[0].provider_start_ms:
@@ -566,9 +556,7 @@ class SonioxMeetingStream:
             self.smart_turn_analyses += 1
             probability = getattr(metrics, "probability", None)
             latency_ms = getattr(metrics, "e2e_processing_time_ms", None)
-            self.smart_turn_last_probability = (
-                float(probability) if isinstance(probability, (int, float)) else None
-            )
+            self.smart_turn_last_probability = float(probability) if isinstance(probability, (int, float)) else None
             self.smart_turn_last_latency_ms = (
                 round(float(latency_ms), 2) if isinstance(latency_ms, (int, float)) else None
             )
@@ -637,11 +625,7 @@ class SonioxMeetingStream:
         return f"Speaker {number}"
 
     async def _emit(self, tokens: list[dict[str, Any]], *, is_final: bool) -> None:
-        runs = (
-            self._contiguous_speaker_runs(tokens)
-            if is_final and self.diarization
-            else [tokens]
-        )
+        runs = self._contiguous_speaker_runs(tokens) if is_final and self.diarization else [tokens]
         for run_index, run in enumerate(runs):
             await self._emit_run(run, is_final=is_final, run_index=run_index)
 
@@ -660,28 +644,26 @@ class SonioxMeetingStream:
         label = self._speaker_label(tokens)
         stable_base = f"live-{self.source}-{self.session_id[:8]}-{self.turn_index}"
         stable_id = stable_base if run_index == 0 else f"{stable_base}-r{run_index}"
-        absolute_start_ms = self._meeting_time_for_provider_ms(
-            min(start_ms_values, default=0), endpoint="start"
-        )
-        absolute_end_ms = self._meeting_time_for_provider_ms(
-            max(end_ms_values, default=0), endpoint="end"
-        )
+        absolute_start_ms = self._meeting_time_for_provider_ms(min(start_ms_values, default=0), endpoint="start")
+        absolute_end_ms = self._meeting_time_for_provider_ms(max(end_ms_values, default=0), endpoint="end")
         if not is_final and end_ms_values:
             latency_ms = max(0, round(self._next_timeline_ms - absolute_end_ms))
             self._interim_latency_samples_ms.append(latency_ms)
             if len(self._interim_latency_samples_ms) > 4096:
                 del self._interim_latency_samples_ms[:2048]
         self._turn_emitted = True
-        await self.on_segment(LiveMeetingSegment(
-            id=stable_id,
-            source=self.source,
-            text=text,
-            is_final=is_final,
-            speaker_label=label,
-            start_ms=absolute_start_ms,
-            end_ms=absolute_end_ms,
-            provider_segment_id=stable_id,
-        ))
+        await self.on_segment(
+            LiveMeetingSegment(
+                id=stable_id,
+                source=self.source,
+                text=text,
+                is_final=is_final,
+                speaker_label=label,
+                start_ms=absolute_start_ms,
+                end_ms=absolute_end_ms,
+                provider_segment_id=stable_id,
+            )
+        )
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -765,11 +747,7 @@ class MeetingLiveTranscriber:
 
     def snapshot(self) -> dict[str, Any]:
         streams = {source: stream.snapshot() for source, stream in self.streams.items()}
-        all_latencies = [
-            value
-            for stream in self.streams.values()
-            for value in stream._interim_latency_samples_ms
-        ]
+        all_latencies = [value for stream in self.streams.values() for value in stream._interim_latency_samples_ms]
         return {
             "streams": streams,
             "droppedFrames": sum(item["droppedFrames"] for item in streams.values()),

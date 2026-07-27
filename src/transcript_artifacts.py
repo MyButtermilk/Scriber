@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any
 
 from src.config import Config
 from src.core.provider_audio_formats import (
@@ -74,22 +75,14 @@ class FrozenTranscriptionRoute:
             "custom_vocab": self.custom_vocab,
             "transport": self.transport,
             "provider_route": self.provider_route,
-            "audio_input_format": (
-                self.audio_input_format.value if self.audio_input_format else None
-            ),
+            "audio_input_format": (self.audio_input_format.value if self.audio_input_format else None),
             "provider_audio_capability_id": self.provider_audio_capability_id,
-            "provider_audio_capability_revision": (
-                self.provider_audio_capability_revision
-            ),
+            "provider_audio_capability_revision": (self.provider_audio_capability_revision),
             "audio_input_format_verified": self.audio_input_format_verified,
             "audio_selection_mode": (
-                self.audio_selection_mode.value
-                if self.audio_selection_mode is not None
-                else None
+                self.audio_selection_mode.value if self.audio_selection_mode is not None else None
             ),
-            "audio_preparation_implementation": (
-                self.audio_preparation_implementation or None
-            ),
+            "audio_preparation_implementation": (self.audio_preparation_implementation or None),
             "provider_region": self.provider_region or None,
             "provider_endpoint_sha256": self.provider_endpoint_sha256 or None,
         }
@@ -102,9 +95,7 @@ class FrozenTranscriptionRoute:
             "customVocabularyCount": len(terms),
         }
         if terms:
-            options["customVocabularySha256"] = hashlib.sha256(
-                self.custom_vocab.encode("utf-8")
-            ).hexdigest()
+            options["customVocabularySha256"] = hashlib.sha256(self.custom_vocab.encode("utf-8")).hexdigest()
         if self.provider_route:
             # These bounded identifiers are safe to persist in the existing
             # request_options_json column.  Evidence URLs and custom endpoint
@@ -112,26 +103,14 @@ class FrozenTranscriptionRoute:
             options.update(
                 {
                     "providerRoute": self.provider_route,
-                    "audioInputFormat": (
-                        self.audio_input_format.value
-                        if self.audio_input_format
-                        else None
-                    ),
-                    "providerAudioCapabilityId": (
-                        self.provider_audio_capability_id or None
-                    ),
-                    "providerAudioCapabilityRevision": (
-                        self.provider_audio_capability_revision or None
-                    ),
+                    "audioInputFormat": (self.audio_input_format.value if self.audio_input_format else None),
+                    "providerAudioCapabilityId": (self.provider_audio_capability_id or None),
+                    "providerAudioCapabilityRevision": (self.provider_audio_capability_revision or None),
                     "audioInputFormatVerified": self.audio_input_format_verified,
                     "audioSelectionMode": (
-                        self.audio_selection_mode.value
-                        if self.audio_selection_mode is not None
-                        else None
+                        self.audio_selection_mode.value if self.audio_selection_mode is not None else None
                     ),
-                    "audioPreparationImplementation": (
-                        self.audio_preparation_implementation or None
-                    ),
+                    "audioPreparationImplementation": (self.audio_preparation_implementation or None),
                 }
             )
         if self.provider_region:
@@ -207,10 +186,22 @@ def freeze_provider_route(
 ) -> FrozenTranscriptionRoute:
     key = str(provider or "").strip().lower()
     direct = key in {
-        "soniox", "soniox_async", "assemblyai", "mistral", "mistral_async",
-        "smallest", "smallest_async", "deepgram_async", "openai_async",
-        "gemini_stt", "azure_mai", "gladia", "gladia_async", "speechmatics_async",
-        "modulate", "modulate_async",
+        "soniox",
+        "soniox_async",
+        "assemblyai",
+        "mistral",
+        "mistral_async",
+        "smallest",
+        "smallest_async",
+        "deepgram_async",
+        "openai_async",
+        "gemini_stt",
+        "azure_mai",
+        "gladia",
+        "gladia_async",
+        "speechmatics_async",
+        "modulate",
+        "modulate_async",
     }
     final_text_only = key in {"modulate", "modulate_async"}
     resolved_model = str(model or provider_batch_model(key)).strip()
@@ -222,19 +213,13 @@ def freeze_provider_route(
         "elevenlabs",
         "speechmatics",
     }
-    route_kind = (
-        ProviderAudioRouteKind.REALTIME
-        if streaming_only
-        else ProviderAudioRouteKind.BATCH
-    )
+    route_kind = ProviderAudioRouteKind.REALTIME if streaming_only else ProviderAudioRouteKind.BATCH
     default_provider_route = (
         realtime_route_for_provider(key)
         if route_kind == ProviderAudioRouteKind.REALTIME
         else batch_route_for_provider(key)
     )
-    requested_provider_route = str(
-        provider_route or default_provider_route or ""
-    ).strip()
+    requested_provider_route = str(provider_route or default_provider_route or "").strip()
     if route_kind == ProviderAudioRouteKind.REALTIME:
         try:
             capability = resolve_provider_audio_capabilities(
@@ -251,14 +236,10 @@ def freeze_provider_route(
             resolved_model,
             custom_endpoint=custom_endpoint,
         )
-    if capability is not None and (
-        requested_provider_route and requested_provider_route != capability.route
-    ):
+    if capability is not None and (requested_provider_route and requested_provider_route != capability.route):
         capability = None
 
-    resolved_transport = str(
-        transport or ("direct_upload" if direct else "decoded_pcm")
-    )
+    resolved_transport = str(transport or ("direct_upload" if direct else "decoded_pcm"))
     realtime_pcm_implementation = realtime_pcm_preparation_implementation(key)
     runtime_audio_contract: tuple[AudioInputFormat, str] | None
     if streaming_only and realtime_pcm_implementation:
@@ -300,8 +281,7 @@ def freeze_provider_route(
             # An explicit selection must never inherit capabilities from an
             # unknown model, route, or custom endpoint.
             raise UnsupportedProviderAudioRoute(
-                "Cannot freeze an audio format without an exact provider "
-                "route/model capability."
+                "Cannot freeze an audio format without an exact provider route/model capability."
             )
         resolved_audio_format = require_exact_audio_input_format(
             capability,
@@ -342,24 +322,17 @@ def freeze_provider_route(
                 else AudioSelectionMode(str(audio_selection_mode).strip().lower())
             )
         except ValueError as exc:
-            raise UnsupportedProviderAudioRoute(
-                "Audio selection mode is not recognized."
-            ) from exc
+            raise UnsupportedProviderAudioRoute("Audio selection mode is not recognized.") from exc
     resolved_implementation = str(audio_preparation_implementation or "").strip()
     if resolved_implementation and (
         resolved_selection_mode is None
         or len(resolved_implementation) > 160
-        or not all(
-            char.isalnum() or char in "._-" for char in resolved_implementation
-        )
+        or not all(char.isalnum() or char in "._-" for char in resolved_implementation)
     ):
-        raise UnsupportedProviderAudioRoute(
-            "Audio preparation implementation metadata is invalid."
-        )
+        raise UnsupportedProviderAudioRoute("Audio preparation implementation metadata is invalid.")
     resolved_region = str(provider_region or "").strip().lower()
     if resolved_region and (
-        len(resolved_region) > 64
-        or not all(char.isalnum() or char in "._-" for char in resolved_region)
+        len(resolved_region) > 64 or not all(char.isalnum() or char in "._-" for char in resolved_region)
     ):
         raise UnsupportedProviderAudioRoute("Provider region metadata is invalid.")
     resolved_endpoint_sha256 = str(provider_endpoint_sha256 or "").strip().lower()
@@ -367,9 +340,7 @@ def freeze_provider_route(
         r"[0-9a-f]{64}",
         resolved_endpoint_sha256,
     ):
-        raise UnsupportedProviderAudioRoute(
-            "Provider endpoint fingerprint is invalid."
-        )
+        raise UnsupportedProviderAudioRoute("Provider endpoint fingerprint is invalid.")
 
     return FrozenTranscriptionRoute(
         workload=workload,
@@ -381,11 +352,7 @@ def freeze_provider_route(
         response_shape=("final_text" if final_text_only else "provider_segments_or_words"),
         timestamp_mode=("estimated" if final_text_only else "word_or_segment"),
         diarization_mode=(
-            (
-                "local_fallback_if_enabled"
-                if final_text_only
-                else "native_if_evidenced_else_local"
-            )
+            ("local_fallback_if_enabled" if final_text_only else "native_if_evidenced_else_local")
             if diarization_requested
             else "disabled"
         ),
@@ -395,12 +362,8 @@ def freeze_provider_route(
         local_worker_manifest=local_worker_manifest,
         provider_route=(capability.route if capability else requested_provider_route),
         audio_input_format=resolved_audio_format,
-        provider_audio_capability_id=(
-            capability.capability_id if capability else ""
-        ),
-        provider_audio_capability_revision=(
-            capability.revision if capability else ""
-        ),
+        provider_audio_capability_id=(capability.capability_id if capability else ""),
+        provider_audio_capability_revision=(capability.revision if capability else ""),
         audio_input_format_verified=format_verified,
         audio_selection_mode=resolved_selection_mode,
         audio_preparation_implementation=resolved_implementation,
@@ -409,9 +372,7 @@ def freeze_provider_route(
     )
 
 
-def freeze_caption_route(
-    *, workload: str, language: str, automatic: bool
-) -> FrozenTranscriptionRoute:
+def freeze_caption_route(*, workload: str, language: str, automatic: bool) -> FrozenTranscriptionRoute:
     return FrozenTranscriptionRoute(
         workload=workload,
         source_track="captions",
@@ -451,11 +412,7 @@ def _estimated_units(text: str, *, duration_ms: int, source_track: str) -> tuple
     units: list[StageUnit] = []
     for index, (block, weight) in enumerate(zip(blocks, weights, strict=True)):
         cumulative_weight += weight
-        end = (
-            duration_ms
-            if index == len(blocks) - 1
-            else round(duration_ms * cumulative_weight / total)
-        )
+        end = duration_ms if index == len(blocks) - 1 else round(duration_ms * cumulative_weight / total)
         end = max(cursor + 1, end)
         units.append(
             StageUnit(
@@ -510,9 +467,7 @@ def stage_units_from_provider(
                     "end_ms": unit.end_ms + max(0, int(origin_ms)),
                 }
             )
-            for unit in _estimated_units(
-                text, duration_ms=duration_ms, source_track=source_track
-            )
+            for unit in _estimated_units(text, duration_ms=duration_ms, source_track=source_track)
         ]
     native_speakers = has_speaker_evidence(normalized)
     exact_count = sum(
@@ -524,8 +479,7 @@ def stage_units_from_provider(
         "nativeSpeakerEvidence": native_speakers,
         "exactWordIntervalCount": exact_count,
         "estimatedTiming": all(
-            str(getattr(unit.alignment_quality, "value", unit.alignment_quality)) == "estimated"
-            for unit in units
+            str(getattr(unit.alignment_quality, "value", unit.alignment_quality)) == "estimated" for unit in units
         ),
     }
     return tuple(units), evidence

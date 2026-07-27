@@ -131,8 +131,7 @@ async def test_speechmatics_async_uses_rust_capture_wav_lease_and_releases_it():
     assert artifact.opened is True
     assert artifact.released is True
     assert any(
-        isinstance(frame, TranscriptionFrame) and frame.text == "leased transcript"
-        for frame, _direction in captured
+        isinstance(frame, TranscriptionFrame) and frame.text == "leased transcript" for frame, _direction in captured
     )
     assert processor.adopt_capture_wav_artifact(Artifact()) is False
 
@@ -211,9 +210,7 @@ async def test_speechmatics_async_cancel_during_rust_wav_open_closes_before_rele
         FrameDirection.DOWNSTREAM,
     )
 
-    terminal_task = asyncio.create_task(
-        processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
-    )
+    terminal_task = asyncio.create_task(processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM))
     try:
         assert await asyncio.to_thread(open_started.wait, 1.0)
         terminal_task.cancel()
@@ -229,9 +226,7 @@ async def test_speechmatics_async_cancel_during_rust_wav_open_closes_before_rele
     assert opened_handle.closed is True
     assert artifact.released is True
     assert path.exists() is False
-    assert release_calls == [
-        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
-    ]
+    assert release_calls == [("audioCaptureArtifactRelease", {"leaseId": lease_id})]
 
 
 @pytest.mark.asyncio
@@ -294,9 +289,7 @@ async def test_speechmatics_async_rust_wav_open_error_uses_pcm_spool_fallback(
         captured.append((frame, direction))
 
     async def transcribe(wav_source):
-        assert processor._audio_preparation_implementation == (
-            "python_reserved_wav_header_v1"
-        )
+        assert processor._audio_preparation_implementation == ("python_reserved_wav_header_v1")
         with wave.open(wav_source, "rb") as reader:
             assert reader.getframerate() == 16_000
             assert reader.getnchannels() == 1
@@ -315,12 +308,9 @@ async def test_speechmatics_async_rust_wav_open_error_uses_pcm_spool_fallback(
     assert open_calls == 2
     assert artifact.released is True
     assert path.exists() is False
-    assert release_calls == [
-        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
-    ]
+    assert release_calls == [("audioCaptureArtifactRelease", {"leaseId": lease_id})]
     assert any(
-        isinstance(frame, TranscriptionFrame)
-        and frame.text == "PCM spool fallback transcript"
+        isinstance(frame, TranscriptionFrame) and frame.text == "PCM spool fallback transcript"
         for frame, _direction in captured
     )
 
@@ -473,9 +463,7 @@ async def test_gemini_inline_audio_read_and_base64_run_off_event_loop(monkeypatc
     )
 
     assert payload["candidates"][0]["content"]["parts"][0]["text"] == "hello"
-    assert session.posts[0][0].endswith(
-        "/models/frozen-gemini-model:generateContent"
-    )
+    assert session.posts[0][0].endswith("/models/frozen-gemini-model:generateContent")
     assert read_threads and all(thread_id != event_loop_thread for thread_id in read_threads)
     assert encode_threads and all(thread_id != event_loop_thread for thread_id in encode_threads)
 
@@ -615,10 +603,7 @@ async def test_openai_batch_requests_word_timestamps_for_local_speaker_alignment
 
         def post(self, _url, **kwargs):
             data = kwargs["data"]
-            self.fields = {
-                str(field[0].get("name")): field[2]
-                for field in data._fields
-            }
+            self.fields = {str(field[0].get("name")): field[2] for field in data._fields}
             return Response()
 
     session = Session()
@@ -657,6 +642,7 @@ def test_speechmatics_payload_preserves_numeric_speaker_zero():
         ]
     }
 
-    assert speechmatics_transcript_payload_to_text(
-        payload, prefer_speaker_labels=True
-    ) == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    assert (
+        speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=True)
+        == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    )

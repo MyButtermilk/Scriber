@@ -1,10 +1,10 @@
-import types
 import threading
 import time
+import types
 
+import src.mic_prewarm as mic_prewarm
 from src.config import Config
 from src.mic_prewarm import RustAudioPrewarmManager
-import src.mic_prewarm as mic_prewarm
 
 
 class _FakeInputStream:
@@ -135,7 +135,6 @@ def test_concurrent_favorite_selection_imports_sounddevice_once(monkeypatch):
     assert all(result["devicePreference"] == "7" for result in results)
 
 
-
 def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch):
     monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True, raising=False)
     monkeypatch.setattr(Config, "SAMPLE_RATE", 16000, raising=False)
@@ -183,22 +182,21 @@ def test_rust_audio_prewarm_manager_adopts_session_without_stopping(monkeypatch)
 
     assert manager.start_if_enabled() is True
     assert selection_calls == ["default"]
-    assert manager.leased_capture_device_preference(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-    ) == "default"
-    prewarm_start_payload = next(
-        payload for command, payload in commands if command == "audioPrewarmStart"
+    assert (
+        manager.leased_capture_device_preference(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+        )
+        == "default"
     )
+    prewarm_start_payload = next(payload for command, payload in commands if command == "audioPrewarmStart")
     assert "_configuredDevice" not in prewarm_start_payload
     assert "_favoriteMic" not in prewarm_start_payload
     monkeypatch.setattr(
         manager,
         "_device_selection_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("warm adoption must not resolve devices")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("warm adoption must not resolve devices")),
     )
     assert manager.is_active is True
     adopted = manager.attach_active_capture(
@@ -250,18 +248,24 @@ def test_rust_audio_prewarm_warm_route_hint_rejects_stale_config(monkeypatch):
             "favorite_mic": "Favorite A",
         }
 
-    assert manager.leased_capture_device_preference(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-    ) == "7"
+    assert (
+        manager.leased_capture_device_preference(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+        )
+        == "7"
+    )
 
     monkeypatch.setattr(Config, "FAVORITE_MIC", "Favorite B", raising=False)
-    assert manager.leased_capture_device_preference(
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-    ) is None
+    assert (
+        manager.leased_capture_device_preference(
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+        )
+        is None
+    )
 
 
 def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identity(
@@ -322,13 +326,16 @@ def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identi
 
     # The pipeline resolved Mic B while the cold-import prewarm still owns Mic A.
     # That stale audio must never be leased to the new capture.
-    assert manager.attach_active_capture(
-        None,
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-        device="2",
-    ) is None
+    assert (
+        manager.attach_active_capture(
+            None,
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+            device="2",
+        )
+        is None
+    )
 
     rejected = manager.diagnostic_snapshot()
     assert rejected["active"] is True
@@ -410,26 +417,32 @@ def test_rust_audio_prewarm_rejects_stale_portaudio_route_until_device_refresh(m
 
 def test_rust_audio_prewarm_rejects_hashless_non_default_identity():
     assert RustAudioPrewarmManager._normalized_device_preference(0) == "0"
-    assert RustAudioPrewarmManager._device_identity_matches(
-        {
-            "device_preference": "1",
-            "native_endpoint_id_hash": "",
-        },
-        {
-            "devicePreference": "1",
-            "nativeEndpointIdHash": None,
-        },
-    ) is False
-    assert RustAudioPrewarmManager._device_identity_matches(
-        {
-            "device_preference": "default",
-            "native_endpoint_id_hash": "",
-        },
-        {
-            "devicePreference": "default",
-            "nativeEndpointIdHash": None,
-        },
-    ) is True
+    assert (
+        RustAudioPrewarmManager._device_identity_matches(
+            {
+                "device_preference": "1",
+                "native_endpoint_id_hash": "",
+            },
+            {
+                "devicePreference": "1",
+                "nativeEndpointIdHash": None,
+            },
+        )
+        is False
+    )
+    assert (
+        RustAudioPrewarmManager._device_identity_matches(
+            {
+                "device_preference": "default",
+                "native_endpoint_id_hash": "",
+            },
+            {
+                "devicePreference": "default",
+                "nativeEndpointIdHash": None,
+            },
+        )
+        is True
+    )
 
 
 def test_rust_audio_prewarm_rejects_config_route_change_without_resolving_devices(
@@ -455,17 +468,18 @@ def test_rust_audio_prewarm_rejects_config_route_change_without_resolving_device
     monkeypatch.setattr(
         manager,
         "_device_selection_payload",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("route mismatch must not resolve devices")
-        ),
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("route mismatch must not resolve devices")),
     )
-    assert manager.attach_active_capture(
-        None,
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-        device="1",
-    ) is None
+    assert (
+        manager.attach_active_capture(
+            None,
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+            device="1",
+        )
+        is None
+    )
 
     snapshot = manager.diagnostic_snapshot()
     assert snapshot["activeCaptureAttached"] is False
@@ -580,13 +594,16 @@ def test_rust_audio_prewarm_manager_rolls_back_failed_capture_without_losing_ses
     )
 
     assert manager.start_if_enabled() is True
-    assert manager.attach_active_capture(
-        None,
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-        device="default",
-    ) is not None
+    assert (
+        manager.attach_active_capture(
+            None,
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+            device="default",
+        )
+        is not None
+    )
     assert manager.rollback_active_capture("prewarm-rollback") is True
 
     snapshot = manager.diagnostic_snapshot()
@@ -614,13 +631,16 @@ def test_rust_audio_prewarm_manager_rejects_non_temporary_session_without_always
         }
         manager._temporary_idle_prewarm = False
 
-    assert manager.attach_active_capture(
-        None,
-        sample_rate=16000,
-        target_channels=1,
-        block_size=160,
-        device="default",
-    ) is None
+    assert (
+        manager.attach_active_capture(
+            None,
+            sample_rate=16000,
+            target_channels=1,
+            block_size=160,
+            device="default",
+        )
+        is None
+    )
 
 
 def test_rust_audio_prewarm_start_if_enabled_stops_disabled_paused_session(monkeypatch):
@@ -1231,8 +1251,7 @@ def test_rust_audio_prewarm_watchdog_keeps_session_on_transport_error(monkeypatc
     assert snapshot["lastHealthCheckActive"] is True
     assert "Invalid argument" in snapshot["lastHealthError"]
     assert any(
-        event["event"] == "health_status_unknown"
-        and event["errorCode"] == "transportError"
+        event["event"] == "health_status_unknown" and event["errorCode"] == "transportError"
         for event in snapshot["recentEvents"]
     )
     assert "prewarm-transport" not in str(snapshot)
@@ -1289,11 +1308,7 @@ def test_rust_audio_prewarm_watchdog_restarts_missing_sidecar_session(monkeypatc
     assert snapshot["lastHealthError"] == "noActivePrewarm"
     assert snapshot["lastStatus"]["prewarmIdHash"]
     events = snapshot["recentEvents"]
-    assert any(
-        event["event"] == "health_restart"
-        and event["healthError"] == "noActivePrewarm"
-        for event in events
-    )
+    assert any(event["event"] == "health_restart" and event["healthError"] == "noActivePrewarm" for event in events)
     assert sum(1 for event in events if event["event"] == "started") == 2
     assert "prewarm-old" not in str(snapshot)
     assert "prewarm-new" not in str(snapshot)

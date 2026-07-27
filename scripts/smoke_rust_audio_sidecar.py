@@ -13,7 +13,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -40,12 +39,7 @@ def resolve_sidecar_exe(explicit: str = "") -> Path:
     candidates = [
         REPO_ROOT / "Frontend" / "src-tauri" / "target" / "debug" / exe_name,
         REPO_ROOT / "Frontend" / "src-tauri" / "target" / "release" / exe_name,
-        REPO_ROOT
-        / "Frontend"
-        / "src-tauri"
-        / "resources"
-        / "audio-sidecar"
-        / exe_name,
+        REPO_ROOT / "Frontend" / "src-tauri" / "resources" / "audio-sidecar" / exe_name,
     ]
     for candidate in candidates:
         if candidate.is_file():
@@ -61,7 +55,7 @@ class SidecarClient:
         self._responses: queue.Queue[str] = queue.Queue()
         self._counter = 0
 
-    def __enter__(self) -> "SidecarClient":
+    def __enter__(self) -> SidecarClient:
         env = os.environ.copy()
         if self.mode == "wasapi":
             env["SCRIBER_RUST_AUDIO_WASAPI_CAPTURE"] = "1"
@@ -217,9 +211,7 @@ def read_frames(
         "bytesRead": bytes_read,
         "firstFrameReadMs": round(first_frame_ms, 3) if first_frame_ms is not None else None,
         "firstTimestampMicros": first_timestamp_micros,
-        "firstLiveFrameReadMs": (
-            round(first_live_frame_ms, 3) if first_live_frame_ms is not None else None
-        ),
+        "firstLiveFrameReadMs": (round(first_live_frame_ms, 3) if first_live_frame_ms is not None else None),
         "firstLiveSequence": first_live_sequence,
         "lastSequence": last_sequence,
         "lastTimestampMicros": last_timestamp_micros,
@@ -380,12 +372,9 @@ def validate_capture_metrics(
         errors.append("writerError must be empty")
     observed_duration = frames.get("observedDurationSec")
     if min_observed_duration_sec > 0 and (
-        not isinstance(observed_duration, (int, float))
-        or float(observed_duration) < float(min_observed_duration_sec)
+        not isinstance(observed_duration, (int, float)) or float(observed_duration) < float(min_observed_duration_sec)
     ):
-        errors.append(
-            f"observedDurationSec must be at least {float(min_observed_duration_sec):g}"
-        )
+        errors.append(f"observedDurationSec must be at least {float(min_observed_duration_sec):g}")
 
     if require_prebuffer:
         if prebuffer_frames_read <= 0:
@@ -509,11 +498,7 @@ def main(argv: list[str] | None = None) -> int:
         "sidecar": {
             "exe": str(sidecar_exe),
             "exists": sidecar_exe.is_file(),
-            "sha256": (
-                hashlib.sha256(sidecar_exe.read_bytes()).hexdigest()
-                if sidecar_exe.is_file()
-                else None
-            ),
+            "sha256": (hashlib.sha256(sidecar_exe.read_bytes()).hexdigest() if sidecar_exe.is_file() else None),
         },
         "requested": {
             "durationSec": args.duration_sec,
@@ -588,43 +573,28 @@ def main(argv: list[str] | None = None) -> int:
     payload["summary"] = {
         "captureCount": len(captures),
         "failedCaptureCount": len(failed),
-        "totalFramesRead": sum(
-            int(capture.get("frames", {}).get("framesRead") or 0) for capture in captures
-        ),
+        "totalFramesRead": sum(int(capture.get("frames", {}).get("framesRead") or 0) for capture in captures),
         "totalPrebufferFramesRead": sum(
-            int(capture.get("frames", {}).get("prebufferFramesRead") or 0)
-            for capture in captures
+            int(capture.get("frames", {}).get("prebufferFramesRead") or 0) for capture in captures
         ),
-        "totalLiveFramesRead": sum(
-            int(capture.get("frames", {}).get("liveFramesRead") or 0)
-            for capture in captures
-        ),
+        "totalLiveFramesRead": sum(int(capture.get("frames", {}).get("liveFramesRead") or 0) for capture in captures),
         "totalPrebufferAfterLiveCount": sum(
-            int(capture.get("frames", {}).get("prebufferAfterLiveCount") or 0)
-            for capture in captures
+            int(capture.get("frames", {}).get("prebufferAfterLiveCount") or 0) for capture in captures
         ),
-        "totalFramesWritten": sum(
-            int(capture.get("stop", {}).get("framesWritten") or 0) for capture in captures
-        ),
+        "totalFramesWritten": sum(int(capture.get("stop", {}).get("framesWritten") or 0) for capture in captures),
         "totalPrebufferFramesWritten": sum(
-            int(capture.get("stop", {}).get("prebufferFramesWritten") or 0)
-            for capture in captures
+            int(capture.get("stop", {}).get("prebufferFramesWritten") or 0) for capture in captures
         ),
         "totalLiveFramesWritten": sum(
-            int(capture.get("stop", {}).get("liveFramesWritten") or 0)
-            for capture in captures
+            int(capture.get("stop", {}).get("liveFramesWritten") or 0) for capture in captures
         ),
         "totalAdoptedPrewarmBlocks": sum(
-            int(capture.get("start", {}).get("adoptedPrewarm", {}).get("blocks") or 0)
-            for capture in captures
+            int(capture.get("start", {}).get("adoptedPrewarm", {}).get("blocks") or 0) for capture in captures
         ),
         "selectedHashVerified": bool(
             selected
             and selected.get("ok")
-            and selected.get("start", {})
-            .get("endpointSelection", {})
-            .get("mode")
-            == "nativeEndpointHash"
+            and selected.get("start", {}).get("endpointSelection", {}).get("mode") == "nativeEndpointHash"
         ),
     }
     payload["ok"] = len(failed) == 0 and bool(captures)

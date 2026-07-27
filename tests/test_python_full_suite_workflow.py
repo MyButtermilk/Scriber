@@ -34,12 +34,8 @@ def _pwsh_logical_commands(script: str) -> list[str]:
 
 
 def test_python_full_suite_has_reproducible_test_dependency_closure() -> None:
-    dev_requirements = (REPO_ROOT / "requirements-dev.txt").read_text(
-        encoding="utf-8"
-    ).splitlines()
-    test_requirements = (REPO_ROOT / "requirements-test.txt").read_text(
-        encoding="utf-8"
-    ).splitlines()
+    dev_requirements = (REPO_ROOT / "requirements-dev.txt").read_text(encoding="utf-8").splitlines()
+    test_requirements = (REPO_ROOT / "requirements-test.txt").read_text(encoding="utf-8").splitlines()
 
     assert dev_requirements == [
         "pytest==9.0.1",
@@ -60,9 +56,7 @@ def test_python_full_suite_has_reproducible_test_dependency_closure() -> None:
 def test_python_test_constraints_resolve_every_direct_requirement_exactly() -> None:
     constraints = [
         Requirement(line)
-        for line in (
-            REPO_ROOT / "requirements-test-constraints.txt"
-        ).read_text(encoding="utf-8").splitlines()
+        for line in (REPO_ROOT / "requirements-test-constraints.txt").read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     ]
     constraint_names = [canonicalize_name(requirement.name) for requirement in constraints]
@@ -87,9 +81,7 @@ def test_python_test_constraints_resolve_every_direct_requirement_exactly() -> N
             if line and not line.startswith(("#", "-r ")):
                 direct_requirements.append(Requirement(line))
 
-    assert {
-        canonicalize_name(requirement.name) for requirement in direct_requirements
-    }.issubset(constraint_versions)
+    assert {canonicalize_name(requirement.name) for requirement in direct_requirements}.issubset(constraint_versions)
     assert {
         name: constraint_versions[name]
         for name in (
@@ -173,15 +165,9 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     assert "-r requirements-test.txt" in install
     assert ".\\venv\\Scripts\\python.exe -m pip check" in install
     assert restore_ffmpeg["env"] == {"GH_TOKEN": "${{ github.token }}"}
-    assert (
-        "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1"
-        in restore_ffmpeg["run"]
-    )
+    assert "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1" in restore_ffmpeg["run"]
     assert "-Tag ffmpeg-profile-b-n7.0-v4" in restore_ffmpeg["run"]
-    assert (
-        "-AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip"
-        in restore_ffmpeg["run"]
-    )
+    assert "-AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip" in restore_ffmpeg["run"]
     assert "validate_ffmpeg_profile.py" in restore_ffmpeg["run"]
     assert "SCRIBER_MEDIA_TOOLS_DIR=" in restore_ffmpeg["run"]
     assert "SCRIBER_FFMPEG_PATH=" not in restore_ffmpeg["run"]
@@ -194,23 +180,15 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         ),
     ]
     assert typecheck["shell"] == "pwsh"
-    assert typecheck["run"].startswith(
-        ".\\venv\\Scripts\\python.exe -m mypy src\\core src\\runtime src\\data"
-    )
+    assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\core src\\runtime src\\data")
     assert "src\\native_overlay.py" in typecheck["run"]
     assert "src\\meeting_export.py" in typecheck["run"]
     assert step_names.index("Typecheck extended Python tranche") == (
         step_names.index("Run complete Python test suite") + 1
     )
-    assert all(
-        not {"if", "continue-on-error", "working-directory"} & step.keys()
-        for step in ordered_steps[:-1]
-    )
+    assert all(not {"if", "continue-on-error", "working-directory"} & step.keys() for step in ordered_steps[:-1])
     install_index = step_names.index("Install Python test dependencies")
-    later_scripts = "\n".join(
-        str(step.get("run", ""))
-        for step in ordered_steps[install_index + 1 :]
-    )
+    later_scripts = "\n".join(str(step.get("run", "")) for step in ordered_steps[install_index + 1 :])
     assert (
         re.search(
             r"(?i)(?:python\s+-m\s+)?pip\s+install\b",

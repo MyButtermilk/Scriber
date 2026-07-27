@@ -67,8 +67,7 @@ def test_frontend_package_is_vite_only() -> None:
     assert package["engines"] == {"node": ">=26.5.0 <27"}
     assert scripts["dev:client"] == "vite dev --port 5000"
     assert scripts["dev:tauri"] == (
-        "cargo build --manifest-path src-tauri/Cargo.toml "
-        "--bin scriber-audio-sidecar && vite dev --port 5000"
+        "cargo build --manifest-path src-tauri/Cargo.toml --bin scriber-audio-sidecar && vite dev --port 5000"
     )
     assert scripts["dev"] == "vite dev --port 5000"
     assert scripts["build"] == "npm run build:webview"
@@ -77,10 +76,7 @@ def test_frontend_package_is_vite_only() -> None:
     assert scripts["lint"] == "eslint . --max-warnings 0"
     assert scripts["test"] == "npm run test:lib && npm run test:components"
     assert scripts["test:lib"] == 'tsx --test "client/src/**/*.test.ts"'
-    assert (
-        scripts["test:components"]
-        == "vitest run --config vitest.components.config.ts"
-    )
+    assert scripts["test:components"] == "vitest run --config vitest.components.config.ts"
     assert scripts["tauri:dev"] == "tauri dev"
     assert scripts["tauri:build"] == "tauri build"
     assert scripts["tauri:bundle"] == "tauri bundle"
@@ -138,9 +134,7 @@ def test_frontend_typescript_and_vite_scope_only_the_webview() -> None:
 def test_tauri_webview_and_release_cache_contracts_remain_intact() -> None:
     tauri = _read_json(FRONTEND_ROOT / "src-tauri" / "tauri.conf.json")
     build = tauri["build"]
-    cache_writer = (
-        REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1"
-    ).read_text(encoding="utf-8")
+    cache_writer = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
 
     assert build["beforeDevCommand"] == "npm run dev:tauri"
     assert build["beforeBuildCommand"] == "npm run build:webview"

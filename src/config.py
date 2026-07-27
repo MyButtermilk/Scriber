@@ -1,14 +1,17 @@
-import os
 import json
 import math
+import os
 import threading
 from pathlib import Path
 from uuid import uuid4
+
 from dotenv import dotenv_values, load_dotenv
 
 from src.runtime.paths import env_path, migrate_legacy_runtime_data, repo_root, settings_path
 from src.soniox_region import (
     DEFAULT_SONIOX_REGION as SONIOX_DEFAULT_REGION,
+)
+from src.soniox_region import (
     normalize_soniox_region,
 )
 
@@ -86,10 +89,9 @@ def _versioned_model_env(
     if not raw:
         os.environ[name] = default
         return default
-    if (
-        name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV
-        and raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
-    ):
+    if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV and raw.casefold() in {
+        value.casefold() for value in legacy_dotenv_defaults
+    }:
         os.environ[name] = default
         return default
     return raw
@@ -111,6 +113,7 @@ def _atomic_write_text(path: str | Path, content: str) -> None:
         except OSError:
             pass
 
+
 def _load_json_settings_with_status() -> tuple[dict, bool]:
     """Load settings and report whether an automatic rewrite is safe.
 
@@ -123,7 +126,7 @@ def _load_json_settings_with_status() -> tuple[dict, bool]:
     try:
         if _JSON_SETTINGS_PATH.stat().st_size > _MAX_JSON_SETTINGS_BYTES:
             return {}, False
-        with open(_JSON_SETTINGS_PATH, "r", encoding="utf-8") as f:
+        with open(_JSON_SETTINGS_PATH, encoding="utf-8") as f:
             payload = json.load(f)
         if not isinstance(payload, dict):
             return {}, False
@@ -136,6 +139,7 @@ def _load_json_settings() -> dict:
     """Load settings from JSON file."""
     settings, _rewrite_safe = _load_json_settings_with_status()
     return settings
+
 
 def _save_json_settings(settings: dict) -> None:
     """Save settings to JSON file."""
@@ -183,25 +187,20 @@ def _migrate_summarization_prompt_once(settings: dict) -> bool:
     was customized. The durable marker is written in the same JSON snapshot;
     later user edits keep that marker and therefore remain authoritative.
     """
-    completed_version = _stored_migration_version(
-        settings.get(_SUMMARIZATION_PROMPT_MIGRATION_KEY)
-    )
+    completed_version = _stored_migration_version(settings.get(_SUMMARIZATION_PROMPT_MIGRATION_KEY))
     if completed_version >= _SUMMARIZATION_PROMPT_MIGRATION_VERSION:
         return False
     if "summarizationPrompt" in settings:
         settings["summarizationPrompt"] = _CURRENT_SUMMARIZATION_PROMPT
-    settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = (
-        _SUMMARIZATION_PROMPT_MIGRATION_VERSION
-    )
+    settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = _SUMMARIZATION_PROMPT_MIGRATION_VERSION
     return True
 
 
 _json_settings, _json_settings_rewrite_safe = _load_json_settings_with_status()
 _json_settings_migration_pending = (
-    _migrate_summarization_prompt_once(_json_settings)
-    if _json_settings_rewrite_safe
-    else False
+    _migrate_summarization_prompt_once(_json_settings) if _json_settings_rewrite_safe else False
 )
+
 
 class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
@@ -222,8 +221,8 @@ class Config:
     SMALLEST_API_KEY = os.getenv("SMALLEST_API_KEY")
     ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
     ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") # For Gemini
-    GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") # For Cloud STT
+    GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # For Gemini
+    GOOGLE_APPLICATION_CREDENTIALS = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")  # For Cloud STT
     YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")  # For Youtube Data API (future Youtube tab)
 
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
@@ -265,12 +264,9 @@ class Config:
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
     MIC_ALWAYS_ON = os.getenv("SCRIBER_MIC_ALWAYS_ON", "0") in ("1", "true", "True")
-    SEGMENT_SPEECH_WITH_VAD = (
-        str(_json_settings.get("segmentSpeechWithVad", os.getenv("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "0")))
-        .strip()
-        .lower()
-        in {"1", "true", "yes", "on"}
-    )
+    SEGMENT_SPEECH_WITH_VAD = str(
+        _json_settings.get("segmentSpeechWithVad", os.getenv("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "0"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
     MIC_POST_RECORDING_PREWARM_SECONDS = _env_float(
         "SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS",
         120.0,
@@ -290,9 +286,7 @@ class Config:
     INJECT_TARGET_TITLE = os.getenv("SCRIBER_INJECT_TARGET_TITLE", "").strip()
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
     PASTE_PRE_DELAY_MS = _env_int("SCRIBER_PASTE_PRE_DELAY_MS", 80, minimum=0, maximum=5000)
-    PASTE_RESTORE_DELAY_MS = _env_int(
-        "SCRIBER_PASTE_RESTORE_DELAY_MS", 1500, minimum=0, maximum=60_000
-    )
+    PASTE_RESTORE_DELAY_MS = _env_int("SCRIBER_PASTE_RESTORE_DELAY_MS", 1500, minimum=0, maximum=60_000)
 
     SERVICE_API_KEY_MAP = {
         "soniox": "SONIOX_API_KEY",
@@ -364,7 +358,11 @@ class Config:
     # Summarization prompt for LLM transcript summarization
     # Load from JSON settings file first, then env, then default
     _DEFAULT_SUMMARIZATION_PROMPT = _CURRENT_SUMMARIZATION_PROMPT
-    SUMMARIZATION_PROMPT = _json_settings.get("summarizationPrompt") or os.getenv("SCRIBER_SUMMARIZATION_PROMPT") or _DEFAULT_SUMMARIZATION_PROMPT
+    SUMMARIZATION_PROMPT = (
+        _json_settings.get("summarizationPrompt")
+        or os.getenv("SCRIBER_SUMMARIZATION_PROMPT")
+        or _DEFAULT_SUMMARIZATION_PROMPT
+    )
 
     # Summarization model for LLM transcript summarization
     DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
@@ -372,10 +370,9 @@ class Config:
 
     # Public Microsoft Entra desktop-app registration. This identifier is not a secret.
     OUTLOOK_CLIENT_ID = os.getenv("SCRIBER_OUTLOOK_CLIENT_ID", "").strip()
-    VOICEPRINT_LIBRARY_OPT_IN = (
-        str(_json_settings.get("voiceprintLibraryOptIn", os.getenv("SCRIBER_VOICEPRINT_LIBRARY_OPT_IN", "0")))
-        .strip().lower() in {"1", "true", "yes", "on"}
-    )
+    VOICEPRINT_LIBRARY_OPT_IN = str(
+        _json_settings.get("voiceprintLibraryOptIn", os.getenv("SCRIBER_VOICEPRINT_LIBRARY_OPT_IN", "0"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     # Auto-summarize transcripts when completed
     AUTO_SUMMARIZE = os.getenv("SCRIBER_AUTO_SUMMARIZE", "0") in ("1", "true", "True")
@@ -383,15 +380,17 @@ class Config:
     # Prefer creator-provided or automatic YouTube captions before downloading
     # audio. This is enabled for first installs and stored in the writable data
     # directory so installer upgrades preserve the user's choice.
-    YOUTUBE_PREFER_CAPTIONS = (
-        str(_json_settings.get("youtubePreferCaptions", os.getenv("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1")))
-        .strip()
-        .lower()
-        in {"1", "true", "yes", "on"}
-    )
+    YOUTUBE_PREFER_CAPTIONS = str(
+        _json_settings.get("youtubePreferCaptions", os.getenv("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
 
     DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b"
-    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {"", "gpt-5-nano", "google/gemini-2.5-flash-lite:nitro", "openai/gpt-oss-120b"}
+    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {
+        "",
+        "gpt-5-nano",
+        "google/gemini-2.5-flash-lite:nitro",
+        "openai/gpt-oss-120b",
+    }
     _DEFAULT_POST_PROCESSING_PROMPT = """Glätte das folgende Speech-to-Text-Transkript sprachlich, typografisch und strukturell, ohne Inhalt zu verändern, zu kürzen, zu interpretieren oder neue Informationen hinzuzufügen.
 
 Verbindliche Regeln:
@@ -429,32 +428,29 @@ Zahlen, Daten, Uhrzeiten und Einheiten:
 
 Transkript:
 ${output}"""
-    POST_PROCESSING_ENABLED = (
-        str(_json_settings.get("postProcessingEnabled", os.getenv("SCRIBER_POST_PROCESSING_ENABLED", "1")))
-        .strip()
-        .lower()
-        in {"1", "true", "yes", "on"}
-    )
+    POST_PROCESSING_ENABLED = str(
+        _json_settings.get("postProcessingEnabled", os.getenv("SCRIBER_POST_PROCESSING_ENABLED", "1"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
     POST_PROCESSING_HOTKEY = (
         os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
         or _json_settings.get("postProcessingHotkey")
         or DEFAULT_POST_PROCESSING_HOTKEY
     )
     MEETING_HOTKEY = (
-        os.getenv("SCRIBER_MEETING_HOTKEY")
-        or _json_settings.get("meetingHotkey")
-        or DEFAULT_MEETING_HOTKEY
+        os.getenv("SCRIBER_MEETING_HOTKEY") or _json_settings.get("meetingHotkey") or DEFAULT_MEETING_HOTKEY
     )
     MEETING_FINAL_PROVIDER = (
-        _json_settings.get("meetingFinalProvider")
-        or os.getenv("SCRIBER_MEETING_FINAL_PROVIDER")
-        or "soniox_async"
+        _json_settings.get("meetingFinalProvider") or os.getenv("SCRIBER_MEETING_FINAL_PROVIDER") or "soniox_async"
     )
-    MEETING_TRANSCRIPTION_MODE = str(
-        _json_settings.get("meetingTranscriptionMode")
-        or os.getenv("SCRIBER_MEETING_TRANSCRIPTION_MODE")
-        or "live_final"
-    ).strip().lower()
+    MEETING_TRANSCRIPTION_MODE = (
+        str(
+            _json_settings.get("meetingTranscriptionMode")
+            or os.getenv("SCRIBER_MEETING_TRANSCRIPTION_MODE")
+            or "live_final"
+        )
+        .strip()
+        .lower()
+    )
     if MEETING_TRANSCRIPTION_MODE not in {"live_final", "final_only"}:
         MEETING_TRANSCRIPTION_MODE = "live_final"
     MEETING_ANALYSIS_MODEL = (
@@ -463,32 +459,27 @@ ${output}"""
         or SUMMARIZATION_MODEL
         or DEFAULT_SUMMARIZATION_MODEL
     )
-    MEETING_SMART_TURN_ENABLED = (
-        str(_json_settings.get("meetingSmartTurnEnabled", os.getenv("SCRIBER_MEETING_SMART_TURN_ENABLED", "1")))
-        .strip().lower() in {"1", "true", "yes", "on"}
-    )
-    MEETING_AUTO_ANALYZE = (
-        str(_json_settings.get("meetingAutoAnalyze", os.getenv("SCRIBER_MEETING_AUTO_ANALYZE", "1")))
-        .strip().lower() in {"1", "true", "yes", "on"}
-    )
-    MEETING_AEC_ENABLED = (
-        str(_json_settings.get("meetingAecEnabled", os.getenv("SCRIBER_MEETING_AEC_ENABLED", "1")))
-        .strip().lower() in {"1", "true", "yes", "on"}
-    )
+    MEETING_SMART_TURN_ENABLED = str(
+        _json_settings.get("meetingSmartTurnEnabled", os.getenv("SCRIBER_MEETING_SMART_TURN_ENABLED", "1"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    MEETING_AUTO_ANALYZE = str(
+        _json_settings.get("meetingAutoAnalyze", os.getenv("SCRIBER_MEETING_AUTO_ANALYZE", "1"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    MEETING_AEC_ENABLED = str(
+        _json_settings.get("meetingAecEnabled", os.getenv("SCRIBER_MEETING_AEC_ENABLED", "1"))
+    ).strip().lower() in {"1", "true", "yes", "on"}
     MEETING_AUDIO_RETENTION_DAYS = _env_int(
         "SCRIBER_MEETING_AUDIO_RETENTION_DAYS",
         int(_json_settings.get("meetingAudioRetentionDays", 0) or 0),
         minimum=0,
         maximum=3650,
     )
-    SPEAKER_DIARIZATION_FALLBACK_ENABLED = (
-        str(
-            _json_settings.get(
-                "speakerDiarizationFallbackEnabled",
-                os.getenv("SCRIBER_SPEAKER_DIARIZATION_FALLBACK_ENABLED", "1"),
-            )
-        ).strip().lower() in {"1", "true", "yes", "on"}
-    )
+    SPEAKER_DIARIZATION_FALLBACK_ENABLED = str(
+        _json_settings.get(
+            "speakerDiarizationFallbackEnabled",
+            os.getenv("SCRIBER_SPEAKER_DIARIZATION_FALLBACK_ENABLED", "1"),
+        )
+    ).strip().lower() in {"1", "true", "yes", "on"}
     POST_PROCESSING_PROMPT = (
         _json_settings.get("postProcessingPrompt")
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
@@ -501,9 +492,7 @@ ${output}"""
     if _env_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
         _env_post_processing_model = ""
     POST_PROCESSING_MODEL = (
-        _configured_post_processing_model
-        or _env_post_processing_model
-        or DEFAULT_POST_PROCESSING_MODEL
+        _configured_post_processing_model or _env_post_processing_model or DEFAULT_POST_PROCESSING_MODEL
     )
 
     # OpenAI Speech-to-Text models. Keep realtime and batch separate so the
@@ -520,11 +509,9 @@ ${output}"""
     # Audio settings
     SAMPLE_RATE = 16000
     CHANNELS = 1
-    
+
     # Visualizer settings (default 60 bars)
-    VISUALIZER_BAR_COUNT = _env_int(
-        "SCRIBER_VISUALIZER_BAR_COUNT", 60, minimum=16, maximum=128
-    )
+    VISUALIZER_BAR_COUNT = _env_int("SCRIBER_VISUALIZER_BAR_COUNT", 60, minimum=16, maximum=128)
 
     @classmethod
     def get_api_key(cls, service_name: str) -> str:
@@ -766,9 +753,7 @@ ${output}"""
         cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
         global _json_settings, _json_settings_migration_pending
         _json_settings["summarizationPrompt"] = cls.SUMMARIZATION_PROMPT
-        _json_settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = (
-            _SUMMARIZATION_PROMPT_MIGRATION_VERSION
-        )
+        _json_settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = _SUMMARIZATION_PROMPT_MIGRATION_VERSION
         _json_settings_migration_pending = False
 
     @classmethod
@@ -826,12 +811,13 @@ ${output}"""
         """Persist current settings and API keys to the .env file."""
         target_path = env_path() if path is None else path
         lines = []
+
         def add(k, v):
             # Escape newlines and quote values with special characters for python-dotenv
             v_str = str(v) if v is not None else ""
-            if '\n' in v_str or '\r' in v_str or '"' in v_str or "'" in v_str:
+            if "\n" in v_str or "\r" in v_str or '"' in v_str or "'" in v_str:
                 # Replace newlines with escaped version and wrap in quotes
-                v_str = v_str.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+                v_str = v_str.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
                 lines.append(f'{k}="{v_str}"')
             else:
                 lines.append(f"{k}={v_str}")
@@ -906,7 +892,7 @@ ${output}"""
             add("SCRIBER_MIC_DEVICE", "default")
         else:
             add("SCRIBER_MIC_DEVICE", cls.MIC_DEVICE)
-        
+
         add("SCRIBER_FAVORITE_MIC", cls.FAVORITE_MIC or "")
         add("SCRIBER_MIC_ALWAYS_ON", "1" if cls.MIC_ALWAYS_ON else "0")
         add("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "1" if cls.SEGMENT_SPEECH_WITH_VAD else "0")

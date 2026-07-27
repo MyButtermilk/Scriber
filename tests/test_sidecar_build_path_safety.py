@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
 
@@ -100,20 +99,14 @@ def test_sidecar_rejects_a_reparse_ancestor_before_writing(tmp_path: Path) -> No
 
 def test_sidecar_revalidates_recursive_targets_before_mutation() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
-    boundary = source[
-        source.index("function Assert-UnderRoot") : source.index(
-            "function Invoke-TimedStep"
-        )
-    ]
+    boundary = source[source.index("function Assert-UnderRoot") : source.index("function Invoke-TimedStep")]
     assert "$prefix = $rootFull + [System.IO.Path]::DirectorySeparatorChar" in boundary
     assert "StartsWith($rootFull," not in boundary
     assert "path must not contain a reparse point" in boundary
     assert "tree must not contain a reparse point" in boundary
 
     sync = source[
-        source.index("function Sync-DirectoryContents") : source.index(
-            "function Get-RustAudioSidecarInputManifest"
-        )
+        source.index("function Sync-DirectoryContents") : source.index("function Get-RustAudioSidecarInputManifest")
     ]
     validation = sync.index("-Path $TargetDir -Label $TargetLabel -Recurse")
     creation = sync.index("New-Item -ItemType Directory")

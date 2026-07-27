@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "scripts" / "build_windows.ps1"
 TIMING_SCRIPT = REPO_ROOT / "scripts" / "measure_installer_research.ps1"
@@ -30,20 +29,16 @@ def test_windows_build_accepts_an_explicit_fail_closed_python_at_the_end() -> No
     param_block = build[build.index("param(") : build.index(")\n\n$ErrorActionPreference")]
 
     assert '[string]$PythonExecutable = ""' in param_block
-    assert param_block.rfind('[string]$PythonExecutable = ""') > param_block.rfind(
-        "[switch]$RunMediaPreparationSmoke"
-    )
+    assert param_block.rfind('[string]$PythonExecutable = ""') > param_block.rfind("[switch]$RunMediaPreparationSmoke")
     assert '[string]$ResearchBuildRoot = ""' in param_block
-    assert param_block.rfind('[string]$ResearchBuildRoot = ""') > param_block.rfind(
-        '[string]$PythonExecutable = ""'
-    )
+    assert param_block.rfind('[string]$ResearchBuildRoot = ""') > param_block.rfind('[string]$PythonExecutable = ""')
     assert '[string]$ResearchToolchainManifest = ""' in param_block
     assert param_block.rfind('[string]$ResearchToolchainManifest = ""') > param_block.rfind(
         '[string]$ResearchBuildRoot = ""'
     )
     assert "$pythonExecutableWasExplicit" in build
     assert "[System.IO.Path]::IsPathRooted($PythonExecutable)" in build
-    assert 'Test-Path -LiteralPath $pythonCandidate -PathType Leaf' in build
+    assert "Test-Path -LiteralPath $pythonCandidate -PathType Leaf" in build
     assert 'throw "Explicit Python executable was not found: $pythonCandidate"' in build
 
     # Omitting the new final positional parameter preserves the established
@@ -54,9 +49,7 @@ def test_windows_build_accepts_an_explicit_fail_closed_python_at_the_end() -> No
 
 def test_windows_build_forwards_the_resolved_python_to_every_sidecar_call() -> None:
     build = _read(BUILD_SCRIPT)
-    sidecar_arguments = _function(
-        build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport"
-    )
+    sidecar_arguments = _function(build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport")
 
     assert '"scripts\\build_tauri_backend_sidecar.ps1"' in sidecar_arguments
     assert '"-PythonPath",\n        $releasePython' in sidecar_arguments
@@ -66,22 +59,16 @@ def test_windows_build_forwards_the_resolved_python_to_every_sidecar_call() -> N
 
 def test_research_sidecar_fails_closed_instead_of_installing_pyinstaller() -> None:
     build = _read(BUILD_SCRIPT)
-    sidecar_arguments = _function(
-        build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport"
-    )
-    initial_arguments = sidecar_arguments.split(
-        "if (-not $resolvedResearchBuildRoot)", 1
-    )[0]
+    sidecar_arguments = _function(build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport")
+    initial_arguments = sidecar_arguments.split("if (-not $resolvedResearchBuildRoot)", 1)[0]
     assert '"-InstallPyInstaller"' not in initial_arguments
-    assert 'if (-not $resolvedResearchBuildRoot)' in sidecar_arguments
+    assert "if (-not $resolvedResearchBuildRoot)" in sidecar_arguments
     assert '$sidecarArgs += "-InstallPyInstaller"' in sidecar_arguments
     assert '$env:PIP_NO_INDEX = "1"' in build
     assert "Remove-Item Env:PIP_NO_INDEX" in build
 
     sidecar = _read(SIDECAR_SCRIPT)
-    guard = sidecar.index(
-        "if ($DeterministicResearchMetadata -and $InstallPyInstaller)"
-    )
+    guard = sidecar.index("if ($DeterministicResearchMetadata -and $InstallPyInstaller)")
     resolution = sidecar.index("$RepoRoot = (Resolve-Path $RepoRoot).Path")
     assert guard < resolution
     assert "network installation is forbidden" in sidecar
@@ -89,9 +76,7 @@ def test_research_sidecar_fails_closed_instead_of_installing_pyinstaller() -> No
 
 def test_windows_build_isolates_research_python_layers_under_one_root() -> None:
     build = _read(BUILD_SCRIPT)
-    sidecar_arguments = _function(
-        build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport"
-    )
+    sidecar_arguments = _function(build, "New-SidecarBuildScriptArguments", "Write-BuildTimingReport")
 
     assert 'throw "-ResearchBuildRoot requires an explicit -PythonExecutable."' in build
     assert 'throw "-ResearchBuildRoot requires an explicit -ResearchToolchainManifest."' in build
@@ -101,17 +86,11 @@ def test_windows_build_isolates_research_python_layers_under_one_root() -> None:
     assert "Explicit Python executable must not be a reparse point" in build
     assert '"-DistRoot", (Join-Path $resolvedResearchBuildRoot "dist")' in sidecar_arguments
     assert '"-WorkRoot", (Join-Path $resolvedResearchBuildRoot "work")' in sidecar_arguments
-    assert (
-        '"-SidecarCacheRoot", (Join-Path $resolvedResearchBuildRoot "sidecar-cache")'
-        in sidecar_arguments
-    )
-    assert (
-        '"-RuntimeCacheRoot", (Join-Path $resolvedResearchBuildRoot "runtime-cache")'
-        in sidecar_arguments
-    )
+    assert '"-SidecarCacheRoot", (Join-Path $resolvedResearchBuildRoot "sidecar-cache")' in sidecar_arguments
+    assert '"-RuntimeCacheRoot", (Join-Path $resolvedResearchBuildRoot "runtime-cache")' in sidecar_arguments
     assert "researchBuildIsolated = [bool]$resolvedResearchBuildRoot" in build
     assert "Research Node version differs from .node-version" in build
-    assert '$env:RUSTUP_TOOLCHAIN = [string]$toolchain.rustToolchain' in build
+    assert "$env:RUSTUP_TOOLCHAIN = [string]$toolchain.rustToolchain" in build
     assert '$env:PATH = "$researchNodeRoot$([System.IO.Path]::PathSeparator)$priorResearchPath"' in build
     assert "Assert-ResearchToolFileIdentity" in build
     assert "researchToolchainHash = $researchToolchainHash" in build
@@ -124,8 +103,8 @@ def test_windows_build_binds_and_rechecks_the_complete_nsis_tree() -> None:
     assert "Get-ResearchPlainTreeIdentity" in build
     assert "Assert-ResearchTreeIdentity" in build
     assert '$researchNsisRoot = Join-Path $env:LOCALAPPDATA "tauri\\NSIS"' in build
-    assert '$toolchain.nsis.relativePath' in build
-    assert '$toolchain.nsisTree' in build
+    assert "$toolchain.nsis.relativePath" in build
+    assert "$toolchain.nsisTree" in build
     bundle = build.split('Invoke-Checked -Label "Tauri Windows bundle"', 1)[1]
     before = bundle.index('Label "Pinned NSIS tree before bundle"')
     launch = bundle.index("cmd.exe /d /s /c $tauriCommand")
@@ -167,14 +146,10 @@ def test_installer_timing_defaults_to_twenty_counterbalanced_pairs() -> None:
 
 def test_installer_timing_starts_qpc_before_create_process_and_waits_for_completion() -> None:
     timing = _read(TIMING_SCRIPT)
-    measurement = _function(
-        timing, "Invoke-InstallerMeasurement", "Get-TimingStatistics"
-    )
+    measurement = _function(timing, "Invoke-InstallerMeasurement", "Get-TimingStatistics")
 
     qpc_index = measurement.index("[System.Diagnostics.Stopwatch]::GetTimestamp()")
-    stopwatch_index = measurement.index(
-        "$watch = [System.Diagnostics.Stopwatch]::StartNew()"
-    )
+    stopwatch_index = measurement.index("$watch = [System.Diagnostics.Stopwatch]::StartNew()")
     process_index = measurement.index("$process = Start-Process")
     assert qpc_index < stopwatch_index < process_index
 
@@ -191,9 +166,7 @@ def test_installer_timing_starts_qpc_before_create_process_and_waits_for_complet
 
 def test_installer_timing_stability_tuple_is_exclusive_and_complete() -> None:
     timing = _read(TIMING_SCRIPT)
-    identity = _function(
-        timing, "Get-ExclusiveInstalledIdentity", "Get-InstalledTreeInventory"
-    )
+    identity = _function(timing, "Get-ExclusiveInstalledIdentity", "Get-InstalledTreeInventory")
 
     assert "[System.IO.FileShare]::None" in identity
     assert "Get-NormalizedFileVersion" in identity
@@ -204,9 +177,7 @@ def test_installer_timing_stability_tuple_is_exclusive_and_complete() -> None:
 
 def test_installer_timing_tracks_children_and_scopes_destructive_cleanup() -> None:
     timing = _read(TIMING_SCRIPT)
-    process_discovery = _function(
-        timing, "Get-RelatedInstallerProcesses", "Stop-ScopedProcessTree"
-    )
+    process_discovery = _function(timing, "Get-RelatedInstallerProcesses", "Stop-ScopedProcessTree")
     cleanup = _function(timing, "Invoke-CleanInstallState", "Get-ExclusiveInstalledIdentity")
 
     assert "$KnownProcessIds.Contains($parentProcessId)" in process_discovery
@@ -306,9 +277,7 @@ def test_timing_rejects_a_reparse_ancestor_before_creating_scratch(
 
 def test_process_scope_rejects_foreign_same_name_and_foreign_updater() -> None:
     timing = _read(TIMING_SCRIPT)
-    process_discovery = _function(
-        timing, "Get-RelatedInstallerProcesses", "Stop-ScopedProcessTree"
-    )
+    process_discovery = _function(timing, "Get-RelatedInstallerProcesses", "Stop-ScopedProcessTree")
 
     def is_related(
         *,
@@ -323,9 +292,9 @@ def test_process_scope_rejects_foreign_same_name_and_foreign_updater() -> None:
         executable_folded = executable.casefold()
         command_folded = command.casefold()
         target_folded = target_root.casefold().rstrip("\\/")
-        exact_installer = executable_folded in {
-            value.casefold() for value in attested_installers
-        } or any(value.casefold() in command_folded for value in attested_installers)
+        exact_installer = executable_folded in {value.casefold() for value in attested_installers} or any(
+            value.casefold() in command_folded for value in attested_installers
+        )
         return (
             pid in known
             or parent_pid in known
@@ -381,9 +350,7 @@ def test_installer_timing_uses_untrimmed_median_and_nearest_rank_p95() -> None:
 
 def test_installed_tree_inventory_runs_after_timing_and_is_consistency_gated() -> None:
     timing = _read(TIMING_SCRIPT)
-    inventory = _function(
-        timing, "Get-InstalledTreeInventory", "Assert-VariantInventoryConsistent"
-    )
+    inventory = _function(timing, "Get-InstalledTreeInventory", "Assert-VariantInventoryConsistent")
 
     assert "SortedDictionary[string, object]" in inventory
     assert "[System.StringComparer]::Ordinal" in inventory
@@ -393,9 +360,7 @@ def test_installed_tree_inventory_runs_after_timing_and_is_consistency_gated() -
     assert "inventoryDurationMs" in inventory
 
     first_measurement = timing.index("$measurement = Invoke-InstallerMeasurement")
-    first_inventory = timing.index(
-        "$inventory = Get-InstalledTreeInventory", first_measurement
-    )
+    first_inventory = timing.index("$inventory = Get-InstalledTreeInventory", first_measurement)
     first_cleanup_after = timing.index("Invoke-CleanInstallState", first_inventory)
     assert first_measurement < first_inventory < first_cleanup_after
     assert "Assert-VariantInventoryConsistent" in timing

@@ -5,6 +5,8 @@ import pytest
 from pipecat.frames.frames import AudioRawFrame, EndFrame, ErrorFrame, TranscriptionFrame
 from pipecat.processors.frame_processor import FrameDirection
 
+from src.core.error_taxonomy import ErrorCategory
+from src.core.provider_errors import provider_user_error
 from src.mistral_stt import (
     MistralAsyncProcessor,
     MistralRealtimeSTTService,
@@ -12,8 +14,6 @@ from src.mistral_stt import (
     format_mistral_segments_with_speakers,
     transcribe_with_mistral,
 )
-from src.core.error_taxonomy import ErrorCategory
-from src.core.provider_errors import provider_user_error
 
 
 def test_mistral_realtime_initializes_complete_pipecat_1_5_settings():
@@ -119,11 +119,7 @@ async def test_mistral_http_error_discards_identifier_shaped_private_code():
             return False
 
         async def text(self):
-            return (
-                '{"code":"'
-                + private_marker
-                + '","message":"private provider response"}'
-            )
+            return '{"code":"' + private_marker + '","message":"private provider response"}'
 
     class Session:
         def post(self, *_args, **_kwargs):
@@ -170,17 +166,19 @@ def test_format_mistral_segments_with_speakers_groups_contiguous_segments():
         ]
     )
 
-    assert text == (
-        "[Speaker 1]: Hallo weiter\n\n"
-        "[Speaker 2]: Guten Tag"
-    )
+    assert text == ("[Speaker 1]: Hallo weiter\n\n[Speaker 2]: Guten Tag")
 
 
 def test_format_mistral_segments_preserves_numeric_speaker_zero():
-    assert format_mistral_segments_with_speakers([
-        {"speaker": 0, "text": "First"},
-        {"speaker": 1, "text": "Second"},
-    ]) == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    assert (
+        format_mistral_segments_with_speakers(
+            [
+                {"speaker": 0, "text": "First"},
+                {"speaker": 1, "text": "Second"},
+            ]
+        )
+        == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    )
 
 
 @pytest.mark.asyncio

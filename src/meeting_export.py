@@ -1,94 +1,175 @@
 """Structured Meeting Workspace export and email templates."""
+
 from __future__ import annotations
 
+import re
 from email import policy
 from email.message import EmailMessage
 from email.utils import formataddr
-import re
 from typing import Any
-
 
 _EXPORT_LABELS: dict[str, dict[str, str]] = {
     "en": {
-        "meeting": "Meeting", "unknown": "Unknown", "executive_summary": "Executive summary",
-        "decisions": "Decisions", "action_items": "Action items", "open_questions": "Open questions",
-        "risks": "Risks", "notes": "Notes", "owner": "Owner", "due": "Due", "status": "Status",
-        "status_open": "open", "status_done": "done", "status_dismissed": "dismissed",
-        "date": "Date", "duration": "Duration", "transcript": "Transcript",
-        "timestamped_segments": "timestamped segments", "timing_quality": "Timing quality",
+        "meeting": "Meeting",
+        "unknown": "Unknown",
+        "executive_summary": "Executive summary",
+        "decisions": "Decisions",
+        "action_items": "Action items",
+        "open_questions": "Open questions",
+        "risks": "Risks",
+        "notes": "Notes",
+        "owner": "Owner",
+        "due": "Due",
+        "status": "Status",
+        "status_open": "open",
+        "status_done": "done",
+        "status_dismissed": "dismissed",
+        "date": "Date",
+        "duration": "Duration",
+        "transcript": "Transcript",
+        "timestamped_segments": "timestamped segments",
+        "timing_quality": "Timing quality",
         "estimated_segments": "{count} segment(s) use estimated intervals",
-        "timestamped_transcript": "Timestamped transcript", "estimated_timing": "estimated timing",
-        "email_subject": "Meeting follow-up: {title}", "hello": "Hello,",
-        "email_intro": "Here is the follow-up for {title}.", "meeting_details": "Meeting details",
-        "summary": "Summary", "due_inline": "due {date}",
+        "timestamped_transcript": "Timestamped transcript",
+        "estimated_timing": "estimated timing",
+        "email_subject": "Meeting follow-up: {title}",
+        "hello": "Hello,",
+        "email_intro": "Here is the follow-up for {title}.",
+        "meeting_details": "Meeting details",
+        "summary": "Summary",
+        "due_inline": "due {date}",
         "attached": "Attached: {name} contains the full timestamped transcript.",
         "available_in_scriber": "The full timestamped transcript remains available in Scriber.",
         "regards": "Best regards",
     },
     "de": {
-        "meeting": "Besprechung", "unknown": "Unbekannt", "executive_summary": "Kurzfassung",
-        "decisions": "Entscheidungen", "action_items": "Aufgaben", "open_questions": "Offene Fragen",
-        "risks": "Risiken", "notes": "Notizen", "owner": "Verantwortlich", "due": "Fällig",
-        "status": "Status", "status_open": "offen", "status_done": "erledigt",
-        "status_dismissed": "verworfen", "date": "Datum", "duration": "Dauer",
-        "transcript": "Transkript", "timestamped_segments": "Segmente mit Zeitstempeln",
+        "meeting": "Besprechung",
+        "unknown": "Unbekannt",
+        "executive_summary": "Kurzfassung",
+        "decisions": "Entscheidungen",
+        "action_items": "Aufgaben",
+        "open_questions": "Offene Fragen",
+        "risks": "Risiken",
+        "notes": "Notizen",
+        "owner": "Verantwortlich",
+        "due": "Fällig",
+        "status": "Status",
+        "status_open": "offen",
+        "status_done": "erledigt",
+        "status_dismissed": "verworfen",
+        "date": "Datum",
+        "duration": "Dauer",
+        "transcript": "Transkript",
+        "timestamped_segments": "Segmente mit Zeitstempeln",
         "timing_quality": "Zeitstempelqualität",
         "estimated_segments": "{count} Segment(e) verwenden geschätzte Zeitintervalle",
-        "timestamped_transcript": "Transkript mit Zeitstempeln", "estimated_timing": "geschätzte Zeit",
-        "email_subject": "Besprechungsnachbereitung: {title}", "hello": "Hallo,",
-        "email_intro": "hier ist die Nachbereitung zu {title}.", "meeting_details": "Besprechungsdetails",
-        "summary": "Zusammenfassung", "due_inline": "fällig am {date}",
+        "timestamped_transcript": "Transkript mit Zeitstempeln",
+        "estimated_timing": "geschätzte Zeit",
+        "email_subject": "Besprechungsnachbereitung: {title}",
+        "hello": "Hallo,",
+        "email_intro": "hier ist die Nachbereitung zu {title}.",
+        "meeting_details": "Besprechungsdetails",
+        "summary": "Zusammenfassung",
+        "due_inline": "fällig am {date}",
         "attached": "Im Anhang: {name} enthält das vollständige Transkript mit Zeitstempeln.",
         "available_in_scriber": "Das vollständige Transkript mit Zeitstempeln bleibt in Scriber verfügbar.",
         "regards": "Viele Grüße",
     },
     "es": {
-        "meeting": "Reunión", "unknown": "Desconocido", "executive_summary": "Resumen ejecutivo",
-        "decisions": "Decisiones", "action_items": "Tareas", "open_questions": "Preguntas abiertas",
-        "risks": "Riesgos", "notes": "Notas", "owner": "Responsable", "due": "Fecha límite",
-        "status": "Estado", "status_open": "abierta", "status_done": "completada",
-        "status_dismissed": "descartada", "date": "Fecha", "duration": "Duración",
-        "transcript": "Transcripción", "timestamped_segments": "segmentos con marcas de tiempo",
+        "meeting": "Reunión",
+        "unknown": "Desconocido",
+        "executive_summary": "Resumen ejecutivo",
+        "decisions": "Decisiones",
+        "action_items": "Tareas",
+        "open_questions": "Preguntas abiertas",
+        "risks": "Riesgos",
+        "notes": "Notas",
+        "owner": "Responsable",
+        "due": "Fecha límite",
+        "status": "Estado",
+        "status_open": "abierta",
+        "status_done": "completada",
+        "status_dismissed": "descartada",
+        "date": "Fecha",
+        "duration": "Duración",
+        "transcript": "Transcripción",
+        "timestamped_segments": "segmentos con marcas de tiempo",
         "timing_quality": "Calidad de las marcas de tiempo",
         "estimated_segments": "{count} segmento(s) usan intervalos estimados",
-        "timestamped_transcript": "Transcripción con marcas de tiempo", "estimated_timing": "tiempo estimado",
-        "email_subject": "Seguimiento de la reunión: {title}", "hello": "Hola,",
-        "email_intro": "Aquí está el seguimiento de {title}.", "meeting_details": "Detalles de la reunión",
-        "summary": "Resumen", "due_inline": "fecha límite {date}",
+        "timestamped_transcript": "Transcripción con marcas de tiempo",
+        "estimated_timing": "tiempo estimado",
+        "email_subject": "Seguimiento de la reunión: {title}",
+        "hello": "Hola,",
+        "email_intro": "Aquí está el seguimiento de {title}.",
+        "meeting_details": "Detalles de la reunión",
+        "summary": "Resumen",
+        "due_inline": "fecha límite {date}",
         "attached": "Adjunto: {name} contiene la transcripción completa con marcas de tiempo.",
         "available_in_scriber": "La transcripción completa con marcas de tiempo sigue disponible en Scriber.",
         "regards": "Saludos",
     },
     "fr": {
-        "meeting": "Réunion", "unknown": "Inconnu", "executive_summary": "Synthèse",
-        "decisions": "Décisions", "action_items": "Actions", "open_questions": "Questions ouvertes",
-        "risks": "Risques", "notes": "Notes", "owner": "Responsable", "due": "Échéance",
-        "status": "Statut", "status_open": "ouverte", "status_done": "terminée",
-        "status_dismissed": "écartée", "date": "Date", "duration": "Durée",
-        "transcript": "Transcription", "timestamped_segments": "segments horodatés",
+        "meeting": "Réunion",
+        "unknown": "Inconnu",
+        "executive_summary": "Synthèse",
+        "decisions": "Décisions",
+        "action_items": "Actions",
+        "open_questions": "Questions ouvertes",
+        "risks": "Risques",
+        "notes": "Notes",
+        "owner": "Responsable",
+        "due": "Échéance",
+        "status": "Statut",
+        "status_open": "ouverte",
+        "status_done": "terminée",
+        "status_dismissed": "écartée",
+        "date": "Date",
+        "duration": "Durée",
+        "transcript": "Transcription",
+        "timestamped_segments": "segments horodatés",
         "timing_quality": "Qualité de l’horodatage",
         "estimated_segments": "{count} segment(s) utilisent des intervalles estimés",
-        "timestamped_transcript": "Transcription horodatée", "estimated_timing": "horaire estimé",
-        "email_subject": "Suivi de la réunion : {title}", "hello": "Bonjour,",
-        "email_intro": "Voici le suivi de {title}.", "meeting_details": "Détails de la réunion",
-        "summary": "Résumé", "due_inline": "échéance {date}",
+        "timestamped_transcript": "Transcription horodatée",
+        "estimated_timing": "horaire estimé",
+        "email_subject": "Suivi de la réunion : {title}",
+        "hello": "Bonjour,",
+        "email_intro": "Voici le suivi de {title}.",
+        "meeting_details": "Détails de la réunion",
+        "summary": "Résumé",
+        "due_inline": "échéance {date}",
         "attached": "Pièce jointe : {name} contient la transcription horodatée complète.",
         "available_in_scriber": "La transcription horodatée complète reste disponible dans Scriber.",
         "regards": "Cordialement",
     },
     "it": {
-        "meeting": "Riunione", "unknown": "Sconosciuto", "executive_summary": "Sintesi",
-        "decisions": "Decisioni", "action_items": "Attività", "open_questions": "Domande aperte",
-        "risks": "Rischi", "notes": "Note", "owner": "Responsabile", "due": "Scadenza",
-        "status": "Stato", "status_open": "aperta", "status_done": "completata",
-        "status_dismissed": "scartata", "date": "Data", "duration": "Durata",
-        "transcript": "Trascrizione", "timestamped_segments": "segmenti con marcatori temporali",
+        "meeting": "Riunione",
+        "unknown": "Sconosciuto",
+        "executive_summary": "Sintesi",
+        "decisions": "Decisioni",
+        "action_items": "Attività",
+        "open_questions": "Domande aperte",
+        "risks": "Rischi",
+        "notes": "Note",
+        "owner": "Responsabile",
+        "due": "Scadenza",
+        "status": "Stato",
+        "status_open": "aperta",
+        "status_done": "completata",
+        "status_dismissed": "scartata",
+        "date": "Data",
+        "duration": "Durata",
+        "transcript": "Trascrizione",
+        "timestamped_segments": "segmenti con marcatori temporali",
         "timing_quality": "Qualità dei marcatori temporali",
         "estimated_segments": "{count} segmento/i usa/usano intervalli stimati",
-        "timestamped_transcript": "Trascrizione con marcatori temporali", "estimated_timing": "tempo stimato",
-        "email_subject": "Seguito della riunione: {title}", "hello": "Buongiorno,",
-        "email_intro": "Ecco il seguito di {title}.", "meeting_details": "Dettagli della riunione",
-        "summary": "Riepilogo", "due_inline": "scadenza {date}",
+        "timestamped_transcript": "Trascrizione con marcatori temporali",
+        "estimated_timing": "tempo stimato",
+        "email_subject": "Seguito della riunione: {title}",
+        "hello": "Buongiorno,",
+        "email_intro": "Ecco il seguito di {title}.",
+        "meeting_details": "Dettagli della riunione",
+        "summary": "Riepilogo",
+        "due_inline": "scadenza {date}",
         "attached": "In allegato: {name} contiene la trascrizione completa con marcatori temporali.",
         "available_in_scriber": "La trascrizione completa con marcatori temporali resta disponibile in Scriber.",
         "regards": "Cordiali saluti",
@@ -174,9 +255,7 @@ def meeting_duration_ms(detail: dict[str, Any]) -> int:
     return max((int(item.get("endMs", 0)) for item in detail.get("segments", [])), default=0)
 
 
-def build_meeting_summary_markdown(
-    detail: dict[str, Any], *, fallback_language: str = "en"
-) -> str:
+def build_meeting_summary_markdown(detail: dict[str, Any], *, fallback_language: str = "en") -> str:
     analysis = _analysis(detail)
     labels = meeting_export_labels(detail, fallback_language=fallback_language)
     lines: list[str] = []
@@ -222,18 +301,13 @@ def build_meeting_summary_markdown(
     return "\n".join(lines).strip()
 
 
-def build_meeting_transcript_text(
-    detail: dict[str, Any], *, fallback_language: str = "en"
-) -> str:
+def build_meeting_transcript_text(detail: dict[str, Any], *, fallback_language: str = "en") -> str:
     labels = meeting_export_labels(detail, fallback_language=fallback_language)
     paragraphs: list[str] = []
     for segment in detail.get("segments", []):
         start_ms, end_ms = int(segment.get("startMs", 0)), int(segment.get("endMs", 0))
         speaker = segment.get("speakerLabel") or segment.get("source") or labels["meeting"]
-        timing_note = (
-            f" ({labels['estimated_timing']})"
-            if segment.get("alignmentQuality") == "estimated" else ""
-        )
+        timing_note = f" ({labels['estimated_timing']})" if segment.get("alignmentQuality") == "estimated" else ""
         paragraphs.append(
             f"{format_offset(start_ms)} to {format_offset(end_ms)}{timing_note} | {speaker}\n"
             f"{str(segment.get('text', '')).strip()}"
@@ -246,9 +320,7 @@ def build_meeting_markdown(
 ) -> str:
     labels = meeting_export_labels(detail, fallback_language=fallback_language)
     segments = detail.get("segments", [])
-    estimated_count = sum(
-        1 for segment in segments if segment.get("alignmentQuality") == "estimated"
-    )
+    estimated_count = sum(1 for segment in segments if segment.get("alignmentQuality") == "estimated")
     lines = [
         f"# {detail.get('title') or labels['meeting']}",
         "",
@@ -257,13 +329,12 @@ def build_meeting_markdown(
         f"**{labels['transcript']}:** {len(segments)} {labels['timestamped_segments']}",
         *(
             [f"**{labels['timing_quality']}:** {labels['estimated_segments'].format(count=estimated_count)}"]
-            if estimated_count else []
+            if estimated_count
+            else []
         ),
         "",
     ]
-    summary_markdown = build_meeting_summary_markdown(
-        detail, fallback_language=fallback_language
-    )
+    summary_markdown = build_meeting_summary_markdown(detail, fallback_language=fallback_language)
     if summary_markdown:
         lines.extend([summary_markdown, ""])
 
@@ -272,16 +343,15 @@ def build_meeting_markdown(
         for segment in segments:
             start_ms, end_ms = int(segment.get("startMs", 0)), int(segment.get("endMs", 0))
             speaker = segment.get("speakerLabel") or segment.get("source") or labels["meeting"]
-            timing_note = (
-                f" · {labels['estimated_timing']}"
-                if segment.get("alignmentQuality") == "estimated" else ""
+            timing_note = f" · {labels['estimated_timing']}" if segment.get("alignmentQuality") == "estimated" else ""
+            lines.extend(
+                [
+                    f"### {format_offset(start_ms)} → {format_offset(end_ms)} · {speaker}{timing_note}",
+                    "",
+                    str(segment.get("text", "")).strip(),
+                    "",
+                ]
             )
-            lines.extend([
-                f"### {format_offset(start_ms)} → {format_offset(end_ms)} · {speaker}{timing_note}",
-                "",
-                str(segment.get("text", "")).strip(),
-                "",
-            ])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -304,21 +374,13 @@ def meeting_email_recipients(detail: dict[str, Any]) -> list[dict[str, str]]:
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
-        attendee_type = _single_line(
-            candidate.get("type") or candidate.get("role"), limit=40
-        ).casefold()
-        response = _single_line(
-            candidate.get("response") or candidate.get("responseStatus"), limit=40
-        ).casefold()
+        attendee_type = _single_line(candidate.get("type") or candidate.get("role"), limit=40).casefold()
+        response = _single_line(candidate.get("response") or candidate.get("responseStatus"), limit=40).casefold()
         # Calendar rooms/resources are not people, declined attendees should not
         # receive an unsolicited recap, and the connected account should not be
         # addressed in its own follow-up draft. Older Meeting snapshots omit
         # these fields and intentionally retain the previous include behavior.
-        if (
-            bool(candidate.get("isCurrentUser"))
-            or attendee_type == "resource"
-            or response in {"declined", "decline"}
-        ):
+        if bool(candidate.get("isCurrentUser")) or attendee_type == "resource" or response in {"declined", "decline"}:
             continue
         address = _single_line(candidate.get("address"), limit=320).lower()
         if (
@@ -340,12 +402,14 @@ def build_meeting_email(
     title = _single_line(detail.get("title") or labels["meeting"], limit=180) or labels["meeting"]
     subject = labels["email_subject"].format(title=title)
     lines = [labels["hello"], "", labels["email_intro"].format(title=title), ""]
-    lines.extend([
-        labels["meeting_details"],
-        f"{labels['date']}: {detail.get('startedAt') or detail.get('createdAt') or labels['unknown']}",
-        f"{labels['duration']}: {format_offset(meeting_duration_ms(detail))}",
-        "",
-    ])
+    lines.extend(
+        [
+            labels["meeting_details"],
+            f"{labels['date']}: {detail.get('startedAt') or detail.get('createdAt') or labels['unknown']}",
+            f"{labels['duration']}: {format_offset(meeting_duration_ms(detail))}",
+            "",
+        ]
+    )
     summary = str(analysis.get("executiveSummary") or "").strip()
     if summary:
         lines.extend([labels["summary"], summary, ""])
@@ -362,7 +426,8 @@ def build_meeting_email(
                     owner = f" [{item.get('owner')}]" if isinstance(item, dict) and item.get("owner") else ""
                     due = (
                         f" ({labels['due_inline'].format(date=item.get('dueDate'))})"
-                        if isinstance(item, dict) and item.get("dueDate") else ""
+                        if isinstance(item, dict) and item.get("dueDate")
+                        else ""
                     )
                     lines.append(f"- {text}{owner}{due}")
             lines.append("")

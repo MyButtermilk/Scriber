@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -26,7 +25,7 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert "--remote-debugging-address=127.0.0.1" in powershell
     assert 'browserTransport: "webview2-remote-debugging"' in driver
     assert 'runtime?.runtimeMode === "tauri-supervised"' in driver
-    assert 'page.$eval(selector, (button)' in driver
+    assert "page.$eval(selector, (button)" in driver
     assert 'page.on("pageerror", (error)' in driver
     assert "if (diagnostics.pageErrorCount > 0)" in driver
     assert 'activePhase = "validate-page-errors"' in driver

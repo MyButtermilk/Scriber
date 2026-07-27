@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
-
 
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
@@ -79,7 +77,9 @@ def is_youtube_url_like(value: str) -> bool:
     if parsed.scheme.lower() not in {"http", "https"}:
         return False
     host = _youtube_host(parsed.hostname)
-    return host in _YOUTU_BE_HOSTS or any(host == suffix or host.endswith(f".{suffix}") for suffix in _YOUTUBE_HOST_SUFFIXES)
+    return host in _YOUTU_BE_HOSTS or any(
+        host == suffix or host.endswith(f".{suffix}") for suffix in _YOUTUBE_HOST_SUFFIXES
+    )
 
 
 def _best_thumbnail_url(thumbnails: Any) -> str:
@@ -153,7 +153,7 @@ async def _request_json(
             if not isinstance(payload, dict):
                 raise YouTubeApiError("Unexpected YouTube API response", status=502, details=payload)
             return payload
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise YouTubeApiError("YouTube API request timed out", status=504) from exc
     except ClientError as exc:
         raise YouTubeApiError("YouTube API request failed", status=502) from exc
@@ -216,7 +216,9 @@ async def search_youtube_videos(
             "url": f"https://www.youtube.com/watch?v={video_id}",
             "title": (snippet.get("title") if isinstance(snippet.get("title"), str) else "").strip(),
             "description": (snippet.get("description") if isinstance(snippet.get("description"), str) else "").strip(),
-            "channelTitle": (snippet.get("channelTitle") if isinstance(snippet.get("channelTitle"), str) else "").strip(),
+            "channelTitle": (
+                snippet.get("channelTitle") if isinstance(snippet.get("channelTitle"), str) else ""
+            ).strip(),
             "publishedAt": (snippet.get("publishedAt") if isinstance(snippet.get("publishedAt"), str) else "").strip(),
             "thumbnailUrl": _best_thumbnail_url(snippet.get("thumbnails")),
         }
@@ -238,11 +240,11 @@ async def search_youtube_videos(
             content_details = v.get("contentDetails") if isinstance(v.get("contentDetails"), dict) else {}
             iso = content_details.get("duration") if isinstance(content_details.get("duration"), str) else ""
             seconds = parse_iso8601_duration(iso)
-            
+
             statistics = v.get("statistics") if isinstance(v.get("statistics"), dict) else {}
             view_count = _safe_nonnegative_count(statistics.get("viewCount"))
             like_count = _safe_nonnegative_count(statistics.get("likeCount"))
-            
+
             durations[vid] = {
                 "duration": format_duration(seconds),
                 "durationSeconds": seconds,
@@ -293,27 +295,27 @@ async def get_video_by_id(
     }
     videos = await _request_json(session, YOUTUBE_VIDEOS_URL, videos_params, timeout=timeout)
     items = videos.get("items") if isinstance(videos.get("items"), list) else []
-    
+
     if not items:
         return None
-    
+
     v = items[0]
     if not isinstance(v, dict):
         return None
-    
+
     vid = v.get("id")
     if not isinstance(vid, str) or not vid.strip():
         return None
-    
+
     snippet = v.get("snippet") if isinstance(v.get("snippet"), dict) else {}
     content_details = v.get("contentDetails") if isinstance(v.get("contentDetails"), dict) else {}
     statistics = v.get("statistics") if isinstance(v.get("statistics"), dict) else {}
-    
+
     iso = content_details.get("duration") if isinstance(content_details.get("duration"), str) else ""
     seconds = parse_iso8601_duration(iso)
     view_count = _safe_nonnegative_count(statistics.get("viewCount"))
     like_count = _safe_nonnegative_count(statistics.get("likeCount"))
-    
+
     return {
         "videoId": vid.strip(),
         "url": f"https://www.youtube.com/watch?v={vid.strip()}",

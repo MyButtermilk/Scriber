@@ -43,7 +43,6 @@ from scripts.perf.installer_size.state import (
     utc_now,
 )
 
-
 PHASES = ("prepare", "run", "finalize")
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 REQUIRED_HOLDOUT_FAMILIES = {
@@ -246,9 +245,13 @@ def validate_environment_manifests(context) -> tuple[list[dict[str, Any]], dict[
     findings.extend(errors)
     if wheelhouse is not None:
         if wheelhouse.get("kind") != "scriber-installer-research-wheelhouse":
-            findings.append(finding("block", "wheelhouse_manifest_contract_mismatch", "wheelhouse manifest kind is invalid"))
+            findings.append(
+                finding("block", "wheelhouse_manifest_contract_mismatch", "wheelhouse manifest kind is invalid")
+            )
         if wheelhouse.get("runId") != context.run_id:
-            findings.append(finding("block", "wheelhouse_manifest_run_mismatch", "wheelhouse manifest belongs to another run"))
+            findings.append(
+                finding("block", "wheelhouse_manifest_run_mismatch", "wheelhouse manifest belongs to another run")
+            )
         for field in ("requirementsSha256", "wheelhouseSha256"):
             if not _hash_field(wheelhouse.get(field)):
                 findings.append(finding("block", "wheelhouse_manifest_hash_invalid", f"wheelhouse {field} is invalid"))
@@ -263,7 +266,9 @@ def validate_environment_manifests(context) -> tuple[list[dict[str, Any]], dict[
         evidence["wheelhouse-manifest.json"] = file_sha256(paths.wheelhouse_manifest)
     if environment is not None:
         if environment.get("kind") != "scriber-installer-research-python-environment":
-            findings.append(finding("block", "environment_manifest_contract_mismatch", "environment manifest kind is invalid"))
+            findings.append(
+                finding("block", "environment_manifest_contract_mismatch", "environment manifest kind is invalid")
+            )
         if environment.get("runId") != context.run_id or environment.get("environmentName") != "baseline":
             findings.append(
                 finding(
@@ -274,16 +279,30 @@ def validate_environment_manifests(context) -> tuple[list[dict[str, Any]], dict[
             )
         for field in ("requirementsSha256", "wheelhouseSha256", "productDependenciesSha256"):
             if not _hash_field(environment.get(field)):
-                findings.append(finding("block", "environment_manifest_hash_invalid", f"environment {field} is invalid"))
+                findings.append(
+                    finding("block", "environment_manifest_hash_invalid", f"environment {field} is invalid")
+                )
         distributions = environment.get("distributions")
         if not isinstance(distributions, list) or not distributions:
-            findings.append(finding("block", "environment_distributions_missing", "environment distribution inventory is empty"))
+            findings.append(
+                finding("block", "environment_distributions_missing", "environment distribution inventory is empty")
+            )
         else:
             names = [str(item.get("name") or "") for item in distributions if isinstance(item, dict)]
             if len(names) != len(distributions) or any(not name for name in names) or len(names) != len(set(names)):
-                findings.append(finding("block", "environment_distributions_invalid", "environment distributions are missing or duplicated"))
+                findings.append(
+                    finding(
+                        "block",
+                        "environment_distributions_invalid",
+                        "environment distributions are missing or duplicated",
+                    )
+                )
         if not _manifest_is_path_redacted(environment):
-            findings.append(finding("block", "environment_manifest_contains_path", "environment manifest contains a local absolute path"))
+            findings.append(
+                finding(
+                    "block", "environment_manifest_contains_path", "environment manifest contains a local absolute path"
+                )
+            )
         if environment.get("requirements") != snapshot_identities:
             findings.append(
                 finding(
@@ -352,11 +371,7 @@ def _plain_tree_identity(root: Path) -> dict[str, Any] | None:
         root_info = root.lstat()
     except OSError:
         return None
-    if (
-        not root.is_dir()
-        or root.is_symlink()
-        or bool(getattr(root_info, "st_file_attributes", 0) & reparse_point)
-    ):
+    if not root.is_dir() or root.is_symlink() or bool(getattr(root_info, "st_file_attributes", 0) & reparse_point):
         return None
     entries: list[str] = []
     file_count = 0
@@ -365,18 +380,14 @@ def _plain_tree_identity(root: Path) -> dict[str, Any] | None:
         descendants = list(root.rglob("*"))
         for path in descendants:
             info = path.lstat()
-            if path.is_symlink() or bool(
-                getattr(info, "st_file_attributes", 0) & reparse_point
-            ):
+            if path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & reparse_point):
                 return None
             relative = path.relative_to(root).as_posix()
             if path.is_dir():
                 entries.append(f"D|{relative}")
             elif path.is_file():
                 length = info.st_size
-                entries.append(
-                    f"F|{relative}|{length}|{file_sha256(path)}"
-                )
+                entries.append(f"F|{relative}|{length}|{file_sha256(path)}")
                 file_count += 1
                 total_bytes += length
             else:
@@ -401,12 +412,7 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
     npm = node_root / "node_modules" / "npm" / "bin" / "npm-cli.js"
     tauri = context.repo_root / "Frontend" / "node_modules" / "@tauri-apps" / "cli" / "tauri.js"
     frontend_node_modules = context.repo_root / "Frontend" / "node_modules"
-    native_tauri = (
-        frontend_node_modules
-        / "@tauri-apps"
-        / "cli-win32-x64-msvc"
-        / "cli.win32-x64-msvc.node"
-    )
+    native_tauri = frontend_node_modules / "@tauri-apps" / "cli-win32-x64-msvc" / "cli.win32-x64-msvc.node"
     package_lock = context.repo_root / "Frontend" / "package-lock.json"
     node_version_file = context.repo_root / ".node-version"
     findings: list[dict[str, Any]] = []
@@ -432,10 +438,7 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
             not isinstance(component, dict)
             or component.get("name") != expected_name
             or component.get("fileName") != expected_file_name
-            or (
-                name == "frontendPackageLock"
-                and component.get("version") != "lockfile-v3"
-            )
+            or (name == "frontendPackageLock" and component.get("version") != "lockfile-v3")
             or not _file_identity_matches(path, component)
         ):
             findings.append(
@@ -448,10 +451,7 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
             )
 
     node_modules_identity = _plain_tree_identity(frontend_node_modules)
-    if (
-        node_modules_identity is None
-        or payload.get("frontendNodeModules") != node_modules_identity
-    ):
+    if node_modules_identity is None or payload.get("frontendNodeModules") != node_modules_identity:
         findings.append(
             finding(
                 "block",
@@ -516,11 +516,14 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
     actual_versions = {"node": node_actual, "npm": npm_actual, "tauri": tauri_actual}
     for name, actual in actual_versions.items():
         manifest_component = payload.get(name)
-        manifest_version = (
-            manifest_component.get("version") if isinstance(manifest_component, dict) else None
-        )
+        manifest_version = manifest_component.get("version") if isinstance(manifest_component, dict) else None
         expected = expected_versions[name]
-        if not isinstance(manifest_version, str) or not manifest_version or actual != expected or actual != manifest_version:
+        if (
+            not isinstance(manifest_version, str)
+            or not manifest_version
+            or actual != expected
+            or actual != manifest_version
+        ):
             findings.append(
                 finding(
                     "block",
@@ -610,28 +613,14 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
     nsis_component = payload.get("nsis")
     nsis_tree = payload.get("nsisTree")
     local_app_data = os.environ.get("LOCALAPPDATA")
-    relative_nsis = (
-        nsis_component.get("relativePath")
-        if isinstance(nsis_component, dict)
-        else None
-    )
+    relative_nsis = nsis_component.get("relativePath") if isinstance(nsis_component, dict) else None
     nsis_root = Path(local_app_data) / "tauri" / "NSIS" if local_app_data else None
     nsis = (
         nsis_root / Path(relative_nsis.replace("/", os.sep))
-        if nsis_root is not None
-        and relative_nsis in {"Bin/makensis.exe", "makensis.exe"}
+        if nsis_root is not None and relative_nsis in {"Bin/makensis.exe", "makensis.exe"}
         else None
     )
-    if nsis is None:
-        findings.append(
-            finding(
-                "block",
-                "toolchain_component_content_drift",
-                "active toolchain component nsis differs from its manifest",
-                component="nsis",
-            )
-        )
-    elif (
+    if nsis is None or (
         nsis_component.get("name") != "makensis"
         or nsis_component.get("fileName") != "makensis.exe"
         or not _file_identity_matches(nsis, nsis_component)
@@ -681,9 +670,13 @@ def validate_toolchain_manifest(context) -> tuple[list[dict[str, Any]], dict[str
     if payload.get("kind") != "scriber-installer-research-toolchain":
         findings.append(finding("block", "toolchain_manifest_contract_mismatch", "toolchain manifest kind is invalid"))
     if payload.get("runId") != context.run_id:
-        findings.append(finding("block", "toolchain_manifest_run_mismatch", "toolchain manifest belongs to another run"))
+        findings.append(
+            finding("block", "toolchain_manifest_run_mismatch", "toolchain manifest belongs to another run")
+        )
     if payload.get("rustToolchain") != "1.97.0":
-        findings.append(finding("block", "toolchain_rust_pin_mismatch", "research Rust toolchain must remain pinned to 1.97.0"))
+        findings.append(
+            finding("block", "toolchain_rust_pin_mismatch", "research Rust toolchain must remain pinned to 1.97.0")
+        )
     for name in (
         "node",
         "npm",
@@ -702,15 +695,18 @@ def validate_toolchain_manifest(context) -> tuple[list[dict[str, Any]], dict[str
             findings.append(finding("block", "toolchain_component_missing", f"toolchain component {name} is missing"))
             continue
         if not _hash_field(component.get("sha256")):
-            findings.append(finding("block", "toolchain_component_hash_invalid", f"toolchain component {name} has no valid SHA-256"))
+            findings.append(
+                finding("block", "toolchain_component_hash_invalid", f"toolchain component {name} has no valid SHA-256")
+            )
         length = component.get("length")
         if isinstance(length, bool) or not isinstance(length, int) or length <= 0:
-            findings.append(finding("block", "toolchain_component_length_invalid", f"toolchain component {name} length is invalid"))
+            findings.append(
+                finding("block", "toolchain_component_length_invalid", f"toolchain component {name} length is invalid")
+            )
     frontend_node_modules = payload.get("frontendNodeModules")
     if (
         not isinstance(frontend_node_modules, dict)
-        or set(frontend_node_modules)
-        != {"fileCount", "totalBytes", "treeSha256"}
+        or set(frontend_node_modules) != {"fileCount", "totalBytes", "treeSha256"}
         or isinstance(frontend_node_modules.get("fileCount"), bool)
         or not isinstance(frontend_node_modules.get("fileCount"), int)
         or frontend_node_modules.get("fileCount", 0) <= 0
@@ -746,11 +742,10 @@ def validate_toolchain_manifest(context) -> tuple[list[dict[str, Any]], dict[str
             )
         )
     nsis_component = payload.get("nsis")
-    if (
-        not isinstance(nsis_component, dict)
-        or nsis_component.get("relativePath")
-        not in {"Bin/makensis.exe", "makensis.exe"}
-    ):
+    if not isinstance(nsis_component, dict) or nsis_component.get("relativePath") not in {
+        "Bin/makensis.exe",
+        "makensis.exe",
+    }:
         findings.append(
             finding(
                 "block",
@@ -759,7 +754,9 @@ def validate_toolchain_manifest(context) -> tuple[list[dict[str, Any]], dict[str
             )
         )
     if not _manifest_is_path_redacted(payload):
-        findings.append(finding("block", "toolchain_manifest_contains_path", "toolchain manifest contains a local absolute path"))
+        findings.append(
+            finding("block", "toolchain_manifest_contains_path", "toolchain manifest contains a local absolute path")
+        )
     findings.extend(_active_toolchain_verification(context, payload))
     evidence["toolchain-manifest.json"] = file_sha256(path)
     return findings, evidence
@@ -768,9 +765,13 @@ def validate_toolchain_manifest(context) -> tuple[list[dict[str, Any]], dict[str
 def _static_holdout_cases(payload: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
     findings: list[dict[str, Any]] = []
     if payload.get("schemaVersion") != 1 or payload.get("fixtureId") != "youtube-runtime-holdouts-v1":
-        findings.append(finding("block", "youtube_holdout_contract_mismatch", "YouTube holdout fixture contract is invalid"))
+        findings.append(
+            finding("block", "youtube_holdout_contract_mismatch", "YouTube holdout fixture contract is invalid")
+        )
     if payload.get("frozenCaseContract") is not True:
-        findings.append(finding("block", "youtube_holdout_contract_not_frozen", "YouTube holdout case contract is not frozen"))
+        findings.append(
+            finding("block", "youtube_holdout_contract_not_frozen", "YouTube holdout case contract is not frozen")
+        )
     rows = payload.get("cases")
     if not isinstance(rows, list):
         return {}, [*findings, finding("block", "youtube_holdout_cases_missing", "YouTube holdout cases are missing")]
@@ -783,7 +784,9 @@ def _static_holdout_cases(payload: dict[str, Any]) -> tuple[dict[str, dict[str, 
         case_id = str(row.get("id") or "")
         family = str(row.get("family") or "")
         if not case_id or case_id in cases:
-            findings.append(finding("block", "youtube_holdout_case_id_invalid", "YouTube holdout case id is missing or duplicated"))
+            findings.append(
+                finding("block", "youtube_holdout_case_id_invalid", "YouTube holdout case id is missing or duplicated")
+            )
             continue
         if row.get("status") != "pending_validation":
             findings.append(
@@ -795,7 +798,11 @@ def _static_holdout_cases(payload: dict[str, Any]) -> tuple[dict[str, dict[str, 
             )
         capabilities = row.get("requiredCapabilities")
         if not isinstance(capabilities, list) or not capabilities:
-            findings.append(finding("block", "youtube_holdout_capabilities_missing", f"holdout {case_id} has no capability contract"))
+            findings.append(
+                finding(
+                    "block", "youtube_holdout_capabilities_missing", f"holdout {case_id} has no capability contract"
+                )
+            )
         cases[case_id] = row
         families.add(family)
     if families != REQUIRED_HOLDOUT_FAMILIES:
@@ -892,14 +899,34 @@ def validate_holdouts(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
     if snapshot is None:
         return findings, evidence
     if snapshot.get("holdoutSnapshotContract") != "InstallerSizeYoutubeHoldoutsV1":
-        findings.append(finding("block", "youtube_holdout_snapshot_contract_mismatch", "run-local holdout snapshot contract is invalid"))
+        findings.append(
+            finding(
+                "block", "youtube_holdout_snapshot_contract_mismatch", "run-local holdout snapshot contract is invalid"
+            )
+        )
     if snapshot.get("schemaVersion") != 1 or snapshot.get("runId") != context.run_id:
-        findings.append(finding("block", "youtube_holdout_snapshot_identity_mismatch", "run-local holdout snapshot belongs to another contract or run"))
+        findings.append(
+            finding(
+                "block",
+                "youtube_holdout_snapshot_identity_mismatch",
+                "run-local holdout snapshot belongs to another contract or run",
+            )
+        )
     if snapshot.get("fixtureId") != fixture.get("fixtureId"):
-        findings.append(finding("block", "youtube_holdout_snapshot_fixture_mismatch", "run-local holdout snapshot uses another fixture"))
+        findings.append(
+            finding(
+                "block", "youtube_holdout_snapshot_fixture_mismatch", "run-local holdout snapshot uses another fixture"
+            )
+        )
     fixture_sha = file_sha256(profile_path)
     if snapshot.get("fixtureSha256") != fixture_sha:
-        findings.append(finding("block", "youtube_holdout_snapshot_fixture_hash_mismatch", "run-local holdout snapshot is not bound to the frozen fixture bytes"))
+        findings.append(
+            finding(
+                "block",
+                "youtube_holdout_snapshot_fixture_hash_mismatch",
+                "run-local holdout snapshot is not bound to the frozen fixture bytes",
+            )
+        )
     try:
         parse_utc(snapshot.get("capturedAtUtc"), field="youtubeHoldouts.capturedAtUtc")
     except StateError as exc:
@@ -907,62 +934,117 @@ def validate_holdouts(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
     snapshot_runtime = snapshot.get("runtime")
     snapshot_distributions = snapshot.get("distributions")
     if not _valid_holdout_runtime(snapshot_runtime):
-        findings.append(finding("block", "youtube_holdout_runtime_identity_invalid", "run-local Deno runtime identity is invalid or unpinned"))
+        findings.append(
+            finding(
+                "block",
+                "youtube_holdout_runtime_identity_invalid",
+                "run-local Deno runtime identity is invalid or unpinned",
+            )
+        )
     if not _valid_holdout_distributions(snapshot_distributions):
-        findings.append(finding("block", "youtube_holdout_distribution_identity_invalid", "run-local Deno/yt-dlp distribution identities are invalid"))
+        findings.append(
+            finding(
+                "block",
+                "youtube_holdout_distribution_identity_invalid",
+                "run-local Deno/yt-dlp distribution identities are invalid",
+            )
+        )
     rows = snapshot.get("cases")
     seen: set[str] = set()
     seen_urls: set[str] = set()
     seen_video_ids: set[str] = set()
     if not isinstance(rows, list):
-        findings.append(finding("block", "youtube_holdout_snapshot_cases_missing", "run-local holdout cases are missing"))
+        findings.append(
+            finding("block", "youtube_holdout_snapshot_cases_missing", "run-local holdout cases are missing")
+        )
     else:
         for row in rows:
             if not isinstance(row, dict):
-                findings.append(finding("block", "youtube_holdout_snapshot_case_invalid", "run-local holdout case is invalid"))
+                findings.append(
+                    finding("block", "youtube_holdout_snapshot_case_invalid", "run-local holdout case is invalid")
+                )
                 continue
             case_id = str(row.get("id") or "")
             static = static_cases.get(case_id)
             if static is None or case_id in seen:
-                findings.append(finding("block", "youtube_holdout_snapshot_case_unknown", f"run-local holdout case {case_id or '<missing>'} is unknown or duplicated"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_case_unknown",
+                        f"run-local holdout case {case_id or '<missing>'} is unknown or duplicated",
+                    )
+                )
                 continue
             seen.add(case_id)
             family = str(static.get("family") or "")
             if row.get("family") != family or row.get("status") != "validated":
-                findings.append(finding("block", "youtube_holdout_snapshot_case_unvalidated", f"holdout {case_id} is not validated for its frozen family"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_case_unvalidated",
+                        f"holdout {case_id} is not validated for its frozen family",
+                    )
+                )
             url = str(row.get("url") or "")
             if not _valid_holdout_url(family, url) or url != static.get("url"):
-                findings.append(finding("block", "youtube_holdout_snapshot_url_invalid", f"holdout {case_id} URL does not represent its family"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_url_invalid",
+                        f"holdout {case_id} URL does not represent its family",
+                    )
+                )
             video_id = str(row.get("videoId") or "")
-            if (
-                not video_id
-                or video_id != _holdout_video_id(url)
-                or url in seen_urls
-                or video_id in seen_video_ids
-            ):
-                findings.append(finding("block", "youtube_holdout_snapshot_video_identity_invalid", f"holdout {case_id} URL/video identity is missing, mismatched, or duplicated"))
+            if not video_id or video_id != _holdout_video_id(url) or url in seen_urls or video_id in seen_video_ids:
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_video_identity_invalid",
+                        f"holdout {case_id} URL/video identity is missing, mismatched, or duplicated",
+                    )
+                )
             seen_urls.add(url)
             seen_video_ids.add(video_id)
             observed = row.get("observedCapabilities")
             required = set(static.get("requiredCapabilities") or [])
             if not isinstance(observed, list) or not required.issubset(set(observed)):
-                findings.append(finding("block", "youtube_holdout_snapshot_capability_missing", f"holdout {case_id} lacks required observed capabilities"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_capability_missing",
+                        f"holdout {case_id} lacks required observed capabilities",
+                    )
+                )
             if row.get("denoProbe") != "pass":
-                findings.append(finding("block", "youtube_holdout_snapshot_deno_probe_missing", f"holdout {case_id} has no passing Deno reference probe"))
-            evidence_path = (
-                paths_for(context).preflight_dir / "youtube-holdout-probes" / f"{case_id}.json"
-            ).resolve()
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_snapshot_deno_probe_missing",
+                        f"holdout {case_id} has no passing Deno reference probe",
+                    )
+                )
+            evidence_path = (paths_for(context).preflight_dir / "youtube-holdout-probes" / f"{case_id}.json").resolve()
             if not evidence_path.is_relative_to(paths_for(context).root.resolve()) or not evidence_path.is_file():
-                findings.append(finding("block", "youtube_holdout_probe_missing", f"holdout {case_id} Deno probe evidence is missing"))
+                findings.append(
+                    finding(
+                        "block", "youtube_holdout_probe_missing", f"holdout {case_id} Deno probe evidence is missing"
+                    )
+                )
                 continue
             if row.get("probeEvidenceSha256") != file_sha256(evidence_path):
-                findings.append(finding("block", "youtube_holdout_probe_hash_mismatch", f"holdout {case_id} Deno probe hash is invalid"))
+                findings.append(
+                    finding(
+                        "block", "youtube_holdout_probe_hash_mismatch", f"holdout {case_id} Deno probe hash is invalid"
+                    )
+                )
                 continue
             evidence[f"youtube-holdout-probe:{case_id}"] = file_sha256(evidence_path)
             try:
                 probe = load_json_object(evidence_path)
             except StateError as exc:
-                findings.append(finding("block", "youtube_holdout_probe_invalid", f"holdout {case_id} Deno probe is invalid: {exc}"))
+                findings.append(
+                    finding("block", "youtube_holdout_probe_invalid", f"holdout {case_id} Deno probe is invalid: {exc}")
+                )
                 continue
             if (
                 probe.get("probeContract") != "InstallerSizeYoutubeHoldoutProbeV1"
@@ -978,12 +1060,26 @@ def validate_holdouts(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
                 or probe.get("runtime") != snapshot_runtime
                 or probe.get("distributions") != snapshot_distributions
             ):
-                findings.append(finding("block", "youtube_holdout_probe_contract_mismatch", f"holdout {case_id} Deno probe is not bound to this case"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_probe_contract_mismatch",
+                        f"holdout {case_id} Deno probe is not bound to this case",
+                    )
+                )
             probe_capabilities = probe.get("observedCapabilities")
             if not isinstance(probe_capabilities, list) or not required.issubset(set(probe_capabilities)):
-                findings.append(finding("block", "youtube_holdout_probe_capability_missing", f"holdout {case_id} probe lacks frozen capabilities"))
+                findings.append(
+                    finding(
+                        "block",
+                        "youtube_holdout_probe_capability_missing",
+                        f"holdout {case_id} probe lacks frozen capabilities",
+                    )
+                )
         if seen != set(static_cases):
-            findings.append(finding("block", "youtube_holdout_snapshot_incomplete", "run-local holdout snapshot omits frozen cases"))
+            findings.append(
+                finding("block", "youtube_holdout_snapshot_incomplete", "run-local holdout snapshot omits frozen cases")
+            )
     evidence["youtube-holdouts.snapshot.json"] = file_sha256(snapshot_path)
     return findings, evidence
 
@@ -1008,12 +1104,16 @@ def validate_preflight_record(context, evidence: dict[str, str]) -> list[dict[st
     if payload is None:
         return findings
     if payload.get("preflightContract") != "InstallerSizePreflightV1" or payload.get("runId") != context.run_id:
-        findings.append(finding("block", "preflight_record_identity_mismatch", "preflight record contract or RunId is invalid"))
+        findings.append(
+            finding("block", "preflight_record_identity_mismatch", "preflight record contract or RunId is invalid")
+        )
     if payload.get("accepted") is not True:
         findings.append(finding("block", "preflight_not_accepted", "preflight record is not accepted"))
     recorded = payload.get("evidenceHashes")
     if not isinstance(recorded, dict) or recorded != dict(sorted(evidence.items())):
-        findings.append(finding("block", "preflight_evidence_drift", "preflight evidence hashes changed after acceptance"))
+        findings.append(
+            finding("block", "preflight_evidence_drift", "preflight evidence hashes changed after acceptance")
+        )
     return findings
 
 
@@ -1120,7 +1220,9 @@ def _common_checks(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
         return [finding("block", "run_state_invalid", str(exc))], evidence
     drift = protected_drift(context, manifest or session_init)
     if drift:
-        findings.append(finding("block", "protected_input_drift", "frozen installer-size evaluator inputs changed", drift=drift))
+        findings.append(
+            finding("block", "protected_input_drift", "frozen installer-size evaluator inputs changed", drift=drift)
+        )
     timing_config = context.config.get("installTiming")
     combined_config = context.config.get("finalCombinedImprovement")
     if (
@@ -1129,8 +1231,7 @@ def _common_checks(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
         or timing_config.get("warmupPerVariant") != 1
         or context.config.get("maximumInstallRegressionFraction") != 0.05
         or not isinstance(combined_config, dict)
-        or combined_config.get("nanoseconds")
-        != MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS
+        or combined_config.get("nanoseconds") != MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS
         or combined_config.get("fraction") != 0.01
     ):
         findings.append(
@@ -1163,15 +1264,32 @@ def _common_checks(context) -> tuple[list[dict[str, Any]], dict[str, str]]:
     try:
         source = git_snapshot(context.repo_root)
         if source["dirtyEntries"]:
-            findings.append(finding("block", "worktree_dirty", "installer-size measurement requires a clean worktree", dirtyEntries=source["dirtyEntries"]))
+            findings.append(
+                finding(
+                    "block",
+                    "worktree_dirty",
+                    "installer-size measurement requires a clean worktree",
+                    dirtyEntries=source["dirtyEntries"],
+                )
+            )
     except StateError as exc:
         findings.append(finding("block", "git_state_unavailable", str(exc)))
     minimum_free = context.config.get("minimumFreeBytes")
     free_bytes = shutil.disk_usage(context.repo_root).free
     if not isinstance(minimum_free, int) or free_bytes < minimum_free:
-        findings.append(finding("block", "insufficient_disk_space", "installer-size research requires at least 50 GiB free", freeBytes=free_bytes, requiredBytes=minimum_free))
+        findings.append(
+            finding(
+                "block",
+                "insufficient_disk_space",
+                "installer-size research requires at least 50 GiB free",
+                freeBytes=free_bytes,
+                requiredBytes=minimum_free,
+            )
+        )
     if os.name != "nt" or platform.machine().casefold() not in {"amd64", "x86_64"}:
-        findings.append(finding("block", "unsupported_research_platform", "installer-size research requires native Windows x64"))
+        findings.append(
+            finding("block", "unsupported_research_platform", "installer-size research requires native Windows x64")
+        )
     processes = list_scriber_processes()
     if processes:
         findings.append(
@@ -1205,18 +1323,28 @@ def run_doctor(
         pass
     if phase == "prepare":
         if progress.get("researchStartedAtUtc"):
-            findings.append(finding("block", "prepare_after_research_start", "prepare doctor cannot run after the research clock started"))
+            findings.append(
+                finding(
+                    "block",
+                    "prepare_after_research_start",
+                    "prepare doctor cannot run after the research clock started",
+                )
+            )
         if paths.preflight.is_file():
             findings.extend(validate_preflight_record(context, evidence))
     else:
         findings.extend(validate_preflight_record(context, evidence))
         findings.extend(validate_baseline_state(context))
         if not allow_unarmed_run and not progress.get("researchStartedAtUtc"):
-            findings.append(finding("block", "research_clock_not_started", "run doctor requires an armed research clock"))
+            findings.append(
+                finding("block", "research_clock_not_started", "run doctor requires an armed research clock")
+            )
         if progress.get("researchStartedAtUtc") and phase == "run":
             deadline = parse_utc(progress.get("researchDeadlineUtc"), field="researchDeadlineUtc")
             if (now or utc_now()) >= deadline:
-                findings.append(finding("block", "research_deadline_elapsed", "the immutable 12-hour research deadline has elapsed"))
+                findings.append(
+                    finding("block", "research_deadline_elapsed", "the immutable 12-hour research deadline has elapsed")
+                )
     if phase == "finalize":
         champion, errors = _load_optional(
             paths.champion,
@@ -1227,7 +1355,9 @@ def run_doctor(
         if champion is not None:
             findings.extend(validate_result(champion, expected_run_id=str(context.run_id)))
             if champion.get("decision") != "keep":
-                findings.append(finding("block", "champion_decision_invalid", "research champion must be a kept result"))
+                findings.append(
+                    finding("block", "champion_decision_invalid", "research champion must be a kept result")
+                )
     blocked = _blocking(findings)
     return {
         "doctorContract": "InstallerSizeDoctorV1",

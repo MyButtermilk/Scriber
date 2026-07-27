@@ -1,4 +1,5 @@
 """Meeting frame-pipe consumers and crash-safe PCM chunk persistence."""
+
 from __future__ import annotations
 
 import errno
@@ -8,17 +9,18 @@ import os
 import threading
 import time
 import wave
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 
 from loguru import logger
 
 from src.data.meeting_store import MeetingStore
 from src.runtime.audio_frame_pipe import (
-    AUDIO_FRAME_HEADER_LEN,
     AUDIO_FRAME_FLAG_END_OF_STREAM,
+    AUDIO_FRAME_HEADER_LEN,
     AudioFrameSequenceGuard,
     decode_audio_frame_header,
 )
@@ -104,18 +106,14 @@ class MeetingDeviceLevelProbe:
         try:
             with self.reader_factory(pipe, "rb", buffering=0) as reader:
                 while not self._stop.is_set():
-                    header = decode_audio_frame_header(
-                        self._read_exact(reader, AUDIO_FRAME_HEADER_LEN)
-                    )
+                    header = decode_audio_frame_header(self._read_exact(reader, AUDIO_FRAME_HEADER_LEN))
                     guard.verify_and_advance(header)
                     payload = self._read_exact(reader, header.payload_len)
                     sample_count = len(payload) // 2
                     sum_squares = 0
                     peak = 0
                     for offset in range(0, sample_count * 2, 2):
-                        sample = int.from_bytes(
-                            payload[offset:offset + 2], "little", signed=True
-                        )
+                        sample = int.from_bytes(payload[offset : offset + 2], "little", signed=True)
                         magnitude = abs(sample)
                         peak = max(peak, magnitude)
                         sum_squares += sample * sample
@@ -196,15 +194,11 @@ class MeetingAudioRecorder:
         missing_sources = self._REQUIRED_SOURCES - seen_sources
         if missing_sources:
             missing = ", ".join(sorted(missing_sources))
-            raise ValueError(
-                f"Native meeting capture omitted required audio sources: {missing}."
-            )
+            raise ValueError(f"Native meeting capture omitted required audio sources: {missing}.")
         with self._lifecycle_lock:
             alive = [thread for thread in self._threads if thread.is_alive()]
             if alive:
-                raise RuntimeError(
-                    "Meeting audio reader is still active; capture cannot restart safely."
-                )
+                raise RuntimeError("Meeting audio reader is still active; capture cannot restart safely.")
             self._threads.clear()
             self._thread_sources.clear()
             self.root.mkdir(parents=True, exist_ok=True)
@@ -233,9 +227,7 @@ class MeetingAudioRecorder:
             settled.wait(timeout=max(0.0, deadline - time.monotonic()))
         snapshot = self.snapshot()
         failed_sources = {
-            source: "pipe_unavailable"
-            for source, stats in snapshot.items()
-            if not opened_events[source].is_set()
+            source: "pipe_unavailable" for source, stats in snapshot.items() if not opened_events[source].is_set()
         }
         if failed_sources:
             self.stop()
@@ -249,9 +241,7 @@ class MeetingAudioRecorder:
         # files that cannot be safely associated with one.
         return MeetingStore().reconcile_audio_chunks(meetings_root)["quarantined"]
 
-    def stop(
-        self, timeout: float = 5.0, *, expected_disconnect: bool = False
-    ) -> dict[str, Any]:
+    def stop(self, timeout: float = 5.0, *, expected_disconnect: bool = False) -> dict[str, Any]:
         with self._lifecycle_lock:
             if expected_disconnect:
                 self._expected_disconnect.set()
@@ -263,9 +253,7 @@ class MeetingAudioRecorder:
             alive = [thread for thread in threads if thread.is_alive()]
             self._threads = alive
             self._thread_sources = {
-                thread: self._thread_sources[thread]
-                for thread in alive
-                if thread in self._thread_sources
+                thread: self._thread_sources[thread] for thread in alive if thread in self._thread_sources
             }
             if alive:
                 with self._lock:
@@ -273,9 +261,7 @@ class MeetingAudioRecorder:
                         source = self._thread_sources.get(thread)
                         if source and source in self._stats:
                             self._stats[source].error_code = "reader_stop_timeout"
-                raise RuntimeError(
-                    "Meeting audio reader did not stop before the timeout."
-                )
+                raise RuntimeError("Meeting audio reader did not stop before the timeout.")
             if expected_disconnect:
                 with self._lock:
                     for stats in self._stats.values():
@@ -364,13 +350,9 @@ class MeetingAudioRecorder:
                     payload = self._read_exact(reader, header.payload_len)
                     if writer is None:
                         path = self.root / f"{source}-{sequence:06d}.partial.wav"
-                        final_path = path.with_name(
-                            path.name.removesuffix(".partial.wav") + ".wav"
-                        )
+                        final_path = path.with_name(path.name.removesuffix(".partial.wav") + ".wav")
                         if final_path.exists():
-                            raise FileExistsError(
-                                f"Meeting audio destination already exists: {final_path.name}"
-                            )
+                            raise FileExistsError(f"Meeting audio destination already exists: {final_path.name}")
                         writer_handle = path.open("xb")
                         try:
                             writer = wave.open(writer_handle, "wb")
@@ -397,8 +379,13 @@ class MeetingAudioRecorder:
                         stats.payload_bytes += len(payload)
                     if chunk_frames >= self.chunk_audio_frames:
                         self._close_chunk(
-                            source, sequence, path, writer, writer_handle,
-                            chunk_start_frame, chunk_frames,
+                            source,
+                            sequence,
+                            path,
+                            writer,
+                            writer_handle,
+                            chunk_start_frame,
+                            chunk_frames,
                         )
                         writer = None
                         writer_handle = None
@@ -449,8 +436,13 @@ class MeetingAudioRecorder:
                 else:
                     try:
                         self._close_chunk(
-                            source, sequence, path, writer, writer_handle,
-                            chunk_start_frame, chunk_frames,
+                            source,
+                            sequence,
+                            path,
+                            writer,
+                            writer_handle,
+                            chunk_start_frame,
+                            chunk_frames,
                         )
                     except Exception as exc:
                         self._record_error(source, exc)
@@ -461,11 +453,7 @@ class MeetingAudioRecorder:
                                 writer_handle.close()
 
     def _record_error(self, source: str, exc: BaseException) -> None:
-        error_code = (
-            "disk_full"
-            if isinstance(exc, OSError) and exc.errno == errno.ENOSPC
-            else type(exc).__name__
-        )
+        error_code = "disk_full" if isinstance(exc, OSError) and exc.errno == errno.ENOSPC else type(exc).__name__
         with self._lock:
             self._stats[source].error_code = error_code
 
@@ -490,9 +478,7 @@ class MeetingAudioRecorder:
         if frame_count <= 0:
             path.unlink(missing_ok=True)
             return
-        final_path = path.with_name(
-            path.name.removesuffix(".partial.wav") + ".wav"
-        )
+        final_path = path.with_name(path.name.removesuffix(".partial.wav") + ".wav")
         digest_state = hashlib.sha256()
         with path.open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
@@ -509,9 +495,7 @@ class MeetingAudioRecorder:
             sha256=digest,
         )
         if final_path.exists():
-            raise FileExistsError(
-                f"Meeting audio destination already exists: {final_path.name}"
-            )
+            raise FileExistsError(f"Meeting audio destination already exists: {final_path.name}")
         # On Windows, Path.rename is an atomic no-replace publication. The
         # explicit existence check is also required for test/dev platforms
         # where rename may otherwise replace the destination.

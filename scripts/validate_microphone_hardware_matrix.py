@@ -14,7 +14,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.smoke_microphone_hardware_matrix import DEFAULT_SCENARIOS, SCENARIO_EXPECTATION_HINTS
 
-
 REDACTED_TEXT_MARKERS = {"[REDACTED]", "[redacted]", "<redacted>", "***REDACTED***"}
 REDACTED_ENDPOINT_MARKERS = {"[REDACTED_ENDPOINT]", "[redacted-endpoint]", "<redacted-endpoint>"}
 

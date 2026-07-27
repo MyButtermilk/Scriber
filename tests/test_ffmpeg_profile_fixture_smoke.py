@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ffmpeg" / "smoke_profile_b_fixtures.py"
 

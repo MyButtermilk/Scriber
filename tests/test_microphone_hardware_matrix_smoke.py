@@ -9,10 +9,9 @@ import scripts.smoke_microphone_hardware_matrix as matrix_smoke
 from scripts.smoke_microphone_hardware_matrix import (
     Device,
     evaluate_expectations,
-    summarize_rust_inventory_change,
     summarize_change,
+    summarize_rust_inventory_change,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -314,6 +313,4 @@ def test_expectation_evaluator_rejects_noop_without_explicit_expectation() -> No
         expect_favorite_fallback=False,
     )
 
-    assert failures == [
-        "expected microphone list/default marker to change or an explicit expectation flag"
-    ]
+    assert failures == ["expected microphone list/default marker to change or an explicit expectation flag"]

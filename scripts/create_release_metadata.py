@@ -6,7 +6,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -43,11 +43,7 @@ def sha256_file(path: Path) -> str:
 def discover_artifacts(root: Path = DEFAULT_ARTIFACT_DIR, *, version: str | None = None) -> list[Path]:
     if not root.exists():
         return []
-    artifacts = sorted(
-        path
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix.lower() in {".exe", ".msi"}
-    )
+    artifacts = sorted(path for path in root.rglob("*") if path.is_file() and path.suffix.lower() in {".exe", ".msi"})
     if version:
         normalized_version = version[1:] if version.startswith("v") else version
         version_pattern = re.compile(
@@ -61,11 +57,7 @@ def discover_artifacts(root: Path = DEFAULT_ARTIFACT_DIR, *, version: str | None
 def primary_platform_artifact(artifacts: list[Path]) -> Path | None:
     if not artifacts:
         return None
-    nsis = [
-        path
-        for path in artifacts
-        if path.suffix.lower() == ".exe" and "setup" in path.name.lower()
-    ]
+    nsis = [path for path in artifacts if path.suffix.lower() == ".exe" and "setup" in path.name.lower()]
     if nsis:
         return sorted(nsis)[0]
     return sorted(artifacts)[0]
@@ -145,7 +137,7 @@ def write_metadata(
     tag: str | None,
 ) -> dict:
     output_dir.mkdir(parents=True, exist_ok=True)
-    pub_date = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    pub_date = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
     checksums = []
     for path in artifacts:

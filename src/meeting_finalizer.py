@@ -1,4 +1,5 @@
 """Canonical meeting transcript and analysis orchestration."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,11 +8,12 @@ import json
 import re
 import shutil
 import wave
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any
 from uuid import uuid4
 
 from loguru import logger
@@ -41,7 +43,6 @@ from src.data.transcript_artifact_store import (
     TranscriptArtifactStore,
 )
 from src.meeting_analysis import MEETING_ANALYSIS_SCHEMA_VERSION, analyze_meeting
-from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
 from src.runtime.ffmpeg_commands import (
     lossless_flac_track_args,
     meeting_lossless_archive_args,
@@ -63,7 +64,6 @@ from src.transcript_artifacts import (
     stage_units_from_local_segments,
     stage_units_from_provider,
 )
-
 
 ProgressCallback = Callable[[str, float], Awaitable[None]]
 
@@ -93,9 +93,7 @@ async def _await_thread_result(
     return result, pending_cancel
 
 
-async def _durable_thread_call(
-    function: Callable[..., Any], *args: Any, **kwargs: Any
-) -> Any:
+async def _durable_thread_call(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     result, pending_cancel = await _await_thread_result(function, *args, **kwargs)
     if pending_cancel is not None:
         raise pending_cancel
@@ -130,9 +128,7 @@ class MeetingFinalizer:
         self.speaker_model = speaker_model
         self.speaker_diarizer = speaker_diarizer
         self.provider_http_transport = provider_http_transport
-        self.artifact_store = artifact_store or TranscriptArtifactStore(
-            Path(database._DB_PATH)
-        )
+        self.artifact_store = artifact_store or TranscriptArtifactStore(Path(database._DB_PATH))
         self._active_attempt_lease: tuple[str, str] | None = None
         self._attempt_lease_heartbeat_task: asyncio.Task[None] | None = None
 
@@ -155,9 +151,7 @@ class MeetingFinalizer:
         try:
             root.relative_to(audio_root)
         except ValueError as exc:
-            raise ValueError(
-                "Meeting voice-processing temp directory escaped the audio workspace."
-            ) from exc
+            raise ValueError("Meeting voice-processing temp directory escaped the audio workspace.") from exc
         root.mkdir(parents=True, exist_ok=True)
         temporary = root / uuid4().hex
         temporary.mkdir(parents=False, exist_ok=False)
@@ -168,13 +162,24 @@ class MeetingFinalizer:
         if database.get_transcript(str(meeting["id"])) is not None:
             return
         created_at = str(meeting.get("createdAt") or meeting.get("startedAt") or "")
-        database.save_transcript({
-            "id": meeting["id"], "title": meeting["title"], "date": created_at,
-            "duration": "00:00", "status": "processing", "type": "meeting",
-            "language": meeting.get("language", "auto"), "step": "Finalizing",
-            "sourceUrl": "", "channel": "Meeting", "thumbnailUrl": "",
-            "content": "", "createdAt": created_at, "updatedAt": created_at,
-        })
+        database.save_transcript(
+            {
+                "id": meeting["id"],
+                "title": meeting["title"],
+                "date": created_at,
+                "duration": "00:00",
+                "status": "processing",
+                "type": "meeting",
+                "language": meeting.get("language", "auto"),
+                "step": "Finalizing",
+                "sourceUrl": "",
+                "channel": "Meeting",
+                "thumbnailUrl": "",
+                "content": "",
+                "createdAt": created_at,
+                "updatedAt": created_at,
+            }
+        )
 
     def _frozen_meeting_route(self, meeting: dict[str, Any]):
         status = self.speaker_diarizer.status() if self.speaker_diarizer is not None else {}
@@ -182,8 +187,7 @@ class MeetingFinalizer:
         metadata = meeting.get("captureMetadata")
         reprocess_model = (
             str(metadata.get("reprocessFinalModel") or "").strip()
-            if isinstance(metadata, dict)
-            and metadata.get("reprocessKind") == "full_transcript"
+            if isinstance(metadata, dict) and metadata.get("reprocessKind") == "full_transcript"
             else ""
         )
         route_args = {
@@ -200,13 +204,8 @@ class MeetingFinalizer:
             },
             "transport": (
                 "webm_opus_task_derivative"
-                if provider.strip().lower()
-                in {"soniox", "soniox_async"}
-                else (
-                    "mp3_task_derivative"
-                    if provider.strip().lower() in {"modulate", "modulate_async"}
-                    else None
-                )
+                if provider.strip().lower() in {"soniox", "soniox_async"}
+                else ("mp3_task_derivative" if provider.strip().lower() in {"modulate", "modulate_async"} else None)
             ),
             "model": reprocess_model or None,
         }
@@ -265,28 +264,20 @@ class MeetingFinalizer:
         }
 
     @classmethod
-    def _track_result_matches_audio(
-        cls, track_result: Any, track: PreparedMeetingTrack
-    ) -> bool:
+    def _track_result_matches_audio(cls, track_result: Any, track: PreparedMeetingTrack) -> bool:
         evidence = getattr(track_result, "evidence", {})
         actual = evidence.get("sourceAudio") if isinstance(evidence, dict) else None
         return actual == cls._track_audio_evidence(track)
 
-    def _begin_artifact_attempt(
-        self, meeting: dict[str, Any]
-    ) -> tuple[AttemptRecord, str, Any | None, dict[str, Any]]:
+    def _begin_artifact_attempt(self, meeting: dict[str, Any]) -> tuple[AttemptRecord, str, Any | None, dict[str, Any]]:
         owner = f"meeting-{uuid4().hex}"
         frozen_route = self._frozen_meeting_route(meeting)
         expected_route = frozen_route.snapshot_draft()
         recovered = self.artifact_store.latest_recoverable_for_transcript(meeting["id"])
         if (
             recovered is not None
-            and self._route_snapshot_matches(
-                recovered.route_snapshot, expected_route
-            )
-            and self._attempt_belongs_to_current_reprocess(
-                meeting, recovered.attempt
-            )
+            and self._route_snapshot_matches(recovered.route_snapshot, expected_route)
+            and self._attempt_belongs_to_current_reprocess(meeting, recovered.attempt)
         ):
             bundle = self.artifact_store.claim_recovery_bundle(
                 recovered.attempt.id,
@@ -294,17 +285,13 @@ class MeetingFinalizer:
                 expected_version=recovered.attempt.state_version,
                 ttl_seconds=_ATTEMPT_LEASE_TTL_SECONDS,
             )
-            return bundle.attempt, owner, bundle, self._execution_route_for_snapshot(
-                bundle.route_snapshot
-            )
+            return bundle.attempt, owner, bundle, self._execution_route_for_snapshot(bundle.route_snapshot)
 
         partial = self.artifact_store.latest_resumable_track_attempt(meeting["id"])
         if (
             partial is not None
             and self._route_snapshot_matches(partial.route_snapshot, expected_route)
-            and self._attempt_belongs_to_current_reprocess(
-                meeting, partial.attempt
-            )
+            and self._attempt_belongs_to_current_reprocess(meeting, partial.attempt)
         ):
             attempt = self.artifact_store.acquire_attempt_lease(
                 partial.attempt.id,
@@ -312,13 +299,9 @@ class MeetingFinalizer:
                 expected_version=partial.attempt.state_version,
                 ttl_seconds=_ATTEMPT_LEASE_TTL_SECONDS,
             )
-            return attempt, owner, partial, self._execution_route_for_snapshot(
-                partial.route_snapshot
-            )
+            return attempt, owner, partial, self._execution_route_for_snapshot(partial.route_snapshot)
 
-        attempt = self.artifact_store.create_attempt(
-            transcript_id=meeting["id"], workload="meeting"
-        )
+        attempt = self.artifact_store.create_attempt(transcript_id=meeting["id"], workload="meeting")
         self.artifact_store.persist_route_snapshot(attempt.id, expected_route)
         attempt = self.artifact_store.acquire_attempt_lease(
             attempt.id,
@@ -367,9 +350,7 @@ class MeetingFinalizer:
         )
 
     @staticmethod
-    def _attempt_belongs_to_current_reprocess(
-        meeting: dict[str, Any], attempt: Any
-    ) -> bool:
+    def _attempt_belongs_to_current_reprocess(meeting: dict[str, Any], attempt: Any) -> bool:
         """Reject provider evidence that predates an explicit full reprocess.
 
         A failed attempt started by this reprocess remains recoverable on a
@@ -388,16 +369,14 @@ class MeetingFinalizer:
             requested = datetime.fromisoformat(requested_raw.replace("Z", "+00:00"))
             created = datetime.fromisoformat(created_raw.replace("Z", "+00:00"))
             if requested.tzinfo is None:
-                requested = requested.replace(tzinfo=timezone.utc)
+                requested = requested.replace(tzinfo=UTC)
             if created.tzinfo is None:
-                created = created.replace(tzinfo=timezone.utc)
-            return created.astimezone(timezone.utc) >= requested.astimezone(timezone.utc)
+                created = created.replace(tzinfo=UTC)
+            return created.astimezone(UTC) >= requested.astimezone(UTC)
         except ValueError:
             return False
 
-    def _completed_artifact_for_current_reprocess(
-        self, meeting: dict[str, Any]
-    ) -> tuple[CanonicalSegment, ...] | None:
+    def _completed_artifact_for_current_reprocess(self, meeting: dict[str, Any]) -> tuple[CanonicalSegment, ...] | None:
         """Return a committed reprocess artifact whose Meeting projection may lag.
 
         Canonical artifact publication and the Meeting projection intentionally
@@ -437,9 +416,7 @@ class MeetingFinalizer:
     async def _begin_artifact_attempt_async(
         self, meeting: dict[str, Any]
     ) -> tuple[AttemptRecord, str, Any | None, dict[str, Any]]:
-        result, pending_cancel = await _await_thread_result(
-            self._begin_artifact_attempt, meeting
-        )
+        result, pending_cancel = await _await_thread_result(self._begin_artifact_attempt, meeting)
         if pending_cancel is not None:
             attempt, owner, _recovery, _route = result
             # Let run()'s finally block release the lease after the worker has
@@ -459,19 +436,12 @@ class MeetingFinalizer:
         while True:
             await asyncio.sleep(_ATTEMPT_LEASE_HEARTBEAT_SECONDS)
             renewed = False
-            for retry_index, delay_seconds in enumerate(
-                _ATTEMPT_LEASE_RETRY_DELAYS_SECONDS
-            ):
+            for retry_index, delay_seconds in enumerate(_ATTEMPT_LEASE_RETRY_DELAYS_SECONDS):
                 if delay_seconds:
                     await asyncio.sleep(delay_seconds)
                 try:
-                    current = await asyncio.to_thread(
-                        self.artifact_store.require_attempt, attempt_id
-                    )
-                    if (
-                        current.state in terminal_states
-                        or current.lease_owner != owner
-                    ):
+                    current = await asyncio.to_thread(self.artifact_store.require_attempt, attempt_id)
+                    if current.state in terminal_states or current.lease_owner != owner:
                         return
                     await asyncio.to_thread(
                         self.artifact_store.renew_attempt_lease,
@@ -497,9 +467,7 @@ class MeetingFinalizer:
                 # transient SQLite or shutdown failure.
                 continue
 
-    async def _start_attempt_lease_heartbeat(
-        self, attempt_id: str, owner: str
-    ) -> None:
+    async def _start_attempt_lease_heartbeat(self, attempt_id: str, owner: str) -> None:
         await self._stop_attempt_lease_heartbeat()
         self._active_attempt_lease = (attempt_id, owner)
         self._attempt_lease_heartbeat_task = asyncio.create_task(
@@ -517,10 +485,7 @@ class MeetingFinalizer:
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
-                logger.warning(
-                    "Meeting artifact lease heartbeat stopped with an error: "
-                    f"{type(exc).__name__}: {exc}"
-                )
+                logger.warning(f"Meeting artifact lease heartbeat stopped with an error: {type(exc).__name__}: {exc}")
 
     @staticmethod
     def _execution_route_for_snapshot(snapshot: Any) -> dict[str, Any]:
@@ -528,9 +493,7 @@ class MeetingFinalizer:
         expected = str(snapshot.request_options.get("customVocabularySha256") or "")
         actual = hashlib.sha256(vocab.encode("utf-8")).hexdigest() if vocab else ""
         if expected and actual != expected:
-            raise RuntimeError(
-                "Meeting recovery needs the same private custom vocabulary used by its frozen route."
-            )
+            raise RuntimeError("Meeting recovery needs the same private custom vocabulary used by its frozen route.")
         options = snapshot.request_options
         return {
             "provider": snapshot.provider,
@@ -540,19 +503,11 @@ class MeetingFinalizer:
             "transport": snapshot.transport,
             "provider_route": options.get("providerRoute"),
             "audio_input_format": options.get("audioInputFormat"),
-            "provider_audio_capability_id": options.get(
-                "providerAudioCapabilityId"
-            ),
-            "provider_audio_capability_revision": options.get(
-                "providerAudioCapabilityRevision"
-            ),
-            "audio_input_format_verified": options.get(
-                "audioInputFormatVerified"
-            ),
+            "provider_audio_capability_id": options.get("providerAudioCapabilityId"),
+            "provider_audio_capability_revision": options.get("providerAudioCapabilityRevision"),
+            "audio_input_format_verified": options.get("audioInputFormatVerified"),
             "audio_selection_mode": options.get("audioSelectionMode"),
-            "audio_preparation_implementation": options.get(
-                "audioPreparationImplementation"
-            ),
+            "audio_preparation_implementation": options.get("audioPreparationImplementation"),
         }
 
     def _commit_artifact(
@@ -574,9 +529,7 @@ class MeetingFinalizer:
                 evidence={
                     "trackCount": len(track_results),
                     "normalizedIntervalCount": len(units),
-                    "nativeSpeakerIntervals": sum(
-                        1 for unit in units if unit.speaker_origin == "provider_native"
-                    ),
+                    "nativeSpeakerIntervals": sum(1 for unit in units if unit.speaker_origin == "provider_native"),
                 },
                 lease_owner=owner,
             )
@@ -609,7 +562,8 @@ class MeetingFinalizer:
                     {"sourceTrack": item.source_track},
                 )
                 for item in track_results
-            ] + [
+            ]
+            + [
                 ArtifactInputDraft(
                     "track_derivation",
                     item.id,
@@ -632,9 +586,7 @@ class MeetingFinalizer:
         return artifact.segments
 
     async def _commit_artifact_async(self, **kwargs: Any) -> tuple[CanonicalSegment, ...]:
-        result, pending_cancel = await _await_thread_result(
-            self._commit_artifact, **kwargs
-        )
+        result, pending_cancel = await _await_thread_result(self._commit_artifact, **kwargs)
         if pending_cancel is not None:
             logger.debug("Cancellation arrived after Meeting canonical commit; completing finalization")
         return result
@@ -650,9 +602,7 @@ class MeetingFinalizer:
             if lease is not None:
                 attempt_id, owner = lease
                 try:
-                    current = await _durable_thread_call(
-                        self.artifact_store.require_attempt, attempt_id
-                    )
+                    current = await _durable_thread_call(self.artifact_store.require_attempt, attempt_id)
                     if current.lease_owner == owner and current.state not in {
                         AttemptState.COMPLETED,
                         AttemptState.SUPERSEDED,
@@ -701,9 +651,7 @@ class MeetingFinalizer:
 
         await progress("Creating canonical transcript", 0.2)
         await asyncio.to_thread(self._ensure_transcript_parent, meeting)
-        committed_reprocess = await _durable_thread_call(
-            self._completed_artifact_for_current_reprocess, meeting
-        )
+        committed_reprocess = await _durable_thread_call(self._completed_artifact_for_current_reprocess, meeting)
         if committed_reprocess is not None:
             await progress("Recovering committed transcript", 0.7)
             return await self._publish_committed_segments_and_analysis(
@@ -717,18 +665,10 @@ class MeetingFinalizer:
         recovered_stage = getattr(recovery, "stage_result", None)
         track_results = list(getattr(recovery, "track_results", ()))
         if not track_results:
-            track_results = list(
-                await _durable_thread_call(
-                    self.artifact_store.list_track_stage_results, attempt.id
-                )
-            )
+            track_results = list(await _durable_thread_call(self.artifact_store.list_track_stage_results, attempt.id))
         track_derivations = list(getattr(recovery, "track_derivations", ()))
         if not track_derivations:
-            track_derivations = list(
-                await _durable_thread_call(
-                    self.artifact_store.list_track_derivations, attempt.id
-                )
-            )
+            track_derivations = list(await _durable_thread_call(self.artifact_store.list_track_derivations, attempt.id))
         canonical_units: list[StageUnit] = []
         transcription_tracks = {
             "microphone": tracks.get("mic_clean") or tracks.get("microphone"),
@@ -736,16 +676,14 @@ class MeetingFinalizer:
         }
         transcription_tracks = {key: value for key, value in transcription_tracks.items() if value}
         recovered_sources = {item.source_track for item in track_results}
-        audio_identity_changed = bool(
-            recovered_stage is not None and not track_results
-        ) or any(
-            source not in transcription_tracks
-            or not self._track_result_matches_audio(result, transcription_tracks[source])
-            for source, result in ((item.source_track, item) for item in track_results)
-        ) or any(
-            source not in recovered_sources
-            for source in transcription_tracks
-            if recovered_stage is not None
+        audio_identity_changed = (
+            bool(recovered_stage is not None and not track_results)
+            or any(
+                source not in transcription_tracks
+                or not self._track_result_matches_audio(result, transcription_tracks[source])
+                for source, result in ((item.source_track, item) for item in track_results)
+            )
+            or any(source not in recovered_sources for source in transcription_tracks if recovered_stage is not None)
         )
         if audio_identity_changed:
             await self._stop_attempt_lease_heartbeat()
@@ -757,9 +695,7 @@ class MeetingFinalizer:
                 new_state=AttemptState.FAILED,
                 lease_owner=owner,
                 error_code="source_audio_identity_changed",
-                error_message=(
-                    "Prepared Meeting audio changed after the persisted provider result."
-                ),
+                error_message=("Prepared Meeting audio changed after the persisted provider result."),
             )
             self._active_attempt_lease = None
             attempt, owner, recovery, execution_route = await self._begin_artifact_attempt_async(meeting)
@@ -768,16 +704,12 @@ class MeetingFinalizer:
             track_results = list(getattr(recovery, "track_results", ()))
             if not track_results:
                 track_results = list(
-                    await _durable_thread_call(
-                        self.artifact_store.list_track_stage_results, attempt.id
-                    )
+                    await _durable_thread_call(self.artifact_store.list_track_stage_results, attempt.id)
                 )
             track_derivations = list(getattr(recovery, "track_derivations", ()))
             if not track_derivations:
                 track_derivations = list(
-                    await _durable_thread_call(
-                        self.artifact_store.list_track_derivations, attempt.id
-                    )
+                    await _durable_thread_call(self.artifact_store.list_track_derivations, attempt.id)
                 )
         empty_sources: list[str] = []
         if recovered_stage is not None:
@@ -789,9 +721,7 @@ class MeetingFinalizer:
                 for item in track_derivations
                 if item.derivation_kind == "local_speaker_diarization"
             }
-            for index, (source, track) in enumerate(
-                transcription_tracks.items()
-            ):
+            for index, (source, track) in enumerate(transcription_tracks.items()):
                 path = track.path
                 duration_ms = track.duration_ms
                 timeline_origin_ms = track.timeline_origin_ms
@@ -803,10 +733,7 @@ class MeetingFinalizer:
                         meeting["finalProvider"],
                         str(execution_route.get("model") or ""),
                     )
-                    if (
-                        provider_duration_limit is not None
-                        and duration_ms > provider_duration_limit * 1_000
-                    ):
+                    if provider_duration_limit is not None and duration_ms > provider_duration_limit * 1_000:
                         raise ValueError(
                             f"{meeting['finalProvider']} accepts Meeting tracks up to "
                             f"{provider_duration_limit // 60} minutes; choose a compatible "
@@ -833,11 +760,9 @@ class MeetingFinalizer:
                     provider_input = path
                     provider_derivative: Path | None = None
                     try:
-                        if (
-                            supports_direct_file_upload(meeting["finalProvider"])
-                            and execution_route.get("transport")
-                            in {"webm_opus_task_derivative", "mp3_task_derivative"}
-                        ):
+                        if supports_direct_file_upload(meeting["finalProvider"]) and execution_route.get(
+                            "transport"
+                        ) in {"webm_opus_task_derivative", "mp3_task_derivative"}:
                             provider_derivative = await self._create_provider_derivative(
                                 path,
                                 source=source,
@@ -878,15 +803,10 @@ class MeetingFinalizer:
                             f"{source} transcript segments."
                         )
                     if not text:
-                        text = "\n".join(
-                            unit.text.strip()
-                            for unit in provider_units
-                            if unit.text.strip()
-                        ).strip()
+                        text = "\n".join(unit.text.strip() for unit in provider_units if unit.text.strip()).strip()
                     if not text:
                         raise ValueError(
-                            "The final transcription provider returned unusable empty "
-                            f"{source} transcript segments."
+                            f"The final transcription provider returned unusable empty {source} transcript segments."
                         )
                     track_result = await _durable_thread_call(
                         self.artifact_store.persist_track_stage_result,
@@ -905,9 +825,7 @@ class MeetingFinalizer:
                     by_source[source] = track_result
 
                 selected_units = list(track_result.units)
-                native_speaker_evidence = bool(
-                    track_result.evidence.get("nativeSpeakerEvidence")
-                )
+                native_speaker_evidence = bool(track_result.evidence.get("nativeSpeakerEvidence"))
                 derivation = derivation_by_source.get(source)
                 if derivation is not None:
                     selected_units = list(derivation.units)
@@ -935,16 +853,14 @@ class MeetingFinalizer:
                             for unit in track_result.units
                         ]
                     try:
-                        fallback_segments, _turns = (
-                            await self.speaker_diarizer.transcribe_with_fallback_speakers(
-                                audio_path=path,
-                                provider=meeting["finalProvider"],
-                                payload=payload,
-                                text=track_result.transcript_text,
-                                source=source,
-                                timeline_origin_ms=timeline_origin_ms,
-                                normalized_words=normalized_words,
-                            )
+                        fallback_segments, _turns = await self.speaker_diarizer.transcribe_with_fallback_speakers(
+                            audio_path=path,
+                            provider=meeting["finalProvider"],
+                            payload=payload,
+                            text=track_result.transcript_text,
+                            source=source,
+                            timeline_origin_ms=timeline_origin_ms,
+                            normalized_words=normalized_words,
                         )
                     except DiarizationIneligibleError:
                         fallback_segments = []
@@ -953,11 +869,7 @@ class MeetingFinalizer:
                             0.25 + index * 0.25,
                         )
                     if fallback_segments:
-                        selected_units = list(
-                            stage_units_from_local_segments(
-                                fallback_segments, source_track=source
-                            )
-                        )
+                        selected_units = list(stage_units_from_local_segments(fallback_segments, source_track=source))
                         diarizer_status = self.speaker_diarizer.status()
                         derivation = await _durable_thread_call(
                             self.artifact_store.persist_track_derivation,
@@ -968,18 +880,10 @@ class MeetingFinalizer:
                             expected_version=attempt.state_version,
                             units=selected_units,
                             evidence={
-                                "engine": str(
-                                    diarizer_status.get("engine") or "sherpa-onnx"
-                                ),
-                                "engineVersion": str(
-                                    diarizer_status.get("version") or ""
-                                ),
-                                "model": str(
-                                    diarizer_status.get("segmentationModel") or ""
-                                ),
-                                "workerVersion": str(
-                                    diarizer_status.get("workerVersion") or ""
-                                ),
+                                "engine": str(diarizer_status.get("engine") or "sherpa-onnx"),
+                                "engineVersion": str(diarizer_status.get("version") or ""),
+                                "model": str(diarizer_status.get("segmentationModel") or ""),
+                                "workerVersion": str(diarizer_status.get("workerVersion") or ""),
                                 "parentStageResultSha256": track_result.result_sha256,
                                 "segmentCount": len(selected_units),
                             },
@@ -988,15 +892,12 @@ class MeetingFinalizer:
                         track_derivations.append(derivation)
                         derivation_by_source[source] = derivation
                 canonical_units.extend(selected_units)
-                await progress(
-                    f"Transcribed {source} audio", 0.25 + (index + 1) * 0.25
-                )
+                await progress(f"Transcribed {source} audio", 0.25 + (index + 1) * 0.25)
 
         if not canonical_units:
             empty_label = ", ".join(empty_sources) if empty_sources else "all available"
             raise ValueError(
-                "The final transcription provider returned no speech on any canonical "
-                f"Meeting track ({empty_label})."
+                f"The final transcription provider returned no speech on any canonical Meeting track ({empty_label})."
             )
         echo_candidates = [
             {
@@ -1010,18 +911,12 @@ class MeetingFinalizer:
                 "text": unit.text,
                 "timingOrigin": unit.timing_origin,
                 "speakerOrigin": unit.speaker_origin,
-                "alignmentQuality": str(
-                    getattr(unit.alignment_quality, "value", unit.alignment_quality)
-                ),
+                "alignmentQuality": str(getattr(unit.alignment_quality, "value", unit.alignment_quality)),
             }
             for index, unit in enumerate(canonical_units)
         ]
         echo_candidates = self._remove_cross_track_echoes(echo_candidates)
-        echo_candidates.sort(
-            key=lambda item: (
-                item["startMs"], 0 if item["source"] == "microphone" else 1
-            )
-        )
+        echo_candidates.sort(key=lambda item: (item["startMs"], 0 if item["source"] == "microphone" else 1))
         canonical_units = [
             StageUnit(
                 source_track=item["source"],
@@ -1077,9 +972,7 @@ class MeetingFinalizer:
                 # This does not claim that multiple people sharing the device
                 # were diarized; provider/local speaker labels still win when
                 # they exist.
-                "speakerLabel": segment.speaker_label or (
-                    "You" if segment.source_track == "microphone" else ""
-                ),
+                "speakerLabel": segment.speaker_label or ("You" if segment.source_track == "microphone" else ""),
                 "startMs": segment.start_ms,
                 "endMs": segment.end_ms,
                 "text": segment.text,
@@ -1091,8 +984,7 @@ class MeetingFinalizer:
         ]
         capture_metadata = meeting.get("captureMetadata")
         is_full_reprocess = bool(
-            isinstance(capture_metadata, dict)
-            and capture_metadata.get("reprocessKind") == "full_transcript"
+            isinstance(capture_metadata, dict) and capture_metadata.get("reprocessKind") == "full_transcript"
         )
         self.store.replace_segments(
             meeting_id,
@@ -1128,9 +1020,7 @@ class MeetingFinalizer:
                 schema_version=MEETING_ANALYSIS_SCHEMA_VERSION,
             )
 
-        async def cache_put(
-            stage: str, digest: str, payload: dict[str, Any]
-        ) -> None:
+        async def cache_put(stage: str, digest: str, payload: dict[str, Any]) -> None:
             await asyncio.to_thread(
                 self.store.put_analysis_chunk,
                 meeting_id,
@@ -1163,9 +1053,7 @@ class MeetingFinalizer:
             transcript_revision="canonical",
             provider=meeting["analysisModel"],
         )
-        await asyncio.to_thread(
-            self._publish_global_transcript, meeting, self.store.detail(meeting_id), analysis
-        )
+        await asyncio.to_thread(self._publish_global_transcript, meeting, self.store.detail(meeting_id), analysis)
         ready = self.store.transition(meeting_id, "ready")
         await self._purge_redundant_pcm_after_ready(meeting_id, tracks)
         await progress("Meeting ready", 1.0)
@@ -1184,12 +1072,7 @@ class MeetingFinalizer:
             required = {"playback_system"} if "system" in tracks else set()
             if "microphone" in tracks or "mic_clean" in tracks:
                 required.add("playback_microphone")
-            if (
-                head is None
-                or archive is None
-                or not archive.get("equalityVerified")
-                or not required.issubset(assets)
-            ):
+            if head is None or archive is None or not archive.get("equalityVerified") or not required.issubset(assets):
                 return
             root = self.audio_root.resolve()
             verified_paths: list[Path] = []
@@ -1207,9 +1090,7 @@ class MeetingFinalizer:
 
             self.store.mark_audio_chunks_purge_pending(meeting_id)
             pending = self.store.pending_audio_chunk_purges(meeting_id)
-            removal_paths: set[Path] = {
-                track.path.resolve() for track in tracks.values()
-            }
+            removal_paths: set[Path] = {track.path.resolve() for track in tracks.values()}
             for chunk in pending:
                 path = (root / str(chunk["relativePath"])).resolve()
                 if root in path.parents:
@@ -1237,11 +1118,7 @@ class MeetingFinalizer:
         required = {"playback_system"} if "system" in sources else set()
         if sources.intersection({"microphone", "mic_clean"}):
             required.add("playback_microphone")
-        if (
-            archive is None
-            or not archive.get("equalityVerified")
-            or not required.issubset(assets)
-        ):
+        if archive is None or not archive.get("equalityVerified") or not required.issubset(assets):
             return False
         root = self.audio_root.resolve()
         for kind in {"multitrack_flac", "playback_mix", *required}:
@@ -1252,8 +1129,7 @@ class MeetingFinalizer:
             if (
                 root not in path.parents
                 or not path.is_file()
-                or await asyncio.to_thread(self._sha256_file, path)
-                != str(asset.get("sha256") or "")
+                or await asyncio.to_thread(self._sha256_file, path) != str(asset.get("sha256") or "")
             ):
                 return False
         removal_paths: set[Path] = set()
@@ -1273,9 +1149,7 @@ class MeetingFinalizer:
         return True
 
     @staticmethod
-    def _publish_global_transcript(
-        meeting: dict[str, Any], detail: dict[str, Any], analysis: dict[str, Any]
-    ) -> None:
+    def _publish_global_transcript(meeting: dict[str, Any], detail: dict[str, Any], analysis: dict[str, Any]) -> None:
         summary = str(analysis.get("executiveSummary") or "")
         existing = database.get_transcript(str(meeting["id"]))
         if existing is not None and str(existing.get("content") or "").strip():
@@ -1300,17 +1174,28 @@ class MeetingFinalizer:
         duration_ms = max((int(item.get("endMs", 0)) for item in segments), default=0)
         duration = f"{duration_ms // 3_600_000:d}:{(duration_ms // 60_000) % 60:02d}:{(duration_ms // 1000) % 60:02d}"
         created_at = str(meeting.get("createdAt") or meeting.get("startedAt") or "")
-        database.save_transcript({
-            "id": meeting["id"], "title": meeting["title"], "date": created_at,
-            "duration": duration, "status": "completed", "type": "meeting",
-            "language": meeting.get("language", "auto"), "step": "Ready",
-            "sourceUrl": "", "channel": "Meeting", "thumbnailUrl": "",
-            "content": content, "createdAt": created_at,
-            "updatedAt": detail.get("updatedAt") or created_at,
-            "summary": summary,
-            "summaryStatus": "completed" if summary else "idle", "summaryError": "",
-            "summaryUpdatedAt": (detail.get("updatedAt") or created_at) if summary else "",
-        })
+        database.save_transcript(
+            {
+                "id": meeting["id"],
+                "title": meeting["title"],
+                "date": created_at,
+                "duration": duration,
+                "status": "completed",
+                "type": "meeting",
+                "language": meeting.get("language", "auto"),
+                "step": "Ready",
+                "sourceUrl": "",
+                "channel": "Meeting",
+                "thumbnailUrl": "",
+                "content": content,
+                "createdAt": created_at,
+                "updatedAt": detail.get("updatedAt") or created_at,
+                "summary": summary,
+                "summaryStatus": "completed" if summary else "idle",
+                "summaryError": "",
+                "summaryUpdatedAt": (detail.get("updatedAt") or created_at) if summary else "",
+            }
+        )
 
     def _validated_chunks(self, meeting_id: str, source: str) -> list[dict[str, Any]]:
         valid: list[dict[str, Any]] = []
@@ -1335,9 +1220,7 @@ class MeetingFinalizer:
                 # (scanner/indexer/AV). Preserve the complete chunk so retry can
                 # validate it; only deterministic content/path failures are
                 # quarantined as corrupt audio.
-                raise RuntimeError(
-                    f"Meeting audio chunk could not be validated ({type(exc).__name__})."
-                ) from exc
+                raise RuntimeError(f"Meeting audio chunk could not be validated ({type(exc).__name__}).") from exc
             if not reason:
                 valid.append(chunk)
                 continue
@@ -1348,14 +1231,10 @@ class MeetingFinalizer:
                 if destination.exists():
                     destination = quarantine / f"{path.stem}-{chunk['id'][:8]}{path.suffix}"
                 shutil.move(str(path), str(destination))
-            self.store.quarantine_audio_chunk(
-                meeting_id, str(chunk["id"]), reason=f"corrupt-chunk:{reason}"
-            )
+            self.store.quarantine_audio_chunk(meeting_id, str(chunk["id"]), reason=f"corrupt-chunk:{reason}")
         return valid
 
-    async def _apply_speaker_intelligence(
-        self, meeting_id: str, tracks: dict[str, PreparedMeetingTrack]
-    ) -> None:
+    async def _apply_speaker_intelligence(self, meeting_id: str, tracks: dict[str, PreparedMeetingTrack]) -> None:
         library_enabled = getattr(self.store, "speaker_library_enabled", None)
         if callable(library_enabled) and not await asyncio.to_thread(library_enabled):
             return
@@ -1368,8 +1247,8 @@ class MeetingFinalizer:
                 continue
             if scheduled_per_speaker.get(speaker_id, 0) >= 3:
                 continue
-            track_key = "system" if segment["source"] == "system" else (
-                "mic_clean" if "mic_clean" in tracks else "microphone"
+            track_key = (
+                "system" if segment["source"] == "system" else ("mic_clean" if "mic_clean" in tracks else "microphone")
             )
             if track_key not in tracks:
                 continue
@@ -1435,25 +1314,17 @@ class MeetingFinalizer:
         Outlook participant fields.
         """
 
-        if self.speaker_model is None or not bool(
-            self.speaker_model.status().get("installed")
-        ):
+        if self.speaker_model is None or not bool(self.speaker_model.status().get("installed")):
             raise ValueError("Install the local Voice Library model first.")
         library_enabled = getattr(self.store, "speaker_library_enabled", None)
-        if callable(library_enabled) and not await asyncio.to_thread(
-            library_enabled
-        ):
+        if callable(library_enabled) and not await asyncio.to_thread(library_enabled):
             raise ValueError("Turn on Voice Library before recognizing speakers.")
 
         detail = await asyncio.to_thread(self.store.detail, meeting_id)
         if str(detail.get("state") or "") not in {"ready", "analysis_failed"}:
             raise ValueError("Speaker recognition is available after Meeting processing finishes.")
         final_dir = self.audio_root / meeting_id / "final"
-        assets = {
-            str(item.get("kind") or ""): item
-            for item in detail.get("audioAssets", [])
-            if isinstance(item, dict)
-        }
+        assets = {str(item.get("kind") or ""): item for item in detail.get("audioAssets", []) if isinstance(item, dict)}
         source_paths: dict[str, Path] = {}
         for source, kind, filename in (
             ("microphone", "playback_microphone", "microphone.opus"),
@@ -1464,9 +1335,7 @@ class MeetingFinalizer:
                 continue
             expected_path = (final_dir / filename).resolve()
             try:
-                persisted_path = (
-                    self.audio_root / str(asset.get("relativePath") or "")
-                ).resolve()
+                persisted_path = (self.audio_root / str(asset.get("relativePath") or "")).resolve()
                 expected_size = int(asset.get("byteSize") or 0)
                 expected_sha256 = str(asset.get("sha256") or "")
                 if (
@@ -1477,20 +1346,16 @@ class MeetingFinalizer:
                     or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256)
                 ):
                     raise ValueError
-                actual_sha256 = await asyncio.to_thread(
-                    self._sha256_file, persisted_path
-                )
+                actual_sha256 = await asyncio.to_thread(self._sha256_file, persisted_path)
                 if actual_sha256 != expected_sha256:
                     raise ValueError
             except (OSError, TypeError, ValueError) as exc:
-                raise ValueError(
-                    "Retained speaker audio failed its integrity check."
-                ) from exc
+                raise ValueError("Retained speaker audio failed its integrity check.") from exc
             source_paths[source] = persisted_path
         scheduled_per_speaker: dict[str, int] = {}
         candidates: list[dict[str, Any]] = []
         virtual_microphone_speaker_id = hashlib.sha256(
-            f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
+            f"{meeting_id}\0canonical\0microphone\0you".encode()
         ).hexdigest()[:32]
         for segment in detail.get("segments", []):
             source = str(segment.get("source") or "")
@@ -1513,9 +1378,7 @@ class MeetingFinalizer:
             if scheduled_per_speaker.get(speaker_id, 0) >= 3:
                 continue
             duration_ms = min(10_000, end_ms - start_ms)
-            clip_start_ms = start_ms + max(
-                0, ((end_ms - start_ms) - duration_ms) // 2
-            )
+            clip_start_ms = start_ms + max(0, ((end_ms - start_ms) - duration_ms) // 2)
             candidates.append(
                 {
                     "speakerId": speaker_id,
@@ -1527,13 +1390,9 @@ class MeetingFinalizer:
                     "path": source_paths[source],
                 }
             )
-            scheduled_per_speaker[speaker_id] = (
-                scheduled_per_speaker.get(speaker_id, 0) + 1
-            )
+            scheduled_per_speaker[speaker_id] = scheduled_per_speaker.get(speaker_id, 0) + 1
         if not candidates:
-            raise ValueError(
-                "No retained speaker audio is available for local recognition."
-            )
+            raise ValueError("No retained speaker audio is available for local recognition.")
 
         ffmpeg = require_media_tool("ffmpeg")
         observations: list[dict[str, Any]] = []
@@ -1568,24 +1427,13 @@ class MeetingFinalizer:
                     stderr=asyncio.subprocess.PIPE,
                     **hidden_subprocess_kwargs(),
                 )
-                _, stderr = await communicate_or_kill_on_cancel(
-                    process, max_stderr_bytes=64 * 1024
-                )
-                if (
-                    process.returncode != 0
-                    or not temporary.is_file()
-                    or temporary.stat().st_size <= 44
-                ):
-                    reason = (stderr or b"").decode(
-                        "utf-8", errors="replace"
-                    )[-400:]
+                _, stderr = await communicate_or_kill_on_cancel(process, max_stderr_bytes=64 * 1024)
+                if process.returncode != 0 or not temporary.is_file() or temporary.stat().st_size <= 44:
+                    reason = (stderr or b"").decode("utf-8", errors="replace")[-400:]
                     raise RuntimeError(
-                        "A retained speaker sample could not be decoded"
-                        + (f": {reason}" if reason else ".")
+                        "A retained speaker sample could not be decoded" + (f": {reason}" if reason else ".")
                     )
-                embedding = await self.speaker_model.extract(
-                    temporary, 0, int(candidate["durationMs"])
-                )
+                embedding = await self.speaker_model.extract(temporary, 0, int(candidate["durationMs"]))
                 observations.append(
                     {
                         "speakerId": candidate["speakerId"],
@@ -1605,9 +1453,7 @@ class MeetingFinalizer:
             observations,
         )
 
-    async def _create_provider_derivative(
-        self, source_path: Path, *, source: str, transport: str
-    ) -> Path:
+    async def _create_provider_derivative(self, source_path: Path, *, source: str, transport: str) -> Path:
         """Create a task-owned provider upload derivative from lossless Meeting PCM."""
         ffmpeg = require_media_tool("ffmpeg")
         if transport == "webm_opus_task_derivative":
@@ -1618,9 +1464,7 @@ class MeetingFinalizer:
             args_builder = mp3_transcode_args
         else:
             raise ValueError("Unsupported Meeting provider derivative transport.")
-        destination = source_path.with_name(
-            f".{source}.{uuid4().hex}.provider.{suffix}"
-        )
+        destination = source_path.with_name(f".{source}.{uuid4().hex}.provider.{suffix}")
         args = args_builder(
             ffmpeg,
             source_path,
@@ -1646,9 +1490,7 @@ class MeetingFinalizer:
         if process.returncode != 0 or not destination.is_file() or destination.stat().st_size <= 0:
             destination.unlink(missing_ok=True)
             reason = stderr.decode("utf-8", errors="replace")[-800:]
-            raise RuntimeError(
-                f"Meeting provider {suffix.upper()} preparation failed: {reason}"
-            )
+            raise RuntimeError(f"Meeting provider {suffix.upper()} preparation failed: {reason}")
         return destination
 
     async def _prepare_lossless_track(
@@ -1668,9 +1510,7 @@ class MeetingFinalizer:
         ffmpeg = require_media_tool("ffmpeg")
         ffprobe = require_media_tool("ffprobe")
         destination = wav_path.with_name(f"{source}.work.flac")
-        temporary = destination.with_name(
-            f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}"
-        )
+        temporary = destination.with_name(f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}")
         process = await asyncio.create_subprocess_exec(
             *lossless_flac_track_args(ffmpeg, wav_path, temporary),
             stdout=asyncio.subprocess.DEVNULL,
@@ -1697,13 +1537,8 @@ class MeetingFinalizer:
                 temporary,
                 stream_index=0,
             )
-            if (
-                decoded["sampleCount"] != expected["sampleCount"]
-                or decoded["pcmSha256"] != expected["pcmSha256"]
-            ):
-                raise RuntimeError(
-                    "Meeting lossless working track does not reproduce its source PCM."
-                )
+            if decoded["sampleCount"] != expected["sampleCount"] or decoded["pcmSha256"] != expected["pcmSha256"]:
+                raise RuntimeError("Meeting lossless working track does not reproduce its source PCM.")
             temporary.replace(destination)
             replaced = True
             # The verified FLAC now owns this temporary source representation.
@@ -1737,9 +1572,7 @@ class MeetingFinalizer:
         assets = {item["kind"]: item for item in self.store.audio_assets(meeting_id)}
         archive = assets.get("multitrack_flac")
         if not archive or not bool(archive.get("equalityVerified")):
-            raise ValueError(
-                "The original lossless Meeting audio is no longer available for retranscription."
-            )
+            raise ValueError("The original lossless Meeting audio is no longer available for retranscription.")
         manifest = archive.get("trackManifest")
         if not isinstance(manifest, list) or not manifest:
             raise ValueError("The retained Meeting archive has no verified track manifest.")
@@ -1756,8 +1589,7 @@ class MeetingFinalizer:
         entries = {
             str(item.get("source") or ""): item
             for item in manifest
-            if isinstance(item, dict)
-            and str(item.get("source") or "") in {"microphone", "mic_clean", "system"}
+            if isinstance(item, dict) and str(item.get("source") or "") in {"microphone", "mic_clean", "system"}
         }
         selected_sources: list[str] = []
         if "mic_clean" in entries:
@@ -1794,9 +1626,7 @@ class MeetingFinalizer:
                 raise ValueError("The retained Meeting track is not losslessly verified.")
 
             destination = destination_dir / f"{source}.work.flac"
-            temporary = destination.with_name(
-                f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}"
-            )
+            temporary = destination.with_name(f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}")
             process = await asyncio.create_subprocess_exec(
                 ffmpeg,
                 "-hide_banner",
@@ -1816,30 +1646,19 @@ class MeetingFinalizer:
             )
             replaced = False
             try:
-                _, stderr = await communicate_or_kill_on_cancel(
-                    process, max_stderr_bytes=1024 * 1024
-                )
+                _, stderr = await communicate_or_kill_on_cancel(process, max_stderr_bytes=1024 * 1024)
                 if process.returncode != 0 or not temporary.is_file():
                     reason = (stderr or b"").decode("utf-8", errors="replace")[-800:]
-                    raise RuntimeError(
-                        f"Meeting archive track extraction failed ({source}): {reason}"
-                    )
+                    raise RuntimeError(f"Meeting archive track extraction failed ({source}): {reason}")
                 await self._verify_audio_asset(
                     ffprobe,
                     temporary,
                     expected_codec="flac",
                     expected_streams=1,
                 )
-                decoded = await self._decoded_pcm_fingerprint(
-                    ffmpeg, temporary, stream_index=0
-                )
-                if (
-                    int(decoded["sampleCount"]) != sample_count
-                    or str(decoded["pcmSha256"]) != pcm_sha256
-                ):
-                    raise RuntimeError(
-                        f"Retained Meeting track PCM verification failed ({source})."
-                    )
+                decoded = await self._decoded_pcm_fingerprint(ffmpeg, temporary, stream_index=0)
+                if int(decoded["sampleCount"]) != sample_count or str(decoded["pcmSha256"]) != pcm_sha256:
+                    raise RuntimeError(f"Retained Meeting track PCM verification failed ({source}).")
                 temporary.replace(destination)
                 replaced = True
                 prepared[source] = PreparedMeetingTrack(
@@ -1858,9 +1677,7 @@ class MeetingFinalizer:
     async def _materialize_pcm_wav(self, source_path: Path, destination: Path) -> Path:
         """Create a task-scoped canonical WAV for a WAV-only optional consumer."""
         ffmpeg = require_media_tool("ffmpeg")
-        temporary = destination.with_name(
-            f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}"
-        )
+        temporary = destination.with_name(f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}")
         process = await asyncio.create_subprocess_exec(
             *wav_pcm_transcode_args(ffmpeg, source_path, temporary),
             stdout=asyncio.subprocess.DEVNULL,
@@ -1912,21 +1729,16 @@ class MeetingFinalizer:
         destination_dir = self.audio_root / meeting_id / "final"
         destination_dir.mkdir(parents=True, exist_ok=True)
 
-        prepared_tracks = {
-            source: await self._coerce_prepared_track(track)
-            for source, track in tracks.items()
-        }
+        prepared_tracks = {source: await self._coerce_prepared_track(track) for source, track in tracks.items()}
 
         archive_tracks: list[tuple[str, str, PreparedMeetingTrack]] = []
         # The map order is a durable contract. Raw microphone is present only
         # when a distinct clean microphone track exists; otherwise the sole
         # microphone track must not be duplicated as both raw and clean.
         if "microphone" in prepared_tracks and "mic_clean" in prepared_tracks:
-            archive_tracks.append(
-                ("microphone", "Microphone raw", prepared_tracks["microphone"])
-            )
-        primary_microphone_source = "mic_clean" if "mic_clean" in prepared_tracks else (
-            "microphone" if "microphone" in prepared_tracks else ""
+            archive_tracks.append(("microphone", "Microphone raw", prepared_tracks["microphone"]))
+        primary_microphone_source = (
+            "mic_clean" if "mic_clean" in prepared_tracks else ("microphone" if "microphone" in prepared_tracks else "")
         )
         if primary_microphone_source:
             title = "Microphone clean" if primary_microphone_source == "mic_clean" else "Microphone"
@@ -1944,21 +1756,21 @@ class MeetingFinalizer:
 
         playback_tracks: list[tuple[str, PreparedMeetingTrack]] = []
         if primary_microphone_source:
-            playback_tracks.append(
-                (primary_microphone_source, prepared_tracks[primary_microphone_source])
-            )
+            playback_tracks.append((primary_microphone_source, prepared_tracks[primary_microphone_source]))
         if "system" in prepared_tracks:
             playback_tracks.append(("system", prepared_tracks["system"]))
 
         archive_sources: list[dict[str, Any]] = []
         for source, _title, track in archive_tracks:
-            archive_sources.append({
-                "source": source,
-                "timelineOriginMs": track.timeline_origin_ms,
-                "durationMs": track.duration_ms,
-                "sampleCount": track.sample_count,
-                "pcmSha256": track.pcm_sha256,
-            })
+            archive_sources.append(
+                {
+                    "source": source,
+                    "timelineOriginMs": track.timeline_origin_ms,
+                    "durationMs": track.duration_ms,
+                    "sampleCount": track.sample_count,
+                    "pcmSha256": track.pcm_sha256,
+                }
+            )
 
         outputs = [
             {
@@ -1969,10 +1781,7 @@ class MeetingFinalizer:
                     ffmpeg,
                     [(track.path, title) for _source, title, track in archive_tracks],
                     temporary,
-                    stream_copy=all(
-                        track.path.suffix.lower() == ".flac"
-                        for _, _, track in archive_tracks
-                    ),
+                    stream_copy=all(track.path.suffix.lower() == ".flac" for _, _, track in archive_tracks),
                 ),
                 "sources": archive_sources,
             },
@@ -1984,60 +1793,52 @@ class MeetingFinalizer:
                     ffmpeg,
                     [track.path for _source, track in playback_tracks],
                     temporary,
-                    timeline_origins_ms=[
-                        track.timeline_origin_ms for _source, track in playback_tracks
-                    ],
+                    timeline_origins_ms=[track.timeline_origin_ms for _source, track in playback_tracks],
                 ),
-                "sources": [{
-                    "source": (
-                        "mixed" if len(playback_tracks) > 1 else playback_tracks[0][0]
-                    ),
-                    # Playback media is padded onto the meeting clock, so seek
-                    # time zero always means meeting time zero.
-                    "timelineOriginMs": 0,
-                    # Replaced with the verified encoded duration below.
-                    "durationMs": max(
-                        track.duration_ms for _source, track in playback_tracks
-                    ),
-                }],
+                "sources": [
+                    {
+                        "source": ("mixed" if len(playback_tracks) > 1 else playback_tracks[0][0]),
+                        # Playback media is padded onto the meeting clock, so seek
+                        # time zero always means meeting time zero.
+                        "timelineOriginMs": 0,
+                        # Replaced with the verified encoded duration below.
+                        "durationMs": max(track.duration_ms for _source, track in playback_tracks),
+                    }
+                ],
                 "minimumDurationMs": max(
-                    track.timeline_origin_ms + track.duration_ms
-                    for _source, track in playback_tracks
+                    track.timeline_origin_ms + track.duration_ms for _source, track in playback_tracks
                 ),
             },
         ]
         for playback_source, track in playback_tracks:
-            public_kind = (
-                "playback_microphone"
-                if playback_source in {"microphone", "mic_clean"}
-                else "playback_system"
+            public_kind = "playback_microphone" if playback_source in {"microphone", "mic_clean"} else "playback_system"
+            outputs.append(
+                {
+                    "kind": public_kind,
+                    "destination": destination_dir
+                    / ("microphone.opus" if public_kind == "playback_microphone" else "system.opus"),
+                    "codec": "opus",
+                    "command": lambda temporary, selected=track: meeting_opus_playback_args(
+                        ffmpeg,
+                        [selected.path],
+                        temporary,
+                        timeline_origins_ms=[selected.timeline_origin_ms],
+                    ),
+                    "sources": [
+                        {
+                            "source": playback_source,
+                            "timelineOriginMs": 0,
+                            "durationMs": track.duration_ms,
+                        }
+                    ],
+                    "minimumDurationMs": track.timeline_origin_ms + track.duration_ms,
+                }
             )
-            outputs.append({
-                "kind": public_kind,
-                "destination": destination_dir / (
-                    "microphone.opus" if public_kind == "playback_microphone" else "system.opus"
-                ),
-                "codec": "opus",
-                "command": lambda temporary, selected=track: meeting_opus_playback_args(
-                    ffmpeg,
-                    [selected.path],
-                    temporary,
-                    timeline_origins_ms=[selected.timeline_origin_ms],
-                ),
-                "sources": [{
-                    "source": playback_source,
-                    "timelineOriginMs": 0,
-                    "durationMs": track.duration_ms,
-                }],
-                "minimumDurationMs": track.timeline_origin_ms + track.duration_ms,
-            })
         for output in outputs:
             kind = str(output["kind"])
             destination = Path(output["destination"])
             codec = str(output["codec"])
-            temporary = destination.with_name(
-                f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}"
-            )
+            temporary = destination.with_name(f".{destination.stem}.{uuid4().hex}.partial{destination.suffix}")
             args = output["command"](temporary)
             process = await asyncio.create_subprocess_exec(
                 *args,
@@ -2065,13 +1866,8 @@ class MeetingFinalizer:
                     expected_codec=codec,
                     expected_streams=len(output["sources"]),
                 )
-                if (
-                    kind.startswith("playback_")
-                    and int(probe["durationMs"]) + 40 < int(output["minimumDurationMs"])
-                ):
-                    raise RuntimeError(
-                        "Meeting playback does not cover the durable meeting timeline."
-                    )
+                if kind.startswith("playback_") and int(probe["durationMs"]) + 40 < int(output["minimumDurationMs"]):
+                    raise RuntimeError("Meeting playback does not cover the durable meeting timeline.")
                 decoded_fingerprints = [
                     await self._decoded_pcm_fingerprint(
                         ffmpeg,
@@ -2081,47 +1877,41 @@ class MeetingFinalizer:
                     for stream_index in range(len(output["sources"]))
                 ]
                 if kind == "multitrack_flac":
-                    for source, decoded in zip(
-                        output["sources"], decoded_fingerprints, strict=True
-                    ):
+                    for source, decoded in zip(output["sources"], decoded_fingerprints, strict=True):
                         if (
                             decoded["sampleCount"] != source["sampleCount"]
                             or decoded["pcmSha256"] != source["pcmSha256"]
                         ):
-                            raise RuntimeError(
-                                "Meeting lossless archive PCM does not match its source track."
-                            )
+                            raise RuntimeError("Meeting lossless archive PCM does not match its source track.")
                 digest = await asyncio.to_thread(self._sha256_file, temporary)
                 if not re.fullmatch(r"[0-9a-f]{64}", digest):
                     raise RuntimeError(f"Meeting audio consolidation produced no valid hash ({kind}).")
                 manifest = []
-                for stream_index, (source, stream) in enumerate(
-                    zip(output["sources"], probe["streams"], strict=True)
-                ):
-                    manifest.append({
-                        "source": source["source"],
-                        "streamIndex": stream_index,
-                        "codec": stream["codec"],
-                        "sampleRate": stream["sampleRate"],
-                        "channels": stream["channels"],
-                        "timelineOriginMs": int(source["timelineOriginMs"]),
-                        "durationMs": (
-                            int(probe["durationMs"])
-                            if kind.startswith("playback_")
-                            else int(source["durationMs"])
-                        ),
-                        "sampleCount": (
-                            int(source["sampleCount"])
-                            if kind == "multitrack_flac"
-                            else int(decoded_fingerprints[stream_index]["sampleCount"])
-                        ),
-                        "pcmSha256": (
-                            str(source["pcmSha256"])
-                            if kind == "multitrack_flac"
-                            else str(decoded_fingerprints[stream_index]["pcmSha256"])
-                        ),
-                        "equalityVerified": kind == "multitrack_flac",
-                    })
+                for stream_index, (source, stream) in enumerate(zip(output["sources"], probe["streams"], strict=True)):
+                    manifest.append(
+                        {
+                            "source": source["source"],
+                            "streamIndex": stream_index,
+                            "codec": stream["codec"],
+                            "sampleRate": stream["sampleRate"],
+                            "channels": stream["channels"],
+                            "timelineOriginMs": int(source["timelineOriginMs"]),
+                            "durationMs": (
+                                int(probe["durationMs"]) if kind.startswith("playback_") else int(source["durationMs"])
+                            ),
+                            "sampleCount": (
+                                int(source["sampleCount"])
+                                if kind == "multitrack_flac"
+                                else int(decoded_fingerprints[stream_index]["sampleCount"])
+                            ),
+                            "pcmSha256": (
+                                str(source["pcmSha256"])
+                                if kind == "multitrack_flac"
+                                else str(decoded_fingerprints[stream_index]["pcmSha256"])
+                            ),
+                            "equalityVerified": kind == "multitrack_flac",
+                        }
+                    )
                 temporary.replace(destination)
                 replaced = True
                 relative = destination.relative_to(self.audio_root).as_posix()
@@ -2158,9 +1948,7 @@ class MeetingFinalizer:
                 or source.getsampwidth() != 2
                 or source.getframerate() != 16_000
             ):
-                raise RuntimeError(
-                    "Meeting archive source must be canonical 16-kHz mono s16le WAV."
-                )
+                raise RuntimeError("Meeting archive source must be canonical 16-kHz mono s16le WAV.")
             sample_count = source.getnframes()
             if sample_count <= 0:
                 raise RuntimeError("Meeting archive source contains no PCM samples.")
@@ -2182,10 +1970,22 @@ class MeetingFinalizer:
     ) -> dict[str, Any]:
         process = await asyncio.create_subprocess_exec(
             ffmpeg,
-            "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-i", str(path),
-            "-map", f"0:a:{stream_index}",
-            "-f", "s16le", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-nostdin",
+            "-i",
+            str(path),
+            "-map",
+            f"0:a:{stream_index}",
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
             "pipe:1",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -2206,9 +2006,7 @@ class MeetingFinalizer:
                 byte_count += len(chunk)
 
         pcm_task = asyncio.create_task(drain_pcm())
-        stderr_task = asyncio.create_task(
-            read_stream_limited(process.stderr, max_bytes=1024 * 1024)
-        )
+        stderr_task = asyncio.create_task(read_stream_limited(process.stderr, max_bytes=1024 * 1024))
         try:
             _, stderr, _ = await asyncio.gather(
                 pcm_task,
@@ -2256,10 +2054,12 @@ class MeetingFinalizer:
             raise RuntimeError("Meeting audio consolidation produced an empty output.")
         process = await asyncio.create_subprocess_exec(
             ffprobe,
-            "-v", "error",
+            "-v",
+            "error",
             "-show_entries",
             "stream=index,codec_type,codec_name,sample_rate,channels,duration:format=duration",
-            "-of", "json",
+            "-of",
+            "json",
             str(path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -2279,13 +2079,13 @@ class MeetingFinalizer:
             raise RuntimeError("Meeting audio verification returned invalid ffprobe JSON.") from exc
         raw_streams = payload.get("streams") if isinstance(payload, dict) else None
         audio_streams = [
-            item for item in (raw_streams if isinstance(raw_streams, list) else [])
+            item
+            for item in (raw_streams if isinstance(raw_streams, list) else [])
             if isinstance(item, dict) and item.get("codec_type") == "audio"
         ]
         if len(audio_streams) != expected_streams:
             raise RuntimeError(
-                f"Meeting audio verification expected {expected_streams} stream(s), "
-                f"found {len(audio_streams)}."
+                f"Meeting audio verification expected {expected_streams} stream(s), found {len(audio_streams)}."
             )
         normalized_streams: list[dict[str, Any]] = []
         for expected_index, stream in enumerate(audio_streams):
@@ -2299,28 +2099,26 @@ class MeetingFinalizer:
             if stream_index != expected_index:
                 raise RuntimeError("Meeting audio verification found an unexpected stream map order.")
             if codec != expected_codec:
-                raise RuntimeError(
-                    f"Meeting audio verification expected {expected_codec}, found {codec or 'unknown'}."
-                )
+                raise RuntimeError(f"Meeting audio verification expected {expected_codec}, found {codec or 'unknown'}.")
             if channels != 1:
                 raise RuntimeError("Meeting audio archive tracks must remain mono.")
             if codec == "flac" and sample_rate != 16_000:
                 raise RuntimeError("Meeting FLAC archive tracks must remain at 16 kHz.")
             if codec == "opus" and sample_rate not in {16_000, 48_000}:
                 raise RuntimeError("Meeting Opus playback reported an unsupported sample rate.")
-            normalized_streams.append({
-                "codec": codec,
-                "sampleRate": sample_rate,
-                "channels": channels,
-            })
+            normalized_streams.append(
+                {
+                    "codec": codec,
+                    "sampleRate": sample_rate,
+                    "channels": channels,
+                }
+            )
         format_info = payload.get("format") if isinstance(payload, dict) else None
         duration_seconds = self._positive_seconds(
             format_info.get("duration") if isinstance(format_info, dict) else None
         )
         if duration_seconds is None:
-            stream_durations = [
-                self._positive_seconds(item.get("duration")) for item in audio_streams
-            ]
+            stream_durations = [self._positive_seconds(item.get("duration")) for item in audio_streams]
             duration_seconds = max(
                 (value for value in stream_durations if value is not None),
                 default=None,
@@ -2349,9 +2147,7 @@ class MeetingFinalizer:
         destination_dir = self.audio_root / meeting_id / "final"
         destination_dir.mkdir(parents=True, exist_ok=True)
         destination = destination_dir / f"{source}.wav"
-        temporary = destination.with_name(
-            f".{destination.name}.{uuid4().hex}.part"
-        )
+        temporary = destination.with_name(f".{destination.name}.{uuid4().hex}.part")
         params: tuple[int, int, int] | None = None
         total_frames = 0
         timeline_origin_ms = min(int(chunk.get("startedAtMs", 0)) for chunk in chunks)
@@ -2413,12 +2209,20 @@ class MeetingFinalizer:
         segments = []
         for index, ((label, block_text), weight) in enumerate(zip(blocks, weights, strict=True)):
             end = timeline_end_ms if index == len(blocks) - 1 else cursor + round(duration_ms * weight / total_weight)
-            segments.append({
-                "revision": "canonical", "source": source, "speakerLabel": label,
-                "providerSegmentId": f"fallback-estimated-{index}",
-                "startMs": cursor, "endMs": max(cursor, end), "text": block_text,
-                "confidence": None, "alignmentQuality": "estimated", "isFinal": True,
-            })
+            segments.append(
+                {
+                    "revision": "canonical",
+                    "source": source,
+                    "speakerLabel": label,
+                    "providerSegmentId": f"fallback-estimated-{index}",
+                    "startMs": cursor,
+                    "endMs": max(cursor, end),
+                    "text": block_text,
+                    "confidence": None,
+                    "alignmentQuality": "estimated",
+                    "isFinal": True,
+                }
+            )
             cursor = end
         return segments
 
@@ -2432,9 +2236,7 @@ class MeetingFinalizer:
         """Apply the original overlap and text-similarity echo thresholds."""
         normalized = normalized_item_text
         if normalized is None:
-            normalized = re.sub(
-                r"[^\w]+", " ", str(item.get("text", "")).lower()
-            ).strip()
+            normalized = re.sub(r"[^\w]+", " ", str(item.get("text", "")).lower()).strip()
         item_start = int(item.get("startMs", 0))
         item_end = int(item.get("endMs", 0))
         candidate_start = int(candidate.get("startMs", 0))
@@ -2447,9 +2249,7 @@ class MeetingFinalizer:
         candidate_duration = max(1, candidate_end - candidate_start)
         if overlap / min(item_duration, candidate_duration) < 0.65:
             return False
-        other = re.sub(
-            r"[^\w]+", " ", str(candidate.get("text", "")).lower()
-        ).strip()
+        other = re.sub(r"[^\w]+", " ", str(candidate.get("text", "")).lower()).strip()
         return SequenceMatcher(None, normalized, other).ratio() >= 0.92
 
     @staticmethod
@@ -2457,9 +2257,7 @@ class MeetingFinalizer:
         """Drop overlapping mic echoes with a timeline sweep; preserve input order."""
         # Event kind 0 (end) sorts before kind 1 (start), so touching but
         # non-overlapping intervals never enter the candidate comparison path.
-        events: list[
-            tuple[int, int, int, str, dict[str, Any], str]
-        ] = []
+        events: list[tuple[int, int, int, str, dict[str, Any], str]] = []
         for index, item in enumerate(segments):
             source = str(item.get("source") or "")
             if source not in {"microphone", "system"}:
@@ -2470,9 +2268,7 @@ class MeetingFinalizer:
                 continue
             normalized = ""
             if source == "microphone":
-                normalized = re.sub(
-                    r"[^\w]+", " ", str(item.get("text", "")).lower()
-                ).strip()
+                normalized = re.sub(r"[^\w]+", " ", str(item.get("text", "")).lower()).strip()
                 if len(normalized) < 8:
                     continue
             events.append((start_ms, 1, index, source, item, normalized))
@@ -2491,16 +2287,11 @@ class MeetingFinalizer:
                 continue
 
             if source == "system":
-                for microphone_index, (microphone, microphone_text) in (
-                    active_microphones.items()
-                ):
-                    if (
-                        microphone_index not in echo_indices
-                        and MeetingFinalizer._cross_track_segments_are_echoes(
-                            microphone,
-                            item,
-                            normalized_item_text=microphone_text,
-                        )
+                for microphone_index, (microphone, microphone_text) in active_microphones.items():
+                    if microphone_index not in echo_indices and MeetingFinalizer._cross_track_segments_are_echoes(
+                        microphone,
+                        item,
+                        normalized_item_text=microphone_text,
                     ):
                         echo_indices.add(microphone_index)
                 active_system[item_index] = item

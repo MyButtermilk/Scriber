@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import base64
-from email import policy
-from email.parser import BytesParser
 import io
 import re
 import subprocess
 import sys
 import zlib
+from email import policy
+from email.parser import BytesParser
 from pathlib import Path
 from types import SimpleNamespace
 from xml.etree import ElementTree
@@ -29,7 +29,6 @@ from src.meeting_export import (
     build_meeting_transcript_text,
     meeting_export_labels,
 )
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORD_NAMESPACE = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
@@ -146,9 +145,7 @@ def _meeting_detail(language: str) -> dict[str, object]:
                 "payload": {
                     "outputLanguage": language,
                     "executiveSummary": (
-                        "Größe und Qualität wurden bestätigt."
-                        if german
-                        else "Size and quality were confirmed."
+                        "Größe und Qualität wurden bestätigt." if german else "Size and quality were confirmed."
                     ),
                     "decisions": [{"text": marker}],
                     "openQuestions": [],
@@ -216,11 +213,8 @@ def test_spec_excludes_the_complete_legacy_export_dependency_graph() -> None:
         assert f'"{root}",' in excludes
     for root in ("PIL", "docx", "reportlab"):
         assert f'"{root}",' not in excludes
-    assert (
-        "pathex=[str(numpy_overlay_root), str(stdlib_export_compat_root), "
-        "str(repo_root)]"
-    ) in spec
-    assert 'hookspath=[str(pyinstaller_hook_root)]' in spec
+    assert ("pathex=[str(numpy_overlay_root), str(stdlib_export_compat_root), str(repo_root)]") in spec
+    assert "hookspath=[str(pyinstaller_hook_root)]" in spec
     for hook in ("hook-PIL.py", "hook-PIL.Image.py", "hook-docx.py", "hook-reportlab.py"):
         assert (REPO_ROOT / "packaging" / "pyinstaller_hooks" / hook).is_file()
     assert "PILLOW_TEXT_EXPORT_MODULES" not in spec
@@ -230,9 +224,9 @@ def test_spec_excludes_the_complete_legacy_export_dependency_graph() -> None:
     generic_collection = spec.split("for package in (", 1)[1].split("):", 1)[0]
     assert '"PIL"' not in generic_collection
 
-    installer_hooks = (
-        REPO_ROOT / "Frontend" / "src-tauri" / "windows" / "installer-hooks.nsh"
-    ).read_text(encoding="utf-8")
+    installer_hooks = (REPO_ROOT / "Frontend" / "src-tauri" / "windows" / "installer-hooks.nsh").read_text(
+        encoding="utf-8"
+    )
     for root in ("PIL", "docx", "lxml", "reportlab"):
         assert f'RMDir "$INSTDIR\\backend\\_internal\\{root}"' in installer_hooks
     assert "RMDir /r" not in installer_hooks
@@ -395,6 +389,4 @@ print(json.dumps({
         check=True,
     )
     assert completed.stderr == ""
-    assert completed.stdout.splitlines()[-1] == (
-        '{"getActiveWindowTitle": true, "hotkey": true, "write": true}'
-    )
+    assert completed.stdout.splitlines()[-1] == ('{"getActiveWindowTitle": true, "hotkey": true, "write": true}')

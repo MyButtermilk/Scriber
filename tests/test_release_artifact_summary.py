@@ -4,7 +4,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "summarize_release_artifacts.py"
 
@@ -256,10 +255,7 @@ def test_release_artifact_summary_flags_tauri_cargo_work_from_bundle_log(tmp_pat
     assert "inspect-tauri-cargo-fingerprints" in recommendation_codes
     assert "profile-nsis-compression-signing" in recommendation_codes
     assert any(line.startswith("tauri bundle log: cargoCompiling=31") for line in summary["oracleBrief"])
-    assert any(
-        line.startswith("tauri bundle durations: firstLineToMakensis=95.0s")
-        for line in summary["oracleBrief"]
-    )
+    assert any(line.startswith("tauri bundle durations: firstLineToMakensis=95.0s") for line in summary["oracleBrief"])
     assert summary["tauriBundleLog"]["firstCargoCompileLines"] == [
         "Compiling tauri v2.0.0",
         "Compiling scriber-desktop v0.1.0",

@@ -12,6 +12,7 @@ from scripts import write_diarization_worker_manifest as manifest_writer
 def test_manifest_attests_exact_bundled_worker(monkeypatch, tmp_path: Path):
     executable = tmp_path / manifest_writer.WORKER_FILE
     executable.write_bytes(b"static-rust-worker")
+
     def probe(_executable: Path, argument: str):
         if argument == "--version":
             return {"ok": True}
@@ -25,9 +26,7 @@ def test_manifest_attests_exact_bundled_worker(monkeypatch, tmp_path: Path):
 
     monkeypatch.setattr(manifest_writer, "_probe", probe)
 
-    output = manifest_writer.write_manifest(
-        executable, tmp_path / manifest_writer.MANIFEST_FILE
-    )
+    output = manifest_writer.write_manifest(executable, tmp_path / manifest_writer.MANIFEST_FILE)
     payload = json.loads(output.read_text(encoding="utf-8"))
 
     assert payload["schemaVersion"] == 1

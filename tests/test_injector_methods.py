@@ -334,9 +334,7 @@ def test_inject_method_tauri_forwards_estimated_marker_timestamps(monkeypatch):
     markers = []
     injector = TextInjector(
         on_injected=lambda _text: None,
-        on_injection_marker=lambda marker, timestamp_ns=None: markers.append(
-            (marker, timestamp_ns)
-        ),
+        on_injection_marker=lambda marker, timestamp_ns=None: markers.append((marker, timestamp_ns)),
     )
 
     with (

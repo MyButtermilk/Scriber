@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 UX_PROFILE = "ux"
 INSTALLER_SIZE_PROFILE = "installer-size"
 PROFILE_NAMES = (UX_PROFILE, INSTALLER_SIZE_PROFILE)
@@ -68,9 +67,7 @@ def _installer_duration(config: dict[str, Any], requested: int | None) -> int:
     if isinstance(duration, bool) or not isinstance(duration, int) or duration <= 0:
         raise ProfileError("DurationSeconds must be a positive integer")
     if duration != configured:
-        raise ProfileError(
-            f"installer-size DurationSeconds is frozen at {configured}; received {duration}"
-        )
+        raise ProfileError(f"installer-size DurationSeconds is frozen at {configured}; received {duration}")
     return duration
 
 
@@ -85,9 +82,7 @@ def resolve_profile_context(
     root = Path(repo_root).resolve()
     normalized_profile = str(profile or UX_PROFILE).strip().lower()
     if normalized_profile not in PROFILE_NAMES:
-        raise ProfileError(
-            f"unknown AutoResearch profile {profile!r}; expected one of {', '.join(PROFILE_NAMES)}"
-        )
+        raise ProfileError(f"unknown AutoResearch profile {profile!r}; expected one of {', '.join(PROFILE_NAMES)}")
 
     if normalized_profile == UX_PROFILE:
         if run_id:

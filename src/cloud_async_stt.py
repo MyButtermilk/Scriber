@@ -11,11 +11,11 @@ import base64
 import json
 import os
 import tempfile
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 import aiohttp
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -44,10 +44,12 @@ from src.runtime.audio_spool import (
     append_pcm_frame,
     close_pcm_spool,
     create_pcm_spool,
+)
+from src.runtime.audio_spool import (
     pcm_stream_to_wav as _pcm_stream_to_wav,
 )
-from src.runtime.http_response import read_response_text_limited
 from src.runtime.env_values import env_float, env_int
+from src.runtime.http_response import read_response_text_limited
 
 
 def provider_language_code(language: Language | str | None) -> str:
@@ -224,7 +226,9 @@ def openai_transcript_payload_to_text(
 ) -> str:
     for key in ("segments", "words"):
         segments = payload.get(key)
-        segment_list = [segment for segment in segments if isinstance(segment, dict)] if isinstance(segments, list) else []
+        segment_list = (
+            [segment for segment in segments if isinstance(segment, dict)] if isinstance(segments, list) else []
+        )
         if prefer_speaker_labels and segment_list:
             formatted = _format_speaker_segments(segment_list)
             if formatted:
@@ -240,9 +244,7 @@ def gemini_transcript_payload_to_text(payload: dict[str, Any]) -> str:
     content = first.get("content") if isinstance(first.get("content"), dict) else {}
     parts = content.get("parts") if isinstance(content.get("parts"), list) else []
     return "".join(
-        str(part.get("text") or "")
-        for part in parts
-        if isinstance(part, dict) and isinstance(part.get("text"), str)
+        str(part.get("text") or "") for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)
     ).strip()
 
 
@@ -382,9 +384,7 @@ async def _wait_for_gemini_file_active(
                 code="failed",
             )
         if asyncio.get_running_loop().time() - started_at >= timeout:
-            raise TimeoutError(
-                f"Gemini file processing timed out after {timeout:.1f}s"
-            )
+            raise TimeoutError(f"Gemini file processing timed out after {timeout:.1f}s")
         await asyncio.sleep(poll_interval)
         async with session.get(
             f"https://generativelanguage.googleapis.com/v1beta/{file_name}",
@@ -453,10 +453,7 @@ async def transcribe_with_gemini_audio(
     if audio_size == 0:
         return {}
 
-    model = (
-        str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash").strip()
-        or "gemini-2.5-flash"
-    )
+    model = str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
     inline_limit_mb = env_float(
         "SCRIBER_GEMINI_STT_INLINE_LIMIT_MB",
         18.0,
@@ -498,13 +495,9 @@ async def transcribe_with_gemini_audio(
         _report_progress(on_progress, "Uploading audio...")
         if 0 <= audio_size <= inline_limit_bytes:
             audio_bytes = (
-                audio_source
-                if isinstance(audio_source, bytes)
-                else await asyncio.to_thread(audio_source.read)
+                audio_source if isinstance(audio_source, bytes) else await asyncio.to_thread(audio_source.read)
             )
-            encoded_audio = await asyncio.to_thread(
-                lambda: base64.b64encode(audio_bytes).decode("ascii")
-            )
+            encoded_audio = await asyncio.to_thread(lambda: base64.b64encode(audio_bytes).decode("ascii"))
             audio_part = {
                 "inlineData": {
                     "mimeType": mime_type,
@@ -767,9 +760,7 @@ async def transcribe_with_speechmatics_batch(
             config=config,
             timeout_secs=timeout_secs,
             poll_interval_secs=poll_interval_secs,
-            audio_preparation_implementation=(
-                audio_preparation_implementation
-            ),
+            audio_preparation_implementation=(audio_preparation_implementation),
         )
         if not isinstance(payload, dict):
             raise RuntimeError("Speechmatics batch transport returned invalid JSON-v2")
@@ -804,11 +795,7 @@ async def transcribe_with_speechmatics_batch(
             empty_value={},
         )
 
-    job_id = str(
-        start_payload.get("id")
-        or (start_payload.get("job") or {}).get("id")
-        or ""
-    ).strip()
+    job_id = str(start_payload.get("id") or (start_payload.get("job") or {}).get("id") or "").strip()
     if not job_id:
         raise provider_transport_error(
             "speechmatics",
@@ -929,11 +916,7 @@ class _BufferedAsyncProcessor(FrameProcessor):
     def adopt_capture_wav_artifact(self, artifact: Any) -> bool:
         """Accept the single Tauri lease before the terminal provider upload."""
 
-        if (
-            artifact is None
-            or not self._capture_wav_adoption_open
-            or self._capture_wav_artifact is not None
-        ):
+        if artifact is None or not self._capture_wav_adoption_open or self._capture_wav_artifact is not None:
             return False
         if (
             not callable(getattr(artifact, "matches_pcm", None))
@@ -999,9 +982,7 @@ class _BufferedAsyncProcessor(FrameProcessor):
                             reserved_wav_header=True,
                             pcm_size=self._buffer_size,
                         )
-                    self._audio_preparation_implementation = (
-                        audio_preparation_implementation
-                    )
+                    self._audio_preparation_implementation = audio_preparation_implementation
                     text = (await self._transcribe_wav(wav_source)).strip()
                     if text:
                         await self.push_frame(
@@ -1249,9 +1230,7 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
                 base_url=self._base_url,
                 raw_transport=self._raw_transport,
                 on_response_complete=self._on_response_complete,
-                audio_preparation_implementation=(
-                    self._audio_preparation_implementation
-                ),
+                audio_preparation_implementation=(self._audio_preparation_implementation),
             )
 
         payload = await _call(self._session) if self._session else None

@@ -25,4 +25,3 @@ def test_provider_router_resets_on_success():
     router.record_failure("soniox", "service unavailable")
     router.record_success("soniox")
     assert router.select() == "soniox"
-

@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scripts.analyze_backend_runtime_dependencies import build_report
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -73,9 +72,7 @@ def test_runtime_dependency_footprint_reports_required_groups(tmp_path: Path) ->
     assert report["dependencies"]["unusedProviderSdks"]["totalMb"] == 0
     assert report["dependencies"]["unusedProviderSdks"]["missingRequiredPaths"] == []
     assert report["dependencies"]["onnxruntime"]["missingRequiredPaths"] == []
-    assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith(
-        "onnxruntime"
-    )
+    assert report["dependencies"]["onnxruntime"]["topFiles"][0]["path"].startswith("onnxruntime")
     assert report["components"]["mediaTools"]["missingRequiredPaths"] == []
     assert report["components"]["pyside6"]["missingRequiredPaths"] == []
     assert report["components"]["pyside6"]["disallowedPaths"] == []
@@ -169,12 +166,7 @@ def test_runtime_dependency_footprint_fails_when_aws_sdk_is_bundled(tmp_path: Pa
 def test_runtime_dependency_footprint_fails_when_azure_speech_sdk_is_bundled(tmp_path: Path) -> None:
     sidecar = write_fake_sidecar(tmp_path / "scriber-backend")
     azure_speech_path = (
-        sidecar
-        / "_internal"
-        / "azure"
-        / "cognitiveservices"
-        / "speech"
-        / "Microsoft.CognitiveServices.Speech.core.dll"
+        sidecar / "_internal" / "azure" / "cognitiveservices" / "speech" / "Microsoft.CognitiveServices.Speech.core.dll"
     )
     azure_speech_path.parent.mkdir(parents=True, exist_ok=True)
     azure_speech_path.write_bytes(b"a" * 1024)
@@ -201,10 +193,7 @@ def test_runtime_dependency_footprint_fails_when_legacy_gui_runtime_is_bundled(t
     assert report["dependencies"]["pythonGuiRuntime"]["unexpectedPresent"] is True
     assert "pythonGuiRuntime" in report["summary"]["unexpectedPresentDependencies"]
     assert "pyside6:_internal\\PySide6" in report["summary"]["componentDisallowedPaths"]
-    assert (
-        "pythonGuiRuntime:_internal\\customtkinter"
-        in report["summary"]["componentDisallowedPaths"]
-    )
+    assert "pythonGuiRuntime:_internal\\customtkinter" in report["summary"]["componentDisallowedPaths"]
 
 
 def test_runtime_dependency_footprint_fails_when_unused_provider_sdk_is_bundled(tmp_path: Path) -> None:
@@ -261,9 +250,7 @@ def test_runtime_dependency_footprint_cli_writes_report(tmp_path: Path) -> None:
 
 def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprint() -> None:
     build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
-    workflow = (REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(encoding="utf-8")
 
     assert "[switch]$RunRuntimeDependencyFootprint" in build
     assert "[double]$MaxScipyRuntimeDependencyMB = 0" in build
@@ -291,7 +278,7 @@ def test_windows_build_and_release_workflow_can_emit_runtime_dependency_footprin
     assert "PrunePySide6" not in build
     assert "$MaxPySide6RuntimeDependencyMB = 65" not in build
     assert "$MaxPillowRuntimeDependencyMB = 6" in build
-    assert "$runtimeDependencyFootprint[\"path\"] = $runtimeDependencyFootprintPath" in build
+    assert '$runtimeDependencyFootprint["path"] = $runtimeDependencyFootprintPath' in build
     assert "runtimeDependencyFootprint = $runtimeDependencyFootprint" in build
 
     assert '"-RunRuntimeDependencyFootprint"' in workflow

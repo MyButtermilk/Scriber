@@ -11,16 +11,8 @@ import pytest
 
 from scripts import smoke_quickjs_youtube_runtime as smoke
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = (
-    REPO_ROOT
-    / "scripts"
-    / "perf"
-    / "profiles"
-    / "installer-size"
-    / "youtube-holdouts.json"
-)
+FIXTURE = REPO_ROOT / "scripts" / "perf" / "profiles" / "installer-size" / "youtube-holdouts.json"
 
 
 def _sha256(value: bytes) -> str:
@@ -65,9 +57,7 @@ def _candidate_payload(tmp_path: Path) -> tuple[Path, Path]:
             "killOnJobClose": True,
         },
     }
-    (tools / "js-runtime-manifest.json").write_text(
-        json.dumps(manifest, separators=(",", ":")), encoding="utf-8"
-    )
+    (tools / "js-runtime-manifest.json").write_text(json.dumps(manifest, separators=(",", ":")), encoding="utf-8")
     return payload, tools / "qjs.exe"
 
 
@@ -188,9 +178,7 @@ def test_product_smoke_rejects_runtime_outside_exact_candidate_location(
     args = _args(tmp_path, payload, outside)
     args.scratch_root.mkdir()
 
-    with pytest.raises(
-        smoke.SmokeError, match="candidate-runtime-not-explicit-payload-runtime"
-    ):
+    with pytest.raises(smoke.SmokeError, match="candidate-runtime-not-explicit-payload-runtime"):
         smoke.run_smoke(args, runner=lambda *_args, **_kwargs: None)
 
 
@@ -259,9 +247,7 @@ def test_bounded_runner_stops_on_output_limit(tmp_path: Path) -> None:
     assert len(result.stdout) <= smoke.MAX_STDOUT_BYTES + 1
 
 
-def test_main_does_not_echo_an_invalid_candidate_path(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_main_does_not_echo_an_invalid_candidate_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     secret_path = tmp_path / "SECRET-CANDIDATE-PATH"
 
     exit_code = smoke.main(

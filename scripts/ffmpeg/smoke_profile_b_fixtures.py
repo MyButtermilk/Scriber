@@ -11,10 +11,9 @@ import sys
 import tempfile
 import time
 import wave
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
@@ -36,7 +35,7 @@ from src.runtime.subprocess_utils import hidden_subprocess_kwargs  # noqa: E402
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def resolve_tool(
@@ -598,27 +597,59 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         try:
             source = work_dir / "meeting-source.wav"
             write_sine_wav(source, duration_sec=args.duration_sec)
-            run_check(checks, "meeting_multitrack_flac", lambda: check_meeting_multitrack_flac(
-                candidate_ffmpeg, source, work_dir / "meeting-tracks.mka", args.timeout_sec
-            ))
-            run_check(checks, "meeting_lossless_work_track", lambda: check_meeting_lossless_work_track(
-                candidate_ffmpeg, source, work_dir / "system.work.flac",
-                work_dir / "meeting-work-track.mka", args.timeout_sec
-            ))
-            run_check(checks, "meeting_playback_mix", lambda: check_meeting_playback_mix(
-                candidate_ffmpeg, source, work_dir / "meeting-playback.opus", args.timeout_sec
-            ))
-            run_check(checks, "meeting_playback_microphone", lambda: check_meeting_playback_track(
-                candidate_ffmpeg, source, work_dir / "microphone.opus", args.timeout_sec,
-                timeline_origin_ms=120,
-            ))
-            run_check(checks, "meeting_playback_system", lambda: check_meeting_playback_track(
-                candidate_ffmpeg, source, work_dir / "system.opus", args.timeout_sec,
-                timeline_origin_ms=240,
-            ))
+            run_check(
+                checks,
+                "meeting_multitrack_flac",
+                lambda: check_meeting_multitrack_flac(
+                    candidate_ffmpeg, source, work_dir / "meeting-tracks.mka", args.timeout_sec
+                ),
+            )
+            run_check(
+                checks,
+                "meeting_lossless_work_track",
+                lambda: check_meeting_lossless_work_track(
+                    candidate_ffmpeg,
+                    source,
+                    work_dir / "system.work.flac",
+                    work_dir / "meeting-work-track.mka",
+                    args.timeout_sec,
+                ),
+            )
+            run_check(
+                checks,
+                "meeting_playback_mix",
+                lambda: check_meeting_playback_mix(
+                    candidate_ffmpeg, source, work_dir / "meeting-playback.opus", args.timeout_sec
+                ),
+            )
+            run_check(
+                checks,
+                "meeting_playback_microphone",
+                lambda: check_meeting_playback_track(
+                    candidate_ffmpeg,
+                    source,
+                    work_dir / "microphone.opus",
+                    args.timeout_sec,
+                    timeline_origin_ms=120,
+                ),
+            )
+            run_check(
+                checks,
+                "meeting_playback_system",
+                lambda: check_meeting_playback_track(
+                    candidate_ffmpeg,
+                    source,
+                    work_dir / "system.opus",
+                    args.timeout_sec,
+                    timeline_origin_ms=240,
+                ),
+            )
             return {
-                "apiVersion": "1", "ok": all(check["ok"] for check in checks),
-                "generatedAt": utc_now(), "profile": "B", "mode": "meeting-only",
+                "apiVersion": "1",
+                "ok": all(check["ok"] for check in checks),
+                "generatedAt": utc_now(),
+                "profile": "B",
+                "mode": "meeting-only",
                 "durationMs": round((time.perf_counter() - started) * 1000.0, 3),
                 "mediaTools": {
                     "candidateFfmpeg": str(candidate_ffmpeg),

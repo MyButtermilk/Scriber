@@ -19,15 +19,12 @@ from scripts.perf.evaluator.local_wux import (
     provider_replay_scenario_name,
 )
 
-
 SCENARIOS = tuple(SCENARIO_WEIGHTS)
 
 
 def complete_metrics(value: float = 100.0) -> dict[str, float]:
     metrics = {
-        metric_name: value
-        for metric_names in SCENARIO_METRICS.values()
-        for metric_name in metric_names.values()
+        metric_name: value for metric_names in SCENARIO_METRICS.values() for metric_name in metric_names.values()
     }
     for scenario in PROVIDER_REPLAY_SCENARIO_WEIGHTS:
         metrics[f"{scenario}_failure_rate"] = 0.0
@@ -81,18 +78,13 @@ def test_scenario_score_weights_p50_and_p95_before_geometric_composition() -> No
     expected_scenario_score = 0.40 * 0.50 + 0.60 * 1.50
     expected_composite = round(expected_scenario_score**0.20, 6)
 
-    assert compute_scenario_score(candidate, baseline, "overlay_warm") == pytest.approx(
-        expected_scenario_score
-    )
+    assert compute_scenario_score(candidate, baseline, "overlay_warm") == pytest.approx(expected_scenario_score)
     assert compute_local_wux(candidate, baseline) == expected_composite
 
 
 def test_nonuniform_scenarios_use_the_goal_geometric_weights() -> None:
     baseline = complete_metrics()
-    scenario_ratios = {
-        scenario: (0.7 + index * 0.01, 0.8 + index * 0.01)
-        for index, scenario in enumerate(SCENARIOS)
-    }
+    scenario_ratios = {scenario: (0.7 + index * 0.01, 0.8 + index * 0.01) for index, scenario in enumerate(SCENARIOS)}
     candidate = dict(baseline)
     expected_log_sum = 0.0
     for scenario, (p50_ratio, p95_ratio) in scenario_ratios.items():
@@ -116,9 +108,7 @@ def test_missing_nonpositive_and_nonfinite_values_fail_closed(
     baseline: dict[str, object] = complete_metrics()
     candidate: dict[str, object] = complete_metrics()
     target = candidate if invalid_side == "candidate" else baseline
-    target[
-        "soniox_local_60s_activation_received_to_final_text_observed_p50_ms"
-    ] = invalid_value
+    target["soniox_local_60s_activation_received_to_final_text_observed_p50_ms"] = invalid_value
 
     assert compute_local_wux(candidate, baseline) == "unknown"
 

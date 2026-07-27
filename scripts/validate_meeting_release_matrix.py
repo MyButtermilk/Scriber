@@ -5,11 +5,11 @@ import hashlib
 import json
 import re
 import sys
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
-
+from typing import Any
 
 SCHEMA_VERSION = 1
 REPORT_KIND = "scriber-meeting-release-evidence"
@@ -133,15 +133,11 @@ def validate_matrix(
         matrix_failures.append(f"no evidence reports matched {REPORT_GLOB}")
 
     versions = sorted({item.app_version for item in validated if item.app_version})
-    installer_hashes = sorted(
-        {item.installer_sha256.lower() for item in validated if item.installer_sha256}
-    )
+    installer_hashes = sorted({item.installer_sha256.lower() for item in validated if item.installer_sha256})
     if len(versions) > 1:
         matrix_failures.append(f"reports use multiple app versions: {versions}")
     if expected_app_version and versions != [expected_app_version]:
-        matrix_failures.append(
-            f"reports must use expected app version {expected_app_version!r}; found {versions}"
-        )
+        matrix_failures.append(f"reports must use expected app version {expected_app_version!r}; found {versions}")
     if len(installer_hashes) > 1:
         matrix_failures.append("reports are not bound to one installer SHA-256")
 
@@ -162,9 +158,7 @@ def validate_matrix(
     acceptance_checks = _build_acceptance_checks(payloads, require_full_matrix=require_full_matrix)
     if require_full_matrix:
         matrix_failures.extend(
-            f"acceptance check failed: {item['id']} ({item['detail']})"
-            for item in acceptance_checks
-            if not item["ok"]
+            f"acceptance check failed: {item['id']} ({item['detail']})" for item in acceptance_checks if not item["ok"]
         )
 
     ok = bool(validated) and all(item.ok for item in validated) and not matrix_failures
@@ -335,9 +329,7 @@ def _validate_artifacts(value: Any, report_path: Path, evidence_root: Path) -> l
     return failures
 
 
-def _validate_scenario_requirements(
-    payload: dict[str, Any], coverage: dict[str, list[str]]
-) -> list[str]:
+def _validate_scenario_requirements(payload: dict[str, Any], coverage: dict[str, list[str]]) -> list[str]:
     failures: list[str] = []
     measurements = payload.get("measurements")
     checks = payload.get("checks")
@@ -410,9 +402,7 @@ def _validate_scenario_requirements(
     if "recording-60m" in soak:
         _require_min(measurements, "recordingDurationSeconds", 3600, failures)
         _require_exact(measurements, "unmarkedAudioLossCount", 0, failures)
-        _require_equal_counts(
-            measurements, "intentionalGapExpectedCount", "intentionalGapObservedCount", failures
-        )
+        _require_equal_counts(measurements, "intentionalGapExpectedCount", "intentionalGapObservedCount", failures)
     if "stability-2h" in soak:
         _require_min(measurements, "stabilityDurationSeconds", 7200, failures)
         _require_true(checks, "stabilitySoakPassed", failures)
@@ -453,24 +443,36 @@ def _validate_scenario_requirements(
     return failures
 
 
-def _build_acceptance_checks(
-    payloads: list[dict[str, Any]], *, require_full_matrix: bool
-) -> list[dict[str, Any]]:
+def _build_acceptance_checks(payloads: list[dict[str, Any]], *, require_full_matrix: bool) -> list[dict[str, Any]]:
     specs = (
         ("capture-start-under-3s", "measurements", "captureStartLatencyMs", lambda v: _number(v) and v <= 3000),
         ("live-interim-p95-under-2s", "measurements", "liveInterimP95Ms", lambda v: _number(v) and v <= 2000),
         ("aec-measurable-echo-reduction", "measurements", "aecEchoReductionDb", lambda v: _number(v) and v > 0),
         ("crash-loss-at-most-open-chunk", "measurements", "crashLostAudioSeconds", lambda v: _number(v) and v <= 30),
         ("no-unmarked-audio-loss", "measurements", "unmarkedAudioLossCount", lambda v: isinstance(v, int) and v == 0),
-        ("no-false-high-confidence-voice-match", "measurements", "voiceprintFalseHighConfidenceMatches", lambda v: isinstance(v, int) and v == 0),
-        ("support-bundle-no-sensitive-findings", "measurements", "supportBundleSensitiveFindingCount", lambda v: isinstance(v, int) and v == 0),
+        (
+            "no-false-high-confidence-voice-match",
+            "measurements",
+            "voiceprintFalseHighConfidenceMatches",
+            lambda v: isinstance(v, int) and v == 0,
+        ),
+        (
+            "support-bundle-no-sensitive-findings",
+            "measurements",
+            "supportBundleSensitiveFindingCount",
+            lambda v: isinstance(v, int) and v == 0,
+        ),
         ("60-minute-recording", "measurements", "recordingDurationSeconds", lambda v: _number(v) and v >= 3600),
         ("2-hour-stability-soak", "measurements", "stabilityDurationSeconds", lambda v: _number(v) and v >= 7200),
         ("existing-regression-suite", "measurements", "automatedTestsPassed", lambda v: _number(v) and v >= 1099),
     )
     checks: list[dict[str, Any]] = []
     for check_id, section, key, predicate in specs:
-        values = [payload.get(section, {}).get(key) for payload in payloads if isinstance(payload.get(section), dict) and key in payload.get(section, {})]
+        values = [
+            payload.get(section, {}).get(key)
+            for payload in payloads
+            if isinstance(payload.get(section), dict) and key in payload.get(section, {})
+        ]
         ok = bool(values) and all(predicate(value) for value in values)
         detail = f"{len(values)} measurement(s) present"
         if not values and not require_full_matrix:
@@ -548,9 +550,7 @@ def _require_exact(section: dict[str, Any], key: str, expected: int, failures: l
         failures.append(f"measurements.{key} must equal {expected}")
 
 
-def _require_equal_counts(
-    section: dict[str, Any], expected_key: str, observed_key: str, failures: list[str]
-) -> None:
+def _require_equal_counts(section: dict[str, Any], expected_key: str, observed_key: str, failures: list[str]) -> None:
     expected = section.get(expected_key)
     observed = section.get(observed_key)
     if not isinstance(expected, int) or expected < 1:

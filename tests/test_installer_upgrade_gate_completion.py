@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "run_installer_size_packet.ps1"
 SOURCE = SCRIPT.read_text(encoding="utf-8")
@@ -60,9 +59,7 @@ def test_completion_barrier_matches_timing_harness_safety_model() -> None:
     assert "$installerPathSet.Contains" in related
     assert "[System.IO.FileShare]::None" in exclusive
     assert "$algorithm.ComputeHash($stream)" in exclusive
-    assert exclusive.index("$algorithm.ComputeHash($stream)") < exclusive.index(
-        "$stream.Dispose()"
-    )
+    assert exclusive.index("$algorithm.ComputeHash($stream)") < exclusive.index("$stream.Dispose()")
     assert "Get-Sha256File -Path $Path" not in exclusive
     assert "[Parameter(Mandatory = $true)][DateTimeOffset]$Deadline" in barrier
     assert "AddSeconds" not in barrier
@@ -107,9 +104,7 @@ def test_exclusive_identity_hashes_a_real_file_under_its_open_stream(tmp_path: P
 def test_same_desktop_identity_cannot_bypass_full_candidate_tree_barrier() -> None:
     barrier = _function_source("Wait-CandidateUpgradeInstallStable")
 
-    app_identity_match = barrier.index(
-        "[string]$identity.sha256 -eq [string]$expectedIdentity.sha256"
-    )
+    app_identity_match = barrier.index("[string]$identity.sha256 -eq [string]$expectedIdentity.sha256")
     full_tree_check = barrier.index("Assert-InstalledPayloadMatchesInventory")
     stable_sample = barrier.index("$stableCount += 1")
     success = barrier.index("return", stable_sample)
@@ -132,9 +127,7 @@ def test_failure_cleanup_is_scoped_bounded_and_precedes_tree_removal() -> None:
     assert "while ([DateTimeOffset]::UtcNow -lt $Deadline)" in wait
     assert "Get-RemainingDeadlineMilliseconds -Deadline $Deadline" in wait
     assert 'throw "upgrade_scoped_process_cleanup_timeout"' in wait
-    assert cleanup.index("Stop-ScopedProcessTree") < cleanup.index(
-        "Wait-ScopedProcessTreeExit"
-    )
+    assert cleanup.index("Stop-ScopedProcessTree") < cleanup.index("Wait-ScopedProcessTreeExit")
     assert "-TimeoutSec 10" in gate
     catch_cleanup = gate.index("Invoke-ScopedInstallerProcessCleanup", gate.index("} catch {"))
     diff = gate.index("Get-InstalledPayloadFirstDifference")
@@ -147,9 +140,7 @@ def test_failure_cleanup_is_scoped_bounded_and_precedes_tree_removal() -> None:
     assert '"gate-cleanup" = "not_run"' in gate
     assert '$outcomes["gate-cleanup"] = "fail"' in gate
     assert '"upgrade_gate_cleanup_failed"' in reasons
-    assert gate.index('$outcomes["gate-cleanup"] = "fail"') < gate.index(
-        "Write-UpgradeGateDetailArtifact"
-    )
+    assert gate.index('$outcomes["gate-cleanup"] = "fail"') < gate.index("Write-UpgradeGateDetailArtifact")
     assert "WaitForExit($remainingMs)" in uninstaller
     assert "-Wait" not in uninstaller
 
@@ -161,12 +152,10 @@ def test_unexpected_reparse_difference_is_never_hashed() -> None:
     unexpected = difference[unexpected_start:missing_start]
 
     reparse = unexpected.index("[System.IO.FileAttributes]::ReparsePoint")
-    guarded_hash = unexpected.index(
-        '$actualSha256 = if ($actualIsReparse) { "" } else { Get-Sha256File'
-    )
+    guarded_hash = unexpected.index('$actualSha256 = if ($actualIsReparse) { "" } else { Get-Sha256File')
     evidence = unexpected.index("New-RedactedInstalledPayloadDifference")
     assert reparse < guarded_hash < evidence
-    assert '$actualLength = if ($actualIsReparse) { [int64]-1 }' in unexpected
+    assert "$actualLength = if ($actualIsReparse) { [int64]-1 }" in unexpected
 
 
 def test_failed_upgrade_retains_only_bounded_bound_first_difference() -> None:
@@ -202,11 +191,9 @@ def test_failed_upgrade_retains_only_bounded_bound_first_difference() -> None:
 
 def test_candidate_upgrade_gate_binds_detail_evidence_into_retained_gate() -> None:
     retained = _function_source("Test-RetainedGateArtifact")
-    gate_definitions = SOURCE.split("$gateDefinitions = [ordered]@{", 1)[1].split(
-        "$gates = [ordered]@{}", 1
-    )[0]
+    gate_definitions = SOURCE.split("$gateDefinitions = [ordered]@{", 1)[1].split("$gates = [ordered]@{}", 1)[0]
 
-    assert 'cleanInstallUpgradeUninstall = [ordered]@{' in gate_definitions
+    assert "cleanInstallUpgradeUninstall = [ordered]@{" in gate_definitions
     assert '$upgradeGate.Contains("detailEvidence")' in gate_definitions
     assert 'ExpectedGate -eq "cleanInstallUpgradeUninstall"' in retained
     assert "Test-RetainedUpgradeGateDetail" in retained

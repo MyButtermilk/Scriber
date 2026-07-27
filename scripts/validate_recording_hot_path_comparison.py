@@ -27,7 +27,6 @@ from scripts.measure_recording_hot_path_baseline import (
     summarize,
 )
 
-
 COMPARISON_SEGMENTS = [
     "hotkey_received_to_mic_ready_ms",
     "hotkey_received_to_first_audio_frame_ms",
@@ -72,7 +71,7 @@ def read_json_object(path: Path) -> dict[str, Any]:
 
 
 def requirement_status(report: dict[str, Any], name: str) -> str:
-    requirements = ((report.get("summary") or {}).get("requirements") or {})
+    requirements = (report.get("summary") or {}).get("requirements") or {}
     requirement = requirements.get(name) if isinstance(requirements, dict) else None
     if not isinstance(requirement, dict):
         return "missing"
@@ -114,7 +113,7 @@ def active_capture_samples(report: dict[str, Any]) -> list[dict[str, Any]]:
         during = sample.get("audioDiagnosticsDuringRecording")
         if not isinstance(during, dict):
             continue
-        active = ((during.get("microphone") or {}).get("activeCapture") or {})
+        active = (during.get("microphone") or {}).get("activeCapture") or {}
         if isinstance(active, dict) and active:
             captures.append(active)
     return captures
@@ -122,16 +121,14 @@ def active_capture_samples(report: dict[str, Any]) -> list[dict[str, Any]]:
 
 def rust_fallback_circuits(report: dict[str, Any]) -> list[dict[str, Any]]:
     circuits: list[dict[str, Any]] = []
-    report_circuit = ((report.get("audioDiagnostics") or {}).get("microphone") or {}).get(
-        "rustAudioFallbackCircuit"
-    )
+    report_circuit = ((report.get("audioDiagnostics") or {}).get("microphone") or {}).get("rustAudioFallbackCircuit")
     if isinstance(report_circuit, dict):
         circuits.append({"source": "report", **report_circuit})
     for sample in report_samples(report):
         during = sample.get("audioDiagnosticsDuringRecording")
         if not isinstance(during, dict):
             continue
-        circuit = ((during.get("microphone") or {}).get("rustAudioFallbackCircuit") or {})
+        circuit = (during.get("microphone") or {}).get("rustAudioFallbackCircuit") or {}
         if isinstance(circuit, dict) and circuit:
             circuits.append({"source": f"sample:{sample.get('iteration')}", **circuit})
     return circuits
@@ -179,10 +176,7 @@ def rust_mid_session_clean_check(report: dict[str, Any]) -> tuple[bool, dict[str
     checked = 0
     failing: list[dict[str, Any]] = []
     for capture in active_capture_samples(report):
-        if (
-            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
-            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
-        ):
+        if capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
             continue
         checked += 1
         source = capture.get("source")
@@ -248,10 +242,7 @@ def rust_frame_pipe_flow_check(report: dict[str, Any]) -> tuple[bool, dict[str, 
     failing: list[dict[str, Any]] = []
     sample_details: list[dict[str, Any]] = []
     for capture in active_capture_samples(report):
-        if (
-            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
-            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
-        ):
+        if capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
             continue
         checked += 1
         detail = {
@@ -283,10 +274,7 @@ def rust_no_dropped_frames_check(report: dict[str, Any]) -> tuple[bool, dict[str
     failing: list[dict[str, Any]] = []
     sample_details: list[dict[str, Any]] = []
     for capture in active_capture_samples(report):
-        if (
-            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
-            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
-        ):
+        if capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
             continue
         checked += 1
         source = capture.get("source")
@@ -315,22 +303,14 @@ def rust_active_capture_stable_check(report: dict[str, Any]) -> tuple[bool, dict
     checked = 0
     failing: list[dict[str, Any]] = []
     for capture in active_capture_samples(report):
-        if (
-            capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
-            or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
-        ):
+        if capture.get("engine") != RUST_AUDIO_ACTIVE_ENGINE or capture.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
             continue
         checked += 1
         restart_count = _int_value(capture.get("healthRestartCount"))
         throttle_count = _int_value(capture.get("healthRestartThrottleCount"))
         failure_reason = str(capture.get("lastHealthFailureReason") or "").strip()
         restart_error = str(capture.get("lastHealthRestartError") or "").strip()
-        sample_ok = (
-            restart_count == 0
-            and throttle_count == 0
-            and not failure_reason
-            and not restart_error
-        )
+        sample_ok = restart_count == 0 and throttle_count == 0 and not failure_reason and not restart_error
         if not sample_ok:
             failing.append(
                 {
@@ -349,8 +329,7 @@ def rust_active_capture_stable_check(report: dict[str, Any]) -> tuple[bool, dict
 
 def has_rust_frame_pipe(report: dict[str, Any]) -> bool:
     return any(
-        capture.get("engine") == RUST_AUDIO_ACTIVE_ENGINE
-        and capture.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
+        capture.get("engine") == RUST_AUDIO_ACTIVE_ENGINE and capture.get("frameSource") == RUST_AUDIO_FRAME_SOURCE
         for capture in active_capture_samples(report)
     )
 
@@ -366,13 +345,10 @@ def rust_prewarm_adoption_check(report: dict[str, Any]) -> tuple[bool, dict[str,
         during = sample.get("audioDiagnosticsDuringRecording")
         if not isinstance(during, dict):
             continue
-        active = ((during.get("microphone") or {}).get("activeCapture") or {})
+        active = (during.get("microphone") or {}).get("activeCapture") or {}
         if not isinstance(active, dict) or not active:
             continue
-        if (
-            active.get("engine") != RUST_AUDIO_ACTIVE_ENGINE
-            or active.get("frameSource") != RUST_AUDIO_FRAME_SOURCE
-        ):
+        if active.get("engine") != RUST_AUDIO_ACTIVE_ENGINE or active.get("frameSource") != RUST_AUDIO_FRAME_SOURCE:
             continue
 
         frame_pipe_samples += 1
@@ -511,9 +487,7 @@ def same_recording_config_check(
         missing.append("rust.requested")
         rust_config = {}
     mismatched_fields = [
-        field
-        for field in COMPARABLE_REQUESTED_FIELDS
-        if python_config.get(field) != rust_config.get(field)
+        field for field in COMPARABLE_REQUESTED_FIELDS if python_config.get(field) != rust_config.get(field)
     ]
     details = {
         "fields": COMPARABLE_REQUESTED_FIELDS,
@@ -655,8 +629,7 @@ def build_comparison(
         rust_provider_label = provider_label(rust_report)
         add_check(
             "sameProvider",
-            bool(python_provider_label)
-            and python_provider_label == rust_provider_label,
+            bool(python_provider_label) and python_provider_label == rust_provider_label,
             {
                 "pythonProvider": python_provider_label,
                 "rustProvider": rust_provider_label,

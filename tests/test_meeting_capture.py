@@ -66,9 +66,7 @@ def write_pcm_wav(path, *, frames=16_000, sample_rate=16_000):
         ),
     ],
 )
-def test_meeting_recorder_rejects_incomplete_required_source_set(
-    tmp_path, sources, missing
-):
+def test_meeting_recorder_rejects_incomplete_required_source_set(tmp_path, sources, missing):
     recorder = MeetingAudioRecorder("meeting", tmp_path, object())
 
     with pytest.raises(ValueError, match=rf"required audio sources: {missing}"):
@@ -155,9 +153,11 @@ def test_meeting_recorder_rotates_durable_wav_chunks(monkeypatch, tmp_path):
 
     assert snapshot["microphone"]["frames"] == 2
     assert snapshot["microphone"]["chunks"] == 2
-    rows = database._get_connection().execute(
-        "SELECT sequence, state, sha256 FROM meeting_audio_chunks ORDER BY sequence"
-    ).fetchall()
+    rows = (
+        database._get_connection()
+        .execute("SELECT sequence, state, sha256 FROM meeting_audio_chunks ORDER BY sequence")
+        .fetchall()
+    )
     assert [row["sequence"] for row in rows] == [0, 1]
     assert all(row["state"] == "complete" and len(row["sha256"]) == 64 for row in rows)
     assert len(list((tmp_path / "meeting-audio" / meeting_id / "audio").glob("*.wav"))) == 2
@@ -186,9 +186,7 @@ def test_meeting_device_probe_reports_levels_without_persisting_audio(tmp_path):
         ),
         pcm,
     )
-    probe = MeetingDeviceLevelProbe(
-        reader_factory=ReaderFactory({"mic-pipe": frame})
-    )
+    probe = MeetingDeviceLevelProbe(reader_factory=ReaderFactory({"mic-pipe": frame}))
     probe.start([{"source": "microphone", "framePipe": "mic-pipe"}])
     deadline = time.monotonic() + 1
     while probe.snapshot()["microphone"]["frames"] < 1 and time.monotonic() < deadline:
@@ -206,8 +204,11 @@ def test_meeting_device_probe_keeps_frames_valid_when_native_pipe_closes():
     pcm = (8_192).to_bytes(2, "little", signed=True) * 160
     frame = encode_audio_frame(
         AudioFrameHeader(
-            payload_len=len(pcm), sequence=0, timestamp_micros=0,
-            frame_count=160, channels=1,
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
         ),
         pcm,
     )
@@ -218,9 +219,7 @@ def test_meeting_device_probe_keeps_frames_valid_when_native_pipe_closes():
                 raise OSError(errno.EPIPE, "synthetic native stop")
             return super().read(size)
 
-    probe = MeetingDeviceLevelProbe(
-        reader_factory=lambda *_args, **_kwargs: NativeCloseReader(frame)
-    )
+    probe = MeetingDeviceLevelProbe(reader_factory=lambda *_args, **_kwargs: NativeCloseReader(frame))
     probe.start([{"source": "microphone", "framePipe": "mic-pipe"}])
     deadline = time.monotonic() + 1
     while probe.snapshot()["microphone"]["frames"] < 1 and time.monotonic() < deadline:
@@ -232,22 +231,21 @@ def test_meeting_device_probe_keeps_frames_valid_when_native_pipe_closes():
     assert snapshot["microphone"]["errorCode"] == ""
 
 
-def test_meeting_recorder_surfaces_disk_full_without_persisting_incomplete_chunk(
-    monkeypatch, tmp_path
-):
+def test_meeting_recorder_surfaces_disk_full_without_persisting_incomplete_chunk(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meetings.db")
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting_id = store.create(
-        MeetingCreate(title="Disk full", consent_confirmed=True)
-    )["id"]
+    meeting_id = store.create(MeetingCreate(title="Disk full", consent_confirmed=True))["id"]
     pcm = b"\0\0" * 160
     frame = encode_audio_frame(
         AudioFrameHeader(
-            payload_len=len(pcm), sequence=0, timestamp_micros=0,
-            frame_count=160, channels=1,
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
         ),
         pcm,
     )
@@ -283,9 +281,12 @@ def test_meeting_recorder_surfaces_disk_full_without_persisting_incomplete_chunk
 
     assert snapshot["microphone"]["errorCode"] == "disk_full"
     assert snapshot["microphone"]["chunks"] == 0
-    assert database._get_connection().execute(
-        "SELECT COUNT(*) FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,)
-    ).fetchone()[0] == 0
+    assert (
+        database._get_connection()
+        .execute("SELECT COUNT(*) FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,))
+        .fetchone()[0]
+        == 0
+    )
     database._close_all_connections()
 
 
@@ -299,8 +300,11 @@ def test_meeting_recorder_retries_transient_named_pipe_open(monkeypatch, tmp_pat
     pcm = b"\0\0" * 160
     frame = encode_audio_frame(
         AudioFrameHeader(
-            payload_len=len(pcm), sequence=0, timestamp_micros=0,
-            frame_count=160, channels=1,
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
         ),
         pcm,
     )
@@ -372,9 +376,7 @@ def test_expected_native_disconnect_clears_only_pipe_errors(tmp_path):
     assert snapshot["system"]["errorCode"] == "disk_full"
 
 
-def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
-    monkeypatch, tmp_path
-):
+def test_expected_windows_pipe_disconnect_commits_partial_before_resume(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "pause-resume.db")
     database.init_database()
@@ -384,8 +386,11 @@ def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
     pcm = b"\0\0" * 160
     frame = encode_audio_frame(
         AudioFrameHeader(
-            payload_len=len(pcm), sequence=0, timestamp_micros=0,
-            frame_count=160, channels=1,
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
         ),
         pcm,
     )
@@ -416,9 +421,7 @@ def test_expected_windows_pipe_disconnect_commits_partial_before_resume(
         meeting_id,
         tmp_path / "meetings",
         store,
-        reader_factory=lambda path, *_args, **_kwargs: readers.get(
-            path, lambda: io.BytesIO(b"")
-        )(),
+        reader_factory=lambda path, *_args, **_kwargs: readers.get(path, lambda: io.BytesIO(b""))(),
     )
     recorder.start(meeting_capture_sources("first-pipe"))
     deadline = time.monotonic() + 1
@@ -477,9 +480,7 @@ def test_recovery_finishes_prepared_partial_after_crash(monkeypatch, tmp_path):
     assert final.is_file() and not partial.exists()
     assert final.read_bytes() and hashlib.sha256(final.read_bytes()).hexdigest() == digest
     assert store.audio_chunks(meeting_id)[0]["state"] == "complete"
-    assert store.transcript_checkpoints(meeting_id)[0]["frontiers"]["logical"] == {
-        "microphone": 1_000
-    }
+    assert store.transcript_checkpoints(meeting_id)[0]["frontiers"]["logical"] == {"microphone": 1_000}
     database._close_all_connections()
 
 
@@ -537,9 +538,11 @@ def test_recovery_defers_database_failure_without_losing_final(monkeypatch, tmp_
         conn.commit()
 
     first = store.reconcile_audio_chunks(root)
-    raw = database._get_connection().execute(
-        "SELECT state FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,)
-    ).fetchone()
+    raw = (
+        database._get_connection()
+        .execute("SELECT state FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,))
+        .fetchone()
+    )
     assert first["deferred"] == 1
     assert raw["state"] == "prepared" and final.is_file()
 
@@ -551,9 +554,7 @@ def test_recovery_defers_database_failure_without_losing_final(monkeypatch, tmp_
     database._close_all_connections()
 
 
-def test_legacy_rowless_final_is_only_adopted_at_unambiguous_next_sequence(
-    monkeypatch, tmp_path
-):
+def test_legacy_rowless_final_is_only_adopted_at_unambiguous_next_sequence(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "legacy-orphan.db")
     database.init_database()
@@ -590,8 +591,11 @@ def test_recorder_never_overwrites_unknown_final(monkeypatch, tmp_path):
     pcm = b"\0\0" * 160
     frame = encode_audio_frame(
         AudioFrameHeader(
-            payload_len=len(pcm), sequence=0, timestamp_micros=0,
-            frame_count=160, channels=1,
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
         ),
         pcm,
     )
@@ -611,9 +615,12 @@ def test_recorder_never_overwrites_unknown_final(monkeypatch, tmp_path):
     assert recorder.snapshot()["microphone"]["errorCode"] == "FileExistsError"
     assert final.read_bytes() == sentinel
     assert not list(final.parent.glob("*.partial.wav"))
-    assert database._get_connection().execute(
-        "SELECT COUNT(*) FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,)
-    ).fetchone()[0] == 0
+    assert (
+        database._get_connection()
+        .execute("SELECT COUNT(*) FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,))
+        .fetchone()[0]
+        == 0
+    )
     database._close_all_connections()
 
 
@@ -641,9 +648,7 @@ def test_stop_retains_blocked_reader_and_prevents_restart(monkeypatch, tmp_path)
         meeting_id,
         tmp_path / "meetings",
         store,
-        reader_factory=lambda path, *_args, **_kwargs: (
-            BlockingReader() if path == "blocked" else io.BytesIO(b"")
-        ),
+        reader_factory=lambda path, *_args, **_kwargs: BlockingReader() if path == "blocked" else io.BytesIO(b""),
     )
     recorder.start(meeting_capture_sources("blocked"))
 
@@ -667,15 +672,20 @@ def test_prepared_sequence_is_immutable(monkeypatch, tmp_path):
     store.initialize()
     meeting_id = store.create(MeetingCreate(title="Immutable sequence"))["id"]
     kwargs = {
-        "source": "system", "sequence": 0,
+        "source": "system",
+        "sequence": 0,
         "relative_path": f"{meeting_id}/audio/system-000000.wav",
-        "started_at_ms": 0, "ended_at_ms": 1_000, "sha256": "a" * 64,
+        "started_at_ms": 0,
+        "ended_at_ms": 1_000,
+        "sha256": "a" * 64,
     }
     store.prepare_audio_chunk(meeting_id, **kwargs)
     with pytest.raises(MeetingConflict, match="already reserved"):
         store.prepare_audio_chunk(meeting_id, **{**kwargs, "sha256": "b" * 64})
-    raw = database._get_connection().execute(
-        "SELECT state,sha256 FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,)
-    ).fetchone()
+    raw = (
+        database._get_connection()
+        .execute("SELECT state,sha256 FROM meeting_audio_chunks WHERE meeting_id=?", (meeting_id,))
+        .fetchone()
+    )
     assert (raw["state"], raw["sha256"]) == ("prepared", "a" * 64)
     database._close_all_connections()

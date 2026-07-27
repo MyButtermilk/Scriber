@@ -45,7 +45,7 @@ class _FakeYdl:
     def __init__(self, options: dict[str, object]) -> None:
         self.options = options
 
-    def __enter__(self) -> "_FakeYdl":
+    def __enter__(self) -> _FakeYdl:
         return self
 
     def __exit__(self, *_args: object) -> None:
@@ -83,7 +83,7 @@ def test_frozen_probe_parses_exact_cli_policy_and_redacts_media_urls(
                 "js_runtimes": {"deno": {"path": str(runtime)}},
                 "remote_components": [],
                 "cachedir": False,
-            }
+            },
         )
 
     exit_code, response = probe.execute_probe(
@@ -167,7 +167,7 @@ def test_frozen_probe_failure_is_bounded_and_does_not_echo_provider_text(
                 "js_runtimes": {"deno": {"path": str(runtime)}},
                 "remote_components": [],
                 "cachedir": False,
-            }
+            },
         )
 
     class FailingYdl(_FakeYdl):
@@ -188,9 +188,7 @@ def test_frozen_probe_failure_is_bounded_and_does_not_echo_provider_text(
     assert "youtube.com" not in json.dumps(response).casefold()
 
 
-def test_frozen_probe_rejects_enabled_external_plugins(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_frozen_probe_rejects_enabled_external_plugins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root, runtime = _runtime_root(tmp_path)
     monkeypatch.delenv("YTDLP_NO_PLUGINS", raising=False)
 
@@ -198,9 +196,7 @@ def test_frozen_probe_rejects_enabled_external_plugins(
         probe.execute_probe(_request(runtime), runtime_root=root)
 
 
-def test_launcher_routes_only_exact_frozen_probe_flag(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_launcher_routes_only_exact_frozen_probe_flag(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     runtime_root = tmp_path / "runtime"
     runtime_root.mkdir()
     calls: list[tuple[str, Path]] = []

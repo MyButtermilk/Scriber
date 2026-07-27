@@ -52,4 +52,3 @@ def test_initializing_can_transition_to_finalizing_when_stop_happens_early():
     sm.transition(RecordingState.COMPLETED)
     sm.transition(RecordingState.IDLE)
     assert sm.state is RecordingState.IDLE
-

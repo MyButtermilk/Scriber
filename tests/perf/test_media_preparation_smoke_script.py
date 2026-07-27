@@ -8,14 +8,11 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_media_preparation_smoke_script_covers_media_helper_paths() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_media_preparation.py").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_media_preparation.py").read_text(encoding="utf-8")
 
     assert "_maybe_compress_audio_upload" in script
     assert "_extract_audio_from_video" in script
@@ -37,14 +34,12 @@ def test_windows_build_can_run_media_preparation_smoke_against_bundled_tools() -
     assert "--media-tools-dir" in build
     assert "--require-ffprobe" in build
     assert "media-preparation-smoke.json" in build
-    assert "$mediaPreparationSmoke[\"path\"] = $mediaPreparationSmokePath" in build
+    assert '$mediaPreparationSmoke["path"] = $mediaPreparationSmokePath' in build
     assert "mediaPreparationSmoke = $mediaPreparationSmoke" in build
 
 
 def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
-    installer = (REPO_ROOT / "scripts" / "smoke_windows_installer.ps1").read_text(
-        encoding="utf-8"
-    )
+    installer = (REPO_ROOT / "scripts" / "smoke_windows_installer.ps1").read_text(encoding="utf-8")
     build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
 
     assert "[switch]$VerifyMediaPreparation" in installer
@@ -54,7 +49,7 @@ def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
     assert "resources\\backend\\tools\\ffmpeg" in installer
     assert "function Invoke-InstalledMediaPreparationSmoke" in installer
     assert '[string]$PythonExecutable = ""' in installer
-    assert 'venv\\Scripts\\python.exe' in installer
+    assert "venv\\Scripts\\python.exe" in installer
     assert "& $PythonExecutable @mediaSmokeArgs | Out-Host" in installer
     assert "python @mediaSmokeArgs" not in installer
     assert "scripts\\smoke_media_preparation.py" in installer
@@ -72,9 +67,7 @@ def test_installer_smoke_can_verify_installed_media_preparation_tools() -> None:
 
 
 def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_cli_token() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_installed_transcription_workflows.py").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_installed_transcription_workflows.py").read_text(encoding="utf-8")
 
     assert "/api/file/transcribe" in script
     assert "/api/youtube/transcribe" in script
@@ -82,7 +75,7 @@ def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_c
     assert "Windows SAPI" in script
     assert "SCRIBER_SMOKE_SESSION_TOKEN" in script
     assert "--token-env" in script
-    assert "--token\"" not in script
+    assert '--token"' not in script
     assert "X-Scriber-Token" in script
     assert "DEFAULT_YOUTUBE_URL" in script
     assert "require_summary" in script

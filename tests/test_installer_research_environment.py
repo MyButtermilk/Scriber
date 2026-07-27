@@ -6,15 +6,12 @@ from pathlib import Path
 
 from scripts import write_installer_research_environment_manifest as environment_manifest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUN_ID = "12345678-1234-4234-8234-123456789abc"
 
 
 def test_environment_preparer_is_scoped_and_has_no_unsafe_powershell() -> None:
-    script = (REPO_ROOT / "scripts/prepare_installer_research_environment.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts/prepare_installer_research_environment.ps1").read_text(encoding="utf-8")
 
     assert "Resolve-CanonicalUuid" in script
     assert "Assert-UnderRoot" in script
@@ -40,9 +37,7 @@ def test_environment_preparer_is_scoped_and_has_no_unsafe_powershell() -> None:
 
 
 def test_toolchain_preparer_pins_and_verifies_downloaded_inputs() -> None:
-    script = (REPO_ROOT / "scripts/prepare_installer_research_toolchain.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts/prepare_installer_research_toolchain.ps1").read_text(encoding="utf-8")
 
     assert "Resolve-CanonicalUuid" in script
     assert "Assert-UnderRoot" in script
@@ -67,16 +62,14 @@ def test_toolchain_preparer_pins_and_verifies_downloaded_inputs() -> None:
     assert '$nsisRoot = Join-Path $env:LOCALAPPDATA "tauri\\NSIS"' in script
     assert '-Path $nsisRoot `\n    -Label "Tauri NSIS toolchain" `\n    -Recurse' in script
     assert "$nsisTreeIdentity = Get-PlainTreeIdentity -Root $nsisRoot" in script
-    assert 'nsisTree = $nsisTreeIdentity' in script
+    assert "nsisTree = $nsisTreeIdentity" in script
     assert '$nsisIdentity["relativePath"] = $makensisRelativePath' in script
     assert "Invoke-Expression" not in script
     assert "EncodedCommand" not in script
     assert "ExecutionPolicy Bypass" not in script
 
 
-def test_environment_manifest_is_path_redacted_and_stable(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_environment_manifest_is_path_redacted_and_stable(tmp_path: Path, monkeypatch) -> None:
     wheelhouse = tmp_path / "wheelhouse"
     wheelhouse.mkdir()
     (wheelhouse / "example-1.0-py3-none-any.whl").write_bytes(b"wheel")
@@ -139,9 +132,7 @@ def test_generated_comtypes_tree_identity_detects_unrecorded_modules(
     environment_root = tmp_path / "environment"
     generated_root = environment_root / "Lib" / "site-packages" / "comtypes" / "gen"
     generated_root.mkdir(parents=True)
-    (generated_root / "__init__.py").write_text(
-        "# deterministic generated package\n", encoding="utf-8"
-    )
+    (generated_root / "__init__.py").write_text("# deterministic generated package\n", encoding="utf-8")
     pycache = generated_root / "__pycache__"
     pycache.mkdir()
     (pycache / "__init__.pyc").write_bytes(b"volatile bytecode")

@@ -5,7 +5,6 @@ import re
 import sys
 from pathlib import Path
 
-
 _PIPECAT_PIN = re.compile(
     r"^\s*pipecat-ai(?:\[[^\]]+\])?==([^\s;]+)",
     flags=re.IGNORECASE,

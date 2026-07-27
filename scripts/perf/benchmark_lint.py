@@ -54,8 +54,7 @@ INTEGER_METRICS = {
     *{
         name
         for name in CANONICAL_PROVIDER_REPLAY_METRICS
-        if name.endswith("_sample_count")
-        or name.endswith("_capture_attested")
+        if name.endswith("_sample_count") or name.endswith("_capture_attested")
     },
 }
 

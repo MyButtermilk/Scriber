@@ -8,9 +8,9 @@ import subprocess
 import sys
 import time
 import urllib.parse
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
-from ctypes import wintypes
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -187,9 +187,7 @@ def click_target_window(title: str, x: int, y: int) -> dict[str, Any]:
 def run_injection_smoke(args: argparse.Namespace) -> dict[str, Any]:
     output_path = Path(args.output).expanduser().resolve() if args.output else default_output_path()
     target_path = (
-        Path(args.target_file).expanduser().resolve()
-        if args.target_file
-        else default_target_path(output_path)
+        Path(args.target_file).expanduser().resolve() if args.target_file else default_target_path(output_path)
     )
 
     injected_texts: list[str] = []
@@ -219,6 +217,7 @@ def run_injection_smoke(args: argparse.Namespace) -> dict[str, Any]:
         if not HAS_GUI:
             target_error = "GUI injection libraries are unavailable"
         else:
+
             def on_injected(text: str) -> None:
                 nonlocal callback_elapsed_ms
                 injected_texts.append(text)

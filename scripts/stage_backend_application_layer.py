@@ -24,7 +24,6 @@ from backend_runtime.contract import (
 )
 from backend_runtime.launcher import validate_application_layer
 
-
 _VERSION_PATTERN = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE)
 
 

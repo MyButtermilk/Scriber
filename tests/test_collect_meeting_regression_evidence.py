@@ -43,9 +43,7 @@ def test_load_json_accepts_utf8_bom_from_powershell_reports(tmp_path: Path) -> N
 
 
 def test_collector_requires_installed_meeting_audio_evidence() -> None:
-    source = Path("scripts/collect_meeting_regression_evidence.py").read_text(
-        encoding="utf-8"
-    )
+    source = Path("scripts/collect_meeting_regression_evidence.py").read_text(encoding="utf-8")
 
     assert '"Tauri sidecar preparation"' in source
     assert '"Tauri Windows bundle"' in source

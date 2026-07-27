@@ -7,10 +7,9 @@ static HTML vocabulary with no executable or style-bearing attributes.
 
 from __future__ import annotations
 
+import re
 from html import escape
 from html.parser import HTMLParser
-import re
-
 
 SUMMARY_HTML_TAGS = frozenset(
     {

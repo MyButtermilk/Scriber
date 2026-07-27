@@ -14,10 +14,10 @@ import stat
 import struct
 import uuid
 from collections import defaultdict
-from datetime import datetime, timezone
+from collections.abc import Iterable, Mapping, Sequence
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, BinaryIO, Iterable, Mapping, Sequence
-
+from typing import Any, BinaryIO
 
 INVENTORY_CONTRACT = "InstallerResearchInventoryV1"
 INVENTORY_SCHEMA_VERSION = 1
@@ -46,9 +46,7 @@ def validate_run_id(value: str, *, field: str = "run_id") -> str:
     try:
         parsed = uuid.UUID(value)
     except ValueError as exc:
-        raise InventoryError(
-            f"{field} must be a canonical non-nil RFC 4122 UUID."
-        ) from exc
+        raise InventoryError(f"{field} must be a canonical non-nil RFC 4122 UUID.") from exc
     if parsed.int == 0 or str(parsed) != value:
         raise InventoryError(f"{field} must be a canonical non-nil RFC 4122 UUID.")
     return str(parsed)
@@ -62,19 +60,12 @@ def validate_source_commit(value: str, *, field: str = "source_commit") -> str:
 
 def validate_replica_id(value: str, *, field: str = "replica_id") -> str:
     if not isinstance(value, str) or not REPLICA_ID_RE.fullmatch(value):
-        raise InventoryError(
-            f"{field} must match {REPLICA_ID_RE.pattern} and contain no path data."
-        )
+        raise InventoryError(f"{field} must match {REPLICA_ID_RE.pattern} and contain no path data.")
     return value
 
 
 def _utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -92,11 +83,7 @@ def _read_stable_bytes(path: Path) -> bytes:
     before = path.stat()
     data = path.read_bytes()
     after = path.stat()
-    if (
-        before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or len(data) != after.st_size
-    ):
+    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or len(data) != after.st_size:
         raise InventoryError(f"File changed while it was inventoried: {path.name}")
     return data
 
@@ -110,11 +97,7 @@ def _hash_stable_file(path: Path) -> tuple[int, str]:
             digest.update(chunk)
             length += len(chunk)
     after = path.stat()
-    if (
-        before.st_size != after.st_size
-        or before.st_mtime_ns != after.st_mtime_ns
-        or length != after.st_size
-    ):
+    if before.st_size != after.st_size or before.st_mtime_ns != after.st_mtime_ns or length != after.st_size:
         raise InventoryError(f"File changed while it was inventoried: {path.name}")
     return length, digest.hexdigest()
 
@@ -207,9 +190,7 @@ def _iter_plain_files(root: Path) -> list[tuple[str, Path]]:
             folded = relative.casefold()
             prior = seen_casefolded.get(folded)
             if prior is not None and prior != relative:
-                raise InventoryError(
-                    f"Case-insensitive payload path collision: {prior!r} and {relative!r}"
-                )
+                raise InventoryError(f"Case-insensitive payload path collision: {prior!r} and {relative!r}")
             seen_casefolded[folded] = relative
             result.append((relative, path))
     return sorted(result, key=lambda item: item[0].encode("utf-8"))
@@ -319,31 +300,21 @@ def _normalize_sidecar_build_metadata(raw: bytes) -> bytes:
         if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
             raise InventoryError(f"phases[{index}].durationMs must be non-negative.")
     total_duration = metadata.get("totalDurationMs")
-    if (
-        isinstance(total_duration, bool)
-        or not isinstance(total_duration, (int, float))
-        or total_duration < 0
-    ):
+    if isinstance(total_duration, bool) or not isinstance(total_duration, (int, float)) or total_duration < 0:
         raise InventoryError("totalDurationMs must be non-negative.")
 
     copied_media = metadata.get("mediaToolsCopied")
-    if not isinstance(copied_media, list) or not all(
-        isinstance(item, str) for item in copied_media
-    ):
+    if not isinstance(copied_media, list) or not all(isinstance(item, str) for item in copied_media):
         raise InventoryError("mediaToolsCopied must be an array of strings.")
     prepared_media = metadata.get("preparedMediaTools")
-    if prepared_media is not None and not isinstance(
-        prepared_media, (dict, list, str, int, float, bool)
-    ):
+    if prepared_media is not None and not isinstance(prepared_media, (dict, list, str, int, float, bool)):
         raise InventoryError("preparedMediaTools has an unsupported JSON type.")
 
     normalized = copy.deepcopy(metadata)
     normalized["generatedAt"] = "1970-01-01T00:00:00Z"
     normalized["sidecarDir"] = "<normalized-sidecar-dir>"
     normalized["sidecarExe"] = "<normalized-sidecar-exe>"
-    normalized["copiedToTauriRelease"] = (
-        "<normalized-tauri-release-dir>" if copied_to is not None else None
-    )
+    normalized["copiedToTauriRelease"] = "<normalized-tauri-release-dir>" if copied_to is not None else None
     normalized["targetCurrent"] = False
     normalized["cache"]["hit"] = False
     normalized["runtimeLayer"]["cacheHit"] = False
@@ -378,9 +349,7 @@ def _normalize_sidecar_build_metadata(raw: bytes) -> bytes:
 
     diarization_copy = normalized.get("rustDiarizationSidecarCopied")
     if diarization_copy is not None:
-        diarization_copy = _require_mapping(
-            diarization_copy, label="rustDiarizationSidecarCopied"
-        )
+        diarization_copy = _require_mapping(diarization_copy, label="rustDiarizationSidecarCopied")
         for key in (
             "targetDir",
             "targetExe",
@@ -407,23 +376,17 @@ def _normalize_sidecar_build_metadata(raw: bytes) -> bytes:
             hit = archive["cacheHitForCurrentBuild"]
             if hit is not None and not isinstance(hit, bool):
                 raise InventoryError(
-                    "rustDiarizationSidecarCopied.archive.cacheHitForCurrentBuild "
-                    "must be a boolean or null."
+                    "rustDiarizationSidecarCopied.archive.cacheHitForCurrentBuild must be a boolean or null."
                 )
             archive["cacheHitForCurrentBuild"] = None
         sync = diarization_copy.get("sync")
         if isinstance(sync, dict):
             for key in ("copied", "skipped", "removed"):
                 if key in sync:
-                    _require_nonnegative_int(
-                        sync[key], label=f"rustDiarizationSidecarCopied.sync.{key}"
-                    )
+                    _require_nonnegative_int(sync[key], label=f"rustDiarizationSidecarCopied.sync.{key}")
                     sync[key] = 0
 
-    return (
-        json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-        + "\n"
-    ).encode("utf-8")
+    return (json.dumps(normalized, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
 
 def _normalize_tauri_bundle_type(
@@ -431,9 +394,7 @@ def _normalize_tauri_bundle_type(
     marker: Mapping[str, Any],
 ) -> bytes:
     prefix = str(marker["prefix"]).encode("ascii")
-    allowed_values = tuple(
-        str(value).encode("ascii") for value in marker["allowedValues"]
-    )
+    allowed_values = tuple(str(value).encode("ascii") for value in marker["allowedValues"])
     normalized_value = str(marker["normalizedValue"]).encode("ascii")
     marker_count = raw.count(prefix)
     if marker_count == 0:
@@ -441,9 +402,7 @@ def _normalize_tauri_bundle_type(
             raise InventoryError("Tauri desktop executable has no bundle-type marker.")
         return raw
     if marker_count != 1:
-        raise InventoryError(
-            "Tauri desktop executable has multiple bundle-type markers."
-        )
+        raise InventoryError("Tauri desktop executable has multiple bundle-type markers.")
     marker_start = raw.index(prefix) + len(prefix)
     marker_end = marker_start + len(normalized_value)
     value = raw[marker_start:marker_end]
@@ -484,9 +443,7 @@ def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
         component_ids.append(component_id)
         for key in ("exactPaths", "fileNames", "pathPrefixes", "pathGlobs"):
             patterns = component.get(key, [])
-            if not isinstance(patterns, list) or not all(
-                isinstance(item, str) and item for item in patterns
-            ):
+            if not isinstance(patterns, list) or not all(isinstance(item, str) and item for item in patterns):
                 raise InventoryError(f"{component_id}.{key} must be an array of strings.")
         if "backendExecutable" in component:
             _require_bool(
@@ -494,9 +451,7 @@ def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
                 label=f"{component_id}.backendExecutable",
             )
 
-    fallback = _require_string(
-        component_map.get("fallbackComponent"), label="fallbackComponent"
-    )
+    fallback = _require_string(component_map.get("fallbackComponent"), label="fallbackComponent")
     if fallback not in component_ids:
         raise InventoryError("fallbackComponent does not name a declared component.")
 
@@ -507,9 +462,7 @@ def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
     for index, rule_value in enumerate(pyz_rules):
         rule = _require_mapping(rule_value, label=f"pyzPrefixComponents[{index}]")
         prefix = _require_string(rule.get("prefix"), label=f"pyzPrefixComponents[{index}].prefix")
-        component = _require_string(
-            rule.get("component"), label=f"pyzPrefixComponents[{index}].component"
-        )
+        component = _require_string(rule.get("component"), label=f"pyzPrefixComponents[{index}].component")
         if prefix in seen_prefixes:
             raise InventoryError(f"Duplicate PYZ prefix: {prefix}")
         if component not in component_ids:
@@ -517,20 +470,13 @@ def load_component_map(path: Path) -> tuple[dict[str, Any], str]:
         seen_prefixes.add(prefix)
 
     allowed = component_map.get("allowedDistributions")
-    if not isinstance(allowed, list) or not all(
-        isinstance(item, str) and item == item.casefold() for item in allowed
-    ):
+    if not isinstance(allowed, list) or not all(isinstance(item, str) and item == item.casefold() for item in allowed):
         raise InventoryError("allowedDistributions must contain lowercase names.")
     if len(set(allowed)) != len(allowed):
         raise InventoryError("allowedDistributions contains duplicates.")
 
-    normalization = _require_mapping(
-        component_map.get("semanticNormalization"), label="semanticNormalization"
-    )
-    if (
-        normalization.get("contract")
-        != "scriber-installer-semantic-normalization-v2"
-    ):
+    normalization = _require_mapping(component_map.get("semanticNormalization"), label="semanticNormalization")
+    if normalization.get("contract") != "scriber-installer-semantic-normalization-v2":
         raise InventoryError("Unsupported semantic-normalization contract.")
     names = normalization.get("sidecarMetadataFileNames")
     if names != ["sidecar-build-metadata.json"]:
@@ -566,10 +512,7 @@ def _component_matches(
         return True
     if any(path.startswith(str(prefix).casefold()) for prefix in component.get("pathPrefixes", [])):
         return True
-    return any(
-        fnmatch.fnmatchcase(path, str(pattern).casefold())
-        for pattern in component.get("pathGlobs", [])
-    )
+    return any(fnmatch.fnmatchcase(path, str(pattern).casefold()) for pattern in component.get("pathGlobs", []))
 
 
 def _classify_file(
@@ -591,10 +534,7 @@ def _classify_file(
         ):
             matches.append(component_id)
     if len(matches) > 1:
-        raise InventoryError(
-            "multiplyAssignedObjects: "
-            f"{relative_path!r} matches {', '.join(sorted(matches))}"
-        )
+        raise InventoryError(f"multiplyAssignedObjects: {relative_path!r} matches {', '.join(sorted(matches))}")
     return matches[0] if matches else fallback
 
 
@@ -608,14 +548,9 @@ def _semantic_bytes_for_file(
 ) -> bytes | None:
     normalized_path = relative_path.casefold()
     if PurePosixPath(normalized_path).name == "sidecar-build-metadata.json":
-        return _normalize_sidecar_build_metadata(
-            raw if raw is not None else _read_stable_bytes(path)
-        )
+        return _normalize_sidecar_build_metadata(raw if raw is not None else _read_stable_bytes(path))
     relative = PurePosixPath(relative_path)
-    if (
-        relative.name.casefold() == "record"
-        and DIST_INFO_RE.fullmatch(relative.parent.name) is not None
-    ):
+    if relative.name.casefold() == "record" and DIST_INFO_RE.fullmatch(relative.parent.name) is not None:
         record_bytes = raw if raw is not None else _read_stable_bytes(path)
         normalized_record = _normalize_unbundled_console_launcher_records(
             path=path,
@@ -655,11 +590,7 @@ def _console_script_names(entry_points_path: Path) -> frozenset[str]:
     for raw_name, raw_target in parser.items("console_scripts", raw=True):
         name = raw_name.strip()
         folded = name.casefold()
-        if (
-            not CONSOLE_SCRIPT_NAME_RE.fullmatch(name)
-            or not raw_target.strip()
-            or folded in names
-        ):
+        if not CONSOLE_SCRIPT_NAME_RE.fullmatch(name) or not raw_target.strip() or folded in names:
             return frozenset()
         names.add(folded)
     return frozenset(names)
@@ -699,10 +630,7 @@ def _normalize_unbundled_console_launcher_records(
     bundled_relative_paths: frozenset[str],
 ) -> bytes | None:
     relative = PurePosixPath(relative_path)
-    if (
-        relative.name.casefold() != "record"
-        or DIST_INFO_RE.fullmatch(relative.parent.name) is None
-    ):
+    if relative.name.casefold() != "record" or DIST_INFO_RE.fullmatch(relative.parent.name) is None:
         return None
 
     entry_points_relative = (relative.parent / "entry_points.txt").as_posix()
@@ -766,26 +694,18 @@ def _build_tree_inventory(
     backend_attribution: Mapping[str, Any],
 ) -> dict[str, Any]:
     component_ids = [str(item["id"]) for item in component_map["components"]]
-    component_contributors: dict[str, list[dict[str, Any]]] = {
-        component_id: [] for component_id in component_ids
-    }
+    component_contributors: dict[str, list[dict[str, Any]]] = {component_id: [] for component_id in component_ids}
     files: list[dict[str, Any]] = []
     duplicate_candidates: dict[tuple[int, str], list[str]] = defaultdict(list)
     distributions: set[str] = set()
 
     plain_files = tuple(_iter_plain_files(root))
-    bundled_relative_paths = frozenset(
-        relative_path.casefold() for relative_path, _path in plain_files
-    )
+    bundled_relative_paths = frozenset(relative_path.casefold() for relative_path, _path in plain_files)
     for relative_path, path in plain_files:
         raw: bytes | None = None
         relative = PurePosixPath(relative_path)
-        if (
-            relative.name.casefold() == "sidecar-build-metadata.json"
-            or (
-                relative.name.casefold() == "record"
-                and DIST_INFO_RE.fullmatch(relative.parent.name) is not None
-            )
+        if relative.name.casefold() == "sidecar-build-metadata.json" or (
+            relative.name.casefold() == "record" and DIST_INFO_RE.fullmatch(relative.parent.name) is not None
         ):
             raw = _read_stable_bytes(path)
             length = len(raw)
@@ -802,27 +722,16 @@ def _build_tree_inventory(
         semantic_length = length if semantic_bytes is None else len(semantic_bytes)
         semantic_sha256 = sha256 if semantic_bytes is None else _sha256_bytes(semantic_bytes)
         if relative_path.casefold() == backend_relative_path.casefold():
-            if (
-                length != backend_attribution.get("length")
-                or sha256 != backend_attribution.get("sha256")
-            ):
-                raise InventoryError(
-                    "Backend executable identity changed between archive and tree inspection."
-                )
+            if length != backend_attribution.get("length") or sha256 != backend_attribution.get("sha256"):
+                raise InventoryError("Backend executable identity changed between archive and tree inspection.")
             allocations = backend_attribution.get("componentAllocations")
             if not isinstance(allocations, dict):
                 raise InventoryError("Backend executable has no component allocation.")
             component_id: str | None = None
             for allocated_component, allocated_bytes in sorted(allocations.items()):
                 if allocated_component not in component_contributors:
-                    raise InventoryError(
-                        f"Backend allocation names unknown component: {allocated_component}"
-                    )
-                if (
-                    isinstance(allocated_bytes, bool)
-                    or not isinstance(allocated_bytes, int)
-                    or allocated_bytes < 0
-                ):
+                    raise InventoryError(f"Backend allocation names unknown component: {allocated_component}")
+                if isinstance(allocated_bytes, bool) or not isinstance(allocated_bytes, int) or allocated_bytes < 0:
                     raise InventoryError("Backend component allocation is invalid.")
                 component_contributors[allocated_component].append(
                     {
@@ -871,12 +780,8 @@ def _build_tree_inventory(
             "rawBytes": sum(int(item["rawBytes"]) for item in contributors),
             "fileCount": len({str(item["path"]) for item in contributors}),
             "allocationCount": len(contributors),
-            "fileListSha256": _file_list_hash(
-                str(item["path"]) for item in contributors
-            ),
-            "allocationListSha256": _file_list_hash(
-                f"{item['id']}:{item['rawBytes']}" for item in contributors
-            ),
+            "fileListSha256": _file_list_hash(str(item["path"]) for item in contributors),
+            "allocationListSha256": _file_list_hash(f"{item['id']}:{item['rawBytes']}" for item in contributors),
         }
     component_total = sum(int(item["rawBytes"]) for item in components.values())
     if component_total != total_bytes:
@@ -939,9 +844,7 @@ def _validate_nonoverlapping_regions(
         if length == 0:
             continue
         if offset < prior_end:
-            raise InventoryError(
-                f"{label} entries overlap: {prior_name!r} and {name!r}"
-            )
+            raise InventoryError(f"{label} entries overlap: {prior_name!r} and {name!r}")
         prior_end = offset + length
         prior_name = name
 
@@ -960,12 +863,8 @@ def _pyz_component(
     if not matches:
         return fallback
     if len(matches) > 1:
-        rendered = ", ".join(
-            f"{prefix}->{component}" for prefix, component in sorted(matches)
-        )
-        raise InventoryError(
-            f"multiplyAssignedPyzModules: {module_name!r} matches {rendered}"
-        )
+        rendered = ", ".join(f"{prefix}->{component}" for prefix, component in sorted(matches))
+        raise InventoryError(f"multiplyAssignedPyzModules: {module_name!r} matches {rendered}")
     return matches[0][1]
 
 
@@ -982,9 +881,7 @@ def inspect_pyinstaller_executable(
 
     expected_version = str(component_map["pyinstallerVersion"])
     if PyInstaller.__version__ != expected_version:
-        raise InventoryError(
-            f"PyInstaller reader drift: expected {expected_version}, got {PyInstaller.__version__}."
-        )
+        raise InventoryError(f"PyInstaller reader drift: expected {expected_version}, got {PyInstaller.__version__}.")
     exe_length, exe_sha256 = _hash_stable_file(backend_exe)
     try:
         archive = CArchiveReader(str(backend_exe))
@@ -1053,10 +950,7 @@ def inspect_pyinstaller_executable(
             if not isinstance(value, tuple) or len(value) != 3:
                 raise InventoryError("Unexpected PyInstaller 6.20 PYZ TOC shape.")
             typecode, offset, length = value
-            if any(
-                isinstance(item, bool) or not isinstance(item, int)
-                for item in (typecode, offset, length)
-            ):
+            if any(isinstance(item, bool) or not isinstance(item, int) for item in (typecode, offset, length)):
                 raise InventoryError(f"Invalid PYZ fields for module: {module_name}")
             if offset < 0 or length < 0:
                 raise InventoryError(f"Negative PYZ field for module: {module_name}")
@@ -1069,17 +963,13 @@ def inspect_pyinstaller_executable(
             try:
                 decompressed = pyz_reader.extract(module_name, raw=True)
             except Exception as exc:
-                raise InventoryError(
-                    f"PYZ module could not be decompressed: {module_name}"
-                ) from exc
+                raise InventoryError(f"PYZ module could not be decompressed: {module_name}") from exc
             if decompressed is None:
                 decompressed_bytes = b""
             elif isinstance(decompressed, bytes):
                 decompressed_bytes = decompressed
             else:
-                raise InventoryError(
-                    f"PYZ raw extraction returned an unexpected type: {module_name}"
-                )
+                raise InventoryError(f"PYZ raw extraction returned an unexpected type: {module_name}")
             root = module_name.split(".", 1)[0]
             component = _pyz_component(
                 module_name,
@@ -1132,9 +1022,7 @@ def inspect_pyinstaller_executable(
                 for component, component_values in sorted(values["components"].items())
             },
         }
-        for root, values in sorted(
-            root_totals.items(), key=lambda item: (item[0].casefold(), item[0])
-        )
+        for root, values in sorted(root_totals.items(), key=lambda item: (item[0].casefold(), item[0]))
     }
     if sum(int(item["compressedBytes"]) for item in roots.values()) != compressed_module_bytes:
         raise InventoryError("PYZ root partition does not sum to compressed module bytes.")
@@ -1164,9 +1052,7 @@ def inspect_pyinstaller_executable(
         pyz_component_bytes[str(item["component"])] += int(item["compressedBytes"])
     component_allocations = dict(sorted(pyz_component_bytes.items()))
     component_allocations["backend-executable"] = (
-        component_allocations.get("backend-executable", 0)
-        + exe_length
-        - compressed_module_bytes
+        component_allocations.get("backend-executable", 0) + exe_length - compressed_module_bytes
     )
     component_allocations = dict(sorted(component_allocations.items()))
     if sum(component_allocations.values()) != exe_length:
@@ -1223,9 +1109,7 @@ def _resolve_product_version(staged_root: Path, explicit_version: str | None) ->
         raise InventoryError("Staged payload contains conflicting application versions.")
     if explicit_version is None:
         if not discovered:
-            raise InventoryError(
-                "Product version was not supplied and no app-layer manifest provides it."
-            )
+            raise InventoryError("Product version was not supplied and no app-layer manifest provides it.")
         version = next(iter(discovered))
     else:
         version = explicit_version
@@ -1252,9 +1136,7 @@ def select_installer(
             kind="file",
         )
         if installer_entry.name != expected_name or selected.name != expected_name:
-            raise InventoryError(
-                f"Installer must be named exactly {expected_name}, got {installer_entry.name}."
-            )
+            raise InventoryError(f"Installer must be named exactly {expected_name}, got {installer_entry.name}.")
         return selected
 
     assert artifact_dir is not None
@@ -1280,44 +1162,30 @@ def select_installer(
                 kind="file",
             )
             if match_entry.name != expected_name or match_resolved.name != expected_name:
-                raise InventoryError(
-                    f"Installer artifact must be named exactly {expected_name}."
-                )
+                raise InventoryError(f"Installer artifact must be named exactly {expected_name}.")
             matches.append(match_resolved)
     matches.sort(key=lambda path: (str(path).casefold(), str(path)))
     if not matches:
         raise InventoryError(f"Artifact directory has no exact {expected_name}.")
     if len(matches) != 1:
-        raise InventoryError(
-            f"Artifact directory contains multiple exact {expected_name} files."
-        )
+        raise InventoryError(f"Artifact directory contains multiple exact {expected_name} files.")
     return matches[0]
 
 
-def _installed_parity(
-    staged: Mapping[str, Any], installed: Mapping[str, Any]
-) -> dict[str, Any]:
+def _installed_parity(staged: Mapping[str, Any], installed: Mapping[str, Any]) -> dict[str, Any]:
     staged_files = {item["path"].casefold(): item for item in staged["files"]}
     installed_files = {item["path"].casefold(): item for item in installed["files"]}
-    missing = sorted(
-        staged_files[key]["path"] for key in staged_files.keys() - installed_files.keys()
-    )
-    installed_only = sorted(
-        installed_files[key]["path"] for key in installed_files.keys() - staged_files.keys()
-    )
+    missing = sorted(staged_files[key]["path"] for key in staged_files.keys() - installed_files.keys())
+    installed_only = sorted(installed_files[key]["path"] for key in installed_files.keys() - staged_files.keys())
     changed = sorted(
         staged_files[key]["path"]
         for key in staged_files.keys() & installed_files.keys()
         if (
-            staged_files[key]["semanticLength"]
-            != installed_files[key]["semanticLength"]
-            or staged_files[key]["semanticSha256"]
-            != installed_files[key]["semanticSha256"]
+            staged_files[key]["semanticLength"] != installed_files[key]["semanticLength"]
+            or staged_files[key]["semanticSha256"] != installed_files[key]["semanticSha256"]
         )
     )
-    allowed_installed_only = [
-        path for path in installed_only if PurePosixPath(path.casefold()).name == "uninstall.exe"
-    ]
+    allowed_installed_only = [path for path in installed_only if PurePosixPath(path.casefold()).name == "uninstall.exe"]
     unexpected_installed_only = sorted(set(installed_only) - set(allowed_installed_only))
     return {
         "ok": not missing and not changed and not unexpected_installed_only,
@@ -1354,15 +1222,11 @@ def build_inventory(
         description="Staged root",
         kind="directory",
     )
-    if not isinstance(build_root_sha256, str) or not SHA256_RE.fullmatch(
-        build_root_sha256
-    ):
+    if not isinstance(build_root_sha256, str) or not SHA256_RE.fullmatch(build_root_sha256):
         raise InventoryError("build_root_sha256 must be a lowercase SHA-256.")
     expected_build_root_sha256 = build_root_identity_sha256(staged_root)
     if build_root_sha256 != expected_build_root_sha256:
-        raise InventoryError(
-            "build_root_sha256 does not match the resolved staged-root identity."
-        )
+        raise InventoryError("build_root_sha256 does not match the resolved staged-root identity.")
     backend_entry = _absolute_path_entry(backend_exe)
     _ensure_plain_descendant_chain(
         _staged_entry,
@@ -1409,9 +1273,7 @@ def build_inventory(
         backend_relative_path=backend_relative,
         backend_attribution=backend,
     )
-    backend_file = next(
-        (item for item in staged["files"] if item["path"] == backend_relative), None
-    )
+    backend_file = next((item for item in staged["files"] if item["path"] == backend_relative), None)
     if backend_file is None:
         raise InventoryError("Backend executable is missing from the staged inventory.")
     if (

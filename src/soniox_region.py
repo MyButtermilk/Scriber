@@ -4,10 +4,10 @@ Soniox regional projects use region-specific API keys and domains.  Keep the
 mapping in one dependency-free module so realtime, Meeting preview, and async
 uploads can never drift to different regions.
 """
+
 from __future__ import annotations
 
 from typing import Final
-
 
 DEFAULT_SONIOX_REGION: Final = "us"
 SUPPORTED_SONIOX_REGIONS: Final = frozenset({"us", "eu"})

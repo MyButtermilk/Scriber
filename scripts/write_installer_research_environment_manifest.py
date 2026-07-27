@@ -12,9 +12,8 @@ import re
 import stat
 import sys
 import uuid
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 
@@ -45,20 +44,14 @@ def _record_identity(distribution: importlib.metadata.Distribution) -> str | Non
     rows: list[tuple[str, str, str]] = []
     for row in csv.reader(record.splitlines()):
         if len(row) != 3:
-            raise ValueError(
-                f"Invalid RECORD row for {distribution.metadata.get('Name', '<unknown>')}"
-            )
+            raise ValueError(f"Invalid RECORD row for {distribution.metadata.get('Name', '<unknown>')}")
         path, digest, length = row
         normalized = path.replace("\\", "/")
         # Wheel RECORD entries for console scripts legitimately use paths such
         # as ``../../Scripts/tool.exe`` relative to the dist-info directory.
         # They are identity strings here and are never opened.  Reject only
         # absolute/drive/NUL values rather than breaking valid Windows wheels.
-        if (
-            "\0" in normalized
-            or normalized.startswith("/")
-            or re.match(r"^[A-Za-z]:", normalized)
-        ):
+        if "\0" in normalized or normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
             raise ValueError(f"Unsafe RECORD path: {path}")
         rows.append((normalized, digest, length))
     rows.sort()
@@ -68,14 +61,14 @@ def _record_identity(distribution: importlib.metadata.Distribution) -> str | Non
 def _plain_file(path: Path, *, label: str) -> Path:
     candidate = Path(path.absolute())
     info = candidate.lstat()
-    if candidate.is_symlink() or bool(
-        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
-    ):
+    if candidate.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT):
         raise ValueError(f"{label} must be a plain file")
     resolved = candidate.resolve(strict=True)
     resolved_info = resolved.lstat()
-    if not resolved.is_file() or resolved.is_symlink() or bool(
-        getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT
+    if (
+        not resolved.is_file()
+        or resolved.is_symlink()
+        or bool(getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT)
     ):
         raise ValueError(f"{label} must be a plain file")
     return resolved
@@ -84,14 +77,14 @@ def _plain_file(path: Path, *, label: str) -> Path:
 def _plain_directory(path: Path, *, label: str, environment_root: Path) -> Path:
     candidate = Path(path.absolute())
     info = candidate.lstat()
-    if candidate.is_symlink() or bool(
-        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
-    ):
+    if candidate.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT):
         raise ValueError(f"{label} must be a plain directory")
     resolved = candidate.resolve(strict=True)
     resolved_info = resolved.lstat()
-    if not resolved.is_dir() or resolved.is_symlink() or bool(
-        getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT
+    if (
+        not resolved.is_dir()
+        or resolved.is_symlink()
+        or bool(getattr(resolved_info, "st_file_attributes", 0) & REPARSE_POINT)
     ):
         raise ValueError(f"{label} must be a plain directory")
     try:
@@ -109,9 +102,7 @@ def _distribution_content_identity(
     rows: list[dict[str, object]] = []
     for item in distribution.files or ():
         normalized = str(item).replace("\\", "/")
-        if "\0" in normalized or normalized.startswith("/") or re.match(
-            r"^[A-Za-z]:", normalized
-        ):
+        if "\0" in normalized or normalized.startswith("/") or re.match(r"^[A-Za-z]:", normalized):
             raise ValueError(f"Unsafe installed distribution path: {normalized}")
         located = _plain_file(
             Path(distribution.locate_file(item)),
@@ -120,9 +111,7 @@ def _distribution_content_identity(
         try:
             located.relative_to(environment_root)
         except ValueError as exc:
-            raise ValueError(
-                f"Installed distribution file escaped the research environment: {normalized}"
-            ) from exc
+            raise ValueError(f"Installed distribution file escaped the research environment: {normalized}") from exc
         rows.append(
             {
                 "path": normalized,
@@ -196,9 +185,7 @@ def _generated_tree_identity(
         try:
             plain.relative_to(environment_root)
         except ValueError as exc:
-            raise ValueError(
-                f"Generated tree file escaped the research environment: {tree_id}"
-            ) from exc
+            raise ValueError(f"Generated tree file escaped the research environment: {tree_id}") from exc
         rows.append(
             {
                 "path": relative.as_posix(),
@@ -312,11 +299,7 @@ def main() -> int:
     except ValueError as exc:
         raise ValueError("--run-id must be a canonical RFC 4122 UUID") from exc
     canonical_run_id = str(parsed_run_id)
-    if (
-        args.run_id != canonical_run_id
-        or parsed_run_id.int == 0
-        or parsed_run_id.variant != uuid.RFC_4122
-    ):
+    if args.run_id != canonical_run_id or parsed_run_id.int == 0 or parsed_run_id.variant != uuid.RFC_4122:
         raise ValueError("--run-id must be a canonical non-nil RFC 4122 UUID")
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", args.environment_name):
         raise ValueError("--environment-name is not safely scoped")

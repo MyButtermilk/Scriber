@@ -58,8 +58,7 @@ def test_latest_json_uses_github_release_url(tmp_path: Path):
     )
 
     assert latest["platforms"]["windows-x86_64"]["url"] == (
-        "https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0/"
-        "Scriber_0.1.0_x64-setup.exe"
+        "https://github.com/MyButtermilk/Scriber/releases/download/v0.1.0/Scriber_0.1.0_x64-setup.exe"
     )
 
 

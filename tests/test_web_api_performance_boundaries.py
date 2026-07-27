@@ -28,9 +28,7 @@ def _audio_claim() -> web_api.AudioAdmissionClaim:
 
 
 def _shutdown_controller(store) -> web_api.ScriberWebController:
-    controller = web_api.ScriberWebController.__new__(
-        web_api.ScriberWebController
-    )
+    controller = web_api.ScriberWebController.__new__(web_api.ScriberWebController)
     controller._retry_scheduler = MagicMock()
     controller._audio_admission_store = store
     controller._audio_controller_id = "performance-boundary-controller"
@@ -61,12 +59,8 @@ async def test_file_pipeline_construction_keeps_event_loop_responsive(
 
     monkeypatch.setattr(web_api, "_create_scriber_pipeline", blocking_builder)
 
-    build_task = asyncio.create_task(
-        web_api._create_scriber_pipeline_off_loop(service_name="test")
-    )
-    assert await asyncio.wait_for(
-        asyncio.to_thread(build_started.wait, 1.0), timeout=1.5
-    )
+    build_task = asyncio.create_task(web_api._create_scriber_pipeline_off_loop(service_name="test"))
+    assert await asyncio.wait_for(asyncio.to_thread(build_started.wait, 1.0), timeout=1.5)
 
     heartbeat = asyncio.Event()
     asyncio.get_running_loop().call_soon(heartbeat.set)
@@ -95,12 +89,8 @@ async def test_cancelled_file_pipeline_construction_waits_and_cleans_up(
 
     monkeypatch.setattr(web_api, "_create_scriber_pipeline", blocking_builder)
 
-    build_task = asyncio.create_task(
-        web_api._create_scriber_pipeline_off_loop(service_name="test")
-    )
-    assert await asyncio.wait_for(
-        asyncio.to_thread(build_started.wait, 1.0), timeout=1.5
-    )
+    build_task = asyncio.create_task(web_api._create_scriber_pipeline_off_loop(service_name="test"))
+    assert await asyncio.wait_for(asyncio.to_thread(build_started.wait, 1.0), timeout=1.5)
     build_task.cancel()
     await asyncio.sleep(0)
     assert not build_task.done()

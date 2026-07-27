@@ -21,10 +21,6 @@ def test_soniox_region_defaults_to_us_and_rejects_unknown_settings_values():
 
 def test_soniox_region_resolves_official_rest_and_realtime_domains():
     assert soniox_rest_api_base_url("us") == "https://api.soniox.com/v1"
-    assert soniox_realtime_websocket_url("us") == (
-        "wss://stt-rt.soniox.com/transcribe-websocket"
-    )
+    assert soniox_realtime_websocket_url("us") == ("wss://stt-rt.soniox.com/transcribe-websocket")
     assert soniox_rest_api_base_url("eu") == "https://api.eu.soniox.com/v1"
-    assert soniox_realtime_websocket_url("eu") == (
-        "wss://stt-rt.eu.soniox.com/transcribe-websocket"
-    )
+    assert soniox_realtime_websocket_url("eu") == ("wss://stt-rt.eu.soniox.com/transcribe-websocket")

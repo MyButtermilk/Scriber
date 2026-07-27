@@ -11,7 +11,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run_installer_size_packet.ps1"
 SOURCE = SCRIPT.read_text(encoding="utf-8")
@@ -44,10 +43,7 @@ def test_entrypoint_has_only_the_frozen_public_arguments() -> None:
     parameter_block = SOURCE.split("$ErrorActionPreference", 1)[0]
     names = re.findall(r"\[(?:string|switch)\]\$(\w+)", parameter_block)
     assert names == ["RunId", "Mode", "RunTiming"]
-    assert (
-        '[ValidateSet("baseline-1", "candidate", "final-1", "final-2")]'
-        in parameter_block
-    )
+    assert '[ValidateSet("baseline-1", "candidate", "final-1", "final-2")]' in parameter_block
     for forbidden in (
         "BuildRoot",
         "InstallRoot",
@@ -104,9 +100,7 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
     if os.name != "nt":
         pytest.skip("The installer packet producer is Windows-only.")
 
-    function_source = "function Invoke-CapturedCommand {" + _function_source(
-        "Invoke-CapturedCommand"
-    )
+    function_source = "function Invoke-CapturedCommand {" + _function_source("Invoke-CapturedCommand")
     probe = tmp_path / "captured-command-probe.ps1"
     probe.write_text(
         "\n".join(
@@ -211,13 +205,9 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
         "smoke_tauri_desktop.ps1": 1,
         "measure_installer_research.ps1": 1,
     }
-    assert SOURCE.count("-PowerShellScript -Command") == sum(
-        expected_powershell_entrypoints.values()
-    )
+    assert SOURCE.count("-PowerShellScript -Command") == sum(expected_powershell_entrypoints.values())
     for entrypoint, expected_count in expected_powershell_entrypoints.items():
-        invocations = [
-            match.start() for match in re.finditer(re.escape(entrypoint), SOURCE)
-        ]
+        invocations = [match.start() for match in re.finditer(re.escape(entrypoint), SOURCE)]
         assert len(invocations) == expected_count
         for invocation in invocations:
             wrapper = SOURCE.rfind("Invoke-CapturedCommand", 0, invocation)
@@ -226,12 +216,8 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
 
 
 def test_installed_media_preparation_uses_the_emitted_smoke_contract() -> None:
-    assert (
-        'PropertyPath @("mediaPreparation", "verified")' in SOURCE
-    )
-    assert (
-        'PropertyPath @("mediaPreparation", "report", "ok")' in SOURCE
-    )
+    assert 'PropertyPath @("mediaPreparation", "verified")' in SOURCE
+    assert 'PropertyPath @("mediaPreparation", "report", "ok")' in SOURCE
     assert 'PropertyPath @("mediaPreparation", "ok")' not in SOURCE
 
 
@@ -241,9 +227,8 @@ def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(
     if os.name != "nt":
         pytest.skip("The installer packet producer is Windows-only.")
 
-    function_source = (
-        "function Remove-ExactUninstallRegistryEntries {"
-        + _function_source("Remove-ExactUninstallRegistryEntries")
+    function_source = "function Remove-ExactUninstallRegistryEntries {" + _function_source(
+        "Remove-ExactUninstallRegistryEntries"
     )
     probe = tmp_path / "registry-cleanup-probe.ps1"
     probe.write_text(
@@ -319,9 +304,7 @@ def test_registry_lookup_skips_entries_without_install_location_in_strict_mode(
     if os.name != "nt":
         pytest.skip("The installer packet producer is Windows-only.")
 
-    convert_source = "function Convert-ToFullPath {" + _function_source(
-        "Convert-ToFullPath"
-    )
+    convert_source = "function Convert-ToFullPath {" + _function_source("Convert-ToFullPath")
     lookup_source = "function Get-ExactUninstallRegistryEntries {" + _function_source(
         "Get-ExactUninstallRegistryEntries"
     )
@@ -364,8 +347,8 @@ def test_registry_lookup_skips_entries_without_install_location_in_strict_mode(
 def test_full_payload_build_is_explicit_hermetic_and_unsigned() -> None:
     body = _function_source("Invoke-FullInstallerBuild")
     required = {
-        "-Bundles @(\"nsis\")",
-        "-NsisCompression \"bzip2\"",
+        '-Bundles @("nsis")',
+        '-NsisCompression "bzip2"',
         "-UseProfileBFfmpeg",
         "-ValidateSlimMediaTools",
         "-PythonExecutable $Python",
@@ -393,9 +376,7 @@ def test_compression_repack_never_mutates_the_shared_release_payload() -> None:
     assert "canonical-backup" not in body
     assert "Move-Item" not in body
     assert "Frontend\\src-tauri\\target\\release" not in body
-    before = body.index(
-        'Assert-NsisTreeIdentity -Manifest $Toolchain.manifest -Code "repack_nsis_tree_drift"'
-    )
+    before = body.index('Assert-NsisTreeIdentity -Manifest $Toolchain.manifest -Code "repack_nsis_tree_drift"')
     launch = body.index("& $node $tauri bundle")
     after = body.index(
         'Assert-NsisTreeIdentity -Manifest $Toolchain.manifest -Code "repack_nsis_tree_drift"',
@@ -408,7 +389,7 @@ def test_compression_lane_is_bound_to_the_parent_semantic_payload() -> None:
     assert '$comparisonKind -notin @("payload", "compression")' in SOURCE
     assert '$compression -notin @("bzip2", "zlib", "lzma")' in SOURCE
     assert 'throw "payload_candidate_must_use_bzip2"' in SOURCE
-    assert '[string]$action.payloadTreeSha256 -ne [string]$parentInventory.payload.staged.semanticTreeSha256' in SOURCE
+    assert "[string]$action.payloadTreeSha256 -ne [string]$parentInventory.payload.staged.semanticTreeSha256" in SOURCE
     assert "Assert-PayloadMatchesInventory -PayloadRoot $sourcePayload" in SOURCE
     assert "Assert-PayloadMatchesInventory -PayloadRoot $payloadRoot" in SOURCE
 
@@ -421,7 +402,7 @@ def test_reused_python_environment_is_fully_reattested() -> None:
     assert "--verify $manifestPath" in body
     assert 'throw "environment_manifest_drift"' in body
     assert "-m pip check" in body
-    assert '[switch]$VerifyOnly' in body
+    assert "[switch]$VerifyOnly" in body
     assert 'throw "environment_missing_after_build"' in body
 
 
@@ -462,15 +443,15 @@ def test_toolchain_rehashes_complete_frontend_and_rust_tools() -> None:
     assert "frontendPackageLock" in body
     assert "Assert-NsisTreeIdentity" in body
     nsis = _function_source("Assert-NsisTreeIdentity")
-    assert '$Manifest.nsis.relativePath' in nsis
-    assert '$Manifest.nsisTree' in nsis
+    assert "$Manifest.nsis.relativePath" in nsis
+    assert "$Manifest.nsisTree" in nsis
     assert "Get-PlainTreeIdentity -Root $nsisRoot" in nsis
     assert "fileCount" in nsis
     assert "totalBytes" in nsis
     assert "treeSha256" in nsis
     assert "-Recurse" in nsis
-    assert '$manifest.rustfmt' in body
-    assert '$manifest.clippyDriver' in body
+    assert "$manifest.rustfmt" in body
+    assert "$manifest.clippyDriver" in body
     assert 'executable = "rustfmt"' in body
     assert 'executable = "clippy-driver"' in body
 
@@ -481,7 +462,7 @@ def test_final_replica_uses_immutable_git_tree_binding_not_commit_equality() -> 
     assert 'rev-parse "$championSourceCommit^{tree}"' in SOURCE
     assert "$currentTreeOid -ne $championTreeOid" in SOURCE
     assert "$championCommitTreeOid -ne $championTreeOid" in SOURCE
-    assert '[string]$champion.sourceCommit -ne $sourceCommit' not in SOURCE
+    assert "[string]$champion.sourceCommit -ne $sourceCommit" not in SOURCE
     assert "$parentChampionId = [string]$champion.packetId" in SOURCE
 
 
@@ -491,12 +472,8 @@ def test_every_mandatory_gate_has_retained_bounded_evidence() -> None:
     assert 'Join-Path $EvidenceRoot "gates\\$Gate.json"' in artifact
     assert "65536" in artifact
     assert "Get-Sha256File -Path $path" in artifact
-    gate_block = SOURCE.split("$gateDefinitions = [ordered]@{", 1)[1].split(
-        "$gates = [ordered]@{}", 1
-    )[0]
-    assert MANDATORY_GATES == set(
-        re.findall(r"(?m)^\s{8}([A-Za-z][A-Za-z0-9]+)\s*=", gate_block)
-    )
+    gate_block = SOURCE.split("$gateDefinitions = [ordered]@{", 1)[1].split("$gates = [ordered]@{}", 1)[0]
+    assert set(re.findall(r"(?m)^\s{8}([A-Za-z][A-Za-z0-9]+)\s*=", gate_block)) == MANDATORY_GATES
     assert "Write-GateArtifact" in SOURCE
     assert "-EvidenceSha256 $artifactSha" in SOURCE
     assert '$definition.Contains("detailEvidence")' in SOURCE
@@ -528,10 +505,7 @@ def test_candidate_and_final_upgrade_is_baseline_to_candidate() -> None:
 
 
 def test_final_modes_require_all_external_gates() -> None:
-    assert (
-        '$expectedKind -in @("baseline-replica", "final-replica") -and '
-        "-not $allExternalGatesPassed"
-    ) in SOURCE
+    assert ('$expectedKind -in @("baseline-replica", "final-replica") -and -not $allExternalGatesPassed') in SOURCE
     assert 'throw "mandatory_functional_gate_failed"' in SOURCE
 
 
@@ -540,40 +514,38 @@ def test_every_candidate_and_final_runs_the_installed_paired_validator() -> None
     assert "InstallerSizeYoutubeCandidateHoldoutsV2" in evidence
     assert 'candidateFailureConfirmationPolicy -ne "single-immediate-complete-confirmation-v1"' in evidence
     assert 'candidateProbeRetryScope -ne "global-candidate-only"' in evidence
-    assert 'performanceCountsLogicalSamplesOnly -ne $true' in evidence
-    assert 'normalPairConfirmationOrder' in evidence
-    assert 'candidate_parallel_probe_failed' in evidence
-    assert '$recoveredCount -gt 1' in evidence
-    assert 'ExpectedPacketId' in evidence
-    assert 'ExpectedParentChampionId' in evidence
-    assert 'ExpectedSourceCommit' in evidence
-    assert 'pairedSampleCount -ne 24' in evidence
-    assert '[int64]$payload.executionPolicy.workspaceCount -ne [int64]$payload.executionPolicy.cleanupCount' in evidence
-    assert 'Test-HoldoutInventoryBinding' in evidence
+    assert "performanceCountsLogicalSamplesOnly -ne $true" in evidence
+    assert "normalPairConfirmationOrder" in evidence
+    assert "candidate_parallel_probe_failed" in evidence
+    assert "$recoveredCount -gt 1" in evidence
+    assert "ExpectedPacketId" in evidence
+    assert "ExpectedParentChampionId" in evidence
+    assert "ExpectedSourceCommit" in evidence
+    assert "pairedSampleCount -ne 24" in evidence
+    assert "[int64]$payload.executionPolicy.workspaceCount -ne [int64]$payload.executionPolicy.cleanupCount" in evidence
+    assert "Test-HoldoutInventoryBinding" in evidence
 
-    assert 'validate_installer_youtube_candidate_holdouts.py' in SOURCE
-    assert '--candidate-root $installRoot' in SOURCE
+    assert "validate_installer_youtube_candidate_holdouts.py" in SOURCE
+    assert "--candidate-root $installRoot" in SOURCE
     assert '--baseline-root (Join-Path $runRoot "payloads\\baseline-1")' in SOURCE
-    assert '--output $candidateHoldoutPath' in SOURCE
-    assert '-ExpectedPacketId $packetId' in SOURCE
-    assert '-ExpectedParentChampionId $parentChampionId' in SOURCE
-    assert '$baselineEnvironment.python' in SOURCE
-    assert 'packet-evidence\\$($champion.packetId)\\youtube-holdouts-candidate.json' not in SOURCE
-    assert '$parentCandidateEvidence' not in SOURCE
+    assert "--output $candidateHoldoutPath" in SOURCE
+    assert "-ExpectedPacketId $packetId" in SOURCE
+    assert "-ExpectedParentChampionId $parentChampionId" in SOURCE
+    assert "$baselineEnvironment.python" in SOURCE
+    assert "packet-evidence\\$($champion.packetId)\\youtube-holdouts-candidate.json" not in SOURCE
+    assert "$parentCandidateEvidence" not in SOURCE
     assert '$requiresCurrentHoldout = $expectedKind -in @("measure-candidate", "final-replica")' in SOURCE
-    assert 'if (-not $requiresCurrentHoldout)' in SOURCE
-    assert '$jsRuntimeChanged' not in SOURCE
+    assert "if (-not $requiresCurrentHoldout)" in SOURCE
+    assert "$jsRuntimeChanged" not in SOURCE
     assert "currentJs" not in SOURCE
     assert "currentYtdlp" not in SOURCE
-    assert 'baseline-prechange-stack' in SOURCE
+    assert "baseline-prechange-stack" in SOURCE
 
 
 def test_powershell_candidate_holdout_reader_accepts_only_exact_v2_policy() -> None:
     if os.name != "nt":
         pytest.skip("The installer packet producer is Windows-only.")
-    fixture_module = runpy.run_path(
-        str(ROOT / "tests" / "perf" / "test_installer_size_autoresearch_profile.py")
-    )
+    fixture_module = runpy.run_path(str(ROOT / "tests" / "perf" / "test_installer_size_autoresearch_profile.py"))
     evidence = fixture_module["_candidate_youtube_evidence"](
         run_id="123e4567-e89b-42d3-a456-426614174000",
         packet_id="candidate-reader-v2",
@@ -581,12 +553,8 @@ def test_powershell_candidate_holdout_reader_accepts_only_exact_v2_policy() -> N
         source_commit="a" * 40,
         recovered_sample_id="case-0:cold:1",
     )
-    payload_base64 = base64.b64encode(
-        json.dumps(evidence, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    reader = "function Test-CandidateHoldoutEvidence {" + _function_source(
-        "Test-CandidateHoldoutEvidence"
-    )
+    payload_base64 = base64.b64encode(json.dumps(evidence, separators=(",", ":")).encode("utf-8")).decode("ascii")
+    reader = "function Test-CandidateHoldoutEvidence {" + _function_source("Test-CandidateHoldoutEvidence")
     harness = f"""
 $script:payload = [System.Text.Encoding]::UTF8.GetString(
     [System.Convert]::FromBase64String('{payload_base64}')
@@ -606,7 +574,7 @@ $common = @{{
     ExpectedRunId = '123e4567-e89b-42d3-a456-426614174000'
     ExpectedPacketId = 'candidate-reader-v2'
     ExpectedParentChampionId = 'baseline'
-    ExpectedSourceCommit = '{'a' * 40}'
+    ExpectedSourceCommit = '{"a" * 40}'
     BaselineInventoryPath = 'baseline'
     ParentInventoryPath = 'parent'
     CandidateInventoryPath = 'candidate'
@@ -637,8 +605,8 @@ exit 0
 
 
 def test_preexisting_candidate_holdout_is_never_accepted() -> None:
-    assert '$preexisting.Count -ne 0' in SOURCE
-    assert '$preexisting.Count -ne 1' not in SOURCE
+    assert "$preexisting.Count -ne 0" in SOURCE
+    assert "$preexisting.Count -ne 1" not in SOURCE
 
 
 def test_final_one_runs_the_exact_retained_full_suite_contract() -> None:
@@ -656,34 +624,34 @@ def test_final_one_runs_the_exact_retained_full_suite_contract() -> None:
     assert "& $cargo test --locked" in body
     assert "& $cargo fmt --check" in body
     assert "& $cargo clippy --locked --all-targets --all-features -- -D warnings" in body
-    assert "$Mode -eq \"final-1\"" in SOURCE
+    assert '$Mode -eq "final-1"' in SOURCE
 
 
 def test_timing_is_fixed_counterbalanced_and_final_two_is_mandatory() -> None:
     assert '$Mode -eq "final-2" -and -not $RunTiming' in SOURCE
-    assert '-PairCount 20' in SOURCE
-    assert '-WarmupPerVariant 1' in SOURCE
-    assert '-RunId $RunId' in SOURCE
-    assert '-PacketId $packetId' in SOURCE
-    assert '-ParentChampionId $timingParentId' in SOURCE
+    assert "-PairCount 20" in SOURCE
+    assert "-WarmupPerVariant 1" in SOURCE
+    assert "-RunId $RunId" in SOURCE
+    assert "-PacketId $packetId" in SOURCE
+    assert "-ParentChampionId $timingParentId" in SOURCE
     timing_call = SOURCE.split('"scripts\\measure_installer_research.ps1"', 1)[1].split(
-        'if ($timingCommand.exitCode', 1
+        "if ($timingCommand.exitCode", 1
     )[0]
-    assert timing_call.count('-OutputPath $timingPath') == 1
-    assert timing_call.count('-SourceCommit $sourceCommit') == 1
+    assert timing_call.count("-OutputPath $timingPath") == 1
+    assert timing_call.count("-SourceCommit $sourceCommit") == 1
     assert '$timingParentId = "baseline"' in SOURCE
 
 
 def test_paths_and_cleanup_are_strictly_scoped() -> None:
     assert '"autoresearch-results\\installer-size"' in SOURCE
-    assert 'Join-Path $ResearchNamespace $RunId' in SOURCE
+    assert "Join-Path $ResearchNamespace $RunId" in SOURCE
     assert "Assert-StrictDescendant" in SOURCE
     assert "Assert-NoReparsePath" in SOURCE
     assert "Remove-ScopedTree" in SOURCE
     assert "Get-ExactInstalledProcesses" in SOURCE
     assert "Get-ExactUninstallRegistryEntries" in SOURCE
     assert (
-        '$smokeNamespace = Assert-NoReparsePath -Root $RepoRoot '
+        "$smokeNamespace = Assert-NoReparsePath -Root $RepoRoot "
         '-Path $InstallerSmokeNamespace -Code "unsafe_smoke_namespace"'
     ) in SOURCE
     cleanup = _function_source("Remove-ScopedTree")
@@ -698,9 +666,7 @@ def test_paths_and_cleanup_are_strictly_scoped() -> None:
 def test_build_evidence_is_retained_and_path_redacted_by_shape() -> None:
     assert "InstallerResearchBuildEvidenceV1" in SOURCE
     assert 'Join-Path $evidenceRoot "build-evidence.json"' in SOURCE
-    block = SOURCE.split("$buildEvidence = [ordered]@{", 1)[1].split(
-        "Write-JsonAtomic -Path $buildEvidencePath", 1
-    )[0]
+    block = SOURCE.split("$buildEvidence = [ordered]@{", 1)[1].split("Write-JsonAtomic -Path $buildEvidencePath", 1)[0]
     assert "installerPath" not in block
     assert "buildRoot" not in block
     assert "treeSha256" in block

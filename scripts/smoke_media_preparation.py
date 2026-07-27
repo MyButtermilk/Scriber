@@ -11,10 +11,10 @@ import sys
 import tempfile
 import time
 import wave
-from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -25,7 +25,7 @@ StepFunc = Callable[[], Awaitable[dict[str, Any]]]
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def _path_text(path: str | Path | None) -> str | None:
@@ -233,8 +233,7 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Smoke-test Scriber media preparation helpers with the resolved ffmpeg "
-            "and optional ffprobe binaries."
+            "Smoke-test Scriber media preparation helpers with the resolved ffmpeg and optional ffprobe binaries."
         )
     )
     parser.add_argument("--output", type=Path, default=REPO_ROOT / "tmp" / "media-preparation-smoke.json")

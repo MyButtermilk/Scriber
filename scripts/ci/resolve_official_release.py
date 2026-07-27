@@ -5,10 +5,9 @@ from __future__ import annotations
 import argparse
 import ast
 import json
-from pathlib import Path
 import re
 import sys
-
+from pathlib import Path
 
 OFFICIAL_TAG_PATTERN = re.compile(r"^refs/tags/v(?P<version>[0-9]+\.[0-9]+\.[0-9]+)$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")

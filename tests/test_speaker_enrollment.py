@@ -47,10 +47,7 @@ def test_voice_enrollment_capture_is_bounded_and_clearable() -> None:
     # The constructor deliberately enforces a one-second minimum capacity.
     first = [3_000] * 8_000
     second = [32_767] * 8_000
-    stream = io.BytesIO(
-        _frame(first)
-        + _frame(second, sequence=1, flags=AUDIO_FRAME_FLAG_END_OF_STREAM)
-    )
+    stream = io.BytesIO(_frame(first) + _frame(second, sequence=1, flags=AUDIO_FRAME_FLAG_END_OF_STREAM))
     capture = VoiceEnrollmentCapture(
         sample_rate=8_000,
         max_duration_seconds=1,
@@ -75,9 +72,7 @@ def test_voice_enrollment_capture_is_bounded_and_clearable() -> None:
 
 def test_voice_enrollment_activity_accepts_speech_across_embedding_windows() -> None:
     samples = _tone(8.0)
-    stream = io.BytesIO(
-        _frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM)
-    )
+    stream = io.BytesIO(_frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM))
     capture = VoiceEnrollmentCapture(
         sample_rate=16_000,
         max_duration_seconds=8,
@@ -101,9 +96,7 @@ def test_short_loud_clap_does_not_pass_voice_enrollment_quality() -> None:
     clap_start = 4 * sample_rate
     clap = [24_000, -24_000] * 200  # One loud 25-ms impulse frame.
     samples[clap_start : clap_start + len(clap)] = clap
-    stream = io.BytesIO(
-        _frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM)
-    )
+    stream = io.BytesIO(_frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM))
     capture = VoiceEnrollmentCapture(
         sample_rate=sample_rate,
         max_duration_seconds=8,
@@ -131,9 +124,7 @@ def test_voice_activity_must_cover_two_embedding_windows() -> None:
     # aggregate activity, but not enough coverage for robust start/middle/end
     # enrollment embeddings.
     samples = _tone(2.0) + [0] * (6 * sample_rate)
-    stream = io.BytesIO(
-        _frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM)
-    )
+    stream = io.BytesIO(_frame(samples, flags=AUDIO_FRAME_FLAG_END_OF_STREAM))
     capture = VoiceEnrollmentCapture(
         sample_rate=sample_rate,
         max_duration_seconds=8,
@@ -220,9 +211,7 @@ def test_stop_requested_while_reader_waits_for_buffer_lock_appends_no_pcm() -> N
             self._lock.release()
             return False
 
-    stream = io.BytesIO(
-        _frame([3_000] * 8_000, flags=AUDIO_FRAME_FLAG_END_OF_STREAM)
-    )
+    stream = io.BytesIO(_frame([3_000] * 8_000, flags=AUDIO_FRAME_FLAG_END_OF_STREAM))
     capture = VoiceEnrollmentCapture(
         sample_rate=8_000,
         max_duration_seconds=1,
@@ -290,31 +279,35 @@ def test_stop_requested_while_reader_waits_for_buffer_lock_appends_no_pcm() -> N
         ),
     ],
 )
-def test_voice_enrollment_quality_rejects_unusable_samples(
-    snapshot: dict[str, object], message: str
-) -> None:
+def test_voice_enrollment_quality_rejects_unusable_samples(snapshot: dict[str, object], message: str) -> None:
     with pytest.raises(ValueError, match=message):
         assess_voice_sample(snapshot)
 
 
 def test_voice_enrollment_quality_is_bounded() -> None:
-    assert assess_voice_sample(
-        {
-            "active": True,
-            "errorCode": "",
-            "durationMs": 8_000,
-            "rms": 0.3,
-            "peak": 0.7,
-            "clippingRatio": 0,
-        }
-    ) == 1.0
-    assert assess_voice_sample(
-        {
-            "active": True,
-            "errorCode": "",
-            "durationMs": 4_000,
-            "rms": 0.008,
-            "peak": 0.025,
-            "clippingRatio": 0,
-        }
-    ) == 0.35
+    assert (
+        assess_voice_sample(
+            {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 8_000,
+                "rms": 0.3,
+                "peak": 0.7,
+                "clippingRatio": 0,
+            }
+        )
+        == 1.0
+    )
+    assert (
+        assess_voice_sample(
+            {
+                "active": True,
+                "errorCode": "",
+                "durationMs": 4_000,
+                "rms": 0.008,
+                "peak": 0.025,
+                "clippingRatio": 0,
+            }
+        )
+        == 0.35
+    )

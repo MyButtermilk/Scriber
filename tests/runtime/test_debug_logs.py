@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import os
 
-from src.runtime import debug_logs
-from src.runtime import log_clear_state
 import pytest
+
+from src.runtime import debug_logs, log_clear_state
 
 
 def test_collect_debug_logs_strips_nul_padding_and_clear_marker_hides_old_entries(monkeypatch, tmp_path):
@@ -20,9 +20,7 @@ def test_collect_debug_logs_strips_nul_padding_and_clear_marker_hides_old_entrie
     monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs_dir)
 
     log_path = logs_dir / "latest.log"
-    log_path.write_bytes(
-        b"\x00\x00\x00... 12:00:00.000 INFO  [web_api    ] [------] [web_api        ] before clear\n"
-    )
+    log_path.write_bytes(b"\x00\x00\x00... 12:00:00.000 INFO  [web_api    ] [------] [web_api        ] before clear\n")
 
     before_payload = debug_logs.collect_debug_logs(limit=20)
     before_entries = [item for item in before_payload["items"] if item["source"] == "latest.log"]
@@ -73,9 +71,7 @@ def test_clear_state_ignores_oversized_file(monkeypatch, tmp_path):
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir()
     monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs_dir)
-    log_clear_state.clear_state_path().write_bytes(
-        b"x" * (log_clear_state._MAX_CLEAR_STATE_BYTES + 1)
-    )
+    log_clear_state.clear_state_path().write_bytes(b"x" * (log_clear_state._MAX_CLEAR_STATE_BYTES + 1))
 
     assert log_clear_state.load_clear_offsets() == {}
 
@@ -194,8 +190,7 @@ def test_structured_log_context_caps_legacy_metric_dumps(monkeypatch, tmp_path):
     monkeypatch.setattr(debug_logs, "repo_root", lambda: repo_dir)
 
     oversized_meta = {
-        f"marker_{index}_to_next_ms": float(index)
-        for index in range(debug_logs._MAX_PUBLIC_META_ITEMS * 4)
+        f"marker_{index}_to_next_ms": float(index) for index in range(debug_logs._MAX_PUBLIC_META_ITEMS * 4)
     }
     structured = {
         "record": {
@@ -244,6 +239,4 @@ def test_clear_marker_resets_when_log_file_is_replaced(monkeypatch, tmp_path):
 
     payload = debug_logs.collect_debug_logs(limit=20)
 
-    assert [item["message"] for item in payload["items"]] == [
-        "replacement entry that is intentionally longer"
-    ]
+    assert [item["message"] for item in payload["items"]] == ["replacement entry that is intentionally longer"]

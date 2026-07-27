@@ -18,7 +18,6 @@ if str(REPO_ROOT) not in sys.path:
 
 from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
 
-
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("pyloudnorm", "local Pipecat loudness compatibility dependency"),
@@ -70,9 +69,7 @@ BLOCKED_FROZEN_YT_DLP_IMPORTS: tuple[str, ...] = (
     "yt_dlp.extractor.vimeo",
 )
 
-REQUIRED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = (
-    "src.export",
-)
+REQUIRED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = ("src.export",)
 FROZEN_NUMPY_VERSION = "2.4.6+scriber.noblas.1"
 
 FROZEN_EXPORT_COMPAT_IMPORTS: tuple[str, ...] = (
@@ -81,9 +78,7 @@ FROZEN_EXPORT_COMPAT_IMPORTS: tuple[str, ...] = (
     "reportlab.platypus",
 )
 
-BLOCKED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = (
-    "lxml",
-)
+BLOCKED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = ("lxml",)
 
 BLOCKED_FROZEN_UNUSED_PROVIDER_IMPORTS: tuple[str, ...] = (
     "deepgram.agent",
@@ -172,6 +167,7 @@ def _docx_text_and_paragraph_count(payload: bytes) -> tuple[str, int, str]:
     paragraphs = sum(1 for _ in root.iter(f"{_WORD_NAMESPACE}p"))
     return text, paragraphs, document_xml
 
+
 REQUIRED_FROZEN_BUILD_PRUNE_IMPORTS: tuple[tuple[str, str], ...] = (
     ("cffi", "Google authentication CFFI runtime"),
     ("_cffi_backend", "Google authentication native CFFI backend"),
@@ -202,9 +198,7 @@ PUNKT_TAB_REQUIRED_FILES: frozenset[str] = frozenset(
         "sent_starters.txt",
     }
 )
-PUNKT_TAB_LANGUAGE_PROBES: tuple[
-    tuple[str, str, str, tuple[str, ...]], ...
-] = (
+PUNKT_TAB_LANGUAGE_PROBES: tuple[tuple[str, str, str, tuple[str, ...]], ...] = (
     (
         "english-punkt-tab",
         "english",
@@ -244,16 +238,12 @@ def _validate_frozen_punkt_tab_data(bundled_nltk_data: Path) -> None:
     punkt_tab_root = bundled_nltk_data / "tokenizers" / "punkt_tab"
     if not punkt_tab_root.is_dir():
         raise RuntimeError("bundled punkt_tab directory is missing")
-    actual_languages = tuple(
-        sorted(path.name for path in punkt_tab_root.iterdir() if path.is_dir())
-    )
+    actual_languages = tuple(sorted(path.name for path in punkt_tab_root.iterdir() if path.is_dir()))
     if actual_languages != tuple(sorted(PUNKT_TAB_RETAINED_LANGUAGES)):
         raise RuntimeError("bundled punkt_tab language set is not exactly English/German")
     for language in PUNKT_TAB_RETAINED_LANGUAGES:
         language_root = punkt_tab_root / language
-        actual_files = {
-            path.name for path in language_root.iterdir() if path.is_file()
-        }
+        actual_files = {path.name for path in language_root.iterdir() if path.is_file()}
         if actual_files != PUNKT_TAB_REQUIRED_FILES:
             raise RuntimeError(f"bundled {language} punkt_tab model is incomplete")
 
@@ -270,8 +260,8 @@ def check_sentence_segmentation(
     original_download: object | None = None
     try:
         nltk_module = import_module("nltk")
-        nltk_data = getattr(nltk_module, "data")
-        nltk_data_path = getattr(nltk_data, "path")
+        nltk_data = nltk_module.data
+        nltk_data_path = nltk_data.path
         is_frozen = bool(getattr(sys, "frozen", False)) if frozen is None else frozen
         if is_frozen:
             root = frozen_root
@@ -288,16 +278,16 @@ def check_sentence_segmentation(
             # user cache can never make an incomplete frozen bundle look valid.
             nltk_data_path[:] = [str(bundled_nltk_data)]
 
-        original_download = getattr(nltk_module, "download")
+        original_download = nltk_module.download
         if not callable(original_download):
             raise RuntimeError("NLTK downloader boundary is unavailable")
 
         def reject_download(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("NLTK download fallback was attempted")
 
-        setattr(nltk_module, "download", reject_download)
+        nltk_module.download = reject_download
         nltk_tokenize = import_module("nltk.tokenize")
-        sent_tokenize = getattr(nltk_tokenize, "sent_tokenize")
+        sent_tokenize = nltk_tokenize.sent_tokenize
         tokenizer_factory = getattr(nltk_tokenize, "_get_punkt_tokenizer", None)
         cache_clear = getattr(tokenizer_factory, "cache_clear", None)
         if not callable(sent_tokenize) or not callable(cache_clear):
@@ -309,12 +299,11 @@ def check_sentence_segmentation(
             actual_sentences = tuple(sent_tokenize(text, language=language))
             if actual_sentences != expected_sentences:
                 raise RuntimeError(
-                    f"sentence tokenizer probe {label} returned {actual_sentences!r}; "
-                    f"expected {expected_sentences!r}"
+                    f"sentence tokenizer probe {label} returned {actual_sentences!r}; expected {expected_sentences!r}"
                 )
 
         pipecat_string = import_module("pipecat.utils.string")
-        match_endofsentence = getattr(pipecat_string, "match_endofsentence")
+        match_endofsentence = pipecat_string.match_endofsentence
         if not callable(match_endofsentence):
             raise RuntimeError("Pipecat sentence segmenter is unavailable")
 
@@ -323,8 +312,7 @@ def check_sentence_segmentation(
             actual_end = match_endofsentence(text)
             if actual_end != expected_end:
                 raise RuntimeError(
-                    f"sentence segmentation probe {label} returned {actual_end!r}; "
-                    f"expected {expected_end}"
+                    f"sentence segmentation probe {label} returned {actual_end!r}; expected {expected_end}"
                 )
     except Exception as exc:
         return [
@@ -337,7 +325,7 @@ def check_sentence_segmentation(
         ]
     finally:
         if nltk_module is not None and callable(original_download):
-            setattr(nltk_module, "download", original_download)
+            nltk_module.download = original_download
 
     return []
 
@@ -401,17 +389,17 @@ def check_frozen_youtube_only_yt_dlp(
         return []
     try:
         policy = import_module("backend_runtime.yt_dlp_policy")
-        apply_policy = getattr(policy, "apply_youtube_only_runtime_policy")
-        expected_names = tuple(getattr(policy, "YOUTUBE_EXTRACTOR_CLASS_NAMES"))
+        apply_policy = policy.apply_youtube_only_runtime_policy
+        expected_names = tuple(policy.YOUTUBE_EXTRACTOR_CLASS_NAMES)
         apply_policy()
 
         globals_module = import_module("yt_dlp.globals")
         extractor_module = import_module("yt_dlp.extractor")
-        if getattr(globals_module, "LAZY_EXTRACTORS").value is not True:
+        if globals_module.LAZY_EXTRACTORS.value is not True:
             raise RuntimeError("lazy extractor mode is not active")
-        if getattr(globals_module, "plugin_dirs").value != []:
+        if globals_module.plugin_dirs.value != []:
             raise RuntimeError("external plugin directories are active")
-        registry = getattr(extractor_module, "_extractors_context").value
+        registry = extractor_module._extractors_context.value
         if tuple(registry) != expected_names or len(registry) != 20:
             raise RuntimeError("extractor registry is not the exact YouTube policy")
         for module_name in BLOCKED_FROZEN_YT_DLP_IMPORTS:
@@ -447,8 +435,8 @@ def check_frozen_text_export_graph(
             compat_module = import_module(module_name)
             if getattr(compat_module, "SCRIBER_STDLIB_EXPORT_COMPAT", False) is not True:
                 raise RuntimeError(f"legacy export package resolved: {module_name}")
-        export_to_pdf = getattr(export_module, "export_to_pdf")
-        export_to_docx = getattr(export_module, "export_to_docx")
+        export_to_pdf = export_module.export_to_pdf
+        export_to_docx = export_module.export_to_docx
         for language, title, marker, labels, unicode_marker in (
             (
                 "de",
@@ -475,11 +463,7 @@ def check_frozen_text_export_graph(
                 "Complete: – “English” € 漢字 🙂",
             ),
         ):
-            filler = (
-                "verlässlicher deutscher Exporttext. "
-                if language == "de"
-                else "reliable English export text. "
-            )
+            filler = "verlässlicher deutscher Exporttext. " if language == "de" else "reliable English export text. "
             content = "\n\n".join(
                 f"[Speaker {index + 1}]: {marker} {index:03d}: "
                 + (filler * 5)
@@ -487,9 +471,7 @@ def check_frozen_text_export_graph(
                 for index in range(140)
             )
             summary = (
-                f"# {labels['summary']}\n"
-                f"- **{marker}**\n"
-                f"*{'Kursiv' if language == 'de' else 'Italic'}* `export-code`"
+                f"# {labels['summary']}\n- **{marker}**\n*{'Kursiv' if language == 'de' else 'Italic'}* `export-code`"
             )
             pdf = export_to_pdf(
                 title,
@@ -513,8 +495,7 @@ def check_frozen_text_export_graph(
                 raise RuntimeError(f"{language} DOCX render failed")
             pdf_text, page_count = _pdf_text_and_page_count(pdf)
             if page_count < 5 or not all(
-                value in pdf_text
-                for value in (title, labels["summary"], labels["transcript"], marker)
+                value in pdf_text for value in (title, labels["summary"], labels["transcript"], marker)
             ):
                 raise RuntimeError(f"{language} PDF content or pagination failed")
             docx_text, paragraph_count, document_xml = _docx_text_and_paragraph_count(docx)
@@ -559,7 +540,7 @@ def check_provider_initialization_matrix(
 
     def google_service_account_cffi() -> None:
         cffi_module = import_module("cffi")
-        ffi = getattr(cffi_module, "FFI")()
+        ffi = cffi_module.FFI()
         probe_buffer = ffi.new("unsigned char[]", b"scriber")
         if bytes(ffi.buffer(probe_buffer, 7)) != b"scriber":
             raise RuntimeError("CFFI buffer round trip failed")
@@ -567,35 +548,28 @@ def check_provider_initialization_matrix(
         rsa = import_module("cryptography.hazmat.primitives.asymmetric.rsa")
         serialization = import_module("cryptography.hazmat.primitives.serialization")
         service_account = import_module("google.oauth2.service_account")
-        private_key = getattr(rsa, "generate_private_key")(
+        private_key = rsa.generate_private_key(
             public_exponent=65537,
             key_size=2048,
         )
         private_key_pem = private_key.private_bytes(
-            getattr(serialization, "Encoding").PEM,
-            getattr(serialization, "PrivateFormat").PKCS8,
-            getattr(serialization, "NoEncryption")(),
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
         ).decode("ascii")
         info = {
             "type": "service_account",
             "project_id": "scriber-runtime-probe",
             "private_key_id": "0" * 40,
             "private_key": private_key_pem,
-            "client_email": (
-                "runtime-probe@scriber-runtime-probe.iam.gserviceaccount.com"
-            ),
+            "client_email": ("runtime-probe@scriber-runtime-probe.iam.gserviceaccount.com"),
             "client_id": "1",
             "auth_uri": "https://accounts.google.com/o/oauth2/auth",
             "token_uri": "https://oauth2.googleapis.com/token",
-            "auth_provider_x509_cert_url": (
-                "https://www.googleapis.com/oauth2/v1/certs"
-            ),
-            "client_x509_cert_url": (
-                "https://www.googleapis.com/robot/v1/metadata/x509/"
-                "runtime-probe"
-            ),
+            "auth_provider_x509_cert_url": ("https://www.googleapis.com/oauth2/v1/certs"),
+            "client_x509_cert_url": ("https://www.googleapis.com/robot/v1/metadata/x509/runtime-probe"),
         }
-        credentials_type = getattr(service_account, "Credentials")
+        credentials_type = service_account.Credentials
         credentials = credentials_type.from_service_account_info(info)
         if not credentials.sign_bytes(b"scriber-provider-probe"):
             raise RuntimeError("Google service-account signing probe failed")
@@ -675,8 +649,7 @@ def check_frozen_build_tool_pruning(
             except ModuleNotFoundError as exc:
                 missing_name = exc.name
                 if isinstance(missing_name, str) and (
-                    missing_name == module_name
-                    or module_name.startswith(missing_name + ".")
+                    missing_name == module_name or module_name.startswith(missing_name + ".")
                 ):
                     continue
                 raise
@@ -706,8 +679,8 @@ def check_frozen_docstring_pruning(
         if not __debug__:
             raise RuntimeError("frozen runtime disabled __debug__")
         module = import_module("backend_runtime.docstring_prune_probe")
-        probe_type = getattr(module, "DocstringPruneProbe")
-        assertions_enabled = getattr(module, "assertions_enabled")
+        probe_type = module.DocstringPruneProbe
+        assertions_enabled = module.assertions_enabled
         docstrings = (
             getattr(module, "__doc__", None),
             getattr(probe_type, "__doc__", None),
@@ -750,8 +723,7 @@ def check_frozen_provider_pruning(
             except ModuleNotFoundError as exc:
                 missing_name = exc.name
                 if isinstance(missing_name, str) and (
-                    missing_name == module_name
-                    or module_name.startswith(missing_name + ".")
+                    missing_name == module_name or module_name.startswith(missing_name + ".")
                 ):
                     continue
                 raise
@@ -785,8 +757,7 @@ def check_frozen_numpy_noblas(
         runtime_version = str(getattr(numpy, "__version__", ""))
         if distribution_version != FROZEN_NUMPY_VERSION or runtime_version != FROZEN_NUMPY_VERSION:
             raise RuntimeError(
-                f"expected {FROZEN_NUMPY_VERSION}, got metadata={distribution_version}, "
-                f"runtime={runtime_version}"
+                f"expected {FROZEN_NUMPY_VERSION}, got metadata={distribution_version}, runtime={runtime_version}"
             )
 
         config = numpy.show_config(mode="dicts")
@@ -811,11 +782,7 @@ def check_frozen_numpy_noblas(
             if not bundled_root:
                 raise RuntimeError("frozen runtime has no bundled data root")
             root = Path(bundled_root)
-        stale = sorted(
-            path.name
-            for path in root.rglob("*")
-            if path.is_file() and "openblas" in path.name.casefold()
-        )
+        stale = sorted(path.name for path in root.rglob("*") if path.is_file() and "openblas" in path.name.casefold())
         if stale:
             raise RuntimeError("frozen runtime retained an OpenBLAS file")
     except Exception as exc:

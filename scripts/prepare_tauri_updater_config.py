@@ -62,9 +62,7 @@ def configure_nsis_compression(config: dict, compression: str) -> dict:
     if not clean_compression:
         return config
     if clean_compression not in NSIS_COMPRESSIONS:
-        raise ValueError(
-            f"Unsupported NSIS compression {compression!r}; expected one of {sorted(NSIS_COMPRESSIONS)}"
-        )
+        raise ValueError(f"Unsupported NSIS compression {compression!r}; expected one of {sorted(NSIS_COMPRESSIONS)}")
     bundle = config.setdefault("bundle", {})
     windows = bundle.setdefault("windows", {})
     nsis = windows.setdefault("nsis", {})
@@ -151,12 +149,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signing_key = os.getenv("TAURI_SIGNING_PRIVATE_KEY", "").strip()
     signing_key_path = os.getenv("TAURI_SIGNING_PRIVATE_KEY_PATH", "").strip()
-    if (
-        not args.skip_updater_config
-        and not args.skip_signing_key_check
-        and not signing_key
-        and not signing_key_path
-    ):
+    if not args.skip_updater_config and not args.skip_signing_key_check and not signing_key and not signing_key_path:
         raise RuntimeError(
             "TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH is required for updater artifacts."
         )
@@ -207,10 +200,7 @@ def main(argv: list[str] | None = None) -> int:
                 "updaterConfigured": not args.skip_updater_config,
                 "endpointCount": len(parsed_endpoints),
                 "version": config.get("version"),
-                "nsisCompression": config.get("bundle", {})
-                .get("windows", {})
-                .get("nsis", {})
-                .get("compression", ""),
+                "nsisCompression": config.get("bundle", {}).get("windows", {}).get("nsis", {}).get("compression", ""),
                 "beforeBundleCommandRemoved": config.get("build", {}).get("beforeBundleCommand") is None,
                 "createUpdaterArtifacts": config.get("bundle", {}).get("createUpdaterArtifacts") is True,
             },

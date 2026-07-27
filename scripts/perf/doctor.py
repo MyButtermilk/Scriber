@@ -8,10 +8,9 @@ import math
 import os
 import re
 import subprocess
-import sys
+from ctypes import wintypes
 from pathlib import Path
 from typing import Any
-from ctypes import wintypes
 
 try:
     from .benchmark_lint import lint
@@ -65,15 +64,18 @@ EVALUATOR_PATHS = (
     "benchmarks/windows/trace_collector.py",
     "scripts/perf/evaluator/local_wux.py",
 )
-B7_REQUIRED_BASELINE_METRICS = tuple(
-    f"{scenario}_{percentile}_ms"
-    for scenario in (
-        "overlay_warm",
-        "overlay_cold",
-        "app_ux",
+B7_REQUIRED_BASELINE_METRICS = (
+    tuple(
+        f"{scenario}_{percentile}_ms"
+        for scenario in (
+            "overlay_warm",
+            "overlay_cold",
+            "app_ux",
+        )
+        for percentile in ("p50", "p95")
     )
-    for percentile in ("p50", "p95")
-) + canonical_provider_replay_metric_names()
+    + canonical_provider_replay_metric_names()
+)
 
 
 def run_capture(args: list[str], cwd: Path, timeout: int = 120) -> subprocess.CompletedProcess[str]:
@@ -428,7 +430,9 @@ def check_autoresearch_state(repo_root: Path) -> list[dict[str, Any]]:
                             }
                         )
                     elif not _identity_values_match(field, actual, expected):
-                        code_field = field.replace("Id", "_id").replace("Sha256", "_sha").replace("Hash", "_hash").lower()
+                        code_field = (
+                            field.replace("Id", "_id").replace("Sha256", "_sha").replace("Hash", "_hash").lower()
+                        )
                         findings.append(
                             {
                                 "level": "block",
@@ -726,7 +730,9 @@ def detect_foreign_scriber_instances(repo_root: Path, install_root: Path) -> lis
 
 def default_install_root(repo_root: Path) -> Path:
     release_root = repo_root / "Frontend" / "src-tauri" / "target" / "release"
-    if (release_root / "scriber-desktop.exe").is_file() and (release_root / "backend" / "scriber-backend.exe").is_file():
+    if (release_root / "scriber-desktop.exe").is_file() and (
+        release_root / "backend" / "scriber-backend.exe"
+    ).is_file():
         return release_root
     return repo_root / "Scriber Install"
 
@@ -740,7 +746,9 @@ def check_static(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
     for rel in PROTECTED_PATHS:
         path = repo_root / rel
         if not path.exists():
-            findings.append({"level": "block", "code": "missing_protected_path", "message": f"Missing protected path {rel}"})
+            findings.append(
+                {"level": "block", "code": "missing_protected_path", "message": f"Missing protected path {rel}"}
+            )
     desktop = install_root / "scriber-desktop.exe"
     backend = install_root / "backend" / "scriber-backend.exe"
     audio_sidecar = install_root / "scriber-audio-sidecar.exe"
@@ -749,7 +757,9 @@ def check_static(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
     if not backend.is_file():
         findings.append({"level": "block", "code": "missing_backend_binary", "message": f"Missing {backend}"})
     if not audio_sidecar.is_file():
-        findings.append({"level": "block", "code": "missing_audio_sidecar_binary", "message": f"Missing {audio_sidecar}"})
+        findings.append(
+            {"level": "block", "code": "missing_audio_sidecar_binary", "message": f"Missing {audio_sidecar}"}
+        )
     package_json = repo_root / "Frontend" / "package.json"
     if desktop.is_file() and package_json.is_file() and os.name == "nt":
         expected_version = str(load_json(package_json).get("version") or "")
@@ -788,7 +798,9 @@ def check_static(repo_root: Path, install_root: Path) -> list[dict[str, Any]]:
             }
         )
     if os.name != "nt":
-        findings.append({"level": "block", "code": "not_windows", "message": "Windows benchmark contract requires native Windows."})
+        findings.append(
+            {"level": "block", "code": "not_windows", "message": "Windows benchmark contract requires native Windows."}
+        )
     foreign = detect_foreign_scriber_instances(repo_root, install_root)
     if foreign:
         findings.append(
@@ -843,7 +855,9 @@ def check_benchmark(repo_root: Path, install_root: Path) -> list[dict[str, Any]]
                 "stderr": result.stderr[-4000:],
             }
         ]
-    return [{"level": "ok", "code": "benchmark_contract", "message": "FastLocal benchmark output is finite and complete."}]
+    return [
+        {"level": "ok", "code": "benchmark_contract", "message": "FastLocal benchmark output is finite and complete."}
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -876,7 +890,8 @@ def main(argv: list[str] | None = None) -> int:
         "blocked": bool(blocked),
         "repoRoot": str(repo_root),
         "installRoot": str(install_root),
-        "findings": findings or [{"level": "ok", "code": "static_contract", "message": "No blocking static issues detected."}],
+        "findings": findings
+        or [{"level": "ok", "code": "static_contract", "message": "No blocking static issues detected."}],
     }
     if args.explain:
         print(json.dumps(payload, indent=2, ensure_ascii=False))

@@ -9,17 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HELPER_PATH = REPO_ROOT / "scripts" / "build_denort_youtube_runtime.py"
-LOCK_PATH = (
-    REPO_ROOT
-    / "scripts"
-    / "perf"
-    / "profiles"
-    / "installer-size"
-    / "denort-runtime-lock-v1.json"
-)
+LOCK_PATH = REPO_ROOT / "scripts" / "perf" / "profiles" / "installer-size" / "denort-runtime-lock-v1.json"
 
 
 def _load_helper():
@@ -64,15 +56,11 @@ def test_denort_lock_rejects_noncanonical_manifest_hash(tmp_path: Path) -> None:
 
 
 def test_sidecar_builder_stages_only_locked_quickjs_wrapper_runtime() -> None:
-    source = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
-        encoding="utf-8"
-    )
-    initializer = source.split(
-        "function Initialize-BackendRuntimeStableMediaTools", 1
-    )[1].split("function Test-BackendMediaFiles", 1)[0]
-    copier = source.split("function Copy-MediaTools", 1)[1].split(
-        "$RepoRoot = (Resolve-Path $RepoRoot).Path", 1
+    source = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    initializer = source.split("function Initialize-BackendRuntimeStableMediaTools", 1)[1].split(
+        "function Test-BackendMediaFiles", 1
     )[0]
+    copier = source.split("function Copy-MediaTools", 1)[1].split("$RepoRoot = (Resolve-Path $RepoRoot).Path", 1)[0]
 
     assert "Invoke-QuickJsYoutubeRuntimeBuild" in initializer
     assert 'Join-Path $stableRoot "qjs.exe"' in initializer
@@ -118,9 +106,7 @@ def test_cold_build_provisions_locked_denort_and_reuses_offline_cache(
     assert first.read_bytes() == executable_bytes
     cached_archive = work_dir / "denort-input-cache" / "denort-test.zip"
     assert cached_archive.is_file()
-    assert hashlib.sha256(cached_archive.read_bytes()).hexdigest() == (
-        entry["denortAsset"]["sha256"]
-    )
+    assert hashlib.sha256(cached_archive.read_bytes()).hexdigest() == (entry["denortAsset"]["sha256"])
 
     source_archive.unlink()
     first.unlink()
@@ -130,9 +116,7 @@ def test_cold_build_provisions_locked_denort_and_reuses_offline_cache(
     assert second.read_bytes() == executable_bytes
 
 
-def test_denort_override_must_match_the_locked_executable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_denort_override_must_match_the_locked_executable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     helper = _load_helper()
     source_archive = tmp_path / "source-denort.zip"
     executable_bytes = b"locked-denort-executable"
@@ -149,9 +133,7 @@ def test_denort_override_must_match_the_locked_executable(
         helper._resolve_denort_for_build(args, tmp_path / "work", entry)
 
 
-def test_verify_only_needs_neither_compiler_nor_raw_denort(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_verify_only_needs_neither_compiler_nor_raw_denort(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     helper = _load_helper()
     output = tmp_path / "deno.exe"
     manifest = tmp_path / "js-runtime-manifest.json"
@@ -161,9 +143,7 @@ def test_verify_only_needs_neither_compiler_nor_raw_denort(
     monkeypatch.setattr(
         helper,
         "_verify_output",
-        lambda runtime, runtime_manifest, _entry: verified.append(
-            (runtime, runtime_manifest)
-        ),
+        lambda runtime, runtime_manifest, _entry: verified.append((runtime, runtime_manifest)),
     )
     monkeypatch.setattr(
         helper,
@@ -195,9 +175,7 @@ def test_verify_only_needs_neither_compiler_nor_raw_denort(
 
 
 def test_release_runtime_key_tracks_every_quickjs_wrapper_build_input() -> None:
-    source = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
     runtime_key = source.split("$backendRuntimeEntries = New-EntryList", 1)[1].split(
         'Write-KeyFile -Name "backend-runtime.txt"', 1
     )[0]
@@ -210,16 +188,12 @@ def test_release_runtime_key_tracks_every_quickjs_wrapper_build_input() -> None:
 
 
 def test_verify_only_power_shell_path_does_not_require_quickjs_overrides() -> None:
-    source = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     invocation = source.split("function Invoke-QuickJsYoutubeRuntimeBuild", 1)[1].split(
         "function Test-MediaToolExecutable", 1
     )[0]
 
-    assert invocation.index("if ($VerifyOnly)") < invocation.index(
-        "if ($env:SCRIBER_QUICKJS_ENGINE_BIN)"
-    )
+    assert invocation.index("if ($VerifyOnly)") < invocation.index("if ($env:SCRIBER_QUICKJS_ENGINE_BIN)")
     assert '"--verify-only"' in invocation
     assert '"--quickjs-engine", $env:SCRIBER_QUICKJS_ENGINE_BIN' in invocation
     assert '"--quickjs-license", $env:SCRIBER_QUICKJS_LICENSE_FILE' in invocation

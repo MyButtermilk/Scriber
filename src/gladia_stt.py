@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, BinaryIO, Callable
+from collections.abc import Callable
+from typing import Any, BinaryIO
 
 import aiohttp
 from loguru import logger
@@ -87,10 +88,7 @@ def _build_pre_recorded_payload(
             "code_switching": False,
         }
 
-    terms = [
-        " ".join(term.strip().split())
-        for term in str(custom_vocab or "").replace("\n", ",").split(",")
-    ]
+    terms = [" ".join(term.strip().split()) for term in str(custom_vocab or "").replace("\n", ",").split(",")]
     terms = [term for term in terms if term]
     if terms:
         payload["custom_vocabulary"] = True
@@ -127,11 +125,7 @@ def gladia_transcript_payload_to_text(
     prefer_speaker_labels: bool,
 ) -> str:
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    transcription = (
-        result.get("transcription")
-        if isinstance(result.get("transcription"), dict)
-        else {}
-    )
+    transcription = result.get("transcription") if isinstance(result.get("transcription"), dict) else {}
     utterances = transcription.get("utterances")
     utterance_list = [u for u in utterances if isinstance(u, dict)] if isinstance(utterances, list) else []
 

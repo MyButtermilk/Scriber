@@ -25,10 +25,7 @@ def deterministic_pcm16le_fixture(sample_count: int) -> bytes:
 
     if sample_count < 1:
         raise ValueError("sample_count must be positive")
-    samples = [
-        ((index * 7_919 + 12_345) & 0xFFFF) - 32_768
-        for index in range(sample_count)
-    ]
+    samples = [((index * 7_919 + 12_345) & 0xFFFF) - 32_768 for index in range(sample_count)]
     return struct.pack(f"<{sample_count}h", *samples)
 
 

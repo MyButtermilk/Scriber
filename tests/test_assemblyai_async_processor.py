@@ -4,7 +4,6 @@ import wave
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
 from pipecat.frames.frames import AudioRawFrame, EndFrame
 from pipecat.processors.frame_processor import FrameDirection
 
@@ -142,18 +141,19 @@ def test_format_assemblyai_utterances_to_scriber_text_maps_speakers():
             {"speaker": "A", "text": "Weiter"},
         ]
     )
-    assert text == (
-        "[Speaker 1]: Hallo\n\n"
-        "[Speaker 2]: Hi\n\n"
-        "[Speaker 1]: Weiter"
-    )
+    assert text == ("[Speaker 1]: Hallo\n\n[Speaker 2]: Hi\n\n[Speaker 1]: Weiter")
 
 
 def test_format_assemblyai_utterances_preserves_numeric_speaker_zero():
-    assert format_assemblyai_utterances_to_scriber_text([
-        {"speaker": 0, "text": "First"},
-        {"speaker": 1, "text": "Second"},
-    ]) == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    assert (
+        format_assemblyai_utterances_to_scriber_text(
+            [
+                {"speaker": 0, "text": "First"},
+                {"speaker": 1, "text": "Second"},
+            ]
+        )
+        == "[Speaker 1]: First\n\n[Speaker 2]: Second"
+    )
 
 
 def test_payload_to_text_prefers_diarized_output_when_requested():

@@ -124,9 +124,7 @@ def test_recording_hot_path_text_target_path_is_unique_per_iteration(tmp_path: P
 
 def test_recording_hot_path_text_target_keeps_focus_during_measurement():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (
-        repo_root / "scripts" / "measure_recording_hot_path_baseline.py"
-    ).read_text(encoding="utf-8")
+    script = (repo_root / "scripts" / "measure_recording_hot_path_baseline.py").read_text(encoding="utf-8")
 
     assert "System.Windows.Forms.Form" in script
     assert "$form.TopMost = $true" in script
@@ -139,7 +137,7 @@ def test_recording_hot_path_text_target_keeps_focus_during_measurement():
     assert "start_text_target_focus_keeper" in script
     assert "focus_keeper:" in script
     assert "System.Text.UTF8Encoding($false)" in script
-    assert "encoding=\"utf-8-sig\"" in script
+    assert 'encoding="utf-8-sig"' in script
 
 
 def test_recording_hot_path_summary_measures_text_injection_after_stop():
@@ -741,9 +739,7 @@ def test_recording_hot_path_summary_reports_missing_injection_after_transcript()
 
 def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     assert "measure_recording_hot_path_baseline.py" in script
     assert "Invoke-RecordingHotPathBenchmark" in script
@@ -778,22 +774,18 @@ def test_hybrid_baseline_runner_wires_recording_hot_path_benchmark():
 
 def test_hybrid_baseline_recording_artifact_is_persistent_sibling():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     assert "[string]$BaselineOutputPath" in script
-    assert '$baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)' in script
-    assert '$baseName-recording-hot-path-$Iteration.json' in script
+    assert "$baseName = [System.IO.Path]::GetFileNameWithoutExtension($BaselineOutputPath)" in script
+    assert "$baseName-recording-hot-path-$Iteration.json" in script
     assert "-BaselineOutputPath $OutputPath" in script
     assert "-BaselineOutputPath $BaselineOutputPath" in script
 
 
 def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     status_function = script.split("function Get-RecordingHotPathRequirementStatus", 1)[1].split(
         "function Get-RecordingHotPathRequirementNotes", 1
@@ -806,9 +798,7 @@ def test_hybrid_baseline_recording_samples_do_not_fall_back_to_old_metric_rows()
 
 def test_hybrid_baseline_keeps_recording_hot_path_ok_false_as_evidence():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     recording_function = script.split("function Invoke-RecordingHotPathBenchmark", 1)[1].split(
         "function Invoke-BaselineIteration", 1
@@ -820,9 +810,7 @@ def test_hybrid_baseline_keeps_recording_hot_path_ok_false_as_evidence():
 
 def test_hybrid_baseline_restores_legacy_data_environment():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     baseline_function = script.split("function Invoke-BaselineIteration", 1)[1].split(
         "$RepoRoot = (Resolve-Path $RepoRoot).Path", 1

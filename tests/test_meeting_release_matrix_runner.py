@@ -8,7 +8,6 @@ import pytest
 
 from src.version import __version__
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER = REPO_ROOT / "scripts" / "run_meeting_release_matrix.ps1"
 
@@ -136,10 +135,6 @@ def test_reinitialize_archives_drafts_bound_to_an_old_installer(tmp_path: Path) 
     assert second.returncode == 0, second.stderr
     current = json.loads(draft.read_text(encoding="utf-8"))
     assert current["build"]["installerSha256"] != original["build"]["installerSha256"]
-    archived = list((output / "stale-drafts").glob(
-        "meeting-release-draft-automated-regression-suite-*.json"
-    ))
+    archived = list((output / "stale-drafts").glob("meeting-release-draft-automated-regression-suite-*.json"))
     assert len(archived) == 1
-    assert json.loads(archived[0].read_text(encoding="utf-8"))["notes"] == (
-        "operator work in progress"
-    )
+    assert json.loads(archived[0].read_text(encoding="utf-8"))["notes"] == ("operator work in progress")

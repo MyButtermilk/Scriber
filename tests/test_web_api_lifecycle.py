@@ -142,12 +142,8 @@ def test_pending_device_cache_invalidation_runs_once_after_lazy_import(monkeypat
 
     fake_pipeline_module = types.ModuleType("src.pipeline")
     fake_pipeline_module.ScriberPipeline = _LazyPipeline
-    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(
-        discard_vad_cache=lambda: None
-    )
-    fake_pipeline_module.invalidate_mic_device_resolution_cache = (
-        lambda: invalidations.append("invalidated")
-    )
+    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(discard_vad_cache=lambda: None)
+    fake_pipeline_module.invalidate_mic_device_resolution_cache = lambda: invalidations.append("invalidated")
     monkeypatch.setitem(sys.modules, "src.pipeline", fake_pipeline_module)
     monkeypatch.setattr(web_api, "ScriberPipeline", None)
     monkeypatch.setattr(web_api, "_invalidate_mic_device_resolution_cache_impl", None)
@@ -200,9 +196,7 @@ def test_vad_cache_discard_during_pipeline_import_runs_once(monkeypatch):
     fake_pipeline_module = types.ModuleType("src.pipeline")
     fake_pipeline_module.ScriberPipeline = _LazyPipeline
     fake_pipeline_module.invalidate_mic_device_resolution_cache = lambda: None
-    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(
-        discard_vad_cache=lambda: discarded.append("discarded")
-    )
+    fake_pipeline_module._AnalyzerCache = types.SimpleNamespace(discard_vad_cache=lambda: discarded.append("discarded"))
     real_import = builtins.__import__
 
     def delayed_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -392,9 +386,7 @@ def test_close_persistence_stores_closes_every_sqlite_owner(monkeypatch):
 def test_begin_shutdown_releases_persisted_native_audio_claim(tmp_path):
     ctl = ScriberWebController.__new__(ScriberWebController)
     ctl._retry_scheduler = MagicMock()
-    ctl._audio_admission_store = web_api.AudioAdmissionStore(
-        tmp_path / "shutdown-audio-admission.db"
-    )
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "shutdown-audio-admission.db")
     ctl._audio_admission_store.initialize()
     ctl._audio_controller_id = "controller-shutdown"
     ctl._audio_admission_heartbeat_task = None
@@ -476,13 +468,9 @@ async def test_cancelled_audio_claim_waits_for_acquire_then_rolls_back(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(
-    monkeypatch, tmp_path
-):
+async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(monkeypatch, tmp_path):
     ctl = ScriberWebController.__new__(ScriberWebController)
-    ctl._audio_admission_store = web_api.AudioAdmissionStore(
-        tmp_path / "heartbeat-transfer.db"
-    )
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "heartbeat-transfer.db")
     ctl._audio_admission_store.initialize()
     ctl._audio_controller_id = "controller-transfer"
     pending = ctl._audio_admission_store.acquire(
@@ -491,9 +479,7 @@ async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(
         controller_id=ctl._audio_controller_id,
         ttl_seconds=60,
     )
-    transferred = ctl._audio_admission_store.transfer(
-        pending, owner_id="meeting-transfer"
-    )
+    transferred = ctl._audio_admission_store.transfer(pending, owner_id="meeting-transfer")
     ctl._persistent_audio_claim = pending
     sleep_calls = 0
 
@@ -512,9 +498,7 @@ async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(
 
 
 @pytest.mark.asyncio
-async def test_live_mic_heartbeat_fails_closed_after_repeated_renewal_errors(
-    monkeypatch
-):
+async def test_live_mic_heartbeat_fails_closed_after_repeated_renewal_errors(monkeypatch):
     claim = web_api.AudioAdmissionClaim(
         owner_kind="live_mic",
         owner_id="session-heartbeat",
@@ -542,9 +526,7 @@ async def test_live_mic_heartbeat_fails_closed_after_repeated_renewal_errors(
     await web_api._audio_claim_heartbeat(ctl)
 
     assert ctl._persistent_audio_claim is None
-    ctl._emergency_stop_pipeline.assert_awaited_once_with(
-        session_id="session-heartbeat"
-    )
+    ctl._emergency_stop_pipeline.assert_awaited_once_with(session_id="session-heartbeat")
 
 
 class _RunServerControllerStub:
@@ -755,13 +737,9 @@ def test_segmented_live_providers_use_async_finalization_timeout(monkeypatch):
         "modulate_async",
         "openai",
     ):
-        assert web_api._live_pipeline_uses_async_finalization(
-            types.SimpleNamespace(service_name=service_name)
-        ) is True
+        assert web_api._live_pipeline_uses_async_finalization(types.SimpleNamespace(service_name=service_name)) is True
 
-    assert web_api._live_pipeline_uses_async_finalization(
-        types.SimpleNamespace(service_name="soniox")
-    ) is False
+    assert web_api._live_pipeline_uses_async_finalization(types.SimpleNamespace(service_name="soniox")) is False
 
 
 @pytest.mark.asyncio
@@ -1007,14 +985,20 @@ class _ChunkUploadField:
 def test_multipart_content_length_allows_framing_overhead_at_file_limit():
     file_limit = 25 * 1024 * 1024
 
-    assert web_api._multipart_request_is_definitely_oversized(
-        file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES,
-        file_limit=file_limit,
-    ) is False
-    assert web_api._multipart_request_is_definitely_oversized(
-        file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES + 1,
-        file_limit=file_limit,
-    ) is True
+    assert (
+        web_api._multipart_request_is_definitely_oversized(
+            file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES,
+            file_limit=file_limit,
+        )
+        is False
+    )
+    assert (
+        web_api._multipart_request_is_definitely_oversized(
+            file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES + 1,
+            file_limit=file_limit,
+        )
+        is True
+    )
 
 
 @pytest.mark.asyncio
@@ -1288,18 +1272,20 @@ async def test_device_change_bursts_are_coalesced_and_handler_failures_are_consu
 
 
 @pytest.mark.asyncio
-async def test_meeting_device_change_policy_pauses_missing_explicit_and_reconnects_default(
-    monkeypatch, tmp_path
-):
+async def test_meeting_device_change_policy_pauses_missing_explicit_and_reconnects_default(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     ctl = ScriberWebController(asyncio.get_running_loop())
     calls: list[tuple[str, bool]] = []
     meeting = {
-        "id": "meeting-device-policy", "state": "recording",
-        "captureMetadata": {"deviceSelection": {
-            "microphoneMode": "explicit", "microphoneDeviceId": "usb-selected",
-        }},
+        "id": "meeting-device-policy",
+        "state": "recording",
+        "captureMetadata": {
+            "deviceSelection": {
+                "microphoneMode": "explicit",
+                "microphoneDeviceId": "usb-selected",
+            }
+        },
     }
     monkeypatch.setattr(ctl._meeting_store, "active", lambda: meeting)
 
@@ -1310,9 +1296,7 @@ async def test_meeting_device_change_policy_pauses_missing_explicit_and_reconnec
     monkeypatch.setattr(ctl, "broadcast", AsyncMock())
     monkeypatch.setattr(ctl, "_sync_idle_mic_prewarm_after_settings", AsyncMock())
 
-    await ctl._handle_devices_changed(
-        [{"deviceId": "different-device", "label": "Other"}], reason="device_removed"
-    )
+    await ctl._handle_devices_changed([{"deviceId": "different-device", "label": "Other"}], reason="device_removed")
     meeting["captureMetadata"]["deviceSelection"] = {"microphoneMode": "default"}
     await ctl._handle_devices_changed(
         [{"deviceId": "new-default", "label": "Default"}],
@@ -1354,9 +1338,7 @@ async def test_update_settings_rejects_oversized_api_secret(monkeypatch, tmp_pat
     ctl = ScriberWebController(asyncio.get_running_loop())
 
     with pytest.raises(ValueError, match=r"apiKeys\.openai exceeds"):
-        await ctl.update_settings(
-            {"apiKeys": {"openai": "x" * (web_api._SETTINGS_SECRET_MAX_BYTES + 1)}}
-        )
+        await ctl.update_settings({"apiKeys": {"openai": "x" * (web_api._SETTINGS_SECRET_MAX_BYTES + 1)}})
 
     ctl.shutdown()
 
@@ -1537,9 +1519,7 @@ async def test_settings_round_trips_celeris_models_and_key(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_settings_round_trips_and_persists_modulate_key_and_meeting_provider(
-    monkeypatch, tmp_path
-):
+async def test_settings_round_trips_and_persists_modulate_key_and_meeting_provider(monkeypatch, tmp_path):
     from src import config as config_module
 
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
@@ -1547,9 +1527,7 @@ async def test_settings_round_trips_and_persists_modulate_key_and_meeting_provid
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
     monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
     monkeypatch.setattr(web_api.Config, "MODULATE_API_KEY", "", raising=False)
-    monkeypatch.setattr(
-        web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async", raising=False
-    )
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "soniox_async", raising=False)
     monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
     ctl = ScriberWebController(asyncio.get_running_loop())
 
@@ -1612,15 +1590,17 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
         monkeypatch.setattr(web_api.Config, name, value, raising=False)
     ctl = ScriberWebController(asyncio.get_running_loop())
 
-    settings = await ctl.update_settings({
-        "meetingTranscriptionMode": "final_only",
-        "meetingFinalProvider": "assemblyai",
-        "meetingAnalysisModel": "gemini-3.5-flash",
-        "meetingSmartTurnEnabled": False,
-        "meetingAutoAnalyze": False,
-        "meetingAecEnabled": False,
-        "meetingAudioRetentionDays": 30,
-    })
+    settings = await ctl.update_settings(
+        {
+            "meetingTranscriptionMode": "final_only",
+            "meetingFinalProvider": "assemblyai",
+            "meetingAnalysisModel": "gemini-3.5-flash",
+            "meetingSmartTurnEnabled": False,
+            "meetingAutoAnalyze": False,
+            "meetingAecEnabled": False,
+            "meetingAudioRetentionDays": 30,
+        }
+    )
 
     assert settings["meetingTranscriptionMode"] == "final_only"
     assert settings["meetingFinalProvider"] == "assemblyai"
@@ -1634,10 +1614,12 @@ async def test_settings_round_trip_meeting_pipeline_preferences(monkeypatch, tmp
     assert config_module._json_settings["meetingAudioRetentionDays"] == 30
 
     with pytest.raises(ValueError, match="Unsupported final meeting"):
-        await ctl.update_settings({
-            "meetingFinalProvider": "unknown-provider",
-            "meetingSmartTurnEnabled": True,
-        })
+        await ctl.update_settings(
+            {
+                "meetingFinalProvider": "unknown-provider",
+                "meetingSmartTurnEnabled": True,
+            }
+        )
     assert web_api.Config.MEETING_FINAL_PROVIDER == "assemblyai"
     assert web_api.Config.MEETING_SMART_TURN_ENABLED is False
 
@@ -1742,9 +1724,7 @@ async def test_startup_prewarm_falls_back_when_device_refresh_never_arrives(
     ctl = ScriberWebController(asyncio.get_running_loop())
     manager = _FakeRustMicPrewarmManager.instances[-1]
 
-    active = await ctl._sync_startup_idle_mic_prewarm(
-        device_refresh_timeout_seconds=0.01
-    )
+    active = await ctl._sync_startup_idle_mic_prewarm(device_refresh_timeout_seconds=0.01)
 
     assert active is True
     assert manager.resume_calls == 1
@@ -1771,7 +1751,7 @@ async def test_controller_uses_rust_idle_prewarm_manager_for_rust_audio_engine(
 
     assert manager.resume_calls == 1
     assert manager.active is True
-    assert getattr(ctl._mic_prewarm, "engine") == "rust-wasapi"
+    assert ctl._mic_prewarm.engine == "rust-wasapi"
 
     ctl.shutdown()
 
@@ -2131,9 +2111,7 @@ async def test_mic_watchdog_checks_active_pipeline(monkeypatch, tmp_path):
 
     await ctl._run_mic_watchdog_check()
 
-    assert pipeline.health_calls == [
-        {"reason": "watchdog", "max_callback_gap_seconds": 15.0}
-    ]
+    assert pipeline.health_calls == [{"reason": "watchdog", "max_callback_gap_seconds": 15.0}]
     assert ctl.get_audio_diagnostics()["microphone"]["activeCapture"]["streamActive"] is True
 
     ctl.shutdown()
@@ -2179,16 +2157,11 @@ async def test_mic_watchdog_persists_last_active_warning_snapshot(monkeypatch, t
     assert last_warning["recordedAtUptimeSeconds"] >= 0
     assert last_warning["diagnostics"]["lastHealthFailureReason"] == "staleCallbacks"
     assert last_warning["diagnostics"]["healthRestartThrottleCount"] == 1
-    assert (
-        last_warning["diagnostics"]["lastHealthRestartThrottledReason"]
-        == "watchdog:staleCallbacks"
-    )
+    assert last_warning["diagnostics"]["lastHealthRestartThrottledReason"] == "watchdog:staleCallbacks"
 
     last_warning["diagnostics"]["lastHealthFailureReason"] = "mutated"
     assert (
-        ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"][
-            "lastHealthFailureReason"
-        ]
+        ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"]["lastHealthFailureReason"]
         == "staleCallbacks"
     )
 
@@ -2480,6 +2453,7 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
             }
         ],
     )
+
     def fake_shell_ipc(command, payload=None, **kwargs):
         if command == "nativeDeviceEventsStatus":
             return {
@@ -2527,6 +2501,7 @@ async def test_audio_diagnostics_prefers_rust_native_endpoint_inventory_for_mapp
             "errorCode": None,
             "fallbackReason": None,
         }
+
     call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
@@ -2579,6 +2554,7 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
     monkeypatch.setenv("SCRIBER_AUDIO_ENGINE", "rust-wasapi")
     monkeypatch.setattr(web_api.Config, "MIC_BLOCK_SIZE", 640, raising=False)
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+
     def fake_shell_ipc(command, payload=None, **kwargs):
         if command == "audioEndpointInventory":
             return {"success": True, "payload": {"available": False}, "errorCode": None, "fallbackReason": None}
@@ -2605,6 +2581,7 @@ async def test_audio_diagnostics_runs_rust_probe_when_requested(monkeypatch):
             "errorCode": None,
             "fallbackReason": None,
         }
+
     call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
@@ -2663,6 +2640,7 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
         ],
     )
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
+
     def fake_shell_ipc(command, payload=None, **kwargs):
         if command == "audioEndpointInventory":
             return {"success": True, "payload": {"available": False}, "errorCode": None, "fallbackReason": None}
@@ -2693,6 +2671,7 @@ async def test_audio_diagnostics_rust_probe_sends_selected_native_endpoint_hash(
             "errorCode": None,
             "fallbackReason": None,
         }
+
     call_mock = MagicMock(side_effect=fake_shell_ipc)
     monkeypatch.setattr(web_api, "call_shell_ipc", call_mock)
     loop = asyncio.get_running_loop()
@@ -2904,18 +2883,14 @@ async def test_input_warning_ignores_stale_session_and_malformed_actions():
     state = ctl.get_state()
     assert state["inputWarning"] == "Microphone input is very low."
     assert state["inputWarningCode"] == "mic_level_very_low"
-    assert state["inputWarningActions"] == [
-        {"id": "settings", "label": "Open settings", "uri": "/settings"}
-    ]
+    assert state["inputWarningActions"] == [{"id": "settings", "label": "Open settings", "uri": "/settings"}]
     payloads = [
         call.args[0]
         for call in broadcast_mock.await_args_list
         if call.args and isinstance(call.args[0], dict) and call.args[0].get("type") == "input_warning"
     ]
     assert payloads[-1]["sessionId"] == "current-session"
-    assert payloads[-1]["actions"] == [
-        {"id": "settings", "label": "Open settings", "uri": "/settings"}
-    ]
+    assert payloads[-1]["actions"] == [{"id": "settings", "label": "Open settings", "uri": "/settings"}]
 
 
 @pytest.mark.asyncio
@@ -3190,9 +3165,7 @@ async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypa
     monkeypatch.setattr(
         ctl,
         "_resume_idle_mic_prewarm_after_capture",
-        lambda: resume_states.append(
-            (ctl._is_stopping, getattr(ctl, "_live_mic_stop_owner", None))
-        ),
+        lambda: resume_states.append((ctl._is_stopping, getattr(ctl, "_live_mic_stop_owner", None))),
     )
 
     await ctl._emergency_stop_pipeline(session_id=session_id)
@@ -3316,9 +3289,7 @@ async def test_stop_listening_marks_failed_when_stop_raises():
         stop_error = await ctl.stop_listening()
 
     error_payloads = [
-        call.args[0]
-        for call in broadcast_mock.await_args_list
-        if call.args and call.args[0].get("type") == "error"
+        call.args[0] for call in broadcast_mock.await_args_list if call.args and call.args[0].get("type") == "error"
     ]
 
     assert rec.status == "failed"
@@ -3367,9 +3338,7 @@ async def test_stop_listening_suppresses_timeout_after_quiet_recording(monkeypat
         stop_error = await ctl.stop_listening()
 
     error_payloads = [
-        call.args[0]
-        for call in broadcast_mock.await_args_list
-        if call.args and call.args[0].get("type") == "error"
+        call.args[0] for call in broadcast_mock.await_args_list if call.args and call.args[0].get("type") == "error"
     ]
 
     assert stop_error is None
@@ -3417,9 +3386,7 @@ class _PrewarmAwarePipeline:
         self.mic_prewarm_manager = mic_prewarm_manager
         self.text_injection_enabled = kwargs.get("text_injection_enabled")
         self.execution_route = kwargs.get("execution_route")
-        self.speechmatics_capture_time_wav_enabled = kwargs.get(
-            "speechmatics_capture_time_wav_enabled"
-        )
+        self.speechmatics_capture_time_wav_enabled = kwargs.get("speechmatics_capture_time_wav_enabled")
         self.stop_gate = asyncio.Event()
         type(self).instances.append(self)
 
@@ -3687,16 +3654,12 @@ async def test_live_speechmatics_freezes_exact_production_wav_route(
         assert route["audio_selection_mode"] == "generated"
         assert route["audio_preparation_implementation"] == expected_implementation
         assert pipeline.speechmatics_capture_time_wav_enabled is expected_enabled
-        assert (
-            route["provider_audio_capability_id"]
-            == "speechmatics_async:batch_v2:enhanced"
-        )
+        assert route["provider_audio_capability_id"] == "speechmatics_async:batch_v2:enhanced"
         assert route["provider_audio_capability_revision"]
-        assert route["provider_endpoint_sha256"] == hashlib.sha256(
-            web_api.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode(
-                "utf-8"
-            )
-        ).hexdigest()
+        assert (
+            route["provider_endpoint_sha256"]
+            == hashlib.sha256(web_api.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode("utf-8")).hexdigest()
+        )
 
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
@@ -3805,9 +3768,7 @@ async def test_mic_watchdog_log_is_compact_while_snapshot_keeps_full_diagnostics
         "hasStream": False,
         "healthRestartCount": 2,
         "lastStartSuccess": False,
-        "recentEvents": [
-            {"event": "start_failed", "secretDetail": "not-for-the-log-message"}
-        ],
+        "recentEvents": [{"event": "start_failed", "secretDetail": "not-for-the-log-message"}],
     }
 
     ctl._log_mic_watchdog_warning(
@@ -3830,10 +3791,7 @@ async def test_mic_watchdog_log_is_compact_while_snapshot_keeps_full_diagnostics
         "lastStartSuccess": False,
         "restartCount": 2,
     }
-    assert (
-        ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"]
-        == diagnostics
-    )
+    assert ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"] == diagnostics
 
     ctl.shutdown()
 
@@ -4032,9 +3990,7 @@ async def test_early_pipeline_failure_releases_claim_and_temporary_prewarm(
 
     assert manager.resume_calls == 1
     assert manager.stop_calls == 1
-    assert manager.stop_reasons == [
-        "live_mic_pipeline_ended_before_audio_cleanup"
-    ]
+    assert manager.stop_reasons == ["live_mic_pipeline_ended_before_audio_cleanup"]
     assert manager.active is False
     assert ctl._persistent_audio_claim is None
     assert ctl._is_listening is False
@@ -4167,12 +4123,14 @@ async def test_live_start_trace_exists_before_first_audio_conflict_lookup():
             observed_snapshot.update(tracer.snapshot())
         raise RuntimeError("stop after inspecting trace boundary")
 
-    with patch(
-        "src.web_api._live_mic_audio_conflict",
-        side_effect=inspect_trace_before_lookup,
+    with (
+        patch(
+            "src.web_api._live_mic_audio_conflict",
+            side_effect=inspect_trace_before_lookup,
+        ),
+        pytest.raises(RuntimeError, match="trace boundary"),
     ):
-        with pytest.raises(RuntimeError, match="trace boundary"):
-            await ctl.start_listening()
+        await ctl.start_listening()
 
     assert observed_snapshot["markerNames"] == [
         "activation_received",
@@ -4343,9 +4301,7 @@ async def test_shutdown_during_cold_start_drains_transition_without_starting_pip
             asyncio.to_thread(import_started.wait, 1.0),
             timeout=1.5,
         )
-        drain_task = asyncio.create_task(
-            ctl.drain_background_tasks_for_shutdown(timeout_seconds=2.0)
-        )
+        drain_task = asyncio.create_task(ctl.drain_background_tasks_for_shutdown(timeout_seconds=2.0))
         await asyncio.sleep(0)
         finish_import.set()
         await asyncio.wait_for(drain_task, timeout=2.5)
@@ -4408,9 +4364,7 @@ async def test_shutdown_drain_joins_active_live_mic_stop_without_cancelling_it()
         assert background_stop is not None
         await asyncio.wait_for(stop_entered.wait(), timeout=1.0)
 
-        drain_task = asyncio.create_task(
-            ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
-        )
+        drain_task = asyncio.create_task(ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0))
         await asyncio.sleep(0)
         assert drain_task.done() is False
         assert background_stop.cancelled() is False

@@ -2,16 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SIDECAR_DIR = (
-    REPO_ROOT / "Frontend" / "src-tauri" / "target" / "release" / "backend"
-)
+DEFAULT_SIDECAR_DIR = REPO_ROOT / "Frontend" / "src-tauri" / "target" / "release" / "backend"
 DEFAULT_OUTPUT = (
     REPO_ROOT
     / "Frontend"
@@ -107,7 +103,12 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
     "pythonGuiRuntime": {
         "paths": ("_internal/customtkinter", "_internal/tkinter", "_internal/_tkinter.pyd", "_internal/pystray"),
         "requiredPaths": (),
-        "disallowedPaths": ("_internal/customtkinter", "_internal/tkinter", "_internal/_tkinter.pyd", "_internal/pystray"),
+        "disallowedPaths": (
+            "_internal/customtkinter",
+            "_internal/tkinter",
+            "_internal/_tkinter.pyd",
+            "_internal/pystray",
+        ),
         "reason": "Disallowed legacy Tk runtime; installed desktop UI is Tauri-owned",
     },
     "googleGrpc": {
@@ -135,7 +136,7 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="seconds")
 
 
 def size_mb(size_bytes: int) -> float:
@@ -162,18 +163,14 @@ def summarize_file(path: Path, *, relative_to: Path) -> dict[str, Any]:
 def summarize_existing_path(path: Path, *, relative_to: Path, top_files_limit: int) -> dict[str, Any]:
     files = iter_files(path)
     total_bytes = sum(item.stat().st_size for item in files)
-    top_files = sorted(files, key=lambda item: item.stat().st_size, reverse=True)[
-        :top_files_limit
-    ]
+    top_files = sorted(files, key=lambda item: item.stat().st_size, reverse=True)[:top_files_limit]
     return {
         "path": str(path.relative_to(relative_to)),
         "exists": path.exists(),
         "fileCount": len(files),
         "totalBytes": total_bytes,
         "totalMb": size_mb(total_bytes),
-        "topFiles": [
-            summarize_file(item, relative_to=relative_to) for item in top_files
-        ],
+        "topFiles": [summarize_file(item, relative_to=relative_to) for item in top_files],
     }
 
 
@@ -217,14 +214,8 @@ def summarize_dependency(
             )
 
     total_bytes = sum(item.stat().st_size for item in all_files)
-    top_files = sorted(all_files, key=lambda item: item.stat().st_size, reverse=True)[
-        :top_files_limit
-    ]
-    missing_required = [
-        relative
-        for relative in group["requiredPaths"]
-        if not (internal_dir / relative).exists()
-    ]
+    top_files = sorted(all_files, key=lambda item: item.stat().st_size, reverse=True)[:top_files_limit]
+    missing_required = [relative for relative in group["requiredPaths"] if not (internal_dir / relative).exists()]
     disallowed_paths = [
         summarize_existing_path(
             internal_dir / relative,
@@ -250,9 +241,7 @@ def summarize_dependency(
         "disallowedPaths": disallowed_paths,
         "budget": budget,
         "paths": path_entries,
-        "topFiles": [
-            summarize_file(item, relative_to=internal_dir) for item in top_files
-        ],
+        "topFiles": [summarize_file(item, relative_to=internal_dir) for item in top_files],
     }
 
 
@@ -305,14 +294,8 @@ def summarize_component(
             )
 
     total_bytes = sum(item.stat().st_size for item in all_files)
-    top_files = sorted(all_files, key=lambda item: item.stat().st_size, reverse=True)[
-        :top_files_limit
-    ]
-    missing_required = [
-        relative
-        for relative in group["requiredPaths"]
-        if not (sidecar_dir / relative).exists()
-    ]
+    top_files = sorted(all_files, key=lambda item: item.stat().st_size, reverse=True)[:top_files_limit]
+    missing_required = [relative for relative in group["requiredPaths"] if not (sidecar_dir / relative).exists()]
     disallowed_paths = [
         summarize_disallowed_sidecar_path(
             sidecar_dir / relative,
@@ -333,9 +316,7 @@ def summarize_component(
         "disallowedPaths": disallowed_paths,
         "budget": evaluate_budget(total_mb, max_mb),
         "paths": path_entries,
-        "topFiles": [
-            summarize_file(item, relative_to=sidecar_dir) for item in top_files
-        ],
+        "topFiles": [summarize_file(item, relative_to=sidecar_dir) for item in top_files],
     }
 
 
@@ -447,40 +428,20 @@ def build_report(
     total_bytes = components["backend"]["totalBytes"]
     total_mb = size_mb(total_bytes)
     total_budget = evaluate_budget(total_mb, max_total_mb)
-    missing = [
-        f"{name}:{relative}"
-        for name, item in dependencies.items()
-        for relative in item["missingRequiredPaths"]
-    ]
-    budget_failures = [
-        name
-        for name, item in dependencies.items()
-        if item["budget"]["withinBudget"] is False
-    ]
+    missing = [f"{name}:{relative}" for name, item in dependencies.items() for relative in item["missingRequiredPaths"]]
+    budget_failures = [name for name, item in dependencies.items() if item["budget"]["withinBudget"] is False]
     disallowed = [
-        f"{name}:{item['path']}"
-        for name, dependency in dependencies.items()
-        for item in dependency["disallowedPaths"]
+        f"{name}:{item['path']}" for name, dependency in dependencies.items() for item in dependency["disallowedPaths"]
     ]
-    unexpected_present = [
-        name for name, item in dependencies.items() if item["unexpectedPresent"]
-    ]
+    unexpected_present = [name for name, item in dependencies.items() if item["unexpectedPresent"]]
     if total_budget["withinBudget"] is False:
         budget_failures.append("total")
     component_missing = [
-        f"{name}:{relative}"
-        for name, item in components.items()
-        for relative in item["missingRequiredPaths"]
+        f"{name}:{relative}" for name, item in components.items() for relative in item["missingRequiredPaths"]
     ]
-    component_budget_failures = [
-        name
-        for name, item in components.items()
-        if item["budget"]["withinBudget"] is False
-    ]
+    component_budget_failures = [name for name, item in components.items() if item["budget"]["withinBudget"] is False]
     component_disallowed = [
-        f"{name}:{item['path']}"
-        for name, component in components.items()
-        for item in component["disallowedPaths"]
+        f"{name}:{item['path']}" for name, component in components.items() for item in component["disallowedPaths"]
     ]
 
     return {
@@ -514,9 +475,7 @@ def build_report(
             "scipy": dependencies["scipy"]["budget"],
             "onnxruntime": dependencies["onnxruntime"]["budget"],
             "total": total_budget,
-            "components": {
-                name: item["budget"] for name, item in components.items()
-            },
+            "components": {name: item["budget"] for name, item in components.items()},
         },
         "dependencies": dependencies,
         "components": components,

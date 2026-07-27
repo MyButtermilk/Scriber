@@ -100,4 +100,3 @@ async def test_retry_scheduler_coalesces_requests_while_trigger_is_running():
     release_first.set()
     await asyncio.sleep(0.04)
     assert calls == 2
-

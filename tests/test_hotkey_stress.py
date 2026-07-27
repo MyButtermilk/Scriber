@@ -83,9 +83,7 @@ class _FakeKeyboard:
 @pytest.fixture(autouse=True)
 def _fake_live_provider_readiness(monkeypatch):
     """Keep lifecycle stress tests independent of local provider credentials."""
-    monkeypatch.setattr(
-        ScriberWebController, "_select_available_provider", lambda _self: "openai"
-    )
+    monkeypatch.setattr(ScriberWebController, "_select_available_provider", lambda _self: "openai")
     monkeypatch.setattr(
         ScriberWebController,
         "_validate_live_provider_ready",
@@ -104,10 +102,7 @@ def _assert_controller_clean(ctl: ScriberWebController) -> None:
 def _assert_pipeline_invariants() -> None:
     assert _StressFakePipeline.instances
     assert all(p.stats.start_calls <= 1 for p in _StressFakePipeline.instances)
-    assert all(
-        p.stats.start_calls == 1 or p.stats.stop_calls == 1
-        for p in _StressFakePipeline.instances
-    )
+    assert all(p.stats.start_calls == 1 or p.stats.stop_calls == 1 for p in _StressFakePipeline.instances)
     assert all(p.stats.stop_calls <= 1 for p in _StressFakePipeline.instances)
     assert all(p.stats.injected for p in _StressFakePipeline.instances)
 
@@ -202,10 +197,7 @@ async def test_tauri_hotkey_start_spam_during_initializing_creates_single_record
             first_response_task = asyncio.create_task(client.post("/api/live-mic/toggle"))
             await asyncio.wait_for(pause_entered.wait(), timeout=1.0)
 
-            burst_response_tasks = [
-                asyncio.create_task(client.post("/api/live-mic/toggle"))
-                for _ in range(24)
-            ]
+            burst_response_tasks = [asyncio.create_task(client.post("/api/live-mic/toggle")) for _ in range(24)]
             await asyncio.sleep(0.01)
             release_start.set()
 

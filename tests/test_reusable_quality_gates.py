@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 QUALITY_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "quality-gates.yml"
 RELEASE_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-windows.yml"

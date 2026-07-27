@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from datetime import UTC
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 
 from src import database
 from src.outlook_calendar import (
-    OutlookCalendarService,
-    OutlookReauthorizationRequired,
     REAUTHORIZATION_REQUIRED_ERROR,
     SCOPES,
-    _GraphUnauthorized,
+    OutlookCalendarService,
+    OutlookReauthorizationRequired,
     _delta_window_needs_reseed,
     _graph_datetime_utc,
+    _GraphUnauthorized,
     _normalize_public_client_id,
     create_pkce_pair,
 )
@@ -64,11 +65,13 @@ def test_public_client_id_requires_a_non_nil_canonical_guid():
 
 
 def test_account_identity_preserves_mail_and_upn_aliases():
-    assert OutlookCalendarService._account_payload({
-        "displayName": "Guest User",
-        "mail": "guest@external.example",
-        "userPrincipalName": "guest_external.example#ext#@tenant.example",
-    }) == {
+    assert OutlookCalendarService._account_payload(
+        {
+            "displayName": "Guest User",
+            "mail": "guest@external.example",
+            "userPrincipalName": "guest_external.example#ext#@tenant.example",
+        }
+    ) == {
         "name": "Guest User",
         "address": "guest@external.example",
         "aliases": [
@@ -82,9 +85,7 @@ def test_system_browser_redirect_uses_registered_localhost_path(service, monkeyp
     calendar, _calls = service
     monkeypatch.setenv("SCRIBER_WEB_PORT", "49152")
 
-    assert calendar.redirect_uri() == (
-        "http://localhost:49152/api/calendar/outlook/callback"
-    )
+    assert calendar.redirect_uri() == ("http://localhost:49152/api/calendar/outlook/callback")
 
 
 @pytest.mark.asyncio
@@ -117,10 +118,8 @@ async def test_status_reads_credential_state_without_exposing_tokens(service):
 
 
 @pytest.mark.asyncio
-async def test_invalid_grant_requires_reauthorization_without_deleting_cached_events(
-    monkeypatch, tmp_path
-):
-    from datetime import datetime, timedelta, timezone
+async def test_invalid_grant_requires_reauthorization_without_deleting_cached_events(monkeypatch, tmp_path):
+    from datetime import datetime, timedelta
 
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-reauth.db")
@@ -135,16 +134,12 @@ async def test_invalid_grant_requires_reauthorization_without_deleting_cached_ev
             return {
                 "success": False,
                 "errorCode": "outlookTokenAcquireFailed",
-                "fallbackReason": (
-                    "Outlook token endpoint rejected the request (invalid_grant)"
-                ),
+                "fallbackReason": ("Outlook token endpoint rejected the request (invalid_grant)"),
             }
         raise AssertionError(command)
 
-    calendar = OutlookCalendarService(
-        shell_call, "11111111-1111-1111-1111-111111111111"
-    )
-    now = datetime.now(timezone.utc)
+    calendar = OutlookCalendarService(shell_call, "11111111-1111-1111-1111-111111111111")
+    now = datetime.now(UTC)
     with database._get_connection() as conn:
         conn.execute(
             "UPDATE outlook_calendar_state SET last_sync_at=?,account_json=? WHERE id=1",
@@ -176,16 +171,12 @@ async def test_invalid_grant_requires_reauthorization_without_deleting_cached_ev
     assert "invalid_grant" not in status["lastError"]
     assert status["account"]["address"] == "alex@example.com"
     assert status["nextEvent"]["id"] == "cached-event"
-    assert database._get_connection().execute(
-        "SELECT COUNT(*) FROM outlook_calendar_events"
-    ).fetchone()[0] == 1
+    assert database._get_connection().execute("SELECT COUNT(*) FROM outlook_calendar_events").fetchone()[0] == 1
     database._close_all_connections()
 
 
 @pytest.mark.asyncio
-async def test_two_graph_unauthorized_responses_require_reauthorization(
-    service, monkeypatch
-):
+async def test_two_graph_unauthorized_responses_require_reauthorization(service, monkeypatch):
     calendar, _calls = service
     attempts = 0
 
@@ -223,17 +214,28 @@ async def test_cancelled_reconnect_does_not_restore_a_false_connected_state(serv
 
 def test_graph_datetime_is_stored_as_offset_aware_utc():
     assert _graph_datetime_utc({"dateTime": "2026-10-25T01:30:00", "timeZone": "UTC"}) == "2026-10-25T01:30:00+00:00"
-    assert _graph_datetime_utc({"dateTime": "2026-10-25T02:30:00+01:00", "timeZone": "UTC"}) == "2026-10-25T01:30:00+00:00"
-    assert _graph_datetime_utc({"dateTime": "2026-07-12T09:00:00", "timeZone": "W. Europe Standard Time"}) == "2026-07-12T07:00:00+00:00"
-    assert _graph_datetime_utc({"dateTime": "2026-01-12T09:00:00", "timeZone": "W. Europe Standard Time"}) == "2026-01-12T08:00:00+00:00"
-    assert _graph_datetime_utc({"dateTime": "2026-10-25T09:00:00", "timeZone": "W. Europe Standard Time"}) == "2026-10-25T08:00:00+00:00"
+    assert (
+        _graph_datetime_utc({"dateTime": "2026-10-25T02:30:00+01:00", "timeZone": "UTC"}) == "2026-10-25T01:30:00+00:00"
+    )
+    assert (
+        _graph_datetime_utc({"dateTime": "2026-07-12T09:00:00", "timeZone": "W. Europe Standard Time"})
+        == "2026-07-12T07:00:00+00:00"
+    )
+    assert (
+        _graph_datetime_utc({"dateTime": "2026-01-12T09:00:00", "timeZone": "W. Europe Standard Time"})
+        == "2026-01-12T08:00:00+00:00"
+    )
+    assert (
+        _graph_datetime_utc({"dateTime": "2026-10-25T09:00:00", "timeZone": "W. Europe Standard Time"})
+        == "2026-10-25T08:00:00+00:00"
+    )
     assert _graph_datetime_utc({"dateTime": "2026-10-25T01:30:00", "timeZone": "Unknown Windows Zone"}) == ""
 
 
 def test_delta_window_reseeds_before_the_forward_horizon_expires():
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    now = datetime(2026, 7, 12, tzinfo=timezone.utc)
+    now = datetime(2026, 7, 12, tzinfo=UTC)
     assert _delta_window_needs_reseed("", now)
     assert _delta_window_needs_reseed((now + timedelta(days=6)).isoformat(), now)
     assert not _delta_window_needs_reseed((now + timedelta(days=8)).isoformat(), now)
@@ -268,9 +270,7 @@ async def test_disconnect_preserves_local_state_when_shell_deletion_fails(monkey
 
 
 @pytest.mark.asyncio
-async def test_disconnect_is_idempotent_and_clears_all_local_account_state(
-    monkeypatch, tmp_path
-):
+async def test_disconnect_is_idempotent_and_clears_all_local_account_state(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-disconnect.db")
     database.init_database()
@@ -293,9 +293,7 @@ async def test_disconnect_is_idempotent_and_clears_all_local_account_state(
             }
         raise AssertionError(command)
 
-    calendar = OutlookCalendarService(
-        shell_call, "11111111-1111-1111-1111-111111111111"
-    )
+    calendar = OutlookCalendarService(shell_call, "11111111-1111-1111-1111-111111111111")
     calendar._access_token = "access-token"
     calendar._access_token_expires_at = 99_999_999.0
     calendar.begin_connect(open_browser=False)
@@ -334,12 +332,8 @@ async def test_disconnect_is_idempotent_and_clears_all_local_account_state(
     assert calendar._access_token_expires_at == 0.0
     assert calendar.authorization_pending is False
     conn = database._get_connection()
-    assert conn.execute(
-        "SELECT COUNT(*) FROM outlook_calendar_events"
-    ).fetchone()[0] == 0
-    state = conn.execute(
-        "SELECT * FROM outlook_calendar_state WHERE id=1"
-    ).fetchone()
+    assert conn.execute("SELECT COUNT(*) FROM outlook_calendar_events").fetchone()[0] == 0
+    state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
     assert state["delta_link"] == ""
     assert state["window_start"] == ""
     assert state["window_end"] == ""
@@ -350,12 +344,15 @@ async def test_disconnect_is_idempotent_and_clears_all_local_account_state(
     assert status["connected"] is False
     assert status["account"] is None
     assert status["nextEvent"] is None
-    assert calendar.events_for_day(
-        day_value="2026-07-14",
-        time_zone_name="Europe/Berlin",
-        start_value="2026-07-13T22:00:00Z",
-        end_value="2026-07-14T22:00:00Z",
-    )["items"] == []
+    assert (
+        calendar.events_for_day(
+            day_value="2026-07-14",
+            time_zone_name="Europe/Berlin",
+            start_value="2026-07-13T22:00:00Z",
+            end_value="2026-07-14T22:00:00Z",
+        )["items"]
+        == []
+    )
     database._close_all_connections()
 
 
@@ -366,9 +363,7 @@ async def test_callback_waiting_for_mutation_lane_revalidates_canceled_state(ser
     state = parse_qs(urlparse(started["authorizationUrl"]).query)["state"][0]
 
     async with calendar._mutation_lock:
-        completion = asyncio.create_task(
-            calendar.complete_connect(state, "authorization-code")
-        )
+        completion = asyncio.create_task(calendar.complete_connect(state, "authorization-code"))
         await asyncio.sleep(0)
         calendar.cancel_connect(state)
 
@@ -378,9 +373,7 @@ async def test_callback_waiting_for_mutation_lane_revalidates_canceled_state(ser
 
 
 @pytest.mark.asyncio
-async def test_cancel_during_shell_exchange_deletes_the_stale_new_credential(
-    monkeypatch, tmp_path
-):
+async def test_cancel_during_shell_exchange_deletes_the_stale_new_credential(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "outlook-cancel-race.db")
     database.init_database()
@@ -408,14 +401,10 @@ async def test_cancel_during_shell_exchange_deletes_the_stale_new_credential(
             }
         raise AssertionError(command)
 
-    calendar = OutlookCalendarService(
-        shell_call, "11111111-1111-1111-1111-111111111111"
-    )
+    calendar = OutlookCalendarService(shell_call, "11111111-1111-1111-1111-111111111111")
     started = calendar.begin_connect(open_browser=False)
     state = parse_qs(urlparse(started["authorizationUrl"]).query)["state"][0]
-    completion = asyncio.create_task(
-        calendar.complete_connect(state, "authorization-code")
-    )
+    completion = asyncio.create_task(calendar.complete_connect(state, "authorization-code"))
     assert await asyncio.to_thread(exchange_entered.wait, 1.0)
     calendar.cancel_connect(state)
     exchange_release.set()
@@ -474,14 +463,17 @@ async def test_pending_authorization_hides_previous_account_and_events(service):
 
 @pytest.mark.asyncio
 async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     calendar, _calls = service
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     with database._get_connection() as conn:
         conn.execute(
             "UPDATE outlook_calendar_state SET delta_link=?,window_end=? WHERE id=1",
-            ("https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=old", (now - timedelta(days=1)).isoformat()),
+            (
+                "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=old",
+                (now - timedelta(days=1)).isoformat(),
+            ),
         )
         conn.execute(
             "INSERT INTO outlook_calendar_events(id,start_at,end_at,updated_at) VALUES (?,?,?,?)",
@@ -491,11 +483,17 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
 
     event_start = now + timedelta(days=20)
     payload = {
-        "value": [{
-            "id": "future", "subject": "Future planning",
-            "start": {"dateTime": event_start.replace(tzinfo=None).isoformat(), "timeZone": "UTC"},
-            "end": {"dateTime": (event_start + timedelta(hours=1)).replace(tzinfo=None).isoformat(), "timeZone": "UTC"},
-        }],
+        "value": [
+            {
+                "id": "future",
+                "subject": "Future planning",
+                "start": {"dateTime": event_start.replace(tzinfo=None).isoformat(), "timeZone": "UTC"},
+                "end": {
+                    "dateTime": (event_start + timedelta(hours=1)).replace(tzinfo=None).isoformat(),
+                    "timeZone": "UTC",
+                },
+            }
+        ],
         "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=new",
     }
 
@@ -518,11 +516,13 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
         def get(self, url, **_kwargs):
             self.urls.append(url)
             if "/v1.0/me?" in url:
-                return ResponseWithPayload({
-                    "displayName": "Alex Example",
-                    "mail": "alex@example.com",
-                    "userPrincipalName": "alex@example.com",
-                })
+                return ResponseWithPayload(
+                    {
+                        "displayName": "Alex Example",
+                        "mail": "alex@example.com",
+                        "userPrincipalName": "alex@example.com",
+                    }
+                )
             return Response()
 
     class ResponseWithPayload(Response):
@@ -539,9 +539,11 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
     assert "$deltatoken=old" not in delta_url
     assert "startDateTime=" in delta_url
     assert "%24select=" not in delta_url
-    rows = database._get_connection().execute(
-        "SELECT id,start_at,end_at FROM outlook_calendar_events ORDER BY id"
-    ).fetchall()
+    rows = (
+        database._get_connection()
+        .execute("SELECT id,start_at,end_at FROM outlook_calendar_events ORDER BY id")
+        .fetchall()
+    )
     assert [row["id"] for row in rows] == ["future"]
     assert rows[0]["start_at"].endswith("+00:00")
 
@@ -678,10 +680,10 @@ def test_browser_supplied_day_boundaries_preserve_dst_without_tzdata(service):
 
 
 def test_current_event_prefers_active_then_upcoming_then_recent_over_all_day(service):
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     calendar, _calls = service
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     rows = [
         (
             "all-day",

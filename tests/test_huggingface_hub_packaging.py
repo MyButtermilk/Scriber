@@ -14,14 +14,11 @@ from backend_runtime.huggingface_hub_policy import (
     HUGGINGFACE_HUB_UNUSED_MODULE_PREFIXES,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_backend_spec_freezes_only_required_huggingface_lazy_surfaces() -> None:
-    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
 
     assert "HUGGINGFACE_HUB_REQUIRED_HIDDEN_IMPORTS" in spec
     assert "HUGGINGFACE_HUB_EXCLUDED_MODULES" in spec
@@ -42,9 +39,7 @@ def test_backend_spec_freezes_only_required_huggingface_lazy_surfaces() -> None:
 def test_frozen_huggingface_hook_forces_http_fallback(monkeypatch) -> None:
     monkeypatch.setenv("HF_HUB_DISABLE_XET", "0")
 
-    runpy.run_path(
-        str(REPO_ROOT / "backend_runtime" / "pyinstaller_huggingface_runtime_hook.py")
-    )
+    runpy.run_path(str(REPO_ROOT / "backend_runtime" / "pyinstaller_huggingface_runtime_hook.py"))
 
     assert os.environ["HF_HUB_DISABLE_XET"] == "1"
 
@@ -199,9 +194,7 @@ def test_required_hub_apis_work_without_excluded_lazy_surfaces(tmp_path: Path) -
         """
     )
     env = os.environ.copy()
-    env["SCRIBER_HF_EXCLUDED_MODULES"] = json.dumps(
-        list(HUGGINGFACE_HUB_EXCLUDED_MODULES)
-    )
+    env["SCRIBER_HF_EXCLUDED_MODULES"] = json.dumps(list(HUGGINGFACE_HUB_EXCLUDED_MODULES))
     env["SCRIBER_HF_CACHE_DIR"] = str(tmp_path / "hub")
     result = subprocess.run(
         [sys.executable, "-c", script],

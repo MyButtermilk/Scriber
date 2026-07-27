@@ -1,13 +1,15 @@
-import unittest
-from unittest.mock import MagicMock, AsyncMock, patch
 import asyncio
-from src.injector import TextInjector
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
 from pipecat.frames.frames import (
-    TranscriptionFrame,
-    InterimTranscriptionFrame,
-    TextFrame,
     EndFrame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
 )
+
+from src.injector import TextInjector
+
 
 class TestInjector(unittest.TestCase):
     def test_injection(self):
@@ -16,8 +18,9 @@ class TestInjector(unittest.TestCase):
         frame = TranscriptionFrame(text="Hello world", user_id="user", timestamp="now")
 
         # Mock injection to avoid OS-level side effects
-        with patch.object(injector, "_inject_text") as mock_inject, patch.object(
-            injector, "push_frame", new=AsyncMock()
+        with (
+            patch.object(injector, "_inject_text") as mock_inject,
+            patch.object(injector, "push_frame", new=AsyncMock()),
         ):
             # We need to run the async method
             async def run():
@@ -32,9 +35,12 @@ class TestInjector(unittest.TestCase):
         injector = TextInjector()
         frame = TranscriptionFrame(text="Hello world", user_id="user", timestamp="now")
 
-        with patch('src.injector.logger') as mock_logger, patch.object(
-            injector, "_inject_text"
-        ), patch.object(injector, "push_frame", new=AsyncMock()):
+        with (
+            patch("src.injector.logger") as mock_logger,
+            patch.object(injector, "_inject_text"),
+            patch.object(injector, "push_frame", new=AsyncMock()),
+        ):
+
             async def run():
                 await injector.process_frame(frame, MagicMock())
                 await injector.process_frame(EndFrame(), MagicMock())
@@ -51,22 +57,20 @@ class TestInjector(unittest.TestCase):
         def record_injection(text: str):
             injected_texts.append(text)
 
-        with patch.object(injector, "_inject_text", side_effect=record_injection), patch.object(
-            injector, "push_frame", new=AsyncMock()
+        with (
+            patch.object(injector, "_inject_text", side_effect=record_injection),
+            patch.object(injector, "push_frame", new=AsyncMock()),
         ):
+
             async def run():
-                frame = TranscriptionFrame(
-                    text="hello world", user_id="user", timestamp="now"
-                )
+                frame = TranscriptionFrame(text="hello world", user_id="user", timestamp="now")
                 await injector.process_frame(frame, MagicMock())
 
                 # First flush injects buffered text
                 await injector.process_frame(EndFrame(), MagicMock())
 
                 # Late/duplicate frame after flush should be deduplicated
-                late_frame = TranscriptionFrame(
-                    text="hello world", user_id="user", timestamp="later"
-                )
+                late_frame = TranscriptionFrame(text="hello world", user_id="user", timestamp="later")
                 await injector.process_frame(late_frame, MagicMock())
                 await injector.process_frame(EndFrame(), MagicMock())
 
@@ -77,15 +81,17 @@ class TestInjector(unittest.TestCase):
     def test_injection_failure_does_not_raise_from_flush(self):
         injector = TextInjector(inject_immediately=False)
 
-        with patch.object(
-            injector,
-            "_inject_text",
-            side_effect=OverflowError("int too long to convert"),
-        ), patch.object(injector, "push_frame", new=AsyncMock()) as push_frame:
+        with (
+            patch.object(
+                injector,
+                "_inject_text",
+                side_effect=OverflowError("int too long to convert"),
+            ),
+            patch.object(injector, "push_frame", new=AsyncMock()) as push_frame,
+        ):
+
             async def run():
-                frame = TranscriptionFrame(
-                    text="hello world", user_id="user", timestamp="now"
-                )
+                frame = TranscriptionFrame(text="hello world", user_id="user", timestamp="now")
                 await injector.process_frame(frame, MagicMock())
                 await injector.process_frame(EndFrame(), MagicMock())
 
@@ -97,11 +103,15 @@ class TestInjector(unittest.TestCase):
         injector = TextInjector(inject_immediately=False)
         injected_texts = []
 
-        with patch.object(
-            injector,
-            "_inject_text",
-            side_effect=injected_texts.append,
-        ), patch.object(injector, "push_frame", new=AsyncMock()):
+        with (
+            patch.object(
+                injector,
+                "_inject_text",
+                side_effect=injected_texts.append,
+            ),
+            patch.object(injector, "push_frame", new=AsyncMock()),
+        ):
+
             async def run():
                 await injector.process_frame(
                     InterimTranscriptionFrame(

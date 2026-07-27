@@ -15,16 +15,8 @@ from scripts.validate_installer_youtube_holdouts import (
     require_baseline_environment_root,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURE = (
-    REPO_ROOT
-    / "scripts"
-    / "perf"
-    / "profiles"
-    / "installer-size"
-    / "youtube-holdouts.json"
-)
+FIXTURE = REPO_ROOT / "scripts" / "perf" / "profiles" / "installer-size" / "youtube-holdouts.json"
 
 
 def test_frozen_holdouts_are_distinct_pending_public_routes() -> None:
@@ -56,10 +48,7 @@ def test_capabilities_require_observed_deno_jsc_and_route_shapes() -> None:
         "live_status": "was_live",
         "was_live": True,
     }
-    debug = (
-        '[youtube] Downloading player 123-main\n'
-        '[youtube] [jsc:deno] Solving JS challenges using deno\n'
-    )
+    debug = "[youtube] Downloading player 123-main\n[youtube] [jsc:deno] Solving JS challenges using deno\n"
 
     observed, details = observed_capabilities(
         family="signature-challenge",
@@ -94,10 +83,7 @@ def test_capabilities_do_not_claim_a_solved_challenge_without_signed_media() -> 
                 }
             ],
         },
-        debug_log=(
-            '[youtube] Downloading player 123-main\n'
-            '[youtube] [jsc:deno] Solving JS challenges using deno\n'
-        ),
+        debug_log=("[youtube] Downloading player 123-main\n[youtube] [jsc:deno] Solving JS challenges using deno\n"),
     )
 
     assert "deno-jsc" in observed
@@ -182,9 +168,7 @@ def test_probe_disables_plugins_and_sanitizes_python_environment(
     }
     captured: dict[str, object] = {}
 
-    def fake_run(
-        command: list[str], **kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         captured["command"] = command
         captured["environment"] = kwargs.get("env")
         return subprocess.CompletedProcess(
@@ -209,9 +193,7 @@ def test_probe_disables_plugins_and_sanitizes_python_environment(
     assert isinstance(environment, dict)
     assert command.count("--no-plugin-dirs") == 1
     assert command[command.index("--js-runtimes") + 1] == f"deno:{deno_executable}"
-    assert all(
-        name not in environment for name in holdouts.PROBE_ENVIRONMENT_REMOVALS
-    )
+    assert all(name not in environment for name in holdouts.PROBE_ENVIRONMENT_REMOVALS)
     assert environment["PATH"] == "preserved"
     assert environment["YTDLP_NO_PLUGINS"] == "1"
     assert environment["PYTHONNOUSERSITE"] == "1"

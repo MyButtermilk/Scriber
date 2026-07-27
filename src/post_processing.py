@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import re
 import time
 from typing import Any
@@ -8,8 +7,8 @@ from typing import Any
 from loguru import logger
 
 from src.config import Config
-from src.summarization import generate_text_with_model
 from src.runtime.env_values import env_float, env_int
+from src.summarization import generate_text_with_model
 
 _OUTPUT_PLACEHOLDER = "${output}"
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)

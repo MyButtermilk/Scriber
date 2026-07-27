@@ -26,4 +26,3 @@ def test_circuit_breaker_opens_then_allows_half_open_after_cooldown():
     snap = breaker.snapshot("soniox")
     assert snap.state == CircuitState.CLOSED
     assert snap.consecutive_failures == 0
-

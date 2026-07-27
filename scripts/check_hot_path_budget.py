@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import sys
 
 from src.core.golden_trace import evaluate_golden_trace
 from src.data.latency_metrics_store import LatencyMetricsStore
@@ -57,4 +56,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

@@ -21,6 +21,8 @@ from src.core.rest_contracts import (
     validate_provider_replay_prepare_request_payload,
     validate_provider_replay_status_query,
 )
+from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
+from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_replay import (
     LocalSonioxReplayServer,
     ProviderReplayConflict,
@@ -35,10 +37,7 @@ from src.runtime.provider_replay import (
     provider_replay_fixture_duration_ms_from_environment,
     windows_qpc_snapshot,
 )
-from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
-from src.runtime.media_tools import find_media_tool
 from src.web_api import ScriberWebController
-
 
 RUN_ID = "7de1a48651d44f859042b7cbcb30da52"
 OTHER_RUN_ID = "8f793212ad894cbdac1118c373788aa5"
@@ -46,8 +45,7 @@ SAMPLE_ID = UUID("2b3022ee-3f40-4333-a115-6da089a24962")
 SECOND_SAMPLE_ID = UUID("3d4054ff-5041-4444-b226-7eb190b35a73")
 SESSION_ID = "4e51660061524555c3378fc2a1c46b84"
 AZURE_REPLAY_URL = (
-    "https://northeurope.api.cognitive.microsoft.com/"
-    "speechtotext/transcriptions:transcribe?api-version=2025-10-15"
+    "https://northeurope.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
 )
 AZURE_REPLAY_DEFINITION = {
     "enhancedMode": {"enabled": True, "model": "mai-transcribe-1.5"},
@@ -73,10 +71,7 @@ def enabled_gate(*, backend_creation: int = 11) -> ProviderReplayRuntimeGate:
 def _fixture_pcm(duration_ms: int, *, frequency_hz: float = 440.0) -> bytes:
     frame_count = 48_000 * duration_ms // 1000
     return b"".join(
-        int(
-            12_000
-            * math.sin((2.0 * math.pi * frequency_hz * index) / 48_000)
-        ).to_bytes(2, "little", signed=True)
+        int(12_000 * math.sin((2.0 * math.pi * frequency_hz * index) / 48_000)).to_bytes(2, "little", signed=True)
         for index in range(frame_count)
     )
 
@@ -100,9 +95,7 @@ async def _encode_fixture_mp3_or_skip(pcm: bytes) -> bytes:
             check=False,
             timeout=30,
         )
-        assert result.returncode == 0, result.stderr.decode(
-            "utf-8", errors="replace"
-        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
         assert result.stdout
         return result.stdout
 
@@ -239,14 +232,8 @@ def test_provider_replay_audio_preparation_defaults_off(monkeypatch):
     monkeypatch.delenv("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", raising=False)
     monkeypatch.delenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", raising=False)
 
-    assert (
-        web_api._provider_replay_audio_preparation_snapshot("microsoft")
-        == "post_stop_ffmpeg_mp3_v1"
-    )
-    assert (
-        web_api._provider_replay_audio_preparation_snapshot("speechmatics")
-        == "python_reserved_wav_header_v1"
-    )
+    assert web_api._provider_replay_audio_preparation_snapshot("microsoft") == "post_stop_ffmpeg_mp3_v1"
+    assert web_api._provider_replay_audio_preparation_snapshot("speechmatics") == "python_reserved_wav_header_v1"
 
 
 def test_registry_is_one_active_sample_and_arm_is_one_shot():
@@ -305,9 +292,7 @@ def test_arm_binds_target_process_generation_without_exposing_raw_identity():
         target_process_id=999,
         target_creation_time_100ns=123457,
     )
-    assert first_status["targetGenerationSha256"] != second_status[
-        "targetGenerationSha256"
-    ]
+    assert first_status["targetGenerationSha256"] != second_status["targetGenerationSha256"]
     assert "targetProcessId" not in first_status
     assert "targetCreationTime100ns" not in first_status
 
@@ -538,9 +523,7 @@ def test_capture_attestation_is_bound_and_allowlisted_before_completion():
     assert capture["runId"] == sample["runId"]
     assert capture["sampleId"] == sample["sampleId"]
     assert capture["sessionId"] == UUID(SESSION_ID).hex
-    assert capture["processGenerationFingerprint"] == (
-        enabled_gate().process_generation_fingerprint
-    )
+    assert capture["processGenerationFingerprint"] == (enabled_gate().process_generation_fingerprint)
     assert capture["source"] == "rust_audio_frame_pipe_reader"
     assert "path" not in capture
     armed = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
@@ -594,17 +577,11 @@ def test_audio_preparation_attestation_is_expected_actual_and_one_shot():
     execution.bind_session(SESSION_ID)
 
     with pytest.raises(ProviderReplayConflict, match="mismatch"):
-        execution.attach_audio_preparation_attestation(
-            "python_reserved_wav_header_v1"
-        )
+        execution.attach_audio_preparation_attestation("python_reserved_wav_header_v1")
     execution.attach_audio_preparation_attestation("wav_pcm16_file_v1")
     status = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
-    assert status["audioPreparationImplementationExpected"] == (
-        "wav_pcm16_file_v1"
-    )
-    assert status["audioPreparationImplementationActual"] == (
-        "wav_pcm16_file_v1"
-    )
+    assert status["audioPreparationImplementationExpected"] == ("wav_pcm16_file_v1")
+    assert status["audioPreparationImplementationActual"] == ("wav_pcm16_file_v1")
     with pytest.raises(ProviderReplayConflict, match="already recorded"):
         execution.attach_audio_preparation_attestation("wav_pcm16_file_v1")
 
@@ -656,9 +633,7 @@ async def test_microsoft_replay_transport_validates_baseline_and_candidate_mp3(
     }
     status, raw = await transport(**kwargs)
     assert status == 200
-    assert json.loads(raw)["combinedPhrases"][0]["text"] == (
-        "Scriber deterministic Microsoft provider replay."
-    )
+    assert json.loads(raw)["combinedPhrases"][0]["text"] == ("Scriber deterministic Microsoft provider replay.")
     assert validated == [preparation]
     with pytest.raises(RuntimeError, match="one-shot"):
         await transport(**kwargs)
@@ -686,31 +661,21 @@ async def test_microsoft_replay_transport_rejects_unbound_mp3_without_attestatio
     pcm = _fixture_pcm(duration_ms)
     fixture_path = tmp_path / "fixture.pcm"
     fixture_path.write_bytes(
-        _fixture_pcm(duration_ms, frequency_hz=880.0)
-        if invalid_kind == "fixture_digest_mismatch"
-        else pcm
+        _fixture_pcm(duration_ms, frequency_hz=880.0) if invalid_kind == "fixture_digest_mismatch" else pcm
     )
     if invalid_kind == "corrupt_mp3":
         mp3 = b"not-an-mp3"
     elif invalid_kind == "wrong_fixture":
-        mp3 = await _encode_fixture_mp3_or_skip(
-            _fixture_pcm(duration_ms, frequency_hz=880.0)
-        )
+        mp3 = await _encode_fixture_mp3_or_skip(_fixture_pcm(duration_ms, frequency_hz=880.0))
     elif invalid_kind == "wrong_duration":
         mp3 = await _encode_fixture_mp3_or_skip(pcm[: len(pcm) // 2])
     elif invalid_kind == "overlong_zero_tail":
-        mp3 = await _encode_fixture_mp3_or_skip(
-            pcm + b"\0\0" * (48_000 * 2100 // 1000)
-        )
+        mp3 = await _encode_fixture_mp3_or_skip(pcm + b"\0\0" * (48_000 * 2100 // 1000))
     elif invalid_kind == "oversized_mp3":
         mp3 = b"x" * (256 * 1024 + 1)
     else:
-        exact_tail_frames = (
-            -(48_000 * duration_ms // 1000)
-        ) % capture_block_size_frames
-        mp3 = await _encode_fixture_mp3_or_skip(
-            pcm + b"\0\0" * exact_tail_frames
-        )
+        exact_tail_frames = (-(48_000 * duration_ms // 1000)) % capture_block_size_frames
+        mp3 = await _encode_fixture_mp3_or_skip(pcm + b"\0\0" * exact_tail_frames)
     if invalid_kind not in {"fixture_digest_mismatch", "credential_sentinel"}:
         await prewarm_azure_mai_replay_validation(
             authoritative_fixture_duration_ms=duration_ms,
@@ -736,11 +701,7 @@ async def test_microsoft_replay_transport_rejects_unbound_mp3_without_attestatio
             filename="audio.mp3",
             content_type="audio/mpeg",
             definition=AZURE_REPLAY_DEFINITION,
-            speech_key=(
-                "must-not-reach-replay-transport"
-                if invalid_kind == "credential_sentinel"
-                else "local-replay"
-            ),
+            speech_key=("must-not-reach-replay-transport" if invalid_kind == "credential_sentinel" else "local-replay"),
             timeout_secs=10.0,
             audio_preparation_implementation="post_stop_ffmpeg_mp3_v1",
         )
@@ -840,9 +801,7 @@ async def test_speechmatics_replay_uses_real_batch_adapter_parser_and_validates_
         )
         for index in range(frame_count)
     )
-    endpoint_sha256 = hashlib.sha256(
-        SPEECHMATICS_BATCH_DEFAULT_BASE_URL.encode("utf-8")
-    ).hexdigest()
+    endpoint_sha256 = hashlib.sha256(SPEECHMATICS_BATCH_DEFAULT_BASE_URL.encode("utf-8")).hexdigest()
     route = freeze_provider_route(
         workload="live_mic",
         provider="speechmatics_async",
@@ -861,9 +820,7 @@ async def test_speechmatics_replay_uses_real_batch_adapter_parser_and_validates_
         authoritative_fixture_duration_ms=duration_ms,
         expected_fixture_pcm_sha256=hashlib.sha256(pcm).hexdigest(),
         capture_block_size_frames=480,
-        expected_audio_preparation_implementation=(
-            "python_reserved_wav_header_v1"
-        ),
+        expected_audio_preparation_implementation=("python_reserved_wav_header_v1"),
         on_audio_preparation_validated=timeline.append,
     )
     pipeline = ScriberPipeline(
@@ -915,9 +872,7 @@ async def test_speechmatics_replay_uses_real_batch_adapter_parser_and_validates_
             },
             timeout_secs=10.0,
             poll_interval_secs=1.0,
-            audio_preparation_implementation=(
-                "python_reserved_wav_header_v1"
-            ),
+            audio_preparation_implementation=("python_reserved_wav_header_v1"),
         )
 
     corrupt_wav = io.BytesIO()
@@ -932,9 +887,7 @@ async def test_speechmatics_replay_uses_real_batch_adapter_parser_and_validates_
         authoritative_fixture_duration_ms=duration_ms,
         expected_fixture_pcm_sha256=hashlib.sha256(pcm).hexdigest(),
         capture_block_size_frames=480,
-        expected_audio_preparation_implementation=(
-            "python_reserved_wav_header_v1"
-        ),
+        expected_audio_preparation_implementation=("python_reserved_wav_header_v1"),
     )
     with pytest.raises(RuntimeError, match="fixture prefix mismatch"):
         await rejecting_transport(
@@ -953,9 +906,7 @@ async def test_speechmatics_replay_uses_real_batch_adapter_parser_and_validates_
             },
             timeout_secs=10.0,
             poll_interval_secs=1.0,
-            audio_preparation_implementation=(
-                "python_reserved_wav_header_v1"
-            ),
+            audio_preparation_implementation=("python_reserved_wav_header_v1"),
         )
 
 
@@ -967,9 +918,7 @@ async def test_replay_transports_reject_requested_actual_preparation_mismatch(tm
         expected_fixture_pcm_sha256="a" * 64,
         authoritative_fixture_pcm_path=tmp_path / "unused.pcm",
         capture_block_size_frames=256,
-        expected_audio_preparation_implementation=(
-            "capture_time_ffmpeg_mp3_v1"
-        ),
+        expected_audio_preparation_implementation=("capture_time_ffmpeg_mp3_v1"),
         on_audio_preparation_validated=validated.append,
     )
     with pytest.raises(RuntimeError, match="audio preparation mismatch"):
@@ -1009,9 +958,7 @@ async def test_replay_transports_reject_requested_actual_preparation_mismatch(tm
             },
             timeout_secs=10.0,
             poll_interval_secs=1.0,
-            audio_preparation_implementation=(
-                "python_reserved_wav_header_v1"
-            ),
+            audio_preparation_implementation=("python_reserved_wav_header_v1"),
         )
     assert validated == []
 
@@ -1050,11 +997,10 @@ async def test_soniox_loopback_uses_real_websocket_messages_and_receive_boundary
         assert len(observed) == 1
         payload = json.loads(observed[0])
         assert payload["finished"] is True
-        assert "".join(
-            token["text"]
-            for token in payload["tokens"]
-            if token["text"] != "<end>"
-        ) == "Scriber deterministic Soniox provider replay."
+        assert (
+            "".join(token["text"] for token in payload["tokens"] if token["text"] != "<end>")
+            == "Scriber deterministic Soniox provider replay."
+        )
         assert markers == ["received"]
     finally:
         await server.close()
@@ -1095,9 +1041,7 @@ async def test_soniox_replay_traverses_real_pipecat_service_and_parser(monkeypat
         await asyncio.wait_for(receive_task, timeout=5.0)
 
         transcripts = [frame for frame in frames if isinstance(frame, TranscriptionFrame)]
-        assert [frame.text for frame in transcripts] == [
-            "Scriber deterministic Soniox provider replay."
-        ]
+        assert [frame.text for frame in transcripts] == ["Scriber deterministic Soniox provider replay."]
         assert markers == ["received"]
         assert service._api_key == "local-replay"
         assert service._settings.model == "stt-rt-v5"
@@ -1124,6 +1068,7 @@ def test_soniox_replay_pipeline_rejects_non_loopback_or_partial_configuration():
             on_soniox_last_final_token_received=lambda: None,
             soniox_replay_model="stt-rt-v5",
         )
+
 
 @pytest.mark.asyncio
 async def test_disabled_replay_control_plane_is_404_before_token_auth(
@@ -1352,11 +1297,7 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
             "activation_received",
             "hotkey_received",
         ]
-        assert (
-            activated["markers"][0]["qpcTicks"]
-            == activated["markers"][1]["qpcTicks"]
-            == activation_qpc
-        )
+        assert activated["markers"][0]["qpcTicks"] == activated["markers"][1]["qpcTicks"] == activation_qpc
 
         duplicate_activation = await client.post(
             "/api/live-mic/start",

@@ -2,8 +2,8 @@ from src.core.provider_capabilities import (
     get_capabilities,
     injects_immediately_in_live_mode,
     meeting_max_duration_seconds,
-    supports_direct_file_upload,
     supports_batch_diarization,
+    supports_direct_file_upload,
     supports_five_hour_meeting,
     supports_word_timestamps,
 )
@@ -80,7 +80,11 @@ def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
     assert all(
         supports_five_hour_meeting(provider)
         for provider in (
-            "soniox", "soniox_async", "assemblyai", "azure_mai", "onnx_local",
+            "soniox",
+            "soniox_async",
+            "assemblyai",
+            "azure_mai",
+            "onnx_local",
         )
     )
     assert meeting_max_duration_seconds("soniox_async") == 18_000
@@ -92,8 +96,15 @@ def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
     assert all(
         not supports_five_hour_meeting(provider)
         for provider in (
-            "smallest", "smallest_async", "openai_async", "gemini_stt",
-            "mistral_async", "gladia_async", "deepgram_async", "speechmatics_async",
-            "groq", "unknown-provider",
+            "smallest",
+            "smallest_async",
+            "openai_async",
+            "gemini_stt",
+            "mistral_async",
+            "gladia_async",
+            "deepgram_async",
+            "speechmatics_async",
+            "groq",
+            "unknown-provider",
         )
     )

@@ -67,28 +67,16 @@ def test_hybrid_pr_checks_pin_workflow_lint_and_python_gate_dependencies() -> No
 
     assert any(
         "go run github.com/rhysd/actionlint/cmd/actionlint@"
-        "914e7df21a07ef503a81201c76d2b11c789d3fca"
-        in step.get("run", "")
+        "914e7df21a07ef503a81201c76d2b11c789d3fca" in step.get("run", "")
         for step in lint_steps
     )
-    setup_go = next(
-        step for step in lint_steps if step["name"] == "Set up Go"
-    )
+    setup_go = next(step for step in lint_steps if step["name"] == "Set up Go")
     assert setup_go["with"]["go-version"] == "1.26.4"
-    actionlint = next(
-        step["run"]
-        for step in lint_steps
-        if step["name"] == "Lint GitHub Actions workflows"
-    )
+    actionlint = next(step["run"] for step in lint_steps if step["name"] == "Lint GitHub Actions workflows")
     assert actionlint.count("-ignore") == 1
-    assert (
-        'unexpected key "queue" for "concurrency" section'
-        in actionlint
-    )
+    assert 'unexpected key "queue" for "concurrency" section' in actionlint
     python_install = next(
-        step["run"]
-        for step in jobs["python-gates"]["steps"]
-        if step["name"] == "Install Python gate dependencies"
+        step["run"] for step in jobs["python-gates"]["steps"] if step["name"] == "Install Python gate dependencies"
     )
     assert "python -m pip install pip==26.1.2" in python_install
     assert "-c requirements-test-constraints.txt" in python_install
@@ -98,11 +86,7 @@ def test_hybrid_pr_checks_pin_workflow_lint_and_python_gate_dependencies() -> No
 def test_ci_and_release_third_party_actions_are_commit_pinned() -> None:
     workflows = [
         yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")),
-        yaml.safe_load(
-            (
-                REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
-            ).read_text(encoding="utf-8")
-        ),
+        yaml.safe_load((REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(encoding="utf-8")),
     ]
     third_party_uses: list[str] = []
     for workflow in workflows:
@@ -110,17 +94,11 @@ def test_ci_and_release_third_party_actions_are_commit_pinned() -> None:
             candidates = [job.get("uses")]
             candidates.extend(step.get("uses") for step in job.get("steps", []))
             for uses in candidates:
-                if (
-                    isinstance(uses, str)
-                    and not uses.startswith(("./", "actions/"))
-                ):
+                if isinstance(uses, str) and not uses.startswith(("./", "actions/")):
                     third_party_uses.append(uses)
 
     assert third_party_uses
-    assert all(
-        re.fullmatch(r"[^/@]+/[^/@]+@[0-9a-f]{40}", uses)
-        for uses in third_party_uses
-    )
+    assert all(re.fullmatch(r"[^/@]+/[^/@]+@[0-9a-f]{40}", uses) for uses in third_party_uses)
 
 
 def test_hybrid_pr_checks_do_not_run_installer_release_build() -> None:

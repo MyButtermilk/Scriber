@@ -2,16 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_live_windows_taskbar_icon_smoke_checks_native_large_and_small_icons() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_windows_taskbar_icon.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_windows_taskbar_icon.ps1").read_text(encoding="utf-8")
 
-    assert '[int]$ProcessId' in script
+    assert "[int]$ProcessId" in script
     assert "EnumWindows" in script
     assert "GetWindowThreadProcessId" in script
     assert "IsWindowVisible" in script
@@ -37,9 +34,7 @@ def test_live_windows_taskbar_icon_smoke_checks_native_large_and_small_icons() -
 
 
 def test_taskbar_icon_smoke_does_not_fall_back_to_an_unrelated_executable_icon() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_windows_taskbar_icon.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_windows_taskbar_icon.ps1").read_text(encoding="utf-8")
 
     # The taskbar regression is specifically about the icon exposed by the
     # live Tauri window. Falling back to ExtractIconEx would let a broken

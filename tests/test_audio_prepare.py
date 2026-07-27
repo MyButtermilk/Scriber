@@ -166,9 +166,7 @@ async def test_generated_preparation_is_cleaned(monkeypatch, tmp_path: Path) -> 
 
     def probe(path: Path):
         return _probe(
-            AudioInputFormat.OGG_OPUS
-            if Path(path) == source
-            else AudioInputFormat.MP3,
+            AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.MP3,
             byte_length=6,
         )
 
@@ -211,9 +209,7 @@ async def test_generated_preparation_rejects_wrong_container_codec(
 
     def probe(path: Path):
         return _probe(
-            AudioInputFormat.OGG_OPUS
-            if Path(path) == source
-            else AudioInputFormat.WAV_PCM16,
+            AudioInputFormat.OGG_OPUS if Path(path) == source else AudioInputFormat.WAV_PCM16,
             byte_length=6,
         )
 

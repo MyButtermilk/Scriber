@@ -5,6 +5,7 @@ Only checksum-pinned models and their license notices are downloaded into
 ``SCRIBER_DATA_DIR``.  Python never loads Sherpa, ONNX Runtime, PyTorch, or
 Pyannote for this feature.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -18,19 +19,19 @@ import subprocess
 import tarfile
 import tempfile
 import wave
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any
 from uuid import uuid4
 
 from aiohttp import ClientSession
 
 from src.provider_transcript import group_provider_words, normalize_provider_words
 from src.runtime.ffmpeg_commands import wav_pcm_transcode_args
-from src.runtime.paths import app_root, data_dir, is_frozen, repo_root
 from src.runtime.media_tools import require_media_tool
+from src.runtime.paths import app_root, data_dir, is_frozen, repo_root
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
-
 
 SHERPA_VERSION = "1.13.3"
 WORKER_NAME = "scriber-diarization-sidecar"
@@ -43,15 +44,11 @@ SEGMENTATION_MODEL_ID = "pyannote-segmentation-3.0-int8"
 EMBEDDING_MODEL_ID = "3d-speaker-eres2net-base-16k"
 SEGMENTATION_ARCHIVE = "sherpa-onnx-pyannote-segmentation-3-0.tar.bz2"
 SEGMENTATION_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    f"speaker-segmentation-models/{SEGMENTATION_ARCHIVE}"
+    f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-segmentation-models/{SEGMENTATION_ARCHIVE}"
 )
 SEGMENTATION_SHA256 = "24615ee884c897d9d2ba09bb4d30da6bb1b15e685065962db5b02e76e4996488"
 EMBEDDING_FILE = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-EMBEDDING_URL = (
-    "https://github.com/k2-fsa/sherpa-onnx/releases/download/"
-    f"speaker-recongition-models/{EMBEDDING_FILE}"
-)
+EMBEDDING_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{EMBEDDING_FILE}"
 EMBEDDING_SHA256 = "1a331345f04805badbb495c775a6ddffcdd1a732567d5ec8b3d5749e3c7a5e4b"
 COMPONENT_SCHEMA = 2
 COMPONENT_NAME = "scriber-local-speaker-diarization"
@@ -64,10 +61,7 @@ COMPONENT_SOURCES = {
     "embedding": {
         "artifactUrl": EMBEDDING_URL,
         "artifactSha256": EMBEDDING_SHA256,
-        "modelCardUrl": (
-            "https://modelscope.cn/models/iic/"
-            "speech_eres2net_base_sv_zh-cn_3dspeaker_16k"
-        ),
+        "modelCardUrl": ("https://modelscope.cn/models/iic/speech_eres2net_base_sv_zh-cn_3dspeaker_16k"),
         "modelRevision": "v1.0.1",
         "repositoryCommit": "46215101b5c2ca4443163c8ced56147cc6f01908",
         "declaredLicense": "Apache-2.0",
@@ -169,8 +163,10 @@ def _best_turn(start_ms: int, end_ms: int, turns: Iterable[DiarizationTurn]) -> 
     best: tuple[int, int, DiarizationTurn] | None = None
     for turn in turns:
         overlap = max(0, min(end_ms, turn.end_ms) - max(start_ms, turn.start_ms))
-        distance = 0 if turn.start_ms <= midpoint <= turn.end_ms else min(
-            abs(midpoint - turn.start_ms), abs(midpoint - turn.end_ms)
+        distance = (
+            0
+            if turn.start_ms <= midpoint <= turn.end_ms
+            else min(abs(midpoint - turn.start_ms), abs(midpoint - turn.end_ms))
         )
         candidate = (overlap, -distance, turn)
         if best is None or candidate[:2] > best[:2]:
@@ -212,22 +208,24 @@ def distribute_text_over_turns(
             take = max(1, min(len(tokens) - cursor - (remaining_turns - 1), proportional))
         if take <= 0:
             continue
-        block = " ".join(tokens[cursor:cursor + take]).strip()
+        block = " ".join(tokens[cursor : cursor + take]).strip()
         cursor += take
         if not block:
             continue
-        segments.append({
-            "revision": "canonical",
-            "source": source,
-            "providerSegmentId": f"local-diarization-{index}",
-            "speakerLabel": f"Speaker {turn.speaker + 1}",
-            "startMs": turn.start_ms,
-            "endMs": turn.end_ms,
-            "text": block,
-            "confidence": None,
-            "alignmentQuality": "estimated",
-            "isFinal": True,
-        })
+        segments.append(
+            {
+                "revision": "canonical",
+                "source": source,
+                "providerSegmentId": f"local-diarization-{index}",
+                "speakerLabel": f"Speaker {turn.speaker + 1}",
+                "startMs": turn.start_ms,
+                "endMs": turn.end_ms,
+                "text": block,
+                "confidence": None,
+                "alignmentQuality": "estimated",
+                "isFinal": True,
+            }
+        )
         if cursor >= len(tokens):
             break
     return segments
@@ -274,9 +272,7 @@ class SherpaOnnxDiarizer:
         self.embedding_model = self.model_dir / EMBEDDING_FILE
         self.manifest_path = self.root / "component.json"
         self._worker_override = Path(worker_executable).resolve() if worker_executable else None
-        self._worker_manifest_override = (
-            Path(worker_manifest_path).resolve() if worker_manifest_path else None
-        )
+        self._worker_manifest_override = Path(worker_manifest_path).resolve() if worker_manifest_path else None
         self._install_lock = asyncio.Lock()
         self._status_lock = asyncio.Lock()
         self._activity_lock = asyncio.Lock()
@@ -456,9 +452,13 @@ class SherpaOnnxDiarizer:
                 self._probe_worker_sync(descriptor)
                 return descriptor
             except (OSError, ValueError, json.JSONDecodeError, _ComponentError) as exc:
-                last_error = exc if isinstance(exc, _ComponentError) else _ComponentError(
-                    "worker_verification_failed",
-                    "The bundled diarization worker could not be verified.",
+                last_error = (
+                    exc
+                    if isinstance(exc, _ComponentError)
+                    else _ComponentError(
+                        "worker_verification_failed",
+                        "The bundled diarization worker could not be verified.",
+                    )
                 )
         if last_error is not None:
             raise last_error
@@ -467,14 +467,10 @@ class SherpaOnnxDiarizer:
             "The bundled diarization worker is unavailable.",
         )
 
-    def _descriptor_from_worker_manifest(
-        self, executable: Path, manifest_path: Path
-    ) -> WorkerDescriptor:
+    def _descriptor_from_worker_manifest(self, executable: Path, manifest_path: Path) -> WorkerDescriptor:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if not isinstance(manifest, dict):
-            raise _ComponentError(
-                "worker_manifest_invalid", "The bundled diarization worker manifest is invalid."
-            )
+            raise _ComponentError("worker_manifest_invalid", "The bundled diarization worker manifest is invalid.")
         worker = manifest.get("worker")
         distribution = manifest.get("distribution")
         if (
@@ -486,25 +482,15 @@ class SherpaOnnxDiarizer:
             or worker.get("protocolSchemaVersion") != WORKER_PROTOCOL_SCHEMA
             or worker.get("sherpaOnnxVersion") != SHERPA_VERSION
             or worker.get("linkMode") != "static"
-            or (
-                is_frozen()
-                and self._worker_override is None
-                and distribution != "bundled-signed-scriber-resource"
-            )
+            or (is_frozen() and self._worker_override is None and distribution != "bundled-signed-scriber-resource")
         ):
-            raise _ComponentError(
-                "worker_manifest_invalid", "The bundled diarization worker manifest is invalid."
-            )
+            raise _ComponentError("worker_manifest_invalid", "The bundled diarization worker manifest is invalid.")
         digest = str(worker.get("sha256") or "").lower()
         byte_size = worker.get("byteSize")
         if not re.fullmatch(r"[0-9a-f]{64}", digest) or not isinstance(byte_size, int):
-            raise _ComponentError(
-                "worker_manifest_invalid", "The bundled diarization worker manifest is invalid."
-            )
+            raise _ComponentError("worker_manifest_invalid", "The bundled diarization worker manifest is invalid.")
         if byte_size <= 0 or executable.stat().st_size != byte_size or _sha256(executable) != digest:
-            raise _ComponentError(
-                "worker_hash_mismatch", "The bundled diarization worker failed verification."
-            )
+            raise _ComponentError("worker_hash_mismatch", "The bundled diarization worker failed verification.")
         return WorkerDescriptor(
             executable=executable,
             sha256=digest,
@@ -534,9 +520,7 @@ class SherpaOnnxDiarizer:
                 or len(process.stdout) > MAX_WORKER_DIAGNOSTIC_BYTES
                 or len(process.stderr) > MAX_WORKER_DIAGNOSTIC_BYTES
             ):
-                raise _ComponentError(
-                    "worker_self_test_failed", "The bundled diarization worker self-test failed."
-                )
+                raise _ComponentError("worker_self_test_failed", "The bundled diarization worker self-test failed.")
             try:
                 payload = json.loads(process.stdout.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -544,9 +528,7 @@ class SherpaOnnxDiarizer:
                     "worker_self_test_failed", "The bundled diarization worker self-test failed."
                 ) from exc
             if not isinstance(payload, dict):
-                raise _ComponentError(
-                    "worker_self_test_failed", "The bundled diarization worker self-test failed."
-                )
+                raise _ComponentError("worker_self_test_failed", "The bundled diarization worker self-test failed.")
             return payload
 
         version = control("--version")
@@ -559,9 +541,7 @@ class SherpaOnnxDiarizer:
             or version.get("engine", {}).get("version") != SHERPA_VERSION
             or version.get("engine", {}).get("linkMode") != "static"
         ):
-            raise _ComponentError(
-                "worker_self_test_failed", "The bundled diarization worker self-test failed."
-            )
+            raise _ComponentError("worker_self_test_failed", "The bundled diarization worker self-test failed.")
         self_test = control("--self-test")
         if (
             self_test.get("schemaVersion") != WORKER_PROTOCOL_SCHEMA
@@ -571,9 +551,7 @@ class SherpaOnnxDiarizer:
             or self_test.get("platform", {}).get("windows") is not True
             or self_test.get("platform", {}).get("memoryLimit") != "jobObject"
         ):
-            raise _ComponentError(
-                "worker_self_test_failed", "The bundled diarization worker self-test failed."
-            )
+            raise _ComponentError("worker_self_test_failed", "The bundled diarization worker self-test failed.")
 
     def _verify_component_manifest_sync(self, worker: WorkerDescriptor) -> int:
         try:
@@ -583,9 +561,7 @@ class SherpaOnnxDiarizer:
                 "component_manifest_invalid", "The diarization component manifest is invalid."
             ) from exc
         if not isinstance(manifest, dict):
-            raise _ComponentError(
-                "component_manifest_invalid", "The diarization component manifest is invalid."
-            )
+            raise _ComponentError("component_manifest_invalid", "The diarization component manifest is invalid.")
         worker_record = manifest.get("worker")
         artifacts = manifest.get("artifacts")
         if (
@@ -602,18 +578,12 @@ class SherpaOnnxDiarizer:
             or manifest.get("sources") != COMPONENT_SOURCES
             or not isinstance(artifacts, list)
         ):
-            raise _ComponentError(
-                "component_manifest_invalid", "The diarization component manifest is invalid."
-            )
+            raise _ComponentError("component_manifest_invalid", "The diarization component manifest is invalid.")
         by_role = {
-            item.get("role"): item
-            for item in artifacts
-            if isinstance(item, dict) and isinstance(item.get("role"), str)
+            item.get("role"): item for item in artifacts if isinstance(item, dict) and isinstance(item.get("role"), str)
         }
         if set(by_role) != set(_EXPECTED_ARTIFACT_PATHS) or len(artifacts) != len(by_role):
-            raise _ComponentError(
-                "component_manifest_invalid", "The diarization component manifest is invalid."
-            )
+            raise _ComponentError("component_manifest_invalid", "The diarization component manifest is invalid.")
         root = self.root.resolve()
         total = self.manifest_path.stat().st_size
         for role, expected_relative in _EXPECTED_ARTIFACT_PATHS.items():
@@ -627,14 +597,10 @@ class SherpaOnnxDiarizer:
                 or not isinstance(byte_size, int)
                 or byte_size <= 0
             ):
-                raise _ComponentError(
-                    "component_manifest_invalid", "The diarization component manifest is invalid."
-                )
+                raise _ComponentError("component_manifest_invalid", "The diarization component manifest is invalid.")
             path = (self.root / relative).resolve()
             if path == root or root not in path.parents or not path.is_file():
-                raise _ComponentError(
-                    "component_artifact_missing", "A diarization component artifact is missing."
-                )
+                raise _ComponentError("component_artifact_missing", "A diarization component artifact is missing.")
             if path.stat().st_size != byte_size or _sha256(path) != digest:
                 raise _ComponentError(
                     "component_hash_mismatch", "A diarization component artifact failed verification."
@@ -700,12 +666,8 @@ class SherpaOnnxDiarizer:
         licenses_out = staging / "licenses"
         models_out.mkdir(parents=True, exist_ok=True)
         licenses_out.mkdir(parents=True, exist_ok=True)
-        segmentation_source = next(
-            (path for path in extracted.rglob("model.int8.onnx") if path.is_file()), None
-        )
-        segmentation_license = next(
-            (path for path in extracted.rglob("LICENSE") if path.is_file()), None
-        )
+        segmentation_source = next((path for path in extracted.rglob("model.int8.onnx") if path.is_file()), None)
+        segmentation_license = next((path for path in extracted.rglob("LICENSE") if path.is_file()), None)
         if segmentation_source is None or segmentation_license is None:
             raise ValueError("The segmentation model archive is incomplete.")
         shutil.copy2(segmentation_source, models_out / self.segmentation_model.name)
@@ -729,18 +691,13 @@ class SherpaOnnxDiarizer:
                 "distribution": worker.source,
             },
             "artifacts": [
-                self._artifact_entry(staging, role, relative)
-                for role, relative in _EXPECTED_ARTIFACT_PATHS.items()
+                self._artifact_entry(staging, role, relative) for role, relative in _EXPECTED_ARTIFACT_PATHS.items()
             ],
             "sources": COMPONENT_SOURCES,
         }
-        (staging / "component.json").write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        (staging / "component.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    async def install(
-        self, session: ClientSession, progress: ProgressCallback | None = None
-    ) -> dict[str, Any]:
+    async def install(self, session: ClientSession, progress: ProgressCallback | None = None) -> dict[str, Any]:
         if os.name != "nt":
             raise RuntimeError("Local Sherpa diarization is currently Windows-only.")
         async with self._install_lock:
@@ -784,9 +741,7 @@ class SherpaOnnxDiarizer:
                     await self._download(session, url, path, digest, max_bytes=max_bytes)
                 await self._report(progress, "Verifying local speaker separation", 0.82)
                 await asyncio.to_thread(_safe_extract, downloads / SEGMENTATION_ARCHIVE, extracted)
-                await asyncio.to_thread(
-                    self._assemble_component_sync, staging, extracted, downloads, worker
-                )
+                await asyncio.to_thread(self._assemble_component_sync, staging, extracted, downloads, worker)
                 await asyncio.to_thread(shutil.rmtree, downloads)
                 await asyncio.to_thread(shutil.rmtree, extracted)
                 if self.root.exists():
@@ -819,25 +774,24 @@ class SherpaOnnxDiarizer:
 
     async def delete_async(self) -> bool:
         """Delete only after atomically proving no diarization job owns files."""
-        async with self._install_lock:
-            async with self._status_lock:
+        async with self._install_lock, self._status_lock:
+            async with self._activity_lock:
+                if self._active_jobs or self._deleting:
+                    return False
+                self._deleting = True
+            deletion = asyncio.create_task(asyncio.to_thread(self._delete_sync))
+            try:
+                await asyncio.shield(deletion)
+            except asyncio.CancelledError:
+                # Keep the ownership barrier closed until the filesystem
+                # worker has actually finished; to_thread itself is not
+                # cancellable once scheduled.
+                await deletion
+                raise
+            finally:
                 async with self._activity_lock:
-                    if self._active_jobs or self._deleting:
-                        return False
-                    self._deleting = True
-                deletion = asyncio.create_task(asyncio.to_thread(self._delete_sync))
-                try:
-                    await asyncio.shield(deletion)
-                except asyncio.CancelledError:
-                    # Keep the ownership barrier closed until the filesystem
-                    # worker has actually finished; to_thread itself is not
-                    # cancellable once scheduled.
-                    await deletion
-                    raise
-                finally:
-                    async with self._activity_lock:
-                        self._deleting = False
-                return True
+                    self._deleting = False
+            return True
 
     async def _enter_job(self) -> None:
         async with self._activity_lock:
@@ -949,9 +903,7 @@ class SherpaOnnxDiarizer:
                 raise
 
         try:
-            stdout, stderr = await asyncio.wait_for(
-                communicate(), timeout=self._worker_timeout_seconds()
-            )
+            stdout, stderr = await asyncio.wait_for(communicate(), timeout=self._worker_timeout_seconds())
         except TimeoutError as exc:
             raise RuntimeError("Local speaker separation timed out.") from exc
         stdout = stdout or b""
@@ -1033,9 +985,7 @@ class SherpaOnnxDiarizer:
         num_speakers: int | None = None,
     ) -> list[DiarizationTurn]:
         if num_speakers is not None and (
-            isinstance(num_speakers, bool)
-            or not isinstance(num_speakers, int)
-            or not 1 <= num_speakers <= 64
+            isinstance(num_speakers, bool) or not isinstance(num_speakers, int) or not 1 <= num_speakers <= 64
         ):
             raise ValueError("Known speaker count must be between 1 and 64.")
         threshold = float(cluster_threshold)
@@ -1049,9 +999,7 @@ class SherpaOnnxDiarizer:
             worker = self._verified_worker
             scratch_root = self.root / "scratch"
             await asyncio.to_thread(scratch_root.mkdir, parents=True, exist_ok=True)
-            directory = Path(
-                await asyncio.to_thread(tempfile.mkdtemp, prefix="job-", dir=scratch_root)
-            )
+            directory = Path(await asyncio.to_thread(tempfile.mkdtemp, prefix="job-", dir=scratch_root))
             try:
                 prepared = directory / "audio.wav"
                 await self._prepare_audio(Path(audio_path), prepared)

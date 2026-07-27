@@ -82,8 +82,7 @@ def test_gladia_payload_to_text_prefers_speaker_utterances():
     }
 
     assert gladia_transcript_payload_to_text(payload, prefer_speaker_labels=True) == (
-        "[Speaker 1]: Hallo\n\n"
-        "[Speaker 2]: Guten Tag"
+        "[Speaker 1]: Hallo\n\n[Speaker 2]: Guten Tag"
     )
     assert gladia_transcript_payload_to_text(payload, prefer_speaker_labels=False) == "fallback transcript"
 

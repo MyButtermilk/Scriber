@@ -79,9 +79,7 @@ def test_fresh_install_shortcut_defaults(tmp_path):
 
 def test_existing_dotenv_shortcuts_override_defaults(tmp_path):
     (tmp_path / ".env").write_text(
-        "SCRIBER_HOTKEY=f8\n"
-        "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+alt+p\n"
-        "SCRIBER_MEETING_HOTKEY=ctrl+alt+m\n",
+        "SCRIBER_HOTKEY=f8\nSCRIBER_POST_PROCESSING_HOTKEY=ctrl+alt+p\nSCRIBER_MEETING_HOTKEY=ctrl+alt+m\n",
         encoding="utf-8",
     )
 
@@ -169,9 +167,7 @@ def test_user_prompt_edit_keeps_completed_migration_marker(monkeypatch):
 
     Config.set_summarization_prompt("Mein später angepasster Prompt")
 
-    assert config_module._json_settings["summarizationPrompt"] == (
-        "Mein später angepasster Prompt"
-    )
+    assert config_module._json_settings["summarizationPrompt"] == ("Mein später angepasster Prompt")
     assert config_module._json_settings[marker_key] == 1
     assert Config.json_settings_migration_pending() is False
 
@@ -278,12 +274,12 @@ class TestConfig(unittest.TestCase):
     def test_default_values(self):
         # Assuming env vars are not set or set to defaults during test
         # We can check if keys exist in class
-        self.assertTrue(hasattr(Config, 'SONIOX_API_KEY'))
-        self.assertTrue(hasattr(Config, 'HOTKEY'))
+        self.assertTrue(hasattr(Config, "SONIOX_API_KEY"))
+        self.assertTrue(hasattr(Config, "HOTKEY"))
 
     def test_hotkey_config(self):
         # Verify we can override
-        os.environ['SCRIBER_HOTKEY'] = 'f9'
+        os.environ["SCRIBER_HOTKEY"] = "f9"
         # Reload module to pick up env change?
         # Config class loads at import time.
         # So we might need to reload or access os.getenv directly in methods.

@@ -102,9 +102,7 @@ async def test_embedding_input_is_fixed_local_waveform_and_never_contains_text(m
 
 
 @pytest.mark.asyncio
-async def test_in_memory_enrollment_uses_three_windows_and_returns_normalized_centroid(
-    monkeypatch, tmp_path
-):
+async def test_in_memory_enrollment_uses_three_windows_and_returns_normalized_centroid(monkeypatch, tmp_path):
     model = WeSpeakerModel(tmp_path / "model")
     model.root.mkdir(parents=True)
     model.path.write_bytes(b"model")
@@ -139,11 +137,7 @@ async def test_in_memory_enrollment_uses_three_windows_and_returns_normalized_ce
 
     # Eight seconds yields start, middle, and end four-second windows.
     assert len(runtime.waveform_starts) == 3
-    assert (
-        runtime.waveform_starts[0]
-        < runtime.waveform_starts[1]
-        < runtime.waveform_starts[2]
-    )
+    assert runtime.waveform_starts[0] < runtime.waveform_starts[1] < runtime.waveform_starts[2]
     assert len(embedding) == 256
     assert np.linalg.norm(np.asarray(embedding)) == pytest.approx(1.0)
     assert embedding[0] == pytest.approx(2 / np.sqrt(5))
@@ -152,9 +146,7 @@ async def test_in_memory_enrollment_uses_three_windows_and_returns_normalized_ce
 
 
 @pytest.mark.asyncio
-async def test_in_memory_enrollment_excludes_silent_embedding_window(
-    monkeypatch, tmp_path
-):
+async def test_in_memory_enrollment_excludes_silent_embedding_window(monkeypatch, tmp_path):
     model = WeSpeakerModel(tmp_path / "model")
     model.root.mkdir(parents=True)
     model.path.write_bytes(b"model")

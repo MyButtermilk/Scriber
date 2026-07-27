@@ -62,17 +62,13 @@ async def test_summary_retry_uses_durable_transcript_and_rejects_duplicate_reque
     client = TestClient(TestServer(web_api.create_app(controller)))
     await client.start_server()
     try:
-        first_request = asyncio.create_task(
-            client.post(f"/api/transcripts/{record.id}/summarize")
-        )
+        first_request = asyncio.create_task(client.post(f"/api/transcripts/{record.id}/summarize"))
         await asyncio.wait_for(started.wait(), timeout=2)
 
         duplicate = await client.post(f"/api/transcripts/{record.id}/summarize")
         duplicate_payload = await duplicate.json()
         assert duplicate.status == 409
-        assert duplicate_payload == {
-            "message": "A summary is already running for this transcript"
-        }
+        assert duplicate_payload == {"message": "A summary is already running for this transcript"}
 
         release.set()
         response = await first_request

@@ -20,7 +20,6 @@ from src.data.transcript_artifact_store import AttemptState, StageUnit
 from src.transcript_artifacts import FrozenTranscriptionRoute
 from src.web_api import ScriberWebController, TranscriptRecord
 
-
 _DURABLE_TRANSCRIPT_TEXT = "Recovered from the durable provider result."
 
 
@@ -445,9 +444,7 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
     assert store.mark_provider_result_durable(job.id, attempt_id=attempt.id)
     ctl._startup_running_job_ids = frozenset({job.id})
 
-    prepare_audio = MagicMock(
-        side_effect=AssertionError("durable recovery must not inspect the missing source")
-    )
+    prepare_audio = MagicMock(side_effect=AssertionError("durable recovery must not inspect the missing source"))
     try:
         with (
             patch("src.web_api.prepare_provider_audio_file", new=prepare_audio),
@@ -467,10 +464,7 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
         assert recovered_job is not None
         assert recovered_job.status == JobStatus.COMPLETED
         assert recovered_job.provider_result_attempt_id == attempt.id
-        assert (
-            ctl._transcript_artifacts.require_attempt(attempt.id).state
-            == AttemptState.COMPLETED
-        )
+        assert ctl._transcript_artifacts.require_attempt(attempt.id).state == AttemptState.COMPLETED
         prepare_audio.assert_not_called()
     finally:
         await _close_test_controller(ctl)
@@ -521,9 +515,7 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
         content="stale projection written after canonical commit",
     )
 
-    prepare_audio = MagicMock(
-        side_effect=AssertionError("completed artifact recovery must remain source-free")
-    )
+    prepare_audio = MagicMock(side_effect=AssertionError("completed artifact recovery must remain source-free"))
     try:
         with (
             patch("src.web_api.prepare_provider_audio_file", new=prepare_audio),
@@ -543,10 +535,7 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
         assert "stale projection" not in persisted["content"]
         assert recovered_job is not None
         assert recovered_job.status == JobStatus.COMPLETED
-        assert (
-            recovered_job.payload["executedRoute"]
-            == recovered_job.payload["executionRoute"]
-        )
+        assert recovered_job.payload["executedRoute"] == recovered_job.payload["executionRoute"]
         assert recovered_job.provider_result_attempt_id == attempt.id
         prepare_audio.assert_not_called()
     finally:
@@ -638,10 +627,7 @@ async def test_startup_recovery_does_not_mutate_job_started_after_running_snapsh
         assert recovered_stale.provider_request_state == PROVIDER_REQUEST_NOT_STARTED
         assert untouched_new is not None
         assert untouched_new.status == JobStatus.RUNNING
-        assert (
-            untouched_new.provider_request_state
-            == PROVIDER_REQUEST_MAY_BE_COMMITTED
-        )
+        assert untouched_new.provider_request_state == PROVIDER_REQUEST_MAY_BE_COMMITTED
         assert ctl._startup_running_job_ids == frozenset()
     finally:
         await _close_test_controller(ctl)
@@ -696,9 +682,7 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
     assert store.mark_provider_result_durable(job.id, attempt_id=attempt.id)
     ctl._startup_running_job_ids = frozenset({job.id})
 
-    forbidden_source_io = AssertionError(
-        "durable YouTube recovery must not require captions, URL, or audio download"
-    )
+    forbidden_source_io = AssertionError("durable YouTube recovery must not require captions, URL, or audio download")
     download_audio = MagicMock(side_effect=forbidden_source_io)
     download_captions = MagicMock(side_effect=forbidden_source_io)
     prepare_audio = MagicMock(side_effect=forbidden_source_io)
@@ -725,10 +709,7 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
         assert recovered_job is not None
         assert recovered_job.status == JobStatus.COMPLETED
         assert recovered_job.provider_result_attempt_id == attempt.id
-        assert (
-            ctl._transcript_artifacts.require_attempt(attempt.id).state
-            == AttemptState.COMPLETED
-        )
+        assert ctl._transcript_artifacts.require_attempt(attempt.id).state == AttemptState.COMPLETED
         download_audio.assert_not_called()
         download_captions.assert_not_called()
         prepare_audio.assert_not_called()
@@ -804,8 +785,7 @@ async def test_startup_unbound_provider_results_fail_closed(
         assert failed_projection is not None
         assert "automatic replay was disabled" in failed_projection["content"]
         assert all(
-            ctl._transcript_artifacts.require_attempt(attempt_id).state
-            == AttemptState.PROVIDER_RESULT_READY
+            ctl._transcript_artifacts.require_attempt(attempt_id).state == AttemptState.PROVIDER_RESULT_READY
             for attempt_id in attempt_ids
         )
         schedule_file.assert_not_called()

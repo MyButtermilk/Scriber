@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import hashlib
+import json
 import re
 import threading
 import wave
@@ -90,9 +90,7 @@ def test_direct_meeting_route_freezes_exact_preparation_before_attempt(
         artifact_store=SimpleNamespace(),
     )
 
-    route = finalizer._frozen_meeting_route(
-        {"finalProvider": provider, "language": "de", "captureMetadata": {}}
-    )
+    route = finalizer._frozen_meeting_route({"finalProvider": provider, "language": "de", "captureMetadata": {}})
     recovered = finalizer._execution_route_for_snapshot(route.snapshot_draft())
 
     assert route.audio_input_format == expected_format
@@ -164,15 +162,11 @@ def test_provider_change_does_not_recover_an_attempt_frozen_to_old_route(tmp_pat
 
         @staticmethod
         def latest_recoverable_for_transcript(_meeting_id):
-            return SimpleNamespace(
-                route_snapshot=SimpleNamespace(provider="soniox_async")
-            )
+            return SimpleNamespace(route_snapshot=SimpleNamespace(provider="soniox_async"))
 
         @staticmethod
         def latest_resumable_track_attempt(_meeting_id):
-            return SimpleNamespace(
-                route_snapshot=SimpleNamespace(provider="soniox_async")
-            )
+            return SimpleNamespace(route_snapshot=SimpleNamespace(provider="soniox_async"))
 
         def create_attempt(self, **_kwargs):
             return self.attempt
@@ -210,11 +204,13 @@ def test_provider_change_does_not_recover_an_attempt_frozen_to_old_route(tmp_pat
         artifact_store=artifacts,
     )
 
-    attempt, _owner, recovery, execution_route = finalizer._begin_artifact_attempt({
-        "id": "meeting-route-change",
-        "finalProvider": "deepgram_async",
-        "language": "auto",
-    })
+    attempt, _owner, recovery, execution_route = finalizer._begin_artifact_attempt(
+        {
+            "id": "meeting-route-change",
+            "finalProvider": "deepgram_async",
+            "language": "auto",
+        }
+    )
 
     assert recovery is None
     assert attempt.state == AttemptState.TRANSCRIBING
@@ -251,9 +247,7 @@ def _write_meeting_wav(
         output.writeframes(int(sample_value).to_bytes(2, "little", signed=True) * frames)
 
 
-def _stub_two_track_preparation(
-    finalizer: MeetingFinalizer, tmp_path: Path
-) -> dict[str, PreparedMeetingTrack]:
+def _stub_two_track_preparation(finalizer: MeetingFinalizer, tmp_path: Path) -> dict[str, PreparedMeetingTrack]:
     tracks = {
         "mic_clean": PreparedMeetingTrack(
             path=tmp_path / "mic-clean.work.flac",
@@ -270,9 +264,7 @@ def _stub_two_track_preparation(
             pcm_sha256="b" * 64,
         ),
     }
-    finalizer._validated_chunks = lambda _meeting_id, source: (
-        [{"sequence": 0}] if source in tracks else []
-    )
+    finalizer._validated_chunks = lambda _meeting_id, source: [{"sequence": 0}] if source in tracks else []
 
     async def prepare(_meeting_id, source, _chunks):
         return tracks[source]
@@ -286,20 +278,20 @@ def _stub_two_track_preparation(
 
 
 @pytest.mark.asyncio
-async def test_finalizer_rejects_track_beyond_the_selected_provider_duration(
-    monkeypatch, tmp_path
-):
+async def test_finalizer_rejects_track_beyond_the_selected_provider_duration(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "provider-duration-limit.db")
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Long Gladia meeting",
-        final_provider="gladia_async",
-        consent_confirmed=True,
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Long Gladia meeting",
+            final_provider="gladia_async",
+            consent_confirmed=True,
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
     provider_calls: list[str] = []
 
@@ -307,9 +299,7 @@ async def test_finalizer_rejects_track_beyond_the_selected_provider_duration(
         provider_calls.append("called")
         raise AssertionError("provider must not be called beyond its duration limit")
 
-    finalizer = MeetingFinalizer(
-        store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None
-    )
+    finalizer = MeetingFinalizer(store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None)
     finalizer._validated_chunks = lambda *_args: [{"sequence": 0}]
 
     async def prepare(_meeting_id, _source, _chunks):
@@ -347,17 +337,17 @@ async def test_finalizer_accepts_one_silent_canonical_track(
 ):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / f"silent-{speech_source}.db")
-    monkeypatch.setattr(
-        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
-    )
+    monkeypatch.setattr("src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False)
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="One silent track",
-        final_provider="soniox_async",
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="One silent track",
+            final_provider="soniox_async",
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
 
     class TrackPipeline(FakePipeline):
@@ -369,9 +359,7 @@ async def test_finalizer_accepts_one_silent_canonical_track(
         text = f"Valid {source} speech" if source == speech_source else ""
         return TrackPipeline(text, on_transcription)
 
-    finalizer = MeetingFinalizer(
-        store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None
-    )
+    finalizer = MeetingFinalizer(store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None)
     _stub_two_track_preparation(finalizer, tmp_path)
     updates: list[tuple[str, float]] = []
 
@@ -394,32 +382,29 @@ async def test_finalizer_accepts_one_silent_canonical_track(
     artifact = finalizer.artifact_store.get_artifact(head.artifact_id)
     assert artifact is not None
     assert [unit.source_track for unit in artifact.segments] == [speech_source]
-    assert [
-        item.source_track
-        for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)
-    ] == [speech_source]
+    assert [item.source_track for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)] == [
+        speech_source
+    ]
     silent_source = "system" if speech_source == "microphone" else "microphone"
     assert any(f"No {silent_source} speech detected" in status for status, _ in updates)
     database._close_all_connections()
 
 
 @pytest.mark.asyncio
-async def test_finalizer_rejects_meeting_when_every_canonical_track_is_silent(
-    monkeypatch, tmp_path
-):
+async def test_finalizer_rejects_meeting_when_every_canonical_track_is_silent(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "all-tracks-silent.db")
-    monkeypatch.setattr(
-        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
-    )
+    monkeypatch.setattr("src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False)
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Silent meeting",
-        final_provider="soniox_async",
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Silent meeting",
+            final_provider="soniox_async",
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
 
     class SilentPipeline(FakePipeline):
@@ -448,22 +433,20 @@ async def test_finalizer_rejects_meeting_when_every_canonical_track_is_silent(
 
 
 @pytest.mark.asyncio
-async def test_finalizer_does_not_treat_provider_failure_as_a_silent_track(
-    monkeypatch, tmp_path
-):
+async def test_finalizer_does_not_treat_provider_failure_as_a_silent_track(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "provider-failure.db")
-    monkeypatch.setattr(
-        "src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False
-    )
+    monkeypatch.setattr("src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False)
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Provider failure",
-        final_provider="soniox_async",
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Provider failure",
+            final_provider="soniox_async",
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
 
     class ProviderPipeline(FakePipeline):
@@ -475,9 +458,7 @@ async def test_finalizer_does_not_treat_provider_failure_as_a_silent_track(
     finalizer = MeetingFinalizer(
         store,
         tmp_path / "audio",
-        lambda *, on_transcription, **_kwargs: ProviderPipeline(
-            "Valid microphone speech", on_transcription
-        ),
+        lambda *, on_transcription, **_kwargs: ProviderPipeline("Valid microphone speech", on_transcription),
         lambda *_args, **_kwargs: None,
     )
     _stub_two_track_preparation(finalizer, tmp_path)
@@ -499,12 +480,14 @@ async def test_recovery_retranscribes_when_prepared_audio_identity_changes(monke
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Changed audio recovery",
-        final_provider="soniox_async",
-        consent_confirmed=True,
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Changed audio recovery",
+            final_provider="soniox_async",
+            consent_confirmed=True,
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
     audio_root = tmp_path / "audio"
     paths: dict[tuple[str, int], Path] = {}
@@ -518,8 +501,12 @@ async def test_recovery_retranscribes_when_prepared_audio_identity_changes(monke
         _write_meeting_wav(path, sample_value=sequence + 1)
         paths[(source, sequence)] = path
         store.add_audio_chunk(
-            meeting["id"], source=source, sequence=sequence, relative_path=relative,
-            started_at_ms=start_ms, ended_at_ms=start_ms + 100,
+            meeting["id"],
+            source=source,
+            sequence=sequence,
+            relative_path=relative,
+            started_at_ms=start_ms,
+            ended_at_ms=start_ms + 100,
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
 
@@ -534,7 +521,8 @@ async def test_recovery_retranscribes_when_prepared_audio_identity_changes(monke
             await super().transcribe_file_direct(path)
 
     first = MeetingFinalizer(
-        store, audio_root,
+        store,
+        audio_root,
         lambda *, on_transcription, **_kwargs: CrashAfterMicrophone("old microphone text", on_transcription),
         lambda *_args, **_kwargs: None,
     )
@@ -558,17 +546,22 @@ async def test_recovery_retranscribes_when_prepared_audio_identity_changes(monke
             await super().transcribe_file_direct(path)
 
     retry = MeetingFinalizer(
-        store, audio_root,
+        store,
+        audio_root,
         lambda *, on_transcription, **_kwargs: RetryPipeline("fresh text", on_transcription),
         lambda *_args, **_kwargs: None,
     )
     result = await retry.run(meeting["id"], progress)
     assert result["state"] == "ready"
     assert retry_calls == ["microphone", "system"]
-    attempts = retry.artifact_store._connect().execute(
-        "SELECT attempt_number,state,error_code FROM transcription_attempts WHERE transcript_id=? ORDER BY attempt_number",
-        (meeting["id"],),
-    ).fetchall()
+    attempts = (
+        retry.artifact_store._connect()
+        .execute(
+            "SELECT attempt_number,state,error_code FROM transcription_attempts WHERE transcript_id=? ORDER BY attempt_number",
+            (meeting["id"],),
+        )
+        .fetchall()
+    )
     assert len(attempts) == 2
     assert attempts[0]["state"] == "failed"
     assert attempts[0]["error_code"] == "source_audio_identity_changed"
@@ -581,9 +574,7 @@ async def test_finalizer_creates_canonical_segments_and_cited_analysis(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_finalizer_recovery_reuses_completed_track_without_second_provider_call(
-    monkeypatch, tmp_path
-):
+async def test_finalizer_recovery_reuses_completed_track_without_second_provider_call(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "track-recovery.db")
     database.init_database()
@@ -629,9 +620,7 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
             await super().transcribe_file_direct(path)
 
     def first_factory(*, on_transcription, **_kwargs):
-        expected_duration_hints.append(
-            _kwargs["direct_file_expected_duration_seconds"]
-        )
+        expected_duration_hints.append(_kwargs["direct_file_expected_duration_seconds"])
         return FailingSystemPipeline("Mic result", on_transcription)
 
     async def progress(_status, _amount):
@@ -644,10 +633,12 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
     assert expected_duration_hints == pytest.approx([0.1, 0.1])
     assert all(not path.exists() for path in first_provider_paths)
     partial = first.artifact_store.list_track_stage_results(
-        first.artifact_store._connect().execute(
+        first.artifact_store._connect()
+        .execute(
             "SELECT id FROM transcription_attempts WHERE transcript_id=? ORDER BY attempt_number DESC LIMIT 1",
             (meeting["id"],),
-        ).fetchone()["id"]
+        )
+        .fetchone()["id"]
     )
     assert [item.source_track for item in partial] == ["microphone"]
 
@@ -665,9 +656,7 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
     retry = MeetingFinalizer(
         store,
         audio_root,
-        lambda *, on_transcription, **_kwargs: RetryPipeline(
-            "System result", on_transcription
-        ),
+        lambda *, on_transcription, **_kwargs: RetryPipeline("System result", on_transcription),
         lambda *_a, **_k: None,
     )
     result = await retry.run(meeting["id"], progress)
@@ -695,8 +684,12 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
             output.setframerate(16_000)
             output.writeframes(b"\0\0" * 1_600)
         store.add_audio_chunk(
-            meeting["id"], source=source, sequence=0, relative_path=relative,
-            started_at_ms=0, ended_at_ms=100,
+            meeting["id"],
+            source=source,
+            sequence=0,
+            relative_path=relative,
+            started_at_ms=0,
+            ended_at_ms=100,
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
 
@@ -706,17 +699,34 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
 
     async def generate(prompt, _model, **_kwargs):
         segment_ids = re.findall(r'"segmentId":\s*"(seg_[a-f0-9]{32})"', prompt)
-        return json.dumps({
-            "schemaVersion": "1",
-            "title": "Roadmap",
-            "executiveSummary": "The launch was approved.",
-            "topics": [{"title": "Launch", "summary": "Launch planning", "segmentIds": [segment_ids[0]]}],
-            "decisions": [{"id": "decision-1", "text": "Launch approved", "owner": None, "segmentIds": [segment_ids[-1]]}],
-            "actionItems": [{"id": "action-1", "text": "Send brief", "owner": "You", "dueDate": None, "status": "open", "segmentIds": [segment_ids[0]]}],
-            "openQuestions": [], "risks": [], "chapters": [], "keywords": ["launch"],
-        })
+        return json.dumps(
+            {
+                "schemaVersion": "1",
+                "title": "Roadmap",
+                "executiveSummary": "The launch was approved.",
+                "topics": [{"title": "Launch", "summary": "Launch planning", "segmentIds": [segment_ids[0]]}],
+                "decisions": [
+                    {"id": "decision-1", "text": "Launch approved", "owner": None, "segmentIds": [segment_ids[-1]]}
+                ],
+                "actionItems": [
+                    {
+                        "id": "action-1",
+                        "text": "Send brief",
+                        "owner": "You",
+                        "dueDate": None,
+                        "status": "open",
+                        "segmentIds": [segment_ids[0]],
+                    }
+                ],
+                "openQuestions": [],
+                "risks": [],
+                "chapters": [],
+                "keywords": ["launch"],
+            }
+        )
 
     updates = []
+
     async def progress(status, amount):
         updates.append((status, amount))
 
@@ -730,13 +740,11 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
     assert head is not None
     artifact = finalizer.artifact_store.get_artifact(head.artifact_id)
     assert artifact is not None
-    assert {segment["id"] for segment in detail["segments"]} == {
-        segment.segment_id for segment in artifact.segments
+    assert {segment["id"] for segment in detail["segments"]} == {segment.segment_id for segment in artifact.segments}
+    assert {item.source_track for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)} == {
+        "microphone",
+        "system",
     }
-    assert {
-        item.source_track
-        for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)
-    } == {"microphone", "system"}
     assert detail["outputs"][0]["schemaVersion"] == "1"
     assert detail["outputs"][0]["payload"]["decisions"][0]["segmentIds"]
     global_item = next(item for item in database.load_all_transcripts() if item["id"] == meeting["id"])
@@ -747,10 +755,12 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
     assert store.audio_chunks(meeting["id"]) == []
     chunk_states = {
         row[0]
-        for row in database._get_connection().execute(
+        for row in database._get_connection()
+        .execute(
             "SELECT state FROM meeting_audio_chunks WHERE meeting_id=?",
             (meeting["id"],),
-        ).fetchall()
+        )
+        .fetchall()
     }
     assert chunk_states == {"purged"}
     assert not list((audio_root / meeting["id"]).rglob("*.wav"))
@@ -786,13 +796,20 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
 
 def test_analysis_validation_drops_unsupported_claims():
     payload = parse_and_validate_analysis(
-        json.dumps({
-            "schemaVersion": "1",
-            "title": "Call", "executiveSummary": "Summary",
-            "topics": [{"title": "Valid", "summary": "Supported", "segmentIds": ["segment-1"]}],
-            "decisions": [{"id": "decision-1", "text": "Invented", "owner": None, "segmentIds": ["missing"]}],
-            "actionItems": [], "openQuestions": [], "risks": [], "chapters": [], "keywords": [],
-        }),
+        json.dumps(
+            {
+                "schemaVersion": "1",
+                "title": "Call",
+                "executiveSummary": "Summary",
+                "topics": [{"title": "Valid", "summary": "Supported", "segmentIds": ["segment-1"]}],
+                "decisions": [{"id": "decision-1", "text": "Invented", "owner": None, "segmentIds": ["missing"]}],
+                "actionItems": [],
+                "openQuestions": [],
+                "risks": [],
+                "chapters": [],
+                "keywords": [],
+            }
+        ),
         {"segment-1"},
     )
     assert len(payload["topics"]) == 1
@@ -817,12 +834,27 @@ def test_analysis_prompt_treats_title_notes_and_transcript_as_untrusted_json():
 
 def test_echo_deduplication_prefers_system_but_keeps_real_overlap():
     segments = [
-        {"id": "mic-echo", "source": "microphone", "startMs": 100, "endMs": 2_000,
-         "text": "We approved the September launch date."},
-        {"id": "system", "source": "system", "startMs": 150, "endMs": 2_050,
-         "text": "We approved the September launch date"},
-        {"id": "mic-real", "source": "microphone", "startMs": 500, "endMs": 1_700,
-         "text": "I will send the customer brief tomorrow."},
+        {
+            "id": "mic-echo",
+            "source": "microphone",
+            "startMs": 100,
+            "endMs": 2_000,
+            "text": "We approved the September launch date.",
+        },
+        {
+            "id": "system",
+            "source": "system",
+            "startMs": 150,
+            "endMs": 2_050,
+            "text": "We approved the September launch date",
+        },
+        {
+            "id": "mic-real",
+            "source": "microphone",
+            "startMs": 500,
+            "endMs": 1_700,
+            "text": "I will send the customer brief tomorrow.",
+        },
     ]
     result = MeetingFinalizer._remove_cross_track_echoes(segments)
     assert {item["id"] for item in result} == {"system", "mic-real"}
@@ -845,22 +877,24 @@ def test_echo_deduplication_sweep_skips_non_overlapping_pairs(monkeypatch):
     segments: list[dict[str, object]] = []
     for index in range(2_000):
         start = index * 2_000
-        segments.extend([
-            {
-                "id": f"system-{index}",
-                "source": "system",
-                "startMs": start,
-                "endMs": start + 500,
-                "text": "A sufficiently long system sentence",
-            },
-            {
-                "id": f"mic-{index}",
-                "source": "microphone",
-                "startMs": start + 500,
-                "endMs": start + 1_000,
-                "text": "A sufficiently long microphone sentence",
-            },
-        ])
+        segments.extend(
+            [
+                {
+                    "id": f"system-{index}",
+                    "source": "system",
+                    "startMs": start,
+                    "endMs": start + 500,
+                    "text": "A sufficiently long system sentence",
+                },
+                {
+                    "id": f"mic-{index}",
+                    "source": "microphone",
+                    "startMs": start + 500,
+                    "endMs": start + 1_000,
+                    "text": "A sufficiently long microphone sentence",
+                },
+            ]
+        )
 
     assert MeetingFinalizer._remove_cross_track_echoes(segments) == segments
     assert comparisons == 0
@@ -910,9 +944,7 @@ async def test_attempt_lease_heartbeat_retries_renewal_without_changing_version(
         AsyncMock(),
         artifact_store=artifact_store,
     )
-    monkeypatch.setattr(
-        "src.meeting_finalizer._ATTEMPT_LEASE_HEARTBEAT_SECONDS", 0.001
-    )
+    monkeypatch.setattr("src.meeting_finalizer._ATTEMPT_LEASE_HEARTBEAT_SECONDS", 0.001)
     monkeypatch.setattr(
         "src.meeting_finalizer._ATTEMPT_LEASE_RETRY_DELAYS_SECONDS",
         (0.0, 0.0, 0.0),
@@ -930,20 +962,24 @@ async def test_attempt_lease_heartbeat_retries_renewal_without_changing_version(
 
 
 @pytest.mark.asyncio
-async def test_finalizer_uses_local_diarization_when_claimed_native_response_has_no_speaker_evidence(monkeypatch, tmp_path):
+async def test_finalizer_uses_local_diarization_when_claimed_native_response_has_no_speaker_evidence(
+    monkeypatch, tmp_path
+):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "fallback.db")
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Imported interview",
-        # Gladia is a native-diarization-capable route, but this concrete
-        # response intentionally contains no parsed speaker evidence.
-        final_provider="gladia_async",
-        consent_confirmed=True,
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Imported interview",
+            # Gladia is a native-diarization-capable route, but this concrete
+            # response intentionally contains no parsed speaker evidence.
+            final_provider="gladia_async",
+            consent_confirmed=True,
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
     audio_root = tmp_path / "audio"
     relative = f"{meeting['id']}/import/system.wav"
@@ -955,15 +991,17 @@ async def test_finalizer_uses_local_diarization_when_claimed_native_response_has
         output.setframerate(16_000)
         output.writeframes(b"\0\0" * 16_000)
     store.add_audio_chunk(
-        meeting["id"], source="system", sequence=0, relative_path=relative,
-        started_at_ms=0, ended_at_ms=1_000,
+        meeting["id"],
+        source="system",
+        sequence=0,
+        relative_path=relative,
+        started_at_ms=0,
+        ended_at_ms=1_000,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
 
     class Pipeline(FakePipeline):
-        last_structured_transcript_payload = {
-            "words": [{"text": "Yes", "start": 0.1, "end": 0.4}]
-        }
+        last_structured_transcript_payload = {"words": [{"text": "Yes", "start": 0.1, "end": 0.4}]}
 
     class Diarizer:
         calls = 0
@@ -979,12 +1017,22 @@ async def test_finalizer_uses_local_diarization_when_claimed_native_response_has
 
         async def transcribe_with_fallback_speakers(self, **_kwargs):
             self.calls += 1
-            return ([{
-                "revision": "canonical", "source": "system",
-                "providerSegmentId": "local-0", "speakerLabel": "Speaker 2",
-                "startMs": 100, "endMs": 400, "text": "Yes",
-                "confidence": None, "isFinal": True,
-            }], [])
+            return (
+                [
+                    {
+                        "revision": "canonical",
+                        "source": "system",
+                        "providerSegmentId": "local-0",
+                        "speakerLabel": "Speaker 2",
+                        "startMs": 100,
+                        "endMs": 400,
+                        "text": "Yes",
+                        "confidence": None,
+                        "isFinal": True,
+                    }
+                ],
+                [],
+            )
 
     diarizer = Diarizer()
     finalizer = MeetingFinalizer(
@@ -1014,45 +1062,49 @@ async def test_finalizer_uses_local_diarization_when_claimed_native_response_has
     assert derivations[0].evidence["workerVersion"] == "1.0.0"
     input_kinds = {
         row[0]
-        for row in finalizer.artifact_store._connect().execute(
+        for row in finalizer.artifact_store._connect()
+        .execute(
             "SELECT input_kind FROM canonical_artifact_inputs WHERE artifact_id = ?",
             (artifact.id,),
-        ).fetchall()
+        )
+        .fetchall()
     }
     assert "track_derivation" in input_kinds
     database._close_all_connections()
 
 
 @pytest.mark.asyncio
-async def test_finalizer_recovery_reuses_durable_local_diarization_without_worker_rerun(
-    monkeypatch, tmp_path
-):
+async def test_finalizer_recovery_reuses_durable_local_diarization_without_worker_rerun(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "fallback-recovery.db")
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Recovered local speakers",
-        final_provider="gladia_async",
-        consent_confirmed=True,
-        auto_analyze=False,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Recovered local speakers",
+            final_provider="gladia_async",
+            consent_confirmed=True,
+            auto_analyze=False,
+        )
+    )
     store.transition(meeting["id"], "finalizing")
     audio_root = tmp_path / "audio"
     relative = f"{meeting['id']}/audio/system-000000.wav"
     path = audio_root / relative
     _write_meeting_wav(path, frames=16_000)
     store.add_audio_chunk(
-        meeting["id"], source="system", sequence=0, relative_path=relative,
-        started_at_ms=0, ended_at_ms=1_000,
+        meeting["id"],
+        source="system",
+        sequence=0,
+        relative_path=relative,
+        started_at_ms=0,
+        ended_at_ms=1_000,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
 
     class Pipeline(FakePipeline):
-        last_structured_transcript_payload = {
-            "words": [{"text": "Welcome", "start": 0.1, "end": 0.7}]
-        }
+        last_structured_transcript_payload = {"words": [{"text": "Welcome", "start": 0.1, "end": 0.7}]}
 
     class Diarizer:
         calls = 0
@@ -1062,12 +1114,22 @@ async def test_finalizer_recovery_reuses_durable_local_diarization_without_worke
 
         async def transcribe_with_fallback_speakers(self, **_kwargs):
             self.calls += 1
-            return ([{
-                "revision": "canonical", "source": "system",
-                "providerSegmentId": "local-recovered", "speakerLabel": "Speaker 7",
-                "startMs": 100, "endMs": 700, "text": "Welcome",
-                "confidence": None, "isFinal": True,
-            }], [])
+            return (
+                [
+                    {
+                        "revision": "canonical",
+                        "source": "system",
+                        "providerSegmentId": "local-recovered",
+                        "speakerLabel": "Speaker 7",
+                        "startMs": 100,
+                        "endMs": 700,
+                        "text": "Welcome",
+                        "confidence": None,
+                        "isFinal": True,
+                    }
+                ],
+                [],
+            )
 
     diarizer = Diarizer()
     first = MeetingFinalizer(
@@ -1089,10 +1151,14 @@ async def test_finalizer_recovery_reuses_durable_local_diarization_without_worke
     with pytest.raises(RuntimeError, match="after durable local diarization"):
         await first.run(meeting["id"], progress)
     assert diarizer.calls == 1
-    attempt_id = first.artifact_store._connect().execute(
-        "SELECT id FROM transcription_attempts WHERE transcript_id = ?",
-        (meeting["id"],),
-    ).fetchone()[0]
+    attempt_id = (
+        first.artifact_store._connect()
+        .execute(
+            "SELECT id FROM transcription_attempts WHERE transcript_id = ?",
+            (meeting["id"],),
+        )
+        .fetchone()[0]
+    )
     assert len(first.artifact_store.list_track_derivations(attempt_id)) == 1
 
     def provider_must_not_run(**_kwargs):
@@ -1113,25 +1179,23 @@ async def test_finalizer_recovery_reuses_durable_local_diarization_without_worke
     assert head is not None
     recovered_inputs = {
         row[0]
-        for row in retry.artifact_store._connect().execute(
+        for row in retry.artifact_store._connect()
+        .execute(
             "SELECT input_kind FROM canonical_artifact_inputs WHERE artifact_id = ?",
             (head.artifact_id,),
-        ).fetchall()
+        )
+        .fetchall()
     }
     assert {"track_stage_result", "track_derivation"}.issubset(recovered_inputs)
     database._close_all_connections()
 
 
 def test_finalizer_recognizes_concrete_native_speaker_evidence_not_registry_marketing():
-    assert has_speaker_evidence([
-        {"speakerLabel": "Speaker 1", "text": "Hello", "startMs": 0, "endMs": 500}
-    ]) is True
-    assert has_speaker_evidence([
-        {"speakerLabel": "Meeting audio", "text": "Hello", "startMs": 0, "endMs": 500}
-    ]) is False
-    assert has_speaker_evidence([
-        {"speakerLabel": "Speaker 1", "text": "Hello", "startMs": 500, "endMs": 500}
-    ]) is False
+    assert has_speaker_evidence([{"speakerLabel": "Speaker 1", "text": "Hello", "startMs": 0, "endMs": 500}]) is True
+    assert (
+        has_speaker_evidence([{"speakerLabel": "Meeting audio", "text": "Hello", "startMs": 0, "endMs": 500}]) is False
+    )
+    assert has_speaker_evidence([{"speakerLabel": "Speaker 1", "text": "Hello", "startMs": 500, "endMs": 500}]) is False
     assert has_speaker_evidence([]) is False
 
 
@@ -1148,8 +1212,13 @@ def test_corrupt_complete_chunk_is_quarantined_and_recorded_as_gap(monkeypatch, 
     path.parent.mkdir(parents=True)
     path.write_bytes(b"not a wave file")
     store.add_audio_chunk(
-        meeting["id"], source="system", sequence=0, relative_path=relative,
-        started_at_ms=500, ended_at_ms=1_500, sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        meeting["id"],
+        source="system",
+        sequence=0,
+        relative_path=relative,
+        started_at_ms=500,
+        ended_at_ms=1_500,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
     )
 
     finalizer = MeetingFinalizer(store, audio_root, lambda **_: None, lambda *_: None)
@@ -1177,8 +1246,13 @@ def test_transient_chunk_read_error_does_not_quarantine_durable_audio(monkeypatc
         output.setframerate(16_000)
         output.writeframes(b"\0\0" * 1_600)
     store.add_audio_chunk(
-        meeting["id"], source="system", sequence=0, relative_path=relative,
-        started_at_ms=0, ended_at_ms=100, sha256="expected",
+        meeting["id"],
+        source="system",
+        sequence=0,
+        relative_path=relative,
+        started_at_ms=0,
+        ended_at_ms=100,
+        sha256="expected",
     )
     finalizer = MeetingFinalizer(store, audio_root, lambda **_: None, lambda *_: None)
 
@@ -1215,8 +1289,12 @@ def test_concatenate_failure_preserves_previous_final_and_removes_partial(monkey
             output.setframerate(sample_rate)
             output.writeframes(b"\0\0" * (sample_rate // 10))
         chunk = store.add_audio_chunk(
-            meeting["id"], source="system", sequence=sequence, relative_path=relative,
-            started_at_ms=sequence * 100, ended_at_ms=(sequence + 1) * 100,
+            meeting["id"],
+            source="system",
+            sequence=sequence,
+            relative_path=relative,
+            started_at_ms=sequence * 100,
+            ended_at_ms=(sequence + 1) * 100,
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
         chunks.append(chunk)
@@ -1235,9 +1313,7 @@ def test_concatenate_failure_preserves_previous_final_and_removes_partial(monkey
 
 
 @pytest.mark.asyncio
-async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_checkpoints(
-    monkeypatch, tmp_path
-):
+async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_checkpoints(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "lossless-work.db")
     database.init_database()
@@ -1252,15 +1328,17 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
         path = audio_root / relative
         _write_meeting_wav(path, frames=16_000, sample_value=source_index * 1_000)
         checkpoint_paths.append(path)
-        chunks_by_source[source] = [store.add_audio_chunk(
-            meeting["id"],
-            source=source,
-            sequence=0,
-            relative_path=relative,
-            started_at_ms=0,
-            ended_at_ms=1_000,
-            sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-        )]
+        chunks_by_source[source] = [
+            store.add_audio_chunk(
+                meeting["id"],
+                source=source,
+                sequence=0,
+                relative_path=relative,
+                started_at_ms=0,
+                ended_at_ms=1_000,
+                sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+        ]
 
     finalizer = MeetingFinalizer(store, audio_root, lambda **_: None, lambda *_: None)
     prepared: dict[str, PreparedMeetingTrack] = {}
@@ -1268,9 +1346,7 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
         # The previous source's full WAV must already be gone before the next
         # source is materialized.
         assert not list((audio_root / meeting["id"] / "final").glob("*.wav"))
-        prepared[source] = await finalizer._prepare_lossless_track(
-            meeting["id"], source, chunks_by_source[source]
-        )
+        prepared[source] = await finalizer._prepare_lossless_track(meeting["id"], source, chunks_by_source[source])
         assert prepared[source].path.name == f"{source}.work.flac"
         assert prepared[source].path.is_file()
         assert not list((audio_root / meeting["id"] / "final").glob("*.wav"))
@@ -1281,9 +1357,7 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
         "system.work.flac",
     }
     for track in prepared.values():
-        decoded = await finalizer._decoded_pcm_fingerprint(
-            require_media_tool("ffmpeg"), track.path, stream_index=0
-        )
+        decoded = await finalizer._decoded_pcm_fingerprint(require_media_tool("ffmpeg"), track.path, stream_index=0)
         assert decoded == {
             "sampleCount": track.sample_count,
             "pcmSha256": track.pcm_sha256,
@@ -1294,13 +1368,17 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
     class VoiceStore:
         @staticmethod
         def detail(_meeting_id):
-            return {"segments": [{
-                "id": "segment-1",
-                "speakerId": "speaker-1",
-                "source": "system",
-                "startMs": 0,
-                "endMs": 3_000,
-            }]}
+            return {
+                "segments": [
+                    {
+                        "id": "segment-1",
+                        "speakerId": "speaker-1",
+                        "source": "system",
+                        "startMs": 0,
+                        "endMs": 3_000,
+                    }
+                ]
+            }
 
         @staticmethod
         def register_speaker_embedding(*args, **kwargs):
@@ -1320,18 +1398,14 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
 
     finalizer.store = VoiceStore()
     finalizer.speaker_model = VoiceModel()
-    await finalizer._apply_speaker_intelligence(
-        meeting["id"], {"system": prepared["system"]}
-    )
+    await finalizer._apply_speaker_intelligence(meeting["id"], {"system": prepared["system"]})
     assert len(registered) == 1
     assert not list((audio_root / meeting["id"] / "final").glob("*.voice.wav"))
     database._close_all_connections()
 
 
 @pytest.mark.asyncio
-async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_store_swap(
-    monkeypatch, tmp_path
-):
+async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_store_swap(monkeypatch, tmp_path):
     meeting_id = "meeting-voice-refresh"
     final_dir = tmp_path / meeting_id / "final"
     final_dir.mkdir(parents=True)
@@ -1350,12 +1424,14 @@ async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_st
             assert _meeting_id == meeting_id
             return {
                 "state": "ready",
-                "audioAssets": [{
-                    "kind": "playback_microphone",
-                    "relativePath": f"{meeting_id}/final/microphone.opus",
-                    "byteSize": microphone_path.stat().st_size,
-                    "sha256": microphone_sha256,
-                }],
+                "audioAssets": [
+                    {
+                        "kind": "playback_microphone",
+                        "relativePath": f"{meeting_id}/final/microphone.opus",
+                        "byteSize": microphone_path.stat().st_size,
+                        "sha256": microphone_sha256,
+                    }
+                ],
                 "segments": [
                     {
                         "id": "mic-without-provider-speaker",
@@ -1398,9 +1474,7 @@ async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_st
         return Process()
 
     monkeypatch.setattr("src.meeting_finalizer.require_media_tool", lambda _name: "ffmpeg")
-    monkeypatch.setattr(
-        "src.meeting_finalizer.asyncio.create_subprocess_exec", create_process
-    )
+    monkeypatch.setattr("src.meeting_finalizer.asyncio.create_subprocess_exec", create_process)
     monkeypatch.setattr(
         "src.meeting_finalizer.communicate_or_kill_on_cancel",
         AsyncMock(return_value=(None, b"")),
@@ -1421,9 +1495,10 @@ async def test_speaker_identity_reprocess_extracts_every_window_before_atomic_st
     observation = committed[0][1][0]
     assert observation["source"] == "microphone"
     assert observation["speakerLabel"] == "You"
-    assert observation["speakerId"] == hashlib.sha256(
-        f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
-    ).hexdigest()[:32]
+    assert (
+        observation["speakerId"]
+        == hashlib.sha256(f"{meeting_id}\0canonical\0microphone\0you".encode()).hexdigest()[:32]
+    )
     assert not list(final_dir.glob(".voice-reprocess-*.wav"))
 
 
@@ -1451,20 +1526,24 @@ async def test_speaker_identity_reprocess_rejects_same_size_audio_tamper_before_
         def detail(_meeting_id):
             return {
                 "state": "ready",
-                "audioAssets": [{
-                    "kind": "playback_microphone",
-                    "relativePath": f"{meeting_id}/final/microphone.opus",
-                    "byteSize": microphone_path.stat().st_size,
-                    "sha256": trusted_sha256,
-                }],
-                "segments": [{
-                    "id": "segment-1",
-                    "source": "microphone",
-                    "speakerId": None,
-                    "speakerLabel": "",
-                    "startMs": 0,
-                    "endMs": 4_000,
-                }],
+                "audioAssets": [
+                    {
+                        "kind": "playback_microphone",
+                        "relativePath": f"{meeting_id}/final/microphone.opus",
+                        "byteSize": microphone_path.stat().st_size,
+                        "sha256": trusted_sha256,
+                    }
+                ],
+                "segments": [
+                    {
+                        "id": "segment-1",
+                        "source": "microphone",
+                        "speakerId": None,
+                        "speakerLabel": "",
+                        "startMs": 0,
+                        "endMs": 4_000,
+                    }
+                ],
             }
 
         @staticmethod
@@ -1507,18 +1586,27 @@ def test_full_reprocess_recovers_only_attempts_started_after_the_request():
         }
     }
 
-    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
-        meeting,
-        SimpleNamespace(created_at="2026-07-15T09:59:59+00:00"),
-    ) is False
-    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
-        meeting,
-        SimpleNamespace(created_at="2026-07-15T10:00:01+00:00"),
-    ) is True
-    assert MeetingFinalizer._attempt_belongs_to_current_reprocess(
-        {"captureMetadata": {}},
-        SimpleNamespace(created_at="2020-01-01T00:00:00+00:00"),
-    ) is True
+    assert (
+        MeetingFinalizer._attempt_belongs_to_current_reprocess(
+            meeting,
+            SimpleNamespace(created_at="2026-07-15T09:59:59+00:00"),
+        )
+        is False
+    )
+    assert (
+        MeetingFinalizer._attempt_belongs_to_current_reprocess(
+            meeting,
+            SimpleNamespace(created_at="2026-07-15T10:00:01+00:00"),
+        )
+        is True
+    )
+    assert (
+        MeetingFinalizer._attempt_belongs_to_current_reprocess(
+            {"captureMetadata": {}},
+            SimpleNamespace(created_at="2020-01-01T00:00:00+00:00"),
+        )
+        is True
+    )
 
 
 def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
@@ -1572,18 +1660,14 @@ def test_full_reprocess_reuses_current_completed_canonical_artifact(tmp_path):
         request_options=dict(expected_route.request_options),
     )
 
-    assert finalizer._completed_artifact_for_current_reprocess(meeting) == (
-        "already-paid-segment",
-    )
+    assert finalizer._completed_artifact_for_current_reprocess(meeting) == ("already-paid-segment",)
 
     attempt.created_at = "2026-07-15T09:59:59+00:00"
     assert finalizer._completed_artifact_for_current_reprocess(meeting) is None
 
 
 @pytest.mark.asyncio
-async def test_full_reprocess_projects_committed_artifact_without_calling_provider_again(
-    monkeypatch, tmp_path
-):
+async def test_full_reprocess_projects_committed_artifact_without_calling_provider_again(monkeypatch, tmp_path):
     meeting_id = "meeting-recover-projection"
     meeting = {
         "id": meeting_id,
@@ -1635,9 +1719,7 @@ async def test_full_reprocess_projects_committed_artifact_without_calling_provid
 
 
 @pytest.mark.asyncio
-async def test_retranscription_reads_archive_without_rewriting_audio_assets(
-    monkeypatch, tmp_path
-):
+async def test_retranscription_reads_archive_without_rewriting_audio_assets(monkeypatch, tmp_path):
     meeting_id = "meeting-retained-source-is-read-only"
     track = PreparedMeetingTrack(
         path=tmp_path / "microphone.work.flac",
@@ -1647,11 +1729,13 @@ async def test_retranscription_reads_archive_without_rewriting_audio_assets(
         pcm_sha256="a" * 64,
     )
     track.path.write_bytes(b"working-copy")
-    store = SimpleNamespace(get=lambda _meeting_id: {
-        "id": meeting_id,
-        "finalProvider": "soniox_async",
-        "captureMetadata": {"reprocessKind": "full_transcript"},
-    })
+    store = SimpleNamespace(
+        get=lambda _meeting_id: {
+            "id": meeting_id,
+            "finalProvider": "soniox_async",
+            "captureMetadata": {"reprocessKind": "full_transcript"},
+        }
+    )
     finalizer = MeetingFinalizer(
         store,
         tmp_path,
@@ -1678,9 +1762,7 @@ async def test_retranscription_reads_archive_without_rewriting_audio_assets(
 
 
 @pytest.mark.asyncio
-async def test_failed_lossless_work_track_preserves_prior_flac_and_retry_wav(
-    monkeypatch, tmp_path
-):
+async def test_failed_lossless_work_track_preserves_prior_flac_and_retry_wav(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "lossless-work-failure.db")
     database.init_database()
@@ -1691,11 +1773,17 @@ async def test_failed_lossless_work_track_preserves_prior_flac_and_retry_wav(
     relative = f"{meeting['id']}/audio/system-000000.wav"
     checkpoint = audio_root / relative
     _write_meeting_wav(checkpoint, frames=16_000, sample_value=1_000)
-    chunks = [store.add_audio_chunk(
-        meeting["id"], source="system", sequence=0, relative_path=relative,
-        started_at_ms=0, ended_at_ms=1_000,
-        sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
-    )]
+    chunks = [
+        store.add_audio_chunk(
+            meeting["id"],
+            source="system",
+            sequence=0,
+            relative_path=relative,
+            started_at_ms=0,
+            ended_at_ms=1_000,
+            sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
+        )
+    ]
     final_dir = audio_root / meeting["id"] / "final"
     final_dir.mkdir(parents=True)
     prior = final_dir / "system.work.flac"
@@ -1710,9 +1798,7 @@ async def test_failed_lossless_work_track_preserves_prior_flac_and_retry_wav(
         return EncodingProcess()
 
     monkeypatch.setattr("src.meeting_finalizer.require_media_tool", lambda name: name)
-    monkeypatch.setattr(
-        "src.meeting_finalizer.asyncio.create_subprocess_exec", fake_create
-    )
+    monkeypatch.setattr("src.meeting_finalizer.asyncio.create_subprocess_exec", fake_create)
     monkeypatch.setattr(
         "src.meeting_finalizer.communicate_or_kill_on_cancel",
         AsyncMock(return_value=(b"", b"")),
@@ -1801,9 +1887,7 @@ async def test_audio_archive_manifest_matches_deterministic_map_order(
     assert archive["trackManifestVersion"] == 2
     assert archive["equalityVerified"] is True
     assert [track["source"] for track in archive["trackManifest"]] == expected_archive_sources
-    assert [track["streamIndex"] for track in archive["trackManifest"]] == list(
-        range(len(expected_archive_sources))
-    )
+    assert [track["streamIndex"] for track in archive["trackManifest"]] == list(range(len(expected_archive_sources)))
     assert {track["codec"] for track in archive["trackManifest"]} == {"flac"}
     assert {track["sampleRate"] for track in archive["trackManifest"]} == {16_000}
     assert {track["channels"] for track in archive["trackManifest"]} == {1}
@@ -1839,11 +1923,13 @@ async def test_imported_system_only_meeting_gets_archive_and_playback_assets(
     database.init_database()
     store = MeetingStore()
     store.initialize()
-    meeting = store.create(MeetingCreate(
-        title="Imported recording",
-        origin="imported",
-        consent_confirmed=True,
-    ))
+    meeting = store.create(
+        MeetingCreate(
+            title="Imported recording",
+            origin="imported",
+            consent_confirmed=True,
+        )
+    )
     audio_root = tmp_path / "audio"
     system_path = audio_root / meeting["id"] / "final" / "system.wav"
     _write_meeting_wav(system_path)
@@ -1869,19 +1955,23 @@ async def test_imported_system_only_meeting_gets_archive_and_playback_assets(
     ("payload", "returncode", "message"),
     [
         (
-            {"streams": [{"index": 0, "codec_type": "audio", "codec_name": "mp3",
-                           "sample_rate": "16000", "channels": 1}],
-             "format": {"duration": "1.0"}},
+            {
+                "streams": [
+                    {"index": 0, "codec_type": "audio", "codec_name": "mp3", "sample_rate": "16000", "channels": 1}
+                ],
+                "format": {"duration": "1.0"},
+            },
             0,
             "expected flac",
         ),
         (
-            {"streams": [
-                {"index": 0, "codec_type": "audio", "codec_name": "flac",
-                 "sample_rate": "16000", "channels": 1},
-                {"index": 1, "codec_type": "audio", "codec_name": "flac",
-                 "sample_rate": "16000", "channels": 1},
-            ], "format": {"duration": "1.0"}},
+            {
+                "streams": [
+                    {"index": 0, "codec_type": "audio", "codec_name": "flac", "sample_rate": "16000", "channels": 1},
+                    {"index": 1, "codec_type": "audio", "codec_name": "flac", "sample_rate": "16000", "channels": 1},
+                ],
+                "format": {"duration": "1.0"},
+            },
             0,
             "expected 1 stream",
         ),
@@ -1897,24 +1987,24 @@ async def test_audio_asset_verification_rejects_wrong_codec_stream_count_and_cor
     path = tmp_path / "candidate.mka"
     path.write_bytes(b"candidate")
     process = SimpleNamespace(returncode=returncode)
-    finalizer = MeetingFinalizer(
-        SimpleNamespace(), tmp_path, lambda **_: None, lambda *_: None
-    )
-    with patch(
-        "src.meeting_finalizer.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=process),
-    ):
-        with patch(
+    finalizer = MeetingFinalizer(SimpleNamespace(), tmp_path, lambda **_: None, lambda *_: None)
+    with (
+        patch(
+            "src.meeting_finalizer.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ),
+        patch(
             "src.meeting_finalizer.communicate_or_kill_on_cancel",
             new=AsyncMock(return_value=(json.dumps(payload).encode(), b"corrupt file")),
-        ):
-            with pytest.raises(RuntimeError, match=message):
-                await finalizer._verify_audio_asset(
-                    "ffprobe",
-                    path,
-                    expected_codec="flac",
-                    expected_streams=1,
-                )
+        ),
+        pytest.raises(RuntimeError, match=message),
+    ):
+        await finalizer._verify_audio_asset(
+            "ffprobe",
+            path,
+            expected_codec="flac",
+            expected_streams=1,
+        )
 
 
 @pytest.mark.asyncio
@@ -1958,9 +2048,7 @@ async def test_failed_temporary_verification_preserves_prior_archive_and_commits
     )
 
     with pytest.raises(RuntimeError, match="wrong codec"):
-        await finalizer._consolidate_audio_assets(
-            meeting["id"], {"system": (system_path, 100, 0)}
-        )
+        await finalizer._consolidate_audio_assets(meeting["id"], {"system": (system_path, 100, 0)})
 
     assert previous.read_bytes() == b"previous-verified-archive"
     assert store.audio_assets(meeting["id"]) == []

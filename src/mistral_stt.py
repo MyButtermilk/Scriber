@@ -1,13 +1,15 @@
 """
 Mistral STT services for realtime and async transcription.
 """
+
 from __future__ import annotations
 
 import asyncio
 import io
 import json
 import re
-from typing import Any, AsyncGenerator, BinaryIO, Callable, Optional, cast
+from collections.abc import AsyncGenerator, Callable
+from typing import Any, BinaryIO, cast
 
 import aiohttp
 from loguru import logger
@@ -33,7 +35,7 @@ from src.runtime.http_response import read_response_text_limited
 _MISTRAL_TRANSCRIPTIONS_URL = "https://api.mistral.ai/v1/audio/transcriptions"
 
 
-def _language_to_code(language: Optional[Language] | str | None) -> str:
+def _language_to_code(language: Language | None | str | None) -> str:
     if not language:
         return "auto"
     if isinstance(language, Language):
@@ -92,9 +94,7 @@ def _extract_text(payload: dict[str, Any]) -> str:
     segments = payload.get("segments") or []
     if isinstance(segments, list):
         return " ".join(
-            str(seg.get("text", "")).strip()
-            for seg in segments
-            if isinstance(seg, dict) and seg.get("text")
+            str(seg.get("text", "")).strip() for seg in segments if isinstance(seg, dict) and seg.get("text")
         ).strip()
     return ""
 
@@ -105,17 +105,11 @@ def format_mistral_segments_with_speakers(segments: list[dict[str, Any]]) -> str
         return ""
 
     has_speakers = any(
-        isinstance(seg, dict)
-        and (
-            seg.get("speaker_id") not in (None, "")
-            or seg.get("speaker") not in (None, "")
-        )
+        isinstance(seg, dict) and (seg.get("speaker_id") not in (None, "") or seg.get("speaker") not in (None, ""))
         for seg in segments
     )
     if not has_speakers:
-        return " ".join(
-            str(seg.get("text", "")).strip() for seg in segments if isinstance(seg, dict)
-        ).strip()
+        return " ".join(str(seg.get("text", "")).strip() for seg in segments if isinstance(seg, dict)).strip()
 
     speaker_map: dict[str, int] = {}
     blocks: list[tuple[int, list[str]]] = []
@@ -150,7 +144,7 @@ async def transcribe_with_mistral(
     language: str | None = None,
     context_bias: str | list[str] | None = "",
     diarize: bool = False,
-    timestamp_granularities: Optional[list[str]] = None,
+    timestamp_granularities: list[str] | None = None,
     timeout_secs: int = 180,
 ) -> dict[str, Any]:
     effective_language = language
@@ -209,7 +203,7 @@ class MistralRealtimeSTTService(SegmentedSTTService):
         *,
         api_key: str,
         model: str,
-        language: Optional[Language] | str = "auto",
+        language: Language | None | str = "auto",
         custom_vocab: str = "",
         aiohttp_session: aiohttp.ClientSession | None = None,
         **kwargs,
@@ -233,7 +227,7 @@ class MistralRealtimeSTTService(SegmentedSTTService):
     async def set_language(self, language: Language):
         self._language = _language_to_code(language)
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame]:
         if not audio:
             return
         try:
@@ -296,10 +290,10 @@ class MistralAsyncProcessor(FrameProcessor):
         *,
         api_key: str,
         model: str,
-        language: Optional[Language] | str = "auto",
+        language: Language | None | str = "auto",
         custom_vocab: str = "",
         session: aiohttp.ClientSession | None = None,
-        on_progress: Optional[Callable[[str], None]] = None,
+        on_progress: Callable[[str], None] | None = None,
         diarize: bool = False,
     ):
         super().__init__()

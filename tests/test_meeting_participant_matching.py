@@ -144,8 +144,7 @@ def test_llm_results_are_bounded_unique_unconfirmed_and_reject_low_confidence():
     speaker_key = next(iter(speaker_keys))
     person_key = next(iter(person_keys))
     low = parse_llm_suggestions(
-        '{"assignments":[{"speakerKey":"%s","participantKey":"%s","confidence":0.4}]}'
-        % (speaker_key, person_key),
+        '{"assignments":[{"speakerKey":"%s","participantKey":"%s","confidence":0.4}]}' % (speaker_key, person_key),
         speaker_keys,
         person_keys,
     )
@@ -153,8 +152,7 @@ def test_llm_results_are_bounded_unique_unconfirmed_and_reject_low_confidence():
 
     accepted = parse_llm_suggestions(
         '{"assignments":[{"speakerKey":"%s","participantKey":"%s",'
-        '"confidence":0.82,"reason":"Customer context"}]}'
-        % (speaker_key, person_key),
+        '"confidence":0.82,"reason":"Customer context"}]}' % (speaker_key, person_key),
         speaker_keys,
         person_keys,
     )
@@ -182,15 +180,17 @@ def test_confirmation_people_keep_declined_humans_but_never_resources():
 def test_meeting_local_name_is_resolved_without_outlook_or_llm_suggestions():
     detail = _detail()
     detail["captureMetadata"]["calendarEvent"] = None
-    detail["speakers"] = [{
-        "id": "shared-room",
-        "label": "Speaker 1",
-        "displayName": "Berlin project room",
-        "sourceHint": "system",
-        "profileId": None,
-        "confidence": None,
-        "participantLinkSource": "custom_name",
-    }]
+    detail["speakers"] = [
+        {
+            "id": "shared-room",
+            "label": "Speaker 1",
+            "displayName": "Berlin project room",
+            "sourceHint": "system",
+            "profileId": None,
+            "confidence": None,
+            "participantLinkSource": "custom_name",
+        }
+    ]
 
     context = build_assignment_context(detail, [])
 

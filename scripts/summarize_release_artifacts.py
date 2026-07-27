@@ -73,16 +73,11 @@ def summarize_sidecar(sidecar: Any) -> dict[str, Any]:
         "cacheHit": cache.get("hit"),
         "cacheKeyPrefix": str(cache.get("key", ""))[:12] if cache.get("key") else None,
         "runtimeCacheHit": runtime_layer.get("cacheHit"),
-        "runtimeCacheKeyPrefix": str(runtime_layer.get("cacheKey", ""))[:12]
-        if runtime_layer.get("cacheKey")
-        else None,
+        "runtimeCacheKeyPrefix": str(runtime_layer.get("cacheKey", ""))[:12] if runtime_layer.get("cacheKey") else None,
         "rustAudioCacheHit": rust_audio.get("cacheHit"),
-        "rustAudioCacheKeyPrefix": str(rust_audio.get("cacheKey", ""))[:12]
-        if rust_audio.get("cacheKey")
-        else None,
+        "rustAudioCacheKeyPrefix": str(rust_audio.get("cacheKey", ""))[:12] if rust_audio.get("cacheKey") else None,
         "pyInstallerRebuilt": "pyinstaller-build" in phase_labels,
-        "rustAudioRebuilt": "rust-audio-sidecar-build" in phase_labels
-        and rust_audio.get("cacheHit") is not True,
+        "rustAudioRebuilt": "rust-audio-sidecar-build" in phase_labels and rust_audio.get("cacheHit") is not True,
         "topPhases": phases[:8],
         "failedPhases": [phase for phase in phases if phase.get("ok") is False],
     }
@@ -154,9 +149,7 @@ def summarize_cache(data: dict[str, Any] | None, path: Path | None) -> dict[str,
         path_evidence = []
 
     evidence_by_name = {
-        str(item.get("Name")): item
-        for item in path_evidence
-        if isinstance(item, dict) and item.get("Name") is not None
+        str(item.get("Name")): item for item in path_evidence if isinstance(item, dict) and item.get("Name") is not None
     }
 
     normalized_rows: list[dict[str, Any]] = []
@@ -250,14 +243,10 @@ def build_oracle_brief(summary: dict[str, Any]) -> list[str]:
                 f"firstLineToLastLine={durations.get('firstLineToLastLineSeconds')}s"
             )
     if diagnostics:
-        lines.append(
-            "diagnostics: "
-            + "; ".join(f"{item.get('code')}={item.get('severity')}" for item in diagnostics)
-        )
+        lines.append("diagnostics: " + "; ".join(f"{item.get('code')}={item.get('severity')}" for item in diagnostics))
     if recommendations:
         lines.append(
-            "recommendations: "
-            + "; ".join(f"{item.get('code')}={item.get('priority')}" for item in recommendations)
+            "recommendations: " + "; ".join(f"{item.get('code')}={item.get('priority')}" for item in recommendations)
         )
     return lines
 
@@ -496,9 +485,7 @@ def summarize_release_artifacts(root: Path) -> dict[str, Any]:
         "artifactRoot": str(root),
         "buildTiming": summarize_build_timing(load_json(timing_path), timing_path),
         "cacheSummary": summarize_cache(load_json(cache_path), cache_path),
-        "tauriBundleLog": summarize_tauri_bundle_log(
-            load_json(tauri_bundle_log_path), tauri_bundle_log_path
-        ),
+        "tauriBundleLog": summarize_tauri_bundle_log(load_json(tauri_bundle_log_path), tauri_bundle_log_path),
     }
     summary["diagnostics"] = analyze_summary(summary)
     summary["recommendations"] = build_recommendations(summary["diagnostics"])

@@ -1,7 +1,7 @@
 import asyncio
+import hashlib
 import threading
 import types
-import hashlib
 
 import numpy as np
 import pytest
@@ -147,9 +147,7 @@ def test_rust_capture_wav_artifact_validates_opens_and_releases(tmp_path):
     assert lease_id not in str(snapshot)
     assert artifact.release() is True
     assert artifact.released is True
-    assert calls == [
-        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
-    ]
+    assert calls == [("audioCaptureArtifactRelease", {"leaseId": lease_id})]
 
 
 @pytest.mark.asyncio
@@ -204,9 +202,7 @@ async def test_rust_capture_wav_artifact_release_async_joins_shell_ack_before_pr
         await release_task
 
     assert artifact.released is True
-    assert calls == [
-        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
-    ]
+    assert calls == [("audioCaptureArtifactRelease", {"leaseId": lease_id})]
 
 
 def test_rust_capture_wav_artifact_rejects_inconsistent_pcm_header(tmp_path):
@@ -276,9 +272,8 @@ def test_invalid_python_artifact_contract_releases_tauri_lease():
     )
 
     assert source.take_capture_wav_artifact() is None
-    assert calls == [
-        ("audioCaptureArtifactRelease", {"leaseId": lease_id})
-    ]
+    assert calls == [("audioCaptureArtifactRelease", {"leaseId": lease_id})]
+
 
 def test_rust_audio_default_without_favorite_uses_windows_default(monkeypatch):
     monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "default", raising=False)
@@ -1099,9 +1094,7 @@ def test_provider_replay_capture_attests_consumed_fixture_tail_and_eos(
     assert fixture_consumed.is_set()
     assert attestation is not None
     assert attestation["fixturePcmSha256"] == hashlib.sha256(fixture).hexdigest()
-    assert attestation["capturedPcmSha256"] == hashlib.sha256(
-        fixture + b"\0" * 4
-    ).hexdigest()
+    assert attestation["capturedPcmSha256"] == hashlib.sha256(fixture + b"\0" * 4).hexdigest()
     assert attestation["fixturePayloadBytesRead"] == len(fixture)
     assert attestation["fixtureAudioFramesRead"] == 6
     assert attestation["payloadBytesRead"] == 16
@@ -1825,9 +1818,7 @@ def test_rust_prototype_stop_keeps_reader_alive_until_sidecar_eos(monkeypatch):
         shell_call=shell_call,
         reader_factory=lambda *_args, **_kwargs: reader,
         first_frame_timeout_seconds=1.0,
-        on_start_marker=lambda marker, timestamp_ns=None: markers.append(
-            (marker, timestamp_ns)
-        ),
+        on_start_marker=lambda marker, timestamp_ns=None: markers.append((marker, timestamp_ns)),
     )
     callbacks: list[np.ndarray] = []
     source.open(lambda audio, *_args: callbacks.append(audio.copy()))
@@ -1909,7 +1900,7 @@ def test_rust_prototype_start_waits_for_live_frame_after_callbacking_prebuffer(m
             if self._offset >= len(self._payload):
                 return b""
             end = min(len(self._payload), self._offset + size)
-            chunk = self._payload[self._offset:end]
+            chunk = self._payload[self._offset : end]
             self._offset = end
             return chunk
 
@@ -2338,9 +2329,7 @@ def test_rust_audio_device_selection_payload_maps_portaudio_index_to_native_hash
         default=types.SimpleNamespace(device=(0, None), hostapi=1),
         query_hostapis=lambda: [{"name": "MME"}, {"name": "Windows WASAPI"}],
         query_devices=lambda device=None, kind=None: (
-            devices
-            if device is None and kind is None
-            else devices[0 if device is None else int(device)]
+            devices if device is None and kind is None else devices[0 if device is None else int(device)]
         ),
         check_input_settings=lambda **_kwargs: None,
     )
@@ -2519,9 +2508,7 @@ async def test_microphone_input_resolves_current_device_when_warm_hint_turns_sta
         device="7",
         keep_alive=True,
         prewarm_manager=prewarm,
-        fresh_device_resolver=lambda: (
-            fresh_resolution_calls.append("resolved") or "12"
-        ),
+        fresh_device_resolver=lambda: fresh_resolution_calls.append("resolved") or "12",
     )
     mic._create_audio_task = lambda: None
 
@@ -3053,9 +3040,7 @@ async def test_microphone_stop_accepts_rust_tail_until_eos_before_success_marker
         channels=1,
         block_size=16,
         on_last_audio_chunk_sent=lambda: events.append("last-chunk-sent"),
-        on_start_marker=lambda marker, timestamp_ns=None: markers.append(
-            (marker, timestamp_ns)
-        ),
+        on_start_marker=lambda marker, timestamp_ns=None: markers.append((marker, timestamp_ns)),
     )
     mic._audio_in_queue = object()
     mic._create_audio_task = lambda: None

@@ -7,14 +7,11 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_sidecar_metadata_redacts_absolute_build_paths() -> None:
-    script = (
-        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
 
     helper_start = script.index("function Test-IsRootedBuildMetadataPath")
     writer_start = script.index("function Write-SidecarBuildMetadata", helper_start)
@@ -38,9 +35,7 @@ def test_packaged_sidecar_metadata_accepts_path_illegal_diagnostics() -> None:
     if powershell is None:
         pytest.skip("Windows PowerShell 5.1 is unavailable")
 
-    script = (
-        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     helper_start = script.index("function Test-IsRootedBuildMetadataPath")
     writer_start = script.index("function Write-SidecarBuildMetadata", helper_start)
     helper = script[helper_start:writer_start]
@@ -82,9 +77,7 @@ def test_packaged_sidecar_metadata_preserves_collection_shapes() -> None:
     if powershell is None:
         pytest.skip("Windows PowerShell 5.1 is unavailable")
 
-    script = (
-        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
+    script = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
     helper_start = script.index("function Test-IsRootedBuildMetadataPath")
     writer_start = script.index("function Write-SidecarBuildMetadata", helper_start)
     helper = script[helper_start:writer_start]
@@ -117,12 +110,8 @@ Convert-ToPathRedactedBuildMetadataValue -Value $payload |
 
 
 def test_research_builds_remove_volatile_packaged_sidecar_metadata() -> None:
-    sidecar = (
-        REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
-    windows_build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(
-        encoding="utf-8"
-    )
+    sidecar = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    windows_build = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
 
     assert "[switch]$DeterministicResearchMetadata" in sidecar
     assert '"1970-01-01T00:00:00.0000000Z"' in sidecar

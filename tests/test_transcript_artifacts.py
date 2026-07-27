@@ -29,9 +29,7 @@ def test_frozen_route_persists_only_vocabulary_metadata():
     assert draft.model == Config.SONIOX_ASYNC_MODEL
     assert draft.request_options["providerRoute"] == "async_transcription"
     assert draft.request_options["audioInputFormat"] is None
-    assert draft.request_options["providerAudioCapabilityId"].startswith(
-        "soniox_async:async_transcription:"
-    )
+    assert draft.request_options["providerAudioCapabilityId"].startswith("soniox_async:async_transcription:")
     assert draft.request_options["providerAudioCapabilityRevision"]
     assert "https://" not in str(draft.request_options)
 
@@ -104,10 +102,7 @@ def test_groq_batch_model_is_reported_as_the_actual_supported_model():
     assert route.provider_route == "openai_v1_segmented_audio_transcriptions"
     assert route.audio_input_format == AudioInputFormat.WAV_PCM16
     assert route.audio_selection_mode == AudioSelectionMode.GENERATED
-    assert (
-        route.audio_preparation_implementation
-        == "pipecat_segmented_wav_pcm16"
-    )
+    assert route.audio_preparation_implementation == "pipecat_segmented_wav_pcm16"
 
 
 def test_google_route_freezes_speech_v2_model_and_raw_pcm_request_contract():
@@ -119,10 +114,7 @@ def test_google_route_freezes_speech_v2_model_and_raw_pcm_request_contract():
     assert route.audio_input_format == AudioInputFormat.RAW_PCM16
     assert route.audio_input_format_verified is True
     assert route.audio_selection_mode == AudioSelectionMode.GENERATED
-    assert (
-        route.audio_preparation_implementation
-        == "pipecat_google_speech_v2_raw_pcm16"
-    )
+    assert route.audio_preparation_implementation == "pipecat_google_speech_v2_raw_pcm16"
 
 
 @pytest.mark.parametrize(
@@ -186,9 +178,7 @@ def test_streaming_only_background_routes_freeze_exact_pcm_contract(
     assert route.audio_input_format_verified is True
     assert route.audio_selection_mode == AudioSelectionMode.GENERATED
     assert route.audio_preparation_implementation == expected_implementation
-    assert route.provider_audio_capability_id == (
-        f"{provider}:{expected_route}:{expected_model}"
-    )
+    assert route.provider_audio_capability_id == (f"{provider}:{expected_route}:{expected_model}")
 
 
 @pytest.mark.parametrize(
@@ -281,18 +271,13 @@ def test_plain_provider_text_estimation_scales_to_many_uniform_blocks():
     assert units[0].end_ms == 100
     assert units[block_count // 2].start_ms == (block_count // 2) * 100
     assert units[-1].end_ms == duration_ms
-    assert all(
-        previous.end_ms == current.start_ms
-        for previous, current in zip(units, units[1:], strict=False)
-    )
+    assert all(previous.end_ms == current.start_ms for previous, current in zip(units, units[1:], strict=False))
     assert evidence["estimatedTiming"] is True
 
 
 def test_caption_route_and_units_preserve_real_cue_times_without_speakers():
     route = freeze_caption_route(workload="youtube", language="de", automatic=True)
-    units, evidence = stage_units_from_captions(
-        [YouTubeCaptionCue(120, 980, "Guten Morgen")]
-    )
+    units, evidence = stage_units_from_captions([YouTubeCaptionCue(120, 980, "Guten Morgen")])
     assert route.provider == "youtube_captions_auto"
     assert route.snapshot_draft().diarization_mode == "disabled"
     assert units[0].start_ms == 120

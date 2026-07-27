@@ -14,7 +14,6 @@ from scripts.validate_hybrid_release_readiness import (
 )
 from scripts.validate_tauri_updater_metadata import sha256_file
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATE_SCRIPT = REPO_ROOT / "scripts" / "validate_hybrid_release_readiness.py"
 
@@ -54,13 +53,31 @@ SCENARIO_FIXTURES = {
         {},
     ),
     "bluetooth-add": (
-        {"expectAdded": "bluetooth", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
-        {"added": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}], "removed": [], "defaultChanged": False},
+        {
+            "expectAdded": "bluetooth",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
+        {
+            "added": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}],
+            "removed": [],
+            "defaultChanged": False,
+        },
         {},
     ),
     "bluetooth-remove": (
-        {"expectAdded": "", "expectRemoved": "bluetooth", "expectDefaultChanged": False, "expectFavoriteFallback": False},
-        {"added": [], "removed": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}], "defaultChanged": False},
+        {
+            "expectAdded": "",
+            "expectRemoved": "bluetooth",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
+        {
+            "added": [],
+            "removed": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}],
+            "defaultChanged": False,
+        },
         {},
     ),
     "default-mic-change": (
@@ -368,9 +385,7 @@ def write_rust_audio_sidecar_report(
         observed_duration_sec = duration_sec
     default_prebuffer_frames = prebuffer_frames_read if prebuffer_ms > 0 else 0
     selected_prebuffer_frames = (
-        max(1, prebuffer_frames_read // 2)
-        if prebuffer_ms > 0 and prebuffer_frames_read > 0
-        else 0
+        max(1, prebuffer_frames_read // 2) if prebuffer_ms > 0 and prebuffer_frames_read > 0 else 0
     )
     path.write_text(
         json.dumps(
@@ -408,9 +423,7 @@ def write_rust_audio_sidecar_report(
                             "adoptedPrewarm": {
                                 "adopted": prewarm_before_capture and adopted_prewarm_blocks > 0,
                                 "blocks": adopted_prewarm_blocks if prewarm_before_capture else 0,
-                                "audioFrames": (
-                                    adopted_prewarm_blocks * 160 if prewarm_before_capture else 0
-                                ),
+                                "audioFrames": (adopted_prewarm_blocks * 160 if prewarm_before_capture else 0),
                                 "stop": {
                                     "reason": (
                                         "adoptedIntoCapture"
@@ -723,15 +736,9 @@ def write_rust_audio_app_prewarm_report(
             },
         }
         if include_status_health:
-            cycle_pre_reason = (
-                "smoke_pre_adoption"
-                if cycle_number == 1
-                else f"smoke_pre_adoption_cycle_{cycle_number}"
-            )
+            cycle_pre_reason = "smoke_pre_adoption" if cycle_number == 1 else f"smoke_pre_adoption_cycle_{cycle_number}"
             cycle_post_reason = (
-                "smoke_post_resume"
-                if cycle_number == capture_cycles
-                else f"smoke_post_resume_cycle_{cycle_number}"
+                "smoke_post_resume" if cycle_number == capture_cycles else f"smoke_post_resume_cycle_{cycle_number}"
             )
             cycle["managerPreAdoptionHealthReturned"] = pre_adoption_status_active
             cycle["managerPreAdoptionHealth"] = health_snapshot(
@@ -992,11 +999,7 @@ def write_installed_live_recording_smoke_report(
         sample_count = max(1, int(stability_duration_sec / max(1, probe_interval_sec)))
     samples = []
     for index in range(max(0, sample_count)):
-        elapsed_sec = (
-            0.0
-            if sample_count <= 1
-            else round((stability_duration_sec / (sample_count - 1)) * index, 2)
-        )
+        elapsed_sec = 0.0 if sample_count <= 1 else round((stability_duration_sec / (sample_count - 1)) * index, 2)
         sample = {
             "index": index + 1,
             "elapsedSec": elapsed_sec,
@@ -1318,11 +1321,29 @@ def write_complete_evidence(tmp_path: Path) -> tuple[Path, Path, Path, Path, Pat
     write_runtime_dependency_footprint_report(runtime_dependency_footprint_report)
     write_authenticode_report(authenticode_report)
     write_publication_report(publication_report, metadata)
-    return hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report
+    return (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    )
 
 
 def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -1349,7 +1370,16 @@ def test_validate_release_readiness_accepts_complete_evidence(tmp_path: Path) ->
 
 
 def test_validate_release_readiness_rejects_missing_required_device_refresh_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     usb_add = hardware_dir / "microphone-hardware-usb-add.json"
     payload = json.loads(usb_add.read_text(encoding="utf-8"))
     payload["result"].pop("deviceMonitorRefresh", None)
@@ -1373,7 +1403,16 @@ def test_validate_release_readiness_rejects_missing_required_device_refresh_evid
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(rust_audio_report)
 
@@ -1397,7 +1436,16 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_smoke(tm
 
 
 def test_validate_release_readiness_rejects_rust_audio_sidecar_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(rust_audio_report)
     payload = json.loads(rust_audio_report.read_text(encoding="utf-8"))
@@ -1423,23 +1471,29 @@ def test_validate_release_readiness_rejects_rust_audio_sidecar_redaction_leaks(t
     assert result["ok"] is False
     assert (
         "Rust audio sidecar smoke contains raw native endpoint ID at "
-        "captures[0].start.endpointId"
-        in rust_audio_check["failures"]
+        "captures[0].start.endpointId" in rust_audio_check["failures"]
     )
     assert (
         "Rust audio sidecar smoke contains unredacted endpointId value at "
-        "captures[0].start.endpointId"
-        in rust_audio_check["failures"]
+        "captures[0].start.endpointId" in rust_audio_check["failures"]
     )
     assert (
         "Rust audio sidecar smoke contains raw Scriber pipe name at "
-        "captures[0].start.framePipe"
-        in rust_audio_check["failures"]
+        "captures[0].start.framePipe" in rust_audio_check["failures"]
     )
 
 
 def test_validate_release_readiness_accepts_required_recording_hot_path_comparison(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
 
@@ -1464,7 +1518,16 @@ def test_validate_release_readiness_accepts_required_recording_hot_path_comparis
 
 
 def test_validate_release_readiness_accepts_required_installed_live_recording_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(live_recording_report, duration_sec=600)
 
@@ -1492,7 +1555,16 @@ def test_validate_release_readiness_accepts_required_installed_live_recording_sm
 
 
 def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1532,7 +1604,16 @@ def test_validate_release_readiness_accepts_installed_live_recording_rust_audio_
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_post_stop_prewarm(
     tmp_path: Path,
 ) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1566,7 +1647,16 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_without_always_on_mic(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1600,8 +1690,19 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     assert "audioDiagnostics.microphone.micAlwaysOn must be true" in failures
 
 
-def test_validate_release_readiness_rejects_installed_rust_live_recording_without_prewarm_adoption(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_rust_live_recording_without_prewarm_adoption(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1636,8 +1737,19 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
     assert "activeCapture.rustPrewarmAdoption.adopted must be true" in failures
 
 
-def test_validate_release_readiness_rejects_installed_rust_live_recording_without_default_endpoint_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_rust_live_recording_without_default_endpoint_evidence(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1672,7 +1784,16 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_withou
 
 
 def test_validate_release_readiness_rejects_installed_rust_live_recording_with_capture_restarts(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1711,8 +1832,19 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_c
     assert "activeCapture.healthRestartCount must be 0" in failures
 
 
-def test_validate_release_readiness_rejects_installed_rust_live_recording_with_capture_health_failures(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_capture_health_failures(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1746,8 +1878,19 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_c
     assert "activeCapture.healthRestartThrottleCount must be 0" in failures
 
 
-def test_validate_release_readiness_rejects_installed_rust_live_recording_with_lingering_health_failure_reason(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_lingering_health_failure_reason(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1780,8 +1923,19 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_l
     assert "activeCapture.lastHealthFailureReason must be empty" in failures
 
 
-def test_validate_release_readiness_rejects_installed_rust_live_recording_with_mid_session_failure(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_rust_live_recording_with_mid_session_failure(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1819,7 +1973,16 @@ def test_validate_release_readiness_rejects_installed_rust_live_recording_with_m
 
 
 def test_validate_release_readiness_rejects_stale_installed_live_recording_rust_audio_counters(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1861,8 +2024,19 @@ def test_validate_release_readiness_rejects_stale_installed_live_recording_rust_
     )
 
 
-def test_validate_release_readiness_rejects_python_installed_live_recording_when_rust_audio_is_required(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_python_installed_live_recording_when_rust_audio_is_required(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(live_recording_report, duration_sec=600)
 
@@ -1886,8 +2060,19 @@ def test_validate_release_readiness_rejects_python_installed_live_recording_when
     assert any("audioEngine must be rust-wasapi" in failure for failure in live_check["failures"])
 
 
-def test_validate_release_readiness_rejects_installed_live_recording_without_rust_audio_diagnostics(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_live_recording_without_rust_audio_diagnostics(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1915,8 +2100,19 @@ def test_validate_release_readiness_rejects_installed_live_recording_without_rus
     assert any("audioDiagnostics must be an object" in failure for failure in live_check["failures"])
 
 
-def test_validate_release_readiness_rejects_installed_live_recording_with_open_rust_fallback_circuit(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_installed_live_recording_with_open_rust_fallback_circuit(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1949,7 +2145,16 @@ def test_validate_release_readiness_rejects_installed_live_recording_with_open_r
 
 
 def test_validate_release_readiness_rejects_installed_live_recording_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -1983,23 +2188,29 @@ def test_validate_release_readiness_rejects_installed_live_recording_redaction_l
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
     assert (
         "installed live recording smoke contains raw native endpoint ID at "
-        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId"
-        in live_check["failures"]
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId" in live_check["failures"]
     )
     assert (
         "installed live recording smoke contains unredacted endpointId value at "
-        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId"
-        in live_check["failures"]
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.endpointId" in live_check["failures"]
     )
     assert (
         "installed live recording smoke contains raw Scriber pipe name at "
-        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.framePipe"
-        in live_check["failures"]
+        "liveRecording.stability.samples[0].audioDiagnostics.activeCapture.framePipe" in live_check["failures"]
     )
 
 
 def test_validate_release_readiness_rejects_missing_required_installed_live_recording_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2018,8 +2229,19 @@ def test_validate_release_readiness_rejects_missing_required_installed_live_reco
     assert "Installed live recording smoke report is required" in live_check["failures"]
 
 
-def test_validate_release_readiness_rejects_missing_installed_live_recording_report_when_rust_audio_is_required(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_missing_installed_live_recording_report_when_rust_audio_is_required(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2039,8 +2261,19 @@ def test_validate_release_readiness_rejects_missing_installed_live_recording_rep
     assert "Installed live recording smoke report is required" in live_check["failures"]
 
 
-def test_validate_release_readiness_rejects_missing_installed_live_recording_report_when_min_duration_is_set(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_missing_installed_live_recording_report_when_min_duration_is_set(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2063,7 +2296,16 @@ def test_validate_release_readiness_rejects_missing_installed_live_recording_rep
 
 
 def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -2087,16 +2329,22 @@ def test_validate_release_readiness_rejects_weak_installed_live_recording_smoke(
 
     assert result["ok"] is False
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
-    assert (
-        "installed live recording smoke liveRecording.durationSec must be at least 600"
-        in live_check["failures"]
-    )
+    assert "installed live recording smoke liveRecording.durationSec must be at least 600" in live_check["failures"]
     assert "installed live recording smoke nonRecordingSampleCount must be 0" in live_check["failures"]
     assert any("sample 1 must remain in recording or listening state" in failure for failure in live_check["failures"])
 
 
 def test_validate_release_readiness_rejects_non_installed_live_recording_metadata(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -2137,7 +2385,16 @@ def test_validate_release_readiness_rejects_non_installed_live_recording_metadat
 
 
 def test_validate_release_readiness_rejects_sparse_installed_live_recording_samples(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     live_recording_report = tmp_path / "installed-live-recording-smoke.json"
     write_installed_live_recording_smoke_report(
         live_recording_report,
@@ -2162,11 +2419,23 @@ def test_validate_release_readiness_rejects_sparse_installed_live_recording_samp
 
     assert result["ok"] is False
     live_check = next(check for check in result["checks"] if check["name"] == "installedLiveRecordingSmoke")
-    assert any("stability.sampleCount must cover at least 50% of expected probes" in failure for failure in live_check["failures"])
+    assert any(
+        "stability.sampleCount must cover at least 50% of expected probes" in failure
+        for failure in live_check["failures"]
+    )
 
 
 def test_validate_release_readiness_accepts_required_tauri_text_injection_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report)
 
@@ -2190,7 +2459,16 @@ def test_validate_release_readiness_accepts_required_tauri_text_injection_smoke(
 
 
 def test_validate_release_readiness_rejects_missing_required_tauri_text_injection_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2210,7 +2488,16 @@ def test_validate_release_readiness_rejects_missing_required_tauri_text_injectio
 
 
 def test_validate_release_readiness_rejects_weak_tauri_text_injection_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(
         injection_report,
@@ -2243,7 +2530,16 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_smoke(tmp_
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pre_delay(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report, pre_delay_mode="")
 
@@ -2265,7 +2561,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_auto_pr
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_without_deadline(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report, deadline_ms=None)
 
@@ -2287,7 +2592,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_deadlin
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_past_deadline(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report, deadline_ms=5.0)
 
@@ -2309,7 +2623,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_past_deadline(t
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_without_restore_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(
         injection_report,
@@ -2338,7 +2661,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_without_restore
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_raw_foreground_diagnostics(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report)
     payload = json.loads(injection_report.read_text(encoding="utf-8"))
@@ -2369,7 +2701,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_raw_foreground_
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     injection_report = tmp_path / "tauri-text-injection-smoke.json"
     write_tauri_text_injection_smoke_report(injection_report)
     payload = json.loads(injection_report.read_text(encoding="utf-8"))
@@ -2402,7 +2743,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_redaction_leaks
 
 
 def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
     write_tauri_text_injection_matrix_report(matrix_report)
 
@@ -2427,7 +2777,16 @@ def test_validate_release_readiness_accepts_required_tauri_text_injection_matrix
 
 
 def test_validate_release_readiness_rejects_tauri_text_injection_matrix_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
     write_tauri_text_injection_matrix_report(matrix_report)
     payload = json.loads(matrix_report.read_text(encoding="utf-8"))
@@ -2462,7 +2821,16 @@ def test_validate_release_readiness_rejects_tauri_text_injection_matrix_redactio
 
 
 def test_validate_release_readiness_rejects_missing_required_tauri_text_injection_matrix(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2482,7 +2850,16 @@ def test_validate_release_readiness_rejects_missing_required_tauri_text_injectio
 
 
 def test_validate_release_readiness_rejects_weak_tauri_text_injection_matrix(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
     scenario_ids = list(REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS)
     scenario_ids.remove("outlook")
@@ -2509,10 +2886,7 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_matrix(tmp
     assert result["ok"] is False
     matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
     assert "Tauri text injection matrix report must not be validate-only evidence" in matrix_check["failures"]
-    assert (
-        "Tauri text injection matrix scenario word shellIpc.available must be true"
-        in matrix_check["failures"]
-    )
+    assert "Tauri text injection matrix scenario word shellIpc.available must be true" in matrix_check["failures"]
     assert (
         "Tauri text injection matrix scenario word response markers must include clipboard_set and paste"
         in matrix_check["failures"]
@@ -2521,7 +2895,16 @@ def test_validate_release_readiness_rejects_weak_tauri_text_injection_matrix(tmp
 
 
 def test_validate_release_readiness_rejects_word_matrix_without_positive_pre_delay(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
     write_tauri_text_injection_matrix_report(matrix_report)
     payload = json.loads(matrix_report.read_text(encoding="utf-8"))
@@ -2550,7 +2933,16 @@ def test_validate_release_readiness_rejects_word_matrix_without_positive_pre_del
 
 
 def test_validate_release_readiness_rejects_matrix_restore_failure(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     matrix_report = tmp_path / "tauri-text-injection-matrix.json"
     write_tauri_text_injection_matrix_report(matrix_report)
     payload = json.loads(matrix_report.read_text(encoding="utf-8"))
@@ -2581,7 +2973,9 @@ def test_validate_release_readiness_rejects_matrix_restore_failure(tmp_path: Pat
     matrix_check = next(check for check in result["checks"] if check["name"] == "tauriTextInjectionMatrix")
     failures = "\n".join(matrix_check["failures"])
     assert "Tauri text injection matrix scenario clipboard-text response restore.errorCode must be empty" in failures
-    assert "Tauri text injection matrix scenario clipboard-text response restore.succeeded must not be false" in failures
+    assert (
+        "Tauri text injection matrix scenario clipboard-text response restore.succeeded must not be false" in failures
+    )
     assert (
         "Tauri text injection matrix scenario clipboard-text response restore.skippedReason must not be restoreFailed"
         in failures
@@ -2589,7 +2983,16 @@ def test_validate_release_readiness_rejects_matrix_restore_failure(tmp_path: Pat
 
 
 def test_validate_release_readiness_rejects_missing_required_recording_hot_path_comparison(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -2611,7 +3014,16 @@ def test_validate_release_readiness_rejects_missing_required_recording_hot_path_
 
 
 def test_validate_release_readiness_rejects_weak_recording_hot_path_comparison(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_ok=False)
 
@@ -2636,7 +3048,16 @@ def test_validate_release_readiness_rejects_weak_recording_hot_path_comparison(t
 
 
 def test_validate_release_readiness_rejects_too_few_recording_hot_path_samples(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, samples=1)
 
@@ -2663,7 +3084,16 @@ def test_validate_release_readiness_rejects_too_few_recording_hot_path_samples(t
 
 
 def test_validate_release_readiness_rejects_open_rust_fallback_circuit_comparison(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, fallback_circuit_ok=False)
 
@@ -2688,7 +3118,16 @@ def test_validate_release_readiness_rejects_open_rust_fallback_circuit_compariso
 
 
 def test_validate_release_readiness_rejects_recording_hot_path_mid_session_failure(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_mid_session_clean_ok=False)
 
@@ -2713,7 +3152,16 @@ def test_validate_release_readiness_rejects_recording_hot_path_mid_session_failu
 
 
 def test_validate_release_readiness_rejects_recording_hot_path_without_frame_pipe_flow(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_frame_pipe_flow_ok=False)
 
@@ -2738,7 +3186,16 @@ def test_validate_release_readiness_rejects_recording_hot_path_without_frame_pip
 
 
 def test_validate_release_readiness_rejects_recording_hot_path_with_dropped_rust_frames(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_no_dropped_frames_ok=False)
 
@@ -2763,7 +3220,16 @@ def test_validate_release_readiness_rejects_recording_hot_path_with_dropped_rust
 
 
 def test_validate_release_readiness_rejects_unstable_recording_hot_path_active_capture(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_active_capture_stable_ok=False)
 
@@ -2788,7 +3254,16 @@ def test_validate_release_readiness_rejects_unstable_recording_hot_path_active_c
 
 
 def test_validate_release_readiness_rejects_recording_hot_path_without_rust_always_on(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_always_on_ok=False)
 
@@ -2813,7 +3288,16 @@ def test_validate_release_readiness_rejects_recording_hot_path_without_rust_alwa
 
 
 def test_validate_release_readiness_rejects_recording_hot_path_without_rust_prewarm_adoption(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, rust_prewarm_adoption_ok=False)
 
@@ -2838,7 +3322,16 @@ def test_validate_release_readiness_rejects_recording_hot_path_without_rust_prew
 
 
 def test_validate_release_readiness_rejects_unredacted_recording_hot_path_comparison_inputs(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, input_redaction_ok=False)
 
@@ -2862,16 +3355,23 @@ def test_validate_release_readiness_rejects_unredacted_recording_hot_path_compar
     assert "recording hot-path comparison check failed: inputReportRedaction" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_redaction_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_redaction_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "inputReportRedaction"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "inputReportRedaction"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -2894,16 +3394,23 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
     assert "recording hot-path comparison is missing check: inputReportRedaction" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_prewarm_adoption_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_prewarm_adoption_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "rustPrewarmAdoption"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "rustPrewarmAdoption"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -2926,16 +3433,23 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
     assert "recording hot-path comparison is missing check: rustPrewarmAdoption" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_mid_session_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_mid_session_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "rustMidSessionClean"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "rustMidSessionClean"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -2958,16 +3472,23 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
     assert "recording hot-path comparison is missing check: rustMidSessionClean" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_frame_pipe_flow_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_frame_pipe_flow_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "rustFramePipeFlow"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "rustFramePipeFlow"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -2990,16 +3511,23 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
     assert "recording hot-path comparison is missing check: rustFramePipeFlow" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_no_dropped_frames_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_no_dropped_frames_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "rustNoDroppedFrames"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "rustNoDroppedFrames"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -3022,16 +3550,23 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
     assert "recording hot-path comparison is missing check: rustNoDroppedFrames" in comparison_check["failures"]
 
 
-def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_active_capture_stable_check(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_without_active_capture_stable_check(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report)
     payload = json.loads(comparison_report.read_text(encoding="utf-8"))
-    payload["checks"] = [
-        check
-        for check in payload["checks"]
-        if check.get("name") != "rustActiveCaptureStable"
-    ]
+    payload["checks"] = [check for check in payload["checks"] if check.get("name") != "rustActiveCaptureStable"]
     comparison_report.write_text(json.dumps(payload), encoding="utf-8")
 
     result = validate_release_readiness(
@@ -3055,7 +3590,16 @@ def test_validate_release_readiness_rejects_stale_recording_hot_path_comparison_
 
 
 def test_validate_release_readiness_rejects_audio_owned_latency_regression_comparison(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, latency_ok=False)
 
@@ -3080,7 +3624,16 @@ def test_validate_release_readiness_rejects_audio_owned_latency_regression_compa
 
 
 def test_validate_release_readiness_rejects_mismatched_recording_hot_path_provider(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(comparison_report, same_provider_ok=False)
 
@@ -3105,7 +3658,16 @@ def test_validate_release_readiness_rejects_mismatched_recording_hot_path_provid
 
 
 def test_validate_release_readiness_rejects_mismatched_recording_hot_path_config(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     comparison_report = tmp_path / "recording-hot-path-python-rust-comparison.json"
     write_recording_hot_path_comparison_report(
         comparison_report,
@@ -3133,7 +3695,16 @@ def test_validate_release_readiness_rejects_mismatched_recording_hot_path_config
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -3160,8 +3731,19 @@ def test_validate_release_readiness_accepts_required_rust_audio_sidecar_prewarm_
     assert rust_audio_check["details"]["summary"]["totalAdoptedPrewarmBlocks"] == 4
 
 
-def test_validate_release_readiness_rejects_reused_sidecar_report_without_required_prewarm_adoption(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_reused_sidecar_report_without_required_prewarm_adoption(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -3194,7 +3776,16 @@ def test_validate_release_readiness_rejects_reused_sidecar_report_without_requir
 
 
 def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_prewarm_adoption(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -3224,7 +3815,16 @@ def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_prewarm_a
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
     write_rust_audio_prewarm_sidecar_report(prewarm_report)
 
@@ -3247,7 +3847,16 @@ def test_validate_release_readiness_accepts_required_rust_audio_prewarm_sidecar_
 
 
 def test_validate_release_readiness_accepts_required_wasapi_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
     write_rust_audio_prewarm_sidecar_report(prewarm_report, mode="wasapi")
 
@@ -3270,7 +3879,16 @@ def test_validate_release_readiness_accepts_required_wasapi_rust_audio_prewarm_s
 
 
 def test_validate_release_readiness_rejects_rust_audio_prewarm_sidecar_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
     write_rust_audio_prewarm_sidecar_report(prewarm_report, mode="wasapi")
     payload = json.loads(prewarm_report.read_text(encoding="utf-8"))
@@ -3295,18 +3913,25 @@ def test_validate_release_readiness_rejects_rust_audio_prewarm_sidecar_redaction
     assert result["ok"] is False
     assert (
         "Rust audio prewarm sidecar smoke contains raw native endpoint ID at "
-        "prewarm.start.endpointId"
-        in prewarm_check["failures"]
+        "prewarm.start.endpointId" in prewarm_check["failures"]
     )
     assert (
         "Rust audio prewarm sidecar smoke contains raw Scriber pipe name at "
-        "prewarm.start.framePipe"
-        in prewarm_check["failures"]
+        "prewarm.start.framePipe" in prewarm_check["failures"]
     )
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3326,7 +3951,16 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_prewarm_
 
 
 def test_validate_release_readiness_rejects_weak_rust_audio_prewarm_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     prewarm_report = tmp_path / "rust-audio-prewarm-sidecar-smoke.json"
     write_rust_audio_prewarm_sidecar_report(
         prewarm_report,
@@ -3357,7 +3991,16 @@ def test_validate_release_readiness_rejects_weak_rust_audio_prewarm_sidecar_smok
 
 
 def test_validate_release_readiness_accepts_required_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(app_prewarm_report)
 
@@ -3380,7 +4023,16 @@ def test_validate_release_readiness_accepts_required_rust_audio_app_prewarm_smok
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_status_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3410,7 +4062,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_statu
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_recent_events(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3440,7 +4101,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_recen
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_resume_gap(
     tmp_path: Path,
 ) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(app_prewarm_report)
     payload = json.loads(app_prewarm_report.read_text(encoding="utf-8"))
@@ -3477,7 +4147,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_without_resum
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_status_evidence(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3507,7 +4186,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_inactive_stat
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_health_restarts(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3536,7 +4224,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_health_restar
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_redaction_leaks(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(app_prewarm_report)
     payload = json.loads(app_prewarm_report.read_text(encoding="utf-8"))
@@ -3561,18 +4258,24 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_redaction_lea
     assert result["ok"] is False
     assert (
         "Rust audio app prewarm smoke contains raw native endpoint ID at "
-        "sourceFinal.endpointId"
-        in app_check["failures"]
+        "sourceFinal.endpointId" in app_check["failures"]
     )
     assert (
-        "Rust audio app prewarm smoke contains raw Scriber pipe name at "
-        "sourceFinal.framePipe"
-        in app_check["failures"]
+        "Rust audio app prewarm smoke contains raw Scriber pipe name at sourceFinal.framePipe" in app_check["failures"]
     )
 
 
 def test_validate_release_readiness_accepts_required_long_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3606,7 +4309,16 @@ def test_validate_release_readiness_accepts_required_long_rust_audio_app_prewarm
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3626,7 +4338,16 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_app_prew
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_with_too_few_cycles(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3660,7 +4381,16 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_with_too_few_
 
 
 def test_validate_release_readiness_rejects_rust_audio_app_prewarm_cycle_health_failure(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3700,8 +4430,19 @@ def test_validate_release_readiness_rejects_rust_audio_app_prewarm_cycle_health_
     assert "cycles[1].managerPostResumeHealth.lastHealthError must be empty" in failures
 
 
-def test_validate_release_readiness_rejects_missing_rust_audio_app_prewarm_report_when_min_duration_is_set(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_missing_rust_audio_app_prewarm_report_when_min_duration_is_set(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3726,7 +4467,16 @@ def test_validate_release_readiness_rejects_missing_rust_audio_app_prewarm_repor
 
 
 def test_validate_release_readiness_rejects_short_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3757,7 +4507,16 @@ def test_validate_release_readiness_rejects_short_rust_audio_app_prewarm_smoke(t
 
 
 def test_validate_release_readiness_rejects_weak_rust_audio_app_prewarm_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     app_prewarm_report = tmp_path / "rust-audio-app-prewarm-smoke.json"
     write_rust_audio_app_prewarm_report(
         app_prewarm_report,
@@ -3795,7 +4554,16 @@ def test_validate_release_readiness_rejects_weak_rust_audio_app_prewarm_smoke(tm
 
 
 def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_requested(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -3824,13 +4592,20 @@ def test_validate_release_readiness_rejects_missing_rust_audio_prebuffer_when_re
     assert "default prebufferFramesRead must be positive" in failures
     assert "default stop.prebufferFramesWritten must be positive" in failures
     assert "selected-native-endpoint-hash prebufferFramesRead must be positive" in failures
-    assert (
-        "selected-native-endpoint-hash stop.prebufferFramesWritten must be positive" in failures
-    )
+    assert "selected-native-endpoint-hash stop.prebufferFramesWritten must be positive" in failures
 
 
 def test_validate_release_readiness_rejects_inconsistent_rust_audio_writer_counts(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(rust_audio_report)
     payload = json.loads(rust_audio_report.read_text(encoding="utf-8"))
@@ -3860,7 +4635,16 @@ def test_validate_release_readiness_rejects_inconsistent_rust_audio_writer_count
 
 
 def test_validate_release_readiness_rejects_short_rust_audio_observed_duration(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -3889,7 +4673,16 @@ def test_validate_release_readiness_rejects_short_rust_audio_observed_duration(t
 
 
 def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3909,8 +4702,19 @@ def test_validate_release_readiness_rejects_missing_required_rust_audio_sidecar_
     assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
 
 
-def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_report_when_min_duration_is_set(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_report_when_min_duration_is_set(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3932,8 +4736,19 @@ def test_validate_release_readiness_rejects_missing_rust_audio_sidecar_report_wh
     assert "Rust audio sidecar smoke report is required" in rust_audio_check["failures"]
 
 
-def test_validate_release_readiness_rejects_missing_sidecar_report_when_prewarm_adoption_is_required(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+def test_validate_release_readiness_rejects_missing_sidecar_report_when_prewarm_adoption_is_required(
+    tmp_path: Path,
+) -> None:
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -3954,7 +4769,16 @@ def test_validate_release_readiness_rejects_missing_sidecar_report_when_prewarm_
 
 
 def test_validate_release_readiness_rejects_weak_rust_audio_sidecar_smoke(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     rust_audio_report = tmp_path / "rust-audio-sidecar-smoke.json"
     write_rust_audio_sidecar_report(
         rust_audio_report,
@@ -4006,7 +4830,16 @@ def test_validate_release_readiness_rejects_missing_external_reports(tmp_path: P
 
 
 def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     data = json.loads(metadata.read_text(encoding="utf-8"))
     data["platforms"]["windows-x86_64"]["signature"] = ""
     data["artifacts"][0]["signature"] = ""
@@ -4030,7 +4863,16 @@ def test_validate_release_readiness_rejects_unsigned_updater_metadata(tmp_path: 
 
 
 def test_validate_release_readiness_rejects_missing_media_preparation_report(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, _media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        _media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
 
     result = validate_release_readiness(
         hardware_input_dir=hardware_dir,
@@ -4048,7 +4890,16 @@ def test_validate_release_readiness_rejects_missing_media_preparation_report(tmp
 
 
 def test_validate_release_readiness_rejects_media_preparation_without_ffprobe(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     write_media_preparation_report(media_preparation_report, require_ffprobe=False)
 
     result = validate_release_readiness(
@@ -4069,7 +4920,16 @@ def test_validate_release_readiness_rejects_media_preparation_without_ffprobe(tm
 
 
 def test_validate_release_readiness_rejects_runtime_dependency_budget_failures(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     write_runtime_dependency_footprint_report(runtime_dependency_footprint_report, ok=False)
 
     result = validate_release_readiness(
@@ -4089,7 +4949,16 @@ def test_validate_release_readiness_rejects_runtime_dependency_budget_failures(t
 
 
 def test_validate_release_readiness_rejects_publication_report_with_non_https_final_url(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     data = json.loads(publication_report.read_text(encoding="utf-8"))
     data["finalUrl"] = "http://example.test/latest.json"
     publication_report.write_text(json.dumps(data), encoding="utf-8")
@@ -4111,7 +4980,16 @@ def test_validate_release_readiness_rejects_publication_report_with_non_https_fi
 
 
 def test_validate_release_readiness_rejects_authenticode_report_for_wrong_artifact(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     write_authenticode_report_for(authenticode_report, artifact_path="unrelated-signed-tool.exe")
 
     result = validate_release_readiness(
@@ -4181,9 +5059,7 @@ def test_authenticode_evidence_rejects_identity_mismatch(tmp_path: Path) -> None
         expected_publisher="",
         require_timestamp=False,
         expected_artifact_names=["setup.exe"],
-        expected_artifact_identities={
-            "setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}
-        },
+        expected_artifact_identities={"setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}},
     )
 
     assert check.ok is False
@@ -4200,9 +5076,7 @@ def test_authenticode_evidence_binds_identity_case_insensitively(
         expected_publisher="",
         require_timestamp=False,
         expected_artifact_names=["setup.exe"],
-        expected_artifact_identities={
-            "setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}
-        },
+        expected_artifact_identities={"setup.exe": {"sizeBytes": 1, "sha256": "0" * 64}},
     )
 
     assert check.ok is False
@@ -4210,7 +5084,16 @@ def test_authenticode_evidence_binds_identity_case_insensitively(
 
 
 def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path: Path) -> None:
-    hardware_dir, metadata, _artifact_dir, _sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        _artifact_dir,
+        _sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     data = json.loads(metadata.read_text(encoding="utf-8"))
     data["artifacts"] = []
     metadata.write_text(json.dumps(data), encoding="utf-8")
@@ -4234,7 +5117,16 @@ def test_validate_release_readiness_requires_latest_json_artifact_names(tmp_path
 
 
 def test_validate_release_readiness_cli_writes_summary(tmp_path: Path) -> None:
-    hardware_dir, metadata, artifact_dir, sums, media_preparation_report, runtime_dependency_footprint_report, publication_report, authenticode_report = write_complete_evidence(tmp_path)
+    (
+        hardware_dir,
+        metadata,
+        artifact_dir,
+        sums,
+        media_preparation_report,
+        runtime_dependency_footprint_report,
+        publication_report,
+        authenticode_report,
+    ) = write_complete_evidence(tmp_path)
     output = tmp_path / "readiness.json"
 
     completed = subprocess.run(

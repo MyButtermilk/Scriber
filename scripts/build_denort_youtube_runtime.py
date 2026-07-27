@@ -10,9 +10,9 @@ import sys
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-
+from typing import Any
 
 LOCK_CONTRACT = "ScriberDenortRuntimeProvenanceLockV1"
 MANIFEST_CONTRACT = "ScriberYoutubeJsRuntimeManifestV2"
@@ -65,9 +65,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _load_json_object(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
-        )
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise BuildError(f"invalid denort provenance lock: {path}") from exc
     if not isinstance(value, dict):
@@ -260,7 +258,9 @@ def _verify_compiler(path: Path, entry: Mapping[str, Any]) -> None:
     _assert_identity(path, compiler, label="Deno compiler")
     result = _run((str(path), "--version"), timeout=30)
     first_line = result.stdout.decode("utf-8", errors="replace").splitlines()[:1]
-    if result.returncode != 0 or first_line != [f"{VERSION_PREFIX}{compiler['version']} (stable, release, x86_64-pc-windows-msvc)"]:
+    if result.returncode != 0 or first_line != [
+        f"{VERSION_PREFIX}{compiler['version']} (stable, release, x86_64-pc-windows-msvc)"
+    ]:
         raise BuildError("Deno compiler version output differs from the lock")
 
 
@@ -288,9 +288,7 @@ def _download_locked_denort_archive(
     digest = hashlib.sha256()
     total = 0
     try:
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "Scriber-installer-build/1"}
-        )
+        request = urllib.request.Request(url, headers={"User-Agent": "Scriber-installer-build/1"})
         with urllib.request.urlopen(request, timeout=60) as response, temporary.open("xb") as output:
             while True:
                 chunk = response.read(min(1024 * 1024, expected_length - total + 1))
@@ -312,9 +310,7 @@ def _download_locked_denort_archive(
         raise BuildError("failed to download the locked denort archive") from exc
 
 
-def _extract_locked_denort(
-    *, archive: Path, destination: Path, entry: Mapping[str, Any]
-) -> None:
+def _extract_locked_denort(*, archive: Path, destination: Path, entry: Mapping[str, Any]) -> None:
     temporary = destination.with_name(f"{destination.name}.extract")
     temporary.unlink(missing_ok=True)
     try:
@@ -322,9 +318,7 @@ def _extract_locked_denort(
             candidates = [
                 member
                 for member in bundle.infolist()
-                if not member.is_dir()
-                and Path(member.filename.replace("\\", "/")).name.lower()
-                == "denort.exe"
+                if not member.is_dir() and Path(member.filename.replace("\\", "/")).name.lower() == "denort.exe"
             ]
             if len(candidates) != 1:
                 raise BuildError("locked denort archive must contain exactly one denort.exe")
@@ -345,8 +339,7 @@ def _extract_locked_denort(
                     output.write(chunk)
             if (
                 total != entry["denortAsset"]["executableLength"]
-                or digest.hexdigest()
-                != entry["denortAsset"]["executableSha256"]
+                or digest.hexdigest() != entry["denortAsset"]["executableSha256"]
             ):
                 raise BuildError("denort archive executable differs from the protected lock")
         os.replace(temporary, destination)
@@ -387,9 +380,7 @@ def _provision_denort(work_dir: Path, entry: Mapping[str, Any]) -> Path:
     return executable
 
 
-def _resolve_denort_for_build(
-    args: argparse.Namespace, work_dir: Path, entry: Mapping[str, Any]
-) -> Path:
+def _resolve_denort_for_build(args: argparse.Namespace, work_dir: Path, entry: Mapping[str, Any]) -> Path:
     requested = args.denort or os.environ.get("DENORT_BIN")
     if requested:
         try:
@@ -407,10 +398,7 @@ def _verify_wrapper(repo_root: Path, entry: Mapping[str, Any]) -> tuple[Path, by
     wrapper = entry["wrapper"]
     source = _resolve_under(repo_root, wrapper["relativePath"], label="wrapper source")
     normalized = _normalized_wrapper_bytes(source)
-    if (
-        len(normalized) != wrapper["length"]
-        or _sha256_bytes(normalized) != wrapper["sha256"]
-    ):
+    if len(normalized) != wrapper["length"] or _sha256_bytes(normalized) != wrapper["sha256"]:
         raise BuildError("normalized denort wrapper differs from the protected lock")
     return source, normalized
 
@@ -422,10 +410,7 @@ def _verify_output(path: Path, manifest_path: Path, entry: Mapping[str, Any]) ->
         actual_manifest = manifest_path.read_bytes()
     except OSError as exc:
         raise BuildError(f"cannot read denort runtime manifest: {manifest_path}") from exc
-    if (
-        actual_manifest != expected_manifest
-        or _sha256_bytes(actual_manifest) != entry["manifestCanonicalSha256"]
-    ):
+    if actual_manifest != expected_manifest or _sha256_bytes(actual_manifest) != entry["manifestCanonicalSha256"]:
         raise BuildError("denort runtime manifest is not byte-exact with the lock")
     version = _run((str(path), "--version"), timeout=30)
     first_line = version.stdout.decode("utf-8", errors="replace").splitlines()[:1]
@@ -470,8 +455,11 @@ def build_or_verify(args: argparse.Namespace) -> dict[str, Any]:
         compile_arguments = [
             str(compiler),
             *(
-                str(temporary_output) if value == "<OUTPUT>" else
-                str(normalized_source) if value == "<SOURCE>" else value
+                str(temporary_output)
+                if value == "<OUTPUT>"
+                else str(normalized_source)
+                if value == "<SOURCE>"
+                else value
                 for value in entry["compileArguments"]
             ),
         ]

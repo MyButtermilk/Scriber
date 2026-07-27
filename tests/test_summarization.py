@@ -241,7 +241,10 @@ def test_openrouter_empty_response_detail_excludes_provider_error_message():
     [
         (
             summarization._post_openrouter_chat_completion,
-            ({"messages": []}, {},),
+            (
+                {"messages": []},
+                {},
+            ),
         ),
         (
             summarization._post_gemini_generate_content,
@@ -408,9 +411,11 @@ async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest
     assert "Scriber owns typography, spacing, colors, and interaction" in prompt
     assert "Infer the dominant natural language from the transcript itself" in prompt
     assert "UNTRUSTED_TRANSCRIPT_TEXT:" in prompt
-    assert prompt.index("Custom instruction: return the answer as Markdown.") < prompt.index(
-        "Output contract (mandatory"
-    ) < prompt.index("UNTRUSTED_TRANSCRIPT_TEXT:")
+    assert (
+        prompt.index("Custom instruction: return the answer as Markdown.")
+        < prompt.index("Output contract (mandatory")
+        < prompt.index("UNTRUSTED_TRANSCRIPT_TEXT:")
+    )
 
 
 @pytest.mark.asyncio
@@ -426,9 +431,7 @@ async def test_summarize_text_uses_configured_language_only_as_ambiguous_fallbac
     monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
     monkeypatch.setattr(summarization.Config, "LANGUAGE", "de-DE", raising=False)
 
-    result = await summarization.summarize_text(
-        "Wir besprechen heute die nächsten Schritte.", model="gpt-5-mini"
-    )
+    result = await summarization.summarize_text("Wir besprechen heute die nächsten Schritte.", model="gpt-5-mini")
 
     assert result == _structured_summary("Deutsche Zusammenfassung", "Überblick")
     assert "Only if the transcript is too short or language-neutral to decide, use de-DE" in captured["prompt"]
@@ -484,8 +487,7 @@ async def test_summarize_text_projects_markdown_model_drift_to_html(monkeypatch:
     out = await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
     assert out == (
-        "<section><h2>Zusammenfassung</h2><p>Kurzer Überblick.</p>"
-        "<ul><li>Punkt A</li><li>Punkt B</li></ul></section>"
+        "<section><h2>Zusammenfassung</h2><p>Kurzer Überblick.</p><ul><li>Punkt A</li><li>Punkt B</li></ul></section>"
     )
 
 
@@ -641,11 +643,7 @@ async def test_summarize_text_stops_after_all_openrouter_models_return_invalid_h
 
     async def _fake_post(payload, _headers, _session):
         calls.append(payload)
-        response_model = (
-            "minimax/minimax-m3"
-            if len(calls) == 1
-            else "z-ai/glm-5.2-20260616"
-        )
+        response_model = "minimax/minimax-m3" if len(calls) == 1 else "z-ai/glm-5.2-20260616"
         return {
             "model": response_model,
             "choices": [
@@ -944,9 +942,7 @@ async def test_summarize_openrouter_stops_after_larger_partial_retry_without_mod
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
     with pytest.raises(RuntimeError, match="larger-budget retry"):
-        await summarization._summarize_openrouter(
-            "large meeting reduce prompt", "minimax/minimax-m3:nitro", 4096
-        )
+        await summarization._summarize_openrouter("large meeting reduce prompt", "minimax/minimax-m3:nitro", 4096)
 
     assert [call["max_tokens"] for call in calls] == [4096, 8192]
 
@@ -1023,7 +1019,9 @@ async def test_gemini_summary_openai_fallback_is_explicit_and_contextual(monkeyp
     monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
     monkeypatch.setattr(summarization, "_summarize_openai", _fake_openai)
 
-    with pytest.raises(RuntimeError, match="Gemini summarization failed and the configured OpenAI fallback also failed"):
+    with pytest.raises(
+        RuntimeError, match="Gemini summarization failed and the configured OpenAI fallback also failed"
+    ):
         await summarization.summarize_text("x y z", model="gemini-flash-latest")
 
     assert openai_calls == 1

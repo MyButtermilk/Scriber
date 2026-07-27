@@ -20,9 +20,7 @@ def _fake_sounddevice():
         default=types.SimpleNamespace(device=(0, None), hostapi=1),
         query_hostapis=lambda: [{"name": "MME"}, {"name": "Windows WASAPI"}],
         query_devices=lambda device=None, kind=None: (
-            devices
-            if device is None and kind is None
-            else devices[0 if device is None else int(device)]
+            devices if device is None and kind is None else devices[0 if device is None else int(device)]
         ),
         check_input_settings=lambda **_kwargs: None,
     )
@@ -146,10 +144,7 @@ def test_collect_native_capture_endpoint_inventory_returns_three_redacted_microp
             self.FriendlyName = friendly_name
             self.flow = flow
 
-    raw_capture_ids = [
-        rf"SWD\MMDEVAPI\{{0.0.1.00000000}}.{{private-capture-{index}}}"
-        for index in range(3)
-    ]
+    raw_capture_ids = [rf"SWD\MMDEVAPI\{{0.0.1.00000000}}.{{private-capture-{index}}}" for index in range(3)]
     captures = [
         _Device(raw_capture_ids[0], "Jabra Engage 75", "capture"),
         _Device(raw_capture_ids[1], "Insta360 Link", "capture"),

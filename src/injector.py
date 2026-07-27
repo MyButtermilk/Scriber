@@ -1,25 +1,24 @@
-import sys
-import asyncio
+import ctypes
 import math
 import os
-import time
+import sys
 import threading
-import ctypes
-from dataclasses import dataclass
+import time
+from collections.abc import Callable
 from ctypes import wintypes
-from typing import Callable, Optional
+from dataclasses import dataclass
+
 from loguru import logger
-from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
+    CancelFrame,
+    EndFrame,
     Frame,
-    TextFrame,
-    TranscriptionFrame,
     InterimTranscriptionFrame,
     StartFrame,
-    EndFrame,
     StopFrame,
-    CancelFrame,
+    TranscriptionFrame,
 )
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from src.config import Config
 from src.runtime.shell_ipc import call_shell_ipc, record_command_diagnostic
@@ -67,10 +66,7 @@ def _ensure_gui_modules() -> bool:
             except (ImportError, KeyError, OSError) as exc:
                 import_errors.append(f"keyboard:{type(exc).__name__}")
         if import_errors:
-            logger.warning(
-                "Some legacy GUI injection fallbacks are unavailable "
-                f"({', '.join(import_errors)})"
-            )
+            logger.warning(f"Some legacy GUI injection fallbacks are unavailable ({', '.join(import_errors)})")
         if pyautogui is None and keyboard is None:
             HAS_GUI = False
             return False
@@ -118,10 +114,7 @@ class InjectionTargetGuard:
         has_pid = self.process_id is not None
         has_creation = self.process_creation_time_100ns is not None
         if has_pid != has_creation:
-            raise ValueError(
-                "InjectionTargetGuard requires process_id and "
-                "process_creation_time_100ns together"
-            )
+            raise ValueError("InjectionTargetGuard requires process_id and process_creation_time_100ns together")
         if has_pid:
             if not title:
                 raise ValueError("A process-bound InjectionTargetGuard requires a title")
@@ -133,17 +126,13 @@ class InjectionTargetGuard:
                     raise ValueError(f"InjectionTargetGuard {field_name} must be a positive integer")
         if self.window_handle is not None:
             if not has_pid:
-                raise ValueError(
-                    "InjectionTargetGuard window_handle requires a complete process generation"
-                )
+                raise ValueError("InjectionTargetGuard window_handle requires a complete process generation")
             if (
                 isinstance(self.window_handle, bool)
                 or not isinstance(self.window_handle, int)
                 or self.window_handle <= 0
             ):
-                raise ValueError(
-                    "InjectionTargetGuard window_handle must be a positive integer"
-                )
+                raise ValueError("InjectionTargetGuard window_handle must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -161,9 +150,9 @@ _MAX_CLIPBOARD_SNAPSHOT_FORMATS = 64
 # with GlobalSize/GlobalLock. Formats such as CF_BITMAP and CF_ENHMETAFILE
 # return GDI handles; treating them like HGLOBAL can crash the process.
 _RESTORABLE_STANDARD_CLIPBOARD_FORMATS = {
-    1,   # CF_TEXT
-    7,   # CF_OEMTEXT
-    8,   # CF_DIB
+    1,  # CF_TEXT
+    7,  # CF_OEMTEXT
+    8,  # CF_DIB
     13,  # CF_UNICODETEXT
     15,  # CF_HDROP
     16,  # CF_LOCALE
@@ -184,9 +173,7 @@ def _windows_clipboard_format_is_restorable(format_id: int) -> bool:
     normalized = int(format_id)
     return (
         normalized in _RESTORABLE_STANDARD_CLIPBOARD_FORMATS
-        or _REGISTERED_CLIPBOARD_FORMAT_FIRST
-        <= normalized
-        <= _REGISTERED_CLIPBOARD_FORMAT_LAST
+        or _REGISTERED_CLIPBOARD_FORMAT_FIRST <= normalized <= _REGISTERED_CLIPBOARD_FORMAT_LAST
     )
 
 
@@ -200,9 +187,9 @@ def _set_ctypes_signature(
         return
     try:
         if argtypes is not None:
-            setattr(func, "argtypes", argtypes)
+            func.argtypes = argtypes
         if restype is not None:
-            setattr(func, "restype", restype)
+            func.restype = restype
     except Exception:
         pass
 
@@ -452,9 +439,7 @@ def _active_foreground_target_snapshot() -> _ForegroundTargetSnapshot | None:
                     ctypes.byref(kernel_time),
                     ctypes.byref(user_time),
                 ):
-                    creation_100ns = (int(creation.dwHighDateTime) << 32) | int(
-                        creation.dwLowDateTime
-                    )
+                    creation_100ns = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
             finally:
                 kernel32.CloseHandle(handle)
         # Title and process identity must describe the same still-foreground
@@ -497,56 +482,30 @@ def _foreground_target_guard_allows_dispatch(
     if guard is None:
         return True
     expected_title = str(guard.title or "").strip()
-    process_bound = (
-        guard.process_id is not None
-        and guard.process_creation_time_100ns is not None
-    )
+    process_bound = guard.process_id is not None and guard.process_creation_time_100ns is not None
     if not process_bound:
         if identity_only:
             return True
         if not expected_title or _active_window_matches_expected_target(expected_title):
             return True
-        logger.warning(
-            "Text injection skipped because foreground target title did not match "
-            f"(phase={phase})"
-        )
+        logger.warning(f"Text injection skipped because foreground target title did not match (phase={phase})")
         return False
 
     snapshot = _active_foreground_target_snapshot()
     if snapshot is None:
-        logger.warning(
-            "Text injection skipped because foreground target identity was unavailable "
-            f"(phase={phase})"
-        )
+        logger.warning(f"Text injection skipped because foreground target identity was unavailable (phase={phase})")
         return False
     if not identity_only and expected_title and snapshot.title != expected_title:
-        logger.warning(
-            "Text injection skipped because foreground target title did not match "
-            f"(phase={phase})"
-        )
+        logger.warning(f"Text injection skipped because foreground target title did not match (phase={phase})")
         return False
     if snapshot.process_id != int(guard.process_id):
-        logger.warning(
-            "Text injection skipped because foreground target process did not match "
-            f"(phase={phase})"
-        )
+        logger.warning(f"Text injection skipped because foreground target process did not match (phase={phase})")
         return False
-    if snapshot.process_creation_time_100ns != int(
-        guard.process_creation_time_100ns
-    ):
-        logger.warning(
-            "Text injection skipped because foreground target generation did not match "
-            f"(phase={phase})"
-        )
+    if snapshot.process_creation_time_100ns != int(guard.process_creation_time_100ns):
+        logger.warning(f"Text injection skipped because foreground target generation did not match (phase={phase})")
         return False
-    if (
-        guard.window_handle is not None
-        and snapshot.window_handle != int(guard.window_handle)
-    ):
-        logger.warning(
-            "Text injection skipped because foreground target window did not match "
-            f"(phase={phase})"
-        )
+    if guard.window_handle is not None and snapshot.window_handle != int(guard.window_handle):
+        logger.warning(f"Text injection skipped because foreground target window did not match (phase={phase})")
         return False
     return True
 
@@ -842,7 +801,7 @@ def _paste_text(
     text: str,
     *,
     skip_clipboard_restore: bool = False,
-    on_marker: Optional[Callable[[str], None]] = None,
+    on_marker: Callable[[str], None] | None = None,
     target_guard: InjectionTargetGuard | None = None,
 ) -> bool:
     """
@@ -860,9 +819,7 @@ def _paste_text(
     if sys.platform != "win32":
         return False
 
-    target = target_guard or _coerce_injection_target_guard(
-        _expected_injection_target_title()
-    )
+    target = target_guard or _coerce_injection_target_guard(_expected_injection_target_title())
     if not _foreground_target_guard_allows_dispatch(
         target,
         phase="before_clipboard_set",
@@ -921,8 +878,7 @@ def _paste_text(
             dispatch()
         except Exception as exc:
             logger.warning(
-                "Clipboard paste dispatch returned an uncertain result; "
-                f"unsafe retries disabled ({type(exc).__name__})"
+                f"Clipboard paste dispatch returned an uncertain result; unsafe retries disabled ({type(exc).__name__})"
             )
             if on_marker:
                 on_marker("paste_dispatch_uncertain")
@@ -952,11 +908,7 @@ def _paste_text(
         if skip_clipboard_restore or not isinstance(previous_clipboard, _ClipboardSnapshot):
             pass  # Skip restoration for speed or no previous content
         else:
-            restore_delay_ms = (
-                max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0))
-                if paste_dispatched
-                else 0
-            )
+            restore_delay_ms = max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0)) if paste_dispatched else 0
 
             def _restore_if_unchanged():
                 try:
@@ -982,7 +934,7 @@ def _paste_text(
 def _tauri_inject_text(
     text: str,
     *,
-    on_marker: Optional[Callable[..., None]] = None,
+    on_marker: Callable[..., None] | None = None,
 ) -> bool:
     client_timeout_seconds = 2.5
     deadline_ms = 2000
@@ -1041,11 +993,7 @@ def _tauri_inject_text(
         return False
     markers = response_payload.get("markers") if isinstance(response_payload, dict) else None
     required_markers = {"clipboard_set", "paste"}
-    marker_set = (
-        {marker for marker in markers if isinstance(marker, str)}
-        if isinstance(markers, list)
-        else set()
-    )
+    marker_set = {marker for marker in markers if isinstance(marker, str)} if isinstance(markers, list) else set()
     missing_markers = sorted(required_markers - marker_set)
     if missing_markers:
         missing_label = ", ".join(missing_markers)
@@ -1053,11 +1001,7 @@ def _tauri_inject_text(
         record_command_diagnostic(
             "injectText",
             False,
-            error_code=(
-                "missingPasteMarker"
-                if missing_markers == ["paste"]
-                else "missingInjectionMarker"
-            ),
+            error_code=("missingPasteMarker" if missing_markers == ["paste"] else "missingInjectionMarker"),
             fallback_reason=f"missing marker(s): {missing_label}",
             response=response,
         )
@@ -1071,11 +1015,7 @@ def _tauri_inject_text(
                     call_started_ns=call_started_ns,
                     call_finished_ns=call_finished_ns,
                 )
-                canonical_alias = (
-                    "injection_target_validated"
-                    if marker == "clipboard_set"
-                    else "paste_requested"
-                )
+                canonical_alias = "injection_target_validated" if marker == "clipboard_set" else "paste_requested"
                 if timestamp_ns is None:
                     on_marker(canonical_alias)
                     on_marker(marker)
@@ -1103,9 +1043,7 @@ def _tauri_marker_timestamp_ns(
     timings = response_payload.get("timingsMs")
     if not isinstance(timings, dict):
         return None
-    timing_key = {"clipboard_set": "clipboardSet", "paste": "pasteDispatch"}.get(
-        marker
-    )
+    timing_key = {"clipboard_set": "clipboardSet", "paste": "pasteDispatch"}.get(marker)
     if not timing_key:
         return None
     total_ms = _finite_number(timings.get("total"))
@@ -1122,8 +1060,8 @@ class TextInjector(FrameProcessor):
         self,
         inject_immediately: bool = False,
         enabled: bool = True,
-        on_injected: Optional[Callable[[str], None]] = None,
-        on_injection_marker: Optional[Callable[..., None]] = None,
+        on_injected: Callable[[str], None] | None = None,
+        on_injection_marker: Callable[..., None] | None = None,
         target_guard: InjectionTargetGuard | None = None,
         injection_method: str | None = None,
     ):
@@ -1182,9 +1120,7 @@ class TextInjector(FrameProcessor):
             self._inject_text(text)
             return True
         except Exception as exc:
-            logger.warning(
-                f"Text injection failed; transcript retained ({type(exc).__name__}: {exc})"
-            )
+            logger.warning(f"Text injection failed; transcript retained ({type(exc).__name__}: {exc})")
             return False
 
     def _inject_text(self, text: str):
@@ -1205,7 +1141,7 @@ class TextInjector(FrameProcessor):
         - Target app runs with higher privileges (Admin)
         - UIPI (User Interface Privilege Isolation) blocks the input
         - App has certain security features enabled
-        
+
         The ~20-40ms speed difference is negligible compared to reliability.
         """
         if getattr(Config, "DISABLE_TEXT_INJECTION", False):
@@ -1213,17 +1149,13 @@ class TextInjector(FrameProcessor):
             return
 
         try:
-            method = self.injection_method or (
-                getattr(Config, "INJECT_METHOD", "auto") or "auto"
-            ).lower().strip()
+            method = self.injection_method or (getattr(Config, "INJECT_METHOD", "auto") or "auto").lower().strip()
         except Exception:
             method = "auto"
         if method not in {"auto", "type", "paste", "sendinput", "tauri"}:
             method = "auto"
 
-        target_guard = self.target_guard or _coerce_injection_target_guard(
-            _expected_injection_target_title()
-        )
+        target_guard = self.target_guard or _coerce_injection_target_guard(_expected_injection_target_title())
         if not _foreground_target_guard_allows_dispatch(
             target_guard,
             phase="before_injection",
@@ -1236,15 +1168,12 @@ class TextInjector(FrameProcessor):
             and self.target_guard.process_creation_time_100ns is not None
         )
         if strict_target_guard and method not in {"auto", "paste"}:
-            logger.warning(
-                "Strict target-bound text injection supports guarded clipboard paste only"
-            )
+            logger.warning("Strict target-bound text injection supports guarded clipboard paste only")
             return
 
         if method == "tauri":
             if target_guard and (
-                target_guard.process_id is not None
-                or target_guard.process_creation_time_100ns is not None
+                target_guard.process_id is not None or target_guard.process_creation_time_100ns is not None
             ):
                 logger.warning(
                     "Tauri text injection skipped because the native IPC path "
@@ -1295,9 +1224,7 @@ class TextInjector(FrameProcessor):
                 self._notify_injected(text)
                 return
             if strict_target_guard:
-                logger.warning(
-                    "Guarded clipboard paste failed before dispatch; unsafe fallbacks disabled"
-                )
+                logger.warning("Guarded clipboard paste failed before dispatch; unsafe fallbacks disabled")
                 return
             logger.debug("Clipboard paste failed; trying SendInput")
             if not _foreground_target_guard_allows_dispatch(
@@ -1341,9 +1268,7 @@ class TextInjector(FrameProcessor):
         except Exception as exc:
             logger.debug(f"TextInjector on_injected callback failed: {exc}")
 
-    def _notify_injection_marker(
-        self, marker: str, timestamp_ns: int | None = None
-    ) -> None:
+    def _notify_injection_marker(self, marker: str, timestamp_ns: int | None = None) -> None:
         if not self.on_injection_marker:
             return
         try:
@@ -1366,8 +1291,8 @@ class TextInjector(FrameProcessor):
 def inject_text_once(
     text: str,
     *,
-    on_injected: Optional[Callable[[str], None]] = None,
-    on_injection_marker: Optional[Callable[..., None]] = None,
+    on_injected: Callable[[str], None] | None = None,
+    on_injection_marker: Callable[..., None] | None = None,
 ) -> bool:
     injector = TextInjector(
         inject_immediately=True,

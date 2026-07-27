@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from benchmarks.windows import endpoint_probe
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -154,19 +153,13 @@ def test_only_stopped_idle_state_is_a_successful_terminal_session() -> None:
 def test_process_generation_comparison_is_fail_closed() -> None:
     baseline = {"ok": True, "fingerprint": "generation-a"}
     assert endpoint_probe.process_generation_matches(baseline, dict(baseline)) is True
-    assert endpoint_probe.process_generation_matches(
-        baseline, {"ok": True, "fingerprint": "generation-b"}
-    ) is False
-    assert endpoint_probe.process_generation_matches(
-        baseline, {"ok": False, "fingerprint": "generation-a"}
-    ) is False
+    assert endpoint_probe.process_generation_matches(baseline, {"ok": True, "fingerprint": "generation-b"}) is False
+    assert endpoint_probe.process_generation_matches(baseline, {"ok": False, "fingerprint": "generation-a"}) is False
     assert endpoint_probe.process_generation_matches({}, {}) is False
 
 
 def test_overlay_observer_requires_ready_handshake_and_exact_pid_hwnd_contract() -> None:
-    source = (
-        REPO_ROOT / "benchmarks" / "windows" / "overlay_observer.py"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "benchmarks" / "windows" / "overlay_observer.py").read_text(encoding="utf-8")
 
     assert 'parser.add_argument("--expected-pid"' in source
     assert 'parser.add_argument("--expected-hwnd"' in source
@@ -286,9 +279,7 @@ def test_overlay_sample_attests_target_focus_generations_and_blocks_missing_taur
         endpoint_probe,
         "request_runtime_json",
         lambda _port, _token, path, **_kwargs: (
-            {"microphone": {"micAlwaysOn": False}}
-            if path == "/api/runtime/audio-diagnostics"
-            else {}
+            {"microphone": {"micAlwaysOn": False}} if path == "/api/runtime/audio-diagnostics" else {}
         ),
     )
     monkeypatch.setattr(
@@ -323,9 +314,7 @@ def test_overlay_sample_attests_target_focus_generations_and_blocks_missing_taur
     assert result["reason"] == "tauri_hotkey_received_marker_unavailable"
     assert result["cleanup"]["ok"] is True
     assert captured["childEnv"]["SCRIBER_MIC_ALWAYS_ON"] == "0"
-    benchmark_run_id = captured["childEnv"][
-        "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID"
-    ]
+    benchmark_run_id = captured["childEnv"]["SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID"]
     assert len(benchmark_run_id) == 32
     assert result["benchmarkRunId"] == benchmark_run_id
     observer_args = captured["observerArgs"]

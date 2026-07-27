@@ -221,10 +221,7 @@ def test_recording_hot_path_comparison_rejects_mismatched_recording_config() -> 
     )
 
     assert result["ok"] is False
-    assert (
-        "Python and Rust reports must use the same recording benchmark configuration"
-        in result["failures"]
-    )
+    assert "Python and Rust reports must use the same recording benchmark configuration" in result["failures"]
     check = next(item for item in result["checks"] if item["name"] == "sameRecordingConfig")
     assert check["ok"] is False
     assert check["details"]["mismatchedFields"] == ["recordSeconds"]
@@ -366,10 +363,7 @@ def test_recording_hot_path_comparison_rejects_unstable_rust_active_capture() ->
     )
 
     assert result["ok"] is False
-    assert (
-        "Rust report must prove active capture stayed stable without watchdog restarts"
-        in result["failures"]
-    )
+    assert "Rust report must prove active capture stayed stable without watchdog restarts" in result["failures"]
     check = next(item for item in result["checks"] if item["name"] == "rustActiveCaptureStable")
     assert check["ok"] is False
     assert check["details"]["unstableSampleCount"] == 3
@@ -388,10 +382,7 @@ def test_recording_hot_path_comparison_rejects_rust_without_always_on_mic() -> N
     )
 
     assert result["ok"] is False
-    assert (
-        "Rust report must prove MIC always-on was enabled during provider-backed comparison"
-        in result["failures"]
-    )
+    assert "Rust report must prove MIC always-on was enabled during provider-backed comparison" in result["failures"]
     check = next(item for item in result["checks"] if item["name"] == "rustAlwaysOnMic")
     assert check["ok"] is False
     assert check["details"]["micAlwaysOnSnapshotCount"] == 0
@@ -410,8 +401,7 @@ def test_recording_hot_path_comparison_rejects_rust_without_prewarm_adoption() -
 
     assert result["ok"] is False
     assert (
-        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison"
-        in result["failures"]
+        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison" in result["failures"]
     )
     check = next(item for item in result["checks"] if item["name"] == "rustPrewarmAdoption")
     assert check["ok"] is False
@@ -433,8 +423,7 @@ def test_recording_hot_path_comparison_rejects_raw_prewarm_id() -> None:
 
     assert result["ok"] is False
     assert (
-        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison"
-        in result["failures"]
+        "Rust report must prove adopted Rust prewarm evidence during provider-backed comparison" in result["failures"]
     )
     check = next(item for item in result["checks"] if item["name"] == "rustPrewarmAdoption")
     assert check["ok"] is False
@@ -455,18 +444,15 @@ def test_recording_hot_path_comparison_rejects_unredacted_input_reports() -> Non
     assert "Recording hot-path comparison input reports must be redacted" in result["failures"]
     assert (
         "Python recording hot-path report contains unredacted token-like value at "
-        "audioDiagnostics.sessionToken"
-        in result["failures"]
+        "audioDiagnostics.sessionToken" in result["failures"]
     )
     assert (
         "Rust recording hot-path report contains raw native endpoint ID at "
-        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.endpointId"
-        in result["failures"]
+        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.endpointId" in result["failures"]
     )
     assert (
         "Rust recording hot-path report contains raw Scriber pipe name at "
-        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.framePipe"
-        in result["failures"]
+        "samples[0].audioDiagnosticsDuringRecording.microphone.activeCapture.framePipe" in result["failures"]
     )
     check = next(item for item in result["checks"] if item["name"] == "inputReportRedaction")
     assert check["ok"] is False

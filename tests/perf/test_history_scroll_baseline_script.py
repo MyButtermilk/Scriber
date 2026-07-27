@@ -43,13 +43,12 @@ def test_history_scroll_baseline_script_validate_only_writes_artifact(tmp_path: 
 
 def test_hybrid_baseline_runner_wires_history_scroll_benchmark():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     assert "measure_history_scroll_baseline.py" in script
     assert "Invoke-HistoryScrollBenchmark" in script
     assert "history_scroll_many_transcripts" in script
-    assert "not_automated_yet" not in script.split(
-        "history_scroll_many_transcripts", maxsplit=1
-    )[1].split(")", maxsplit=1)[0]
+    assert (
+        "not_automated_yet"
+        not in script.split("history_scroll_many_transcripts", maxsplit=1)[1].split(")", maxsplit=1)[0]
+    )

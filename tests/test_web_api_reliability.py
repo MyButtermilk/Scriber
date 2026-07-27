@@ -128,9 +128,7 @@ async def test_retry_ladder_retries_transient_file_failure(monkeypatch, tmp_path
     ):
         rec = await ctl.start_file_transcription(sample_file, "sample.wav")
         deadline = loop.time() + 2.0
-        while loop.time() < deadline and (
-            rec.status != "completed" or rec.id in ctl._running_tasks
-        ):
+        while loop.time() < deadline and (rec.status != "completed" or rec.id in ctl._running_tasks):
             await asyncio.sleep(0.02)
 
     assert rec.status == "completed"

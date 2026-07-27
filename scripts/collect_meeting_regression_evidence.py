@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +18,6 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.new_meeting_release_evidence import build_template
-
 
 RUST_RESULT_RE = re.compile(
     r"test result:\s+ok\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;",
@@ -108,21 +107,21 @@ def collect(
         "Tauri Windows bundle",
     }
     phases = {
-        str(item.get("label")): item.get("ok") is True
-        for item in timing.get("phases", [])
-        if isinstance(item, dict)
+        str(item.get("label")): item.get("ok") is True for item in timing.get("phases", []) if isinstance(item, dict)
     }
     missing_phases = sorted(label for label in required_phases if phases.get(label) is not True)
     if missing_phases:
         raise ValueError(f"build timing is missing passing phases: {', '.join(missing_phases)}")
     meeting_scenarios = [
-        item for item in browser.get("scenarios", [])
+        item
+        for item in browser.get("scenarios", [])
         if isinstance(item, dict) and item.get("route") == "/meetings" and item.get("ok") is True
     ]
     if not meeting_scenarios:
         raise ValueError("Meeting browser smoke lacks a passing /meetings scenario")
     meeting_checks = [
-        check for check in meeting_scenarios[0].get("interactionChecks", [])
+        check
+        for check in meeting_scenarios[0].get("interactionChecks", [])
         if isinstance(check, dict) and check.get("name") == "meeting-end-to-end" and check.get("ok") is True
     ]
     if not meeting_checks:
@@ -179,7 +178,7 @@ def collect(
     browser_check_count = int(browser.get("summary", {}).get("interactionCheckCount") or 0)
     automated_tests_passed = pytest_counts["passed"] + rust_audio_passed + rust_lib_passed + browser_check_count
 
-    captured_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    captured_at = datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
     summary = {
         "schemaVersion": 1,
         "kind": "scriber-meeting-automated-regression-summary",

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import contextlib
 import asyncio
+import contextlib
 import io
 import json
 import os
 import tempfile
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
-from collections.abc import AsyncGenerator
-from typing import Any, Awaitable, BinaryIO, Callable
+from typing import Any, BinaryIO
 
 import aiohttp
 from loguru import logger
-
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
@@ -33,14 +32,14 @@ from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
 from src.core.provider_errors import provider_transport_error, provider_user_error
-from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
-from src.runtime.http_response import read_response_text_limited
-from src.runtime.media_tools import require_media_tool
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
 from src.runtime.capture_time_encoder import (
     CaptureTimeEncoderError,
     CaptureTimeFfmpegEncoder,
 )
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, mp3_encode_pcm_pipe_args, mp3_transcode_args
+from src.runtime.http_response import read_response_text_limited
+from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import (
     communicate_or_kill_on_cancel,
     hidden_subprocess_kwargs,
@@ -145,20 +144,14 @@ def azure_mai_transcript_payload_to_text(payload: dict[str, Any]) -> str:
     combined = payload.get("combinedPhrases")
     if isinstance(combined, list):
         text = "\n\n".join(
-            _phrase_text(item)
-            for item in combined
-            if isinstance(item, dict) and _phrase_text(item)
+            _phrase_text(item) for item in combined if isinstance(item, dict) and _phrase_text(item)
         ).strip()
         if text:
             return text
 
     phrases = payload.get("phrases") or payload.get("recognizedPhrases")
     if isinstance(phrases, list):
-        text = " ".join(
-            _phrase_text(item)
-            for item in phrases
-            if isinstance(item, dict) and _phrase_text(item)
-        ).strip()
+        text = " ".join(_phrase_text(item) for item in phrases if isinstance(item, dict) and _phrase_text(item)).strip()
         if text:
             return text
 
@@ -434,9 +427,7 @@ class AzureMaiTranscribeSTTService(STTService):
         self._language = language or "auto"
         self._model = selected_model
         self._custom_vocab = (
-            str(custom_vocab)
-            if custom_vocab is not None
-            else str(getattr(Config, "CUSTOM_VOCAB", "") or "")
+            str(custom_vocab) if custom_vocab is not None else str(getattr(Config, "CUSTOM_VOCAB", "") or "")
         )
         self._session = session
         self._on_progress = on_progress
@@ -449,9 +440,7 @@ class AzureMaiTranscribeSTTService(STTService):
         self._channels = 1
         self._capture_encoder: CaptureTimeFfmpegEncoder | None = None
         self._capture_encoder_enabled = (
-            _capture_time_mp3_enabled()
-            if capture_time_mp3_enabled is None
-            else bool(capture_time_mp3_enabled)
+            _capture_time_mp3_enabled() if capture_time_mp3_enabled is None else bool(capture_time_mp3_enabled)
         )
         self._capture_encoder_disabled = not self._capture_encoder_enabled
         self._audio_preparation_implementation: str | None = None
@@ -531,11 +520,7 @@ class AzureMaiTranscribeSTTService(STTService):
         try:
             return await encoder.finish()
         except Exception as exc:
-            reason = (
-                str(exc)
-                if isinstance(exc, CaptureTimeEncoderError)
-                else type(exc).__name__
-            )
+            reason = str(exc) if isinstance(exc, CaptureTimeEncoderError) else type(exc).__name__
             logger.warning(
                 "Azure MAI capture-time MP3 failed before upload; using PCM fallback ({})",
                 reason,
@@ -582,9 +567,7 @@ class AzureMaiTranscribeSTTService(STTService):
                 timeout_secs=900.0,
                 raw_transport=self._raw_transport,
                 on_response_complete=self._on_response_complete,
-                audio_preparation_implementation=(
-                    self._audio_preparation_implementation
-                ),
+                audio_preparation_implementation=(self._audio_preparation_implementation),
             )
 
         if self._session:
@@ -602,7 +585,7 @@ class AzureMaiTranscribeSTTService(STTService):
             result=None,
         )
 
-    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame, None]:
+    async def run_stt(self, audio: bytes) -> AsyncGenerator[Frame]:
         text = (await self._transcribe_bytes(audio)).strip()
         if text:
             yield self._transcription_frame(text)
@@ -636,18 +619,14 @@ class AzureMaiTranscribeSTTService(STTService):
         try:
             mp3_source = await self._finish_capture_encoder()
             if mp3_source is None:
-                self._audio_preparation_implementation = (
-                    "post_stop_ffmpeg_mp3_v1"
-                )
+                self._audio_preparation_implementation = "post_stop_ffmpeg_mp3_v1"
                 mp3_source = await _pcm_stream_to_mp3(
                     self._buffer,
                     sample_rate=self._sample_rate,
                     channels=self._channels,
                 )
             else:
-                self._audio_preparation_implementation = (
-                    "capture_time_ffmpeg_mp3_v1"
-                )
+                self._audio_preparation_implementation = "capture_time_ffmpeg_mp3_v1"
         finally:
             self._emit_encoder_marker("encoder_tail_completed")
         try:

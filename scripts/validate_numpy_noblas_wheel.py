@@ -4,6 +4,7 @@ The validator is intentionally standard-library-only so it can run before the
 backend environment exists.  It treats the wheel, its lock, its static runtime
 version, licenses, RECORD entries, and PE import tables as one artifact.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -20,16 +21,14 @@ import stat
 import struct
 import sys
 import zipfile
+from collections.abc import Iterable, Mapping, Sequence
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LOCK_PATH = (
-    REPO_ROOT / "packaging" / "wheels" / "numpy-noblas-wheel-lock-v1.json"
-)
+DEFAULT_LOCK_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-noblas-wheel-lock-v1.json"
 CONTRACT = "ScriberNumPyNoBlasWheelLockV1"
 SCHEMA_VERSION = 1
 MAX_PYD_BYTES = 64 * 1024 * 1024
@@ -51,9 +50,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _load_lock(path: Path) -> dict[str, Any]:
     try:
-        payload = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
-        )
+        payload = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValidationError(f"cannot read NumPy wheel lock: {path}") from exc
     if not isinstance(payload, dict):
@@ -163,9 +160,7 @@ def _validate_artifact_lock(lock: Mapping[str, Any]) -> dict[str, Any]:
     abi_tag = _require_string(artifact, "abiTag", label="artifact")
     platform_tag = _require_string(artifact, "platformTag", label="artifact")
     wheel_tag = _require_string(artifact, "wheelTag", label="artifact")
-    expected_file_name = (
-        f"{distribution}-{version}-{python_tag}-{abi_tag}-{platform_tag}.whl"
-    )
+    expected_file_name = f"{distribution}-{version}-{python_tag}-{abi_tag}-{platform_tag}.whl"
     if file_name != expected_file_name or wheel_tag != f"{python_tag}-{abi_tag}-{platform_tag}":
         raise ValidationError("artifact filename and wheel tags are inconsistent")
 
@@ -293,9 +288,7 @@ def _static_runtime_version(source: bytes) -> dict[str, str]:
     return {key: str(value) for key, value in required.items()}
 
 
-def _validate_static_runtime_version(
-    source: bytes, *, expected_version: str
-) -> dict[str, str]:
+def _validate_static_runtime_version(source: bytes, *, expected_version: str) -> dict[str, str]:
     runtime_versions = _static_runtime_version(source)
     if set(runtime_versions.values()) != {expected_version}:
         raise ValidationError("wheel static runtime version differs from METADATA")
@@ -412,9 +405,7 @@ def _pe_imports(data: bytes, *, label: str) -> list[str]:
         entry = section_offset + index * 40
         if entry + 40 > len(data):
             raise ValidationError(f"{label} has a truncated PE section table")
-        virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from(
-            "<IIII", data, entry + 8
-        )
+        virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", data, entry + 8)
         sections.append((virtual_address, virtual_size, raw_offset, raw_size))
 
     imports: set[str] = set()
@@ -539,22 +530,15 @@ def validate(lock_path: Path = DEFAULT_LOCK_PATH, wheel_path: Path | None = None
 
         _validate_no_forbidden_archive_entries(
             names,
-            suffixes=_require_string_list(
-                validation, "forbiddenArchiveSuffixes", label="validation"
-            ),
-            path_markers=_require_string_list(
-                validation, "forbiddenArchivePathMarkers", label="validation"
-            ),
+            suffixes=_require_string_list(validation, "forbiddenArchiveSuffixes", label="validation"),
+            path_markers=_require_string_list(validation, "forbiddenArchivePathMarkers", label="validation"),
         )
 
         metadata_name = _single_member(names, ".dist-info/METADATA")
         wheel_metadata_name = _single_member(names, ".dist-info/WHEEL")
         record_name = _single_member(names, ".dist-info/RECORD")
         expected_dist_info = f"numpy-{artifact['version']}.dist-info/"
-        if not all(
-            name.startswith(expected_dist_info)
-            for name in (metadata_name, wheel_metadata_name, record_name)
-        ):
+        if not all(name.startswith(expected_dist_info) for name in (metadata_name, wheel_metadata_name, record_name)):
             raise ValidationError("wheel dist-info directory differs from the locked version")
 
         metadata = _parse_message(archive.read(metadata_name), label="METADATA")
@@ -572,15 +556,11 @@ def validate(lock_path: Path = DEFAULT_LOCK_PATH, wheel_path: Path | None = None
         if root_is_pure is not validation["rootIsPurelib"]:
             raise ValidationError("wheel Root-Is-Purelib differs from the lock")
 
-        _validate_static_runtime_version(
-            archive.read("numpy/version.py"), expected_version=artifact["version"]
-        )
+        _validate_static_runtime_version(archive.read("numpy/version.py"), expected_version=artifact["version"])
         _validate_init_version_binding(archive.read("numpy/__init__.py"))
         _validate_static_build_dependencies(archive.read("numpy/__config__.py"))
 
-        expected_licenses = set(
-            _require_string_list(validation, "licenseFiles", label="validation")
-        )
+        expected_licenses = set(_require_string_list(validation, "licenseFiles", label="validation"))
         actual_licenses = {name for name in names if ".dist-info/licenses/" in name}
         if actual_licenses != expected_licenses:
             raise ValidationError("wheel license members differ from the lock")
@@ -590,12 +570,8 @@ def validate(lock_path: Path = DEFAULT_LOCK_PATH, wheel_path: Path | None = None
             raise ValidationError("wheel PYD count differs from the lock")
         if sum(entry.file_size for entry in pyd_infos) != artifact["pydBytes"]:
             raise ValidationError("wheel PYD bytes differ from the lock")
-        forbidden_markers = _require_string_list(
-            validation, "forbiddenPeImportMarkers", label="validation"
-        )
-        allowed_imports = _require_string_list(
-            validation, "allowedPeImports", label="validation"
-        )
+        forbidden_markers = _require_string_list(validation, "forbiddenPeImportMarkers", label="validation")
+        allowed_imports = _require_string_list(validation, "allowedPeImports", label="validation")
         aggregate_imports: set[str] = set()
         for entry in pyd_infos:
             imports = _pe_imports(archive.read(entry), label=entry.filename)
@@ -605,9 +581,7 @@ def validate(lock_path: Path = DEFAULT_LOCK_PATH, wheel_path: Path | None = None
                 allowed_imports=allowed_imports,
             )
             aggregate_imports.update(imports)
-        if {item.casefold() for item in aggregate_imports} != {
-            item.casefold() for item in allowed_imports
-        }:
+        if {item.casefold() for item in aggregate_imports} != {item.casefold() for item in allowed_imports}:
             raise ValidationError("aggregate NumPy PE imports differ from the lock")
 
         _validate_record(archive, names, record_name)

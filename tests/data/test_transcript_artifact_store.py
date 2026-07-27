@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Barrier
 
@@ -19,7 +19,6 @@ from src.data.transcript_artifact_store import (
     TranscriptArtifactStore,
     UnsafeSnapshotValue,
 )
-
 
 SHA_A = "a" * 64
 SHA_B = "b" * 64
@@ -76,9 +75,7 @@ def _route(workload: str = "file") -> RouteSnapshotDraft:
             "customVocabularyCount": 3,
             "providerRoute": "async_transcription",
             "audioInputFormat": "webm_opus",
-            "providerAudioCapabilityId": (
-                "soniox_async:async_transcription:stt-async-v5"
-            ),
+            "providerAudioCapabilityId": ("soniox_async:async_transcription:stt-async-v5"),
             "providerAudioCapabilityRevision": "provider-audio-formats-v1",
             "audioInputFormatVerified": True,
             "apiKeyPresent": True,
@@ -202,9 +199,7 @@ def _segments(first_text: str = "Guten Morgen."):
 
 
 def _ready_commit(store: TranscriptArtifactStore, *, transcript_id="transcript-1", attempt_id=None):
-    attempt = _advance_to_transcribing(
-        store, transcript_id=transcript_id, attempt_id=attempt_id
-    )
+    attempt = _advance_to_transcribing(store, transcript_id=transcript_id, attempt_id=attempt_id)
     _, attempt = _persist_stage(store, attempt)
     return _advance_to_committing(store, attempt)
 
@@ -220,12 +215,7 @@ def test_schema_migrations_are_additive_and_idempotent(tmp_path):
     second.close()
 
     with sqlite3.connect(db_path) as conn:
-        tables = {
-            row[0]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table'"
-            ).fetchall()
-        }
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
         assert {
             "transcription_route_snapshots",
             "transcription_attempts",
@@ -259,9 +249,7 @@ def test_schema_migrations_are_additive_and_idempotent(tmp_path):
         ("sourceUrl", "file:///C:/private/source.wav"),
     ],
 )
-def test_route_snapshot_rejects_secret_url_vocabulary_and_path_fields(
-    artifact_store, field, value
-):
+def test_route_snapshot_rejects_secret_url_vocabulary_and_path_fields(artifact_store, field, value):
     attempt = artifact_store.create_attempt(transcript_id="transcript-1", workload="file")
     safe = _route()
     draft = RouteSnapshotDraft(
@@ -284,10 +272,7 @@ def test_route_snapshot_allows_only_digest_presence_and_count_secret_metadata(ar
     assert snapshot.request_options["customVocabularySha256"] == SHA_A
     assert snapshot.request_options["providerRoute"] == "async_transcription"
     assert snapshot.request_options["audioInputFormat"] == "webm_opus"
-    assert (
-        snapshot.request_options["providerAudioCapabilityRevision"]
-        == "provider-audio-formats-v1"
-    )
+    assert snapshot.request_options["providerAudioCapabilityRevision"] == "provider-audio-formats-v1"
     assert snapshot.request_options["apiKeyPresent"] is True
     assert snapshot.request_options["secretDigest"] == SHA_B
 
@@ -295,8 +280,7 @@ def test_route_snapshot_allows_only_digest_presence_and_count_secret_metadata(ar
         persisted = " ".join(
             str(value or "")
             for value in conn.execute(
-                "SELECT request_options_json, local_worker_manifest_json "
-                "FROM transcription_route_snapshots"
+                "SELECT request_options_json, local_worker_manifest_json FROM transcription_route_snapshots"
             ).fetchone()
         )
     assert "synthetic-secret" not in persisted
@@ -346,9 +330,7 @@ def test_new_snapshot_after_transcribing_is_rejected_but_existing_retry_is_idemp
     existing = artifact_store.get_route_snapshot(attempt.id)
     assert artifact_store.persist_route_snapshot(attempt.id, _route()) == existing
 
-    invalid = artifact_store.create_attempt(
-        transcript_id="transcript-2", workload="file", attempt_id="late-snapshot"
-    )
+    invalid = artifact_store.create_attempt(transcript_id="transcript-2", workload="file", attempt_id="late-snapshot")
     # The public state machine can no longer create this invalid state; emulate a
     # legacy/pre-migration row to prove the snapshot writer still refuses it.
     with sqlite3.connect(artifact_store._db_path) as conn:
@@ -365,9 +347,7 @@ def test_attempt_transition_is_versioned_compare_and_swap_under_concurrency(tmp_
     _create_legacy_database(db_path, "transcript-1")
     first_store = TranscriptArtifactStore(db_path)
     second_store = TranscriptArtifactStore(db_path)
-    attempt = first_store.create_attempt(
-        transcript_id="transcript-1", workload="file", attempt_id="attempt-cas"
-    )
+    attempt = first_store.create_attempt(transcript_id="transcript-1", workload="file", attempt_id="attempt-cas")
     barrier = Barrier(2)
 
     def advance(store):
@@ -394,9 +374,7 @@ def test_attempt_transition_is_versioned_compare_and_swap_under_concurrency(tmp_
 
 def test_attempt_lease_blocks_other_owner_and_expired_lease_can_be_taken_over(artifact_store):
     attempt = artifact_store.create_attempt(transcript_id="transcript-1", workload="file")
-    leased = artifact_store.acquire_attempt_lease(
-        attempt.id, owner="worker-a", expected_version=0, ttl_seconds=60
-    )
+    leased = artifact_store.acquire_attempt_lease(attempt.id, owner="worker-a", expected_version=0, ttl_seconds=60)
     with pytest.raises(ArtifactConflict, match="owned"):
         artifact_store.acquire_attempt_lease(
             attempt.id,
@@ -405,7 +383,7 @@ def test_attempt_lease_blocks_other_owner_and_expired_lease_can_be_taken_over(ar
             ttl_seconds=60,
         )
 
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     with sqlite3.connect(artifact_store._db_path) as conn:
         conn.execute(
             "UPDATE transcription_attempts SET lease_expires_at = ? WHERE id = ?",
@@ -429,9 +407,7 @@ def test_attempt_lease_blocks_other_owner_and_expired_lease_can_be_taken_over(ar
 
 def test_attempt_lease_heartbeat_preserves_state_version(artifact_store):
     attempt = artifact_store.create_attempt(transcript_id="transcript-1", workload="file")
-    leased = artifact_store.acquire_attempt_lease(
-        attempt.id, owner="worker-a", expected_version=0, ttl_seconds=30
-    )
+    leased = artifact_store.acquire_attempt_lease(attempt.id, owner="worker-a", expected_version=0, ttl_seconds=30)
     renewed = artifact_store.renew_attempt_lease(
         attempt.id,
         owner="worker-a",
@@ -463,9 +439,7 @@ def test_stage_result_and_speaker_zero_survive_restart_without_provider_rerun(tm
     store.close()
 
     reopened = TranscriptArtifactStore(db_path)
-    assert [item.attempt.id for item in reopened.list_recoverable_provider_results()] == [
-        attempt.id
-    ]
+    assert [item.attempt.id for item in reopened.list_recoverable_provider_results()] == [attempt.id]
     assert reopened.latest_recoverable_for_transcript("transcript-1").attempt.id == attempt.id
     assert reopened.latest_recoverable_for_transcript("transcript-2") is None
     bundle = reopened.claim_recovery_bundle(
@@ -518,7 +492,7 @@ def test_track_stage_results_checkpoint_each_meeting_track_without_advancing_att
     )
     assert retry == system
 
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     with sqlite3.connect(artifact_store._db_path) as conn:
         conn.execute(
             "UPDATE transcription_attempts SET lease_owner = 'dead', lease_expires_at = ? WHERE id = ?",
@@ -592,7 +566,7 @@ def test_local_track_derivation_is_immutable_and_recovery_bound_to_parent(
             evidence={"engine": "sherpa-onnx"},
         )
 
-    past = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+    past = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
     with sqlite3.connect(artifact_store._db_path) as conn:
         conn.execute(
             "UPDATE transcription_attempts SET lease_owner = 'dead', lease_expires_at = ? WHERE id = ?",
@@ -631,8 +605,7 @@ def test_recovery_refuses_a_corrupted_normalized_stage_result(artifact_store):
     _, attempt = _persist_stage(artifact_store, attempt)
     with sqlite3.connect(artifact_store._db_path) as conn:
         conn.execute(
-            "UPDATE transcription_stage_results SET transcript_text = 'tampered' "
-            "WHERE attempt_id = ?",
+            "UPDATE transcription_stage_results SET transcript_text = 'tampered' WHERE attempt_id = ?",
             (attempt.id,),
         )
 
@@ -656,15 +629,11 @@ def test_canonical_commit_updates_head_attempt_and_legacy_projection_atomically(
     assert result.artifact.segments[0].duration_ms == 1200
 
     with sqlite3.connect(artifact_store._db_path) as conn:
-        content, status = conn.execute(
-            "SELECT content, status FROM transcripts WHERE id = 'transcript-1'"
-        ).fetchone()
+        content, status = conn.execute("SELECT content, status FROM transcripts WHERE id = 'transcript-1'").fetchone()
         assert "[0:00] Speaker 0: Guten Morgen." in content
         assert status == "completed"
         assert conn.execute("SELECT COUNT(*) FROM canonical_artifact_inputs").fetchone()[0] == 2
-        assert conn.execute(
-            "SELECT COUNT(*) FROM canonical_transcript_segments_fts"
-        ).fetchone()[0] == 2
+        assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments_fts").fetchone()[0] == 2
 
     matches = artifact_store.search_canonical_segments("transcript-1", "nächster")
     assert len(matches) == 1
@@ -704,18 +673,28 @@ def test_canonical_fts_migration_restores_rowid_parity_and_indexed_integrity_loo
 
     migrated = TranscriptArtifactStore(artifact_store._db_path)
     try:
-        parity = migrated._connect().execute(
-            """SELECT COUNT(*) FROM canonical_transcript_segments s
+        parity = (
+            migrated._connect()
+            .execute(
+                """SELECT COUNT(*) FROM canonical_transcript_segments s
                JOIN canonical_transcript_segments_fts f ON f.rowid=s.rowid"""
-        ).fetchone()[0]
-        plan = migrated._connect().execute(
-            """EXPLAIN QUERY PLAN SELECT 1 FROM canonical_transcript_segments s
+            )
+            .fetchone()[0]
+        )
+        plan = (
+            migrated._connect()
+            .execute(
+                """EXPLAIN QUERY PLAN SELECT 1 FROM canonical_transcript_segments s
                LEFT JOIN canonical_transcript_segments_fts f ON f.rowid=s.rowid
                WHERE f.rowid IS NULL LIMIT 1"""
-        ).fetchall()
-        trigger_sql = migrated._connect().execute(
-            "SELECT sql FROM sqlite_master WHERE name='trg_canonical_segment_fts_delete'"
-        ).fetchone()[0]
+            )
+            .fetchall()
+        )
+        trigger_sql = (
+            migrated._connect()
+            .execute("SELECT sql FROM sqlite_master WHERE name='trg_canonical_segment_fts_delete'")
+            .fetchone()[0]
+        )
         matches = migrated.search_canonical_segments("transcript-1", "nächster")
     finally:
         migrated.close()
@@ -760,9 +739,7 @@ def test_transcript_cascade_removes_canonical_segment_search_rows(artifact_store
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("DELETE FROM transcripts WHERE id = 'transcript-1'")
         assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_artifacts").fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM canonical_transcript_segments_fts"
-        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments_fts").fetchone()[0] == 0
 
 
 def test_concurrent_same_generation_commit_has_one_winner_and_supersedes_stale_loser(tmp_path):
@@ -864,13 +841,12 @@ def test_fault_after_artifact_insert_rolls_back_head_projection_and_attempt(tmp_
     with sqlite3.connect(db_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_artifacts").fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_heads").fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT COUNT(*) FROM canonical_transcript_segments_fts"
-        ).fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments_fts").fetchone()[0] == 0
         assert conn.execute("SELECT content FROM transcripts").fetchone()[0] == "old projection"
-        assert conn.execute(
-            "SELECT state FROM transcription_attempts WHERE id = ?", (attempt.id,)
-        ).fetchone()[0] == AttemptState.COMMITTING.value
+        assert (
+            conn.execute("SELECT state FROM transcription_attempts WHERE id = ?", (attempt.id,)).fetchone()[0]
+            == AttemptState.COMMITTING.value
+        )
 
     recovered = TranscriptArtifactStore(db_path)
     result = recovered.commit_canonical_artifact(
@@ -905,15 +881,11 @@ def test_source_asset_requires_durable_purge_pending_before_purged_and_hides_pat
         artifact_store.mark_source_asset_purged(
             asset.id, expected_version=asset.state_version, tombstone_reason="retention"
         )
-    pending = artifact_store.mark_source_asset_purge_pending(
-        asset.id, expected_version=asset.state_version
+    pending = artifact_store.mark_source_asset_purge_pending(asset.id, expected_version=asset.state_version)
+    assert artifact_store.list_source_assets_by_state(SourceAssetState.PURGE_PENDING, purpose="processing_only") == (
+        pending,
     )
-    assert artifact_store.list_source_assets_by_state(
-        SourceAssetState.PURGE_PENDING, purpose="processing_only"
-    ) == (pending,)
-    assert artifact_store.list_source_assets_by_state(
-        SourceAssetState.PURGE_PENDING, purpose="retained"
-    ) == ()
+    assert artifact_store.list_source_assets_by_state(SourceAssetState.PURGE_PENDING, purpose="retained") == ()
     purged = artifact_store.mark_source_asset_purged(
         asset.id,
         expected_version=pending.state_version,

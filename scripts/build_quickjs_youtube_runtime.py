@@ -12,9 +12,9 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
-
+from typing import Any
 
 LOCK_CONTRACT = "ScriberQuickJsWrapperRuntimeLockV1"
 UPSTREAM_LOCK_CONTRACT = "ScriberQuickJsRuntimeProvenanceLockV1"
@@ -57,9 +57,7 @@ def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _load_json_object(path: Path, *, label: str) -> dict[str, Any]:
     try:
-        value = json.loads(
-            path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys
-        )
+        value = json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_reject_duplicate_keys)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise BuildError(f"invalid {label}: {path}") from exc
     if not isinstance(value, dict):
@@ -184,18 +182,14 @@ def _expected_manifest(lock: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_upstream_lock(
-    repo_root: Path, lock: Mapping[str, Any]
-) -> Mapping[str, Any]:
+def _validate_upstream_lock(repo_root: Path, lock: Mapping[str, Any]) -> Mapping[str, Any]:
     upstream = lock["upstreamLock"]
     _exact_keys(
         upstream,
         {"relativePath", "length", "sha256", "entry"},
         label="upstream QuickJS lock binding",
     )
-    path = _resolve_under(
-        repo_root, upstream["relativePath"], label="upstream QuickJS lock"
-    )
+    path = _resolve_under(repo_root, upstream["relativePath"], label="upstream QuickJS lock")
     normalized = _normalized_text_bytes(path)
     if (len(normalized), _sha256_bytes(normalized)) != (
         upstream["length"],
@@ -212,11 +206,7 @@ def _validate_upstream_lock(
     entries = payload.get("entries")
     if not isinstance(entries, list):
         raise BuildError("upstream QuickJS provenance entries are invalid")
-    matches = [
-        entry
-        for entry in entries
-        if isinstance(entry, dict) and entry.get("id") == upstream["entry"]
-    ]
+    matches = [entry for entry in entries if isinstance(entry, dict) and entry.get("id") == upstream["entry"]]
     if len(matches) != 1:
         raise BuildError("bound upstream QuickJS entry is not unique")
     entry = matches[0]
@@ -245,11 +235,9 @@ def _validate_upstream_lock(
         or runtime_files[0].get("length") != engine_source["length"]
         or runtime_files[0].get("sha256") != engine_source["sha256"]
         or installed_license["spdx"] != license_value.get("spdx")
-        or installed_license["installedFileName"]
-        != license_value.get("installedFileName")
+        or installed_license["installedFileName"] != license_value.get("installedFileName")
         or installed_license["url"] != license_value["source"].get("url")
-        or installed_license["fileName"]
-        != license_value["source"].get("fileName")
+        or installed_license["fileName"] != license_value["source"].get("fileName")
         or installed_license["length"] != license_value.get("length")
         or installed_license["sha256"] != license_value.get("sha256")
     ):
@@ -389,12 +377,7 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
     files = wrapper.get("files")
     artifact = wrapper.get("artifact")
     output = wrapper.get("output")
-    if (
-        not isinstance(files, list)
-        or len(files) != 4
-        or not isinstance(artifact, dict)
-        or not isinstance(output, dict)
-    ):
+    if not isinstance(files, list) or len(files) != 4 or not isinstance(artifact, dict) or not isinstance(output, dict):
         raise BuildError("QuickJS wrapper input or output inventory is invalid")
     _exact_keys(
         artifact,
@@ -440,11 +423,9 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
         actual_inputs.add(relative)
         source = _resolve_under(repo_root, relative, label="QuickJS wrapper input")
         normalized = _normalized_text_bytes(source)
-        if (
-            len(normalized) != _positive_integer(item["length"], label="wrapper input length")
-            or _sha256_bytes(normalized)
-            != _sha256(item["sha256"], label="wrapper input SHA-256")
-        ):
+        if len(normalized) != _positive_integer(item["length"], label="wrapper input length") or _sha256_bytes(
+            normalized
+        ) != _sha256(item["sha256"], label="wrapper input SHA-256"):
             raise BuildError("QuickJS wrapper input differs from its lock")
     if actual_inputs != expected_inputs or wrapper["crateRoot"] != "native/scriber-quickjs-wrapper":
         raise BuildError("QuickJS wrapper source inventory is not exact")
@@ -466,8 +447,7 @@ def _load_lock(path: Path, repo_root: Path) -> Mapping[str, Any]:
     manifest = lock.get("manifest")
     if (
         manifest != expected_manifest
-        or _sha256_bytes(_canonical_manifest_bytes(expected_manifest))
-        != lock["manifestCanonicalSha256"]
+        or _sha256_bytes(_canonical_manifest_bytes(expected_manifest)) != lock["manifestCanonicalSha256"]
     ):
         raise BuildError("QuickJS wrapper manifest is not canonical")
     return lock
@@ -485,21 +465,15 @@ def _assert_identity(path: Path, expected: Mapping[str, Any], *, label: str) -> 
         )
 
 
-def _download_locked(
-    *, url: str, destination: Path, expected_length: int, expected_sha256: str
-) -> None:
+def _download_locked(*, url: str, destination: Path, expected_length: int, expected_sha256: str) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f"{destination.name}.download")
     temporary.unlink(missing_ok=True)
     digest = hashlib.sha256()
     total = 0
     try:
-        request = urllib.request.Request(
-            url, headers={"User-Agent": "Scriber-installer-build/1"}
-        )
-        with urllib.request.urlopen(request, timeout=60) as response, temporary.open(
-            "xb"
-        ) as output:
+        request = urllib.request.Request(url, headers={"User-Agent": "Scriber-installer-build/1"})
+        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("xb") as output:
             while True:
                 chunk = response.read(min(1024 * 1024, expected_length - total + 1))
                 if not chunk:
@@ -520,9 +494,7 @@ def _download_locked(
         raise BuildError("failed to download a locked QuickJS input") from exc
 
 
-def _provision_input(
-    *, cache_root: Path, identity: Mapping[str, Any], offline: bool
-) -> Path:
+def _provision_input(*, cache_root: Path, identity: Mapping[str, Any], offline: bool) -> Path:
     destination = cache_root / identity["fileName"]
     if destination.is_file():
         try:
@@ -542,9 +514,7 @@ def _provision_input(
     return destination
 
 
-def _resolve_override(
-    requested: Path | None, expected: Mapping[str, Any], *, label: str
-) -> Path | None:
+def _resolve_override(requested: Path | None, expected: Mapping[str, Any], *, label: str) -> Path | None:
     if requested is None:
         return None
     try:
@@ -557,9 +527,7 @@ def _resolve_override(
     return path
 
 
-def _harden_engine(
-    *, source: Path, destination: Path, engine: Mapping[str, Any]
-) -> Path:
+def _harden_engine(*, source: Path, destination: Path, engine: Mapping[str, Any]) -> Path:
     _assert_identity(source, engine["source"], label="QuickJS engine source")
     try:
         content = bytearray(source.read_bytes())
@@ -618,9 +586,7 @@ def _cargo_target_dir(repo_root: Path, lock: Mapping[str, Any]) -> Path:
     return repo_root.resolve(strict=True) / "build" / "qjs-target" / target_key
 
 
-def _build_wrapper(
-    *, repo_root: Path, work_dir: Path, rustup: Path, lock: Mapping[str, Any], offline: bool
-) -> Path:
+def _build_wrapper(*, repo_root: Path, work_dir: Path, rustup: Path, lock: Mapping[str, Any], offline: bool) -> Path:
     crate_root = (repo_root / lock["wrapper"]["crateRoot"]).resolve(strict=True)
     manifest = crate_root / "Cargo.toml"
     target_dir = _cargo_target_dir(repo_root, lock)
@@ -679,17 +645,13 @@ def _verify_runtime(
         manifest_bytes = manifest_path.read_bytes()
     except OSError as exc:
         raise BuildError("QuickJS runtime manifest is unavailable") from exc
-    if (
-        manifest_bytes != expected_manifest
-        or _sha256_bytes(manifest_bytes) != lock["manifestCanonicalSha256"]
-    ):
+    if manifest_bytes != expected_manifest or _sha256_bytes(manifest_bytes) != lock["manifestCanonicalSha256"]:
         raise BuildError("QuickJS runtime manifest differs from its lock")
 
     help_result = _run((str(wrapper), "--help"), timeout=15)
     if (
         help_result.returncode != 1
-        or help_result.stdout.decode("utf-8", errors="replace").splitlines()[:1]
-        != ["QuickJS-ng version 0.15.0"]
+        or help_result.stdout.decode("utf-8", errors="replace").splitlines()[:1] != ["QuickJS-ng version 0.15.0"]
         or help_result.stderr
     ):
         raise BuildError("QuickJS wrapper help/version contract failed")
@@ -701,15 +663,12 @@ def _verify_runtime(
     if (
         self_test.returncode != 0
         or self_test.stderr
-        or self_test_payload
-        != {"contract": PROTOCOL, "ok": True, "quickjsVersion": "0.15.0"}
+        or self_test_payload != {"contract": PROTOCOL, "ok": True, "quickjsVersion": "0.15.0"}
     ):
         raise BuildError("QuickJS wrapper self-test failed")
 
     timeout_started = time.monotonic()
-    timeout_self_test = _run(
-        (str(wrapper), "--scriber-test-timeout"), timeout=5
-    )
+    timeout_self_test = _run((str(wrapper), "--scriber-test-timeout"), timeout=5)
     timeout_elapsed = time.monotonic() - timeout_started
     try:
         timeout_payload = json.loads(timeout_self_test.stdout)
@@ -739,19 +698,11 @@ def _verify_runtime(
             newline="\n",
         )
         smoke = _run((str(wrapper), "--script", str(script)), timeout=15)
-        if (
-            smoke.returncode != 0
-            or smoke.stdout != b'{"responses":[],"type":"result"}\n'
-            or smoke.stderr
-        ):
+        if smoke.returncode != 0 or smoke.stdout != b'{"responses":[],"type":"result"}\n' or smoke.stderr:
             raise BuildError("QuickJS wrapper EJS/JSON protocol smoke failed")
         script.write_text("throw new Error('bounded failure');\n", encoding="utf-8", newline="\n")
         failure = _run((str(wrapper), "--script", str(script)), timeout=15)
-        if (
-            failure.returncode == 0
-            or failure.stdout
-            or not failure.stderr.startswith(f"{PROTOCOL}: ".encode())
-        ):
+        if failure.returncode == 0 or failure.stdout or not failure.stderr.startswith(f"{PROTOCOL}: ".encode()):
             raise BuildError("QuickJS wrapper failure protocol smoke failed")
         escape_module = Path(raw_temp) / "escape.js"
         escape_module.write_text(
@@ -803,9 +754,7 @@ const denied = async (loader) => {
             escape_payload = json.loads(escape.stdout)
             checks = escape_payload["responses"][0]["capabilityBoundary"]
         except (json.JSONDecodeError, KeyError, IndexError, TypeError) as exc:
-            raise BuildError(
-                "QuickJS wrapper capability escape smoke returned invalid JSON"
-            ) from exc
+            raise BuildError("QuickJS wrapper capability escape smoke returned invalid JSON") from exc
         if (
             escape.returncode != 0
             or escape.stderr
@@ -815,11 +764,7 @@ const denied = async (loader) => {
         ):
             raise BuildError("QuickJS wrapper capability escape smoke failed")
     invalid = _run((str(wrapper), "--eval", "1 + 1"), timeout=15)
-    if (
-        invalid.returncode != 64
-        or invalid.stdout
-        or not invalid.stderr.startswith(f"{PROTOCOL}: ".encode())
-    ):
+    if invalid.returncode != 64 or invalid.stdout or not invalid.stderr.startswith(f"{PROTOCOL}: ".encode()):
         raise BuildError("QuickJS wrapper exact argument gate failed")
 
 
@@ -846,9 +791,7 @@ def build_or_verify(args: argparse.Namespace) -> dict[str, Any]:
         work_dir = args.work_dir.resolve(strict=False)
         work_dir.mkdir(parents=True, exist_ok=True)
         cache_root = work_dir / "input-cache"
-        engine_source = _resolve_override(
-            args.quickjs_engine, lock["engine"]["source"], label="engine source"
-        )
+        engine_source = _resolve_override(args.quickjs_engine, lock["engine"]["source"], label="engine source")
         if engine_source is None:
             engine_source = _provision_input(
                 cache_root=cache_root,
@@ -860,21 +803,15 @@ def build_or_verify(args: argparse.Namespace) -> dict[str, Any]:
             destination=work_dir / "hardened-engine" / lock["engine"]["installedFileName"],
             engine=lock["engine"],
         )
-        license_path = _resolve_override(
-            args.quickjs_license, lock["license"], label="license"
-        )
+        license_path = _resolve_override(args.quickjs_license, lock["license"], label="license")
         if license_path is None:
-            license_path = _provision_input(
-                cache_root=cache_root, identity=lock["license"], offline=args.offline
-            )
+            license_path = _provision_input(cache_root=cache_root, identity=lock["license"], offline=args.offline)
         if getattr(args, "rebuild_wrapper", False):
             rustup = args.rustup
             if rustup is None:
                 found = shutil.which("rustup")
                 if not found:
-                    raise BuildError(
-                        "rustup is unavailable for the pinned QuickJS wrapper rebuild"
-                    )
+                    raise BuildError("rustup is unavailable for the pinned QuickJS wrapper rebuild")
                 rustup = Path(found)
             rustup = rustup.resolve(strict=True)
             wrapper = _build_wrapper(
@@ -899,9 +836,7 @@ def build_or_verify(args: argparse.Namespace) -> dict[str, Any]:
         _copy_exact(wrapper, wrapper_output, lock["wrapper"]["output"])
         _copy_exact(engine, engine_output, lock["engine"])
         _copy_exact(license_path, license_output, lock["license"])
-        temporary_manifest = manifest_output.with_name(
-            f"{manifest_output.name}.stage"
-        )
+        temporary_manifest = manifest_output.with_name(f"{manifest_output.name}.stage")
         temporary_manifest.parent.mkdir(parents=True, exist_ok=True)
         temporary_manifest.write_bytes(_canonical_manifest_bytes(lock["manifest"]))
         os.replace(temporary_manifest, manifest_output)

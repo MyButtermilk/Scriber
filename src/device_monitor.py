@@ -1,17 +1,17 @@
 from __future__ import annotations
 
-from importlib import import_module
-from importlib.util import find_spec
-import sys
 import re
+import sys
 import threading
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from importlib import import_module
+from importlib.util import find_spec
+from typing import Any
 
 from loguru import logger
 
 from src.audio_devices import get_input_hostapi_priorities, normalize_device_name
-
 
 # Importing sounddevice initializes CFFI/PortAudio and used to add roughly half
 # a second to every backend process before DeviceMonitor had even started its
@@ -154,11 +154,7 @@ def _endpoint_id_flow_hint(device_id) -> int | None:
 
 
 def _default_input_index(sounddevice_module: Any | None = None) -> int | None:
-    sounddevice = (
-        _load_sounddevice_once()
-        if sounddevice_module is None
-        else sounddevice_module
-    )
+    sounddevice = _load_sounddevice_once() if sounddevice_module is None else sounddevice_module
     if sounddevice is None:
         return None
     try:
@@ -354,9 +350,7 @@ class DeviceMonitor:
         self._pending_refresh_requires_portaudio = False
         self._refresh_deferred_until_idle = False
         self._deferred_refresh_trigger = ""
-        self._poll_seconds_override = (
-            None if poll_seconds is None else max(1.0, float(poll_seconds))
-        )
+        self._poll_seconds_override = None if poll_seconds is None else max(1.0, float(poll_seconds))
         self._poll_refresh_count = 0
         self._event_refresh_count = 0
         self._portaudio_refresh_count = 0
@@ -536,9 +530,7 @@ class DeviceMonitor:
                 "lastNativeHint": dict(self._last_native_hint or {}),
                 "lastDevicesChangedAgoSeconds": ago(self._last_devices_changed_at),
                 "pendingRefresh": self._pending_refresh_at > 0.0,
-                "pendingRefreshRequiresPortAudio": bool(
-                    self._pending_refresh_requires_portaudio
-                ),
+                "pendingRefreshRequiresPortAudio": bool(self._pending_refresh_requires_portaudio),
                 "refreshDeferredUntilIdle": bool(self._refresh_deferred_until_idle),
                 "deferredRefreshTrigger": self._deferred_refresh_trigger,
             }
@@ -791,8 +783,7 @@ class DeviceMonitor:
             self._com_initialized = True
         except Exception as exc:
             logger.info(
-                "[DeviceMonitor] COM init failed; "
-                f"fallback polling every {self._current_poll_seconds():.0f}s: {exc}"
+                f"[DeviceMonitor] COM init failed; fallback polling every {self._current_poll_seconds():.0f}s: {exc}"
             )
             return
 
@@ -842,8 +833,7 @@ class DeviceMonitor:
             self._native_notifications_active = True
             self._poll_seconds = self._current_poll_seconds()
             logger.info(
-                "[DeviceMonitor] pycaw endpoint callback registered; "
-                f"safety poll every {self._poll_seconds:.0f}s"
+                f"[DeviceMonitor] pycaw endpoint callback registered; safety poll every {self._poll_seconds:.0f}s"
             )
         except Exception as exc:
             logger.warning(f"[DeviceMonitor] Failed to register endpoint callback: {exc}")

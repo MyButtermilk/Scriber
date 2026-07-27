@@ -6,13 +6,12 @@ import html
 import io
 import re
 import zlib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Mapping, Optional, Tuple
+from datetime import UTC, datetime
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
 
 from src.summary_html import summary_html_to_markdown
-
 
 _DEFAULT_DOCUMENT_LABELS = {
     "date": "Date",
@@ -21,9 +20,7 @@ _DEFAULT_DOCUMENT_LABELS = {
     "transcript": "Transcript",
 }
 
-_INLINE_MARKDOWN_RE = re.compile(
-    r"(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)"
-)
+_INLINE_MARKDOWN_RE = re.compile(r"(\*\*\*(.+?)\*\*\*|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`)")
 
 
 @dataclass(frozen=True)
@@ -41,14 +38,14 @@ class _ExportBlock:
     heading_level: int = 0
 
 
-def _document_labels(labels: Optional[Mapping[str, str]]) -> dict[str, str]:
+def _document_labels(labels: Mapping[str, str] | None) -> dict[str, str]:
     resolved = dict(_DEFAULT_DOCUMENT_LABELS)
     if labels:
         resolved.update({key: str(value) for key, value in labels.items() if str(value)})
     return resolved
 
 
-def _summary_for_export(summary: Optional[str], summary_format: str) -> Optional[str]:
+def _summary_for_export(summary: str | None, summary_format: str) -> str | None:
     if not summary:
         return summary
     if (summary_format or "markdown").strip().lower() == "html":
@@ -56,7 +53,7 @@ def _summary_for_export(summary: Optional[str], summary_format: str) -> Optional
     return summary
 
 
-def _parse_markdown_line(line: str) -> Tuple[str, dict]:
+def _parse_markdown_line(line: str) -> tuple[str, dict]:
     """Parse one Markdown line into its text and block-level metadata."""
 
     metadata = {"heading_level": 0, "is_bullet": False, "is_bold": False}
@@ -118,9 +115,9 @@ def _build_export_blocks(
     *,
     title: str,
     content: str,
-    summary: Optional[str],
-    date: Optional[str],
-    duration: Optional[str],
+    summary: str | None,
+    date: str | None,
+    duration: str | None,
     labels: Mapping[str, str],
 ) -> list[_ExportBlock]:
     blocks = [_ExportBlock("title", (_InlineSpan(str(title)),))]
@@ -202,10 +199,7 @@ def _docx_run(span: _InlineSpan) -> str:
     if span.italic:
         properties.append("<w:i/>")
     if span.code:
-        properties.append(
-            '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" '
-            'w:eastAsia="Consolas" w:cs="Consolas"/>'
-        )
+        properties.append('<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas" w:eastAsia="Consolas" w:cs="Consolas"/>')
     run_properties = f"<w:rPr>{''.join(properties)}</w:rPr>" if properties else ""
     content: list[str] = []
     parts = _clean_xml_text(span.text).split("\n")
@@ -222,7 +216,7 @@ def _docx_run(span: _InlineSpan) -> str:
 def _docx_paragraph(
     spans: tuple[_InlineSpan, ...] = (),
     *,
-    style: Optional[str] = None,
+    style: str | None = None,
     bullet: bool = False,
 ) -> str:
     properties: list[str] = []
@@ -230,9 +224,7 @@ def _docx_paragraph(
         properties.append(f'<w:pStyle w:val="{style}"/>')
     if bullet:
         properties.append('<w:numPr><w:ilvl w:val="0"/><w:numId w:val="1"/></w:numPr>')
-    paragraph_properties = (
-        f"<w:pPr>{''.join(properties)}</w:pPr>" if properties else ""
-    )
+    paragraph_properties = f"<w:pPr>{''.join(properties)}</w:pPr>" if properties else ""
     return f"<w:p>{paragraph_properties}{''.join(_docx_run(span) for span in spans)}</w:p>"
 
 
@@ -307,7 +299,7 @@ def _zip_entry(archive: ZipFile, name: str, payload: str) -> None:
 
 
 def _build_docx(blocks: list[_ExportBlock], *, title: str) -> bytes:
-    created = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    created = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     content_types = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
   <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
@@ -427,9 +419,7 @@ def _pdf_width(text: str, font: str, size: float) -> float:
     return units * size
 
 
-def _append_pdf_chunk(
-    chunks: list[tuple[str, str]], text: str, font: str
-) -> None:
+def _append_pdf_chunk(chunks: list[tuple[str, str]], text: str, font: str) -> None:
     if not text:
         return
     if chunks and chunks[-1][1] == font:
@@ -452,13 +442,11 @@ def _split_pdf_word(text: str, font: str, size: float, width: float) -> list[str
     return pieces or [""]
 
 
-def _wrap_pdf_spans(
-    spans: tuple[_InlineSpan, ...], style: _PdfStyle, width: float
-) -> list[list[tuple[str, str]]]:
+def _wrap_pdf_spans(spans: tuple[_InlineSpan, ...], style: _PdfStyle, width: float) -> list[list[tuple[str, str]]]:
     lines: list[list[tuple[str, str]]] = []
     line: list[tuple[str, str]] = []
     line_width = 0.0
-    pending_space: Optional[tuple[str, str]] = None
+    pending_space: tuple[str, str] | None = None
 
     def finish_line(*, keep_empty: bool = False) -> None:
         nonlocal line, line_width, pending_space
@@ -480,11 +468,7 @@ def _wrap_pdf_spans(
                 pending_space = (" ", font)
                 continue
 
-            space_width = (
-                _pdf_width(pending_space[0], pending_space[1], style.size)
-                if pending_space and line
-                else 0.0
-            )
+            space_width = _pdf_width(pending_space[0], pending_space[1], style.size) if pending_space and line else 0.0
             token_width = _pdf_width(token, font, style.size)
             if line and line_width + space_width + token_width > width:
                 finish_line()
@@ -498,9 +482,7 @@ def _wrap_pdf_spans(
                 pending_space = None
                 continue
 
-            for piece_index, piece in enumerate(
-                _split_pdf_word(token, font, style.size, width)
-            ):
+            for piece_index, piece in enumerate(_split_pdf_word(token, font, style.size, width)):
                 piece_width = _pdf_width(piece, font, style.size)
                 if line:
                     finish_line()
@@ -552,11 +534,7 @@ def _draw_pdf_line(
     else:
         cursor_x = x
     spaces = sum(text.count(" ") for text, _font in line)
-    extra_space = (
-        max(0.0, available_width - line_width) / spaces
-        if justify and spaces
-        else 0.0
-    )
+    extra_space = max(0.0, available_width - line_width) / spaces if justify and spaces else 0.0
     gray = _pdf_number(style.gray)
     for text, font in line:
         fragments = re.split(r"( +)", text)
@@ -655,9 +633,7 @@ def _layout_pdf(blocks: list[_ExportBlock]) -> list[bytes]:
 def _pdf_stream(payload: bytes) -> bytes:
     compressed = zlib.compress(payload, 9)
     return (
-        f"<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode("ascii")
-        + compressed
-        + b"\nendstream"
+        f"<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode("ascii") + compressed + b"\nendstream"
     )
 
 
@@ -680,13 +656,10 @@ def _build_pdf(blocks: list[_ExportBlock], *, title: str) -> bytes:
         objects[content_id] = _pdf_stream(stream)
         objects[page_id] = (
             b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595.276 841.89] "
-            b"/Resources << /Font "
-            + font_resources
-            + b" >> /Contents "
-            + f"{content_id} 0 R >>".encode("ascii")
+            b"/Resources << /Font " + font_resources + b" >> /Contents " + f"{content_id} 0 R >>".encode("ascii")
         )
     info_id = next_id
-    creation = datetime.now(timezone.utc).strftime("D:%Y%m%d%H%M%SZ")
+    creation = datetime.now(UTC).strftime("D:%Y%m%d%H%M%SZ")
     objects[info_id] = (
         b"<< /Title "
         + _pdf_literal(title)
@@ -728,10 +701,10 @@ def _build_pdf(blocks: list[_ExportBlock], *, title: str) -> bytes:
 def export_to_docx(
     title: str,
     content: str,
-    summary: Optional[str] = None,
-    date: Optional[str] = None,
-    duration: Optional[str] = None,
-    labels: Optional[Mapping[str, str]] = None,
+    summary: str | None = None,
+    date: str | None = None,
+    duration: str | None = None,
+    labels: Mapping[str, str] | None = None,
     summary_format: str = "markdown",
 ) -> bytes:
     """Export a transcript as a self-contained, standards-based OOXML document."""
@@ -752,10 +725,10 @@ def export_to_docx(
 def export_to_pdf(
     title: str,
     content: str,
-    summary: Optional[str] = None,
-    date: Optional[str] = None,
-    duration: Optional[str] = None,
-    labels: Optional[Mapping[str, str]] = None,
+    summary: str | None = None,
+    date: str | None = None,
+    duration: str | None = None,
+    labels: Mapping[str, str] | None = None,
     summary_format: str = "markdown",
 ) -> bytes:
     """Export a transcript as a paginated A4 PDF using standard PDF fonts."""

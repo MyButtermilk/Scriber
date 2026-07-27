@@ -8,9 +8,7 @@ import src.pipeline as pipeline
 from src.audio_devices import get_default_input_device_index
 from src.config import Config
 from src.pipeline import _normalize_device_name as normalize_pipeline_device_name
-from src.pipeline import _resolve_mic_device
-from src.pipeline import _resolve_live_mic_capture_device
-from src.pipeline import invalidate_mic_device_resolution_cache
+from src.pipeline import _resolve_live_mic_capture_device, _resolve_mic_device, invalidate_mic_device_resolution_cache
 from src.web_api import ScriberWebController
 
 
@@ -101,9 +99,7 @@ def test_get_default_input_device_index_supports_pair_like_default_device() -> N
         def __getitem__(self, index: int) -> int:
             return self._values[index]
 
-    fake_sd = types.SimpleNamespace(
-        default=types.SimpleNamespace(device=_PairLike(2, 7))
-    )
+    fake_sd = types.SimpleNamespace(default=types.SimpleNamespace(device=_PairLike(2, 7)))
 
     assert get_default_input_device_index(fake_sd) == 2
 

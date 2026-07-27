@@ -11,7 +11,6 @@ from scripts.ci.resolve_official_release import (
     resolve_official_release,
 )
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "ci" / "resolve_official_release.py"
 SHA = "1" * 40

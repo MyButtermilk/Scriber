@@ -4,12 +4,14 @@ Supports OpenAI, Google Gemini, and OpenRouter models.
 """
 
 from __future__ import annotations
+
 import asyncio
 import json
 import math
 import os
 import re
-from typing import Any, Literal, Sequence
+from collections.abc import Sequence
+from typing import Any, Literal
 
 import aiohttp
 from loguru import logger
@@ -26,8 +28,8 @@ from src.core.provider_errors import (
     provider_public_code,
     provider_transport_error,
 )
-from src.summary_html import normalize_summary_document_html
 from src.runtime.http_response import read_response_text_limited
+from src.summary_html import normalize_summary_document_html
 
 SummarizationModel = Literal[
     "gemini-flash-latest",
@@ -356,7 +358,9 @@ def _summary_budget_for_text(
     token_overhead = _env_int("SCRIBER_SUMMARY_TOKEN_OVERHEAD", 320, min_value=0, max_value=100_000)
     min_tokens = _env_int("SCRIBER_SUMMARY_MIN_OUTPUT_TOKENS", 1024, min_value=256, max_value=1_000_000)
     max_tokens = _env_int("SCRIBER_SUMMARY_MAX_OUTPUT_TOKENS", 8192, min_value=min_tokens, max_value=1_000_000)
-    short_min_tokens = _env_int("SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", 1600, min_value=min_tokens, max_value=max_tokens)
+    short_min_tokens = _env_int(
+        "SCRIBER_SUMMARY_SHORT_MIN_OUTPUT_TOKENS", 1600, min_value=min_tokens, max_value=max_tokens
+    )
 
     model_key = _openrouter_nitro_model(model) if _is_openrouter_model(model) else model
     model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_tokens)
@@ -376,7 +380,9 @@ def _summary_budget_for_text(
     # Gemini 3 uses hidden "thinking" budget within max_output_tokens.
     # Reserve additional tokens so visible output is not cut to 1-2 lines.
     if _is_gemini_thinking_model(model):
-        thinking_reserve = _env_int("SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", 2400, min_value=0, max_value=1_000_000)
+        thinking_reserve = _env_int(
+            "SCRIBER_SUMMARY_GEMINI_THINKING_RESERVE_TOKENS", 2400, min_value=0, max_value=1_000_000
+        )
         if thinking_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + thinking_reserve)
 
@@ -549,11 +555,7 @@ def _split_text_for_celeris(
     if not normalized:
         return []
     byte_limit = max(1_024, int(maximum_bytes))
-    paragraphs = [
-        value.strip()
-        for value in re.split(r"\n{2,}", normalized)
-        if value.strip()
-    ] or [normalized]
+    paragraphs = [value.strip() for value in re.split(r"\n{2,}", normalized) if value.strip()] or [normalized]
     chunks: list[str] = []
     current = ""
     for paragraph in paragraphs:
@@ -619,11 +621,7 @@ async def _summarize_celeris_document(
                 _CELERIS_PARTIAL_OUTPUT_TOKENS,
             )
 
-    partials = list(
-        await asyncio.gather(
-            *(summarize_part(index, chunk) for index, chunk in enumerate(chunks))
-        )
-    )
+    partials = list(await asyncio.gather(*(summarize_part(index, chunk) for index, chunk in enumerate(chunks))))
 
     async def reduce_group(group: list[str]) -> str:
         if len(group) == 1:
@@ -724,15 +722,13 @@ async def _try_openrouter_summary_fallback(
             fallback_request,
             timeout=timeout_seconds,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         timeout_display = max(1, int(round(timeout_seconds)))
         raise RuntimeError(
             f"{primary_model} summarization failed and OpenRouter fallback timed out after {timeout_display}s."
         ) from exc
     except Exception:
-        raise RuntimeError(
-            f"{primary_model} summarization failed and the OpenRouter fallback also failed."
-        ) from None
+        raise RuntimeError(f"{primary_model} summarization failed and the OpenRouter fallback also failed.") from None
 
 
 async def summarize_text(
@@ -744,21 +740,21 @@ async def summarize_text(
 ) -> str:
     """
     Summarize text using the configured LLM model.
-    
+
     Args:
         text: The transcript text to summarize
         model: Optional override for the model (uses Config.SUMMARIZATION_MODEL if not provided)
-    
+
     Returns:
         The summarized text
-    
+
     Raises:
         ValueError: If no API key is configured for the selected model
         RuntimeError: If the API call fails
     """
     if not text or not text.strip():
         return ""
-    
+
     model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
     if _is_openrouter_model(model):
         model = _openrouter_nitro_model(model)
@@ -775,7 +771,7 @@ async def summarize_text(
         f"{base_prompt}\n\n{language_instruction}\n\n{length_instruction}\n\n"
         f"{_HTML_OUTPUT_GUARDRAIL}\n\nUNTRUSTED_TRANSCRIPT_TEXT:\n{text}"
     )
-    
+
     logger.info(
         "Summarizing transcript with {} ({} chars, ~{} words, target ~{} words, duration_s={}, max_output_tokens={})",
         model,
@@ -807,19 +803,15 @@ async def summarize_text(
             )
         summary = normalize_summary_document_html(summary)
         if not summary:
-            raise RuntimeError(
-                f"{model} returned no displayable structured HTML summary."
-            )
-    except asyncio.TimeoutError as exc:
+            raise RuntimeError(f"{model} returned no displayable structured HTML summary.")
+    except TimeoutError as exc:
         timeout_display = max(1, int(round(timeout_seconds)))
         logger.error(
             "Summarization timed out after {}s (model={})",
             timeout_seconds,
             model,
         )
-        timeout_error = RuntimeError(
-            f"Summarization timed out after {timeout_display}s. Please try again."
-        )
+        timeout_error = RuntimeError(f"Summarization timed out after {timeout_display}s. Please try again.")
         fallback = await _try_openrouter_summary_fallback(
             full_prompt,
             primary_model=model,
@@ -831,9 +823,7 @@ async def summarize_text(
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
             if not summary:
-                raise RuntimeError(
-                    "OpenRouter fallback returned no displayable structured HTML summary."
-                )
+                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.")
         else:
             raise timeout_error from exc
     except Exception as exc:
@@ -848,9 +838,7 @@ async def summarize_text(
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
             if not summary:
-                raise RuntimeError(
-                    "OpenRouter fallback returned no displayable structured HTML summary."
-                )
+                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.")
         # Gemini can occasionally return transient 429/503 ("high demand").
         # The legacy OpenAI fallback remains opt-in for existing power users,
         # but OpenRouter is the default automatic fallback when configured.
@@ -874,10 +862,8 @@ async def summarize_text(
                         )
                         summary = normalize_summary_document_html(summary)
                         if not summary:
-                            raise RuntimeError(
-                                f"{fallback_model} returned no displayable structured HTML summary."
-                            )
-                    except asyncio.TimeoutError as timeout_exc:
+                            raise RuntimeError(f"{fallback_model} returned no displayable structured HTML summary.")
+                    except TimeoutError as timeout_exc:
                         timeout_display = max(1, int(round(timeout_seconds)))
                         raise RuntimeError(
                             f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
@@ -925,11 +911,9 @@ async def generate_text_with_model(
                 timeout=timeout_seconds,
             )
         ).strip()
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         timeout_display = max(1, int(round(timeout_seconds)))
-        timeout_error = RuntimeError(
-            f"Text generation timed out after {timeout_display}s. Please try again."
-        )
+        timeout_error = RuntimeError(f"Text generation timed out after {timeout_display}s. Please try again.")
         fallback = await _try_openrouter_summary_fallback(
             prompt,
             primary_model=selected_model,
@@ -958,19 +942,19 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
     api_key = Config.OPENAI_API_KEY
     if not api_key:
         raise ValueError("OpenAI API key not configured. Please add it in Settings.")
-    
+
     try:
         import openai
     except ImportError:
         raise RuntimeError("openai library not installed. Run: pip install openai")
-    
+
     timeout_seconds = _summary_timeout_seconds()
     try:
         client = openai.AsyncOpenAI(api_key=api_key, timeout=timeout_seconds)
     except TypeError:
         # Older SDK versions may not expose timeout in the constructor.
         client = openai.AsyncOpenAI(api_key=api_key)
-    
+
     try:
         # gpt-5 models are most reliable with the Responses API and max_output_tokens.
         if model.startswith("gpt-5") and hasattr(client, "responses"):
@@ -1059,9 +1043,7 @@ def _build_openrouter_payload(
     return payload
 
 
-_OPENROUTER_FINISH_REASONS = frozenset(
-    {"stop", "length", "content_filter", "tool_calls", "error"}
-)
+_OPENROUTER_FINISH_REASONS = frozenset({"stop", "length", "content_filter", "tool_calls", "error"})
 _GEMINI_FINISH_REASONS = frozenset(
     {
         "BLOCKLIST",
@@ -1162,9 +1144,7 @@ def _openrouter_usage_summary(data: dict[str, Any]) -> dict[str, Any]:
         "prompt_tokens": _safe_nonnegative_int(usage.get("prompt_tokens")),
         "completion_tokens": _safe_nonnegative_int(usage.get("completion_tokens")),
         "total_tokens": _safe_nonnegative_int(usage.get("total_tokens")),
-        "reasoning_tokens": _safe_nonnegative_int(
-            completion_details.get("reasoning_tokens")
-        ),
+        "reasoning_tokens": _safe_nonnegative_int(completion_details.get("reasoning_tokens")),
     }
 
 
@@ -1265,7 +1245,7 @@ async def _post_openrouter_chat_completion(
             )
         try:
             return json.loads(raw)
-        except json.JSONDecodeError as exc:
+        except json.JSONDecodeError:
             raise provider_transport_error(
                 "openrouter",
                 "summarization_response",
@@ -1276,17 +1256,10 @@ async def _post_openrouter_chat_completion(
 def _openrouter_used_model(data: dict[str, Any], fallback: str) -> str:
     model = data.get("model") if isinstance(data, dict) else None
     candidate = _safe_model_identifier(model)
-    allowed_models = {
-        configured
-        for configured in _MODEL_OUTPUT_TOKEN_CAPS
-        if _is_openrouter_model(configured)
-    }
+    allowed_models = {configured for configured in _MODEL_OUTPUT_TOKEN_CAPS if _is_openrouter_model(configured)}
     if fallback and fallback != "unknown":
         allowed_models.add(fallback)
-    if candidate and any(
-        _same_openrouter_model(candidate, allowed)
-        for allowed in allowed_models
-    ):
+    if candidate and any(_same_openrouter_model(candidate, allowed) for allowed in allowed_models):
         return candidate
     return fallback
 
@@ -1312,8 +1285,7 @@ def _openrouter_retry_candidates(
 
 def _openrouter_retry_output_cap(models: Sequence[str], initial_max_output_tokens: int) -> int:
     model_caps = [
-        _MODEL_OUTPUT_TOKEN_CAPS.get(_openrouter_nitro_model(model), initial_max_output_tokens)
-        for model in models
+        _MODEL_OUTPUT_TOKEN_CAPS.get(_openrouter_nitro_model(model), initial_max_output_tokens) for model in models
     ]
     model_cap = max(model_caps) if model_caps else initial_max_output_tokens
     requested_cap = _env_int(
@@ -1406,8 +1378,7 @@ async def _summarize_openrouter(
 
             length_limited = _openrouter_should_retry_with_more_tokens(data)
             already_retried_with_larger_budget = any(
-                previous_budget < attempt_max_tokens
-                for previous_budget in attempt_budgets[:attempt_index]
+                previous_budget < attempt_max_tokens for previous_budget in attempt_budgets[:attempt_index]
             )
             if length_limited and content and already_retried_with_larger_budget:
                 last_empty_detail = _openrouter_empty_response_detail(data)
@@ -1572,7 +1543,9 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
 
     try:
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp:
+            async with session.post(
+                "https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload
+            ) as resp:
                 raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
                 if resp.status >= 400:
                     raise provider_transport_error(
@@ -1583,7 +1556,7 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
                     )
                 try:
                     data = json.loads(raw)
-                except json.JSONDecodeError as exc:
+                except json.JSONDecodeError:
                     raise provider_transport_error(
                         "cerebras",
                         "summarization_response",
@@ -1655,7 +1628,7 @@ async def _post_gemini_generate_content(
                     response_body=raw,
                 )
                 if resp.status in {429, 500, 503} and attempt < retries:
-                    delay = min(8.0, 1.5 * (2 ** attempt))
+                    delay = min(8.0, 1.5 * (2**attempt))
                     logger.warning(
                         "Gemini API transient error (status={}) on attempt {}/{}. Retrying in {:.1f}s.",
                         resp.status,
@@ -1669,7 +1642,7 @@ async def _post_gemini_generate_content(
                 raise err
             try:
                 data = json.loads(raw)
-            except json.JSONDecodeError as exc:
+            except json.JSONDecodeError:
                 raise provider_transport_error(
                     "gemini",
                     "summarization_response",
@@ -1688,9 +1661,7 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any
     first = candidates[0] if candidates else {}
     content_parts = first.get("content", {}).get("parts", []) if isinstance(first, dict) else []
     content = "".join(
-        part.get("text", "")
-        for part in content_parts
-        if isinstance(part, dict) and isinstance(part.get("text"), str)
+        part.get("text", "") for part in content_parts if isinstance(part, dict) and isinstance(part.get("text"), str)
     ).strip()
 
     finish_reason = (
@@ -1703,16 +1674,8 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any
         else None
     )
     usage = data.get("usageMetadata", {}) if isinstance(data, dict) else {}
-    candidate_tokens = (
-        _safe_nonnegative_int(usage.get("candidatesTokenCount"))
-        if isinstance(usage, dict)
-        else None
-    )
-    total_tokens = (
-        _safe_nonnegative_int(usage.get("totalTokenCount"))
-        if isinstance(usage, dict)
-        else None
-    )
+    candidate_tokens = _safe_nonnegative_int(usage.get("candidatesTokenCount")) if isinstance(usage, dict) else None
+    total_tokens = _safe_nonnegative_int(usage.get("totalTokenCount")) if isinstance(usage, dict) else None
     return content, finish_reason, candidate_tokens, total_tokens
 
 
@@ -1779,11 +1742,7 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
                     )
 
                 if not content:
-                    feedback = (
-                        data.get("promptFeedback")
-                        if isinstance(data, dict)
-                        else None
-                    )
+                    feedback = data.get("promptFeedback") if isinstance(data, dict) else None
                     block_reason = (
                         _safe_enum_value(
                             feedback.get("blockReason"),

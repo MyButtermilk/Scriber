@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -14,11 +13,9 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_YOUTUBE_URL = "https://www.youtube.com/watch?v=0wEjbSYNUM8"
 DEFAULT_FILE_TEXT = (
-    "Scriber Workflow Test. Diese Audiodatei prueft die installierte "
-    "Datei Transkription und Zusammenfassung."
+    "Scriber Workflow Test. Diese Audiodatei prueft die installierte Datei Transkription und Zusammenfassung."
 )
 
 
@@ -83,15 +80,14 @@ class HttpClient:
         file_bytes = file_path.read_bytes()
         filename = file_path.name
         body = bytearray()
-        body.extend(f"--{boundary}\r\n".encode("utf-8"))
+        body.extend(f"--{boundary}\r\n".encode())
         body.extend(
             (
-                f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
-                "Content-Type: audio/wav\r\n\r\n"
-            ).encode("utf-8")
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\nContent-Type: audio/wav\r\n\r\n'
+            ).encode()
         )
         body.extend(file_bytes)
-        body.extend(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        body.extend(f"\r\n--{boundary}--\r\n".encode())
 
         request = urllib.request.Request(
             self.base_url + path,
@@ -196,11 +192,15 @@ def wait_for_workflow(
                 return last_detail
             if not summarize_attempted and summary_status not in {"pending", "completed"}:
                 summarize_attempted = True
-                client.request_json("POST", f"/api/transcripts/{urllib.parse.quote(transcript_id)}/summarize", timeout_sec=timeout_sec)
+                client.request_json(
+                    "POST", f"/api/transcripts/{urllib.parse.quote(transcript_id)}/summarize", timeout_sec=timeout_sec
+                )
 
         time.sleep(max(0.5, poll_sec))
 
-    raise TimeoutError(f"Transcript {transcript_id} did not complete in {timeout_sec}s. Last detail: {transcript_summary(last_detail)}")
+    raise TimeoutError(
+        f"Transcript {transcript_id} did not complete in {timeout_sec}s. Last detail: {transcript_summary(last_detail)}"
+    )
 
 
 def run_file_workflow(client: HttpClient, args: argparse.Namespace, work_dir: Path) -> dict[str, Any]:

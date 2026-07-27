@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src.runtime import media_tools
-from src.runtime import quickjs_runtime_lock
+from src.runtime import media_tools, quickjs_runtime_lock
 
 
 def _tool_file(directory: Path, name: str) -> Path:
@@ -52,9 +51,7 @@ def _quickjs_bundle(directory: Path) -> Path:
             "killOnJobClose": True,
         },
     }
-    (directory / "js-runtime-manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (directory / "js-runtime-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return wrapper
 
 
@@ -76,34 +73,28 @@ def test_frozen_quickjs_root_is_exactly_bound_to_packaging_lock() -> None:
 
     assert quickjs_runtime_lock.ROOT_CONTRACT == "ScriberFrozenQuickJsRuntimeRootV1"
     assert len(lock_bytes) == quickjs_runtime_lock.SOURCE_LOCK_LENGTH
+    assert hashlib.sha256(lock_bytes).hexdigest() == quickjs_runtime_lock.SOURCE_LOCK_SHA256
     assert (
-        hashlib.sha256(lock_bytes).hexdigest()
-        == quickjs_runtime_lock.SOURCE_LOCK_SHA256
-    )
-    assert quickjs_runtime_lock.WRAPPER == (
         lock["wrapper"]["output"]["installedFileName"],
         lock["wrapper"]["output"]["length"],
         lock["wrapper"]["output"]["sha256"],
-    )
-    assert quickjs_runtime_lock.HARDENED_ENGINE == (
+    ) == quickjs_runtime_lock.WRAPPER
+    assert (
         lock["engine"]["installedFileName"],
         lock["engine"]["length"],
         lock["engine"]["sha256"],
-    )
-    assert quickjs_runtime_lock.MANIFEST == (
+    ) == quickjs_runtime_lock.HARDENED_ENGINE
+    assert (
         "js-runtime-manifest.json",
         len(manifest_bytes),
         lock["manifestCanonicalSha256"],
-    )
+    ) == quickjs_runtime_lock.MANIFEST
+    assert hashlib.sha256(manifest_bytes).hexdigest() == quickjs_runtime_lock.MANIFEST.sha256
     assert (
-        hashlib.sha256(manifest_bytes).hexdigest()
-        == quickjs_runtime_lock.MANIFEST.sha256
-    )
-    assert quickjs_runtime_lock.LICENSE == (
         lock["license"]["installedFileName"],
         lock["license"]["length"],
         lock["license"]["sha256"],
-    )
+    ) == quickjs_runtime_lock.LICENSE
     expected_self_test = {
         "contract": lock["manifest"]["runtime"]["protocol"],
         "ok": True,
@@ -277,8 +268,7 @@ def test_frozen_quickjs_resolution_accepts_real_built_locked_quartet(
         return all(
             (directory / identity.name).is_file()
             and (directory / identity.name).stat().st_size == identity.length
-            and hashlib.sha256((directory / identity.name).read_bytes()).hexdigest()
-            == identity.sha256
+            and hashlib.sha256((directory / identity.name).read_bytes()).hexdigest() == identity.sha256
             for identity in identities
         )
 

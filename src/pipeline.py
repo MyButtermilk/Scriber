@@ -1,46 +1,46 @@
 import asyncio
-import aiohttp
-import io
-import wave
 import contextlib
-import tempfile
-import os
-import time
-import inspect
-import math
-import re
 import hashlib
-from typing import Any, BinaryIO, Callable, Mapping, Optional
+import inspect
+import io
+import math
+import os
+import re
+import tempfile
+import time
+import wave
+from collections.abc import Callable, Mapping
+from typing import Any, BinaryIO
 
+import aiohttp
 from loguru import logger
-
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.workers.runner import WorkerRunner
-from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.processors.audio.vad_processor import VADProcessor
-from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.frames.frames import (
-    SystemFrame,
+    CancelFrame,
+    EndFrame,
+    ErrorFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
-    TranscriptionFrame,
-    EndFrame,
     StartFrame,
     StopFrame,
-    CancelFrame,
+    SystemFrame,
+    TranscriptionFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
-    ErrorFrame,
 )
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.worker import PipelineParams, PipelineWorker
+from pipecat.processors.audio.vad_processor import VADProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.stt_service import SegmentedSTTService, STTService
 from pipecat.transcriptions.language import Language
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
+from pipecat.workers.runner import WorkerRunner
 
 from src.audio_prepare import (
     PreparedProviderAudio,
@@ -48,9 +48,9 @@ from src.audio_prepare import (
     prepare_provider_audio_file,
 )
 from src.core.provider_audio_formats import (
-    AudioInputFormat,
     SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
     SPEECHMATICS_REALTIME_DEFAULT_BASE_URL,
+    AudioInputFormat,
     ProviderAudioCapabilityError,
     ProviderAudioInputCapabilities,
     ProviderAudioRouteKind,
@@ -64,22 +64,19 @@ from src.core.provider_audio_formats import (
     speechmatics_realtime_base_url,
 )
 from src.core.provider_capabilities import get_capabilities
+from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
+from src.runtime.env_values import env_float as _safe_env_float
+from src.runtime.http_response import read_response_json_limited, read_response_text_limited
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.provider_http import ProviderHttpTransport
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
-from src.runtime.http_response import read_response_json_limited, read_response_text_limited
-from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
-from src.runtime.env_values import env_float as _safe_env_float
 from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_base_url
-
 
 _SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
 _GROQ_OPENAI_V1_BASE_URL = "https://api.groq.com/openai/v1"
-_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
-    {"azure_mai", "speechmatics_async"}
-)
+_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset({"azure_mai", "speechmatics_async"})
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
 
@@ -133,9 +130,7 @@ def _rust_capture_wav_plan(
         return None
 
     default_endpoint = SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/")
-    expected_endpoint_sha256 = hashlib.sha256(
-        default_endpoint.encode("utf-8")
-    ).hexdigest()
+    expected_endpoint_sha256 = hashlib.sha256(default_endpoint.encode("utf-8")).hexdigest()
     exact_route = {
         "model": "batch-v2",
         "provider_route": capability.route,
@@ -147,10 +142,7 @@ def _rust_capture_wav_plan(
         "transport": "direct_upload",
         "provider_endpoint_sha256": expected_endpoint_sha256,
     }
-    if any(
-        str(execution_route.get(key) or "").strip() != expected
-        for key, expected in exact_route.items()
-    ):
+    if any(str(execution_route.get(key) or "").strip() != expected for key, expected in exact_route.items()):
         return None
     if execution_route.get("audio_input_format_verified") is not True:
         return None
@@ -175,8 +167,10 @@ def _rust_capture_wav_plan(
         "maxPcmBytes": max_pcm_bytes,
     }
 
+
 try:
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+
     HAS_SMART_TURN = True
 except ImportError:
     LocalSmartTurnAnalyzerV3 = None
@@ -198,8 +192,10 @@ def _create_local_smart_turn_analyzer(**kwargs: Any) -> Any:
         )
     return LocalSmartTurnAnalyzerV3(**kwargs)
 
+
 try:
     from pipecat.audio.vad.silero import SileroVADAnalyzer
+
     HAS_SILERO_VAD = True
 except Exception:
     SileroVADAnalyzer = None
@@ -217,6 +213,7 @@ except Exception:
 # ============================================================================
 import threading
 
+
 class _AnalyzerCache:
     """Thread-safe, one-shot warmup pool for expensive analyzer instances.
 
@@ -227,6 +224,7 @@ class _AnalyzerCache:
     removes it from the pool and ownership transfers permanently to that
     recording. Later recordings receive newly constructed instances.
     """
+
     _lock = threading.Lock()
     _vad_analyzer = None
     _smart_turn_analyzer = None
@@ -266,17 +264,9 @@ class _AnalyzerCache:
         with cls._lock:
             vad_generation = cls._vad_generation
             smart_turn_generation = cls._smart_turn_generation
-            needs_vad = bool(
-                include_vad
-                and HAS_SILERO_VAD
-                and SileroVADAnalyzer
-                and cls._vad_analyzer is None
-            )
+            needs_vad = bool(include_vad and HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None)
             needs_smart_turn = bool(
-                include_smart_turn
-                and HAS_SMART_TURN
-                and LocalSmartTurnAnalyzerV3
-                and cls._smart_turn_analyzer is None
+                include_smart_turn and HAS_SMART_TURN and LocalSmartTurnAnalyzerV3 and cls._smart_turn_analyzer is None
             )
 
         # Model construction stays outside the lock. A hotkey arriving during
@@ -324,17 +314,9 @@ class _AnalyzerCache:
     ) -> bool:
         """Refill empty warm slots on a daemon thread after session teardown."""
         with cls._lock:
-            needs_vad = bool(
-                include_vad
-                and HAS_SILERO_VAD
-                and SileroVADAnalyzer
-                and cls._vad_analyzer is None
-            )
+            needs_vad = bool(include_vad and HAS_SILERO_VAD and SileroVADAnalyzer and cls._vad_analyzer is None)
             needs_smart_turn = bool(
-                include_smart_turn
-                and HAS_SMART_TURN
-                and LocalSmartTurnAnalyzerV3
-                and cls._smart_turn_analyzer is None
+                include_smart_turn and HAS_SMART_TURN and LocalSmartTurnAnalyzerV3 and cls._smart_turn_analyzer is None
             )
             if cls._refill_in_progress or not (needs_vad or needs_smart_turn):
                 return False
@@ -423,28 +405,27 @@ class _AnalyzerCache:
 
 def _live_service_uses_async_finalization(service_name: str) -> bool:
     normalized = str(service_name or "")
-    return (
-        normalized in {
-            "groq",
-            "mistral",
-            "soniox_async",
-            "mistral_async",
-            "smallest_async",
-            "deepgram_async",
-            "gladia_async",
-            "openai_async",
-            "speechmatics_async",
-            "modulate_async",
-            "azure_mai",
-            "assemblyai",
-        }
-        or (normalized == "soniox" and Config.SONIOX_MODE == "async")
-    )
+    return normalized in {
+        "groq",
+        "mistral",
+        "soniox_async",
+        "mistral_async",
+        "smallest_async",
+        "deepgram_async",
+        "gladia_async",
+        "openai_async",
+        "speechmatics_async",
+        "modulate_async",
+        "azure_mai",
+        "assemblyai",
+    } or (normalized == "soniox" and Config.SONIOX_MODE == "async")
 
 
 def _live_service_needs_local_vad(service_name: str) -> bool:
     normalized = str(service_name or "")
-    return normalized in {"openai", "deepgram", "gladia", "elevenlabs"} or _live_service_uses_async_finalization(normalized)
+    return normalized in {"openai", "deepgram", "gladia", "elevenlabs"} or _live_service_uses_async_finalization(
+        normalized
+    )
 
 
 def _live_service_uses_native_streaming(service_name: str) -> bool:
@@ -492,13 +473,7 @@ def _live_analyzer_requirements(
 
     vad_enabled = bool(Config.SEGMENT_SPEECH_WITH_VAD)
     uses_smart_turn = False
-    needs_vad = bool(
-        vad_enabled
-        and (
-            segmented_service
-            or _live_service_needs_local_vad(service_name)
-        )
-    )
+    needs_vad = bool(vad_enabled and (segmented_service or _live_service_needs_local_vad(service_name)))
     return needs_vad, uses_smart_turn
 
 
@@ -509,10 +484,7 @@ def _live_recording_gate_needed(
     vad_attached: bool,
 ) -> bool:
     """Preserve one provider turn when no local VAD processor is attached."""
-    return bool(
-        segmented_service
-        or (not vad_attached and _live_service_needs_local_vad(service_name))
-    )
+    return bool(segmented_service or (not vad_attached and _live_service_needs_local_vad(service_name)))
 
 
 def _live_analyzer_diagnostics(
@@ -527,22 +499,13 @@ def _live_analyzer_diagnostics(
     """Return explicit, structured analyzer state for support diagnostics."""
     return {
         "sileroVadSettingEnabled": bool(Config.SEGMENT_SPEECH_WITH_VAD),
-        "sileroVadAvailable": bool(
-            HAS_SILERO_VAD and SileroVADAnalyzer is not None
-        ),
+        "sileroVadAvailable": bool(HAS_SILERO_VAD and SileroVADAnalyzer is not None),
         "sileroVadAttached": vad_processor is not None,
-        "sileroVadEffectiveEnabled": bool(
-            Config.SEGMENT_SPEECH_WITH_VAD and not native_realtime_provider
-        ),
-        "sileroSuppressedForNativeRealtime": bool(
-            Config.SEGMENT_SPEECH_WITH_VAD and native_realtime_provider
-        ),
+        "sileroVadEffectiveEnabled": bool(Config.SEGMENT_SPEECH_WITH_VAD and not native_realtime_provider),
+        "sileroSuppressedForNativeRealtime": bool(Config.SEGMENT_SPEECH_WITH_VAD and native_realtime_provider),
         "recordingGateAttached": segmented_gate is not None,
         "syntheticRecordingBoundary": bool(
-            segmented_gate is not None
-            and not bool(
-                getattr(segmented_gate, "vad_segmentation_enabled", False)
-            )
+            segmented_gate is not None and not bool(getattr(segmented_gate, "vad_segmentation_enabled", False))
         ),
         "segmentedProvider": bool(segmented_provider),
         "nativeRealtimeProvider": bool(native_realtime_provider),
@@ -650,6 +613,7 @@ def _redact_provider_error_text(message: str) -> str:
     text = re.sub(r"(?i)\bToken\s+[A-Za-z0-9._~+/=-]+", "Token [REDACTED]", text)
     return text
 
+
 SonioxSTTService = None
 SonioxContextObject = None
 
@@ -686,11 +650,7 @@ def _format_speaker_transcript_tokens(tokens: list[dict[str, Any]]) -> str:
     if not segments:
         return "".join(str(t.get("text") or "") for t in tokens if isinstance(t, dict)).strip()
 
-    return "\n\n".join(
-        f"[Speaker {speaker}]: {text}"
-        for speaker, text in segments
-        if text
-    )
+    return "\n\n".join(f"[Speaker {speaker}]: {text}" for speaker, text in segments if text)
 
 
 def direct_file_workflow_timeout_seconds(
@@ -742,11 +702,7 @@ def _format_deepgram_words_with_speakers(words: list[Any]) -> str:
         speaker_raw = _word_value(word, "speaker")
         if speaker_raw is None or speaker_raw == "":
             continue
-        text = str(
-            _word_value(word, "punctuated_word")
-            or _word_value(word, "word")
-            or ""
-        ).strip()
+        text = str(_word_value(word, "punctuated_word") or _word_value(word, "word") or "").strip()
         if not text:
             continue
         speaker_key = str(speaker_raw).strip()
@@ -760,11 +716,7 @@ def _format_deepgram_words_with_speakers(words: list[Any]) -> str:
         else:
             blocks[-1][1].append(text)
 
-    return "\n\n".join(
-        f"[Speaker {speaker_num}]: {' '.join(parts)}"
-        for speaker_num, parts in blocks
-        if parts
-    ).strip()
+    return "\n\n".join(f"[Speaker {speaker_num}]: {' '.join(parts)}" for speaker_num, parts in blocks if parts).strip()
 
 
 def _diarized_text_from_frame_result(result: Any) -> str:
@@ -807,7 +759,7 @@ class SonioxAsyncProcessor(FrameProcessor):
         custom_vocab: str = "",
         model: str = "stt-async-v5",
         session: aiohttp.ClientSession = None,
-        on_progress: Optional[Callable[[str], None]] = None,
+        on_progress: Callable[[str], None] | None = None,
         enable_speaker_diarization: bool = False,
         base_url: str | None = None,
     ):
@@ -929,9 +881,7 @@ class SonioxAsyncProcessor(FrameProcessor):
             )
             encoded_size = len(file_content)
         if Config.DEBUG:
-            logger.info(
-                f"Soniox async upload using {filename} ({encoded_size} bytes)"
-            )
+            logger.info(f"Soniox async upload using {filename} ({encoded_size} bytes)")
 
         async def upload_file(
             content: bytes | BinaryIO,
@@ -960,10 +910,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                     return uploaded_file_id
 
                 error_body = await read_response_text_limited(response, 64 * 1024 * 1024)
-                logger.error(
-                    "Soniox file upload failed: "
-                    f"status={response.status}, body={error_body[:500]}"
-                )
+                logger.error(f"Soniox file upload failed: status={response.status}, body={error_body[:500]}")
                 response.raise_for_status()
                 raise RuntimeError(f"Soniox file upload failed ({response.status})")
 
@@ -1063,15 +1010,13 @@ class SonioxAsyncProcessor(FrameProcessor):
                 token_list = tokens if isinstance(tokens, list) else []
                 text = ""
                 if self.enable_speaker_diarization and token_list:
-                    text = _format_speaker_transcript_tokens(
-                        [token for token in token_list if isinstance(token, dict)]
-                    )
+                    text = _format_speaker_transcript_tokens([token for token in token_list if isinstance(token, dict)])
                 if not text:
                     text = transcript_payload.get("text", "")
                 if text:
                     logger.info(f"Soniox async transcription completed ({len(text)} chars)")
                 self._report_progress("Completed")
-                
+
                 return text
 
         except Exception as e:
@@ -1173,9 +1118,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                 )
                 await feed_task
                 if proc.returncode != 0:
-                    raise RuntimeError(
-                        f"FFmpeg encoding failed: {stderr.decode('utf-8', errors='replace')}"
-                    )
+                    raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode('utf-8', errors='replace')}")
                 encoded = open(output_path, "rb")
                 return encoded, "audio/webm", "audio.webm", (output_path,)
             except asyncio.CancelledError:
@@ -1212,7 +1155,7 @@ class SonioxAsyncProcessor(FrameProcessor):
 
         sr = self._sample_rate or 16000
         ch = self._channels or 1
-        
+
         # Calculate audio duration from PCM data (16-bit = 2 bytes per sample)
         bytes_per_sample = 2 * ch  # int16 * channels
         num_samples = len(audio_bytes) // bytes_per_sample
@@ -1229,23 +1172,33 @@ class SonioxAsyncProcessor(FrameProcessor):
                 tmp_input = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
                 tmp_input.write(audio_bytes)
                 tmp_input.close()
-                
+
                 # Create temp output file path
                 tmp_output_path = tmp_input.name.replace(".pcm", ".webm")
-                
+
                 # Two-pass encoding: input file → output file (allows FFmpeg to write duration)
                 cmd = [
-                    ffmpeg, "-y",            # Overwrite output
-                    "-f", "s16le",           # Input format: signed 16-bit little-endian PCM
-                    "-ar", str(sr),          # Input sample rate
-                    "-ac", str(ch),          # Input channels
-                    "-i", tmp_input.name,    # Read from temp file
-                    "-c:a", "libopus",       # Encode to Opus
-                    "-ar", "48000",          # Output sample rate (Opus standard)
-                    "-ac", "1",              # Mono output
-                    "-b:a", "32k",           # Bitrate
-                    "-application", "voip",  # Optimize for voice
-                    tmp_output_path          # Write to temp file (allows seeking for duration)
+                    ffmpeg,
+                    "-y",  # Overwrite output
+                    "-f",
+                    "s16le",  # Input format: signed 16-bit little-endian PCM
+                    "-ar",
+                    str(sr),  # Input sample rate
+                    "-ac",
+                    str(ch),  # Input channels
+                    "-i",
+                    tmp_input.name,  # Read from temp file
+                    "-c:a",
+                    "libopus",  # Encode to Opus
+                    "-ar",
+                    "48000",  # Output sample rate (Opus standard)
+                    "-ac",
+                    "1",  # Mono output
+                    "-b:a",
+                    "32k",  # Bitrate
+                    "-application",
+                    "voip",  # Optimize for voice
+                    tmp_output_path,  # Write to temp file (allows seeking for duration)
                 ]
 
                 proc = await asyncio.create_subprocess_exec(
@@ -1311,7 +1264,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                         logger.warning(f"Failed to delete transcription {transcription_id}: {resp.status}")
             except Exception as e:
                 logger.warning(f"Error deleting transcription: {e}")
-        
+
         # Delete the uploaded file
         if file_id:
             try:
@@ -1327,21 +1280,22 @@ class SonioxAsyncProcessor(FrameProcessor):
             except Exception as e:
                 logger.warning(f"Error deleting file: {e}")
 
+
 # ============================================================================
 # STT Services are imported LAZILY inside _create_stt_service() to reduce
 # app startup time by ~500-800ms. Each service is only imported when used.
 # ============================================================================
 
-from src.config import Config
-from src.core.provider_capabilities import injects_immediately_in_live_mode
 from src.audio_devices import (
     normalize_device_name,
     resolve_input_microphone_device,
 )
+from src.audio_file_input import FfmpegAudioFileInput
+from src.config import Config
+from src.core.provider_capabilities import injects_immediately_in_live_mode
 from src.device_monitor import get_device_guard_lock
 from src.injector import InjectionTargetGuard, TextInjector
 from src.microphone import MicrophoneInput
-from src.audio_file_input import FfmpegAudioFileInput
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -1354,13 +1308,12 @@ LANGUAGE_MAP = {
     "nl": Language.NL,
 }
 
+
 def _pipecat_language(language: str | None) -> Language | str | None:
     normalized = str(language or "").strip().lower().replace("_", "-")
     if not normalized or normalized == "auto":
         return None
-    lang = LANGUAGE_MAP.get(normalized) or LANGUAGE_MAP.get(
-        normalized.split("-", 1)[0]
-    )
+    lang = LANGUAGE_MAP.get(normalized) or LANGUAGE_MAP.get(normalized.split("-", 1)[0])
     return lang if lang else None
 
 
@@ -1419,13 +1372,9 @@ def _create_assemblyai_realtime_service(
     settings_candidates["speaker_labels"] = False
     settings_kwargs = _filter_supported_kwargs(settings_cls, settings_candidates)
     if settings_kwargs.get("model") != model:
-        raise RuntimeError(
-            "AssemblyAI Pipecat settings cannot bind the frozen model."
-        )
+        raise RuntimeError("AssemblyAI Pipecat settings cannot bind the frozen model.")
     if keyterms and settings_kwargs.get("keyterms_prompt") != keyterms[:100]:
-        raise RuntimeError(
-            "AssemblyAI Pipecat settings cannot bind the frozen vocabulary."
-        )
+        raise RuntimeError("AssemblyAI Pipecat settings cannot bind the frozen vocabulary.")
     settings = settings_cls(**settings_kwargs)
     service_candidates = {
         "api_key": api_key,
@@ -1438,9 +1387,7 @@ def _create_assemblyai_realtime_service(
     service_kwargs = _filter_supported_kwargs(service_cls, service_candidates)
     if language_code and "language_code" not in settings_kwargs:
         if service_kwargs.get("language") != _pipecat_language(language):
-            raise RuntimeError(
-                "AssemblyAI Pipecat service cannot bind the frozen language."
-            )
+            raise RuntimeError("AssemblyAI Pipecat service cannot bind the frozen language.")
     return service_cls(**service_kwargs)
 
 
@@ -1481,7 +1428,9 @@ def _mic_device_resolution_cache_ttl() -> float:
     )
 
 
-def _mic_device_cache_key(sd_module, device_name: str, sample_rate: int, channels: int) -> tuple[int, str, str, int, int]:
+def _mic_device_cache_key(
+    sd_module, device_name: str, sample_rate: int, channels: int
+) -> tuple[int, str, str, int, int]:
     return (
         id(sd_module),
         str(device_name or "default"),
@@ -1516,11 +1465,11 @@ def _set_cached_mic_resolution(key: tuple[int, str, str, int, int], resolved: st
 
 def _resolve_mic_device(device_name: str) -> str:
     """Resolve a saved device name to the current device index.
-    
+
     The mic device setting now stores the device NAME (stable across reboots)
     instead of the index (which can change). This function looks up the current
     index for the named device, falling back to 'default' if not found.
-    
+
     If a FAVORITE_MIC is set and available, it will be used instead of the
     selected device. This allows users to have a preferred mic that is
     automatically used whenever it's connected.
@@ -1530,7 +1479,7 @@ def _resolve_mic_device(device_name: str) -> str:
     except Exception as exc:
         logger.warning(f"Sounddevice unavailable while resolving microphone ({exc}); using default")
         return "default"
-    
+
     sample_rate = int(getattr(Config, "SAMPLE_RATE", 16000) or 16000)
     requested_channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
     cache_key = _mic_device_cache_key(sd, device_name, sample_rate, requested_channels)
@@ -1541,6 +1490,7 @@ def _resolve_mic_device(device_name: str) -> str:
     def remember(resolved: str) -> str:
         _set_cached_mic_resolution(cache_key, resolved)
         return resolved
+
     with get_device_guard_lock():
         resolved = resolve_input_microphone_device(
             sd,
@@ -1591,9 +1541,9 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
 
     def __init__(
         self,
-        on_error: Optional[Callable[[str], None]] = None,
-        cleanup_callback: Optional[Callable[[], None]] = None,
-        on_provider_error: Optional[Callable[[str], None]] = None,
+        on_error: Callable[[str], None] | None = None,
+        cleanup_callback: Callable[[], None] | None = None,
+        on_provider_error: Callable[[str], None] | None = None,
     ):
         super().__init__()
         self.on_error = on_error
@@ -1607,7 +1557,7 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
         # Catch STT ErrorFrames. All provider errors are terminal for the active
         # live recording; connection failures additionally stop capture early.
         if isinstance(frame, ErrorFrame):
-            error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
+            error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
             error_lower = error_msg.lower()
 
             # Check for connection-related errors
@@ -1710,14 +1660,10 @@ class PipecatVadSpeechObserver(FrameProcessor):
             "speechStartedCount": int(self._started_count),
             "speechStoppedCount": int(self._stopped_count),
             "lastSpeechStartedAgoSeconds": (
-                round(now - self._last_started_at, 3)
-                if self._last_started_at > 0
-                else None
+                round(now - self._last_started_at, 3) if self._last_started_at > 0 else None
             ),
             "lastSpeechStoppedAgoSeconds": (
-                round(now - self._last_stopped_at, 3)
-                if self._last_stopped_at > 0
-                else None
+                round(now - self._last_stopped_at, 3) if self._last_stopped_at > 0 else None
             ),
         }
 
@@ -1759,10 +1705,7 @@ class SegmentedSTTRecordingGate(FrameProcessor):
             await self.push_frame(frame, direction)
             if not self.vad_segmentation_enabled:
                 self._whole_recording_open = True
-                logger.debug(
-                    "Opening recording-wide STT upload boundary "
-                    "(local VAD segmentation disabled)"
-                )
+                logger.debug("Opening recording-wide STT upload boundary (local VAD segmentation disabled)")
                 await self.push_frame(VADUserStartedSpeakingFrame(), direction)
             return
 
@@ -1825,10 +1768,7 @@ class _ProviderIngressDrainProcessor(FrameProcessor):
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
-        if (
-            direction == FrameDirection.DOWNSTREAM
-            and isinstance(frame, _ProviderIngressDrainFrame)
-        ):
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, _ProviderIngressDrainFrame):
             frame.acknowledge()
             return
         await self.push_frame(frame, direction)
@@ -1839,10 +1779,10 @@ class TranscriptionCallbackProcessor(FrameProcessor):
 
     def __init__(
         self,
-        on_transcription: Optional[Callable[[str, bool], None]],
+        on_transcription: Callable[[str, bool], None] | None,
         *,
         enable_speaker_diarization: bool = False,
-        on_final_transcription: Optional[Callable[[], None]] = None,
+        on_final_transcription: Callable[[], None] | None = None,
     ):
         super().__init__()
         self.on_transcription = on_transcription
@@ -1872,21 +1812,22 @@ class TranscriptionCallbackProcessor(FrameProcessor):
 
         await self.push_frame(frame, direction)
 
+
 class ScriberPipeline:
     def __init__(
         self,
         service_name=Config.DEFAULT_STT_SERVICE,
         on_status_change=None,
         on_audio_level=None,
-        on_transcription: Optional[Callable[[str, bool], None]] = None,
-        on_text_injected: Optional[Callable[[str], None]] = None,
-        on_injection_marker: Optional[Callable[..., None]] = None,
-        on_progress: Optional[Callable[[str], None]] = None,
-        on_mic_ready: Optional[Callable[[], None]] = None,
-        on_last_audio_chunk_sent: Optional[Callable[[], None]] = None,
-        on_audio_start_marker: Optional[Callable[..., None]] = None,
-        on_provider_replay_fixture_consumed: Optional[Callable[[], None]] = None,
-        on_error: Optional[Callable[[str], None]] = None,
+        on_transcription: Callable[[str, bool], None] | None = None,
+        on_text_injected: Callable[[str], None] | None = None,
+        on_injection_marker: Callable[..., None] | None = None,
+        on_progress: Callable[[str], None] | None = None,
+        on_mic_ready: Callable[[], None] | None = None,
+        on_last_audio_chunk_sent: Callable[[], None] | None = None,
+        on_audio_start_marker: Callable[..., None] | None = None,
+        on_provider_replay_fixture_consumed: Callable[[], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
         mic_prewarm_manager=None,
         enable_speaker_diarization: bool = False,
         direct_file_speaker_diarization: bool | None = None,
@@ -1899,10 +1840,10 @@ class ScriberPipeline:
         azure_mai_capture_time_mp3_enabled: bool | None = None,
         speechmatics_batch_raw_transport=None,
         speechmatics_capture_time_wav_enabled: bool | None = None,
-        on_provider_response_complete: Optional[Callable[[], None]] = None,
+        on_provider_response_complete: Callable[[], None] | None = None,
         soniox_replay_url: str | None = None,
         soniox_replay_final_message_sha256: str | None = None,
-        on_soniox_last_final_token_received: Optional[Callable[[], None]] = None,
+        on_soniox_last_final_token_received: Callable[[], None] | None = None,
         soniox_replay_model: str | None = None,
         provider_http_transport: ProviderHttpTransport | None = None,
     ):
@@ -1916,9 +1857,7 @@ class ScriberPipeline:
         self.on_mic_ready = on_mic_ready
         self.on_last_audio_chunk_sent = on_last_audio_chunk_sent
         self.on_audio_start_marker = on_audio_start_marker
-        self.on_provider_replay_fixture_consumed = (
-            on_provider_replay_fixture_consumed
-        )
+        self.on_provider_replay_fixture_consumed = on_provider_replay_fixture_consumed
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
@@ -1926,24 +1865,17 @@ class ScriberPipeline:
         # finalization overrides this per track so the single-user mic is plain
         # while shared system audio remains diarized.
         self.direct_file_speaker_diarization = (
-            True if direct_file_speaker_diarization is None
-            else bool(direct_file_speaker_diarization)
+            True if direct_file_speaker_diarization is None else bool(direct_file_speaker_diarization)
         )
         self.text_injection_enabled = bool(text_injection_enabled)
         self.injection_target_guard = injection_target_guard
-        self.injection_method_override = (
-            str(injection_method_override or "").strip().lower() or None
-        )
+        self.injection_method_override = str(injection_method_override or "").strip().lower() or None
         self.azure_mai_raw_transport = azure_mai_raw_transport
-        self.azure_mai_capture_time_mp3_enabled = (
-            azure_mai_capture_time_mp3_enabled
-        )
+        self.azure_mai_capture_time_mp3_enabled = azure_mai_capture_time_mp3_enabled
         self.speechmatics_batch_raw_transport = speechmatics_batch_raw_transport
         self.on_provider_response_complete = on_provider_response_complete
         self.soniox_replay_url = str(soniox_replay_url or "").strip() or None
-        self.soniox_replay_final_message_sha256 = (
-            str(soniox_replay_final_message_sha256 or "").strip().lower() or None
-        )
+        self.soniox_replay_final_message_sha256 = str(soniox_replay_final_message_sha256 or "").strip().lower() or None
         self.on_soniox_last_final_token_received = on_soniox_last_final_token_received
         self.soniox_replay_model = str(soniox_replay_model or "").strip() or None
         self._provider_replay_capture_enabled = bool(
@@ -1957,10 +1889,7 @@ class ScriberPipeline:
             if speechmatics_capture_time_wav_enabled is None
             else bool(speechmatics_capture_time_wav_enabled)
         )
-        if (
-            self.speechmatics_batch_raw_transport is not None
-            and not callable(self.speechmatics_batch_raw_transport)
-        ):
+        if self.speechmatics_batch_raw_transport is not None and not callable(self.speechmatics_batch_raw_transport):
             raise ValueError("Speechmatics replay transport must be callable")
         replay_parts = (
             self.soniox_replay_url,
@@ -1997,17 +1926,13 @@ class ScriberPipeline:
         except (TypeError, ValueError):
             expected_duration = 0.0
         self.direct_file_expected_duration_seconds = (
-            expected_duration
-            if math.isfinite(expected_duration) and expected_duration > 0.0
-            else 0.0
+            expected_duration if math.isfinite(expected_duration) and expected_duration > 0.0 else 0.0
         )
         self.pipeline: Any | None = None
         self.task: PipelineWorker | None = None
         self.runner: WorkerRunner | None = None
         self.audio_input = None
-        self._provider_ingress_drain_processor: (
-            _ProviderIngressDrainProcessor | None
-        ) = None
+        self._provider_ingress_drain_processor: _ProviderIngressDrainProcessor | None = None
         self._provider_replay_capture_attestation: dict[str, Any] | None = None
         self._vad_observer: PipecatVadSpeechObserver | None = None
         self.is_active = False
@@ -2043,6 +1968,7 @@ class ScriberPipeline:
         """
 
         if self.provider_http_transport is not None:
+
             def on_http_marker(name: str, *, timestamp_ns: int | None = None) -> None:
                 if name == "request_started":
                     self._provider_request_state = "request_started"
@@ -2094,11 +2020,7 @@ class ScriberPipeline:
         if value is None:
             return None
         normalized = value.strip().lower().replace("_", "-")
-        return (
-            LANGUAGE_MAP.get(normalized)
-            or LANGUAGE_MAP.get(normalized.split("-", 1)[0])
-            or value
-        )
+        return LANGUAGE_MAP.get(normalized) or LANGUAGE_MAP.get(normalized.split("-", 1)[0]) or value
 
     def _execution_custom_vocab(self) -> str:
         return str(self._execution_value("custom_vocab", Config.CUSTOM_VOCAB) or "")
@@ -2115,15 +2037,11 @@ class ScriberPipeline:
         """Verify the endpoint used now against the frozen privacy-safe hash."""
 
         normalized = str(endpoint_identity or "").strip().rstrip("/")
-        expected = str(
-            self._execution_value("provider_endpoint_sha256", "") or ""
-        ).strip().lower()
+        expected = str(self._execution_value("provider_endpoint_sha256", "") or "").strip().lower()
         if expected:
             actual = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
             if actual != expected:
-                raise RuntimeError(
-                    "Provider endpoint no longer matches the frozen execution route"
-                )
+                raise RuntimeError("Provider endpoint no longer matches the frozen execution route")
         return normalized
 
     def mark_provider_result_durable(self) -> None:
@@ -2181,19 +2099,11 @@ class ScriberPipeline:
             route = str(route_snapshot.get("provider_route") or "").strip()
             model = str(route_snapshot.get("model") or "").strip()
             if not route or not model:
-                raise ProviderAudioCapabilityError(
-                    "Frozen provider request is missing its exact route or model."
-                )
+                raise ProviderAudioCapabilityError("Frozen provider request is missing its exact route or model.")
 
         capability = resolve_provider_audio_capabilities(provider, route, model)
-        if (
-            capability.route_kind != route_kind
-            or route != capability.route
-            or model != capability.model_family
-        ):
-            raise ProviderAudioCapabilityError(
-                "Frozen provider request does not match the exact active API contract."
-            )
+        if capability.route_kind != route_kind or route != capability.route or model != capability.model_family:
+            raise ProviderAudioCapabilityError("Frozen provider request does not match the exact active API contract.")
         require_exact_audio_input_format(
             capability,
             audio_input_format,
@@ -2227,9 +2137,7 @@ class ScriberPipeline:
         route = realtime_route_for_provider(provider)
         implementation = realtime_pcm_preparation_implementation(provider)
         if not route or not implementation:
-            raise ProviderAudioCapabilityError(
-                "Realtime provider has no active exact PCM request contract."
-            )
+            raise ProviderAudioCapabilityError("Realtime provider has no active exact PCM request contract.")
         return self._require_exact_provider_request_contract(
             provider=provider,
             default_route=route,
@@ -2244,9 +2152,7 @@ class ScriberPipeline:
         """Return the effective, credential-free STT route for diagnostics."""
 
         service = str(self.service_name or "").strip().lower()
-        frozen_provider_route = str(
-            (self.execution_route or {}).get("provider_route") or ""
-        ).strip()
+        frozen_provider_route = str((self.execution_route or {}).get("provider_route") or "").strip()
         soniox_async = service == "soniox_async" or (
             service == "soniox"
             and self.soniox_replay_url is None
@@ -2320,17 +2226,11 @@ class ScriberPipeline:
             "model": self._execution_model(fallback_model),
             "mode": modes.get(service, "unknown"),
             "language": self._execution_language().strip() or "auto",
-            "sampleRateHz": (
-                48_000
-                if self._provider_replay_capture_enabled
-                else int(Config.SAMPLE_RATE)
-            ),
+            "sampleRateHz": (48_000 if self._provider_replay_capture_enabled else int(Config.SAMPLE_RATE)),
             "channels": int(Config.CHANNELS),
         }
         if service in {"soniox", "soniox_async"}:
-            configuration["region"] = self._execution_provider_region(
-                Config.SONIOX_REGION
-            )
+            configuration["region"] = self._execution_provider_region(Config.SONIOX_REGION)
         return configuration
 
     def _log_stt_runtime_configuration(self, *, workload: str) -> None:
@@ -2364,9 +2264,7 @@ class ScriberPipeline:
         duration = self.direct_file_expected_duration_seconds
         return min(14_400.0, max(600.0, 300.0 + duration * 0.5))
 
-    def _direct_file_workflow_timeout_seconds(
-        self, *, minimum_seconds: float = 600.0
-    ) -> float:
+    def _direct_file_workflow_timeout_seconds(self, *, minimum_seconds: float = 600.0) -> float:
         return direct_file_workflow_timeout_seconds(
             self.direct_file_expected_duration_seconds,
             minimum_seconds=minimum_seconds,
@@ -2438,10 +2336,7 @@ class ScriberPipeline:
                 final_task.cancel()
                 await asyncio.gather(final_task, return_exceptions=True)
 
-        if (
-            final_task in done
-            and self._final_transcription_generation > after_generation
-        ):
+        if final_task in done and self._final_transcription_generation > after_generation:
             return "final"
         if receive_wait is not None and receive_wait in done:
             try:
@@ -2496,14 +2391,10 @@ class ScriberPipeline:
             try:
                 external_handoff_prepared = bool(prepare_external_handoff())
             except Exception as exc:
-                logger.debug(
-                    f"Mic external handoff diagnostic preparation warning: {exc}"
-                )
+                logger.debug(f"Mic external handoff diagnostic preparation warning: {exc}")
 
         try:
-            self._mic_prewarm_handoff_resumed = bool(
-                await asyncio.to_thread(manager.resume_after_active_capture)
-            )
+            self._mic_prewarm_handoff_resumed = bool(await asyncio.to_thread(manager.resume_after_active_capture))
         except Exception as exc:
             logger.debug(f"Mic prewarm pre-resume before audio cleanup warning: {exc}")
             self._mic_prewarm_handoff_resumed = False
@@ -2522,16 +2413,11 @@ class ScriberPipeline:
                 try:
                     resolve_external_handoff()
                 except Exception as exc:
-                    logger.debug(
-                        f"Mic external handoff diagnostic resolution warning: {exc}"
-                    )
+                    logger.debug(f"Mic external handoff diagnostic resolution warning: {exc}")
         return self._mic_prewarm_handoff_resumed
 
     def _requires_provider_ingress_audio_drain(self) -> bool:
-        return (
-            str(self.service_name or "").strip().lower()
-            in _PROVIDER_INGRESS_DRAIN_SERVICES
-        )
+        return str(self.service_name or "").strip().lower() in _PROVIDER_INGRESS_DRAIN_SERVICES
 
     async def _abort_after_provider_ingress_drain_failure(self) -> None:
         """Cancel without allowing a buffered provider to upload partial PCM."""
@@ -2542,9 +2428,7 @@ class ScriberPipeline:
         if task is not None and not task.has_finished():
             try:
                 try:
-                    cancellation = task.cancel(
-                        reason="provider ingress audio drain failed"
-                    )
+                    cancellation = task.cancel(reason="provider ingress audio drain failed")
                 except TypeError:
                     cancellation = task.cancel()
                 if inspect.isawaitable(cancellation):
@@ -2552,10 +2436,8 @@ class ScriberPipeline:
                         cancellation,
                         timeout=_PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS,
                     )
-            except asyncio.TimeoutError:
-                logger.debug(
-                    "Timed out cancelling pipeline after provider ingress drain failure"
-                )
+            except TimeoutError:
+                logger.debug("Timed out cancelling pipeline after provider ingress drain failure")
             except Exception as exc:
                 logger.debug(
                     "Pipeline cancel after provider ingress drain failure warning: {}",
@@ -2572,10 +2454,8 @@ class ScriberPipeline:
                         cancellation,
                         timeout=_PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS,
                     )
-            except asyncio.TimeoutError:
-                logger.debug(
-                    "Timed out cancelling runner after provider ingress drain failure"
-                )
+            except TimeoutError:
+                logger.debug("Timed out cancelling runner after provider ingress drain failure")
             except Exception as exc:
                 logger.debug(
                     "Runner cancel after provider ingress drain failure warning: {}",
@@ -2617,20 +2497,14 @@ class ScriberPipeline:
                 return True
             except asyncio.CancelledError:
                 raise
-            except asyncio.TimeoutError:
-                reason = (
-                    "Provider ingress audio drain barrier timed out before "
-                    "terminal transcription."
-                )
+            except TimeoutError:
+                reason = "Provider ingress audio drain barrier timed out before terminal transcription."
             except Exception as exc:
                 logger.debug(
                     "Provider ingress audio drain barrier warning: {}",
                     exc,
                 )
-                reason = (
-                    "Provider ingress audio drain barrier failed before "
-                    "terminal transcription."
-                )
+                reason = "Provider ingress audio drain barrier failed before terminal transcription."
 
         logger.error(reason)
         self._record_terminal_error(reason)
@@ -2649,9 +2523,7 @@ class ScriberPipeline:
             if not audio_input:
                 return
             if has_prewarm_manager:
-                prewarm_resumed_before_stop = bool(
-                    await self._prepare_mic_prewarm_for_capture_stop_locked()
-                )
+                prewarm_resumed_before_stop = bool(await self._prepare_mic_prewarm_for_capture_stop_locked())
             try:
                 # Pipeline instances are per-session, so keep_alive streams cannot
                 # be safely reused here. Always close to avoid orphaned PortAudio
@@ -2667,9 +2539,7 @@ class ScriberPipeline:
                 )
                 if callable(capture_snapshot):
                     try:
-                        self._provider_replay_capture_attestation = (
-                            capture_snapshot()
-                        )
+                        self._provider_replay_capture_attestation = capture_snapshot()
                     except Exception:
                         self._provider_replay_capture_attestation = None
                 self.audio_input = None
@@ -2695,14 +2565,8 @@ class ScriberPipeline:
             audio_input = self.audio_input
             if not audio_input:
                 return
-            prewarm_resumed = (
-                await self._prepare_mic_prewarm_for_capture_stop_locked()
-            )
-            if (
-                Config.MIC_ALWAYS_ON
-                and self.mic_prewarm_manager is not None
-                and not prewarm_resumed
-            ):
+            prewarm_resumed = await self._prepare_mic_prewarm_for_capture_stop_locked()
+            if Config.MIC_ALWAYS_ON and self.mic_prewarm_manager is not None and not prewarm_resumed:
                 # Do not create a deliberate privacy-indicator gap when the
                 # overlap-first start fails. Release the lock before falling
                 # back to normal cleanup, which retries before capture closes.
@@ -2720,21 +2584,15 @@ class ScriberPipeline:
                         logger.debug(f"Segmented STT capture-stop warning: {exc}")
                 try:
                     audio_queue = getattr(audio_input, "_audio_in_queue", None)
-                    if audio_queue is not None and callable(
-                        getattr(audio_queue, "join", None)
-                    ):
+                    if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
                         await asyncio.wait_for(audio_queue.join(), timeout=1.0)
-                except asyncio.TimeoutError:
-                    logger.debug(
-                        "Timed out waiting for segmented STT audio queue to drain"
-                    )
+                except TimeoutError:
+                    logger.debug("Timed out waiting for segmented STT audio queue to drain")
                 except Exception as exc:
                     logger.debug(f"Segmented STT audio queue drain warning: {exc}")
 
         if use_normal_cleanup:
-            logger.warning(
-                "Segmented STT prewarm handoff was not ready; using normal audio cleanup"
-            )
+            logger.warning("Segmented STT prewarm handoff was not ready; using normal audio cleanup")
             await self._cleanup_audio_input()
 
     def _live_stt_final_failure_timeout_seconds(self) -> float:
@@ -2771,7 +2629,7 @@ class ScriberPipeline:
                     self._final_transcription_received.wait(),
                     timeout=min(0.25, remaining),
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if self._final_transcription_generation > after_generation:
                 return "final"
@@ -2800,9 +2658,7 @@ class ScriberPipeline:
             logger.warning(message)
             self._record_terminal_error(message)
         else:
-            logger.debug(
-                f"Committed live STT final wait ended without a final result ({result})"
-            )
+            logger.debug(f"Committed live STT final wait ended without a final result ({result})")
         return result
 
     def audio_diagnostics(self) -> dict[str, Any] | None:
@@ -2920,11 +2776,7 @@ class ScriberPipeline:
 
     async def _flush_live_vad_finalization_turn(self) -> bool:
         """Finalize a live streaming turn when the hotkey stops while speech is active."""
-        if (
-            not self.pipeline
-            or self._vad_observer is None
-            or not _live_service_needs_local_vad(self.service_name)
-        ):
+        if not self.pipeline or self._vad_observer is None or not _live_service_needs_local_vad(self.service_name):
             return False
         if self._requires_pre_endframe_stt_finalization():
             return False
@@ -2939,10 +2791,7 @@ class ScriberPipeline:
         if vad_snapshot is not None:
             if not vad_snapshot.get("speechObserved"):
                 return False
-            if (
-                not vad_snapshot.get("speaking")
-                and int(vad_snapshot.get("speechStoppedCount") or 0) > 0
-            ):
+            if not vad_snapshot.get("speaking") and int(vad_snapshot.get("speechStoppedCount") or 0) > 0:
                 return False
 
         try:
@@ -2967,15 +2816,9 @@ class ScriberPipeline:
         )
 
     def _uses_async_vad_commit_finalization(self) -> bool:
-        if any(
-            isinstance(processor, SegmentedSTTService)
-            for processor in self._iter_pipeline_processors()
-        ):
+        if any(isinstance(processor, SegmentedSTTService) for processor in self._iter_pipeline_processors()):
             return False
-        return (
-            _live_stt_stop_strategy(self.service_name)
-            == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
-        )
+        return _live_stt_stop_strategy(self.service_name) == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
 
     def _local_vad_final_response_pending(self) -> bool:
         observer = self._vad_observer
@@ -3001,7 +2844,7 @@ class ScriberPipeline:
     def _mark_provider_terminal_transcription_skip(self) -> None:
         for processor in self._iter_pipeline_processors():
             if hasattr(processor, "_buffer_size") or callable(getattr(processor, "_reset_buffer", None)):
-                setattr(processor, "_skip_terminal_transcription", True)
+                processor._skip_terminal_transcription = True
 
     async def cancel_silent_recording(self, timeout_secs: float = 5.0) -> None:
         """Cancel a live session without asking buffered async providers to transcribe silence."""
@@ -3028,13 +2871,13 @@ class ScriberPipeline:
 
         try:
             await asyncio.wait_for(self._start_done.wait(), timeout=timeout_secs)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("Timed out waiting for silent recording pipeline cancellation")
         self.is_active = False
 
     def _create_stt_service(self, session: aiohttp.ClientSession, *, for_file: bool = False):
         """Create the appropriate STT service based on configuration.
-        
+
         STT services are imported lazily here to reduce app startup time.
         This saves ~500-800ms by not loading all service dependencies at launch.
         """
@@ -3052,9 +2895,7 @@ class ScriberPipeline:
                 else self.service_name == "soniox_async" or Config.SONIOX_MODE == "async"
             )
             soniox_region = self._execution_provider_region(Config.SONIOX_REGION)
-            soniox_base_url = self._bind_execution_provider_endpoint(
-                soniox_rest_api_base_url(soniox_region)
-            )
+            soniox_base_url = self._bind_execution_provider_endpoint(soniox_rest_api_base_url(soniox_region))
             if use_async:
                 logger.info("Using Soniox async transcription mode")
                 return SonioxAsyncProcessor(
@@ -3067,49 +2908,29 @@ class ScriberPipeline:
                     base_url=soniox_base_url,
                 )
             soniox_service_cls, soniox_context_cls = _load_soniox_realtime_classes()
-            if not soniox_service_cls: raise RuntimeError("SonioxSTTService not available.")
+            if not soniox_service_cls:
+                raise RuntimeError("SonioxSTTService not available.")
             settings_cls = getattr(soniox_service_cls, "Settings", None)
             if settings_cls is None:
                 raise RuntimeError("Soniox realtime transcription requires Pipecat 1.5.0.")
-            lang_hint = (
-                Language.EN
-                if self.soniox_replay_url is not None
-                else self._execution_pipecat_language()
-            )
-            rt_model = self.soniox_replay_model or self._execution_model(
-                Config.SONIOX_RT_MODEL
-            )
+            lang_hint = Language.EN if self.soniox_replay_url is not None else self._execution_pipecat_language()
+            rt_model = self.soniox_replay_model or self._execution_model(Config.SONIOX_RT_MODEL)
             settings_candidates: dict[str, Any] = {
                 "model": rt_model,
                 "language_hints": [lang_hint] if lang_hint else None,
                 "enable_speaker_diarization": self.enable_speaker_diarization if for_file else False,
             }
-            soniox_custom_vocab = (
-                ""
-                if self.soniox_replay_url is not None
-                else self._execution_custom_vocab()
-            )
+            soniox_custom_vocab = "" if self.soniox_replay_url is not None else self._execution_custom_vocab()
             if soniox_custom_vocab and soniox_context_cls:
                 terms = [t.strip() for t in soniox_custom_vocab.split(",") if t.strip()]
                 if terms:
                     logger.info(f"Applying custom vocabulary: {terms}")
                     settings_candidates["context"] = soniox_context_cls(terms=terms)
             settings = settings_cls(**_filter_supported_kwargs(settings_cls, settings_candidates))
-            logger.info(
-                "Creating SonioxSTTService with Pipecat 1.5 settings and "
-                "Soniox semantic endpoint detection"
-            )
+            logger.info("Creating SonioxSTTService with Pipecat 1.5 settings and Soniox semantic endpoint detection")
             service_kwargs: dict[str, Any] = {
-                "api_key": (
-                    "local-replay"
-                    if self.soniox_replay_url is not None
-                    else soniox_api_key
-                ),
-                "sample_rate": (
-                    48_000
-                    if self._provider_replay_capture_enabled
-                    else Config.SAMPLE_RATE
-                ),
+                "api_key": ("local-replay" if self.soniox_replay_url is not None else soniox_api_key),
+                "sample_rate": (48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
                 "settings": settings,
                 # Soniox v5 performs semantic endpoint detection itself. Local
                 # VAD may still support UI diagnostics, but must not force a
@@ -3119,9 +2940,7 @@ class ScriberPipeline:
             if self.soniox_replay_url is not None:
                 service_kwargs["url"] = self.soniox_replay_url
             else:
-                service_kwargs["url"] = soniox_realtime_websocket_url(
-                    soniox_region
-                )
+                service_kwargs["url"] = soniox_realtime_websocket_url(soniox_region)
             service = soniox_service_cls(**service_kwargs)
             if self.soniox_replay_url is not None:
                 from src.runtime.provider_replay import (
@@ -3130,12 +2949,8 @@ class ScriberPipeline:
 
                 install_soniox_replay_receive_observer(
                     service,
-                    final_message_sha256=(
-                        self.soniox_replay_final_message_sha256 or ""
-                    ),
-                    on_last_final_token_received=(
-                        self.on_soniox_last_final_token_received
-                    ),
+                    final_message_sha256=(self.soniox_replay_final_message_sha256 or ""),
+                    on_last_final_token_received=(self.on_soniox_last_final_token_received),
                 )
             return service
 
@@ -3229,16 +3044,14 @@ class ScriberPipeline:
                 language=self._execution_language(),
                 custom_vocab=self._execution_custom_vocab(),
             )
-        
+
         elif self.service_name == "google":
             # Lazy import - only loaded when Google is used
             module = import_provider_runtime_module("google", "pipecat.services.google.stt")
             GoogleSTTService = module.GoogleSTTService
             speech_v2_module = getattr(module, "speech_v2", None)
             if getattr(speech_v2_module, "__name__", "") != "google.cloud.speech_v2":
-                raise RuntimeError(
-                    "Google Cloud transcription requires the verified Speech V2 API."
-                )
+                raise RuntimeError("Google Cloud transcription requires the verified Speech V2 API.")
             credentials_path = str(Config.GOOGLE_APPLICATION_CREDENTIALS or "").strip()
             if not credentials_path:
                 raise ValueError("Google Cloud credentials path is missing.")
@@ -3247,9 +3060,7 @@ class ScriberPipeline:
                 raise RuntimeError("Google Cloud streaming transcription requires Pipecat 1.5.0.")
             provider_route = realtime_route_for_provider("google")
             if not provider_route:
-                raise ProviderAudioCapabilityError(
-                    "Google Cloud has no active exact streaming route."
-                )
+                raise ProviderAudioCapabilityError("Google Cloud has no active exact streaming route.")
             bound_model = self._require_exact_provider_request_contract(
                 provider="google",
                 default_route=provider_route,
@@ -3270,15 +3081,9 @@ class ScriberPipeline:
                 settings_values["languages"] = [selected_language]
             settings_kwargs = _filter_supported_kwargs(settings_cls, settings_values)
             if settings_kwargs.get("model") != bound_model:
-                raise RuntimeError(
-                    "Google Cloud Pipecat settings cannot bind the frozen model."
-                )
-            if selected_language and settings_kwargs.get("languages") != [
-                selected_language
-            ]:
-                raise RuntimeError(
-                    "Google Cloud Pipecat settings cannot bind the frozen language."
-                )
+                raise RuntimeError("Google Cloud Pipecat settings cannot bind the frozen model.")
+            if selected_language and settings_kwargs.get("languages") != [selected_language]:
+                raise RuntimeError("Google Cloud Pipecat settings cannot bind the frozen language.")
             settings = settings_cls(**settings_kwargs)
             return GoogleSTTService(
                 credentials_path=credentials_path,
@@ -3302,13 +3107,14 @@ class ScriberPipeline:
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
             )
-        
+
         elif self.service_name == "elevenlabs":
             from src.assemblyai_async_stt import build_keyterms_from_vocab
 
             # Lazy import - only loaded when ElevenLabs is used
             module = import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
-            if not _get_api_key("elevenlabs"): raise ValueError("ElevenLabs API Key is missing.")
+            if not _get_api_key("elevenlabs"):
+                raise ValueError("ElevenLabs API Key is missing.")
 
             realtime_cls = getattr(module, "ElevenLabsRealtimeSTTService", None)
             if realtime_cls is None:
@@ -3322,9 +3128,7 @@ class ScriberPipeline:
                 default_model="scribe_v2_realtime",
             )
             language = self._execution_pipecat_language()
-            elevenlabs_keyterms = build_keyterms_from_vocab(
-                self._execution_custom_vocab()
-            )[:100]
+            elevenlabs_keyterms = build_keyterms_from_vocab(self._execution_custom_vocab())[:100]
             settings_values = {
                 "model": bound_model,
                 "language": language,
@@ -3335,15 +3139,9 @@ class ScriberPipeline:
                 settings_values,
             )
             if settings_kwargs.get("model") != bound_model:
-                raise RuntimeError(
-                    "ElevenLabs Pipecat settings cannot bind the frozen model."
-                )
-            if elevenlabs_keyterms and (
-                settings_kwargs.get("keyterms") != elevenlabs_keyterms
-            ):
-                raise RuntimeError(
-                    "ElevenLabs Pipecat settings cannot bind the frozen vocabulary."
-                )
+                raise RuntimeError("ElevenLabs Pipecat settings cannot bind the frozen model.")
+            if elevenlabs_keyterms and (settings_kwargs.get("keyterms") != elevenlabs_keyterms):
+                raise RuntimeError("ElevenLabs Pipecat settings cannot bind the frozen vocabulary.")
             settings = settings_cls(**settings_kwargs)
 
             logger.info(
@@ -3362,14 +3160,15 @@ class ScriberPipeline:
                     },
                 )
             )
-        
+
         elif self.service_name == "deepgram":
             from src.assemblyai_async_stt import build_keyterms_from_vocab
 
             # Lazy import - only loaded when Deepgram is used
             module = import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
             DeepgramSTTService = module.DeepgramSTTService
-            if not _get_api_key("deepgram"): raise ValueError("Deepgram API Key is missing.")
+            if not _get_api_key("deepgram"):
+                raise ValueError("Deepgram API Key is missing.")
             settings_cls = getattr(DeepgramSTTService, "Settings", None)
             if settings_cls is None:
                 raise RuntimeError("Deepgram streaming transcription requires Pipecat 1.5.0.")
@@ -3377,9 +3176,7 @@ class ScriberPipeline:
                 provider="deepgram",
                 default_model=Config.DEEPGRAM_MODEL,
             )
-            deepgram_keyterms = build_keyterms_from_vocab(
-                self._execution_custom_vocab()
-            )
+            deepgram_keyterms = build_keyterms_from_vocab(self._execution_custom_vocab())
             deepgram_settings_values = {
                 "model": bound_model,
                 "language": self._execution_pipecat_language(),
@@ -3395,15 +3192,9 @@ class ScriberPipeline:
                 deepgram_settings_values,
             )
             if deepgram_settings_kwargs.get("model") != bound_model:
-                raise RuntimeError(
-                    "Deepgram Pipecat settings cannot bind the frozen model."
-                )
-            if deepgram_keyterms and (
-                deepgram_settings_kwargs.get("keyterm") != deepgram_keyterms
-            ):
-                raise RuntimeError(
-                    "Deepgram Pipecat settings cannot bind the frozen vocabulary."
-                )
+                raise RuntimeError("Deepgram Pipecat settings cannot bind the frozen model.")
+            if deepgram_keyterms and (deepgram_settings_kwargs.get("keyterm") != deepgram_keyterms):
+                raise RuntimeError("Deepgram Pipecat settings cannot bind the frozen vocabulary.")
             deepgram_settings = settings_cls(**deepgram_settings_kwargs)
 
             pipeline_ref = self
@@ -3441,12 +3232,13 @@ class ScriberPipeline:
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
             )
-        
+
         elif self.service_name == "openai":
             # Lazy import - only loaded when OpenAI is used
             module = import_provider_runtime_module("openai", "pipecat.services.openai.stt")
             OpenAIRealtimeSTTService = getattr(module, "OpenAIRealtimeSTTService", None)
-            if not _get_api_key("openai"): raise ValueError("OpenAI API Key is missing.")
+            if not _get_api_key("openai"):
+                raise ValueError("OpenAI API Key is missing.")
             if OpenAIRealtimeSTTService is None:
                 raise RuntimeError("OpenAI Realtime STT requires Pipecat 1.5.0.")
             settings_cls = getattr(OpenAIRealtimeSTTService, "Settings", None)
@@ -3481,7 +3273,7 @@ class ScriberPipeline:
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
             )
-        
+
         elif self.service_name == "azure_mai":
             from src.azure_mai_stt import (
                 AzureMaiTranscribeSTTService,
@@ -3495,9 +3287,7 @@ class ScriberPipeline:
             bound_model = self._execution_model(Config.AZURE_MAI_MODEL)
             provider_route = batch_route_for_provider("azure_mai")
             if not provider_route:
-                raise ProviderAudioCapabilityError(
-                    "Azure MAI has no active exact batch request contract."
-                )
+                raise ProviderAudioCapabilityError("Azure MAI has no active exact batch request contract.")
             capability = resolve_provider_audio_capabilities(
                 "azure_mai",
                 provider_route,
@@ -3509,19 +3299,11 @@ class ScriberPipeline:
                 route_kind=ProviderAudioRouteKind.BATCH,
             )
             azure_region = validate_azure_mai_region(
-                self._execution_provider_region(
-                    getattr(Config, "AZURE_MAI_REGION", None)
-                )
+                self._execution_provider_region(getattr(Config, "AZURE_MAI_REGION", None))
             )
-            self._bind_execution_provider_endpoint(
-                f"azure-mai-region:{azure_region}"
-            )
+            self._bind_execution_provider_endpoint(f"azure-mai-region:{azure_region}")
             return AzureMaiTranscribeSTTService(
-                speech_key=(
-                    "local-replay"
-                    if self.azure_mai_raw_transport is not None
-                    else api_key
-                ),
+                speech_key=("local-replay" if self.azure_mai_raw_transport is not None else api_key),
                 region=azure_region,
                 language=self._execution_language(),
                 model=bound_model,
@@ -3531,16 +3313,15 @@ class ScriberPipeline:
                 raw_transport=self.azure_mai_raw_transport,
                 on_response_complete=self.on_provider_response_complete,
                 on_encoder_marker=self.on_audio_start_marker,
-                capture_time_mp3_enabled=(
-                    self.azure_mai_capture_time_mp3_enabled
-                ),
+                capture_time_mp3_enabled=(self.azure_mai_capture_time_mp3_enabled),
             )
-        
+
         elif self.service_name == "gladia":
             # Lazy import - only loaded when Gladia is used
             module = import_provider_runtime_module("gladia", "pipecat.services.gladia.stt")
             GladiaSTTService = module.GladiaSTTService
-            if not _get_api_key("gladia"): raise ValueError("Gladia API Key is missing.")
+            if not _get_api_key("gladia"):
+                raise ValueError("Gladia API Key is missing.")
             pipeline_ref = self
 
             class ScriberGladiaSTTService(GladiaSTTService):
@@ -3564,7 +3345,7 @@ class ScriberPipeline:
                                 timeout=timeout,
                             )
                             logger.debug("Gladia final transcription received before websocket cleanup")
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             logger.debug(
                                 f"Timed out waiting {timeout:g}s for Gladia final transcription before websocket cleanup"
                             )
@@ -3611,20 +3392,19 @@ class ScriberPipeline:
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
             )
-        
+
         elif self.service_name == "groq":
             # Lazy import - only loaded when Groq is used
             module = import_provider_runtime_module("groq", "pipecat.services.groq.stt")
             GroqSTTService = module.GroqSTTService
-            if not _get_api_key("groq"): raise ValueError("Groq API Key is missing.")
+            if not _get_api_key("groq"):
+                raise ValueError("Groq API Key is missing.")
             settings_cls = getattr(GroqSTTService, "Settings", None)
             if settings_cls is None:
                 raise RuntimeError("Groq transcription requires Pipecat 1.5.0.")
             provider_route = batch_route_for_provider("groq")
             if not provider_route:
-                raise ProviderAudioCapabilityError(
-                    "Groq has no active exact segmented request route."
-                )
+                raise ProviderAudioCapabilityError("Groq has no active exact segmented request route.")
             bound_model = self._require_exact_provider_request_contract(
                 provider="groq",
                 default_route=provider_route,
@@ -3636,9 +3416,7 @@ class ScriberPipeline:
             )
             bound_language = self._execution_pipecat_language()
             bound_prompt = (
-                "Likely vocabulary: " + self._execution_custom_vocab()
-                if self._execution_custom_vocab()
-                else None
+                "Likely vocabulary: " + self._execution_custom_vocab() if self._execution_custom_vocab() else None
             )
             settings_values = {
                 "model": bound_model,
@@ -3649,35 +3427,30 @@ class ScriberPipeline:
             if settings_kwargs.get("model") != bound_model:
                 raise RuntimeError("Groq Pipecat settings cannot bind the frozen model.")
             if bound_language and settings_kwargs.get("language") != bound_language:
-                raise RuntimeError(
-                    "Groq Pipecat settings cannot bind the frozen language."
-                )
+                raise RuntimeError("Groq Pipecat settings cannot bind the frozen language.")
             if bound_prompt and settings_kwargs.get("prompt") != bound_prompt:
-                raise RuntimeError(
-                    "Groq Pipecat settings cannot bind the frozen vocabulary."
-                )
+                raise RuntimeError("Groq Pipecat settings cannot bind the frozen vocabulary.")
             settings = settings_cls(**settings_kwargs)
             service_kwargs = _filter_supported_kwargs(
                 GroqSTTService,
                 {
                     "api_key": _get_api_key("groq"),
-                    "base_url": self._bind_execution_provider_endpoint(
-                        _GROQ_OPENAI_V1_BASE_URL
-                    ),
+                    "base_url": self._bind_execution_provider_endpoint(_GROQ_OPENAI_V1_BASE_URL),
                     "settings": settings,
                 },
             )
             if service_kwargs.get("base_url") != _GROQ_OPENAI_V1_BASE_URL:
                 raise RuntimeError("Groq Pipecat service cannot bind the verified v1 API.")
             return GroqSTTService(**service_kwargs)
-        
+
         elif self.service_name == "speechmatics":
             from src.assemblyai_async_stt import build_keyterms_from_vocab
 
             # Lazy import - only loaded when Speechmatics is used
             module = import_provider_runtime_module("speechmatics", "pipecat.services.speechmatics.stt")
             SpeechmaticsSTTService = module.SpeechmaticsSTTService
-            if not _get_api_key("speechmatics"): raise ValueError("Speechmatics API Key is missing.")
+            if not _get_api_key("speechmatics"):
+                raise ValueError("Speechmatics API Key is missing.")
             settings_cls = getattr(SpeechmaticsSTTService, "Settings", None)
             if settings_cls is None:
                 raise RuntimeError("Speechmatics realtime transcription requires Pipecat 1.5.0.")
@@ -3691,27 +3464,19 @@ class ScriberPipeline:
                 getattr(module, "OperatingPoint", None),
             )
             if operating_point_cls is None:
-                raise RuntimeError(
-                    "Speechmatics Pipecat service cannot bind the frozen model."
-                )
+                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.")
             try:
                 operating_point = operating_point_cls(bound_model)
             except (TypeError, ValueError) as exc:
-                raise RuntimeError(
-                    "Speechmatics Pipecat service cannot bind the frozen model."
-                ) from exc
-            speechmatics_terms = build_keyterms_from_vocab(
-                self._execution_custom_vocab()
-            )
+                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen model.") from exc
+            speechmatics_terms = build_keyterms_from_vocab(self._execution_custom_vocab())
             additional_vocab_cls = getattr(
                 SpeechmaticsSTTService,
                 "AdditionalVocabEntry",
                 getattr(module, "AdditionalVocabEntry", None),
             )
             if speechmatics_terms and additional_vocab_cls is None:
-                raise RuntimeError(
-                    "Speechmatics Pipecat service cannot bind the frozen vocabulary."
-                )
+                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen vocabulary.")
             additional_vocab = (
                 [additional_vocab_cls(content=term) for term in speechmatics_terms]
                 if additional_vocab_cls is not None
@@ -3723,9 +3488,7 @@ class ScriberPipeline:
                 "language": bound_language,
                 "additional_vocab": additional_vocab,
                 "operating_point": operating_point,
-                "enable_diarization": (
-                    self.enable_speaker_diarization if for_file else False
-                ),
+                "enable_diarization": (self.enable_speaker_diarization if for_file else False),
                 "speaker_active_format": "[Speaker {speaker_id}]: {text}",
                 "speaker_passive_format": "[Speaker {speaker_id}]: {text}",
             }
@@ -3733,23 +3496,12 @@ class ScriberPipeline:
                 settings_cls,
                 settings_values,
             )
-            if (
-                settings_kwargs.get("model") != bound_model
-                or settings_kwargs.get("operating_point") != operating_point
-            ):
-                raise RuntimeError(
-                    "Speechmatics Pipecat settings cannot bind the frozen model."
-                )
+            if settings_kwargs.get("model") != bound_model or settings_kwargs.get("operating_point") != operating_point:
+                raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen model.")
             if settings_kwargs.get("language") != bound_language:
-                raise RuntimeError(
-                    "Speechmatics Pipecat settings cannot bind the frozen language."
-                )
-            if speechmatics_terms and (
-                settings_kwargs.get("additional_vocab") != additional_vocab
-            ):
-                raise RuntimeError(
-                    "Speechmatics Pipecat settings cannot bind the frozen vocabulary."
-                )
+                raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen language.")
+            if speechmatics_terms and (settings_kwargs.get("additional_vocab") != additional_vocab):
+                raise RuntimeError("Speechmatics Pipecat settings cannot bind the frozen vocabulary.")
             settings = settings_cls(**settings_kwargs)
             speechmatics_base_url = self._bind_execution_provider_endpoint(
                 speechmatics_realtime_base_url(
@@ -3769,9 +3521,7 @@ class ScriberPipeline:
                 },
             )
             if service_kwargs.get("base_url") != speechmatics_base_url:
-                raise RuntimeError(
-                    "Speechmatics Pipecat service cannot bind the frozen endpoint."
-                )
+                raise RuntimeError("Speechmatics Pipecat service cannot bind the frozen endpoint.")
             return SpeechmaticsSTTService(**service_kwargs)
 
         elif self.service_name == "speechmatics_async":
@@ -3782,21 +3532,15 @@ class ScriberPipeline:
                 raise ValueError("Speechmatics API Key is missing.")
             logger.info("Using Speechmatics batch async transcription mode")
             speechmatics_base_url = self._bind_execution_provider_endpoint(
-                (
-                    SPEECHMATICS_BATCH_DEFAULT_BASE_URL
-                    if self.speechmatics_batch_raw_transport is not None
-                    else os.getenv(
-                        "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
-                        SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
-                    )
+                SPEECHMATICS_BATCH_DEFAULT_BASE_URL
+                if self.speechmatics_batch_raw_transport is not None
+                else os.getenv(
+                    "SCRIBER_SPEECHMATICS_BATCH_BASE_URL",
+                    SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
                 )
             )
             return SpeechmaticsAsyncProcessor(
-                api_key=(
-                    "local-replay"
-                    if self.speechmatics_batch_raw_transport is not None
-                    else api_key
-                ),
+                api_key=("local-replay" if self.speechmatics_batch_raw_transport is not None else api_key),
                 language=self._execution_language(),
                 custom_vocab=self._execution_custom_vocab(),
                 session=session,
@@ -3832,9 +3576,10 @@ class ScriberPipeline:
                 sample_rate=Config.SAMPLE_RATE,
                 channels=Config.CHANNELS,
             )
-        
+
         elif self.service_name == "onnx_local":
             from src.onnx_local_service import OnnxLocalBufferedSTTService
+
             if for_file:
                 return OnnxLocalBufferedSTTService(
                     model_name=self._execution_model(Config.ONNX_MODEL),
@@ -3886,9 +3631,7 @@ class ScriberPipeline:
             async with self._provider_session() as session:
                 stt_service = self._create_stt_service(session)
                 if self._requires_provider_ingress_audio_drain():
-                    self._provider_ingress_drain_processor = (
-                        _ProviderIngressDrainProcessor()
-                    )
+                    self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
                 self._log_stt_runtime_configuration(workload="live_mic")
 
                 vad_analyzer = None
@@ -3900,7 +3643,7 @@ class ScriberPipeline:
                     segmented_service=isinstance(stt_service, SegmentedSTTService),
                     provider_replay=self.soniox_replay_url is not None,
                 )
-                    
+
                 if needs_vad:
                     vad_analyzer = _create_vad_analyzer(
                         quiet_mic=(
@@ -3909,47 +3652,36 @@ class ScriberPipeline:
                         )
                     )
                     if not vad_analyzer:
-                        logger.warning("VAD analyzer required but not available; transcripts may not finalize properly.")
+                        logger.warning(
+                            "VAD analyzer required but not available; transcripts may not finalize properly."
+                        )
 
-                vad_processor = (
-                    VADProcessor(vad_analyzer=vad_analyzer)
-                    if vad_analyzer is not None
-                    else None
-                )
+                vad_processor = VADProcessor(vad_analyzer=vad_analyzer) if vad_analyzer is not None else None
                 smart_turn_processor = None
                 if uses_smart_turn:
                     if vad_processor is None:
-                        logger.warning(
-                            "SmartTurn V3 disabled for this recording because Silero VAD is unavailable"
-                        )
+                        logger.warning("SmartTurn V3 disabled for this recording because Silero VAD is unavailable")
                     else:
                         smart_turn_processor = _create_soniox_smart_turn_processor()
                         if smart_turn_processor is None:
                             logger.warning("SmartTurn V3 is unavailable for this recording")
 
                 prewarm_active = bool(
-                    self.mic_prewarm_manager is not None
-                    and getattr(self.mic_prewarm_manager, "is_active", False)
+                    self.mic_prewarm_manager is not None and getattr(self.mic_prewarm_manager, "is_active", False)
                 )
                 use_prewarm_for_capture = bool(Config.MIC_ALWAYS_ON or prewarm_active)
 
                 # Always use our custom MicrophoneInput to support on_audio_level callback
-                capture_device, capture_device_from_warm_lease = (
-                    _resolve_live_mic_capture_device(self.mic_prewarm_manager)
+                capture_device, capture_device_from_warm_lease = _resolve_live_mic_capture_device(
+                    self.mic_prewarm_manager
                 )
                 self.audio_input = MicrophoneInput(
-                    sample_rate=(
-                        48_000
-                        if self._provider_replay_capture_enabled
-                        else Config.SAMPLE_RATE
-                    ),
+                    sample_rate=(48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
                     channels=Config.CHANNELS,
                     block_size=Config.MIC_BLOCK_SIZE,
                     device=capture_device,
                     fresh_device_resolver=(
-                        (lambda: _resolve_mic_device(Config.MIC_DEVICE))
-                        if capture_device_from_warm_lease
-                        else None
+                        (lambda: _resolve_mic_device(Config.MIC_DEVICE)) if capture_device_from_warm_lease else None
                     ),
                     keep_alive=use_prewarm_for_capture,
                     prewarm_manager=self.mic_prewarm_manager,
@@ -3957,21 +3689,13 @@ class ScriberPipeline:
                     on_ready=self.on_mic_ready,
                     on_last_audio_chunk_sent=self.on_last_audio_chunk_sent,
                     on_start_marker=self.on_audio_start_marker,
-                    on_provider_replay_fixture_consumed=(
-                        self.on_provider_replay_fixture_consumed
-                    ),
+                    on_provider_replay_fixture_consumed=(self.on_provider_replay_fixture_consumed),
                     capture_audio_preparation=_rust_capture_wav_plan(
                         self.service_name,
-                        sample_rate=(
-                            48_000
-                            if self._provider_replay_capture_enabled
-                            else Config.SAMPLE_RATE
-                        ),
+                        sample_rate=(48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
                         channels=Config.CHANNELS,
                         execution_route=self.execution_route,
-                        candidate_enabled=(
-                            self._speechmatics_capture_time_wav_enabled
-                        ),
+                        candidate_enabled=(self._speechmatics_capture_time_wav_enabled),
                     ),
                     on_capture_wav_artifact=self._adopt_capture_wav_artifact,
                 )
@@ -3979,9 +3703,8 @@ class ScriberPipeline:
                 inject_immediately = (
                     True
                     if self.soniox_replay_url is not None
-                    else injects_immediately_in_live_mode(self.service_name) and not (
-                        self.service_name == "soniox" and Config.SONIOX_MODE == "async"
-                    )
+                    else injects_immediately_in_live_mode(self.service_name)
+                    and not (self.service_name == "soniox" and Config.SONIOX_MODE == "async")
                 )
                 text_injector = TextInjector(
                     inject_immediately=inject_immediately,
@@ -3992,19 +3715,17 @@ class ScriberPipeline:
                     injection_method=self.injection_method_override,
                 )
                 self.text_injector = text_injector
-                needs_soniox_realtime_final_signal = (
-                    self.service_name == "soniox"
-                    and (
-                        self.soniox_replay_url is not None
-                        or Config.SONIOX_MODE != "async"
-                    )
+                needs_soniox_realtime_final_signal = self.service_name == "soniox" and (
+                    self.soniox_replay_url is not None or Config.SONIOX_MODE != "async"
                 )
                 transcript_cb = (
                     TranscriptionCallbackProcessor(
                         self.on_transcription,
                         enable_speaker_diarization=self.enable_speaker_diarization,
                         on_final_transcription=self._mark_final_transcription_received,
-                    ) if (self.on_transcription or needs_soniox_realtime_final_signal) else None
+                    )
+                    if (self.on_transcription or needs_soniox_realtime_final_signal)
+                    else None
                 )
 
                 # Create cleanup callback to stop microphone on connection errors
@@ -4053,10 +3774,7 @@ class ScriberPipeline:
                 )
                 segmented_gate = (
                     SegmentedSTTRecordingGate(
-                        vad_segmentation_enabled=bool(
-                            Config.SEGMENT_SPEECH_WITH_VAD
-                            and vad_processor is not None
-                        ),
+                        vad_segmentation_enabled=bool(Config.SEGMENT_SPEECH_WITH_VAD and vad_processor is not None),
                         stop_strategy=stop_strategy,
                     )
                     if needs_recording_gate
@@ -4066,9 +3784,7 @@ class ScriberPipeline:
                     vad_processor=vad_processor,
                     segmented_gate=segmented_gate,
                     segmented_provider=segmented_provider,
-                    native_realtime_provider=_live_service_uses_native_streaming(
-                        self.service_name
-                    ),
+                    native_realtime_provider=_live_service_uses_native_streaming(self.service_name),
                     stop_strategy=stop_strategy,
                     smart_turn_processor=smart_turn_processor,
                 )
@@ -4108,9 +3824,7 @@ class ScriberPipeline:
                     error_handler=error_handler,
                     transcript_callback=transcript_cb,
                     text_injector=text_injector,
-                    provider_ingress_drain=(
-                        self._provider_ingress_drain_processor
-                    ),
+                    provider_ingress_drain=(self._provider_ingress_drain_processor),
                 )
 
                 self.pipeline = Pipeline(steps)
@@ -4127,9 +3841,10 @@ class ScriberPipeline:
 
                 # Register error handler to catch non-fatal errors (e.g., Soniox websocket timeout)
                 if self.on_error:
+
                     @self.task.event_handler("on_pipeline_error")
                     async def handle_pipeline_error(task, frame):
-                        error_msg = str(frame.error) if hasattr(frame, 'error') else str(frame)
+                        error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
                         logger.error(f"Pipeline error event: {error_msg}")
                         if self.on_error:
                             self.on_error(error_msg)
@@ -4232,7 +3947,9 @@ class ScriberPipeline:
                     TranscriptionCallbackProcessor(
                         self.on_transcription,
                         enable_speaker_diarization=self.enable_speaker_diarization,
-                    ) if self.on_transcription else None
+                    )
+                    if self.on_transcription
+                    else None
                 )
                 steps = [file_input, stt_service]
                 if transcript_cb:
@@ -4291,20 +4008,18 @@ class ScriberPipeline:
 
     def _format_speaker_transcript(self, tokens: list) -> str:
         """Format tokens with speaker diarization labels.
-        
+
         Groups consecutive tokens by speaker and formats as:
         [Speaker 1]: Hello, how are you?
         [Speaker 2]: I'm doing great, thanks!
-        
+
         Args:
             tokens: List of token dicts with 'text' and optionally 'speaker' fields
-            
+
         Returns:
             Formatted transcript string with speaker labels
         """
-        return _format_speaker_transcript_tokens(
-            [token for token in tokens if isinstance(token, dict)]
-        )
+        return _format_speaker_transcript_tokens([token for token in tokens if isinstance(token, dict)])
 
     @staticmethod
     def _direct_file_content_type(path: Any) -> str:
@@ -4364,38 +4079,24 @@ class ScriberPipeline:
                 )
             return None
         if not capability_id or not revision:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio capability metadata is incomplete."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio capability metadata is incomplete.")
 
         provider = str(self.service_name or "").strip().lower()
         frozen_provider = str(route.get("provider") or "").strip().lower()
         if frozen_provider and frozen_provider != provider:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio route does not match the active provider."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio route does not match the active provider.")
         model = str(route.get("model") or "").strip()
         if not provider or not model:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio route requires provider and model identifiers."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio route requires provider and model identifiers.")
         try:
             capability = resolve_batch_provider_audio_capabilities(provider, model)
         except ProviderAudioCapabilityError as exc:
-            raise ProviderAudioPreparationError(
-                "Frozen provider/model has no verified audio capability."
-            ) from exc
+            raise ProviderAudioPreparationError("Frozen provider/model has no verified audio capability.") from exc
         if capability.capability_id != capability_id or capability.revision != revision:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio capability does not match the active registry."
-            )
-        frozen_route = str(
-            self._execution_audio_value(route, "provider_route", "providerRoute") or ""
-        ).strip()
+            raise ProviderAudioPreparationError("Frozen provider audio capability does not match the active registry.")
+        frozen_route = str(self._execution_audio_value(route, "provider_route", "providerRoute") or "").strip()
         if frozen_route and frozen_route != capability.route:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio route does not match its capability."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio route does not match its capability.")
 
         raw_format = self._execution_audio_value(
             route,
@@ -4408,20 +4109,14 @@ class ScriberPipeline:
             "audioInputFormatVerified",
         )
         if raw_verified is not None and not isinstance(raw_verified, bool):
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio verification marker is invalid."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio verification marker is invalid.")
         if raw_verified is False:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio format is not verified for this route."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio format is not verified for this route.")
 
         frozen_format: AudioInputFormat | None = None
         if raw_format not in (None, ""):
             if raw_verified is not True:
-                raise ProviderAudioPreparationError(
-                    "Frozen provider audio format lacks a verified marker."
-                )
+                raise ProviderAudioPreparationError("Frozen provider audio format lacks a verified marker.")
             try:
                 frozen_format = coerce_audio_input_format(raw_format)
             except ProviderAudioCapabilityError as exc:
@@ -4429,9 +4124,7 @@ class ScriberPipeline:
                     "Frozen provider audio format is not an exact representation."
                 ) from exc
         elif raw_verified is True:
-            raise ProviderAudioPreparationError(
-                "Frozen provider audio verification marker has no exact format."
-            )
+            raise ProviderAudioPreparationError("Frozen provider audio verification marker has no exact format.")
         return capability, frozen_format
 
     @staticmethod
@@ -4442,24 +4135,13 @@ class ScriberPipeline:
         frozen_format: AudioInputFormat | None,
     ) -> None:
         if not isinstance(prepared, PreparedProviderAudio):
-            raise ProviderAudioPreparationError(
-                "Prepared provider audio has an invalid boundary object."
-            )
+            raise ProviderAudioPreparationError("Prepared provider audio has an invalid boundary object.")
         if not prepared.path.is_file() or prepared.byte_length <= 0:
-            raise ProviderAudioPreparationError(
-                "Prepared provider audio file is missing or empty."
-            )
+            raise ProviderAudioPreparationError("Prepared provider audio file is missing or empty.")
         if prepared.path.stat().st_size != prepared.byte_length:
-            raise ProviderAudioPreparationError(
-                "Prepared provider audio changed after format verification."
-            )
-        if (
-            prepared.capability_id != capability.capability_id
-            or prepared.capability_revision != capability.revision
-        ):
-            raise ProviderAudioPreparationError(
-                "Prepared audio does not match the frozen provider capability."
-            )
+            raise ProviderAudioPreparationError("Prepared provider audio changed after format verification.")
+        if prepared.capability_id != capability.capability_id or prepared.capability_revision != capability.revision:
+            raise ProviderAudioPreparationError("Prepared audio does not match the frozen provider capability.")
         try:
             require_exact_audio_input_format(
                 capability,
@@ -4471,9 +4153,7 @@ class ScriberPipeline:
                 "Prepared audio format is not verified for the frozen provider route."
             ) from exc
         if frozen_format is not None and prepared.selected_format != frozen_format:
-            raise ProviderAudioPreparationError(
-                "Prepared audio does not match the frozen exact audio format."
-            )
+            raise ProviderAudioPreparationError("Prepared audio does not match the frozen exact audio format.")
 
     async def transcribe_file_direct(
         self,
@@ -4502,9 +4182,7 @@ class ScriberPipeline:
             frozen_audio = self._frozen_provider_audio_capability()
             if prepared_audio is not None:
                 if frozen_audio is None:
-                    raise ProviderAudioPreparationError(
-                        "Prepared provider audio requires frozen capability metadata."
-                    )
+                    raise ProviderAudioPreparationError("Prepared provider audio requires frozen capability metadata.")
                 capability, frozen_format = frozen_audio
                 if frozen_format is None:
                     raise ProviderAudioPreparationError(
@@ -4662,9 +4340,7 @@ class ScriberPipeline:
                 self.last_structured_transcript_payload = payload
                 segments = payload.get("segments") if isinstance(payload.get("segments"), list) else []
                 if segments:
-                    diarized = format_mistral_segments_with_speakers(
-                        [s for s in segments if isinstance(s, dict)]
-                    )
+                    diarized = format_mistral_segments_with_speakers([s for s in segments if isinstance(s, dict)])
                     if diarized:
                         text = diarized
 
@@ -4840,21 +4516,15 @@ class ScriberPipeline:
                     raise ValueError("Azure MAI Speech key is missing")
 
                 region = validate_azure_mai_region(
-                    self._execution_provider_region(
-                        getattr(Config, "AZURE_MAI_REGION", None)
-                    )
+                    self._execution_provider_region(getattr(Config, "AZURE_MAI_REGION", None))
                 )
-                self._bind_execution_provider_endpoint(
-                    f"azure-mai-region:{region}"
-                )
+                self._bind_execution_provider_endpoint(f"azure-mai-region:{region}")
                 if self.on_progress:
                     self.on_progress("Preparing audio...")
 
                 async with self._provider_session() as session:
                     upload_context = (
-                        contextlib.nullcontext(path)
-                        if capability_prepared
-                        else prepared_azure_mai_audio_file(path)
+                        contextlib.nullcontext(path) if capability_prepared else prepared_azure_mai_audio_file(path)
                     )
                     async with upload_context as upload_path:
                         with open(upload_path, "rb") as f:
@@ -4865,9 +4535,7 @@ class ScriberPipeline:
                                 audio_source=f,
                                 filename=upload_path.name,
                                 content_type=(
-                                    content_type
-                                    if capability_prepared
-                                    else azure_mai_content_type(upload_path)
+                                    content_type if capability_prepared else azure_mai_content_type(upload_path)
                                 ),
                                 language=self._execution_language(),
                                 model=self._execution_model(Config.AZURE_MAI_MODEL),
@@ -4953,9 +4621,7 @@ class ScriberPipeline:
                 self.last_structured_transcript_payload = payload
                 text = modulate_transcript_payload_to_text(payload)
                 if text and self.on_transcription:
-                    logger.info(
-                        f"Modulate direct transcription completed ({len(text)} chars)"
-                    )
+                    logger.info(f"Modulate direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
 
                 if self.on_progress:
@@ -5013,12 +4679,8 @@ class ScriberPipeline:
 
             headers = {"Authorization": f"Bearer {api_key}"}
             soniox_region = self._execution_provider_region(Config.SONIOX_REGION)
-            base_url = self._bind_execution_provider_endpoint(
-                soniox_rest_api_base_url(soniox_region)
-            )
-            model = self._execution_model(
-                Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL
-            )
+            base_url = self._bind_execution_provider_endpoint(soniox_rest_api_base_url(soniox_region))
+            model = self._execution_model(Config.SONIOX_ASYNC_MODEL or Config.DEFAULT_SONIOX_ASYNC_MODEL)
             file_id = None
             transcription_id = None
 
@@ -5026,6 +4688,7 @@ class ScriberPipeline:
                 self.on_progress("Uploading audio...")
 
             async with self._provider_session() as session:
+
                 async def _cleanup_resources() -> None:
                     if not file_id and not transcription_id:
                         return
@@ -5183,32 +4846,21 @@ class ScriberPipeline:
             return
         logger.info("Stopping Scriber Pipeline")
 
-        is_soniox_async = (
-            self.service_name == "soniox_async"
-            or (
-                self.service_name == "soniox"
-                and self.soniox_replay_url is None
-                and Config.SONIOX_MODE == "async"
-            )
+        is_soniox_async = self.service_name == "soniox_async" or (
+            self.service_name == "soniox" and self.soniox_replay_url is None and Config.SONIOX_MODE == "async"
         )
         is_async_finalization = (
-            False
-            if self.soniox_replay_url is not None
-            else _live_service_uses_async_finalization(self.service_name)
+            False if self.soniox_replay_url is not None else _live_service_uses_async_finalization(self.service_name)
         )
         if self.on_status_change:
             self.on_status_change("Transcribing..." if is_async_finalization else "Stopping...")
 
-        requires_pre_endframe_finalization = (
-            self._requires_pre_endframe_stt_finalization()
-        )
+        requires_pre_endframe_finalization = self._requires_pre_endframe_stt_finalization()
         provider_ingress_audio_input = self.audio_input
         if requires_pre_endframe_finalization:
             final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
-            await self._await_provider_ingress_audio_drain(
-                provider_ingress_audio_input
-            )
+            await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             boundary_flushed = await self._flush_segmented_stt_buffers()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
@@ -5223,26 +4875,23 @@ class ScriberPipeline:
             # the replacement WASAPI client first, so the Windows privacy light
             # remains continuous while transcription finalizes.
             await self._cleanup_audio_input()
-            await self._await_provider_ingress_audio_drain(
-                provider_ingress_audio_input
-            )
+            await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
             boundary_flushed = await self._flush_live_vad_finalization_turn()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
-                final_response_pending=(
-                    final_response_pending or boundary_flushed
-                ),
+                final_response_pending=(final_response_pending or boundary_flushed),
             )
 
         # For Soniox real-time: send stop_recording and wait for final tokens BEFORE pipeline shutdown.
         # This ensures all spoken audio is transcribed and injected before we close.
         is_soniox_rt = self.service_name == "soniox" and not is_soniox_async
         soniox_manual_stop_done = False
-        if is_soniox_rt and self.pipeline and hasattr(self.pipeline, '_processors'):
+        if is_soniox_rt and self.pipeline and hasattr(self.pipeline, "_processors"):
             for step in self.pipeline._processors:
                 if step.__class__.__name__ == "SonioxSTTService":
                     try:
                         from websockets.protocol import State
+
                         websocket = getattr(step, "_websocket", None)
 
                         # Log diagnostics about the connection state
@@ -5252,7 +4901,10 @@ class ScriberPipeline:
                         # Wait for websocket to be ready if it's still connecting
                         if websocket:
                             wait_start = asyncio.get_running_loop().time()
-                            while websocket.state not in (State.OPEN, State.CLOSED) and (asyncio.get_running_loop().time() - wait_start) < 2.0:
+                            while (
+                                websocket.state not in (State.OPEN, State.CLOSED)
+                                and (asyncio.get_running_loop().time() - wait_start) < 2.0
+                            ):
                                 await asyncio.sleep(0.05)
 
                         if websocket and websocket.state is State.OPEN:
@@ -5263,12 +4915,17 @@ class ScriberPipeline:
                                 try:
                                     # Wait up to 0.5s for audio queue to drain
                                     drain_start = asyncio.get_running_loop().time()
-                                    while not audio_queue.empty() and (asyncio.get_running_loop().time() - drain_start) < 0.5:
+                                    while (
+                                        not audio_queue.empty()
+                                        and (asyncio.get_running_loop().time() - drain_start) < 0.5
+                                    ):
                                         await asyncio.sleep(0.02)
                                     if audio_queue.empty():
                                         logger.debug("Soniox audio queue drained successfully")
                                     else:
-                                        logger.warning(f"Soniox audio queue not fully drained (approx {audio_queue.qsize()} items remaining)")
+                                        logger.warning(
+                                            f"Soniox audio queue not fully drained (approx {audio_queue.qsize()} items remaining)"
+                                        )
                                 except Exception as e:
                                     logger.debug(f"Audio queue drain check error: {e}")
 
@@ -5277,9 +4934,7 @@ class ScriberPipeline:
                             # message ends the stream after the finalize request;
                             # WebSocket ordering guarantees the provider sees
                             # both in this order.
-                            final_generation_before_stop = (
-                                self._final_transcription_generation
-                            )
+                            final_generation_before_stop = self._final_transcription_generation
                             logger.debug("Requesting manual finalization from Soniox")
                             await websocket.send(_SONIOX_MANUAL_FINALIZE_MESSAGE)
                             logger.debug("Sending stop_recording to Soniox")
@@ -5336,7 +4991,9 @@ class ScriberPipeline:
                                     else:
                                         logger.warning("No Soniox receive task found")
                         elif websocket:
-                            logger.warning(f"Soniox websocket not open on stop (state={websocket.state}) - transcription may be incomplete")
+                            logger.warning(
+                                f"Soniox websocket not open on stop (state={websocket.state}) - transcription may be incomplete"
+                            )
                         else:
                             logger.warning("No Soniox websocket found - recording may have failed to connect")
                     except Exception as e:
@@ -5351,7 +5008,7 @@ class ScriberPipeline:
                 stop_future = asyncio.create_task(self.task.cancel(reason="manual stop completed"))
             else:
                 stop_future = asyncio.create_task(self.task.stop_when_done())
-        
+
         wait_timeout = timeout_secs
         if wait_timeout is None:
             # Modulate owns a bounded 30-second wait for its final ``done``
@@ -5371,11 +5028,9 @@ class ScriberPipeline:
         try:
             # Wait for either start_done (pipeline completely finished) or timeout
             await asyncio.wait_for(self._start_done.wait(), timeout=wait_timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"Timeout while stopping pipeline (>{wait_timeout}s); forcing cancel")
-            self._record_terminal_error(
-                f"Transcription did not finish within {wait_timeout:g} seconds."
-            )
+            self._record_terminal_error(f"Transcription did not finish within {wait_timeout:g} seconds.")
             if self.task and not self.task.has_finished():
                 try:
                     await self.task.cancel(reason="stop timeout")

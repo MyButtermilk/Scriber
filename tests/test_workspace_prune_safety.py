@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "prune_local_dev_workspace.ps1"
 
@@ -27,17 +26,13 @@ def _fake_scriber_workspace(root: Path) -> Path:
     (root / "src").mkdir()
     (root / "src" / "web_api.py").write_text("# fixture\n", encoding="utf-8")
     (root / "Frontend" / "src-tauri").mkdir(parents=True)
-    (root / "Frontend" / "src-tauri" / "tauri.conf.json").write_text(
-        '{"productName":"Scriber"}\n', encoding="utf-8"
-    )
+    (root / "Frontend" / "src-tauri" / "tauri.conf.json").write_text('{"productName":"Scriber"}\n', encoding="utf-8")
     fixture_script = root / "scripts" / SCRIPT.name
     shutil.copyfile(SCRIPT, fixture_script)
     return fixture_script
 
 
-def _run_dry_run(
-    script: Path, *additional_arguments: str
-) -> subprocess.CompletedProcess[str]:
+def _run_dry_run(script: Path, *additional_arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [
             _powershell(),

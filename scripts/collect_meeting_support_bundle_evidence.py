@@ -5,7 +5,7 @@ import hashlib
 import json
 import sys
 import zipfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -15,13 +15,8 @@ if str(REPO_ROOT) not in sys.path:
 
 from scripts.new_meeting_release_evidence import build_template
 
-
-AUDIO_SUFFIXES = {
-    ".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".pcm", ".wav", ".webm"
-}
-DATABASE_OR_BIOMETRIC_SUFFIXES = {
-    ".bin", ".blob", ".db", ".db-shm", ".db-wal", ".npy", ".npz", ".sqlite", ".sqlite3"
-}
+AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".pcm", ".wav", ".webm"}
+DATABASE_OR_BIOMETRIC_SUFFIXES = {".bin", ".blob", ".db", ".db-shm", ".db-wal", ".npy", ".npz", ".sqlite", ".sqlite3"}
 FORBIDDEN_PATH_MARKERS = {
     "meeting_audio",
     "speaker_observation",
@@ -71,7 +66,8 @@ def audit_support_bundle(bundle: Path) -> dict[str, Any]:
             "databaseAndTranscriptStoresAbsent": "database-or-biometric" not in categories,
             "outlookCredentialArtifactsAbsent": "outlook_refresh_token" not in categories,
             "voiceprintArtifactsAbsent": not any(
-                category in {"database-or-biometric", "speaker_observation", "speaker_profile", "voice_embedding", "voiceprint"}
+                category
+                in {"database-or-biometric", "speaker_observation", "speaker_profile", "voice_embedding", "voiceprint"}
                 for category in categories
             ),
             "webhookSecretArtifactsAbsent": "webhook_secret" not in categories,
@@ -123,7 +119,9 @@ def collect(
         if not isinstance(meeting_privacy, dict) or any(
             meeting_privacy.get(key) != expected for key, expected in required_privacy.items()
         ):
-            raise ValueError("installed support-bundle ZIP is missing and no verified Meeting privacy audit was persisted")
+            raise ValueError(
+                "installed support-bundle ZIP is missing and no verified Meeting privacy audit was persisted"
+            )
         audit = {
             "schemaVersion": 1,
             "kind": "scriber-meeting-support-bundle-privacy-audit",
@@ -142,7 +140,7 @@ def collect(
         audit_source = "persisted-installed-smoke-audit"
     audit.update(
         {
-            "capturedAtUtc": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "capturedAtUtc": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "installerSha256": _sha256(installer),
             "installedSmoke": {
                 "supportBundleVerified": True,

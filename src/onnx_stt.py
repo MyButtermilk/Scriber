@@ -7,6 +7,7 @@ Supported Models:
 - nemo-parakeet-tdt-0.6b-v3: NVIDIA Parakeet TDT v3 (25 European languages)
 - parakeet-primeline: Primeline German Parakeet ONNX export
 """
+
 import asyncio
 import contextlib
 import hashlib
@@ -19,10 +20,12 @@ import threading
 import time
 import wave
 import zipfile
-from fnmatch import fnmatch
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
+
 from loguru import logger
 
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, wav_pcm_transcode_args
@@ -47,9 +50,31 @@ ONNX_MODELS = {
         "name": "Canary 1B v2",
         "description": "NVIDIA Canary - Best accuracy, multilingual (25 European languages)",
         "languages": [
-            "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
-            "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
-            "sl", "es", "sv", "ru", "uk"
+            "bg",
+            "hr",
+            "cs",
+            "da",
+            "nl",
+            "en",
+            "et",
+            "fi",
+            "fr",
+            "de",
+            "el",
+            "hu",
+            "it",
+            "lv",
+            "lt",
+            "mt",
+            "pl",
+            "pt",
+            "ro",
+            "sk",
+            "sl",
+            "es",
+            "sv",
+            "ru",
+            "uk",
         ],
         # Approx sizes from HF repo file list (int8 vs full precision)
         "size_mb": 1030,
@@ -66,9 +91,31 @@ ONNX_MODELS = {
         "name": "Parakeet TDT v3",
         "description": "NVIDIA Parakeet - Fast, 25 European languages incl. German",
         "languages": [
-            "bg", "hr", "cs", "da", "nl", "en", "et", "fi", "fr", "de",
-            "el", "hu", "it", "lv", "lt", "mt", "pl", "pt", "ro", "sk",
-            "sl", "es", "sv", "ru", "uk"
+            "bg",
+            "hr",
+            "cs",
+            "da",
+            "nl",
+            "en",
+            "et",
+            "fi",
+            "fr",
+            "de",
+            "el",
+            "hu",
+            "it",
+            "lv",
+            "lt",
+            "mt",
+            "pl",
+            "pt",
+            "ro",
+            "sk",
+            "sl",
+            "es",
+            "sv",
+            "ru",
+            "uk",
         ],
         # Approx sizes from HF repo file list (int8 vs full precision)
         "size_mb": 670,
@@ -154,14 +201,12 @@ def _get_onnx_asr():
     if _onnx_asr is None:
         try:
             import onnx_asr
+
             _onnx_asr = onnx_asr
             logger.debug("onnx-asr library loaded successfully")
         except ImportError as e:
             logger.error(f"onnx-asr not installed: {e}")
-            raise ImportError(
-                "onnx-asr library not installed. "
-                "Install with: pip install onnx-asr[cpu,hub]"
-            ) from e
+            raise ImportError("onnx-asr library not installed. Install with: pip install onnx-asr[cpu,hub]") from e
     return _onnx_asr
 
 
@@ -175,9 +220,10 @@ def is_onnx_available() -> bool:
 
 
 def _directory_has_files(path: Path, filenames: list[str]) -> bool:
-    return bool(path) and path.exists() and all(
-        (path / filename).is_file() and (path / filename).stat().st_size > 0
-        for filename in filenames
+    return (
+        bool(path)
+        and path.exists()
+        and all((path / filename).is_file() and (path / filename).stat().st_size > 0 for filename in filenames)
     )
 
 
@@ -252,10 +298,10 @@ def _safe_extract_zip(archive: zipfile.ZipFile, destination: Path) -> None:
 def _set_download_state(
     model_name: str,
     status: str,
-    progress: Optional[float] = None,
+    progress: float | None = None,
     message: str = "",
     *,
-    quantization: Optional[str] = None,
+    quantization: str | None = None,
 ) -> None:
     _, quantization_label = _normalize_quantization(quantization)
     with _download_state_lock:
@@ -268,7 +314,7 @@ def _set_download_state(
 
 
 def _notify_download_progress(
-    on_progress: Optional[Callable[[float, str], None]],
+    on_progress: Callable[[float, str], None] | None,
     progress: float,
     message: str,
 ) -> None:
@@ -280,7 +326,7 @@ def _notify_download_progress(
         logger.debug(f"ONNX download progress callback failed: {exc}")
 
 
-def _normalize_quantization(quantization: Optional[str]) -> tuple[Optional[str], str]:
+def _normalize_quantization(quantization: str | None) -> tuple[str | None, str]:
     """Return (onnx_quantization, label) where fp32 maps to None for onnx-asr."""
     if not quantization:
         return None, "int8"
@@ -325,7 +371,7 @@ def _candidate_cache_dirs() -> list[Path | None]:
     return existing + [None]
 
 
-def _resolve_repo_id(model_name: str, quantization_label: str) -> Optional[str]:
+def _resolve_repo_id(model_name: str, quantization_label: str) -> str | None:
     info = ONNX_MODELS.get(model_name, {})
     repo_map = info.get("hf_repo_by_quantization") or {}
     return repo_map.get(quantization_label, info.get("hf_repo"))
@@ -364,12 +410,7 @@ def _build_allow_patterns(model_name: str, quantization_label: str) -> list[str]
             f"encoder-model*{quantization_label}*.onnx",
             f"decoder-model*{quantization_label}*.onnx",
         ]
-    elif model_name == "nemo-parakeet-tdt-0.6b-v3":
-        patterns += [
-            f"encoder-model*{quantization_label}*.onnx",
-            f"decoder_joint-model*{quantization_label}*.onnx",
-        ]
-    elif model_name == "parakeet-primeline":
+    elif model_name == "nemo-parakeet-tdt-0.6b-v3" or model_name == "parakeet-primeline":
         patterns += [
             f"encoder-model*{quantization_label}*.onnx",
             f"decoder_joint-model*{quantization_label}*.onnx",
@@ -397,9 +438,7 @@ def _snapshot_model_path(model_name: str, quantization_label: str) -> Path:
         )
     )
     if allow_patterns and not _snapshot_has_required_files(snapshot_path, allow_patterns):
-        raise FileNotFoundError(
-            f"Downloaded snapshot is incomplete for {model_name} ({quantization_label})"
-        )
+        raise FileNotFoundError(f"Downloaded snapshot is incomplete for {model_name} ({quantization_label})")
     return snapshot_path
 
 
@@ -411,10 +450,7 @@ def _snapshot_has_required_files(snapshot_path: Path, allow_patterns: list[str])
         for path in snapshot_path.rglob("*")
         if path.is_file() and path.stat().st_size > 0
     ]
-    return all(
-        any(fnmatch(relative_path, pattern) for relative_path in relative_files)
-        for pattern in allow_patterns
-    )
+    return all(any(fnmatch(relative_path, pattern) for relative_path in relative_files) for pattern in allow_patterns)
 
 
 def _archive_model_path(
@@ -482,15 +518,11 @@ def _archive_model_path(
     if not isinstance(manifest_required_values, list):
         raise ValueError(f"Invalid archive manifest {manifest_name}: required_files must be a list")
     manifest_required = {
-        str(filename)
-        for filename in manifest_required_values
-        if isinstance(filename, str) and filename
+        str(filename) for filename in manifest_required_values if isinstance(filename, str) and filename
     }
     missing_manifest_files = sorted(set(required) - manifest_required)
     if missing_manifest_files:
-        raise ValueError(
-            f"Archive manifest is missing required files: {missing_manifest_files}"
-        )
+        raise ValueError(f"Archive manifest is missing required files: {missing_manifest_files}")
 
     sidecar_tokens = sha256_path.read_text(encoding="utf-8").strip().split()
     sidecar_sha = sidecar_tokens[0].lower() if sidecar_tokens else ""
@@ -507,22 +539,16 @@ def _archive_model_path(
     manifest_sha = str(manifest.get("sha256") or "").strip().lower()
     expected_hashes = {value for value in (expected_sha, manifest_sha, sidecar_sha) if value}
     if len(expected_hashes) != 1:
-        raise ValueError(
-            f"Conflicting SHA-256 metadata for {archive_name}: {sorted(expected_hashes)}"
-        )
+        raise ValueError(f"Conflicting SHA-256 metadata for {archive_name}: {sorted(expected_hashes)}")
     verified_sha = next(iter(expected_hashes))
     actual_sha = _sha256_file(archive_path)
     if actual_sha.lower() != verified_sha:
-        raise ValueError(
-            f"Checksum mismatch for {archive_name}: expected {verified_sha}, got {actual_sha}"
-        )
+        raise ValueError(f"Checksum mismatch for {archive_name}: expected {verified_sha}, got {actual_sha}")
     manifest_size = manifest.get("size")
     if isinstance(manifest_size, int) and manifest_size > 0:
         actual_size = archive_path.stat().st_size
         if actual_size != manifest_size:
-            raise ValueError(
-                f"Size mismatch for {archive_name}: expected {manifest_size}, got {actual_size}"
-            )
+            raise ValueError(f"Size mismatch for {archive_name}: expected {manifest_size}, got {actual_size}")
 
     tmp_dir = extract_dir.with_name(f"{extract_dir.name}.tmp-{os.getpid()}")
     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -553,11 +579,11 @@ def _archive_model_path(
 def _format_bytes(value: int) -> str:
     if value < 1024:
         return f"{value} B"
-    if value < 1024 ** 2:
+    if value < 1024**2:
         return f"{value / 1024:.1f} KB"
-    if value < 1024 ** 3:
-        return f"{value / (1024 ** 2):.1f} MB"
-    return f"{value / (1024 ** 3):.1f} GB"
+    if value < 1024**3:
+        return f"{value / (1024**2):.1f} MB"
+    return f"{value / (1024**3):.1f} GB"
 
 
 def _list_repo_files(repo_id: str, allow_patterns: list[str]) -> list[dict[str, Any]]:
@@ -589,24 +615,20 @@ def _list_repo_files(repo_id: str, allow_patterns: list[str]) -> list[dict[str, 
 
 def get_download_state(
     model_name: str,
-    quantization: Optional[str] = None,
+    quantization: str | None = None,
 ) -> dict[str, Any]:
     with _download_state_lock:
         if quantization is not None:
             _, quantization_label = _normalize_quantization(quantization)
             return dict(_download_state.get((model_name, quantization_label), {}))
-        matching = [
-            state
-            for (candidate, _label), state in _download_state.items()
-            if candidate == model_name
-        ]
+        matching = [state for (candidate, _label), state in _download_state.items() if candidate == model_name]
         if not matching:
             return {}
         active = next((state for state in matching if state.get("status") == "downloading"), None)
         return dict(active or matching[-1])
 
 
-def is_model_downloading(model_name: str, quantization: Optional[str] = None) -> bool:
+def is_model_downloading(model_name: str, quantization: str | None = None) -> bool:
     if quantization is not None:
         return get_download_state(model_name, quantization).get("status") == "downloading"
     with _download_state_lock:
@@ -616,7 +638,7 @@ def is_model_downloading(model_name: str, quantization: Optional[str] = None) ->
         )
 
 
-def get_model_status(model_name: str, quantization: Optional[str] = None) -> dict[str, Any]:
+def get_model_status(model_name: str, quantization: str | None = None) -> dict[str, Any]:
     """Get download status + availability for a model."""
     state = get_download_state(model_name, quantization)
     status = state.get("status")
@@ -656,13 +678,13 @@ def get_model_status(model_name: str, quantization: Optional[str] = None) -> dic
     }
 
 
-def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> bool:
+def is_model_downloaded(model_name: str, quantization: str | None = None) -> bool:
     """
     Check if a model is already downloaded in the HuggingFace cache.
     """
     if model_name not in ONNX_MODELS:
         return False
-    
+
     try:
         _, q_label = _normalize_quantization(quantization)
         supported = _get_supported_quantizations(model_name)
@@ -682,12 +704,14 @@ def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> 
 
         for cache_dir in _candidate_cache_dirs():
             try:
-                snapshot_path = Path(snapshot_download(
-                    repo_id=repo_id,
-                    cache_dir=cache_dir,
-                    local_files_only=True,
-                    allow_patterns=allow_patterns or None,
-                ))
+                snapshot_path = Path(
+                    snapshot_download(
+                        repo_id=repo_id,
+                        cache_dir=cache_dir,
+                        local_files_only=True,
+                        allow_patterns=allow_patterns or None,
+                    )
+                )
                 if not allow_patterns or _snapshot_has_required_files(snapshot_path, allow_patterns):
                     return True
             except LocalEntryNotFoundError:
@@ -698,49 +722,51 @@ def is_model_downloaded(model_name: str, quantization: Optional[str] = None) -> 
         return False
 
 
-def get_model_info(model_name: str) -> Optional[dict]:
+def get_model_info(model_name: str) -> dict | None:
     """Get metadata for a model."""
     return ONNX_MODELS.get(model_name)
 
 
-def list_available_models(quantization: Optional[str] = None) -> list[dict]:
+def list_available_models(quantization: str | None = None) -> list[dict]:
     """List all available models with their download status."""
     models = []
     for model_id, info in ONNX_MODELS.items():
         status = get_model_status(model_id, quantization=quantization)
-        models.append({
-            "id": model_id,
-            "name": info["name"],
-            "description": info["description"],
-            "languages": info["languages"],
-            "runtime": info.get("runtime", "onnx_asr"),
-            "hfRepo": info.get("hf_repo", ""),
-            "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
-            "localDirName": info.get("local_dir_name", ""),
-            "sizeMb": info["size_mb"],
-            "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
-            "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
-            "supportsTimestamps": info["supports_timestamps"],
-            "downloaded": status["downloaded"],
-            "status": status["status"],
-            "progress": status["progress"],
-            "message": status["message"],
-        })
+        models.append(
+            {
+                "id": model_id,
+                "name": info["name"],
+                "description": info["description"],
+                "languages": info["languages"],
+                "runtime": info.get("runtime", "onnx_asr"),
+                "hfRepo": info.get("hf_repo", ""),
+                "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
+                "localDirName": info.get("local_dir_name", ""),
+                "sizeMb": info["size_mb"],
+                "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
+                "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
+                "supportsTimestamps": info["supports_timestamps"],
+                "downloaded": status["downloaded"],
+                "status": status["status"],
+                "progress": status["progress"],
+                "message": status["message"],
+            }
+        )
     return models
 
 
 async def download_model(
     model_name: str,
-    quantization: Optional[str] = None,
-    on_progress: Optional[Callable[[float, str], None]] = None,
+    quantization: str | None = None,
+    on_progress: Callable[[float, str], None] | None = None,
 ) -> bool:
     """
     Download model from Hugging Face with progress callback.
-    
+
     Args:
         model_name: Name of the model (e.g., "nemo-canary-1b-v2")
         on_progress: Callback(progress_percent, status_message)
-    
+
     Returns:
         True on success, False on failure.
     """
@@ -802,6 +828,7 @@ async def download_model(
                     return True
 
                 import importlib
+
                 from huggingface_hub import hf_hub_download, snapshot_download
                 from huggingface_hub.utils import LocalEntryNotFoundError
                 from tqdm import tqdm
@@ -837,6 +864,7 @@ async def download_model(
 
                             def close(self):
                                 super().close()
+
                         return ProgressTqdm
 
                     local_dir = snapshot_download(
@@ -1011,12 +1039,12 @@ def _load_model_impl(
 ):
     """
     Load an ONNX model (downloads if not present).
-    
+
     Args:
         model_name: Name of the model to load
         quantization: "int8" (fastest), "fp16", or "fp32" (most accurate)
         use_vad: Enable Voice Activity Detection for long audio
-    
+
     Returns:
         Loaded onnx_asr model object
     """
@@ -1049,10 +1077,10 @@ def _load_model_impl(
         model_path = _snapshot_model_path(model_name, q_label)
 
     logger.info(f"Loading ONNX model: {model_name} (quantization={q_label})")
-    
+
     try:
         model = onnx_asr.load_model(model_arg, path=model_path, quantization=quantization_onnx)
-        
+
         if use_vad:
             # Load Silero VAD for handling long audio files
             try:
@@ -1061,7 +1089,7 @@ def _load_model_impl(
                 logger.debug("Silero VAD enabled for long audio support")
             except Exception as vad_err:
                 logger.warning(f"Could not load VAD, long audio may fail: {vad_err}")
-        
+
         evicted_cache_keys = [key for key in _model_cache if key != cache_key]
         _model_cache.clear()
         _model_cache[cache_key] = model
@@ -1073,7 +1101,7 @@ def _load_model_impl(
             )
         logger.info(f"Model loaded successfully: {model_name}")
         return model
-        
+
     except Exception as e:
         logger.error(f"Failed to load model {model_name}: {e}")
         raise
@@ -1082,12 +1110,12 @@ def _load_model_impl(
 def unload_model(model_name: str = None) -> None:
     """
     Unload model(s) from cache to free memory.
-    
+
     Args:
         model_name: Specific model to unload, or None to unload all
     """
     global _model_cache
-    
+
     with _model_load_lock:
         if model_name is None:
             _model_cache.clear()
@@ -1188,9 +1216,7 @@ async def _prepare_onnx_audio_path(audio_path: str | Path) -> tuple[Path, Path |
         if proc.returncode != 0:
             detail = (stderr or b"").decode("utf-8", errors="replace").strip()
             friendly = classify_ffmpeg_stderr(detail)
-            raise RuntimeError(
-                f"FFmpeg ONNX audio preparation failed: {friendly or f'exit code {proc.returncode}'}"
-            )
+            raise RuntimeError(f"FFmpeg ONNX audio preparation failed: {friendly or f'exit code {proc.returncode}'}")
         if not prepared_path.is_file() or prepared_path.stat().st_size <= 44:
             raise RuntimeError("FFmpeg ONNX audio preparation produced an empty WAV file.")
         return prepared_path, prepared_path
@@ -1206,11 +1232,11 @@ async def transcribe_audio(
     language: str = "auto",
     quantization: str = "int8",
     use_vad: bool = True,
-    on_progress: Optional[Callable[[str], None]] = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> str:
     """
     Transcribe audio file using local ONNX model.
-    
+
     Args:
         audio_path: Path to audio file (WAV, MP3, etc.)
         model_name: ONNX model to use
@@ -1218,7 +1244,7 @@ async def transcribe_audio(
         quantization: Model quantization level
         use_vad: Enable VAD for long audio
         on_progress: Optional progress callback
-    
+
     Returns:
         Transcribed text
     """
@@ -1296,14 +1322,14 @@ async def transcribe_audio_bytes(
 ) -> str:
     """
     Transcribe audio from bytes (PCM float32 or int16).
-    
+
     Args:
         audio_bytes: Raw audio data
         sample_rate: Sample rate of the audio
         model_name: ONNX model to use
         language: Language code or "auto"
         quantization: Model quantization level
-    
+
     Returns:
         Transcribed text
     """
@@ -1318,7 +1344,7 @@ async def transcribe_audio_bytes(
         )
     )
     model_info = ONNX_MODELS.get(model_name, {})
-    
+
     def _transcribe():
         audio, sr = _audio_bytes_to_float32(audio_bytes, sample_rate)
 
@@ -1326,21 +1352,21 @@ async def transcribe_audio_bytes(
         lang_param = None
         if model_info.get("supports_language_param") and language != "auto":
             lang_param = language
-        
+
         result = model.recognize(audio, sample_rate=sr, language=lang_param)
         return _recognition_result_to_text(result)
-    
+
     return await asyncio.shield(loop.run_in_executor(_executor, _transcribe))
 
 
-def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
+def delete_model(model_name: str, quantization: str | None = None) -> bool:
     """
     Delete a downloaded model from the cache.
-    
+
     Args:
         model_name: Name of the model to delete
         quantization: Quantization to delete (int8/fp16/fp32). If None, delete all.
-    
+
     Returns:
         True if deleted, False otherwise
     """
@@ -1350,20 +1376,19 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
         _, requested_quantization = _normalize_quantization(quantization)
         supported_quantizations = _get_supported_quantizations(model_name)
         if requested_quantization not in supported_quantizations:
-            raise ValueError(
-                f"Quantization not supported for {model_name}: {requested_quantization}"
-            )
+            raise ValueError(f"Quantization not supported for {model_name}: {requested_quantization}")
     if is_model_downloading(model_name):
         logger.warning(f"Refusing to delete model while download is active: {model_name}")
         return False
-    
+
     # Unload from memory first
     unload_model(model_name)
-    
+
     try:
         import shutil
-        from huggingface_hub import scan_cache_dir, HFCacheInfo, constants
-        
+
+        from huggingface_hub import constants, scan_cache_dir
+
         repo_ids: list[str] = []
         quantizations_to_delete: list[str]
         if quantization:
@@ -1436,7 +1461,7 @@ def delete_model(model_name: str, quantization: Optional[str] = None) -> bool:
                     quantization=q_label,
                 )
         return deleted
-        
+
     except Exception as e:
         logger.error(f"Failed to delete model {model_name}: {e}")
         return False

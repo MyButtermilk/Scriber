@@ -1,7 +1,9 @@
 """Normalize provider-native transcript timing into Scriber's canonical segments."""
+
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 
 def _number(value: Any) -> float | None:
@@ -16,9 +18,7 @@ def _speaker_key(value: Any) -> str:
     return str(value).strip()
 
 
-def _timed_items(
-    items: Iterable[Any], *, start_key: str, end_key: str, scale: float
-) -> list[dict[str, Any]]:
+def _timed_items(items: Iterable[Any], *, start_key: str, end_key: str, scale: float) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
@@ -27,13 +27,15 @@ def _timed_items(
         text = str(item.get("text") or item.get("punctuated_word") or item.get("word") or "")
         if start is None or end is None or end < start or not text.strip():
             continue
-        result.append({
-            "text": text,
-            "startMs": round(start * scale),
-            "endMs": round(end * scale),
-            "speaker": _speaker_key(item.get("speaker")),
-            "confidence": _number(item.get("confidence")),
-        })
+        result.append(
+            {
+                "text": text,
+                "startMs": round(start * scale),
+                "endMs": round(end * scale),
+                "speaker": _speaker_key(item.get("speaker")),
+                "confidence": _number(item.get("confidence")),
+            }
+        )
     return result
 
 
@@ -49,13 +51,15 @@ def _duration_timed_items(
         text = str(item.get("text") or item.get("displayText") or item.get("display") or "")
         if start is None or duration is None or duration < 0 or not text.strip():
             continue
-        result.append({
-            "text": text,
-            "startMs": round(start * scale),
-            "endMs": round((start + duration) * scale),
-            "speaker": _speaker_key(item.get("speaker")),
-            "confidence": _number(item.get("confidence")),
-        })
+        result.append(
+            {
+                "text": text,
+                "startMs": round(start * scale),
+                "endMs": round((start + duration) * scale),
+                "speaker": _speaker_key(item.get("speaker")),
+                "confidence": _number(item.get("confidence")),
+            }
+        )
     return result
 
 
@@ -96,23 +100,21 @@ def _speechmatics_words(payload: dict[str, Any]) -> list[dict[str, Any]]:
         speaker_value = alternative.get("speaker")
         if speaker_value in (None, ""):
             speaker_value = item.get("speaker")
-        words.append({
-            "text": text,
-            "startMs": round(start * 1_000),
-            "endMs": round(end * 1_000),
-            "speaker": _speaker_key(speaker_value),
-            "confidence": _number(alternative.get("confidence")),
-        })
+        words.append(
+            {
+                "text": text,
+                "startMs": round(start * 1_000),
+                "endMs": round(end * 1_000),
+                "speaker": _speaker_key(speaker_value),
+                "confidence": _number(alternative.get("confidence")),
+            }
+        )
     return words
 
 
 def _gladia_utterances(payload: dict[str, Any]) -> list[dict[str, Any]]:
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
-    transcription = (
-        result.get("transcription")
-        if isinstance(result.get("transcription"), dict)
-        else {}
-    )
+    transcription = result.get("transcription") if isinstance(result.get("transcription"), dict) else {}
     utterances = transcription.get("utterances")
     return _timed_items(
         utterances if isinstance(utterances, list) else [],
@@ -133,7 +135,11 @@ def _azure_phrase_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def group_provider_words(
-    words: list[dict[str, Any]], source: str, origin_ms: int, *, concatenate: bool = False,
+    words: list[dict[str, Any]],
+    source: str,
+    origin_ms: int,
+    *,
+    concatenate: bool = False,
     alignment_quality: str | None = None,
 ) -> list[dict[str, Any]]:
     groups: list[list[dict[str, Any]]] = []
@@ -142,9 +148,7 @@ def group_provider_words(
             groups.append([word])
             continue
         previous = groups[-1][-1]
-        speaker_changed = word["speaker"] != previous["speaker"] and bool(
-            word["speaker"] or previous["speaker"]
-        )
+        speaker_changed = word["speaker"] != previous["speaker"] and bool(word["speaker"] or previous["speaker"])
         long_pause = word["startMs"] - previous["endMs"] > 1_500
         long_turn = word["endMs"] - groups[-1][0]["startMs"] > 30_000
         if speaker_changed or long_pause or long_turn:
@@ -168,31 +172,27 @@ def group_provider_words(
         else:
             speaker = "Meeting audio"
         confidences = [word["confidence"] for word in group if word["confidence"] is not None]
-        qualities = [
-            str(word.get("alignmentQuality") or "exact_word") for word in group
-        ]
-        group_quality = alignment_quality or min(
-            qualities, key=lambda value: quality_rank.get(value, 0)
+        qualities = [str(word.get("alignmentQuality") or "exact_word") for word in group]
+        group_quality = alignment_quality or min(qualities, key=lambda value: quality_rank.get(value, 0))
+        segments.append(
+            {
+                "revision": "canonical",
+                "source": source,
+                "providerSegmentId": f"provider-exact-{index}",
+                "speakerKey": speaker_key,
+                "speakerLabel": speaker,
+                "startMs": origin_ms + group[0]["startMs"],
+                "endMs": origin_ms + group[-1]["endMs"],
+                "text": text,
+                "confidence": sum(confidences) / len(confidences) if confidences else None,
+                "alignmentQuality": group_quality,
+                "isFinal": True,
+            }
         )
-        segments.append({
-            "revision": "canonical",
-            "source": source,
-            "providerSegmentId": f"provider-exact-{index}",
-            "speakerKey": speaker_key,
-            "speakerLabel": speaker,
-            "startMs": origin_ms + group[0]["startMs"],
-            "endMs": origin_ms + group[-1]["endMs"],
-            "text": text,
-            "confidence": sum(confidences) / len(confidences) if confidences else None,
-            "alignmentQuality": group_quality,
-            "isFinal": True,
-        })
     return segments
 
 
-def normalize_provider_segments(
-    provider: str, payload: Any, source: str, origin_ms: int = 0
-) -> list[dict[str, Any]]:
+def normalize_provider_segments(provider: str, payload: Any, source: str, origin_ms: int = 0) -> list[dict[str, Any]]:
     """Return exact provider-timed segments, or an empty list when unavailable."""
     if not isinstance(payload, dict):
         return []
@@ -220,20 +220,24 @@ def normalize_provider_segments(
             if source == "microphone":
                 speaker_label = "You"
             elif speaker_key:
-                speaker_label = speaker_labels.setdefault(
-                    speaker_key, f"Speaker {len(speaker_labels) + 1}"
-                )
+                speaker_label = speaker_labels.setdefault(speaker_key, f"Speaker {len(speaker_labels) + 1}")
             else:
                 speaker_label = "Meeting audio"
-            segments.append({
-                "revision": "canonical", "source": source,
-                "providerSegmentId": f"provider-exact-{index}",
-                "speakerKey": speaker_key,
-                "speakerLabel": speaker_label,
-                "startMs": origin_ms + round(start), "endMs": origin_ms + round(end),
-                "text": text, "confidence": _number(utterance.get("confidence")), "isFinal": True,
-                "alignmentQuality": "provider_segment",
-            })
+            segments.append(
+                {
+                    "revision": "canonical",
+                    "source": source,
+                    "providerSegmentId": f"provider-exact-{index}",
+                    "speakerKey": speaker_key,
+                    "speakerLabel": speaker_label,
+                    "startMs": origin_ms + round(start),
+                    "endMs": origin_ms + round(end),
+                    "text": text,
+                    "confidence": _number(utterance.get("confidence")),
+                    "isFinal": True,
+                    "alignmentQuality": "provider_segment",
+                }
+            )
         return segments
 
     if provider in {"mistral", "mistral_async"}:
@@ -242,17 +246,11 @@ def normalize_provider_segments(
         return group_provider_words(words, source, origin_ms, alignment_quality="provider_segment")
 
     if provider in {"smallest", "smallest_async"}:
-        words = _timed_items(
-            payload.get("words", []), start_key="start", end_key="end", scale=1_000
-        )
+        words = _timed_items(payload.get("words", []), start_key="start", end_key="end", scale=1_000)
         if words:
             return group_provider_words(words, source, origin_ms)
-        utterances = _timed_items(
-            payload.get("utterances", []), start_key="start", end_key="end", scale=1_000
-        )
-        return group_provider_words(
-            utterances, source, origin_ms, alignment_quality="provider_segment"
-        )
+        utterances = _timed_items(payload.get("utterances", []), start_key="start", end_key="end", scale=1_000)
+        return group_provider_words(utterances, source, origin_ms, alignment_quality="provider_segment")
 
     if provider in {"gladia", "gladia_async"}:
         return group_provider_words(
@@ -283,26 +281,18 @@ def normalize_provider_segments(
         )
 
     if provider == "openai_async":
-        words = _timed_items(
-            payload.get("words", []), start_key="start", end_key="end", scale=1_000
-        )
+        words = _timed_items(payload.get("words", []), start_key="start", end_key="end", scale=1_000)
         if words:
             return group_provider_words(words, source, origin_ms)
         # ``diarized_json`` exposes speaker-attributed provider segments and
         # explicitly cannot return word timestamp granularities.
-        segments = _timed_items(
-            payload.get("segments", []), start_key="start", end_key="end", scale=1_000
-        )
-        return group_provider_words(
-            segments, source, origin_ms, alignment_quality="provider_segment"
-        )
+        segments = _timed_items(payload.get("segments", []), start_key="start", end_key="end", scale=1_000)
+        return group_provider_words(segments, source, origin_ms, alignment_quality="provider_segment")
 
     # Smallest and other compatible adapters commonly expose millisecond words.
     words = payload.get("words")
     if isinstance(words, list):
-        return group_provider_words(
-            _timed_items(words, start_key="start", end_key="end", scale=1), source, origin_ms
-        )
+        return group_provider_words(_timed_items(words, start_key="start", end_key="end", scale=1), source, origin_ms)
     return []
 
 
@@ -331,9 +321,7 @@ def has_speaker_evidence(segments: Iterable[dict[str, Any]]) -> bool:
     return False
 
 
-def normalize_provider_words(
-    provider: str, payload: Any, origin_ms: int = 0
-) -> list[dict[str, Any]]:
+def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) -> list[dict[str, Any]]:
     """Return provider words with exact timing for local diarization alignment.
 
     Utterance-only APIs are represented as one timed item per utterance. That
@@ -346,9 +334,7 @@ def normalize_provider_words(
     words: list[dict[str, Any]] = []
     concatenate = False
     if key in {"soniox", "soniox_async"}:
-        words = _timed_items(
-            payload.get("tokens", []), start_key="start_ms", end_key="end_ms", scale=1
-        )
+        words = _timed_items(payload.get("tokens", []), start_key="start_ms", end_key="end_ms", scale=1)
         concatenate = True
         alignment_quality = "exact_word"
     elif key == "assemblyai":
@@ -365,9 +351,7 @@ def normalize_provider_words(
         alignment_quality = "exact_word" if payload.get("words") else "provider_segment"
     elif key in {"smallest", "smallest_async"}:
         source_items = payload.get("words") or payload.get("utterances") or []
-        words = _timed_items(
-            source_items, start_key="start", end_key="end", scale=1_000
-        )
+        words = _timed_items(source_items, start_key="start", end_key="end", scale=1_000)
         alignment_quality = "exact_word" if payload.get("words") else "provider_segment"
     elif key in {"gladia", "gladia_async"}:
         words = _gladia_utterances(payload)
@@ -387,9 +371,7 @@ def normalize_provider_words(
         alignment_quality = "exact_word"
     elif key == "openai_async":
         source_items = payload.get("words") or payload.get("segments") or []
-        words = _timed_items(
-            source_items, start_key="start", end_key="end", scale=1_000
-        )
+        words = _timed_items(source_items, start_key="start", end_key="end", scale=1_000)
         alignment_quality = "exact_word" if payload.get("words") else "provider_segment"
     else:
         source_items = payload.get("words") or []

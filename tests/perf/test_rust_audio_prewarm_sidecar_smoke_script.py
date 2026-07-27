@@ -7,14 +7,11 @@ from pathlib import Path
 
 from scripts.smoke_rust_audio_prewarm_sidecar import validate_prewarm_metrics
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_rust_audio_prewarm_sidecar_smoke_script_documents_prewarm_contract() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_prewarm_sidecar.py").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_prewarm_sidecar.py").read_text(encoding="utf-8")
 
     assert "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" in script
     assert "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE" in script

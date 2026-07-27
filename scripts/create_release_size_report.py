@@ -3,19 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = (
-    REPO_ROOT
-    / "Frontend"
-    / "src-tauri"
-    / "target"
-    / "release"
-    / "release-metadata"
-    / "size-report.json"
-)
+DEFAULT_OUTPUT = REPO_ROOT / "Frontend" / "src-tauri" / "target" / "release" / "release-metadata" / "size-report.json"
 
 BYTES_PER_MIB = 1024 * 1024
 
@@ -37,9 +29,7 @@ def summarize_file(path: Path) -> dict:
 def summarize_directory(root: Path, *, top_files_limit: int) -> dict:
     files = [path for path in root.rglob("*") if path.is_file()]
     total_bytes = sum(path.stat().st_size for path in files)
-    top_files = sorted(files, key=lambda path: path.stat().st_size, reverse=True)[
-        :top_files_limit
-    ]
+    top_files = sorted(files, key=lambda path: path.stat().st_size, reverse=True)[:top_files_limit]
     return {
         "path": str(root),
         "fileCount": len(files),
@@ -102,9 +92,7 @@ def build_report(
     installed_app = None
     if installed_smoke_report is not None:
         if not installed_smoke_report.is_file():
-            raise FileNotFoundError(
-                f"Installed smoke report was not found: {installed_smoke_report}"
-            )
+            raise FileNotFoundError(f"Installed smoke report was not found: {installed_smoke_report}")
         installed_app = installed_app_from_smoke_report(
             installed_smoke_report,
             max_installed_mb=max_installed_mb,
@@ -113,9 +101,7 @@ def build_report(
         if not install_dir.is_dir():
             raise FileNotFoundError(f"Install directory was not found: {install_dir}")
         installed_app = summarize_directory(install_dir, top_files_limit=top_files_limit)
-        installed_app["budget"] = evaluate_budget(
-            installed_app["totalMb"], max_installed_mb
-        )
+        installed_app["budget"] = evaluate_budget(installed_app["totalMb"], max_installed_mb)
 
     roots = []
     seen_roots: set[Path] = set()
@@ -135,10 +121,7 @@ def build_report(
 
     return {
         "ok": not failed_budgets,
-        "generatedAt": datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z"),
+        "generatedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "budgets": {
             "installer": installer_budget,
             "installedApp": evaluate_budget(
@@ -168,7 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help="Optional smoke_windows_installer JSON report containing installSize.",
     )
-    parser.add_argument("--top-root", action="append", default=[], help="Directory whose largest files should be reported.")
+    parser.add_argument(
+        "--top-root", action="append", default=[], help="Directory whose largest files should be reported."
+    )
     parser.add_argument("--output", default=str(DEFAULT_OUTPUT), help="JSON report output path.")
     parser.add_argument("--max-installer-mb", type=float, default=220.0)
     parser.add_argument("--max-installed-mb", type=float, default=0.0)
@@ -178,9 +163,7 @@ def main(argv: list[str] | None = None) -> int:
     artifacts = [Path(item).expanduser().resolve() for item in args.artifact]
     install_dir = Path(args.install_dir).expanduser().resolve() if args.install_dir else None
     installed_smoke_report = (
-        Path(args.installed_smoke_report).expanduser().resolve()
-        if args.installed_smoke_report
-        else None
+        Path(args.installed_smoke_report).expanduser().resolve() if args.installed_smoke_report else None
     )
     top_roots = [Path(item).expanduser().resolve() for item in args.top_root]
 

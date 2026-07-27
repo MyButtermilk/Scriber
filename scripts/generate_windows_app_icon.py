@@ -16,16 +16,15 @@ from __future__ import annotations
 
 import argparse
 import html
-from pathlib import Path
 import re
 import shutil
 import struct
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from PIL import Image
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
@@ -65,9 +64,7 @@ def _build_master_svg() -> bytes:
         raise ValueError(f"Invalid source viewBox: {root.attrib['viewBox']!r}")
 
     styles: dict[str, str] = {}
-    for style in (
-        element.text or "" for element in root.iter() if element.tag.endswith("style")
-    ):
+    for style in (element.text or "" for element in root.iter() if element.tag.endswith("style")):
         styles.update(
             (name, fill.upper())
             for name, fill in re.findall(
@@ -85,10 +82,7 @@ def _build_master_svg() -> bytes:
         fill = element.attrib.get("fill") or styles.get(class_name or "")
         if not path_data or not fill:
             raise ValueError("Every source feather path must have path data and a fill color")
-        paths.append(
-            f'    <path fill="{html.escape(fill, quote=True)}" '
-            f'd="{html.escape(path_data, quote=True)}"/>'
-        )
+        paths.append(f'    <path fill="{html.escape(fill, quote=True)}" d="{html.escape(path_data, quote=True)}"/>')
     if not paths:
         raise ValueError("No feather paths found in the canonical SVG")
 
@@ -125,9 +119,7 @@ def _render_frames(master_svg: bytes, output_dir: Path) -> dict[int, bytes]:
     if not node:
         raise RuntimeError("Node.js is required to run Tauri's local SVG renderer")
     if not TAURI_CLI.is_file():
-        raise RuntimeError(
-            "Tauri CLI is not installed; run npm install in Frontend before regenerating icons"
-        )
+        raise RuntimeError("Tauri CLI is not installed; run npm install in Frontend before regenerating icons")
 
     source_path = output_dir / "windows-app-icon.svg"
     source_path.write_bytes(master_svg)
@@ -237,11 +229,7 @@ def main() -> None:
     for size, (png, rgba) in tray_frames.items():
         artifacts[ICON_DIR / f"tray-normal-{size}.rgba"] = rgba
     if args.check:
-        stale = [
-            str(path.relative_to(REPO_ROOT))
-            for path, data in artifacts.items()
-            if not _check_file(path, data)
-        ]
+        stale = [str(path.relative_to(REPO_ROOT)) for path, data in artifacts.items() if not _check_file(path, data)]
         if stale:
             raise SystemExit("Stale Windows icon artifacts: " + ", ".join(stale))
         print("Windows SVG, ICO, tray, and window artifacts are current.")

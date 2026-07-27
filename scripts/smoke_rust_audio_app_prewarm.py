@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -22,7 +21,6 @@ from scripts.smoke_rust_audio_sidecar import (  # noqa: E402
 from src.config import Config  # noqa: E402
 from src.mic_prewarm import RustAudioPrewarmManager  # noqa: E402
 from src.microphone import RustPrototypeFrameSource  # noqa: E402
-
 
 COMMAND_MAP = {
     "audioPrewarmStart": "prewarmStart",
@@ -87,9 +85,7 @@ class ShellIpcSidecarAdapter:
                 "errorCode": response.get("errorCode"),
                 "fallbackReason": response.get("fallbackReason"),
                 "request": redact_prewarm_ids(request_payload),
-                "responseKeys": (
-                    sorted(response_payload.keys()) if isinstance(response_payload, dict) else []
-                ),
+                "responseKeys": (sorted(response_payload.keys()) if isinstance(response_payload, dict) else []),
             }
         )
         return response
@@ -223,9 +219,7 @@ def validate_source_failure_state(final_source: dict[str, Any], prefix: str) -> 
         errors.append(f"{prefix}.fallbackReason must be empty")
     reader_end_reason = str(final_source.get("framePipeReaderEndReason") or "").strip()
     if reader_end_reason not in ALLOWED_FINAL_READER_END_REASONS:
-        errors.append(
-            f"{prefix}.framePipeReaderEndReason must be stopRequested, endOfStream, or empty"
-        )
+        errors.append(f"{prefix}.framePipeReaderEndReason must be stopRequested, endOfStream, or empty")
     if str(final_source.get("lastError") or "").strip():
         errors.append(f"{prefix}.lastError must be empty")
     return errors
@@ -260,11 +254,7 @@ def _valid_manager_health_snapshot(
         recent_events = value.get("recentEvents")
         if not isinstance(recent_events, list):
             return False
-        event_names = {
-            str(event.get("event") or "")
-            for event in recent_events
-            if isinstance(event, dict)
-        }
+        event_names = {str(event.get("event") or "") for event in recent_events if isinstance(event, dict)}
         if not set(required_events).issubset(event_names):
             return False
         if "resume_active_capture" in set(required_events):
@@ -281,11 +271,7 @@ def _valid_manager_health_snapshot(
                 "maxActiveCaptureStopToReadyMs",
             ):
                 metric = value.get(field)
-                if (
-                    not isinstance(metric, (int, float))
-                    or isinstance(metric, bool)
-                    or metric < 0
-                ):
+                if not isinstance(metric, (int, float)) or isinstance(metric, bool) or metric < 0:
                     return False
     return True
 
@@ -307,10 +293,7 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
                 "The synthetic mode proves app-lifecycle plumbing; the wasapi mode "
                 "opens the real passive WASAPI prewarm and capture path."
             ),
-            (
-                "Promotion still requires long physical hardware runs and provider-backed "
-                "transcription smokes."
-            ),
+            ("Promotion still requires long physical hardware runs and provider-backed transcription smokes."),
         ],
         "exampleCommand": (
             "python scripts/smoke_rust_audio_app_prewarm.py "
@@ -372,11 +355,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
         "sidecar": {
             "exe": str(sidecar_exe),
             "exists": sidecar_exe.is_file(),
-            "sha256": (
-                hashlib.sha256(sidecar_exe.read_bytes()).hexdigest()
-                if sidecar_exe.is_file()
-                else None
-            ),
+            "sha256": (hashlib.sha256(sidecar_exe.read_bytes()).hexdigest() if sidecar_exe.is_file() else None),
         },
         "requested": requested_payload(args),
     }
@@ -405,22 +384,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             time.sleep(max(0.05, float(args.prewarm_duration_sec)))
             for cycle_index in range(1, int(args.capture_cycles) + 1):
                 cycle: dict[str, Any] = {"index": cycle_index}
-                health_reason = (
-                    "smoke_pre_adoption"
-                    if cycle_index == 1
-                    else f"smoke_pre_adoption_cycle_{cycle_index}"
-                )
-                cycle["managerPreAdoptionHealthReturned"] = bool(
-                    manager.ensure_healthy(reason=health_reason)
-                )
+                health_reason = "smoke_pre_adoption" if cycle_index == 1 else f"smoke_pre_adoption_cycle_{cycle_index}"
+                cycle["managerPreAdoptionHealthReturned"] = bool(manager.ensure_healthy(reason=health_reason))
                 cycle["managerPreAdoptionHealth"] = manager.diagnostic_snapshot()
                 if cycle_index == 1:
-                    payload["managerPreAdoptionHealthReturned"] = cycle[
-                        "managerPreAdoptionHealthReturned"
-                    ]
-                    payload["managerPreAdoptionHealth"] = cycle[
-                        "managerPreAdoptionHealth"
-                    ]
+                    payload["managerPreAdoptionHealthReturned"] = cycle["managerPreAdoptionHealthReturned"]
+                    payload["managerPreAdoptionHealth"] = cycle["managerPreAdoptionHealth"]
                 adopted = manager.attach_active_capture(
                     None,
                     sample_rate=args.sample_rate,
@@ -443,11 +412,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     callback_info = {
                         "frames": int(frames or 0),
                         "shape": list(getattr(audio, "shape", ())),
-                        "engine": (
-                            time_info.get("engine")
-                            if isinstance(time_info, dict)
-                            else None
-                        ),
+                        "engine": (time_info.get("engine") if isinstance(time_info, dict) else None),
                         "status": str(status) if status else None,
                     }
                     callbacks.append(callback_info)
@@ -466,9 +431,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 source.open(callback)
                 source.start()
                 if not manager.commit_active_capture(prewarm_id):
-                    payload["error"] = (
-                        "RustAudioPrewarmManager could not commit the adopted prewarm lease"
-                    )
+                    payload["error"] = "RustAudioPrewarmManager could not commit the adopted prewarm lease"
                     payload["cycles"] = cycles + [cycle]
                     payload["ipcCalls"] = adapter.calls
                     return payload
@@ -499,18 +462,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                         if cycle_index == int(args.capture_cycles)
                         else f"smoke_post_resume_cycle_{cycle_index}"
                     )
-                    cycle["managerPostResumeHealthReturned"] = bool(
-                        manager.ensure_healthy(reason=post_reason)
-                    )
+                    cycle["managerPostResumeHealthReturned"] = bool(manager.ensure_healthy(reason=post_reason))
                     cycle["managerPostResumeHealth"] = manager.diagnostic_snapshot()
                     if cycle_index == int(args.capture_cycles):
                         payload["managerResume"] = cycle["managerResume"]
-                        payload["managerPostResumeHealthReturned"] = cycle[
-                            "managerPostResumeHealthReturned"
-                        ]
-                        payload["managerPostResumeHealth"] = cycle[
-                            "managerPostResumeHealth"
-                        ]
+                        payload["managerPostResumeHealthReturned"] = cycle["managerPostResumeHealthReturned"]
+                        payload["managerPostResumeHealth"] = cycle["managerPostResumeHealth"]
                 cycles.append(cycle)
             if args.resume_after_capture:
                 manager.stop(reason="smoke_complete")
@@ -532,11 +489,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     pass
 
     final_source = payload.get("sourceFinal") if isinstance(payload.get("sourceFinal"), dict) else {}
-    cycle_summaries = [
-        cycle.get("summary")
-        for cycle in cycles
-        if isinstance(cycle.get("summary"), dict)
-    ]
+    cycle_summaries = [cycle.get("summary") for cycle in cycles if isinstance(cycle.get("summary"), dict)]
     payload["summary"] = {
         "callbackCount": int(payload.get("callbackCount") or 0),
         "captureCycleCount": len(cycles),

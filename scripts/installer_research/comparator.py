@@ -3,8 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from datetime import datetime, timezone
-from typing import Any, Mapping
+from collections.abc import Mapping
+from datetime import UTC, datetime
+from typing import Any
 
 from .inventory import (
     INVENTORY_CONTRACT,
@@ -14,7 +15,6 @@ from .inventory import (
     validate_run_id,
     validate_source_commit,
 )
-
 
 BASELINE_CONTRACT = "InstallerResearchBaselineV2"
 BASELINE_SCHEMA_VERSION = 2
@@ -43,12 +43,7 @@ MANDATORY_EXTERNAL_GATES = (
 
 
 def _utc_now() -> str:
-    return (
-        datetime.now(timezone.utc)
-        .replace(microsecond=0)
-        .isoformat()
-        .replace("+00:00", "Z")
-    )
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def canonical_json_sha256(payload: Mapping[str, Any]) -> str:
@@ -69,27 +64,19 @@ def _validate_inventory(inventory: Mapping[str, Any], *, label: str) -> None:
     if inventory.get("schemaVersion") != 1:
         raise InventoryError(f"{label} has an unsupported inventory schemaVersion.")
     validate_run_id(inventory.get("runId"), field=f"{label}.runId")
-    validate_source_commit(
-        inventory.get("sourceCommit"), field=f"{label}.sourceCommit"
-    )
+    validate_source_commit(inventory.get("sourceCommit"), field=f"{label}.sourceCommit")
     provenance = inventory.get("buildProvenance")
     if not isinstance(provenance, dict):
         raise InventoryError(f"{label}.buildProvenance must be an object.")
-    validate_replica_id(
-        provenance.get("replicaId"), field=f"{label}.buildProvenance.replicaId"
-    )
+    validate_replica_id(provenance.get("replicaId"), field=f"{label}.buildProvenance.replicaId")
     if not SHA256_RE.fullmatch(str(provenance.get("buildRootSha256", ""))):
-        raise InventoryError(
-            f"{label}.buildProvenance.buildRootSha256 must be a lowercase SHA-256."
-        )
+        raise InventoryError(f"{label}.buildProvenance.buildRootSha256 must be a lowercase SHA-256.")
     for field in ("evaluatorHash", "toolchainHash"):
         value = inventory.get(field)
         if not isinstance(value, str) or not SHA256_RE.fullmatch(value):
             raise InventoryError(f"{label}.{field} must be a lowercase SHA-256.")
     component_map = inventory.get("componentMap")
-    if not isinstance(component_map, dict) or not SHA256_RE.fullmatch(
-        str(component_map.get("sha256", ""))
-    ):
+    if not isinstance(component_map, dict) or not SHA256_RE.fullmatch(str(component_map.get("sha256", ""))):
         raise InventoryError(f"{label}.componentMap is invalid.")
     installer = inventory.get("installer")
     if not isinstance(installer, dict):
@@ -107,11 +94,7 @@ def _validate_inventory(inventory: Mapping[str, Any], *, label: str) -> None:
         raise InventoryError(f"{label}.payload.staged is invalid.")
     staged = payload["staged"]
     for field in ("totalBytes", "fileCount", "componentBytesSum"):
-        if (
-            isinstance(staged.get(field), bool)
-            or not isinstance(staged.get(field), int)
-            or staged[field] < 0
-        ):
+        if isinstance(staged.get(field), bool) or not isinstance(staged.get(field), int) or staged[field] < 0:
             raise InventoryError(f"{label}.payload.staged.{field} is invalid.")
     for field in ("exactTreeSha256", "semanticTreeSha256", "fileListSha256"):
         if not SHA256_RE.fullmatch(str(staged.get(field, ""))):
@@ -130,9 +113,7 @@ def _validate_inventory(inventory: Mapping[str, Any], *, label: str) -> None:
             ):
                 raise InventoryError(f"{label}.payload.installed.{field} is invalid.")
         if installed.get("componentBytesSum") != installed.get("totalBytes"):
-            raise InventoryError(
-                f"{label} installed component partition is not exact."
-            )
+            raise InventoryError(f"{label} installed component partition is not exact.")
     backend = inventory.get("backendExecutable")
     if (
         not isinstance(backend, dict)
@@ -143,9 +124,7 @@ def _validate_inventory(inventory: Mapping[str, Any], *, label: str) -> None:
     ):
         raise InventoryError(f"{label} backend virtual partition is not exact.")
     pyz = backend.get("pyzDiagnostics")
-    if not isinstance(pyz, dict) or not SHA256_RE.fullmatch(
-        str(pyz.get("inventorySha256", ""))
-    ):
+    if not isinstance(pyz, dict) or not SHA256_RE.fullmatch(str(pyz.get("inventorySha256", ""))):
         raise InventoryError(f"{label} PYZ inventory is invalid.")
 
 
@@ -165,9 +144,7 @@ def _component_identity(staged: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_accepted_baseline(
-    baseline: Mapping[str, Any], inventory: Mapping[str, Any]
-) -> None:
+def _validate_accepted_baseline(baseline: Mapping[str, Any], inventory: Mapping[str, Any]) -> None:
     if baseline.get("reasonCodes") != []:
         raise InventoryError("Accepted baseline must have an empty reasonCodes array.")
     staged = inventory["payload"]["staged"]
@@ -185,42 +162,30 @@ def _validate_accepted_baseline(
         "installedBytes": installed["totalBytes"] if installed is not None else None,
         "semanticTreeSha256": staged["semanticTreeSha256"],
         "fileListSha256": staged["fileListSha256"],
-        "pyzInventorySha256": inventory["backendExecutable"]["pyzDiagnostics"][
-            "inventorySha256"
-        ],
+        "pyzInventorySha256": inventory["backendExecutable"]["pyzDiagnostics"]["inventorySha256"],
     }
     mismatches = [name for name, value in expected.items() if baseline.get(name) != value]
     if mismatches:
         raise InventoryError(
-            "Accepted baseline summary disagrees with its canonical inventory: "
-            + ", ".join(mismatches)
+            "Accepted baseline summary disagrees with its canonical inventory: " + ", ".join(mismatches)
         )
     contract = baseline.get("baselineContract")
     schema_version = baseline.get("schemaVersion")
     if contract == BASELINE_CONTRACT and schema_version == BASELINE_SCHEMA_VERSION:
         expected_replica_count = 1
         if baseline.get("baselineInventoryCount") != 1:
-            raise InventoryError(
-                "Accepted single-inventory baseline must declare baselineInventoryCount=1."
-            )
-    elif (
-        contract == LEGACY_BASELINE_CONTRACT
-        and schema_version == LEGACY_BASELINE_SCHEMA_VERSION
-    ):
+            raise InventoryError("Accepted single-inventory baseline must declare baselineInventoryCount=1.")
+    elif contract == LEGACY_BASELINE_CONTRACT and schema_version == LEGACY_BASELINE_SCHEMA_VERSION:
         expected_replica_count = 2
     else:
         raise InventoryError("Accepted baseline contract or schemaVersion is unsupported.")
     replicas = baseline.get("replicas")
     if not isinstance(replicas, list) or len(replicas) != expected_replica_count:
-        raise InventoryError(
-            f"Accepted baseline must bind exactly {expected_replica_count} inventory document(s)."
-        )
+        raise InventoryError(f"Accepted baseline must bind exactly {expected_replica_count} inventory document(s).")
     for ordinal, replica in enumerate(replicas, start=1):
         if not isinstance(replica, dict) or replica.get("ordinal") != ordinal:
             raise InventoryError("Accepted baseline replica ordinals are invalid.")
-        validate_replica_id(
-            replica.get("replicaId"), field=f"baseline.replicas[{ordinal}].replicaId"
-        )
+        validate_replica_id(replica.get("replicaId"), field=f"baseline.replicas[{ordinal}].replicaId")
         for field in (
             "buildRootSha256",
             "inventorySha256",
@@ -229,9 +194,7 @@ def _validate_accepted_baseline(
             "semanticTreeSha256",
         ):
             if not SHA256_RE.fullmatch(str(replica.get(field, ""))):
-                raise InventoryError(
-                    f"baseline.replicas[{ordinal}].{field} must be a lowercase SHA-256."
-                )
+                raise InventoryError(f"baseline.replicas[{ordinal}].{field} must be a lowercase SHA-256.")
     first = replicas[0]
     if expected_replica_count == 2:
         second = replicas[1]
@@ -249,9 +212,7 @@ def _validate_accepted_baseline(
         "semanticTreeSha256": staged["semanticTreeSha256"],
     }
     if any(first.get(name) != value for name, value in first_expected.items()):
-        raise InventoryError(
-            "Accepted baseline first replica disagrees with its canonical inventory."
-        )
+        raise InventoryError("Accepted baseline first replica disagrees with its canonical inventory.")
 
 
 def _baseline_reason_codes(
@@ -270,13 +231,10 @@ def _baseline_reason_codes(
     second_provenance = second["buildProvenance"]
     if first_provenance.get("replicaId") == second_provenance.get("replicaId"):
         reasons.append("replica_id_not_distinct")
-    if first_provenance.get("buildRootSha256") == second_provenance.get(
-        "buildRootSha256"
-    ):
+    if first_provenance.get("buildRootSha256") == second_provenance.get("buildRootSha256"):
         reasons.append("build_root_not_distinct")
-    if (
-        first_inventory_sha256 == second_inventory_sha256
-        or canonical_json_sha256(first) == canonical_json_sha256(second)
+    if first_inventory_sha256 == second_inventory_sha256 or canonical_json_sha256(first) == canonical_json_sha256(
+        second
     ):
         reasons.append("inventory_document_not_distinct")
     if not first.get("ok") or not second.get("ok"):
@@ -392,9 +350,7 @@ def accept_baseline(
         raise InventoryError("Baseline inventory SHA-256 is invalid.")
     if second is None:
         if second_inventory_sha256 is not None:
-            raise InventoryError(
-                "second_inventory_sha256 is invalid without a second inventory."
-            )
+            raise InventoryError("second_inventory_sha256 is invalid without a second inventory.")
         reason_codes = _single_baseline_reason_codes(first)
         contract = BASELINE_CONTRACT
         schema_version = BASELINE_SCHEMA_VERSION
@@ -462,10 +418,7 @@ def accept_baseline(
 
 
 def _missing_external_gates(reason: str) -> dict[str, dict[str, Any]]:
-    return {
-        name: {"status": "not_run", "reason": reason}
-        for name in MANDATORY_EXTERNAL_GATES
-    }
+    return {name: {"status": "not_run", "reason": reason} for name in MANDATORY_EXTERNAL_GATES}
 
 
 def _validate_external_gates(
@@ -477,9 +430,7 @@ def _validate_external_gates(
     source_commit: str,
 ) -> dict[str, dict[str, Any]]:
     if value is None:
-        return _missing_external_gates(
-            "No external functional gate evidence was supplied."
-        )
+        return _missing_external_gates("No external functional gate evidence was supplied.")
     if not isinstance(value, dict):
         raise InventoryError("gate_results must be a JSON object.")
     unexpected_document_fields = set(value) - {
@@ -493,13 +444,10 @@ def _validate_external_gates(
     }
     if unexpected_document_fields:
         raise InventoryError(
-            "gate_results contains unsupported fields: "
-            + ", ".join(sorted(unexpected_document_fields))
+            "gate_results contains unsupported fields: " + ", ".join(sorted(unexpected_document_fields))
         )
     if value.get("gateEvidenceContract") != GATE_EVIDENCE_CONTRACT:
-        raise InventoryError(
-            f"gate_results.gateEvidenceContract must be {GATE_EVIDENCE_CONTRACT}."
-        )
+        raise InventoryError(f"gate_results.gateEvidenceContract must be {GATE_EVIDENCE_CONTRACT}.")
     if value.get("schemaVersion") != SCHEMA_VERSION:
         raise InventoryError("gate_results.schemaVersion must be 1.")
     bindings = {
@@ -532,18 +480,13 @@ def _validate_external_gates(
             "reasonCode",
         }
         if unexpected_fields:
-            raise InventoryError(
-                f"Gate {name!r} contains unsupported fields: "
-                + ", ".join(sorted(unexpected_fields))
-            )
+            raise InventoryError(f"Gate {name!r} contains unsupported fields: " + ", ".join(sorted(unexpected_fields)))
         status = gate_value.get("status")
         if status not in GATE_STATUSES:
             raise InventoryError(f"Gate {name!r} has invalid status {status!r}.")
         evidence_sha = gate_value.get("evidenceSha256")
         if status == "pass" and not SHA256_RE.fullmatch(str(evidence_sha or "")):
-            raise InventoryError(
-                f"Passing gate {name!r} requires a lowercase evidenceSha256."
-            )
+            raise InventoryError(f"Passing gate {name!r} requires a lowercase evidenceSha256.")
         if evidence_sha is not None and not SHA256_RE.fullmatch(str(evidence_sha)):
             raise InventoryError(f"Gate {name!r} has an invalid evidenceSha256.")
         reason_code = gate_value.get("reasonCode")
@@ -551,11 +494,7 @@ def _validate_external_gates(
             not isinstance(reason_code, str)
             or not reason_code
             or len(reason_code) > 128
-            or not reason_code.replace("_", "a")
-            .replace("-", "a")
-            .replace(".", "a")
-            .replace(":", "a")
-            .isalnum()
+            or not reason_code.replace("_", "a").replace("-", "a").replace(".", "a").replace(":", "a").isalnum()
         ):
             raise InventoryError(f"Gate {name!r} has an invalid reasonCode.")
         gate = {"status": status}
@@ -567,7 +506,7 @@ def _validate_external_gates(
     for name in MANDATORY_EXTERNAL_GATES:
         if name not in gates:
             gates[name] = {
-            "status": "not_run",
+                "status": "not_run",
                 "reason": "Mandatory functional evidence was not supplied.",
             }
     return gates
@@ -636,35 +575,19 @@ def _timing_summary(
             "count": baseline_stats.get("count"),
             "p50Ms": baseline_p50,
             "p95Ms": baseline_p95,
-            "totalInstallSeconds50P50": total_seconds(
-                parent_installer_bytes, baseline_p50
-            ),
-            "totalInstallSeconds50P95": total_seconds(
-                parent_installer_bytes, baseline_p95
-            ),
-            "totalInstallNanoseconds50P50": total_nanoseconds(
-                parent_installer_bytes, baseline_p50
-            ),
-            "totalInstallNanoseconds50P95": total_nanoseconds(
-                parent_installer_bytes, baseline_p95
-            ),
+            "totalInstallSeconds50P50": total_seconds(parent_installer_bytes, baseline_p50),
+            "totalInstallSeconds50P95": total_seconds(parent_installer_bytes, baseline_p95),
+            "totalInstallNanoseconds50P50": total_nanoseconds(parent_installer_bytes, baseline_p50),
+            "totalInstallNanoseconds50P95": total_nanoseconds(parent_installer_bytes, baseline_p95),
         },
         "candidate": {
             "count": candidate_stats.get("count"),
             "p50Ms": candidate_p50,
             "p95Ms": candidate_p95,
-            "totalInstallSeconds50P50": total_seconds(
-                candidate_installer_bytes, candidate_p50
-            ),
-            "totalInstallSeconds50P95": total_seconds(
-                candidate_installer_bytes, candidate_p95
-            ),
-            "totalInstallNanoseconds50P50": total_nanoseconds(
-                candidate_installer_bytes, candidate_p50
-            ),
-            "totalInstallNanoseconds50P95": total_nanoseconds(
-                candidate_installer_bytes, candidate_p95
-            ),
+            "totalInstallSeconds50P50": total_seconds(candidate_installer_bytes, candidate_p50),
+            "totalInstallSeconds50P95": total_seconds(candidate_installer_bytes, candidate_p95),
+            "totalInstallNanoseconds50P50": total_nanoseconds(candidate_installer_bytes, candidate_p50),
+            "totalInstallNanoseconds50P95": total_nanoseconds(candidate_installer_bytes, candidate_p95),
         },
     }
 
@@ -696,9 +619,7 @@ def validate_install_measurements(
     if not isinstance(value, dict):
         errors.append("document_not_object")
         value = {}
-    if not isinstance(evidence_sha256, str) or not SHA256_RE.fullmatch(
-        evidence_sha256
-    ):
+    if not isinstance(evidence_sha256, str) or not SHA256_RE.fullmatch(evidence_sha256):
         errors.append("evidence_sha256_invalid")
     if value.get("apiVersion") != "1":
         errors.append("api_version_mismatch")
@@ -716,10 +637,7 @@ def validate_install_measurements(
             errors.append(f"{field}_mismatch")
 
     pair_count = value.get("pairCount")
-    if (
-        not _is_nonnegative_int(pair_count)
-        or pair_count < MINIMUM_TIMING_PAIR_COUNT
-    ):
+    if not _is_nonnegative_int(pair_count) or pair_count < MINIMUM_TIMING_PAIR_COUNT:
         errors.append("pair_count_below_twenty")
         pair_count = 0
     warmup_count = value.get("warmupPerVariant")
@@ -744,10 +662,7 @@ def validate_install_measurements(
     if not isinstance(cleanup, dict) or cleanup.get("outsideTimedIntervals") is not True:
         errors.append("cleanup_not_outside_timing")
     cache_policy = value.get("cachePolicy")
-    if (
-        not isinstance(cache_policy, dict)
-        or cache_policy.get("osFileCacheFlushed") is not False
-    ):
+    if not isinstance(cache_policy, dict) or cache_policy.get("osFileCacheFlushed") is not False:
         errors.append("cache_policy_mismatch")
     if value.get("expectedVersion") != candidate.get("productVersion"):
         errors.append("candidate_version_mismatch")
@@ -860,11 +775,7 @@ def validate_install_measurements(
         ):
             errors.append("sample_completion_timing_invalid")
         installed_exe = sample.get("installedExe")
-        normalized_exe = (
-            installed_exe.replace("\\", "/")
-            if isinstance(installed_exe, str)
-            else ""
-        )
+        normalized_exe = installed_exe.replace("\\", "/") if isinstance(installed_exe, str) else ""
         if (
             not normalized_exe
             or normalized_exe.startswith("/")
@@ -881,9 +792,7 @@ def validate_install_measurements(
         ):
             errors.append("sample_installed_executable_identity_invalid")
         else:
-            installed_executable_identities[variant].add(
-                (normalized_exe, installed_length, installed_sha256)
-            )
+            installed_executable_identities[variant].add((normalized_exe, installed_length, installed_sha256))
         if sample.get("installedVersion") != value.get("expectedVersion"):
             errors.append("sample_installed_version_mismatch")
         if not _is_nonnegative_int(sample.get("inventoryDurationMs")):
@@ -917,9 +826,13 @@ def validate_install_measurements(
         errors.append("sample_sequence_not_contiguous")
     for pair in range(1, pair_count + 1):
         pair_samples = measured_by_pair.get(pair, [])
-        expected_order = ("baseline", "candidate") if pair % 2 else (
-            "candidate",
-            "baseline",
+        expected_order = (
+            ("baseline", "candidate")
+            if pair % 2
+            else (
+                "candidate",
+                "baseline",
+            )
         )
         expected_label = "AB" if pair % 2 else "BA"
         if len(pair_samples) != 2:
@@ -959,11 +872,7 @@ def validate_install_measurements(
         ):
             errors.append(f"statistics_{variant_name}_p50_mismatch")
         reported_p95 = report_stats.get("p95Ms")
-        if (
-            isinstance(reported_p95, bool)
-            or not isinstance(reported_p95, int)
-            or reported_p95 != p95
-        ):
+        if isinstance(reported_p95, bool) or not isinstance(reported_p95, int) or reported_p95 != p95:
             errors.append(f"statistics_{variant_name}_p95_mismatch")
         if report_stats.get("count") != len(values) or len(values) != pair_count:
             errors.append(f"statistics_{variant_name}_count_mismatch")
@@ -1001,16 +910,9 @@ def validate_install_measurements(
 
     baseline_stats = validated_statistics["baseline"]
     candidate_stats = validated_statistics["candidate"]
-    p50_pass = (
-        int(candidate_stats["p50Twice"]) * 100
-        <= int(baseline_stats["p50Twice"]) * 105
-    )
-    p95_pass = int(candidate_stats["p95Ms"]) * 100 <= int(
-        baseline_stats["p95Ms"]
-    ) * 105
-    p50_ratio = _ratio_basis_points(
-        int(candidate_stats["p50Twice"]), int(baseline_stats["p50Twice"])
-    )
+    p50_pass = int(candidate_stats["p50Twice"]) * 100 <= int(baseline_stats["p50Twice"]) * 105
+    p95_pass = int(candidate_stats["p95Ms"]) * 100 <= int(baseline_stats["p95Ms"]) * 105
+    p50_ratio = _ratio_basis_points(int(candidate_stats["p50Twice"]), int(baseline_stats["p50Twice"]))
     p95_ratio = _ratio_basis_points(
         int(candidate_stats["p95Ms"]) * 2,
         int(baseline_stats["p95Ms"]) * 2,
@@ -1038,9 +940,7 @@ def _computed_gate(status: str, **details: Any) -> dict[str, Any]:
     return {"status": status, **details}
 
 
-def _component_deltas(
-    parent: Mapping[str, Any], candidate: Mapping[str, Any]
-) -> dict[str, int]:
+def _component_deltas(parent: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, int]:
     parent_components = parent.get("components", {})
     candidate_components = candidate.get("components", {})
     names = sorted(set(parent_components) | set(candidate_components))
@@ -1051,9 +951,7 @@ def _component_deltas(
     }
 
 
-def _pyz_root_deltas(
-    parent: Mapping[str, Any], candidate: Mapping[str, Any]
-) -> dict[str, int]:
+def _pyz_root_deltas(parent: Mapping[str, Any], candidate: Mapping[str, Any]) -> dict[str, int]:
     names = sorted(set(parent) | set(candidate), key=lambda item: (item.casefold(), item))
     return {
         name: int(candidate.get(name, {}).get("compressedBytes", 0))
@@ -1108,9 +1006,7 @@ def evaluate_candidate(
     run_id = validate_run_id(run_id)
     packet_id = validate_replica_id(packet_id, field="packet_id")
     if parent_champion_id != "baseline":
-        parent_champion_id = validate_replica_id(
-            parent_champion_id, field="parent_champion_id"
-        )
+        parent_champion_id = validate_replica_id(parent_champion_id, field="parent_champion_id")
     if not isinstance(hypothesis, str) or not hypothesis.strip():
         raise InventoryError("hypothesis must be a non-empty string.")
     source_commit = validate_source_commit(source_commit)
@@ -1134,34 +1030,27 @@ def evaluate_candidate(
     binding_checks = {
         "baselineRunId": baseline.get("runId") == run_id,
         "baselineInventoryRunId": baseline_inventory.get("runId") == run_id,
-        "baselineSourceCommit": baseline.get("sourceCommit")
-        == baseline_inventory.get("sourceCommit"),
+        "baselineSourceCommit": baseline.get("sourceCommit") == baseline_inventory.get("sourceCommit"),
         "candidateInventoryOk": bool(candidate.get("ok")),
         "candidateRunId": candidate.get("runId") == run_id,
         "candidateSourceCommit": candidate.get("sourceCommit") == source_commit,
-        "candidatePacketId": candidate.get("buildProvenance", {}).get("replicaId")
-        == packet_id,
+        "candidatePacketId": candidate.get("buildProvenance", {}).get("replicaId") == packet_id,
         "evaluatorHash": candidate.get("evaluatorHash") == baseline.get("evaluatorHash"),
         "toolchainHash": candidate.get("toolchainHash") == baseline.get("toolchainHash"),
-        "componentMap": candidate.get("componentMap", {}).get("sha256")
-        == baseline.get("componentMapSha256"),
+        "componentMap": candidate.get("componentMap", {}).get("sha256") == baseline.get("componentMapSha256"),
         "productVersion": candidate.get("productVersion") == baseline.get("productVersion"),
-        "pyinstallerVersion": candidate.get("backendExecutable", {}).get(
-            "pyinstallerVersion"
-        )
+        "pyinstallerVersion": candidate.get("backendExecutable", {}).get("pyinstallerVersion")
         == baseline_inventory.get("backendExecutable", {}).get("pyinstallerVersion"),
         "parentInventoryOk": bool(parent.get("ok")),
         "parentRunId": parent.get("runId") == run_id,
         "parentChampionId": (
             parent_champion_id == "baseline"
             if parent_inventory is None
-            else parent.get("buildProvenance", {}).get("replicaId")
-            == parent_champion_id
+            else parent.get("buildProvenance", {}).get("replicaId") == parent_champion_id
         ),
         "parentEvaluatorHash": parent.get("evaluatorHash") == baseline.get("evaluatorHash"),
         "parentToolchainHash": parent.get("toolchainHash") == baseline.get("toolchainHash"),
-        "parentComponentMap": parent.get("componentMap", {}).get("sha256")
-        == baseline.get("componentMapSha256"),
+        "parentComponentMap": parent.get("componentMap", {}).get("sha256") == baseline.get("componentMapSha256"),
         "parentProductVersion": parent.get("productVersion") == baseline.get("productVersion"),
     }
     computed_gates: dict[str, dict[str, Any]] = {
@@ -1179,16 +1068,12 @@ def evaluate_candidate(
             minRelativeBasisPoints=min_relative_basis_points,
         ),
         "stagedPayloadNonGrowth": _computed_gate(
-            "pass"
-            if int(candidate_staged["totalBytes"]) <= int(parent_staged["totalBytes"])
-            else "fail",
+            "pass" if int(candidate_staged["totalBytes"]) <= int(parent_staged["totalBytes"]) else "fail",
             parentBytes=parent_staged["totalBytes"],
             candidateBytes=candidate_staged["totalBytes"],
         ),
         "componentPartition": _computed_gate(
-            "pass"
-            if candidate_staged.get("componentBytesSum") == candidate_staged.get("totalBytes")
-            else "fail",
+            "pass" if candidate_staged.get("componentBytesSum") == candidate_staged.get("totalBytes") else "fail",
             totalBytes=candidate_staged.get("totalBytes"),
             componentBytesSum=candidate_staged.get("componentBytesSum"),
         ),
@@ -1208,9 +1093,7 @@ def evaluate_candidate(
         )
     else:
         computed_gates["installedPayloadNonGrowth"] = _computed_gate(
-            "pass"
-            if int(candidate_installed["totalBytes"]) <= int(parent_installed["totalBytes"])
-            else "fail",
+            "pass" if int(candidate_installed["totalBytes"]) <= int(parent_installed["totalBytes"]) else "fail",
             parentBytes=parent_installed["totalBytes"],
             candidateBytes=candidate_installed["totalBytes"],
         )
@@ -1228,8 +1111,7 @@ def evaluate_candidate(
         )
     else:
         semantic_same = (
-            candidate_staged.get("semanticTreeSha256")
-            == parent_staged.get("semanticTreeSha256")
+            candidate_staged.get("semanticTreeSha256") == parent_staged.get("semanticTreeSha256")
             and candidate_staged.get("fileListSha256") == parent_staged.get("fileListSha256")
             and candidate_staged.get("totalBytes") == parent_staged.get("totalBytes")
         )
@@ -1274,25 +1156,17 @@ def evaluate_candidate(
     else:
         baseline_total = timing_summary["baseline"]["totalInstallSeconds50P50"]
         candidate_total = timing_summary["candidate"]["totalInstallSeconds50P50"]
-        baseline_total_ns = timing_summary["baseline"][
-            "totalInstallNanoseconds50P50"
-        ]
-        candidate_total_ns = timing_summary["candidate"][
-            "totalInstallNanoseconds50P50"
-        ]
+        baseline_total_ns = timing_summary["baseline"]["totalInstallNanoseconds50P50"]
+        candidate_total_ns = timing_summary["candidate"]["totalInstallNanoseconds50P50"]
         improvement_nanoseconds = baseline_total_ns - candidate_total_ns
         relative_required_nanoseconds = (
-            baseline_total_ns
-            + MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR
-            - 1
+            baseline_total_ns + MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR - 1
         ) // MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR
         required_improvement_nanoseconds = max(
             MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS,
             relative_required_nanoseconds,
         )
-        combined_improves = (
-            improvement_nanoseconds >= required_improvement_nanoseconds
-        )
+        combined_improves = improvement_nanoseconds >= required_improvement_nanoseconds
         computed_gates["combinedInstall50"] = _computed_gate(
             "pass" if combined_improves else "fail",
             bandwidthBitsPerSecond=50_000_000,
@@ -1302,9 +1176,7 @@ def evaluate_candidate(
             candidateTotalNanosecondsP50=candidate_total_ns,
             improvementNanoseconds=improvement_nanoseconds,
             requiredImprovementNanoseconds=required_improvement_nanoseconds,
-            minimumAbsoluteImprovementNanoseconds=(
-                MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS
-            ),
+            minimumAbsoluteImprovementNanoseconds=(MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS),
             minimumRelativeImprovementBasisPoints=100,
             improvementSeconds=round(improvement_nanoseconds / 1_000_000_000, 6),
         )
@@ -1319,24 +1191,15 @@ def evaluate_candidate(
     duplicate_gate_names = set(computed_gates) & set(external_gates)
     if duplicate_gate_names:
         raise InventoryError(
-            "External gates collide with evaluator-owned gates: "
-            + ", ".join(sorted(duplicate_gate_names))
+            "External gates collide with evaluator-owned gates: " + ", ".join(sorted(duplicate_gate_names))
         )
     gates = {**computed_gates, **external_gates}
-    computed_failures = sorted(
-        name for name, gate in computed_gates.items() if gate["status"] == "fail"
-    )
-    external_failures = sorted(
-        name for name, gate in external_gates.items() if gate["status"] == "fail"
-    )
+    computed_failures = sorted(name for name, gate in computed_gates.items() if gate["status"] == "fail")
+    external_failures = sorted(name for name, gate in external_gates.items() if gate["status"] == "fail")
     mandatory_not_applicable = sorted(
-        name
-        for name in MANDATORY_EXTERNAL_GATES
-        if external_gates[name]["status"] == "not_applicable"
+        name for name in MANDATORY_EXTERNAL_GATES if external_gates[name]["status"] == "not_applicable"
     )
-    incomplete_gates = sorted(
-        name for name, gate in gates.items() if gate["status"] == "not_run"
-    )
+    incomplete_gates = sorted(name for name, gate in gates.items() if gate["status"] == "not_run")
     if timing_invalid:
         decision = "invalid_measurement"
         reason_codes = ["invalid_install_timing_evidence"]
@@ -1346,9 +1209,7 @@ def evaluate_candidate(
     elif external_failures or mandatory_not_applicable:
         decision = "checks_failed"
         reason_codes = [f"gate_failed:{name}" for name in external_failures]
-        reason_codes.extend(
-            f"gate_not_applicable:{name}" for name in mandatory_not_applicable
-        )
+        reason_codes.extend(f"gate_not_applicable:{name}" for name in mandatory_not_applicable)
     elif incomplete_gates:
         decision = "measure_only"
         reason_codes = [f"gate_not_run:{name}" for name in incomplete_gates]
@@ -1358,15 +1219,9 @@ def evaluate_candidate(
 
     baseline_inventory_for_delta = baseline["inventory"]
     baseline_installer_bytes = int(baseline_inventory_for_delta["installer"]["length"])
-    baseline_staged_bytes = int(
-        baseline_inventory_for_delta["payload"]["staged"]["totalBytes"]
-    )
-    candidate_installed_bytes = (
-        int(candidate_installed["totalBytes"]) if candidate_installed is not None else None
-    )
-    parent_installed_bytes = (
-        int(parent_installed["totalBytes"]) if parent_installed is not None else None
-    )
+    baseline_staged_bytes = int(baseline_inventory_for_delta["payload"]["staged"]["totalBytes"])
+    candidate_installed_bytes = int(candidate_installed["totalBytes"]) if candidate_installed is not None else None
+    parent_installed_bytes = int(parent_installed["totalBytes"]) if parent_installed is not None else None
     installer_delta = candidate_installer_bytes - parent_installer_bytes
     staged_delta = int(candidate_staged["totalBytes"]) - int(parent_staged["totalBytes"])
     installed_delta = (

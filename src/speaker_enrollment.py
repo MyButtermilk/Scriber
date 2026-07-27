@@ -1,4 +1,5 @@
 """Bounded, local-only microphone capture for Voice Library enrollment."""
+
 from __future__ import annotations
 
 import array
@@ -6,8 +7,9 @@ import math
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 
 from src.runtime.audio_frame_pipe import (
     AUDIO_FRAME_FLAG_END_OF_STREAM,
@@ -15,7 +17,6 @@ from src.runtime.audio_frame_pipe import (
     AudioFrameSequenceGuard,
     decode_audio_frame_header,
 )
-
 
 _ACTIVITY_FRAME_MS = 25
 _ACTIVITY_RMS_FLOOR = 0.006
@@ -59,9 +60,7 @@ class VoiceEnrollmentCapture:
             round(self.sample_rate * max(1.0, min(30.0, float(max_duration_seconds)))),
         )
         self.reader_factory = reader_factory
-        self.reader_open_timeout_seconds = max(
-            0.05, min(5.0, float(reader_open_timeout_seconds))
-        )
+        self.reader_open_timeout_seconds = max(0.05, min(5.0, float(reader_open_timeout_seconds)))
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._expected_native_stop = threading.Event()
@@ -175,9 +174,7 @@ class VoiceEnrollmentCapture:
                 self._opened.set()
                 self._settled.set()
                 while not self._stop.is_set():
-                    header = decode_audio_frame_header(
-                        self._read_exact(reader, AUDIO_FRAME_HEADER_LEN)
-                    )
+                    header = decode_audio_frame_header(self._read_exact(reader, AUDIO_FRAME_HEADER_LEN))
                     guard.verify_and_advance(header)
                     payload = self._read_exact(reader, header.payload_len)
                     if header.channels != 1:
@@ -191,18 +188,14 @@ class VoiceEnrollmentCapture:
                         # fresh PCM after cleanup has overwritten the sample.
                         if self._stop.is_set():
                             break
-                        remaining_frames = max(
-                            0, self.max_audio_frames - self._stats.audio_frames
-                        )
+                        remaining_frames = max(0, self.max_audio_frames - self._stats.audio_frames)
                         accepted_frames = min(int(header.frame_count), remaining_frames)
                         accepted = payload[: accepted_frames * 2]
                         sum_squares = 0
                         peak = 0
                         clipped = 0
                         for offset in range(0, len(accepted), 2):
-                            sample = int.from_bytes(
-                                accepted[offset : offset + 2], "little", signed=True
-                            )
+                            sample = int.from_bytes(accepted[offset : offset + 2], "little", signed=True)
                             magnitude = abs(sample)
                             peak = max(peak, magnitude)
                             sum_squares += sample * sample
@@ -277,17 +270,12 @@ def _analyze_voice_activity(pcm: bytes, *, sample_rate: int) -> dict[str, Any]:
         variance = max(0.0, sum_squares / count - mean * mean)
         ac_rms = math.sqrt(variance) / 32768.0
         dynamic_peak = max(maximum - mean, mean - minimum) / 32768.0
-        active = (
-            ac_rms >= _ACTIVITY_RMS_FLOOR
-            and dynamic_peak >= _ACTIVITY_DYNAMIC_PEAK_FLOOR
-        )
+        active = ac_rms >= _ACTIVITY_RMS_FLOOR and dynamic_peak >= _ACTIVITY_DYNAMIC_PEAK_FLOOR
         activity_frames.append((start, end, active))
         if active:
             active_samples += count
 
-    embedding_window_samples = min(
-        total_samples, round(rate * _EMBEDDING_WINDOW_MS / 1_000)
-    )
+    embedding_window_samples = min(total_samples, round(rate * _EMBEDDING_WINDOW_MS / 1_000))
     final_start = max(0, total_samples - embedding_window_samples)
     middle_start = max(0, final_start // 2)
     # A short sample can make start/middle/end identical. Count unique windows
@@ -300,17 +288,12 @@ def _analyze_voice_activity(pcm: bytes, *, sample_rate: int) -> dict[str, Any]:
         for frame_start, frame_end, active in activity_frames:
             if not active or frame_end <= window_start or frame_start >= window_end:
                 continue
-            window_active_samples += max(
-                0, min(frame_end, window_end) - max(frame_start, window_start)
-            )
+            window_active_samples += max(0, min(frame_end, window_end) - max(frame_start, window_start))
         window_active_ms.append(round(window_active_samples * 1_000 / rate))
 
     return {
         "activeSpeechMs": round(active_samples * 1_000 / rate),
-        "usableVoiceWindows": sum(
-            value >= _MIN_ACTIVE_MS_PER_EMBEDDING_WINDOW
-            for value in window_active_ms
-        ),
+        "usableVoiceWindows": sum(value >= _MIN_ACTIVE_MS_PER_EMBEDDING_WINDOW for value in window_active_ms),
         "voiceWindowActiveMs": window_active_ms,
     }
 
@@ -336,13 +319,9 @@ def assess_voice_sample(snapshot: dict[str, Any]) -> float:
     if "activeSpeechMs" in snapshot:
         active_speech_ms = int(snapshot.get("activeSpeechMs", 0) or 0)
         usable_windows = int(snapshot.get("usableVoiceWindows", 0) or 0)
-        if (
-            active_speech_ms < _MIN_ACTIVE_SPEECH_MS
-            or usable_windows < _MIN_USABLE_EMBEDDING_WINDOWS
-        ):
+        if active_speech_ms < _MIN_ACTIVE_SPEECH_MS or usable_windows < _MIN_USABLE_EMBEDDING_WINDOWS:
             raise ValueError(
-                "Scriber heard too little clear speech. Keep speaking naturally "
-                "throughout the recording and try again."
+                "Scriber heard too little clear speech. Keep speaking naturally throughout the recording and try again."
             )
     level_score = min(1.0, max(0.0, (rms - 0.008) / 0.10))
     duration_score = min(1.0, duration_ms / 8_000)

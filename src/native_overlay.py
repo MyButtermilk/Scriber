@@ -10,11 +10,13 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from loguru import logger
 
-from src.runtime.shell_ipc import available as shell_ipc_available, call_shell_ipc
+from src.runtime.shell_ipc import available as shell_ipc_available
+from src.runtime.shell_ipc import call_shell_ipc
 
 _DISABLE_TAURI_OVERLAY_ENV = "SCRIBER_DISABLE_TAURI_OVERLAY"
 _OVERLAY_AUDIO_INTERVAL_SECONDS = 1.0 / 20.0
@@ -169,10 +171,10 @@ _audio_level_pump = _OverlayAudioLevelPump()
 class RecordingOverlay:
     """Overlay facade preserving the old Python overlay API."""
 
-    def __init__(self, on_stop: Optional[Callable[[], None]] = None):
+    def __init__(self, on_stop: Callable[[], None] | None = None):
         self._on_stop = on_stop
 
-    def set_on_stop(self, on_stop: Optional[Callable[[], None]]) -> None:
+    def set_on_stop(self, on_stop: Callable[[], None] | None) -> None:
         self._on_stop = on_stop
 
     def start(self) -> dict[str, Any] | None:
@@ -216,10 +218,10 @@ class RecordingOverlay:
             _audio_level_pump.publish(rms)
 
 
-_overlay: Optional[RecordingOverlay] = None
+_overlay: RecordingOverlay | None = None
 
 
-def get_overlay(on_stop: Optional[Callable[[], None]] = None) -> RecordingOverlay:
+def get_overlay(on_stop: Callable[[], None] | None = None) -> RecordingOverlay:
     global _overlay
     if _overlay is None:
         _overlay = RecordingOverlay(on_stop=on_stop)

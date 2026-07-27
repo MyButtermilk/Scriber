@@ -1,9 +1,11 @@
 import os
 import sys
+
 from loguru import logger
 
 # Source-only diagnostic demo for Gemini audio transcription. The optional
 # `google-generativeai` SDK is not part of the standard Scriber installer.
+
 
 def transcribe_audio_with_gemini(audio_path: str):
     """
@@ -36,15 +38,14 @@ def transcribe_audio_with_gemini(audio_path: str):
 
         # Generate content
         logger.info("Requesting transcription...")
-        result = model.generate_content(
-            [myfile, "Transcribe this audio file into text."]
-        )
+        result = model.generate_content([myfile, "Transcribe this audio file into text."])
 
         logger.info(f"Transcription Result:\n{result.text}")
         return result.text
 
     except Exception as e:
         logger.error(f"Gemini Error: {e}")
+
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

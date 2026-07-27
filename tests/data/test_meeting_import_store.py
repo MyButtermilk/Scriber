@@ -7,13 +7,12 @@ from threading import Barrier
 import pytest
 
 from src.data.meeting_import_store import (
-    InvalidMeetingImportTransition,
     MAX_MEETING_IMPORT_INBOX_ITEMS,
+    InvalidMeetingImportTransition,
     MeetingImportConflict,
     MeetingImportStatus,
     MeetingImportStore,
 )
-
 
 ORIGINAL_SHA = "a" * 64
 NORMALIZED_SHA = "b" * 64
@@ -283,9 +282,7 @@ def test_cancel_is_rejected_after_workspace_claim(tmp_path, status):
     record = _create(store)
     _receive(store)
     _prepare(store)
-    store.transition(
-        record.id, MeetingImportStatus.COMMITTING, meeting_id="meeting-claimed"
-    )
+    store.transition(record.id, MeetingImportStatus.COMMITTING, meeting_id="meeting-claimed")
     if status == MeetingImportStatus.FINALIZING:
         store.transition(record.id, MeetingImportStatus.FINALIZING)
 
@@ -302,9 +299,7 @@ def test_failure_cannot_override_an_accepted_cancel(tmp_path):
     _receive(store)
     store.request_cancel(record.id)
 
-    persisted = store.mark_failed(
-        record.id, error_code="worker_race", error_message="late worker failure"
-    )
+    persisted = store.mark_failed(record.id, error_code="worker_race", error_message="late worker failure")
 
     assert persisted.status == MeetingImportStatus.CANCELED
     assert persisted.error_code == ""
@@ -315,13 +310,9 @@ def test_failed_committed_import_can_reopen_only_for_meeting_retry(tmp_path):
     committed = _create(store, "committed")
     _receive(store, committed.id)
     _prepare(store, committed.id)
-    store.transition(
-        committed.id, MeetingImportStatus.COMMITTING, meeting_id="meeting-retry"
-    )
+    store.transition(committed.id, MeetingImportStatus.COMMITTING, meeting_id="meeting-retry")
     store.transition(committed.id, MeetingImportStatus.FINALIZING)
-    failed = store.mark_failed(
-        committed.id, error_code="provider", error_message="temporary failure"
-    )
+    failed = store.mark_failed(committed.id, error_code="provider", error_message="temporary failure")
     assert failed.finished_at
 
     reopened = store.transition(
@@ -333,9 +324,7 @@ def test_failed_committed_import_can_reopen_only_for_meeting_retry(tmp_path):
     assert reopened.error_code == ""
 
     precommit = _create(store, "precommit")
-    failed_precommit = store.mark_failed(
-        precommit.id, error_code="bad_upload", error_message="invalid"
-    )
+    failed_precommit = store.mark_failed(precommit.id, error_code="bad_upload", error_message="invalid")
     assert failed_precommit.meeting_id == ""
     with pytest.raises(MeetingImportConflict, match="verified original|workspace ID"):
         store.transition(precommit.id, MeetingImportStatus.FINALIZING)
@@ -356,9 +345,7 @@ def test_workspace_meeting_id_cannot_escape_data_root(tmp_path, meeting_id):
     _prepare(store)
 
     with pytest.raises(ValueError, match="meeting_id contains invalid"):
-        store.transition(
-            record.id, MeetingImportStatus.COMMITTING, meeting_id=meeting_id
-        )
+        store.transition(record.id, MeetingImportStatus.COMMITTING, meeting_id=meeting_id)
 
 
 def test_recovery_queries_separate_upload_cleanup_resume_and_cancel(tmp_path):
@@ -479,10 +466,7 @@ def test_nonterminal_state_cannot_be_deleted_or_skip_forward(tmp_path):
 
 def test_store_creates_recovery_indexes(tmp_path):
     store = MeetingImportStore(db_path=tmp_path / "imports.db")
-    indexes = {
-        row[1]
-        for row in store._connect().execute("PRAGMA index_list(meeting_import_jobs)").fetchall()
-    }
+    indexes = {row[1] for row in store._connect().execute("PRAGMA index_list(meeting_import_jobs)").fetchall()}
 
     assert "idx_meeting_import_jobs_status_updated" in indexes
     assert "idx_meeting_import_jobs_meeting_id" in indexes

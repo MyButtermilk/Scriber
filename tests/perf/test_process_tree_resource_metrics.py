@@ -7,7 +7,6 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -247,9 +246,7 @@ def test_app_frame_probe_maps_real_frontend_long_task_delta(
         endpoint_probe,
         "load_json",
         lambda path: (
-            {"ok": True, "qpcTicks": 2_000, "qpcFrequency": 1_000}
-            if path.name == "app-observer.json"
-            else smoke
+            {"ok": True, "qpcTicks": 2_000, "qpcFrequency": 1_000} if path.name == "app-observer.json" else smoke
         ),
     )
 
@@ -358,9 +355,7 @@ def test_app_frame_probe_rejects_invalid_frontend_barrier_evidence(
         endpoint_probe,
         "load_json",
         lambda path: (
-            {"ok": True, "qpcTicks": 2_000, "qpcFrequency": 1_000}
-            if path.name == "app-observer.json"
-            else smoke
+            {"ok": True, "qpcTicks": 2_000, "qpcFrequency": 1_000} if path.name == "app-observer.json" else smoke
         ),
     )
 

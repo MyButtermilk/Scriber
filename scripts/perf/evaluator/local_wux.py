@@ -5,7 +5,6 @@ import math
 from pathlib import Path
 from typing import Any
 
-
 PERCENTILE_WEIGHTS = {
     "p50": 0.40,
     "p95": 0.60,
@@ -42,9 +41,7 @@ def provider_replay_scenario_name(
 
 PROVIDER_REPLAY_SCENARIO_WEIGHTS = {
     provider_replay_scenario_name(provider, duration, kpi): (
-        provider_weight
-        / len(PROVIDER_REPLAY_DURATION_SECONDS)
-        / len(PROVIDER_REPLAY_KPIS)
+        provider_weight / len(PROVIDER_REPLAY_DURATION_SECONDS) / len(PROVIDER_REPLAY_KPIS)
     )
     for provider, provider_weight in PROVIDER_REPLAY_WEIGHTS.items()
     for duration in PROVIDER_REPLAY_DURATION_SECONDS
@@ -59,10 +56,7 @@ SCENARIO_WEIGHTS = {
 }
 
 SCENARIO_METRICS = {
-    scenario: {
-        percentile: f"{scenario}_{percentile}_ms"
-        for percentile in PERCENTILE_WEIGHTS
-    }
+    scenario: {percentile: f"{scenario}_{percentile}_ms" for percentile in PERCENTILE_WEIGHTS}
     for scenario in SCENARIO_WEIGHTS
 }
 
@@ -128,17 +122,9 @@ def canonical_provider_replay_evidence_valid(metrics: dict[str, Any]) -> bool:
         capture_attested = metrics.get(f"{scenario}_capture_attested")
         if failure_rate is None or failure_rate != 0.0:
             return False
-        if (
-            isinstance(sample_count, bool)
-            or not isinstance(sample_count, int)
-            or sample_count <= 0
-        ):
+        if isinstance(sample_count, bool) or not isinstance(sample_count, int) or sample_count <= 0:
             return False
-        if (
-            isinstance(capture_attested, bool)
-            or not isinstance(capture_attested, int)
-            or capture_attested != 1
-        ):
+        if isinstance(capture_attested, bool) or not isinstance(capture_attested, int) or capture_attested != 1:
             return False
     return True
 

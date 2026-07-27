@@ -99,9 +99,7 @@ def test_text_injection_smoke_classifies_target_text_without_callback() -> None:
 
 def test_text_injection_smoke_uses_real_injector_and_safe_target_window() -> None:
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "smoke_text_injection_target.py").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "smoke_text_injection_target.py").read_text(encoding="utf-8")
 
     assert "TextInjector" in script
     assert "InjectionTargetGuard" in script

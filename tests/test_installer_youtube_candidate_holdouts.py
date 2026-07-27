@@ -12,9 +12,7 @@ import pytest
 from scripts import validate_installer_youtube_candidate_holdouts as holdouts
 
 
-def _bound_stack_fixture(
-    root: Path, *, label: str = "baseline"
-) -> tuple[holdouts.StackIdentity, dict[str, object]]:
+def _bound_stack_fixture(root: Path, *, label: str = "baseline") -> tuple[holdouts.StackIdentity, dict[str, object]]:
     contents = {
         "backend/scriber-backend.exe": b"backend",
         "backend/tools/ffmpeg/deno.exe": b"runtime",
@@ -29,11 +27,7 @@ def _bound_stack_fixture(
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-        component = (
-            "yt-dlp-ejs"
-            if "/yt_dlp" in f"/{relative}" and "/tools/ffmpeg/" not in f"/{relative}"
-            else None
-        )
+        component = "yt-dlp-ejs" if "/yt_dlp" in f"/{relative}" and "/tools/ffmpeg/" not in f"/{relative}" else None
         entries.append(
             {
                 "path": relative,
@@ -126,9 +120,7 @@ def _synthetic_quickjs_lock(
     entry["license"]["sha256"] = license_sha256
     entry["license"]["source"]["length"] = len(license_bytes)
     entry["license"]["source"]["sha256"] = license_sha256
-    entry["manifest"] = holdouts._quickjs_manifest_for_entry(
-        entry, entry["runtimeFiles"][0]
-    )
+    entry["manifest"] = holdouts._quickjs_manifest_for_entry(entry, entry["runtimeFiles"][0])
     manifest_bytes = holdouts._canonical_manifest_bytes(entry["manifest"])
     entry["manifestCanonicalSha256"] = hashlib.sha256(manifest_bytes).hexdigest()
     lock_path = tmp_path / "quickjs-runtime-lock-v1.json"
@@ -203,9 +195,7 @@ def test_pair_allows_optional_capability_differences_and_records_them() -> None:
             "manual-or-automatic-captions",
         )
     )
-    candidate = _outcome(
-        capabilities=("audio-format-url", "js-runtime", "metadata", "signature")
-    )
+    candidate = _outcome(capabilities=("audio-format-url", "js-runtime", "metadata", "signature"))
 
     classification = holdouts.classify_pair(
         baseline,
@@ -243,16 +233,9 @@ def test_pair_allows_optional_capability_differences_and_records_them() -> None:
 
 
 def test_public_candidate_failure_code_is_strictly_allowlisted() -> None:
+    assert holdouts._public_failure_code(_outcome(status="fail", failure_code="network_timeout")) == "network_timeout"
     assert (
-        holdouts._public_failure_code(
-            _outcome(status="fail", failure_code="network_timeout")
-        )
-        == "network_timeout"
-    )
-    assert (
-        holdouts._public_failure_code(
-            _outcome(status="fail", failure_code="provider-secret-detail")
-        )
+        holdouts._public_failure_code(_outcome(status="fail", failure_code="provider-secret-detail"))
         == "unclassified_failure"
     )
     assert holdouts._public_failure_code(_outcome()) is None
@@ -307,8 +290,7 @@ def test_deno_version_contract_accepts_the_pinned_release_banner() -> None:
     assert (
         holdouts._runtime_version_from_output(
             runtime,
-            b"deno 2.9.2 (stable, release, x86_64-pc-windows-msvc)\n"
-            b"v8 14.7.119.2-rusty\ntypescript 6.0.2\n",
+            b"deno 2.9.2 (stable, release, x86_64-pc-windows-msvc)\nv8 14.7.119.2-rusty\ntypescript 6.0.2\n",
         )
         is True
     )
@@ -333,17 +315,10 @@ def test_quickjs_version_contract_uses_documented_help_shape() -> None:
 
     assert holdouts._runtime_version_command(runtime)[-1] == "--help"
     assert holdouts._runtime_version_return_code_ok(runtime, 1) is True
-    assert (
-        holdouts._runtime_version_from_output(
-            runtime, b"QuickJS version 2025-04-26\nusage: qjs [options]"
-        )
-        is True
-    )
+    assert holdouts._runtime_version_from_output(runtime, b"QuickJS version 2025-04-26\nusage: qjs [options]") is True
 
 
-def test_quickjs_security_boundary_rejects_before_any_probe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_quickjs_security_boundary_rejects_before_any_probe(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     deno_stack, _inventory = _bound_stack_fixture(tmp_path)
     holdouts._require_runtime_security_boundary(deno_stack.runtime)
     candidate = replace(
@@ -397,24 +372,12 @@ def test_protected_quickjs_lock_prefers_ng_and_pins_official_bytes() -> None:
     ]
     primary = entries["quickjs-ng-0.15.0-windows-x86_64"]
     fallback = entries["quickjs-2026-06-04-windows-x86_64"]
-    assert primary["asset"]["sha256"] == (
-        "f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf"
-    )
-    assert primary["license"]["sha256"] == (
-        "96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171"
-    )
-    assert fallback["asset"]["sha256"] == (
-        "8d10e75796656f49a3797e2c14465bd67c1f085dba505cf0c8d8a14bf5b19cb4"
-    )
-    assert fallback["runtimeFiles"][0]["sha256"] == (
-        "433a35a59bd6ff8950c57e6c7e809cae3fa01302ff673c121488b45f738afe3a"
-    )
-    assert fallback["runtimeFiles"][1]["sha256"] == (
-        "1933c3f02ede171b7d9432204a89dfbdd846b86819df3040b0804fe1d02a8b16"
-    )
-    assert fallback["license"]["sha256"] == (
-        "598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d"
-    )
+    assert primary["asset"]["sha256"] == ("f157d58a9e14e958991e4b0f01b3a6d1d7dc25f3ae78f85c6c8da01c19bf77bf")
+    assert primary["license"]["sha256"] == ("96f73f9d2a16c21a36b418f06073be26e7d6d5e7c1bc99756b21a4f2c74ef171")
+    assert fallback["asset"]["sha256"] == ("8d10e75796656f49a3797e2c14465bd67c1f085dba505cf0c8d8a14bf5b19cb4")
+    assert fallback["runtimeFiles"][0]["sha256"] == ("433a35a59bd6ff8950c57e6c7e809cae3fa01302ff673c121488b45f738afe3a")
+    assert fallback["runtimeFiles"][1]["sha256"] == ("1933c3f02ede171b7d9432204a89dfbdd846b86819df3040b0804fe1d02a8b16")
+    assert fallback["license"]["sha256"] == ("598fd7fc928e4350abce36e337ba5a1346923c5c692f5be92c3d8e29ddd7c18d")
 
 
 def test_protected_denort_lock_pins_wrapper_and_compiled_output() -> None:
@@ -423,17 +386,16 @@ def test_protected_denort_lock_pins_wrapper_and_compiled_output() -> None:
     assert len(lock_sha256) == 64
     assert entry["implementation"] == holdouts.DENORT_IMPLEMENTATION
     assert entry["protocol"] == holdouts.DENORT_PROTOCOL
-    assert entry["wrapper"]["sha256"] == (
-        "10b251b09237bf38e03d1890528e94dac1203dc2f10ac84b4e1873b8ff8d7987"
-    )
+    assert entry["wrapper"]["sha256"] == ("10b251b09237bf38e03d1890528e94dac1203dc2f10ac84b4e1873b8ff8d7987")
     assert entry["output"] == {
         "installedFileName": "deno.exe",
         "length": 80_416_159,
         "sha256": "9179466207b9495035200cf8f153780f0d9d43248cb2eaa154d0af375952e10e",
     }
-    assert entry["manifestCanonicalSha256"] == hashlib.sha256(
-        holdouts._canonical_manifest_bytes(entry["manifest"])
-    ).hexdigest()
+    assert (
+        entry["manifestCanonicalSha256"]
+        == hashlib.sha256(holdouts._canonical_manifest_bytes(entry["manifest"])).hexdigest()
+    )
 
 
 def test_compiled_denort_lifecycle_uses_the_exact_stdin_protocol() -> None:
@@ -518,9 +480,7 @@ def test_candidate_manifest_and_files_must_match_protected_lock_bytes(
             provenance_lock_path=lock_path,
         )
 
-    locked_manifest = json.loads(lock_path.read_text(encoding="utf-8"))["entries"][0][
-        "manifest"
-    ]
+    locked_manifest = json.loads(lock_path.read_text(encoding="utf-8"))["entries"][0]["manifest"]
     manifest_path.write_text(json.dumps(locked_manifest, indent=2) + "\n", encoding="utf-8")
     manifest_entry["length"] = manifest_path.stat().st_size
     manifest_entry["sha256"] = holdouts._sha256_file(manifest_path)
@@ -698,20 +658,22 @@ def test_probe_outcome_rejects_non_allowlisted_failure_code() -> None:
 def test_case_rows_persist_and_accept_one_candidate_confirmation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    baseline_pass = _outcome(
-        capabilities=("audio-format-url", "metadata", "player-js")
-    )
-    candidate_pass = _outcome(
-        capabilities=("audio-format-url", "metadata", "signature")
-    )
+    baseline_pass = _outcome(capabilities=("audio-format-url", "metadata", "player-js"))
+    candidate_pass = _outcome(capabilities=("audio-format-url", "metadata", "signature"))
     candidate_failure = _outcome(status="fail", failure_code="http_403")
     outcomes = [
-        baseline_pass, candidate_pass,  # prime
-        baseline_pass, candidate_pass,  # cold 1
-        baseline_pass, candidate_failure,  # cold 2 original
-        baseline_pass, candidate_pass,  # cold 2 confirmation
-        baseline_pass, candidate_pass,  # warm 1
-        baseline_pass, candidate_pass,  # warm 2
+        baseline_pass,
+        candidate_pass,  # prime
+        baseline_pass,
+        candidate_pass,  # cold 1
+        baseline_pass,
+        candidate_failure,  # cold 2 original
+        baseline_pass,
+        candidate_pass,  # cold 2 confirmation
+        baseline_pass,
+        candidate_pass,  # warm 1
+        baseline_pass,
+        candidate_pass,  # warm 2
     ]
 
     def fake_probe(**_kwargs: object) -> holdouts.ProbeOutcome:
@@ -746,9 +708,7 @@ def test_case_rows_persist_and_accept_one_candidate_confirmation(
     assert rows[0]["primeCapabilityDiagnostics"]["optionalParity"] is False
     assert rows[0]["primeCandidateFailureCode"] is None
     assert rows[0]["pairs"][0]["status"] == "pass"
-    assert rows[0]["pairs"][0]["capabilityDiagnostics"][
-        "optionalOnlyInBaseline"
-    ] == ["player-js"]
+    assert rows[0]["pairs"][0]["capabilityDiagnostics"]["optionalOnlyInBaseline"] == ["player-js"]
     recovered_pair = rows[0]["pairs"][1]
     assert recovered_pair["status"] == "pass"
     assert recovered_pair["reasonCode"] is None
@@ -1058,9 +1018,7 @@ def test_bound_input_snapshot_rehashes_all_relevant_payload_files(
         ("semanticSha256", None),
     ],
 )
-def test_inventory_entries_require_strict_semantic_identity(
-    field: str, invalid: object
-) -> None:
+def test_inventory_entries_require_strict_semantic_identity(field: str, invalid: object) -> None:
     entry: dict[str, object] = {
         "path": "backend/scriber-backend.exe",
         "length": 7,
@@ -1211,9 +1169,7 @@ def test_write_immutable_loses_publish_race_without_overwriting(
 ) -> None:
     output = tmp_path / "evidence.json"
 
-    def racing_link(
-        _source: Path, destination: Path, *, follow_symlinks: bool = True
-    ) -> None:
+    def racing_link(_source: Path, destination: Path, *, follow_symlinks: bool = True) -> None:
         assert follow_symlinks is False
         Path(destination).write_text("racer", encoding="utf-8")
         raise FileExistsError("synthetic publish race")

@@ -9,7 +9,6 @@ import pytest
 
 from scripts import build_quickjs_youtube_runtime as helper
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = REPO_ROOT / "packaging" / "quickjs-youtube-runtime-lock-v1.json"
 
@@ -24,43 +23,26 @@ def test_quickjs_wrapper_lock_binds_sources_engine_and_canonical_manifest() -> N
     assert lock["wrapper"]["artifact"]["length"] == lock["wrapper"]["output"]["length"]
     assert lock["wrapper"]["artifact"]["sha256"] == lock["wrapper"]["output"]["sha256"]
     assert "release-cache-quickjs-wrapper-v3" in lock["wrapper"]["artifact"]["url"]
-    source_tree = (
-        json.dumps(
-            lock["wrapper"]["files"], sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        + b"\n"
-    )
-    assert hashlib.sha256(source_tree).hexdigest() == lock["wrapper"]["artifact"][
-        "sourceTreeSha256"
-    ]
+    source_tree = json.dumps(lock["wrapper"]["files"], sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
+    assert hashlib.sha256(source_tree).hexdigest() == lock["wrapper"]["artifact"]["sourceTreeSha256"]
     assert lock["manifest"]["runtime"]["implementation"] == helper.IMPLEMENTATION
     assert lock["manifest"]["runtime"]["protocol"] == helper.PROTOCOL
     assert lock["manifest"]["runtime"]["wrapperVersion"] == "3"
+    assert lock["manifest"]["policy"]["processStateFailureCleanupBeforeReaderJoin"] is True
     assert (
-        lock["manifest"]["policy"][
-            "processStateFailureCleanupBeforeReaderJoin"
-        ]
-        is True
+        hashlib.sha256(helper._canonical_manifest_bytes(lock["manifest"])).hexdigest()
+        == lock["manifestCanonicalSha256"]
     )
-    assert hashlib.sha256(
-        helper._canonical_manifest_bytes(lock["manifest"])
-    ).hexdigest() == lock["manifestCanonicalSha256"]
 
 
 def test_quickjs_upstream_lock_binding_normalizes_mixed_line_endings(
     tmp_path: Path,
 ) -> None:
-    lock = helper._load_json_object(
-        LOCK_PATH, label="QuickJS wrapper runtime lock"
-    )
-    source = helper._normalized_text_bytes(
-        REPO_ROOT / lock["upstreamLock"]["relativePath"]
-    )
+    lock = helper._load_json_object(LOCK_PATH, label="QuickJS wrapper runtime lock")
+    source = helper._normalized_text_bytes(REPO_ROOT / lock["upstreamLock"]["relativePath"])
     lines = source.splitlines(keepends=True)
     mixed = b"".join(
-        line[:-1] + (b"\r\n" if index % 2 else b"\n")
-        if line.endswith(b"\n")
-        else line
+        line[:-1] + (b"\r\n" if index % 2 else b"\n") if line.endswith(b"\n") else line
         for index, line in enumerate(lines)
     )
     upstream_path = tmp_path / lock["upstreamLock"]["relativePath"]
@@ -71,9 +53,7 @@ def test_quickjs_upstream_lock_binding_normalizes_mixed_line_endings(
 
     assert entry["id"] == lock["upstreamLock"]["entry"]
     upstream_path.write_bytes(mixed.replace(b"quickjs-ng", b"quickjs-nh", 1))
-    with pytest.raises(
-        helper.BuildError, match="upstream QuickJS lock differs from its wrapper binding"
-    ):
+    with pytest.raises(helper.BuildError, match="upstream QuickJS lock differs from its wrapper binding"):
         helper._validate_upstream_lock(tmp_path, lock)
 
     upstream_path.write_bytes(source.replace(b"\n", b"\r", 1))
@@ -81,9 +61,7 @@ def test_quickjs_upstream_lock_binding_normalizes_mixed_line_endings(
         helper._validate_upstream_lock(tmp_path, lock)
 
 
-def test_quickjs_input_cache_reuses_verified_bytes_offline(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_quickjs_input_cache_reuses_verified_bytes_offline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     content = b"locked quickjs input"
     identity = {
         "url": "https://example.test/locked-input",
@@ -101,12 +79,8 @@ def test_quickjs_input_cache_reuses_verified_bytes_offline(
     monkeypatch.setattr(helper, "_download_locked", fake_download)
     cache_root = tmp_path / "cache"
 
-    first = helper._provision_input(
-        cache_root=cache_root, identity=identity, offline=False
-    )
-    second = helper._provision_input(
-        cache_root=cache_root, identity=identity, offline=True
-    )
+    first = helper._provision_input(cache_root=cache_root, identity=identity, offline=False)
+    second = helper._provision_input(cache_root=cache_root, identity=identity, offline=True)
 
     assert first == second
     assert first.read_bytes() == content
@@ -203,9 +177,7 @@ def test_normal_quickjs_build_provisions_locked_wrapper_instead_of_linking(
     assert provisioned[-1] is lock["wrapper"]["artifact"]
 
 
-def test_verify_only_never_builds_or_downloads(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_verify_only_never_builds_or_downloads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     lock = helper._load_lock(LOCK_PATH, REPO_ROOT)
     output_root = tmp_path / "runtime"
     outputs = [
@@ -257,12 +229,8 @@ def test_verify_only_never_builds_or_downloads(
 
 
 def test_sidecar_and_release_cache_keys_track_every_quickjs_build_input() -> None:
-    sidecar = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
-        encoding="utf-8"
-    )
-    release_keys = (
-        REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1"
-    ).read_text(encoding="utf-8")
+    sidecar = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    release_keys = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
     required = (
         "packaging/quickjs-youtube-runtime-lock-v1.json",
         "scripts/build_quickjs_youtube_runtime.py",
@@ -282,21 +250,11 @@ def test_sidecar_and_release_cache_keys_track_every_quickjs_build_input() -> Non
 
 
 def test_ci_downloads_and_hashes_quickjs_wrapper_before_release_builds() -> None:
-    verifier = (
-        REPO_ROOT / "scripts" / "ci" / "verify_quickjs_wrapper_cache_asset.ps1"
-    ).read_text(encoding="utf-8")
-    release_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "release-windows.yml"
-    ).read_text(encoding="utf-8")
-    pr_workflow = (
-        REPO_ROOT / ".github" / "workflows" / "hybrid-pr-checks.yml"
-    ).read_text(encoding="utf-8")
-    publisher = (
-        REPO_ROOT / "scripts" / "ci" / "publish_quickjs_wrapper_cache_asset.ps1"
-    ).read_text(encoding="utf-8")
-    pruner = (
-        REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1"
-    ).read_text(encoding="utf-8")
+    verifier = (REPO_ROOT / "scripts" / "ci" / "verify_quickjs_wrapper_cache_asset.ps1").read_text(encoding="utf-8")
+    release_workflow = (REPO_ROOT / ".github" / "workflows" / "release-windows.yml").read_text(encoding="utf-8")
+    pr_workflow = (REPO_ROOT / ".github" / "workflows" / "hybrid-pr-checks.yml").read_text(encoding="utf-8")
+    publisher = (REPO_ROOT / "scripts" / "ci" / "publish_quickjs_wrapper_cache_asset.ps1").read_text(encoding="utf-8")
+    pruner = (REPO_ROOT / "scripts" / "ci" / "prune_obsolete_release_caches.ps1").read_text(encoding="utf-8")
 
     assert "gh release download" in verifier
     assert "Get-FileHash" in verifier

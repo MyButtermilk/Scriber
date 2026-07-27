@@ -24,9 +24,7 @@ def test_pipeline_workers_disable_unused_rtvi_and_turn_tracking() -> None:
     calls = [
         node
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "PipelineWorker"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "PipelineWorker"
     ]
 
     assert len(calls) == 2

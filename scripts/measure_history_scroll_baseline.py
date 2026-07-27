@@ -18,7 +18,6 @@ from typing import Any
 
 from aiohttp import WSMsgType, web
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FRONTEND_ROOT = REPO_ROOT / "Frontend"
 
@@ -118,9 +117,7 @@ def resolve_browser_path(requested: str = "") -> str:
         path = shutil.which(candidate) or candidate
         if Path(path).exists() or shutil.which(path):
             return path
-    raise RuntimeError(
-        "No Chrome/Edge/Chromium executable found. Pass --browser with an explicit path."
-    )
+    raise RuntimeError("No Chrome/Edge/Chromium executable found. Pass --browser with an explicit path.")
 
 
 def npm_executable() -> str:
@@ -244,9 +241,7 @@ class MockBackend:
         matching_indexes = range(self.item_count)
         if query:
             matching_indexes = [
-                index
-                for index in matching_indexes
-                if query in transcript_item(transcript_type, index)["title"].lower()
+                index for index in matching_indexes if query in transcript_item(transcript_type, index)["title"].lower()
             ]
         else:
             matching_indexes = list(matching_indexes)
@@ -303,7 +298,7 @@ class CdpClient:
         self.receiver_task = asyncio.create_task(self._receiver())
 
     @classmethod
-    async def connect(cls, websocket_url: str) -> "CdpClient":
+    async def connect(cls, websocket_url: str) -> CdpClient:
         import aiohttp
 
         session = aiohttp.ClientSession()

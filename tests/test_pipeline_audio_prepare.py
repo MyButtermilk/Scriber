@@ -68,9 +68,7 @@ async def test_openai_flac_is_prepared_as_wav_before_request(
         audio_prepare,
         "probe_audio_input_file",
         lambda path: _probe(
-            AudioInputFormat.FLAC
-            if Path(path) == source
-            else AudioInputFormat.WAV_PCM16,
+            AudioInputFormat.FLAC if Path(path) == source else AudioInputFormat.WAV_PCM16,
             byte_length=Path(path).stat().st_size,
         ),
     )
@@ -395,9 +393,7 @@ async def test_frozen_exact_format_must_match_prepared_selection(
         audio_prepare,
         "probe_audio_input_file",
         lambda path: _probe(
-            AudioInputFormat.FLAC
-            if Path(path) == source
-            else AudioInputFormat.MP3,
+            AudioInputFormat.FLAC if Path(path) == source else AudioInputFormat.MP3,
             byte_length=Path(path).stat().st_size,
         ),
     )

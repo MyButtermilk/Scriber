@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 import pytest
 
 from scripts.prepare_nltk_punkt_data import PunktDataError, prepare
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -109,11 +108,7 @@ def test_prepare_rejects_nonempty_output(tmp_path: Path) -> None:
 
 
 def test_production_lock_retains_exactly_english_and_german() -> None:
-    lock = json.loads(
-        (REPO_ROOT / "packaging/nltk-punkt-tab-lock-v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    lock = json.loads((REPO_ROOT / "packaging/nltk-punkt-tab-lock-v1.json").read_text(encoding="utf-8"))
     required_files = {
         "abbrev_types.txt",
         "collocations.tab",
@@ -121,9 +116,7 @@ def test_production_lock_retains_exactly_english_and_german() -> None:
         "sent_starters.txt",
     }
     expected_assets = {"README"} | {
-        f"{language}/{filename}"
-        for language in ("english", "german")
-        for filename in required_files
+        f"{language}/{filename}" for language in ("english", "german") for filename in required_files
     }
 
     assert set(lock["assets"]) == expected_assets

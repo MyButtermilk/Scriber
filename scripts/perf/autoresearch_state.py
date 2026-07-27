@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 SESSION_FILES = [
     "autoresearch.md",
     "autoresearch.jsonl",
@@ -150,14 +149,9 @@ def cmd_recommend_next(repo_root: Path, compact: bool, checklist: bool) -> int:
     decision_rows = [
         row
         for row in state.get("ledger", [])
-        if isinstance(row, dict)
-        and row.get("status") in {"keep", "discard", "crash", "no-op", "blocked"}
+        if isinstance(row, dict) and row.get("status") in {"keep", "discard", "crash", "no-op", "blocked"}
     ]
-    kept_rows = [
-        row
-        for row in decision_rows
-        if row.get("status") == "keep" and not is_instrumentation_only_keep(row)
-    ]
+    kept_rows = [row for row in decision_rows if row.get("status") == "keep" and not is_instrumentation_only_keep(row)]
     latest_decision = decision_rows[-1] if decision_rows else latest
     latest_champion = kept_rows[-1] if kept_rows else latest_decision
     latest_decision_index = -1
@@ -166,11 +160,7 @@ def cmd_recommend_next(repo_root: Path, compact: bool, checklist: bool) -> int:
             if row is latest_champion:
                 latest_decision_index = index
                 break
-    rows_after_decision = (
-        state.get("ledger", [])[latest_decision_index + 1 :]
-        if latest_decision_index >= 0
-        else []
-    )
+    rows_after_decision = state.get("ledger", [])[latest_decision_index + 1 :] if latest_decision_index >= 0 else []
     final_full_local_events = {
         "final_fulllocal_confirmation_overlay_prepare",
         "fulllocal_confirmation_startup_defer",
@@ -180,12 +170,10 @@ def cmd_recommend_next(repo_root: Path, compact: bool, checklist: bool) -> int:
         "final_live_holdouts_startup_defer",
     }
     has_final_full_local = any(
-        isinstance(row, dict) and row.get("event") in final_full_local_events
-        for row in rows_after_decision
+        isinstance(row, dict) and row.get("event") in final_full_local_events for row in rows_after_decision
     )
     has_final_live_holdouts = any(
-        isinstance(row, dict) and row.get("event") in final_live_holdout_events
-        for row in rows_after_decision
+        isinstance(row, dict) and row.get("event") in final_live_holdout_events for row in rows_after_decision
     )
     baseline = config.get("baseline", {}) if isinstance(config.get("baseline"), dict) else {}
     segment = str(config.get("segment", ""))

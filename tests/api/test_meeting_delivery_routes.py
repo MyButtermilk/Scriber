@@ -12,8 +12,8 @@ from src.api.meeting_delivery_routes import (
     PinnedWebhookResolver,
     ResolvedWebhookAddress,
     ValidatedWebhookTarget,
-    _delivery_preview_hash,
     _claim_delivery_with_cancellation_barrier,
+    _delivery_preview_hash,
     _pinned_socket_factory,
     _update_delivery_after_cancellation,
     validate_webhook_target,
@@ -139,7 +139,7 @@ async def test_pinned_transport_accepts_real_empty_204_response():
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     try:
-        server = getattr(site, "_server")
+        server = site._server
         port = int(server.sockets[0].getsockname()[1])
         target = ValidatedWebhookTarget(
             url=f"http://webhook.test:{port}/hook",
@@ -244,9 +244,7 @@ async def test_cancelled_request_settles_claim_and_marks_unsent_delivery_failed(
 
     store = Store()
     service = MeetingDeliveryService(store=store, broadcast=broadcast)
-    task = asyncio.create_task(
-        _claim_delivery_with_cancellation_barrier(service, store.claim)
-    )
+    task = asyncio.create_task(_claim_delivery_with_cancellation_barrier(service, store.claim))
     assert await asyncio.to_thread(claim_started.wait, 5)
 
     task.cancel()

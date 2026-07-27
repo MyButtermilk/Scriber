@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scripts.validate_hybrid_release_readiness import REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "build_tauri_text_injection_matrix.py"
 
@@ -151,4 +150,6 @@ def test_build_tauri_text_injection_matrix_rejects_required_unsupported_marker(t
     assert result.returncode == 1
     payload = json.loads(output.read_text(encoding="utf-8"))
     assert payload["ok"] is False
-    assert any("required scenario notepad cannot be marked unsupported" in failure for failure in payload["validationFailures"])
+    assert any(
+        "required scenario notepad cannot be marked unsupported" in failure for failure in payload["validationFailures"]
+    )

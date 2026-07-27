@@ -103,9 +103,7 @@ def test_hot_path_tracer_exposes_canonical_kpis_without_removing_legacy_pairs():
         "non_speech_overhead_ms": 350.0,
     }
     assert tracer.report()["legacy_marker_to_final_text_observed_ms"] == 50.0
-    assert "non_speech_overhead_ms" not in tracer.canonical_kpis(
-        authoritative_fixture_duration_ms=float("inf")
-    )
+    assert "non_speech_overhead_ms" not in tracer.canonical_kpis(authoritative_fixture_duration_ms=float("inf"))
     assert "hotkey_received" in tracer.missing_canonical_markers()
     assert set(CANONICAL_HOT_PATH_MARKERS) >= {
         "activation_received",

@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -153,11 +152,7 @@ async def measure_exports(
                 "ok": bool(data) and ext == export_format,
             }
 
-    tasks = [
-        run_one(index, export_format)
-        for index in range(iterations)
-        for export_format in formats
-    ]
+    tasks = [run_one(index, export_format) for index in range(iterations) for export_format in formats]
     started = time.perf_counter_ns()
     items = await asyncio.gather(*tasks)
     total_ms = (time.perf_counter_ns() - started) / 1_000_000

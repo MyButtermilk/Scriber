@@ -1,4 +1,5 @@
 """Optional local WeSpeaker ONNX embeddings without Torch/Pyannote/SciPy."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,11 +16,9 @@ from aiohttp import ClientSession
 
 from src.runtime.paths import data_dir
 
-
 MODEL_REVISION = "abea38bae76873d0842509a54f8fbe6c8b5b5fe6"
 MODEL_URL = (
-    "https://huggingface.co/talatapp/wespeaker-voxceleb-resnet34-LM-onnx/resolve/"
-    f"{MODEL_REVISION}/wespeaker.onnx"
+    f"https://huggingface.co/talatapp/wespeaker-voxceleb-resnet34-LM-onnx/resolve/{MODEL_REVISION}/wespeaker.onnx"
 )
 MODEL_SHA256 = "131700f06e0f4efa9283d66f504d84aaea8c279e81cba8c7784c14d180333c61"
 MODEL_SIZE = 26_632_299
@@ -47,8 +46,7 @@ class WeSpeakerModel:
                 installed = (
                     byte_size == MODEL_SIZE
                     and self.verification_path.is_file()
-                    and self.verification_path.read_text(encoding="ascii").strip()
-                    == MODEL_SHA256
+                    and self.verification_path.read_text(encoding="ascii").strip() == MODEL_SHA256
                 )
             except OSError:
                 # A concurrent delete or cross-process opt-out is an ordinary
@@ -69,9 +67,7 @@ class WeSpeakerModel:
         """Download and verify into a unique non-installed staging file."""
 
         self.root.mkdir(parents=True, exist_ok=True)
-        temporary = self.root / (
-            f".wespeaker.{os.getpid()}.{uuid4().hex}.onnx.partial"
-        )
+        temporary = self.root / (f".wespeaker.{os.getpid()}.{uuid4().hex}.onnx.partial")
         digest = hashlib.sha256()
         written = 0
         try:
@@ -97,20 +93,13 @@ class WeSpeakerModel:
     def promote_staged(self, staged: StagedWeSpeakerDownload) -> dict[str, Any]:
         """Atomically promote a verified staging file under the model lock."""
 
-        verification_temporary = self.root / (
-            f".wespeaker.{os.getpid()}.{uuid4().hex}.sha256.partial"
-        )
+        verification_temporary = self.root / (f".wespeaker.{os.getpid()}.{uuid4().hex}.sha256.partial")
         with self._lock:
             try:
-                if (
-                    not staged.model_path.is_file()
-                    or staged.model_path.stat().st_size != MODEL_SIZE
-                ):
+                if not staged.model_path.is_file() or staged.model_path.stat().st_size != MODEL_SIZE:
                     raise ValueError("WeSpeaker staged model is unavailable.")
                 staged.model_path.replace(self.path)
-                verification_temporary.write_text(
-                    MODEL_SHA256 + "\n", encoding="ascii"
-                )
+                verification_temporary.write_text(MODEL_SHA256 + "\n", encoding="ascii")
                 verification_temporary.replace(self.verification_path)
                 self._session = None
                 return self.status()
@@ -151,9 +140,7 @@ class WeSpeakerModel:
                     raise ValueError("The optional WeSpeaker model checksum is invalid.")
                 import onnxruntime as ort
 
-                self._session = ort.InferenceSession(
-                    str(self.path), providers=["CPUExecutionProvider"]
-                )
+                self._session = ort.InferenceSession(str(self.path), providers=["CPUExecutionProvider"])
             return self._session
 
     async def extract(self, path: Path, start_ms: int, end_ms: int) -> list[float]:
@@ -196,9 +183,7 @@ class WeSpeakerModel:
             if self._voice_window_is_usable(window):
                 windows.append(window)
         if len(windows) < 2:
-            raise ValueError(
-                "WeSpeaker needs clear speech across at least two parts of the sample."
-            )
+            raise ValueError("WeSpeaker needs clear speech across at least two parts of the sample.")
         return self._extract_windows_sync(windows)
 
     @staticmethod
@@ -242,9 +227,7 @@ class WeSpeakerModel:
             waveform[0, :copy_count] = samples[:copy_count]
             active_mask = max(1, min(589, round(copy_count / 160_000 * 589)))
             mask[0, :active_mask] = 1.0
-            raw_output = runtime.run(
-                ["embedding"], {"waveform": waveform, "mask": mask}
-            )[0]
+            raw_output = runtime.run(["embedding"], {"waveform": waveform, "mask": mask})[0]
             output = np.asarray(raw_output, dtype=np.float32)
             if output.ndim == 1:
                 output = output.reshape(1, -1)

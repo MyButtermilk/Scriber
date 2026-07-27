@@ -104,12 +104,7 @@ class PinnedWebhookResolver(AbstractResolver):
 
 async def validate_webhook_target(raw_url: str) -> ValidatedWebhookTarget:
     parsed = urlparse(str(raw_url or "").strip())
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or parsed.username
-        or parsed.password
-    ):
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise ValueError("Webhook URL must be HTTPS and must not contain credentials.")
     if parsed.port not in {None, 443}:
         raise ValueError("Webhook URL must use the standard HTTPS port.")
@@ -135,9 +130,7 @@ async def validate_webhook_target(raw_url: str) -> ValidatedWebhookTarget:
         except ValueError as exc:
             raise ValueError("Webhook hostname resolved to an invalid address.") from exc
         if not value.is_global:
-            raise ValueError(
-                "Webhook targets must resolve only to public internet addresses."
-            )
+            raise ValueError("Webhook targets must resolve only to public internet addresses.")
         item = (value.compressed, int(family), int(proto))
         if item in seen:
             continue
@@ -163,11 +156,7 @@ async def validate_webhook_target(raw_url: str) -> ValidatedWebhookTarget:
 
 def build_meeting_delivery_payload(detail: dict[str, Any]) -> dict[str, Any]:
     analysis = next(
-        (
-            item.get("payload", {})
-            for item in detail.get("outputs", [])
-            if item.get("kind") == "analysis"
-        ),
+        (item.get("payload", {}) for item in detail.get("outputs", []) if item.get("kind") == "analysis"),
         {},
     )
     if isinstance(analysis, dict):
@@ -199,10 +188,7 @@ def build_meeting_delivery_payload(detail: dict[str, Any]) -> dict[str, Any]:
             }
             for item in detail.get("segments", [])
         ],
-        "notes": [
-            {"id": item["id"], "body": item["body"], "atMs": item["atMs"]}
-            for item in detail.get("notes", [])
-        ],
+        "notes": [{"id": item["id"], "body": item["body"], "atMs": item["atMs"]} for item in detail.get("notes", [])],
     }
 
 
@@ -216,10 +202,7 @@ def _pinned_socket_factory(
     response context (notably for an empty 204 response).
     """
 
-    allowed = {
-        (address.family, ipaddress.ip_address(address.host), target.port)
-        for address in target.addresses
-    }
+    allowed = {(address.family, ipaddress.ip_address(address.host), target.port) for address in target.addresses}
 
     def create_socket(address_info: tuple[Any, ...]) -> socket.socket:
         family, sock_type, proto, _canonname, sockaddr = address_info
@@ -284,9 +267,7 @@ async def _claim_delivery_with_cancellation_barrier(
         result = worker.result()
     except BaseException:
         if pending_cancel is not None:
-            logger.warning(
-                "Meeting delivery claim failed while its request was cancelling"
-            )
+            logger.warning("Meeting delivery claim failed while its request was cancelling")
             raise pending_cancel from None
         raise
     if pending_cancel is not None:
@@ -302,8 +283,7 @@ async def _claim_delivery_with_cancellation_barrier(
                 pending_cancel = exc
             except Exception as exc:
                 logger.warning(
-                    "Meeting delivery cancellation reconciliation failed "
-                    "(error_type={})",
+                    "Meeting delivery cancellation reconciliation failed (error_type={})",
                     type(exc).__name__,
                 )
         raise pending_cancel
@@ -443,10 +423,7 @@ async def _deliver_meeting_webhook(request: web.Request) -> web.Response:
                                 final_status, final_error = "delivered", ""
                                 break
                             final_error = f"Webhook returned HTTP {response.status}"
-                            if (
-                                response.status not in _WEBHOOK_RETRY_STATUSES
-                                and response.status < 500
-                            ):
+                            if response.status not in _WEBHOOK_RETRY_STATUSES and response.status < 500:
                                 break
                     except Exception as exc:
                         final_error = type(exc).__name__
@@ -471,9 +448,7 @@ async def _deliver_meeting_webhook(request: web.Request) -> web.Response:
             attempt_count=attempts,
         )
         try:
-            await service.broadcast(
-                meeting_delivery_updated_event(meeting_id, delivery)
-            )
+            await service.broadcast(meeting_delivery_updated_event(meeting_id, delivery))
         except Exception as exc:
             logger.warning(
                 "Meeting delivery broadcast failed (error_type={})",
@@ -500,9 +475,7 @@ async def _list_meeting_deliveries(request: web.Request) -> web.Response:
     meeting_id = request.match_info.get("id", "")
     try:
         items = await asyncio.to_thread(service.store.deliveries, meeting_id)
-        return web.json_response(
-            {"apiVersion": REST_API_VERSION, "items": items}
-        )
+        return web.json_response({"apiVersion": REST_API_VERSION, "items": items})
     except MeetingNotFound:
         return web.json_response({"message": "Meeting not found"}, status=404)
 

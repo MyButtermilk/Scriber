@@ -5,6 +5,7 @@ the installed NSIS tree.  It intentionally does not inspect SCRIBER_DATA_DIR:
 the two ONNX models are an optional post-install component and must be absent
 from the signed base package.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -14,7 +15,6 @@ import struct
 import subprocess
 from pathlib import Path
 from typing import Any
-
 
 WORKER_NAME = "scriber-diarization-sidecar"
 WORKER_FILE = f"{WORKER_NAME}.exe"
@@ -26,9 +26,7 @@ MAX_CONTROL_BYTES = 64 * 1024
 MAX_WORKER_BYTES = 64 * 1024 * 1024
 
 SEGMENTATION_MODEL_FILE = "pyannote-segmentation-3.0.int8.onnx"
-EMBEDDING_MODEL_FILE = (
-    "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
-)
+EMBEDDING_MODEL_FILE = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 OPTIONAL_COMPONENT_FILE = "component.json"
 
 _FORBIDDEN_DYNAMIC_IMPORT_MARKERS = (
@@ -109,9 +107,7 @@ def _pe_imports(path: Path) -> list[str]:
         entry = section_offset + index * 40
         if entry + 40 > len(data):
             raise ValueError("Diarization worker has a truncated PE section table.")
-        virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from(
-            "<IIII", data, entry + 8
-        )
+        virtual_size, virtual_address, raw_size, raw_offset = struct.unpack_from("<IIII", data, entry + 8)
         sections.append((virtual_address, virtual_size, raw_offset, raw_size))
 
     descriptor_offset = _rva_to_offset(import_rva, sections)
@@ -150,11 +146,7 @@ def _run_control(executable: Path, argument: str) -> dict[str, Any]:
         timeout=10,
         check=False,
     )
-    if (
-        process.returncode != 0
-        or len(process.stdout) > MAX_CONTROL_BYTES
-        or len(process.stderr) > MAX_CONTROL_BYTES
-    ):
+    if process.returncode != 0 or len(process.stdout) > MAX_CONTROL_BYTES or len(process.stderr) > MAX_CONTROL_BYTES:
         raise RuntimeError(f"Diarization worker {argument} probe failed.")
     try:
         payload = json.loads(process.stdout.decode("utf-8"))
@@ -192,8 +184,7 @@ def _resolve_resource_dir(root: Path) -> Path:
     matches = [
         candidate
         for candidate in candidates
-        if (candidate / WORKER_FILE).is_file()
-        or (candidate / MANIFEST_FILE).is_file()
+        if (candidate / WORKER_FILE).is_file() or (candidate / MANIFEST_FILE).is_file()
     ]
     if len(matches) != 1:
         raise RuntimeError("Expected exactly one bundled diarization worker resource.")
@@ -251,9 +242,7 @@ def validate_resource(root: Path) -> dict[str, Any]:
 
     imports = _pe_imports(executable)
     forbidden_imports = [
-        name
-        for name in imports
-        if any(marker in name.casefold() for marker in _FORBIDDEN_DYNAMIC_IMPORT_MARKERS)
+        name for name in imports if any(marker in name.casefold() for marker in _FORBIDDEN_DYNAMIC_IMPORT_MARKERS)
     ]
     if forbidden_imports:
         raise RuntimeError("Diarization worker is not statically self-contained.")
@@ -262,9 +251,7 @@ def validate_resource(root: Path) -> dict[str, Any]:
     for name in (SEGMENTATION_MODEL_FILE, EMBEDDING_MODEL_FILE):
         forbidden_files.extend(path for path in root.rglob(name) if path.is_file())
     forbidden_files.extend(path for path in resource_dir.rglob("*.onnx") if path.is_file())
-    forbidden_files.extend(
-        path for path in resource_dir.rglob(OPTIONAL_COMPONENT_FILE) if path.is_file()
-    )
+    forbidden_files.extend(path for path in resource_dir.rglob(OPTIONAL_COMPONENT_FILE) if path.is_file())
     if forbidden_files:
         raise RuntimeError("Optional diarization models are present in the base package.")
 

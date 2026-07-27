@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
 from scripts import check_backend_runtime_imports as runtime_import_checks
 from scripts.check_backend_runtime_imports import (
     BLOCKED_FROZEN_BUILD_ONLY_IMPORTS,
@@ -15,21 +16,19 @@ from scripts.check_backend_runtime_imports import (
     PUNKT_TAB_LANGUAGE_PROBES,
     PUNKT_TAB_REQUIRED_FILES,
     PUNKT_TAB_RETAINED_LANGUAGES,
-    REQUIRED_IMPORTS,
     REQUIRED_FROZEN_BUILD_PRUNE_IMPORTS,
+    REQUIRED_IMPORTS,
     REQUIRED_PACKAGE_VERSIONS,
     SENTENCE_SEGMENTATION_PROBES,
     check_frozen_build_tool_pruning,
     check_frozen_numpy_noblas,
-    check_imports,
     check_frozen_youtube_only_yt_dlp,
+    check_imports,
     check_package_versions,
     check_provider_initialization_matrix,
     check_runtime_requirements,
     check_sentence_segmentation,
 )
-from backend_runtime.contract import RUNTIME_CONTRACT_REVISION, RUNTIME_REQUIRED_IMPORTS
-
 
 PUNKT_TAB_PRUNED_LANGUAGES = (
     "czech",
@@ -74,12 +73,15 @@ def _fake_compact_numpy():
 def test_frozen_numpy_noblas_gate_accepts_compact_runtime(tmp_path):
     fake_numpy = _fake_compact_numpy()
 
-    assert check_frozen_numpy_noblas(
-        frozen=True,
-        frozen_root=tmp_path,
-        import_module=lambda name: fake_numpy if name == "numpy" else None,
-        version_for=lambda _name: FROZEN_NUMPY_VERSION,
-    ) == []
+    assert (
+        check_frozen_numpy_noblas(
+            frozen=True,
+            frozen_root=tmp_path,
+            import_module=lambda name: fake_numpy if name == "numpy" else None,
+            version_for=lambda _name: FROZEN_NUMPY_VERSION,
+        )
+        == []
+    )
 
 
 def test_frozen_numpy_noblas_gate_rejects_stale_openblas(tmp_path):
@@ -101,10 +103,13 @@ def test_frozen_numpy_noblas_gate_rejects_stale_openblas(tmp_path):
 
 
 def test_numpy_noblas_gate_does_not_constrain_source_environment():
-    assert check_frozen_numpy_noblas(
-        frozen=False,
-        import_module=lambda _name: (_ for _ in ()).throw(AssertionError()),
-    ) == []
+    assert (
+        check_frozen_numpy_noblas(
+            frozen=False,
+            import_module=lambda _name: (_ for _ in ()).throw(AssertionError()),
+        )
+        == []
+    )
 
 
 def _write_complete_punkt_tab(
@@ -195,24 +200,16 @@ def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
 
 def test_sidecar_spec_prunes_exact_build_and_test_pyz_prefixes():
     repo_root = Path(__file__).resolve().parents[1]
-    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
     expected_prefixes = tuple(BLOCKED_FROZEN_BUILD_ONLY_IMPORTS)
-    filter_call = spec.split("a.pure[:] = exclude_pure_modules(", 1)[1].split(
-        "\n)\n\npyz = PYZ(a.pure)", 1
-    )[0]
+    filter_call = spec.split("a.pure[:] = exclude_pure_modules(", 1)[1].split("\n)\n\npyz = PYZ(a.pure)", 1)[0]
 
     assert "def exclude_pure_modules(" in spec
     assert 'module_name == prefix or module_name.startswith(prefix + ".")' in spec
     assert spec.count("a.pure[:] = exclude_pure_modules(") == 1
-    assert spec.index("a.pure[:] = exclude_pure_modules(") < spec.index(
-        "pyz = PYZ(a.pure)"
-    )
+    assert spec.index("a.pure[:] = exclude_pure_modules(") < spec.index("pyz = PYZ(a.pure)")
     assert 'startswith("setuptools/")' in spec
-    assert spec.index('startswith("setuptools/")') < spec.index(
-        "a.pure[:] = exclude_pure_modules("
-    )
+    assert spec.index('startswith("setuptools/")') < spec.index("a.pure[:] = exclude_pure_modules(")
     for prefix in expected_prefixes:
         assert f'"{prefix}"' in filter_call
     for retained_prefix in (
@@ -229,14 +226,8 @@ def test_sidecar_spec_prunes_exact_build_and_test_pyz_prefixes():
 
 
 def test_sidecar_spec_preserves_pycparser_runtime_grammar_docstrings():
-    spec = (
-        Path(__file__).resolve().parents[1]
-        / "packaging"
-        / "scriber-backend.spec"
-    ).read_text(encoding="utf-8")
-    prune_loop = spec.split("total_stripped_docstrings = 0", 1)[1].split(
-        "pyz = PYZ(a.pure)", 1
-    )[0]
+    spec = (Path(__file__).resolve().parents[1] / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
+    prune_loop = spec.split("total_stripped_docstrings = 0", 1)[1].split("pyz = PYZ(a.pure)", 1)[0]
 
     assert 'RUNTIME_DOCSTRING_REQUIRED_PREFIXES = ("pycparser",)' in spec
     assert "for prefix in RUNTIME_DOCSTRING_REQUIRED_PREFIXES" in prune_loop
@@ -258,10 +249,13 @@ def test_frozen_build_tool_gate_requires_runtime_dependencies_and_absence():
             raise exc
         return object()
 
-    assert check_frozen_build_tool_pruning(
-        frozen=True,
-        import_module=fake_import,
-    ) == []
+    assert (
+        check_frozen_build_tool_pruning(
+            frozen=True,
+            import_module=fake_import,
+        )
+        == []
+    )
     assert required == {
         "_cffi_backend",
         "cffi",
@@ -313,41 +307,32 @@ def test_runtime_build_and_cache_validators_read_the_contract_revision_from_sour
 
 
 def test_backend_spec_keeps_only_english_and_german_punkt_tab_models():
-    spec = (
-        Path(__file__).resolve().parents[1]
-        / "packaging"
-        / "scriber-backend.spec"
-    ).read_text(encoding="utf-8")
-    exact_filter = '''a.datas = [
+    spec = (Path(__file__).resolve().parents[1] / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
+    exact_filter = """a.datas = [
     entry
     for entry in a.datas
     if str(entry[0]).replace("\\\\", "/")
     != "nltk_data/tokenizers/punkt_tab.zip"
-]'''
+]"""
 
     assert spec.count(exact_filter) == 1
     assert spec.count('"nltk_data/tokenizers/punkt_tab.zip"') == 1
     assert "def retain_punkt_tab_languages(" in spec
     assert 'prefix = "nltk_data/tokenizers/punkt_tab/"' in spec
     assert 'path_parts = relative.split("/", 1)' in spec
-    exact_language_filter = (
-        'a.datas = retain_punkt_tab_languages(a.datas, ("english", "german"))'
-    )
+    exact_language_filter = 'a.datas = retain_punkt_tab_languages(a.datas, ("english", "german"))'
     assert spec.count(exact_language_filter) == 1
-    assert spec.index("a = Analysis(") < spec.index(exact_filter) < spec.index(
-        exact_language_filter
-    ) < spec.index(
-        "pyz = PYZ(a.pure)"
+    assert (
+        spec.index("a = Analysis(")
+        < spec.index(exact_filter)
+        < spec.index(exact_language_filter)
+        < spec.index("pyz = PYZ(a.pure)")
     )
 
 
 def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_directories():
     repo_root = Path(__file__).resolve().parents[1]
-    config = json.loads(
-        (repo_root / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    config = json.loads((repo_root / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     hook_relative = config["bundle"]["windows"]["nsis"]["installerHooks"]
     hook_path = repo_root / "Frontend" / "src-tauri" / hook_relative
     hook = hook_path.read_text(encoding="utf-8")
@@ -434,10 +419,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     }
     obsolete_directories = (
         "backend/_internal/numpy.libs",
-        *(
-            f"backend/_internal/nltk_data/tokenizers/punkt_tab/{language}"
-            for language in PUNKT_TAB_PRUNED_LANGUAGES
-        ),
+        *(f"backend/_internal/nltk_data/tokenizers/punkt_tab/{language}" for language in PUNKT_TAB_PRUNED_LANGUAGES),
         "backend/_internal/PIL",
         "backend/_internal/docx/templates/default-docx-template/_rels",
         "backend/_internal/docx/templates/default-docx-template/customXml/_rels",
@@ -482,17 +464,9 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     assert removed_directories == obsolete_directories
     assert hook.count("  RMDir ") == len(obsolete_directories)
     for retained_language in PUNKT_TAB_RETAINED_LANGUAGES:
-        retained_prefix = (
-            f"backend/_internal/nltk_data/tokenizers/punkt_tab/"
-            f"{retained_language}/"
-        )
-        assert not any(
-            path.startswith(retained_prefix) for path in deleted_installed_paths
-        )
-        assert (
-            f"backend/_internal/nltk_data/tokenizers/punkt_tab/{retained_language}"
-            not in removed_directories
-        )
+        retained_prefix = f"backend/_internal/nltk_data/tokenizers/punkt_tab/{retained_language}/"
+        assert not any(path.startswith(retained_prefix) for path in deleted_installed_paths)
+        assert f"backend/_internal/nltk_data/tokenizers/punkt_tab/{retained_language}" not in removed_directories
     first_rmdir_path = obsolete_directories[0].replace("/", "\\")
     first_rmdir = f'  RMDir "$INSTDIR\\{first_rmdir_path}"'
     assert hook.index(first_rmdir) > hook.rindex("  Delete ")
@@ -507,11 +481,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
 
 def test_nsis_upgrade_hook_tombstones_only_the_exact_obsolete_deno_runtime_file():
     hook = (
-        Path(__file__).resolve().parents[1]
-        / "Frontend"
-        / "src-tauri"
-        / "windows"
-        / "installer-hooks.nsh"
+        Path(__file__).resolve().parents[1] / "Frontend" / "src-tauri" / "windows" / "installer-hooks.nsh"
     ).read_text(encoding="utf-8")
     media_tool_prefix = '  Delete "$INSTDIR\\backend\\tools\\ffmpeg\\'
     media_tool_deletes = tuple(
@@ -531,11 +501,7 @@ def test_nsis_upgrade_hook_tombstones_only_the_exact_obsolete_deno_runtime_file(
 
 def test_nsis_upgrade_hook_tombstones_only_the_exact_h16_openblas_runtime():
     hook = (
-        Path(__file__).resolve().parents[1]
-        / "Frontend"
-        / "src-tauri"
-        / "windows"
-        / "installer-hooks.nsh"
+        Path(__file__).resolve().parents[1] / "Frontend" / "src-tauri" / "windows" / "installer-hooks.nsh"
     ).read_text(encoding="utf-8")
     numpy_libs_prefix = '  Delete "$INSTDIR\\backend\\_internal\\numpy.libs\\'
     numpy_lib_deletes = tuple(
@@ -576,12 +542,14 @@ def test_backend_runtime_import_check_exercises_sentence_segmentation():
         "cjk_punctuation",
         "arabic_punctuation",
     }
-    assert tuple(
-        language for _label, language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES
-    ) == PUNKT_TAB_RETAINED_LANGUAGES
-    assert {
-        label for label, _language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES
-    } == {"english-punkt-tab", "german-punkt-tab"}
+    assert (
+        tuple(language for _label, language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES)
+        == PUNKT_TAB_RETAINED_LANGUAGES
+    )
+    assert {label for label, _language, _text, _expected in PUNKT_TAB_LANGUAGE_PROBES} == {
+        "english-punkt-tab",
+        "german-punkt-tab",
+    }
     assert check_sentence_segmentation(frozen=False) == []
 
 
@@ -603,9 +571,7 @@ def test_pinned_pipecat_and_scriber_sentence_paths_do_not_request_other_language
     actual_callers: dict[str, int] = {}
     for source_path in pipecat_root.rglob("*.py"):
         source = source_path.read_text(encoding="utf-8")
-        call_count = source.count("match_endofsentence(") - source.count(
-            "def match_endofsentence("
-        )
+        call_count = source.count("match_endofsentence(") - source.count("def match_endofsentence(")
         if call_count:
             actual_callers[source_path.relative_to(pipecat_root).as_posix()] = call_count
     assert actual_callers == expected_callers
@@ -631,13 +597,9 @@ def test_frozen_sentence_check_uses_only_bundled_nltk_data(tmp_path):
         data=SimpleNamespace(path=["user-cache", "developer-cache"]),
         download=original_download,
     )
-    expected_ends = {
-        text: len(expected)
-        for _label, text, expected in SENTENCE_SEGMENTATION_PROBES
-    }
+    expected_ends = {text: len(expected) for _label, text, expected in SENTENCE_SEGMENTATION_PROBES}
     expected_tokenizations = {
-        (language, text): expected
-        for _label, language, text, expected in PUNKT_TAB_LANGUAGE_PROBES
+        (language, text): expected for _label, language, text, expected in PUNKT_TAB_LANGUAGE_PROBES
     }
     observed_paths: list[list[str]] = []
     tokenizer_calls: list[tuple[str, str]] = []
@@ -664,9 +626,7 @@ def test_frozen_sentence_check_uses_only_bundled_nltk_data(tmp_path):
         if module_name == "pipecat.utils.string":
             observed_paths.append(list(fake_nltk.data.path))
             assert fake_nltk.download is not original_download
-            return SimpleNamespace(
-                match_endofsentence=lambda text: expected_ends[text]
-            )
+            return SimpleNamespace(match_endofsentence=lambda text: expected_ends[text])
         raise AssertionError(f"unexpected import: {module_name}")
 
     assert (
@@ -682,10 +642,7 @@ def test_frozen_sentence_check_uses_only_bundled_nltk_data(tmp_path):
     assert fake_nltk.download is original_download
     assert original_download_calls == []
     assert cache_clear_calls == [True]
-    assert tokenizer_calls == [
-        (language, text)
-        for _label, language, text, _expected in PUNKT_TAB_LANGUAGE_PROBES
-    ]
+    assert tokenizer_calls == [(language, text) for _label, language, text, _expected in PUNKT_TAB_LANGUAGE_PROBES]
 
 
 def test_frozen_sentence_check_rejects_download_fallback(tmp_path):
@@ -796,9 +753,7 @@ def test_frozen_youtube_only_runtime_check_requires_registry_and_blocked_imports
         LAZY_EXTRACTORS=SimpleNamespace(value=True),
         plugin_dirs=SimpleNamespace(value=[]),
     )
-    extractor_module = SimpleNamespace(
-        _extractors_context=SimpleNamespace(value=dict.fromkeys(expected_names))
-    )
+    extractor_module = SimpleNamespace(_extractors_context=SimpleNamespace(value=dict.fromkeys(expected_names)))
 
     def fake_import(module_name: str) -> object:
         if module_name == "backend_runtime.yt_dlp_policy":
@@ -825,9 +780,7 @@ def test_frozen_youtube_only_runtime_check_rejects_present_foreign_extractor():
         LAZY_EXTRACTORS=SimpleNamespace(value=True),
         plugin_dirs=SimpleNamespace(value=[]),
     )
-    extractor_module = SimpleNamespace(
-        _extractors_context=SimpleNamespace(value=dict.fromkeys(expected_names))
-    )
+    extractor_module = SimpleNamespace(_extractors_context=SimpleNamespace(value=dict.fromkeys(expected_names)))
 
     def fake_import(module_name: str) -> object:
         return {
@@ -836,9 +789,7 @@ def test_frozen_youtube_only_runtime_check_rejects_present_foreign_extractor():
             "yt_dlp.extractor": extractor_module,
         }.get(module_name, object())
 
-    failures = check_frozen_youtube_only_yt_dlp(
-        frozen=True, import_module=fake_import
-    )
+    failures = check_frozen_youtube_only_yt_dlp(frozen=True, import_module=fake_import)
 
     assert failures == [
         {
@@ -851,8 +802,8 @@ def test_frozen_youtube_only_runtime_check_rejects_present_foreign_extractor():
 
 def test_standard_requirements_include_audio_runtime_dependencies():
     requirements = (
-        Path(__file__).resolve().parents[1] / "requirements-base.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (Path(__file__).resolve().parents[1] / "requirements-base.txt").read_text(encoding="utf-8").splitlines()
+    )
 
     assert "scipy" not in requirements
     assert "onnxruntime" in requirements
@@ -880,16 +831,14 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert all("boto" not in line for line in requirements)
 
     local_requirements = (
-        Path(__file__).resolve().parents[1] / "requirements-local-asr.txt"
-    ).read_text(encoding="utf-8").splitlines()
+        (Path(__file__).resolve().parents[1] / "requirements-local-asr.txt").read_text(encoding="utf-8").splitlines()
+    )
     assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in local_requirements
     assert all("pipecat-ai" not in line for line in local_requirements)
 
 
 def test_pipeline_uses_pipecat_1_5_smart_turn_import_without_removed_processor():
-    pipeline_source = (
-        Path(__file__).resolve().parents[1] / "src" / "pipeline.py"
-    ).read_text(encoding="utf-8")
+    pipeline_source = (Path(__file__).resolve().parents[1] / "src" / "pipeline.py").read_text(encoding="utf-8")
 
     assert "local_smart_turn_v3 import LocalSmartTurnAnalyzerV3" in pipeline_source
     assert "UserIdleProcessor" not in pipeline_source
@@ -931,12 +880,8 @@ def test_backend_worker_runtime_import_check_entrypoint():
 
 def test_sidecar_build_runs_frozen_runtime_import_check():
     repo_root = Path(__file__).resolve().parents[1]
-    build_script = (
-        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
-    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    build_script = (repo_root / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
 
     assert "Invoke-FrozenBackendRuntimeImportCheck" in build_script
     assert "Invoke-FrozenBackendRuntimeLayerCheck" in build_script
@@ -948,12 +893,8 @@ def test_sidecar_build_runs_frozen_runtime_import_check():
 
 def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     repo_root = Path(__file__).resolve().parents[1]
-    build_script = (
-        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
-    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    build_script = (repo_root / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    spec = (repo_root / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
 
     assert "collect_dynamic_libs" in spec
     assert '"onnxruntime"' in spec
@@ -987,12 +928,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"preprocessors/*.py"' in spec
     assert "collect_data_files(" in spec
     assert '"onnxruntime",' in spec
-    hidden_imports = spec.split("hiddenimports += [", 1)[1].split(
-        "]\n\nfor package in (", 1
-    )[0]
-    excluded_imports = spec.split("excludes=[", 1)[1].split(
-        "],\n    noarchive", 1
-    )[0]
+    hidden_imports = spec.split("hiddenimports += [", 1)[1].split("]\n\nfor package in (", 1)[0]
+    excluded_imports = spec.split("excludes=[", 1)[1].split("],\n    noarchive", 1)[0]
     smart_turn_module = '"pipecat.audio.turn.smart_turn.local_smart_turn_v3"'
     assert smart_turn_module in hidden_imports
     assert smart_turn_module not in excluded_imports
@@ -1029,23 +966,20 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert 'Resolve-BackendStableMediaTool -Names @("qjs.exe")' in build_script
     assert "$pythonCommand = Get-Command $Python -ErrorAction SilentlyContinue" in build_script
     assert "if ($pythonDir)" in build_script
-    runtime_manifest_source = build_script.split(
-        "function Get-BackendRuntimeInputManifest", 1
-    )[1].split("function Get-BackendApplicationInputManifest", 1)[0]
+    runtime_manifest_source = build_script.split("function Get-BackendRuntimeInputManifest", 1)[1].split(
+        "function Get-BackendApplicationInputManifest", 1
+    )[0]
     assert '"packaging\\quickjs-youtube-runtime-lock-v1.json"' in runtime_manifest_source
-    assert (
-        '"packaging\\wheels\\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"'
-        in runtime_manifest_source
-    )
+    assert '"packaging\\wheels\\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"' in runtime_manifest_source
     assert '"packaging\\wheels\\numpy-noblas-wheel-lock-v1.json"' in runtime_manifest_source
     assert '"scripts\\validate_numpy_noblas_wheel.py"' in runtime_manifest_source
     assert '"scripts\\build_quickjs_youtube_runtime.py"' in runtime_manifest_source
     assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in runtime_manifest_source
     assert '"requirements-base.txt"' in runtime_manifest_source
     assert "Get-PythonFileEntries" in runtime_manifest_source
-    sidecar_manifest_source = build_script.split(
-        "function Get-SidecarInputManifest", 1
-    )[1].split("function Get-BackendRuntimeFileIdentityEntries", 1)[0]
+    sidecar_manifest_source = build_script.split("function Get-SidecarInputManifest", 1)[1].split(
+        "function Get-BackendRuntimeFileIdentityEntries", 1
+    )[0]
     assert "Get-QuickJsYoutubeRuntimeLockedFileMetadata" in sidecar_manifest_source
     assert 'Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"' in sidecar_manifest_source
     assert '$ErrorActionPreference = "Continue"' in build_script
@@ -1058,26 +992,22 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
 
 def test_backend_media_resolution_supports_fresh_full_and_runtime_cache_hits():
     repo_root = Path(__file__).resolve().parents[1]
-    build_script = (
-        repo_root / "scripts" / "build_tauri_backend_sidecar.ps1"
-    ).read_text(encoding="utf-8")
-    resolver = build_script.split(
-        "function Resolve-BackendStableMediaTool", 1
-    )[1].split("function Initialize-BackendRuntimeStableMediaTools", 1)[0]
+    build_script = (repo_root / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    resolver = build_script.split("function Resolve-BackendStableMediaTool", 1)[1].split(
+        "function Initialize-BackendRuntimeStableMediaTools", 1
+    )[0]
 
     assert "Resolve-BackendSidecarCandidateMediaTool" in resolver
     assert resolver.index("Resolve-BackendSidecarCandidateMediaTool") < resolver.index(
         'Join-Path $RuntimeCacheRoot "media-tools"'
     )
-    assert resolver.index('Join-Path $RuntimeCacheRoot "media-tools"') < resolver.index(
-        "Resolve-PythonInstalledTool"
-    )
-    assert '[string]$manifest.cacheKey -ne $ExpectedRuntimeCacheKey' in resolver
+    assert resolver.index('Join-Path $RuntimeCacheRoot "media-tools"') < resolver.index("Resolve-PythonInstalledTool")
+    assert "[string]$manifest.cacheKey -ne $ExpectedRuntimeCacheKey" in resolver
     assert "Test-BackendStableMediaFiles" in resolver
-    candidate = build_script.split(
-        "function Resolve-BackendSidecarCandidateMediaTool", 1
-    )[1].split("function Resolve-BackendStableMediaTool", 1)[0]
-    assert '[string]$manifest.inputManifest.runtimeCacheKey -ne $ExpectedRuntimeCacheKey' in candidate
+    candidate = build_script.split("function Resolve-BackendSidecarCandidateMediaTool", 1)[1].split(
+        "function Resolve-BackendStableMediaTool", 1
+    )[0]
+    assert "[string]$manifest.inputManifest.runtimeCacheKey -ne $ExpectedRuntimeCacheKey" in candidate
     assert "Test-BackendMediaFiles" in candidate
     assert "Full-sidecar cache generations disagree" in candidate
 

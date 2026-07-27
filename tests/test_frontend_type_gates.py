@@ -9,9 +9,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_legacy_websocket_hook_uses_typed_contract() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-websocket.ts").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-websocket.ts").read_text(encoding="utf-8")
 
     assert "type ScriberWebSocketMessage" in source
     assert "isScriberWebSocketMessage" in source
@@ -23,9 +21,7 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx").read_text(
         encoding="utf-8"
     )
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "export interface BackendHealthResponse" in api_types
     assert "loadBackendBaseUrlFromTauri" in source
@@ -35,7 +31,7 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     assert "health.ok === true && health.ready === true" in source
     assert "Tauri backend supervisor check failed; falling back to HTTP health probe." in source
     assert "void reportFrontendReady().catch" in source
-    assert "return true;" in source[source.index('invoke<TauriBackendStatus>("ensure_backend_running")'):]
+    assert "return true;" in source[source.index('invoke<TauriBackendStatus>("ensure_backend_running")') :]
     assert "checkInFlightRef.current" in source
     assert "const request = runHealthCheck();" in source
     assert "if (existing)" in source
@@ -46,33 +42,25 @@ def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
 
 
 def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
 
     assert "withPromiseTimeout(" in source
     assert '"Initial Tauri backend lookup"' in source
     assert "continuing with health fallback" in source
     assert "setBackendBaseReady(true)" in source
 
-    backend_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
-    ).read_text(encoding="utf-8")
+    backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
     assert '"Tauri backend access"' in backend_source
     assert '"Tauri backend URL fallback"' in backend_source
     assert "backendAccessRetryAfterMs" in backend_source
 
 
 def test_main_webview_reports_only_bounded_long_task_timings() -> None:
-    main_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "main.tsx"
-    ).read_text(encoding="utf-8")
-    app_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx"
-    ).read_text(encoding="utf-8")
-    performance_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "frontend-performance.ts"
-    ).read_text(encoding="utf-8")
+    main_source = (REPO_ROOT / "Frontend" / "client" / "src" / "main.tsx").read_text(encoding="utf-8")
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    performance_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "frontend-performance.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert "startFrontendLongTaskObserver()" in main_source
     assert "setFrontendPerformanceReportingEnabled(isOnline)" in app_source
@@ -91,9 +79,7 @@ def test_main_webview_reports_only_bounded_long_task_timings() -> None:
 
 
 def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "settings-bootstrap.ts"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "settings-bootstrap.ts").read_text(encoding="utf-8")
 
     assert "bootstrapGeneration += 1" in source
     assert "requestGeneration === bootstrapGeneration" in source
@@ -101,21 +87,11 @@ def test_settings_bootstrap_cache_rejects_stale_inflight_results() -> None:
 
 
 def test_settings_put_commits_the_server_response_to_the_global_query_cache() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    update_section = source[
-        source.index("const updateSettings =") : source.index(
-            "const saveCustomVocabulary ="
-        )
-    ]
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    update_section = source[source.index("const updateSettings =") : source.index("const saveCustomVocabulary =")]
 
-    parsed_response = (
-        "const updatedSettings = (await res.json()) as SettingsResponse;"
-    )
-    cache_write = (
-        'queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);'
-    )
+    parsed_response = "const updatedSettings = (await res.json()) as SettingsResponse;"
+    cache_write = 'queryClient.setQueryData<SettingsResponse>(["/api/settings"], updatedSettings);'
     bootstrap_invalidation = "invalidateSettingsBootstrap();"
     returned_response = "return updatedSettings;"
 
@@ -134,15 +110,15 @@ def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
     history_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts"
     ).read_text(encoding="utf-8")
-    command_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx"
-    ).read_text(encoding="utf-8")
-    live_mic_control_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "live-mic-control.ts"
-    ).read_text(encoding="utf-8")
-    tray_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
-    ).read_text(encoding="utf-8")
+    command_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx").read_text(
+        encoding="utf-8"
+    )
+    live_mic_control_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "live-mic-control.ts").read_text(
+        encoding="utf-8"
+    )
+    tray_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "fetchWithTimeout(" in history_source
     assert "queryFn: async ({ pageParam, signal })" in history_source
@@ -154,9 +130,7 @@ def test_history_and_command_requests_are_abortable_and_deadlined() -> None:
 
 
 def test_desktop_shell_commands_have_deadlines() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
 
     for label in (
         "Global hotkey refresh",
@@ -172,9 +146,7 @@ def test_desktop_shell_commands_have_deadlines() -> None:
 
 
 def test_processing_timer_formats_long_jobs_with_hours() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
 
     assert "Math.floor(seconds / 3600)" in source
     assert "Math.floor((seconds % 3600) / 60)" in source
@@ -182,12 +154,10 @@ def test_processing_timer_formats_long_jobs_with_hours() -> None:
 
 
 def test_transcript_detail_uses_current_attempt_clock_and_truthful_clipboard_feedback() -> None:
-    page_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
-    types_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
-    ).read_text(encoding="utf-8")
+    page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
+        encoding="utf-8"
+    )
+    types_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "processingStartedAt?: string;" in types_source
     assert "startedAt: transcript.processingStartedAt" in page_source
@@ -201,22 +171,22 @@ def test_transcript_detail_uses_current_attempt_clock_and_truthful_clipboard_fee
 
 
 def test_startup_screen_handles_managed_backend_starting_state() -> None:
-    hook_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx"
-    ).read_text(encoding="utf-8")
-    banner_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BackendOfflineBanner.tsx"
-    ).read_text(encoding="utf-8")
+    hook_source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx").read_text(
+        encoding="utf-8"
+    )
+    banner_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BackendOfflineBanner.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "backendStarting: boolean;" in hook_source
     assert "backendMessage: string | null;" in hook_source
     assert "function isManagedBackendStarting" in hook_source
     assert "!status.managed || !status.running || status.ready" in hook_source
-    assert "message.includes(\"starting\")" in hook_source
-    assert "message.includes(\"process started\")" in hook_source
+    assert 'message.includes("starting")' in hook_source
+    assert 'message.includes("process started")' in hook_source
     assert "setBackendStarting(isManagedBackendStarting(status));" in hook_source
 
-    assert "\"Managed backend is starting\"" in banner_source
+    assert '"Managed backend is starting"' in banner_source
     assert "backendStarting || (!startupGraceElapsed && isStartupRecoverable)" in banner_source
     assert "checkCount < 3" not in banner_source
     assert "Backend Not Available" in banner_source
@@ -225,18 +195,14 @@ def test_startup_screen_handles_managed_backend_starting_state() -> None:
 
 def test_frontend_uses_current_svg_logo_asset() -> None:
     index_html = (REPO_ROOT / "Frontend" / "client" / "index.html").read_text(encoding="utf-8")
-    favicon_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon.svg").read_text(
+    favicon_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon.svg").read_text(encoding="utf-8")
+    dark_favicon_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg").read_text(encoding="utf-8")
+    brand_mark_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BrandMark.tsx").read_text(
         encoding="utf-8"
     )
-    dark_favicon_svg = (
-        REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg"
-    ).read_text(encoding="utf-8")
-    brand_mark_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "BrandMark.tsx"
-    ).read_text(encoding="utf-8")
-    layout_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
-    ).read_text(encoding="utf-8")
+    layout_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert 'type="image/svg+xml"' in index_html
     assert 'href="/favicon.svg"' in index_html
@@ -265,12 +231,8 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     build_source = (tauri_root / "build.rs").read_text(encoding="utf-8")
     lib_source = (tauri_root / "src" / "lib.rs").read_text(encoding="utf-8")
     bundle_icon = tauri_root / "icons" / "icon.ico"
-    master_svg = (tauri_root / "icons" / "windows-app-icon.svg").read_text(
-        encoding="utf-8"
-    )
-    dark_app_svg = (
-        REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg"
-    ).read_text(encoding="utf-8")
+    master_svg = (tauri_root / "icons" / "windows-app-icon.svg").read_text(encoding="utf-8")
+    dark_app_svg = (REPO_ROOT / "Frontend" / "client" / "public" / "favicon-dark.svg").read_text(encoding="utf-8")
 
     assert config["bundle"]["icon"] == ["icons/icon.ico"]
     assert bundle_icon.read_bytes().startswith(b"\x00\x00\x01\x00")
@@ -291,24 +253,22 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
     assert taskbar_frame.size == tray_frame.size == (32, 32)
     mean_channel_delta = sum(
         abs(taskbar_channel - tray_channel)
-        for taskbar_pixel, tray_pixel in zip(
-            taskbar_frame.getdata(), tray_frame.getdata(), strict=True
-        )
-        for taskbar_channel, tray_channel in zip(
-            taskbar_pixel, tray_pixel, strict=True
-        )
+        for taskbar_pixel, tray_pixel in zip(taskbar_frame.getdata(), tray_frame.getdata(), strict=True)
+        for taskbar_channel, tray_channel in zip(taskbar_pixel, tray_pixel, strict=True)
     ) / (32 * 32 * 4)
     assert mean_channel_delta < 1.0
-    assert sum(
-        alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
-        for red, green, blue, alpha in taskbar_frame.getdata()
-    ) >= 450
+    assert (
+        sum(
+            alpha >= 220 and red >= 235 and green >= 235 and blue >= 235
+            for red, green, blue, alpha in taskbar_frame.getdata()
+        )
+        >= 450
+    )
     feather_pixels = [
         (x, y)
         for y in range(taskbar_frame.height)
         for x in range(taskbar_frame.width)
-        if taskbar_frame.getpixel((x, y))[3] >= 200
-        and max(taskbar_frame.getpixel((x, y))[:3]) < 100
+        if taskbar_frame.getpixel((x, y))[3] >= 200 and max(taskbar_frame.getpixel((x, y))[:3]) < 100
     ]
     feather_bounds = (
         min(x for x, _ in feather_pixels),
@@ -329,7 +289,7 @@ def test_windows_taskbar_identity_uses_the_contrast_safe_tray_artwork() -> None:
         window_frame = window_icon.convert("RGBA")
     assert window_frame.size == (256, 256)
     assert (tauri_root / "icons" / "window-icon.rgba").read_bytes() == window_frame.tobytes()
-    assert 'cargo:rerun-if-changed=icons/icon.ico' in build_source
+    assert "cargo:rerun-if-changed=icons/icon.ico" in build_source
     assert 'include_bytes!("../icons/window-icon.rgba"), 256, 256' in lib_source
     assert "CreateIconFromResourceEx" in lib_source
     assert "WM_SETICON" in lib_source
@@ -351,12 +311,9 @@ def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> N
             icon = Image.frombytes("RGBA", (size, size), rgba)
             assert icon.getpixel((0, 0))[3] == 0
 
-        normal = Image.frombytes(
-            "RGBA", (size, size), (icon_dir / f"tray-normal-{size}.rgba").read_bytes()
-        )
+        normal = Image.frombytes("RGBA", (size, size), (icon_dir / f"tray-normal-{size}.rgba").read_bytes())
         assert sum(
-            alpha >= 200 and red >= 225 and green >= 225 and blue >= 225
-            for red, green, blue, alpha in normal.getdata()
+            alpha >= 200 and red >= 225 and green >= 225 and blue >= 225 for red, green, blue, alpha in normal.getdata()
         ) >= round(size * size * 0.40)
 
     for state in ("normal", "update", "recording"):
@@ -391,8 +348,7 @@ def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> N
         dark_taskbar = Image.new("RGBA", (16, 16), (32, 34, 37, 255))
         composited = Image.alpha_composite(dark_taskbar, small)
         light_pixels = sum(
-            red >= 205 and green >= 205 and blue >= 205
-            for red, green, blue, _alpha in composited.getdata()
+            red >= 205 and green >= 205 and blue >= 205 for red, green, blue, _alpha in composited.getdata()
         )
         assert light_pixels >= 65
 
@@ -409,18 +365,14 @@ def test_all_tray_states_preserve_white_disc_identity_and_semantic_badges() -> N
 
 
 def test_settings_microphones_use_shared_api_types() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    websocket_source = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
         encoding="utf-8"
     )
-    websocket_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
-    ).read_text(encoding="utf-8")
     device_refresh_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-device-change-refresh.ts"
     ).read_text(encoding="utf-8")
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "export interface MicrophoneDevice" in api_types
     assert "export interface MicrophonesResponse" in api_types
@@ -442,7 +394,7 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "setSelectedDeviceId(previousDeviceId);" in source
     assert "const saved = await handleMicDeviceChange(deviceId);" in source
     assert "if (!saved)" in source
-    assert "favoriteMicRestored && typeof msg.restoredDeviceId === \"string\"" in source
+    assert 'favoriteMicRestored && typeof msg.restoredDeviceId === "string"' in source
     assert "import type { MicrophoneDevice }" in websocket_source
     assert "devices: MicrophoneDevice[]" in websocket_source
     assert "const closeCurrentSocket = useCallback" in websocket_source
@@ -454,9 +406,7 @@ def test_settings_microphones_use_shared_api_types() -> None:
 
 
 def test_settings_provider_help_links_are_safe_external_links() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     expected_links = [
         'openai: { href: "https://platform.openai.com/api-keys"',
@@ -495,12 +445,10 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
 
 
 def test_websocket_reconnect_reports_frontend_ready() -> None:
-    backend_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
-    ).read_text(encoding="utf-8")
-    websocket_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
-    ).read_text(encoding="utf-8")
+    backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+    websocket_source = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "options: { force?: boolean } = {}" in backend_source
     assert "!options.force && frontendReadyReportKey === reportKey" in backend_source
@@ -510,24 +458,24 @@ def test_websocket_reconnect_reports_frontend_ready() -> None:
 
 
 def test_mobile_header_icon_buttons_keep_touch_targets() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert 'className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}' in source
     assert 'className="min-h-[44px] min-w-[44px]"\n              onClick={handleOpenCommandPalette}' in source
 
 
 def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
-    layout_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
-    ).read_text(encoding="utf-8")
-    palette_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx"
-    ).read_text(encoding="utf-8")
-    command_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "command.tsx"
-    ).read_text(encoding="utf-8")
+    layout_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx").read_text(
+        encoding="utf-8"
+    )
+    palette_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "CommandPalette.tsx").read_text(
+        encoding="utf-8"
+    )
+    command_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "command.tsx").read_text(
+        encoding="utf-8"
+    )
 
     for route in [
         '{ href: "/", icon: Mic, label: t("Live Mic") }',
@@ -537,7 +485,10 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
         '{ href: "/settings", icon: Settings, label: t("Settings") }',
     ]:
         assert route in layout_source
-    assert "const isActive = location === tab.href || (tab.href !== \"/\" && location.startsWith(tab.href));" in layout_source
+    assert (
+        'const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));'
+        in layout_source
+    )
     assert "onPointerEnter={() => handleNavIntent(tab.href)}" in layout_source
     assert "onPointerDown={() => handleNavIntent(tab.href)}" in layout_source
     assert "onFocus={() => handleNavIntent(tab.href)}" in layout_source
@@ -556,12 +507,8 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
 
 
 def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "export interface YouTubeSearchItem" in api_types
     assert "export interface YouTubeSearchResponse" in api_types
@@ -575,8 +522,8 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "/api/youtube/thumbnail?url=" in source
     assert "youtube\\.com\\/live\\/" in source
     assert "encodeURIComponent(value)" in source
-    assert "decoding=\"async\"" in source
-    assert "referrerPolicy=\"no-referrer\"" in source
+    assert 'decoding="async"' in source
+    assert 'referrerPolicy="no-referrer"' in source
     assert "URL.createObjectURL(blob)" not in source
     assert "function isCompletedStep" in source
     assert "function isVisiblyProcessing" in source
@@ -588,36 +535,39 @@ def test_youtube_page_proxies_thumbnails_and_hides_completed_spinners() -> None:
     assert "TranscriptSummaryRetryButton" in source
     assert "onSummaryRetryComplete" in source
     assert 'historyStatus === "failed"' in source
-    assert 'onTranscriptionRetry(event, item)' in source
+    assert "onTranscriptionRetry(event, item)" in source
     assert 't("Retry transcription")' in source
     assert 'apiUrl("/api/youtube/transcribe")' in source
     assert 'description: t("No source URL is available for this video."),' in source
-    assert 'description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),' in source
-    assert 'isRetryingTranscription={retryingTranscriptId === item.id}' in source
+    assert (
+        'description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),'
+        in source
+    )
+    assert "isRetryingTranscription={retryingTranscriptId === item.id}" in source
     assert source.count('? t("Summarizing…")') == 2
     assert "border-red-200 bg-red-50/95" in source
     assert "const isProcessing = isVisiblyProcessing(item);" not in source
     assert "youtubePreferCaptions" in api_types
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     assert 'label={t("YouTube captions first")}' in settings_source
     assert "youtubePreferCaptions" in settings_source
-    assert settings_source.index('id="settings-summaries"') < settings_source.index('label={t("YouTube captions first")}')
-    assert settings_source.index('label={t("Auto-summarize")}') < settings_source.index('label={t("YouTube captions first")}')
+    assert settings_source.index('id="settings-summaries"') < settings_source.index(
+        'label={t("YouTube captions first")}'
+    )
+    assert settings_source.index('label={t("Auto-summarize")}') < settings_source.index(
+        'label={t("YouTube captions first")}'
+    )
     assert "preferCaptions," not in source
 
 
 def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows() -> None:
-    page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
-        encoding="utf-8"
-    )
+    page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
     virtual_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
     ).read_text(encoding="utf-8")
-    period_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "transcript-history-period.ts"
-    ).read_text(encoding="utf-8")
+    period_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "transcript-history-period.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert "const visibleSnippet =" in page_source
     assert "item.preview" in page_source
@@ -626,28 +576,20 @@ def test_live_mic_history_uses_snippets_period_sections_and_stable_virtual_rows(
     assert "getItemGroup={(item)" not in page_source
     assert "const getTranscriptHistoryGroup = useCallback(" in page_source
     reference_section = page_source[
-        page_source.index("const historyLocalDay =") : page_source.index(
-            "const activeSessionIdRef"
-        )
+        page_source.index("const historyLocalDay =") : page_source.index("const activeSessionIdRef")
     ]
     assert "const historyLocalDay = new Date().toDateString();" in reference_section
     assert "const historyReferenceTime = useMemo(() => {" in reference_section
     assert "void historyLocalDay;" in reference_section
     assert "return new Date();" in reference_section
     assert "}, [historyLocalDay]);" in reference_section
-    assert (
-        "(item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime)"
-        in reference_section
-    )
+    assert "(item: Transcript) => transcriptHistoryPeriod(item.createdAt, historyReferenceTime)" in reference_section
     assert "[historyReferenceTime]" in reference_section
     assert 'label: translateNow("Today")' in period_source
     assert 'label: translateNow("Last week")' in period_source
     assert 'label: translateNow("Last month")' in period_source
     assert 'label: translateNow("Older")' in period_source
-    assert (
-        "translate3d(0, ${calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)}px, 0)"
-        in virtual_source
-    )
+    assert "translate3d(0, ${calculateHistoryRowTranslateY(virtualRow.start, scrollMargin)}px, 0)" in virtual_source
     assert "layoutId=" not in virtual_source
     assert "AnimatePresence" not in virtual_source
 
@@ -681,9 +623,7 @@ def test_history_card_actions_reject_same_render_double_clicks() -> None:
 
 
 def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "const savedKeyResetTimersRef = useRef<Map<string, number>>(new Map());" in source
     assert "savedKeyResetTimersRef.current.get(provider)" in source
@@ -693,9 +633,7 @@ def test_api_key_saved_feedback_replaces_stale_reset_timers() -> None:
 
 
 def test_onnx_model_actions_reject_same_render_double_clicks() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());" in source
     assert source.count("onnxModelActionInFlightRef.current.has(modelId)") == 2
@@ -704,12 +642,10 @@ def test_onnx_model_actions_reject_same_render_double_clicks() -> None:
 
 
 def test_onnx_progress_only_updates_the_selected_quantization() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    websocket_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    websocket_source = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "quantization?: string;" in websocket_source
     assert "msg.quantization !== onnxQuantization" in settings_source
@@ -717,9 +653,9 @@ def test_onnx_progress_only_updates_the_selected_quantization() -> None:
 
 
 def test_primary_page_intros_share_responsive_full_width_layout() -> None:
-    component_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"
-    ).read_text(encoding="utf-8")
+    component_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx").read_text(
+        encoding="utf-8"
+    )
     page_sources = {
         page: (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
         for page in (
@@ -758,16 +694,12 @@ def test_primary_section_numbers_follow_navigation_order() -> None:
     }
 
     for page, marker in page_markers.items():
-        source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(
-            encoding="utf-8"
-        )
+        source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
         assert marker in source
 
 
 def test_settings_section_navigation_accounts_for_sticky_header() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert 'label: "Transcription"' in settings_source
     assert 'label: "Summarization"' in settings_source
@@ -780,9 +712,7 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
 
 
 def test_debug_console_intro_matches_primary_page_typography() -> None:
-    stylesheet = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
-        encoding="utf-8"
-    )
+    stylesheet = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert ".debug-console-page {" in stylesheet
     assert 'font-family: "Switzer", ui-sans-serif, system-ui, sans-serif;' in stylesheet
@@ -797,9 +727,9 @@ def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
     component_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcript-history-search.tsx"
     ).read_text(encoding="utf-8")
-    sidebar_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "sidebar-search.tsx"
-    ).read_text(encoding="utf-8")
+    sidebar_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "sidebar-search.tsx").read_text(
+        encoding="utf-8"
+    )
     toolbar_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcription-history-toolbar.tsx"
     ).read_text(encoding="utf-8")
@@ -823,12 +753,10 @@ def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
 
 
 def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> None:
-    youtube_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(
+    youtube_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
+    detail_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
     )
-    detail_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
 
     assert 'useUrlQueryState<SortOption>("sort", "date"' in youtube_source
     assert "const sortedResults = useMemo(() =>" in youtube_source
@@ -853,42 +781,31 @@ def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> N
     assert "return;" in detail_source
     assert "url: sourceUrl," in detail_source
     assert "title: transcript?.title," in detail_source
-    assert 'setLocation(`/transcript/${rec.id}`);' in detail_source
+    assert "setLocation(`/transcript/${rec.id}`);" in detail_source
     assert "void retryYoutubeTranscription();" in detail_source
 
 
 def test_transcript_detail_keeps_failed_retry_actions_contextual_and_single() -> None:
-    detail_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
+    detail_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
+        encoding="utf-8"
+    )
 
     # Failed YouTube transcription and summary retries belong beside their
     # respective error explanations, not duplicated in the global toolbar.
     assert detail_source.count("void retryYoutubeTranscription();") == 1
     assert detail_source.count('label={t("Retry Summary")}') == 1
-    assert 'const showHeaderSummaryAction =' in detail_source
-    assert '!isSummaryFailed;' in detail_source
+    assert "const showHeaderSummaryAction =" in detail_source
+    assert "!isSummaryFailed;" in detail_source
 
 
 def test_youtube_async_start_only_navigates_while_the_user_is_still_on_youtube() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx"
-    ).read_text(encoding="utf-8")
-    start_section = source[
-        source.index("const startTranscription = async") : source.index(
-            "const deleteTranscript"
-        )
-    ]
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
+    start_section = source[source.index("const startTranscription = async") : source.index("const deleteTranscript")]
 
     assert "const [location, setLocation] = useLocation();" in source
+    assert ('const currentPath = typeof window !== "undefined" ? window.location.pathname : location;') in start_section
     assert (
-        'const currentPath = typeof window !== "undefined" ? '
-        "window.location.pathname : location;"
-    ) in start_section
-    assert (
-        'if (currentPath === "/youtube") {\n'
-        "          setLocation(`/transcript/${rec.id}`);\n"
-        "        }"
+        'if (currentPath === "/youtube") {\n          setLocation(`/transcript/${rec.id}`);\n        }'
     ) in start_section
 
 
@@ -913,7 +830,10 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
     assert "const xhr = new XMLHttpRequest();" not in page_source
     assert "const [uploadProgress, setUploadProgress] = useState(0);" not in page_source
 
-    assert 'export type FileUploadStatus = "idle" | "uploading" | "server_processing" | "completed" | "failed";' in store_source
+    assert (
+        'export type FileUploadStatus = "idle" | "uploading" | "server_processing" | "completed" | "failed";'
+        in store_source
+    )
     assert "export interface FileUploadQueueItem" in store_source
     assert "export function startFileUploadBatch(" in store_source
     assert "A file upload batch is already in progress." in store_source
@@ -928,7 +848,7 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
     assert "progress: 96" in store_source
     assert "serverProcessingText: getServerProcessingText(file)" in store_source
     assert "xhr.upload.onload = () => {" in store_source
-    assert 'value={uploadProgress}' in page_source
+    assert "value={uploadProgress}" in page_source
     assert "uploadStatusText" in page_source
     assert "uploadQueueItems.map" in page_source
     assert 'type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in page_source
@@ -944,20 +864,15 @@ def test_file_upload_progress_uses_route_persistent_store_before_server_processi
 
 def test_failed_summary_history_action_is_accessible_and_retries_in_place() -> None:
     component_source = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "components"
-        / "transcript-summary-retry-button.tsx"
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcript-summary-retry-button.tsx"
     ).read_text(encoding="utf-8")
 
     assert "event.stopPropagation();" in component_source
     assert "`/api/transcripts/${transcriptId}/summarize`" in component_source
     assert 'method: "POST"' in component_source
     assert "15 * 60_000" in component_source
-    assert 'disabled={isRetrying}' in component_source
-    assert 'aria-busy={isRetrying}' in component_source
+    assert "disabled={isRetrying}" in component_source
+    assert "aria-busy={isRetrying}" in component_source
     assert 'aria-live="polite"' in component_source
     assert '<span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>' in component_source
     assert '? t("Retrying summary for {{title}}", { title: transcriptTitle })' in component_source
@@ -980,9 +895,9 @@ def test_history_updates_are_invalidated_globally_for_background_jobs() -> None:
 
 
 def test_page_refresh_hook_does_not_duplicate_global_history_refetches() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-auto-refresh.ts"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-auto-refresh.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert 'msg.type === "history_updated"' not in source
     assert "refetchQueries" not in source
@@ -990,17 +905,10 @@ def test_page_refresh_hook_does_not_duplicate_global_history_refetches() -> None
 
 
 def test_transcript_pages_do_not_duplicate_unscoped_websocket_error_toasts() -> None:
-    hook_source = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "hooks"
-        / "use-transcript-auto-refresh.ts"
-    ).read_text(encoding="utf-8")
-    app_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx"
-    ).read_text(encoding="utf-8")
+    hook_source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-auto-refresh.ts").read_text(
+        encoding="utf-8"
+    )
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
 
     assert "useWebSocketContext" in hook_source
     assert "useSharedWebSocket" not in hook_source
@@ -1011,22 +919,16 @@ def test_transcript_pages_do_not_duplicate_unscoped_websocket_error_toasts() -> 
     assert "showRecordingErrorToast(toast, msg);" in app_source
 
     for page_name in ("FileTranscribe.tsx", "Youtube.tsx", "TranscriptDetail.tsx"):
-        page_source = (
-            REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page_name
-        ).read_text(encoding="utf-8")
+        page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page_name).read_text(encoding="utf-8")
         call_start = page_source.index("useTranscriptAutoRefresh({")
         call_end = page_source.index("});", call_start)
         assert "onError" not in page_source[call_start:call_end], page_name
 
 
 def test_live_mic_reconciliation_polls_only_during_an_active_websocket_outage() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
 
-    effect_start = source.index(
-        "// The shared WebSocket sends an authoritative state snapshot on connect"
-    )
+    effect_start = source.index("// The shared WebSocket sends an authoritative state snapshot on connect")
     effect_end = source.index(
         "}, [applyBackendStateSnapshot, hasActiveSession, isConnected]);",
         effect_start,
@@ -1120,9 +1022,7 @@ def test_primary_live_mic_button_captures_native_benchmark_activation_once() -> 
 
 
 def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     update_start = source.index("const updateSettings =")
     update_end = source.index("const saveCustomVocabulary =", update_start)
@@ -1154,12 +1054,12 @@ def test_silero_switch_waits_for_the_authoritative_settings_response() -> None:
 
 
 def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
-    ).read_text(encoding="utf-8")
-    query_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx").read_text(
+        encoding="utf-8"
+    )
+    query_source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-transcript-history-query.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert '"then" in result' in source
     assert ".catch((error) =>" in source
@@ -1171,9 +1071,9 @@ def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> No
 
 
 def test_virtual_history_uses_outer_scroller_coordinates_without_scroll_time_layout_work() -> None:
-    source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "virtual-transcript-history.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert 'element.closest<HTMLDivElement>("[data-app-scroll-container]")' in source
     assert "calculateHistoryScrollMargin(" in source
@@ -1197,9 +1097,7 @@ def test_transcript_history_refreshes_after_websocket_reconnect() -> None:
 
 
 def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
 
     assert 'const [finalText, setFinalText] = useState("");' in source
     assert 'const [interimText, setInterimText] = useState("");' in source
@@ -1213,17 +1111,13 @@ def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
 
 
 def test_live_mic_history_uses_title_when_legacy_preview_is_missing() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
 
     assert 'item.title.trim() || t("No transcript preview available")' in source
 
 
 def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
 
     assert "type BackendLiveStateSnapshot" in source
     assert "const applyBackendStateSnapshot = useCallback" in source
@@ -1237,18 +1131,14 @@ def test_live_mic_reconciles_active_state_and_websocket_reconnects() -> None:
 
 
 def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
-    live_mic_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    live_mic_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
     overlay_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx"
     ).read_text(encoding="utf-8")
-    helper_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "visualizer-settings.ts"
-    ).read_text(encoding="utf-8")
+    helper_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "visualizer-settings.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert "await updateSettings({ visualizerBarCount: count });" in settings_source
     assert "export const DEFAULT_VISUALIZER_BAR_COUNT = 45;" in helper_source
@@ -1272,33 +1162,31 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "max={MAX_VISUALIZER_BAR_COUNT}" in settings_source
     assert "settings.visualizerBarCount || 45" not in settings_source
 
-    assert "const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);" in live_mic_source
+    assert (
+        "const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);" in live_mic_source
+    )
     assert "void refreshVisualizerBarCount();" in live_mic_source
     assert "barCount={visualizerBarCount}" in live_mic_source
     assert "const barCount = 20;" not in live_mic_source
 
-    assert "const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);" in overlay_source
+    assert (
+        "const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);" in overlay_source
+    )
     assert "resizeBarBuffer" in overlay_source
     assert "barCount={visualizerBarCount}" in overlay_source
     assert "const BAR_COUNT =" not in overlay_source
 
 
 def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> None:
-    backend_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts"
-    ).read_text(encoding="utf-8")
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+    backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    visualizer_helper_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "visualizer-settings.ts").read_text(
         encoding="utf-8"
     )
-    visualizer_helper_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "visualizer-settings.ts"
-    ).read_text(encoding="utf-8")
-    youtube_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(
+    youtube_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
+    detail_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
     )
-    detail_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
 
     assert "function appendSessionToken(url: string): string" in backend_source
     assert 'parsed.searchParams.set("scriberToken", backendSessionToken);' in backend_source
@@ -1325,9 +1213,7 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     structured_log_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "debug" / "RuntimeLogMessage.tsx"
     ).read_text(encoding="utf-8")
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert "--action-size: 44px;" in css
@@ -1339,7 +1225,7 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "debug-console-action-label" in debug_source
     assert "debug-console-stat-copy" in debug_source
     assert "debug-console-stat-icon" in debug_source
-    assert 'aria-pressed={selectedLevel === level}' in debug_source
+    assert "aria-pressed={selectedLevel === level}" in debug_source
     assert "debug-level-selected-icon" in debug_source
     assert 't("Download support bundle")' in debug_source
     assert 'source: "Support bundle downloaded as {{filename}}. Check your Downloads folder."' in debug_source
@@ -1369,7 +1255,7 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "--impact-switch-track-width: 64px" in css
     assert ".debug-console-actions" in css
     assert ".debug-console-action-label" in css
-    assert ".debug-console-page .debug-level-button[aria-pressed=\"true\"]" in css
+    assert '.debug-console-page .debug-level-button[aria-pressed="true"]' in css
     assert "grid-template-columns: auto minmax(0, 1fr) auto" in css
     assert "padding: 1.5rem 1.5rem 1rem" in css
     assert "grid-template-columns: repeat(5, minmax(2.25rem, 1fr))" in css
@@ -1381,9 +1267,7 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
 
 
 def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "function hotkeyDisplayFromKeyboardEvent" in source
     assert "const hotkeyCaptureRef = useRef<HTMLDivElement | null>(null);" in source
@@ -1407,23 +1291,19 @@ def test_settings_hotkey_recorder_uses_window_capture_listener() -> None:
 
 
 def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
-    tauri_config = json.loads(
-        (REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
-    )
+    tauri_config = json.loads((REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
     tauri_capabilities = json.loads(
-        (REPO_ROOT / "Frontend" / "src-tauri" / "capabilities" / "default.json").read_text(
-            encoding="utf-8"
-        )
+        (REPO_ROOT / "Frontend" / "src-tauri" / "capabilities" / "default.json").read_text(encoding="utf-8")
     )
-    layout_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx"
-    ).read_text(encoding="utf-8")
-    titlebar_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "DesktopTitleBar.tsx"
-    ).read_text(encoding="utf-8")
-    transcript_detail_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
+    layout_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "layout" / "AppLayout.tsx").read_text(
+        encoding="utf-8"
+    )
+    titlebar_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "DesktopTitleBar.tsx").read_text(
+        encoding="utf-8"
+    )
+    transcript_detail_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
+        encoding="utf-8"
+    )
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert tauri_config["app"]["windows"][0]["decorations"] is False
@@ -1454,9 +1334,9 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
 
 
 def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
-    provider_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "theme-provider.tsx"
-    ).read_text(encoding="utf-8")
+    provider_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "theme-provider.tsx").read_text(
+        encoding="utf-8"
+    )
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert 'THEME_REVEAL_ACTIVE_DATASET_KEY = "themeRevealActive"' in provider_source
@@ -1488,12 +1368,10 @@ def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
 
 
 def test_desktop_update_status_filters_same_version_updates() -> None:
-    update_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "desktop-updates.ts"
-    ).read_text(encoding="utf-8")
-    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(
+    update_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "desktop-updates.ts").read_text(
         encoding="utf-8"
     )
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
     vite_config = (REPO_ROOT / "Frontend" / "vite.config.ts").read_text(encoding="utf-8")
 
     assert "__SCRIBER_APP_VERSION__" in vite_config
@@ -1503,9 +1381,10 @@ def test_desktop_update_status_filters_same_version_updates() -> None:
     assert "function latestKnownCurrentVersion" in update_source
     assert "const currentVersion = latestKnownCurrentVersion(cache.currentVersion);" in update_source
     assert "status.version &&\n    isVersionNewerThanCurrent(status.version, status.currentVersion)" in update_source
-    assert "status.version &&\n    isVersionNewerThanCurrent(status.version, status.currentVersion)" in update_source[
-        update_source.index("export function publishDesktopUpdateStatusToTray") :
-    ]
+    assert (
+        "status.version &&\n    isVersionNewerThanCurrent(status.version, status.currentVersion)"
+        in update_source[update_source.index("export function publishDesktopUpdateStatusToTray") :]
+    )
     assert "if (!isVersionNewerThanCurrent(update.version, currentVersion))" in update_source
     assert "let updateCheckInFlight: Promise<DesktopUpdateStatus> | null = null;" in update_source
     assert "let updateInstallInFlight: Promise<DesktopUpdateStatus> | null = null;" in update_source
@@ -1518,9 +1397,7 @@ def test_desktop_update_status_filters_same_version_updates() -> None:
 
 
 def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "function createPostProcessingModelOptions(localeTag: string, t: Translate)" in settings_source
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
@@ -1530,7 +1407,10 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "GPT-OSS 120B Cerebras" in settings_source
     assert 'value: "cerebras/gemma-4-31b"' in settings_source
     assert "Gemma 4 31B Cerebras" in settings_source
-    assert 'return t("{{price}}€/M blended, ~{{tokens}} Token/s", { price: priceText, tokens: tokensPerSecond });' in settings_source
+    assert (
+        'return t("{{price}}€/M blended, ~{{tokens}} Token/s", { price: priceText, tokens: tokensPerSecond });'
+        in settings_source
+    )
     assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768, localeTag, t)" in settings_source
     assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
     assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
@@ -1551,7 +1431,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
     assert 'label={t("Post-processing model")}' in settings_source
-    assert 'value={postProcessingModel}' in settings_source
+    assert "value={postProcessingModel}" in settings_source
     assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
     assert "postProcessingModelOptions.map((option)" in settings_source
     assert "selectedPostProcessingModelOption" in settings_source
@@ -1576,9 +1456,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
 
 
 def test_settings_model_choices_require_saved_api_keys() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "type CredentialRequirement" in settings_source
     assert "const isCredentialReady = (requirement: CredentialRequirement | null) => {" in settings_source
@@ -1599,21 +1477,17 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert 't("below, or choose a model that already has credentials.")' in settings_source
     assert "setSavedKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
     assert "setCredentialReadyKeys((prev) => ({ ...prev, [provider]: credentialReady }));" in settings_source
-    assert 'OpenRouter: hasValue(keys.openrouter)' in settings_source
+    assert "OpenRouter: hasValue(keys.openrouter)" in settings_source
 
 
 def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    api_types = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
-    ).read_text(encoding="utf-8")
-    modulate_icon = (
-        REPO_ROOT / "Frontend" / "client" / "public" / "provider-icons" / "modulate.svg"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    modulate_icon = (REPO_ROOT / "Frontend" / "client" / "public" / "provider-icons" / "modulate.svg").read_text(
+        encoding="utf-8"
+    )
 
-    assert 'modulate?: string;' in api_types
+    assert "modulate?: string;" in api_types
     assert 'value: "modulate-realtime"' in settings_source
     assert 'value: "modulate-async"' in settings_source
     assert 'label: "Modulate.AI Multilingual Realtime"' in settings_source
@@ -1621,36 +1495,40 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert "const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;" in settings_source
     assert "const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;" in settings_source
     assert "const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;" in settings_source
-    assert 'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")' in settings_source
-    assert 'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")' in settings_source
+    assert (
+        'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")'
+        in settings_source
+    )
+    assert (
+        'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")'
+        in settings_source
+    )
     assert 't("Model Name")' in settings_source
-    assert "<strong className=\"font-mono font-semibold" in settings_source
+    assert '<strong className="font-mono font-semibold' in settings_source
     assert "Multilingual streaming shows finalized text only." not in settings_source
     assert "Multilingual batch returns one final transcript" not in settings_source
     assert 'defaultSttService: "modulate"' in settings_source
     assert 'defaultSttService: "modulate_async"' in settings_source
-    assert 'apiKeys.modulate = modulateKey;' in settings_source
+    assert "apiKeys.modulate = modulateKey;" in settings_source
     assert 'setModulateKey(keys.modulate || "");' in settings_source
     assert '"Modulate.AI": hasValue(keys.modulate)' in settings_source
     assert 'provider="Modulate.AI" icon="modulate"' in settings_source
-    assert 'show={showModulateKey}' in settings_source
-    assert 'onShowChange={setShowModulateKey}' in settings_source
+    assert "show={showModulateKey}" in settings_source
+    assert "onShowChange={setShowModulateKey}" in settings_source
     assert 'helpKey="modulate"' in settings_source
-    assert 'speaker_diarization' not in settings_source
-    assert 'emotion_signal' not in settings_source
-    assert 'accent_signal' not in settings_source
-    assert 'deepfake_signal' not in settings_source
-    assert 'pii_phi_tagging' not in settings_source
+    assert "speaker_diarization" not in settings_source
+    assert "emotion_signal" not in settings_source
+    assert "accent_signal" not in settings_source
+    assert "deepfake_signal" not in settings_source
+    assert "pii_phi_tagging" not in settings_source
     assert 'fill="#285FEB"' in modulate_icon
 
 
 def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "Save vocabulary" not in settings_source
-    assert "const savedCustomVocabularyRef = useRef(\"\");" in settings_source
+    assert 'const savedCustomVocabularyRef = useRef("");' in settings_source
     assert "const saveCustomVocabulary = useCallback((nextValue: string): Promise<void>" in settings_source
     assert "pendingCustomVocabularyRef" in settings_source
     assert "customVocabularySaveInFlightRef" in settings_source
@@ -1661,29 +1539,34 @@ def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
 
 
 def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert 'return t("{{price}}€/h with {{error}}% Error", { price: euroText, error: errorText });' in settings_source
     hourly_benchmark_source = settings_source[
-        settings_source.index("function sttHourlyBenchmarkDetail")
-        : settings_source.index("function sttBenchmarkDetail")
+        settings_source.index("function sttHourlyBenchmarkDetail") : settings_source.index(
+            "function sttBenchmarkDetail"
+        )
     ]
     assert hourly_benchmark_source.count("maximumFractionDigits: 2,") == 2
     assert 't("{{price}}€/h with model-dependent Error"' in settings_source
     assert "0,00 €/h" not in settings_source
     assert " % Error" not in settings_source
     assert "{disabledReason || option.detail}" not in settings_source
-    assert "title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : \"\"}`}" in settings_source
+    assert (
+        'title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}' in settings_source
+    )
     assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
     provider_options_source = settings_source[
-        settings_source.index("function createProviderModelOptions")
-        : settings_source.index("const MEETING_FINAL_STT_OPTIONS")
+        settings_source.index("function createProviderModelOptions") : settings_source.index(
+            "const MEETING_FINAL_STT_OPTIONS"
+        )
     ]
     assert "cloud_segmented" not in provider_options_source
     assert "Cloud live / segmented" not in settings_source
-    assert 'benchmarkOption("mistral-realtime", "Mistral Segmented", 6.00, 5.2, "cloud_async", "mistral")' in provider_options_source
+    assert (
+        'benchmarkOption("mistral-realtime", "Mistral Segmented", 6.00, 5.2, "cloud_async", "mistral")'
+        in provider_options_source
+    )
     assert 'benchmarkOption("groq", "Groq Segmented", 4.00, 3.7, "cloud_async", "groq")' in provider_options_source
 
     streaming_order = [
@@ -1720,25 +1603,17 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
 
 
 def test_settings_uses_effective_provider_models_from_the_backend() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    api_types = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
     translations = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "i18n"
-        / "translations"
-        / "de"
-        / "settings.ts"
+        REPO_ROOT / "Frontend" / "client" / "src" / "i18n" / "translations" / "de" / "settings.ts"
     ).read_text(encoding="utf-8")
 
     assert "transcriptionProviderModels?: Record<string, string>;" in api_types
-    assert "const [transcriptionProviderModels, setTranscriptionProviderModels] = useState<Record<string, string>>({});" in settings_source
+    assert (
+        "const [transcriptionProviderModels, setTranscriptionProviderModels] = useState<Record<string, string>>({});"
+        in settings_source
+    )
     assert "createProviderModelOptions(localeTag, t, transcriptionProviderModels)" in settings_source
     assert 'model: providerModels[value] || "",' in settings_source
     assert "setTranscriptionProviderModels(settings.transcriptionProviderModels || {});" in settings_source
@@ -1752,9 +1627,7 @@ def test_settings_uses_effective_provider_models_from_the_backend() -> None:
 
 
 def test_settings_embeds_local_model_management_in_local_provider_group() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "Local model files" not in settings_source
     assert "const activeLocalModelSettings =" in settings_source
@@ -1763,9 +1636,7 @@ def test_settings_embeds_local_model_management_in_local_provider_group() -> Non
 
 
 def test_settings_summary_model_groups_do_not_render_secondary_descriptions() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert "Fast Google summaries." not in settings_source
     assert "Nitro routes for long output." not in settings_source
@@ -1773,9 +1644,7 @@ def test_settings_summary_model_groups_do_not_render_secondary_descriptions() ->
 
 
 def test_settings_paired_panels_balance_height_and_update_metadata_density() -> None:
-    settings_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     for section_id in ("settings-api-keys", "settings-summaries", "settings-updates", "settings-language"):
         section = settings_source[settings_source.index(f'id="{section_id}"') :]
@@ -1788,9 +1657,9 @@ def test_settings_paired_panels_balance_height_and_update_metadata_density() -> 
 
 
 def test_tray_panel_exposes_direct_update_install_action() -> None:
-    tray_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
-    ).read_text(encoding="utf-8")
+    tray_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx").read_text(
+        encoding="utf-8"
+    )
 
     assert "function StatusIndicator" in tray_source
     assert "showUpdateInstallBanner" in tray_source
@@ -1807,12 +1676,10 @@ def test_tray_panel_exposes_direct_update_install_action() -> None:
 
 
 def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
-    tray_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx"
-    ).read_text(encoding="utf-8")
-    shell_source = (
-        REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs"
-    ).read_text(encoding="utf-8")
+    tray_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx").read_text(
+        encoding="utf-8"
+    )
+    shell_source = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert 'import("@tauri-apps/api/app")' in tray_source
     assert ".then(({ getVersion }) => getVersion())" in tray_source
@@ -1831,12 +1698,8 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
 
 
 def test_transcript_detail_uses_typed_rest_queries() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "export type TranscriptDetailResponse = TranscriptHistoryItem" in api_types
     assert "import type {" in source
@@ -1859,9 +1722,7 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     client_src = REPO_ROOT / "Frontend" / "client" / "src"
     styles = (client_src / "index.css").read_text(encoding="utf-8")
     detail = (client_src / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
-    renderer = (client_src / "components" / "transcript-summary-document.tsx").read_text(
-        encoding="utf-8"
-    )
+    renderer = (client_src / "components" / "transcript-summary-document.tsx").read_text(encoding="utf-8")
 
     for token in (
         "--summary-surface: #f7f3ea;",
@@ -1881,7 +1742,7 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     assert 'data-summary-format="html"' in renderer
     assert 'className="summary-toc__path"' in renderer
     assert "lineTo(currentX, height);" not in renderer
-    assert 'aria-label={title}' in renderer
+    assert "aria-label={title}" in renderer
     assert '<p className="summary-toc__eyebrow">{title}</p>' in renderer
     assert "new IntersectionObserver(resolveActiveHeading" in renderer
     assert "new ResizeObserver(connectObserver)" in renderer
@@ -1891,22 +1752,18 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     assert "scheduleNavigationRelease(4_000);" in renderer
     assert "scheduleNavigationRelease(180);" in renderer
     assert "if (!targetIsVisible) resolveActiveHeading();" in renderer
-    assert "window.addEventListener(\"scroll\"" not in renderer
+    assert 'window.addEventListener("scroll"' not in renderer
 
 
 def test_responsive_ui_polish_contracts_are_preserved() -> None:
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    language_toggle = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "language-toggle.tsx").read_text(
         encoding="utf-8"
     )
-    language_toggle = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "language-toggle.tsx"
-    ).read_text(encoding="utf-8")
-    transcript_detail = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx"
-    ).read_text(encoding="utf-8")
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+    transcript_detail = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
     )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert "min-[1280px]:grid-cols-2" in settings
     assert "min-[1280px]:col-span-2" in settings
@@ -1927,13 +1784,13 @@ def test_responsive_ui_polish_contracts_are_preserved() -> None:
     assert 'target="_blank"' in transcript_detail
     assert 'rel="noopener noreferrer"' in transcript_detail
     assert 'hostname.endsWith(".youtube.com")' in transcript_detail
-    assert 'if (!isTauriRuntime()) return;' in transcript_detail
+    assert "if (!isTauriRuntime()) return;" in transcript_detail
     assert 'import("@tauri-apps/plugin-opener")' in transcript_detail
-    assert 'saveTranscriptExport(' in transcript_detail
+    assert "saveTranscriptExport(" in transcript_detail
     assert 'onSelect={() => void handleExport("pdf")}' in transcript_detail
     assert 'onSelect={() => void handleExport("docx")}' in transcript_detail
-    assert 'window.open(apiUrl(`/api/transcripts/${id}/export/' not in transcript_detail
-    assert 'summaryTableOfContentsTitle(preparedSummaryHtml.plainText, transcript.language)' in transcript_detail
+    assert "window.open(apiUrl(`/api/transcripts/${id}/export/" not in transcript_detail
+    assert "summaryTableOfContentsTitle(preparedSummaryHtml.plainText, transcript.language)" in transcript_detail
 
     assert meetings.count('className="w-32"') == 3
 
@@ -1980,16 +1837,14 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
 
 def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
-    websocket_types = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx"
-    ).read_text(encoding="utf-8")
-    api_types = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
-    ).read_text(encoding="utf-8")
+    websocket_types = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
+        encoding="utf-8"
+    )
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert 'if (msg.type === "meeting_state")' in source
     assert '["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]' in source
-    assert 'mode: `meeting-${meetingState}`' in source
+    assert "mode: `meeting-${meetingState}`" in source
     assert '(msg.type === "state" && msg.voiceEnrollmentActive)' in source
     assert "voiceEnrollmentActive: boolean;" in websocket_types
     assert "export interface BackendStateResponse" in api_types
@@ -1997,9 +1852,7 @@ def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
 
 
 def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert 't("Ready to start")' in source
     assert 't("Check before a long meeting")' in source
@@ -2019,7 +1872,7 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert "transition-transform" in source
     assert "motion-reduce:transition-none" in source
     assert 'segment.revision === "canonical"' in source
-    assert 'if (!hasCanonicalTranscript)' in source
+    assert "if (!hasCanonicalTranscript)" in source
     assert "TERMINAL_MEETING_STATES.has(message.meeting.state)" in source
     assert 't("Delete this meeting?")' in source
     assert "deleteMeetingMutation" in source
@@ -2027,22 +1880,19 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert "Soniox Realtime" not in source  # Provider/model labels come from the backend contract.
     assert "selectedProfile.stages" in source
     assert "const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;" in source
-    assert "const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;" in source
+    assert (
+        "const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;"
+        in source
+    )
     assert 't("Models used")' in source
     assert "playLoadedAudio" in source
     assert 't("Speaker sound played")' in source
 
 
 def test_meeting_progress_restores_from_detail_and_never_invents_zero() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_types = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts"
-    ).read_text(encoding="utf-8")
-    cache = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-cache.ts"
-    ).read_text(encoding="utf-8")
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    cache = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-cache.ts").read_text(encoding="utf-8")
 
     assert "detail.processingProgress" in source
     assert "mergeMeetingProcessingProgress" in source
@@ -2056,19 +1906,14 @@ def test_meeting_progress_restores_from_detail_and_never_invents_zero() -> None:
 
 
 def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert "const meetingWsHasConnectedRef = useRef(false);" in source
     assert "const meetingWsWasConnectedRef = useRef(false);" in source
     assert "const { isConnected: meetingWsConnected } = useWebSocketContext();" in source
     assert "isMeetingWebSocketReconnect(" in source
     assert "meetingWsConnected," in source
-    assert (
-        "queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true })"
-        in source
-    )
+    assert "queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true })" in source
     assert "void refreshMeetingCapabilities(queryClient);" in source
     assert "if (selectedId) void refreshMeetingDetail(queryClient, selectedId);" in source
     assert "invalidateMeetingImports();" in source
@@ -2076,15 +1921,10 @@ def test_meeting_workspace_reconciles_after_backend_websocket_restart() -> None:
 
 
 def test_meeting_audio_device_picker_refreshes_and_explains_inventory_fallbacks() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert 'if (message.type === "microphones_updated")' in source
-    assert (
-        'queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true })'
-        in source
-    )
+    assert 'queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true })' in source
     assert "const audioDeviceInitialLoading = audioDevicesQuery.isPending;" in source
     assert "disabled={microphoneSelectDisabled}" in source
     assert "disabled={renderSelectDisabled}" in source
@@ -2100,30 +1940,14 @@ def test_meeting_audio_device_picker_refreshes_and_explains_inventory_fallbacks(
 
 
 def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
     note_autosave = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "components"
-        / "meeting"
-        / "useMeetingNotesAutosave.ts"
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "meeting" / "useMeetingNotesAutosave.ts"
     ).read_text(encoding="utf-8")
     note_editor = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "components"
-        / "meeting"
-        / "MeetingNotesEditor.tsx"
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "meeting" / "MeetingNotesEditor.tsx"
     ).read_text(encoding="utf-8")
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
     assert 'setChatQuestion("");' in meetings
     assert "variables.id !== selectedId" in meetings
@@ -2145,7 +1969,7 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert "value={body}" in note_editor
     assert "onChange={(event) => setBody(event.target.value)}" in note_editor
     assert 'asset.kind === "playback_mix"' in meetings
-    assert 'src={apiUrl(`/api/meetings/${detail.id}/audio`)}' in meetings
+    assert "src={apiUrl(`/api/meetings/${detail.id}/audio`)}" in meetings
     assert "meetingSpeakerSampleWindow(" in meetings
     assert "canPlaySpeakerSamples" in meetings
     assert "availablePlaybackSources" not in meetings
@@ -2155,7 +1979,7 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     assert "Playback track controls" not in meetings
     assert "Audio is no longer retained" in meetings
     assert "meetingImportsQuery.data?.items.find" in meetings
-    assert 'job.meetingId' in meetings
+    assert "job.meetingId" in meetings
     assert 'queryKey: ["/api/meetings/speaker-profiles"]' in settings
     # The Meeting workspace now intentionally reads the same local Voice
     # Library query as Settings so a matched generic voice can be previewed and
@@ -2163,23 +1987,17 @@ def test_meeting_workspace_scopes_drafts_playback_and_imports_to_durable_state()
     # not fetch the biometric-library metadata.
     assert "const speakerProfilesQuery" in meetings
     assert "enabled: Boolean(detail?.speakers.some((speaker) => speaker.profileId))" in meetings
-    assert 'onClick={() => setVoiceLibraryDeleteOpen(true)}' in settings
+    assert "onClick={() => setVoiceLibraryDeleteOpen(true)}" in settings
     assert "Delete all saved voice data?" in settings
     assert "Delete this saved speaker?" in settings
     assert "voiceLibraryDeletePending" in settings
 
 
 def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
-    meeting_settings = settings[
-        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
-    ]
+    meeting_settings = settings[settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')]
     transcription_settings = settings[
         settings.index('id="settings-transcription"') : settings.index("{speechToTextProviderPanel}")
     ]
@@ -2187,19 +2005,27 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert "Advanced · Retention" not in meetings
     assert "Local audio retention" not in meetings
     assert "Local Voice Library" not in meetings
-    assert 'voiceLibraryEnabled: Boolean(speakerModelQuery.data?.optedIn && speakerModelQuery.data?.installed)' in meetings
+    assert (
+        "voiceLibraryEnabled: Boolean(speakerModelQuery.data?.optedIn && speakerModelQuery.data?.installed)" in meetings
+    )
     assert "audioRetentionDays: profile?.audioRetentionDays ?? 0" in meetings
 
     assert 'label={t("Meeting shortcut")}' in meeting_settings
     assert 'label={t("Keep meeting audio")}' in meeting_settings
     assert 'title={t("Voice Library")}' in meeting_settings
-    assert 't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")' in meeting_settings
+    assert (
+        't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")'
+        in meeting_settings
+    )
     assert 'label={t("Recognize familiar speakers")}' in meeting_settings
     assert 'aria-label={t("Recognize familiar speakers in future meetings")}' in meeting_settings
     assert 't("Add voice")' in meeting_settings
     assert '"/api/meetings/speaker-profiles/enroll"' in settings
     assert 't("Teach Scriber a voice")' in settings
-    assert 't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")' in settings
+    assert (
+        't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")'
+        in settings
+    )
     assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
     assert "sonioxRealtimeModel" in meeting_settings
     assert 'label={t("Meeting shortcut")}' not in transcription_settings
@@ -2215,18 +2041,17 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
 
 
 def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(
-        encoding="utf-8"
-    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert 'label={t("Data processing region")}' in settings
     assert 'label: t("US - Region (default)")' in settings
     assert 'label: t("EUR - Region (recommended for better latency)")' in settings
     assert 't("EU access must be enabled by Soniox first")' in settings
-    assert 't("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project\'s API key above. The selected region and API key must match.")' in settings
+    assert (
+        't("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project\'s API key above. The selected region and API key must match.")'
+        in settings
+    )
     assert 't("Open Soniox API Console")' in settings
     assert "mailto:support@soniox.com" in settings
     assert "https://soniox.com/docs/data-residency" in settings
@@ -2236,15 +2061,9 @@ def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
 
 
 def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
-    meeting_settings = settings[
-        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
-    ]
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    meeting_settings = settings[settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')]
 
     assert 'id="meeting-profile"' not in meetings
     assert 'id="meeting-import-profile"' not in meetings
@@ -2255,28 +2074,27 @@ def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:
     assert "meetingTranscriptionMode" in meeting_settings
     assert 't("Estimated total")' in meeting_settings
     assert 't("Why Scriber does not upload one-minute pieces")' in meeting_settings
-    assert 't("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")' in meeting_settings
+    assert (
+        't("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")'
+        in meeting_settings
+    )
 
 
 def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert "const [followLatest, setFollowLatest] = useState(true);" in meetings
     assert 'virtualizer.scrollToIndex(segments.length - 1, { align: "end" });' in meetings
     assert "scrollToLatest, search, segments]" in meetings
     assert "element.scrollHeight - element.clientHeight - element.scrollTop <= 40" in meetings
     assert '{t("Latest text")}' in meetings
-    assert "isLive={detail.state === \"recording\" || detail.state === \"paused\"}" in meetings
+    assert 'isLive={detail.state === "recording" || detail.state === "paused"}' in meetings
     assert "key={detail.id}" in meetings
     assert 't("Recording safely. The transcript appears after you stop.")' in meetings
 
 
 def test_settings_cards_follow_the_requested_two_column_order() -> None:
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     rendered = settings[settings.index("<PageIntro") :]
     navigation = rendered[rendered.index('{ section: "transcription"') : rendered.index("].map((item)")]
 
@@ -2293,15 +2111,9 @@ def test_settings_cards_follow_the_requested_two_column_order() -> None:
 
 
 def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(
-        encoding="utf-8"
-    )
-    meeting_settings = settings[
-        settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')
-    ]
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    meeting_settings = settings[settings.index('id="settings-meetings"') : settings.index('id="settings-api-keys"')]
 
     assert "Outlook is connected" in meeting_settings
     assert "Outlook is ready to connect" in meeting_settings
@@ -2324,9 +2136,7 @@ def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> Non
 def test_outlook_meeting_picker_uses_fresh_daily_events_and_explicit_selection() -> None:
     client = REPO_ROOT / "Frontend" / "client" / "src"
     meetings = (client / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
-    picker = (client / "components" / "meeting" / "OutlookMeetingPicker.tsx").read_text(
-        encoding="utf-8"
-    )
+    picker = (client / "components" / "meeting" / "OutlookMeetingPicker.tsx").read_text(encoding="utf-8")
     api_types = (client / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert '"/api/calendar/outlook/events"' in meetings
@@ -2334,10 +2144,10 @@ def test_outlook_meeting_picker_uses_fresh_daily_events_and_explicit_selection()
     assert "timeZone: outlookTimeZone" in meetings
     assert "start: outlookCalendarWindow.start" in meetings
     assert "end: outlookCalendarWindow.end" in meetings
-    assert "outlookQuery.data?.lastSyncAt ?? \"\"" in meetings
+    assert 'outlookQuery.data?.lastSyncAt ?? ""' in meetings
     assert "!outlookQuery.data.lastSyncAt && outlookQuery.data.lastError" in meetings
     assert "calendarEventId: selectedCalendarEventId || null" in meetings
-    assert "setSelectedCalendarEventId(event?.id ?? \"\")" in meetings
+    assert 'setSelectedCalendarEventId(event?.id ?? "")' in meetings
     assert "if (calendarEvent?.id) {" in meetings
     assert "setSelectedCalendarEventId(calendarEvent.id);" in meetings
     assert "selectedCalendarSubjectRef.current = calendarEvent.subject;" in meetings
@@ -2349,7 +2159,7 @@ def test_outlook_meeting_picker_uses_fresh_daily_events_and_explicit_selection()
     assert 't("Today\'s meetings could not be loaded.")' in picker
     assert 'event.isAllDay ? t("All day")' in picker
     assert "event.location" in picker
-    assert "participant.type === \"resource\"" in picker
+    assert 'participant.type === "resource"' in picker
     assert "events?.truncated" in picker
     assert "credentialStatusAvailable: boolean" in api_types
     assert "export interface OutlookCalendarEventsResponse" in api_types
@@ -2360,9 +2170,7 @@ def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmatio
     client = REPO_ROOT / "Frontend" / "client" / "src"
     settings = (client / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     meetings = (client / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
-    assignments = (
-        client / "components" / "meeting" / "SpeakerAttendeeAssignments.tsx"
-    ).read_text(encoding="utf-8")
+    assignments = (client / "components" / "meeting" / "SpeakerAttendeeAssignments.tsx").read_text(encoding="utf-8")
 
     assert "outlookDisconnectOpen" in settings
     assert "Disconnect Outlook?" in settings
@@ -2375,7 +2183,7 @@ def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmatio
 
     assert "<SpeakerAttendeeAssignments" in meetings
     assert "speaker-assignments/suggest" in assignments
-    assert 'confirmed: true' in assignments
+    assert "confirmed: true" in assignments
     assert "participantId" in assignments
     assert "suggestionSource" in assignments
     assert 'contact.type === "resource"' in assignments
@@ -2387,23 +2195,15 @@ def test_outlook_disconnect_and_speaker_assignments_require_explicit_confirmatio
 
 
 def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events() -> None:
-    query_client = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "queryClient.ts"
-    ).read_text(encoding="utf-8")
-    settings = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    meetings = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx"
-    ).read_text(encoding="utf-8")
+    query_client = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "queryClient.ts").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
     mutation = settings[
-        settings.index("const outlookMutation = useMutation") :
-        settings.index("const outlookCredentialStatusUnavailable")
+        settings.index("const outlookMutation = useMutation") : settings.index(
+            "const outlookCredentialStatusUnavailable"
+        )
     ]
-    sync_success = mutation[
-        mutation.index('if (action === "sync")') :
-        mutation.index("} else {")
-    ]
+    sync_success = mutation[mutation.index('if (action === "sync")') : mutation.index("} else {")]
 
     assert "queryClient.setQueryData" not in sync_success
     assert "queryClient.refetchQueries" in sync_success
@@ -2413,22 +2213,23 @@ def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events()
     assert 'queryKey: ["/api/calendar/outlook/events"]' in sync_success
     assert "OUTLOOK_SYNC_REQUEST_TIMEOUT_MS = 70_000" in query_client
     assert "options.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS" in query_client
-    assert (
-        'action === "sync" ? { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } : undefined'
-        in mutation
-    )
+    assert 'action === "sync" ? { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } : undefined' in mutation
     assert "{ timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS }" in meetings
 
 
 def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
-    assert 't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")' in meetings
+    assert (
+        't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")'
+        in meetings
+    )
     assert 't("Safety saves")' in meetings
     assert 't("Final transcript")' in meetings
-    assert 't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")' in meetings
+    assert (
+        't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")'
+        in meetings
+    )
     assert 't("Creating your meeting brief…")' in meetings
     assert 't("Added on this device · up to 60 min")' in meetings
     assert "Render-aware AEC3" not in meetings
@@ -2438,46 +2239,38 @@ def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
 
 
 def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
+    page_intro = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx").read_text(
         encoding="utf-8"
     )
-    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(
-        encoding="utf-8"
-    )
-    page_intro = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx"
-    ).read_text(encoding="utf-8")
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
-        encoding="utf-8"
-    )
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert "transcription-page meetings-page" in meetings
-    assert '<PageIntro' in meetings
+    assert "<PageIntro" in meetings
     assert 'eyebrow={t("Meeting workspace · 02")}' in meetings
-    assert 'app-page-shell' in meetings
+    assert "app-page-shell" in meetings
     assert 'data-page-shell="meetings"' in meetings
-    assert 'max-w-[1440px]' not in meetings
-    assert 'max-w-[1680px]' not in meetings
-    assert 'meetings-history-rail rounded-[22px]' in meetings
-    assert 'meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]' in meetings
-    assert 'min-[1380px]:grid-cols-[minmax(0,1fr)_260px]' in meetings
-    assert '2xl:grid-cols-[minmax(0,1fr)_300px]' in meetings
-    assert '2xl:border-l 2xl:border-t-0' in meetings
+    assert "max-w-[1440px]" not in meetings
+    assert "max-w-[1680px]" not in meetings
+    assert "meetings-history-rail rounded-[22px]" in meetings
+    assert "meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]" in meetings
+    assert "min-[1380px]:grid-cols-[minmax(0,1fr)_260px]" in meetings
+    assert "2xl:grid-cols-[minmax(0,1fr)_300px]" in meetings
+    assert "2xl:border-l 2xl:border-t-0" in meetings
 
-    assert 'app-page-shell' in live_mic
+    assert "app-page-shell" in live_mic
     assert 'data-page-shell="live-mic"' in live_mic
-    assert 'actions?: ReactNode' in page_intro
-    assert 'text-[36px]' in page_intro
-    assert 'md:text-[42px]' in page_intro
-    assert '.meetings-history-rail' in styles
-    assert '.meetings-workspace-panel' in styles
-    assert 'background: var(--live-core);' in styles
+    assert "actions?: ReactNode" in page_intro
+    assert "text-[36px]" in page_intro
+    assert "md:text-[42px]" in page_intro
+    assert ".meetings-history-rail" in styles
+    assert ".meetings-workspace-panel" in styles
+    assert "background: var(--live-core);" in styles
 
 
 def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
-        encoding="utf-8"
-    )
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
     shell_rule = styles.split(".app-page-shell {", 1)[1].split("}", 1)[0]
 
     assert "width: 100%;" in shell_rule
@@ -2500,13 +2293,11 @@ def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
         assert source.count(f'data-page-shell="{shell_name}"') == 1, filename
 
     meetings = (pages_dir / "Meetings.tsx").read_text(encoding="utf-8")
-    assert 'max-w-[1440px]' not in meetings
+    assert "max-w-[1440px]" not in meetings
 
 
 def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(
-        encoding="utf-8"
-    )
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
     dark_shell = styles.split(".dark .app-page-shell {", 1)[1].split("}", 1)[0]
 
     expected_tokens = {
@@ -2529,12 +2320,8 @@ def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
     assert "--dc-surface-raised: var(--live-card-hover);" in styles
     assert "--dc-surface-deep: var(--live-well);" in styles
 
-    settings = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
-    ).read_text(encoding="utf-8")
-    live_mic = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx"
-    ).read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
     assert "dark:bg-[var(--live-core)]" in settings
     assert "dark:bg-[var(--live-card)]" in settings
     assert "dark:bg-[var(--live-well)]" in settings
@@ -2543,18 +2330,12 @@ def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
 
 
 def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
+    export_client = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-export.ts").read_text(
         encoding="utf-8"
     )
-    export_client = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "meeting-export.ts"
-    ).read_text(encoding="utf-8")
-    export_shell = (
-        REPO_ROOT / "Frontend" / "src-tauri" / "src" / "export_dialog.rs"
-    ).read_text(encoding="utf-8")
-    shell = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs").read_text(
-        encoding="utf-8"
-    )
+    export_shell = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "export_dialog.rs").read_text(encoding="utf-8")
+    shell = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
 
     assert "downloadApiFile" not in meetings
     assert "Save or share" in meetings
@@ -2576,15 +2357,13 @@ def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> N
 
 
 def test_meeting_workspace_guards_async_state_and_touch_delete_controls() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(
-        encoding="utf-8"
-    )
+    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
     assert "min-[1100px]:pointer-events-none" in meetings
     assert "min-[1100px]:group-hover:pointer-events-auto" in meetings
     assert "h-11 w-11" in meetings
     assert 'scope: { id: "meeting-action-item-updates" }' in meetings
-    assert 'key={`${item.id}:${item.updatedAt}`}' in meetings
+    assert "key={`${item.id}:${item.updatedAt}`}" in meetings
     assert "applyMeetingActionItem(queryClient, variables.id, item);" in meetings
     assert 'queryKey: ["/api/meetings", variables.id, "deliveries"]' in meetings
 
@@ -2660,15 +2439,9 @@ def test_frontend_motion_uses_transitions_dev_refine_and_polish_contract() -> No
 def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> None:
     client_src = REPO_ROOT / "Frontend" / "client" / "src"
     live_mic = (client_src / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
-    overlay = (client_src / "components" / "NativeRecordingOverlay.tsx").read_text(
-        encoding="utf-8"
-    )
-    skeleton = (client_src / "components" / "ui" / "skeleton.tsx").read_text(
-        encoding="utf-8"
-    )
-    spinner = (client_src / "components" / "ui" / "spinner.tsx").read_text(
-        encoding="utf-8"
-    )
+    overlay = (client_src / "components" / "NativeRecordingOverlay.tsx").read_text(encoding="utf-8")
+    skeleton = (client_src / "components" / "ui" / "skeleton.tsx").read_text(encoding="utf-8")
+    spinner = (client_src / "components" / "ui" / "spinner.tsx").read_text(encoding="utf-8")
     youtube = (client_src / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
     file_page = (client_src / "pages" / "FileTranscribe.tsx").read_text(encoding="utf-8")
 

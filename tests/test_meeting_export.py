@@ -59,42 +59,61 @@ def meeting_detail() -> dict:
                         "type": "optional",
                         "response": "declined",
                     },
-                ]
+                ],
             }
         },
         # Confirmed mappings improve Meeting-local labels only. They never add
         # an address that was not part of the frozen Outlook event.
-        "speakers": [{
-            "confirmedAttendee": {
-                "name": "Not an event recipient",
-                "address": "mapping-only@example.net",
+        "speakers": [
+            {
+                "confirmedAttendee": {
+                    "name": "Not an event recipient",
+                    "address": "mapping-only@example.net",
+                }
             }
-        }],
+        ],
         "segments": [
             {
-                "id": "segment-1", "source": "microphone", "speakerLabel": "Alex",
-                "startMs": 1_000, "endMs": 4_200, "durationMs": 3_200,
+                "id": "segment-1",
+                "source": "microphone",
+                "speakerLabel": "Alex",
+                "startMs": 1_000,
+                "endMs": 4_200,
+                "durationMs": 3_200,
                 "text": "We approved the Friday release.",
             },
             {
-                "id": "segment-2", "source": "system", "speakerLabel": "Márta",
-                "startMs": 5_000, "endMs": 8_250, "durationMs": 3_250,
+                "id": "segment-2",
+                "source": "system",
+                "speakerLabel": "Márta",
+                "startMs": 5_000,
+                "endMs": 8_250,
+                "durationMs": 3_250,
                 "text": "I will send the customer update.",
             },
         ],
         "notes": [{"id": "note-1", "atMs": 6_000, "body": "Confirm release owner."}],
-        "actionItems": [{
-            "id": "action-1", "text": "Send the customer update", "owner": "Márta",
-            "dueDate": "2026-07-12", "status": "open",
-        }],
-        "outputs": [{
-            "kind": "analysis", "status": "completed", "payload": {
-                "executiveSummary": "The team approved a Friday release.",
-                "decisions": [{"text": "Release on Friday"}],
-                "openQuestions": [{"text": "Who monitors deployment?"}],
-                "risks": [{"text": "Customer approval is pending"}],
-            },
-        }],
+        "actionItems": [
+            {
+                "id": "action-1",
+                "text": "Send the customer update",
+                "owner": "Márta",
+                "dueDate": "2026-07-12",
+                "status": "open",
+            }
+        ],
+        "outputs": [
+            {
+                "kind": "analysis",
+                "status": "completed",
+                "payload": {
+                    "executiveSummary": "The team approved a Friday release.",
+                    "decisions": [{"text": "Release on Friday"}],
+                    "openQuestions": [{"text": "Who monitors deployment?"}],
+                    "risks": [{"text": "Customer approval is pending"}],
+                },
+            }
+        ],
     }
 
 
@@ -109,8 +128,7 @@ def test_meeting_templates_keep_summary_and_timestamped_transcript_distinct():
     assert "## Action items" in summary
     assert "Owner: Márta; Due: 2026-07-12; Status: open" in summary
     assert transcript == (
-        "0:01 to 0:04 | Alex\nWe approved the Friday release.\n\n"
-        "0:05 to 0:08 | Márta\nI will send the customer update."
+        "0:01 to 0:04 | Alex\nWe approved the Friday release.\n\n0:05 to 0:08 | Márta\nI will send the customer update."
     )
     assert "**Duration:** 0:08" in markdown
     assert "### 0:01 → 0:04 · Alex" in markdown
@@ -137,11 +155,13 @@ def test_email_template_uses_unique_valid_outlook_participants_without_false_att
 def test_email_like_custom_speaker_name_never_becomes_an_export_recipient():
     detail = meeting_detail()
     detail["captureMetadata"]["calendarEvent"] = None
-    detail["speakers"] = [{
-        "displayName": "not-a-recipient@example.net",
-        "participantLinkSource": "custom_name",
-        "confirmedAttendee": None,
-    }]
+    detail["speakers"] = [
+        {
+            "displayName": "not-a-recipient@example.net",
+            "participantLinkSource": "custom_name",
+            "confirmedAttendee": None,
+        }
+    ]
     detail["segments"][0]["speakerLabel"] = "not-a-recipient@example.net"
 
     assert meeting_email_recipients(detail) == []
@@ -217,9 +237,7 @@ def test_meeting_exports_follow_analysis_output_language_including_email_labels(
     # even though the decoded draft contains umlauts and localized text.
     eml.decode("ascii")
     parsed = BytesParser(policy=policy.default).parsebytes(eml)
-    assert "Die Veröffentlichung wurde beschlossen." in parsed.get_body(
-        preferencelist=("plain",)
-    ).get_content()
+    assert "Die Veröffentlichung wurde beschlossen." in parsed.get_body(preferencelist=("plain",)).get_content()
     assert list(parsed.iter_attachments())[0].get_payload(decode=True) == b"%PDF-localized"
 
 
@@ -231,9 +249,7 @@ def test_meeting_export_uses_concrete_settings_language_only_when_language_is_un
     # This short fixture is intentionally below the conservative heuristic's
     # evidence threshold, so the configured language becomes the fallback.
     assert meeting_export_language(detail, fallback_language="de") == "de"
-    assert build_meeting_email(detail, fallback_language="de")["subject"].startswith(
-        "Besprechungsnachbereitung:"
-    )
+    assert build_meeting_email(detail, fallback_language="de")["subject"].startswith("Besprechungsnachbereitung:")
 
 
 def test_transcript_language_overrides_stale_analysis_and_settings_language():
@@ -241,21 +257,21 @@ def test_transcript_language_overrides_stale_analysis_and_settings_language():
     detail["language"] = "en"
     analysis = next(item for item in detail["outputs"] if item["kind"] == "analysis")
     analysis["payload"]["outputLanguage"] = "en"
-    detail["segments"] = [{
-        "id": "segment-de",
-        "source": "microphone",
-        "speakerLabel": "Alex",
-        "startMs": 0,
-        "endMs": 12_000,
-        "durationMs": 12_000,
-        "text": (
-            "Wir haben heute die Planung besprochen und die wichtigsten Aufgaben "
-            "für das Team festgelegt. Die Veröffentlichung ist am Freitag, aber "
-            "wir prüfen auch noch, dass der Kunde mit dem Ergebnis zufrieden ist."
-        ),
-    }]
+    detail["segments"] = [
+        {
+            "id": "segment-de",
+            "source": "microphone",
+            "speakerLabel": "Alex",
+            "startMs": 0,
+            "endMs": 12_000,
+            "durationMs": 12_000,
+            "text": (
+                "Wir haben heute die Planung besprochen und die wichtigsten Aufgaben "
+                "für das Team festgelegt. Die Veröffentlichung ist am Freitag, aber "
+                "wir prüfen auch noch, dass der Kunde mit dem Ergebnis zufrieden ist."
+            ),
+        }
+    ]
 
     assert meeting_export_language(detail, fallback_language="en") == "de"
-    assert build_meeting_email(detail)["subject"].startswith(
-        "Besprechungsnachbereitung:"
-    )
+    assert build_meeting_email(detail)["subject"].startswith("Besprechungsnachbereitung:")

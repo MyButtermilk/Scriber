@@ -371,9 +371,7 @@ class MeetingStore:
                    ORDER BY type,name"""
             ).fetchall()
         ]
-        foreign_keys_enabled = bool(
-            conn.execute("PRAGMA foreign_keys").fetchone()[0]
-        )
+        foreign_keys_enabled = bool(conn.execute("PRAGMA foreign_keys").fetchone()[0])
         if conn.in_transaction:
             conn.commit()
         conn.execute("PRAGMA foreign_keys=OFF")
@@ -406,13 +404,9 @@ class MeetingStore:
             )
             for statement in schema_objects:
                 conn.execute(statement)
-            violations = conn.execute(
-                "PRAGMA foreign_key_check(meeting_notes)"
-            ).fetchall()
+            violations = conn.execute("PRAGMA foreign_key_check(meeting_notes)").fetchall()
             if violations:
-                raise sqlite3.IntegrityError(
-                    "Meeting note migration produced foreign-key violations."
-                )
+                raise sqlite3.IntegrityError("Meeting note migration produced foreign-key violations.")
             conn.commit()
         except Exception:
             conn.rollback()
@@ -1692,9 +1686,7 @@ class MeetingStore:
         if not note_id:
             raise ValueError("Meeting note id is required.")
         if (writer_id is None) != (write_generation is None):
-            raise ValueError(
-                "Meeting note writerId and writeGeneration must be supplied together."
-            )
+            raise ValueError("Meeting note writerId and writeGeneration must be supplied together.")
         ordered_write = writer_id is not None
         if ordered_write:
             writer_id = str(writer_id).strip()
@@ -4695,12 +4687,9 @@ class MeetingStore:
                    WHERE confirmation_token=? AND meeting_id=?""",
                 (token, meeting_id),
             ).fetchone()
-            if (
-                confirmation is None
-                or not hmac.compare_digest(
-                    str(confirmation["fingerprint"]),
-                    normalized_fingerprint,
-                )
+            if confirmation is None or not hmac.compare_digest(
+                str(confirmation["fingerprint"]),
+                normalized_fingerprint,
             ):
                 raise MeetingConflict("Delivery confirmation is invalid or expired.")
 

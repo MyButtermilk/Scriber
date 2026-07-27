@@ -9,14 +9,14 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from scripts.perf.autoresearch_profiles import ProfileContext, canonical_run_id
-
 
 STATE_SCHEMA_VERSION = 1
 SESSION_INIT_CONTRACT = "InstallerSizeResearchSessionInitV1"
@@ -51,11 +51,11 @@ class StateError(RuntimeError):
 
 
 def utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def format_utc(value: datetime) -> str:
-    normalized = value.astimezone(timezone.utc).replace(microsecond=0)
+    normalized = value.astimezone(UTC).replace(microsecond=0)
     return normalized.isoformat().replace("+00:00", "Z")
 
 
@@ -69,7 +69,7 @@ def parse_utc(value: Any, *, field: str) -> datetime:
         raise StateError(f"{field} is not a valid UTC timestamp") from exc
     if parsed.tzinfo is None:
         raise StateError(f"{field} must include UTC timezone information")
-    return parsed.astimezone(timezone.utc)
+    return parsed.astimezone(UTC)
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -186,8 +186,7 @@ def baseline_requirement_source_identities(repo_root: Path) -> list[dict[str, An
             raise StateError(f"installer-size initialization requires {name}")
         info = path.lstat()
         if path.is_symlink() or bool(
-            getattr(info, "st_file_attributes", 0)
-            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         ):
             raise StateError(f"installer-size initialization requires plain {name}")
         identities.append(
@@ -210,8 +209,7 @@ def _baseline_requirement_snapshot_identities(paths: RunPaths) -> list[dict[str,
             raise StateError(f"missing immutable baseline snapshot: {path.name}")
         info = path.lstat()
         if path.is_symlink() or bool(
-            getattr(info, "st_file_attributes", 0)
-            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         ):
             raise StateError(f"baseline snapshot must be a plain file: {path.name}")
         identities.append(
@@ -326,9 +324,7 @@ def baseline_replica_count(context: ProfileContext) -> int:
 
     configured = context.config.get("baselineReplicas")
     if isinstance(configured, bool) or not isinstance(configured, int) or configured != 1:
-        raise StateError(
-            "installer-size config baselineReplicas must be exactly 1"
-        )
+        raise StateError("installer-size config baselineReplicas must be exactly 1")
     return 1
 
 
@@ -375,9 +371,7 @@ def acquire_dispatch_lock(context: ProfileContext):
 
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except (OSError, BlockingIOError) as exc:
-            raise StateError(
-                "another installer-size dispatch or resume operation is still active"
-            ) from exc
+            raise StateError("another installer-size dispatch or resume operation is still active") from exc
         locked = True
         yield
     finally:
@@ -447,12 +441,8 @@ def _expected_manifest_bindings(context: ProfileContext) -> dict[str, Any]:
     toolchain = load_json_object(paths.toolchain_manifest)
     return {
         "sessionInitSha256": file_sha256(paths.session_init),
-        "baselineRequirementsBaseSha256": file_sha256(
-            paths.baseline_requirements_base
-        ),
-        "baselineRequirementsBuildSha256": file_sha256(
-            paths.baseline_requirements_build
-        ),
+        "baselineRequirementsBaseSha256": file_sha256(paths.baseline_requirements_base),
+        "baselineRequirementsBuildSha256": file_sha256(paths.baseline_requirements_build),
         "preflightSha256": file_sha256(paths.preflight),
         "baselineSha256": file_sha256(paths.baseline),
         "baselineReplicaCount": baseline_replica_count(context),
@@ -503,9 +493,7 @@ def validate_manifest(context: ProfileContext, manifest: dict[str, Any]) -> None
     if not isinstance(hashes, dict) or not hashes:
         raise StateError("run manifest has no protected input hashes")
     if hashes != session_init.get("protectedInputHashes"):
-        raise StateError(
-            "run manifest protected input hashes differ from session initialization"
-        )
+        raise StateError("run manifest protected input hashes differ from session initialization")
     if protected_drift(context, session_init):
         raise StateError("protected installer-size inputs drifted after session initialization")
     bindings = manifest.get("bindings")
@@ -515,9 +503,7 @@ def validate_manifest(context: ProfileContext, manifest: dict[str, Any]) -> None
     if any(value in (None, "") for value in expected_bindings.values()):
         raise StateError("authoritative run manifest bindings are incomplete")
     if bindings != expected_bindings:
-        raise StateError(
-            "run manifest bindings differ from the authoritative immutable artifacts"
-        )
+        raise StateError("run manifest bindings differ from the authoritative immutable artifacts")
 
 
 def validate_session_init(context: ProfileContext, payload: dict[str, Any]) -> None:
@@ -550,10 +536,7 @@ def validate_session_init(context: ProfileContext, payload: dict[str, Any]) -> N
             or not isinstance(item.get("sha256"), str)
             or len(item["sha256"]) != 64
             or item["sha256"] != item["sha256"].casefold()
-            or any(
-                character not in "0123456789abcdef"
-                for character in item["sha256"]
-            )
+            or any(character not in "0123456789abcdef" for character in item["sha256"])
             for item in requirement_sources
         )
     ):
@@ -576,12 +559,8 @@ def load_session_init(context: ProfileContext) -> dict[str, Any]:
         "baselineReplicaCount": baseline_replica_count(context),
         "researchClockStarted": False,
         "sessionInitSha256": file_sha256(paths.session_init),
-        "baselineRequirementsBaseSha256": file_sha256(
-            paths.baseline_requirements_base
-        ),
-        "baselineRequirementsBuildSha256": file_sha256(
-            paths.baseline_requirements_build
-        ),
+        "baselineRequirementsBaseSha256": file_sha256(paths.baseline_requirements_base),
+        "baselineRequirementsBuildSha256": file_sha256(paths.baseline_requirements_build),
     }
     if ledger_payload != expected:
         raise StateError("session initialization differs from its immutable ledger binding")
@@ -622,9 +601,7 @@ def _validate_clock_ledger_binding(
     expected = _expected_clock_ledger_payload(context, manifest)
     for field, expected_value in expected.items():
         if payload.get(field) != expected_value:
-            raise StateError(
-                f"research clock ledger {field} differs from the immutable run manifest"
-            )
+            raise StateError(f"research clock ledger {field} differs from the immutable run manifest")
     return True
 
 
@@ -678,9 +655,7 @@ def _validate_started_packet_hashes(context: ProfileContext) -> None:
             raise StateError("packet_started ledger entry has no immutable packet record")
         actual = file_sha256(packet_path)
         if claimed != actual:
-            raise StateError(
-                "immutable packet differs from its packet_started ledger hash"
-            )
+            raise StateError("immutable packet differs from its packet_started ledger hash")
         started[packet_id] = claimed
 
 
@@ -721,9 +696,7 @@ def load_progress(
     for packet_id in interrupted_ids:
         safe_packet_id(packet_id)
     abandoned_ids = progress.get("abandonedPacketIds")
-    if not isinstance(abandoned_ids, list) or len(set(abandoned_ids)) != len(
-        abandoned_ids
-    ):
+    if not isinstance(abandoned_ids, list) or len(set(abandoned_ids)) != len(abandoned_ids):
         raise StateError("progress abandoned packet ids are invalid")
     for packet_id in abandoned_ids:
         safe_packet_id(packet_id)
@@ -736,14 +709,8 @@ def load_progress(
             raise StateError("progress lane learning entry is invalid")
     started = progress.get("researchStartedAtUtc")
     deadline = progress.get("researchDeadlineUtc")
-    manifest = (
-        load_manifest(context)
-        if paths.manifest.is_file()
-        else None
-    )
-    if bool(started) != bool(deadline) and not (
-        manifest is not None and allow_manifest_clock_recovery
-    ):
+    manifest = load_manifest(context) if paths.manifest.is_file() else None
+    if bool(started) != bool(deadline) and not (manifest is not None and allow_manifest_clock_recovery):
         raise StateError("research start and deadline must be written together")
     if started and deadline:
         start_time = parse_utc(started, field="researchStartedAtUtc")
@@ -760,9 +727,7 @@ def load_progress(
         )
         progress_clock = (started, deadline)
         if progress_clock != manifest_clock and not allow_manifest_clock_recovery:
-            raise StateError(
-                "progress research clock differs from the immutable run manifest"
-            )
+            raise StateError("progress research clock differs from the immutable run manifest")
     _validate_started_packet_hashes(context)
     return progress
 
@@ -776,12 +741,9 @@ def _assert_no_reparse_ancestors(path: Path) -> None:
             continue
         info = current.lstat()
         if current.is_symlink() or bool(
-            getattr(info, "st_file_attributes", 0)
-            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+            getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
         ):
-            raise StateError(
-                "initialization path contains a symlink or reparse-point ancestor"
-            )
+            raise StateError("initialization path contains a symlink or reparse-point ancestor")
 
 
 def _validate_initialization_staging_path(
@@ -790,10 +752,7 @@ def _validate_initialization_staging_path(
 ) -> None:
     expected_parent = final_root.parent / ".initializing"
     expected_prefix = f".{final_root.name}."
-    if (
-        staging_root.parent != expected_parent
-        or not staging_root.name.startswith(expected_prefix)
-    ):
+    if staging_root.parent != expected_parent or not staging_root.name.startswith(expected_prefix):
         raise StateError("untrusted initialization staging path")
     _assert_no_reparse_ancestors(staging_root)
     try:
@@ -803,10 +762,7 @@ def _validate_initialization_staging_path(
     if (
         staging_root.is_symlink()
         or not staging_root.is_dir()
-        or bool(
-            getattr(info, "st_file_attributes", 0)
-            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
-        )
+        or bool(getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
     ):
         raise StateError("initialization staging root must be a plain directory")
 
@@ -854,12 +810,8 @@ def initialize_run(
         with nullcontext():
             recovered_at = now or utc_now()
             session_init = load_session_init(context)
-            if session_init.get("baselineRequirementSources") != (
-                _baseline_requirement_snapshot_identities(paths)
-            ):
-                raise StateError(
-                    "immutable baseline requirement snapshots differ from session initialization"
-                )
+            if session_init.get("baselineRequirementSources") != (_baseline_requirement_snapshot_identities(paths)):
+                raise StateError("immutable baseline requirement snapshots differ from session initialization")
             manifest: dict[str, Any] | None = None
             if paths.manifest.is_file():
                 manifest = load_json_object(paths.manifest)
@@ -886,9 +838,7 @@ def initialize_run(
                 if prior_clock != manifest_clock:
                     if not progress.get("researchStartedAtUtc"):
                         progress["phase"] = "run"
-                        progress["baselineReplicasAccepted"] = baseline_replica_count(
-                            context
-                        )
+                        progress["baselineReplicasAccepted"] = baseline_replica_count(context)
                     progress.update(manifest_clock)
                     progress["updatedAtUtc"] = format_utc(recovered_at)
                     write_json_atomic(paths.progress, progress)
@@ -896,9 +846,7 @@ def initialize_run(
                         paths.ledger,
                         event="progress_clock_recovered_from_manifest",
                         payload={
-                            "priorClockSha256": sha256_bytes(
-                                canonical_json_bytes(prior_clock)
-                            ),
+                            "priorClockSha256": sha256_bytes(canonical_json_bytes(prior_clock)),
                             "runManifestSha256": file_sha256(paths.manifest),
                             **manifest_clock,
                         },
@@ -936,17 +884,13 @@ def initialize_run(
     if source["dirtyEntries"]:
         raise StateError("installer-size session initialization requires a clean Git worktree")
     hashes = _protected_input_hashes(context)
-    source_requirement_identities = baseline_requirement_source_identities(
-        context.repo_root
-    )
+    source_requirement_identities = baseline_requirement_source_identities(context.repo_root)
     created = now or utc_now()
     staging_parent = paths.root.parent / ".initializing"
     _assert_no_reparse_ancestors(staging_parent)
     staging_parent.mkdir(parents=True, exist_ok=True)
     _assert_no_reparse_ancestors(staging_parent)
-    staging_root = Path(
-        tempfile.mkdtemp(prefix=f".{context.run_id}.", dir=str(staging_parent))
-    )
+    staging_root = Path(tempfile.mkdtemp(prefix=f".{context.run_id}.", dir=str(staging_parent)))
     _validate_initialization_staging_path(staging_root, paths.root)
     staging_context = replace(context, run_root=staging_root)
     staged_paths = _paths_for_root(staging_context, staging_root)
@@ -975,9 +919,7 @@ def initialize_run(
             )
         snapshot_identities = _baseline_requirement_snapshot_identities(staged_paths)
         if snapshot_identities != source_requirement_identities:
-            raise StateError(
-                "baseline requirement snapshot copy differs from clean source bytes"
-            )
+            raise StateError("baseline requirement snapshot copy differs from clean source bytes")
 
         session_init = {
             "sessionInitContract": SESSION_INIT_CONTRACT,
@@ -1034,12 +976,8 @@ def initialize_run(
                 "baselineReplicaCount": baseline_count,
                 "researchClockStarted": False,
                 "sessionInitSha256": file_sha256(staged_paths.session_init),
-                "baselineRequirementsBaseSha256": file_sha256(
-                    staged_paths.baseline_requirements_base
-                ),
-                "baselineRequirementsBuildSha256": file_sha256(
-                    staged_paths.baseline_requirements_build
-                ),
+                "baselineRequirementsBaseSha256": file_sha256(staged_paths.baseline_requirements_base),
+                "baselineRequirementsBuildSha256": file_sha256(staged_paths.baseline_requirements_build),
             },
             now=created,
         )
@@ -1192,17 +1130,13 @@ def arm_research_clock(
     if preflight.get("accepted") is not True:
         raise StateError("research clock cannot start before accepted preflight")
     if not accepted_baseline_replica_packet_id(context, 1):
-        raise StateError(
-            "research clock cannot start before one ledger-accepted baseline inventory"
-        )
+        raise StateError("research clock cannot start before one ledger-accepted baseline inventory")
     if (
         baseline.get("baselineContract") != "InstallerResearchBaselineV2"
         or baseline.get("schemaVersion") != 2
         or baseline.get("baselineInventoryCount") != 1
     ):
-        raise StateError(
-            "research clock requires an accepted single-inventory InstallerResearchBaselineV2"
-        )
+        raise StateError("research clock requires an accepted single-inventory InstallerResearchBaselineV2")
     if baseline.get("accepted") is not True:
         raise StateError("research clock requires an accepted baseline inventory")
     if baseline.get("runId") != context.run_id:
@@ -1372,11 +1306,7 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
         if not isinstance(hypothesis.get(field), str) or not hypothesis[field].strip():
             raise StateError(f"pending packet hypothesis {field} must be a non-empty string")
     expected_reduction = hypothesis.get("expectedReductionBytes")
-    if (
-        isinstance(expected_reduction, bool)
-        or not isinstance(expected_reduction, int)
-        or expected_reduction < 0
-    ):
+    if isinstance(expected_reduction, bool) or not isinstance(expected_reduction, int) or expected_reduction < 0:
         raise StateError("pending packet hypothesis expectedReductionBytes must be non-negative")
     if hypothesis.get("risk") not in {"low", "medium", "high"}:
         raise StateError("pending packet hypothesis risk must be low, medium, or high")
@@ -1395,11 +1325,7 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
     }:
         raise StateError("pending packet action kind is not allowlisted")
     timeout_seconds = action.get("timeoutSeconds")
-    if (
-        isinstance(timeout_seconds, bool)
-        or not isinstance(timeout_seconds, int)
-        or not 30 <= timeout_seconds <= 14_400
-    ):
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or not 30 <= timeout_seconds <= 14_400:
         raise StateError("pending packet timeoutSeconds must be between 30 and 14400")
     if action.get("kind") in {"baseline-replica", "final-replica"}:
         if action.get("replica") not in (1, 2):
@@ -1407,15 +1333,10 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
     if action.get("kind") == "baseline-replica":
         replica = int(action["replica"])
         if replica != 1:
-            raise StateError(
-                "the single-baseline protocol allows only baseline replica 1"
-            )
+            raise StateError("the single-baseline protocol allows only baseline replica 1")
         expected_packet_id = f"baseline-{replica}"
         if packet.get("packetId") != expected_packet_id:
-            raise StateError(
-                "baseline-replica packetId must match its canonical "
-                f"replica id {expected_packet_id}"
-            )
+            raise StateError(f"baseline-replica packetId must match its canonical replica id {expected_packet_id}")
         if packet.get("lane") != "baseline":
             raise StateError("baseline-replica packet lane must be baseline")
     if action.get("kind") == "measure-candidate":
@@ -1433,49 +1354,34 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
             if not (
                 len(parent_tree_oid) in (40, 64)
                 and parent_tree_oid == parent_tree_oid.casefold()
-                and all(
-                    character in "0123456789abcdef"
-                    for character in parent_tree_oid
-                )
+                and all(character in "0123456789abcdef" for character in parent_tree_oid)
             ):
-                raise StateError(
-                    "payload candidate requires a lowercase parentSourceTreeOid"
-                )
+                raise StateError("payload candidate requires a lowercase parentSourceTreeOid")
         if action.get("comparisonKind") == "compression":
             tree_sha = str(action.get("payloadTreeSha256") or "")
-            if len(tree_sha) != 64 or any(
-                character not in "0123456789abcdef" for character in tree_sha
-            ):
+            if len(tree_sha) != 64 or any(character not in "0123456789abcdef" for character in tree_sha):
                 raise StateError("compression action requires a lowercase payloadTreeSha256")
     elif "comparisonKind" in action:
         raise StateError("comparisonKind is valid only for measure-candidate actions")
     if action.get("kind") == "final-replica":
         champion_sha = str(action.get("championSha256") or "")
-        if len(champion_sha) != 64 or any(
-            character not in "0123456789abcdef" for character in champion_sha
-        ):
+        if len(champion_sha) != 64 or any(character not in "0123456789abcdef" for character in champion_sha):
             raise StateError("final-replica action requires a lowercase championSha256")
         champion_tree_oid = str(action.get("championSourceTreeOid") or "")
         if not (
             len(champion_tree_oid) in (40, 64)
             and champion_tree_oid == champion_tree_oid.casefold()
-            and all(
-                character in "0123456789abcdef"
-                for character in champion_tree_oid
-            )
+            and all(character in "0123456789abcdef" for character in champion_tree_oid)
         ):
-            raise StateError(
-                "final-replica action requires a lowercase championSourceTreeOid"
-            )
+            raise StateError("final-replica action requires a lowercase championSourceTreeOid")
 
 
 def set_pending_packet(context: ProfileContext, packet: dict[str, Any]) -> Path:
     paths = paths_for(context)
     validate_packet(packet, run_id=str(context.run_id))
-    if (
-        packet.get("action", {}).get("kind") == "baseline-replica"
-        and packet.get("action", {}).get("replica") > baseline_replica_count(context)
-    ):
+    if packet.get("action", {}).get("kind") == "baseline-replica" and packet.get("action", {}).get(
+        "replica"
+    ) > baseline_replica_count(context):
         raise StateError("baseline packet exceeds the frozen baseline replica count")
     if paths.pending_packet.exists():
         raise StateError("a pending packet already exists")
@@ -1494,9 +1400,7 @@ def clear_pending_packet(paths: RunPaths, *, expected_packet_id: str) -> None:
 
 
 def _packet_result_path_from_packet(paths: RunPaths, packet: dict[str, Any]) -> Path:
-    relative = str(packet.get("action", {}).get("resultRelativePath") or "").replace(
-        "\\", "/"
-    )
+    relative = str(packet.get("action", {}).get("resultRelativePath") or "").replace("\\", "/")
     if not relative or relative.startswith("/") or ".." in Path(relative).parts:
         raise StateError("pending packet resultRelativePath is unsafe")
     result = paths.root.joinpath(*relative.split("/")).resolve()
@@ -1533,10 +1437,7 @@ def pending_packet_requires_resume(context: ProfileContext) -> bool:
 
     if paths.last_run.is_file():
         last_run = load_json_object(paths.last_run)
-        if (
-            last_run.get("runId") == context.run_id
-            and last_run.get("packetId") == packet_id
-        ):
+        if last_run.get("runId") == context.run_id and last_run.get("packetId") == packet_id:
             return True
 
     lifecycle_events = {
@@ -1571,8 +1472,7 @@ def _validate_interruption_tombstone(
     }:
         raise StateError("packet interruption tombstone shape is invalid")
     if (
-        tombstone.get("interruptionContract")
-        != "InstallerSizePacketInterruptionV1"
+        tombstone.get("interruptionContract") != "InstallerSizePacketInterruptionV1"
         or tombstone.get("schemaVersion") != STATE_SCHEMA_VERSION
         or tombstone.get("runId") != context.run_id
         or tombstone.get("packetId") != packet_id
@@ -1588,8 +1488,7 @@ def _validate_interruption_tombstone(
     elif (
         not isinstance(interrupted_result, dict)
         or set(interrupted_result) != {"relativePath", "sha256"}
-        or interrupted_result.get("relativePath")
-        != quarantine.relative_to(paths.root).as_posix()
+        or interrupted_result.get("relativePath") != quarantine.relative_to(paths.root).as_posix()
         or not quarantine.is_file()
         or interrupted_result.get("sha256") != file_sha256(quarantine)
     ):
@@ -1635,9 +1534,7 @@ def _validate_or_append_interruption_ledger(
         tombstone,
         last_run_sha256=file_sha256(paths.last_run),
     )
-    payload["tombstoneSha256"] = file_sha256(
-        paths.interruption(str(tombstone["packetId"]))
-    )
+    payload["tombstoneSha256"] = file_sha256(paths.interruption(str(tombstone["packetId"])))
     events = [
         row
         for row in read_ledger(paths.ledger)
@@ -1748,9 +1645,7 @@ def _reconcile_interrupted_pending(
     tombstone = load_json_object(tombstone_path)
     _validate_interruption_tombstone(context, packet, tombstone)
     expected_last_run = _interruption_last_run(tombstone)
-    if canonical_json_bytes(load_json_object(paths.last_run)) != canonical_json_bytes(
-        expected_last_run
-    ):
+    if canonical_json_bytes(load_json_object(paths.last_run)) != canonical_json_bytes(expected_last_run):
         raise StateError("packet interruption last-run binding is invalid")
     _validate_or_append_interruption_ledger(
         context,
@@ -1801,9 +1696,7 @@ def _reconcile_completed_pending(
     validate_packet(packet, run_id=str(context.run_id))
     packet_id = safe_packet_id(packet.get("packetId"))
     immutable_packet = paths.packet(packet_id)
-    if canonical_json_bytes(packet) != canonical_json_bytes(
-        load_json_object(immutable_packet)
-    ):
+    if canonical_json_bytes(packet) != canonical_json_bytes(load_json_object(immutable_packet)):
         raise StateError("completed pending packet differs from its immutable record")
     result_path = _packet_result_path_from_packet(paths, packet)
     if not paths.last_run.is_file():
@@ -1833,8 +1726,7 @@ def _reconcile_completed_pending(
         elif (
             not isinstance(failed_result, dict)
             or set(failed_result) != {"relativePath", "sha256"}
-            or failed_result.get("relativePath")
-            != failed_path.relative_to(paths.root).as_posix()
+            or failed_result.get("relativePath") != failed_path.relative_to(paths.root).as_posix()
             or not failed_path.is_file()
             or failed_result.get("sha256") != file_sha256(failed_path)
         ):
@@ -1867,29 +1759,20 @@ def _reconcile_completed_pending(
                     or not isinstance(prior_sha, str)
                     or file_sha256(paths.champion) != prior_sha
                 ):
-                    raise StateError(
-                        "completed keep champion copy differs from both prior and new result"
-                    )
+                    raise StateError("completed keep champion copy differs from both prior and new result")
                 write_json_atomic(paths.champion, result)
         else:
             if last_run.get("priorChampionId") is not None:
                 raise StateError("completed keep lost its prior champion artifact")
             write_json_atomic(paths.champion, result)
-    if decision == "final_replica_accept" and packet_id not in progress.get(
-        "finalReplicaPacketIds", []
-    ):
+    if decision == "final_replica_accept" and packet_id not in progress.get("finalReplicaPacketIds", []):
         raise StateError("completed final replica is absent from durable progress")
     if decision == "baseline_accept":
         replica = packet.get("action", {}).get("replica")
         accepted_count = sum(
-            1
-            for index in range(1, baseline_replica_count(context) + 1)
-            if paths.baseline_replica(index).is_file()
+            1 for index in range(1, baseline_replica_count(context) + 1) if paths.baseline_replica(index).is_file()
         )
-        if (
-            replica != 1
-            or progress.get("baselineReplicasAccepted") != accepted_count
-        ):
+        if replica != 1 or progress.get("baselineReplicasAccepted") != accepted_count:
             raise StateError("completed baseline replica is absent from durable progress")
     last_run_sha = file_sha256(paths.last_run)
     expected_payload = packet_completed_ledger_payload(
@@ -1966,9 +1849,7 @@ def _recover_abandoned_pending(
     if not tombstone_path.is_file():
         return None
     immutable_packet = paths.packet(packet_id)
-    if canonical_json_bytes(packet) != canonical_json_bytes(
-        load_json_object(immutable_packet)
-    ):
+    if canonical_json_bytes(packet) != canonical_json_bytes(load_json_object(immutable_packet)):
         raise StateError("abandoned pending packet differs from its immutable record")
     tombstone = load_json_object(tombstone_path)
     _validate_abandon_tombstone(context, packet, tombstone)
@@ -2031,9 +1912,7 @@ def abandon_pending_packet(
         validate_packet(packet, run_id=str(context.run_id))
         packet_id = safe_packet_id(packet["packetId"])
         immutable_packet = paths.packet(packet_id)
-        if canonical_json_bytes(packet) != canonical_json_bytes(
-            load_json_object(immutable_packet)
-        ):
+        if canonical_json_bytes(packet) != canonical_json_bytes(load_json_object(immutable_packet)):
             raise StateError("pending packet differs from its immutable record")
         if _packet_result_path_from_packet(paths, packet).exists():
             raise StateError("a packet with result evidence cannot be abandoned")
@@ -2093,8 +1972,6 @@ def summarize(context: ProfileContext, *, now: datetime | None = None) -> dict[s
             progress=progress,
         ),
         "preflightAccepted": (
-            load_json_object(paths.preflight).get("accepted") is True
-            if paths.preflight.is_file()
-            else False
+            load_json_object(paths.preflight).get("accepted") is True if paths.preflight.is_file() else False
         ),
     }

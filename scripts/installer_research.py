@@ -5,8 +5,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Mapping
-
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -84,13 +83,9 @@ def _inventory_command(args: argparse.Namespace, *, evaluator_hash: str) -> int:
 
 
 def _accept_baseline_command(args: argparse.Namespace, *, evaluator_hash: str) -> int:
-    first, first_sha = _read_json_with_sha(
-        args.inventory, label="baseline inventory"
-    )
+    first, first_sha = _read_json_with_sha(args.inventory, label="baseline inventory")
     if first.get("evaluatorHash") != evaluator_hash:
-        raise InventoryError(
-            "baseline inventory was produced by a different evaluator."
-        )
+        raise InventoryError("baseline inventory was produced by a different evaluator.")
     baseline = accept_baseline(
         first,
         first_inventory_sha256=first_sha,
@@ -119,9 +114,7 @@ def _optional_json(path: Path | None, *, label: str) -> dict[str, Any] | None:
 
 def _evaluate_command(args: argparse.Namespace, *, evaluator_hash: str) -> int:
     baseline, _baseline_sha = _read_json_with_sha(args.baseline, label="baseline")
-    candidate, _candidate_sha = _read_json_with_sha(
-        args.candidate_inventory, label="candidate inventory"
-    )
+    candidate, _candidate_sha = _read_json_with_sha(args.candidate_inventory, label="candidate inventory")
     if baseline.get("evaluatorHash") != evaluator_hash:
         raise InventoryError("Baseline was produced by a different evaluator.")
     if candidate.get("evaluatorHash") != evaluator_hash:
@@ -174,9 +167,7 @@ def _path(value: str) -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Create and compare byte-exact Scriber installer research evidence."
-    )
+    parser = argparse.ArgumentParser(description="Create and compare byte-exact Scriber installer research evidence.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     inventory = subparsers.add_parser(

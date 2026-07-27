@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import hashlib
-from importlib import import_module
-from importlib.util import find_spec
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
+from importlib import import_module
+from importlib.util import find_spec
 from typing import Any
 
 from loguru import logger
@@ -127,10 +127,7 @@ def _sanitize_event_value(key: str, value: object, *, depth: int = 0) -> object:
     if isinstance(value, (list, tuple)):
         if depth >= 2:
             return "[LIST]"
-        return [
-            _sanitize_event_value(key_text, item, depth=depth + 1)
-            for item in list(value)[:8]
-        ]
+        return [_sanitize_event_value(key_text, item, depth=depth + 1) for item in list(value)[:8]]
     return _bounded_diagnostic_text(value)
 
 
@@ -162,7 +159,6 @@ def _snapshot_prewarm_events(events: deque[dict[str, Any]]) -> list[dict[str, An
             event["ageSeconds"] = round(max(0.0, now - float(at)), 3)
         snapshot.append(event)
     return snapshot
-
 
 
 class RustAudioPrewarmManager:
@@ -249,15 +245,11 @@ class RustAudioPrewarmManager:
                 "prewarmIdHash": self._hash_hint(self._prewarm_id),
                 "activeCaptureAttached": self._active_capture_attached,
                 "adoptionPending": bool(self._pending_adoption_prewarm_id),
-                "pendingAdoptionPrewarmIdHash": self._hash_hint(
-                    self._pending_adoption_prewarm_id
-                ),
+                "pendingAdoptionPrewarmIdHash": self._hash_hint(self._pending_adoption_prewarm_id),
                 "pausedForActiveCapture": self._paused_for_active_capture,
                 "pausedForDeviceRefresh": self._paused_for_device_refresh,
                 "streamStartedAgoSeconds": (
-                    round(time.monotonic() - self._stream_started_at, 3)
-                    if self._stream_started_at > 0
-                    else None
+                    round(time.monotonic() - self._stream_started_at, 3) if self._stream_started_at > 0 else None
                 ),
                 "streamStartCount": self._stream_start_count,
                 "streamCloseCount": self._stream_close_count,
@@ -274,9 +266,7 @@ class RustAudioPrewarmManager:
                 "adoptionCount": self._adoption_count,
                 "adoptionCommitCount": self._adoption_commit_count,
                 "adoptionRollbackCount": self._adoption_rollback_count,
-                "adoptionDeviceIdentityRejectionCount": (
-                    self._adoption_device_identity_rejection_count
-                ),
+                "adoptionDeviceIdentityRejectionCount": (self._adoption_device_identity_rejection_count),
                 "lastAdoptionRejectionReason": self._last_adoption_rejection_reason,
                 "lastAdoptedPrewarmIdHash": self._last_adopted_prewarm_id_hash,
                 "lastActiveCaptureDetachAgoSeconds": (
@@ -300,18 +290,14 @@ class RustAudioPrewarmManager:
                 "lastStartSuccess": self._last_start_success,
                 "startInProgress": self._start_in_progress,
                 "lastStopAgoSeconds": (
-                    round(time.monotonic() - self._last_stop_at, 3)
-                    if self._last_stop_at > 0
-                    else None
+                    round(time.monotonic() - self._last_stop_at, 3) if self._last_stop_at > 0 else None
                 ),
                 "lastStopReason": self._last_stop_reason,
                 "lastStopResponseMs": self._last_stop_response_ms,
                 "lastStopSuccess": self._last_stop_success,
                 "lastStopError": self._last_stop_error,
                 "lastHealthCheckAgoSeconds": (
-                    round(time.monotonic() - self._last_health_check_at, 3)
-                    if self._last_health_check_at > 0
-                    else None
+                    round(time.monotonic() - self._last_health_check_at, 3) if self._last_health_check_at > 0 else None
                 ),
                 "lastHealthCheckReason": self._last_health_check_reason,
                 "lastHealthCheckActive": self._last_health_check_active,
@@ -320,9 +306,7 @@ class RustAudioPrewarmManager:
                 "lastTransition": self._last_transition,
                 "lastTransitionReason": self._last_transition_reason,
                 "lastTransitionAgoSeconds": (
-                    round(time.monotonic() - self._last_transition_at, 3)
-                    if self._last_transition_at > 0
-                    else None
+                    round(time.monotonic() - self._last_transition_at, 3) if self._last_transition_at > 0 else None
                 ),
                 "signature": dict(self._stream_signature),
                 "lastStop": self._redacted_stop_payload_locked(),
@@ -350,9 +334,7 @@ class RustAudioPrewarmManager:
         sidecar_payload = payload.get("sidecarPayload")
         if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
             sidecar_payload = dict(sidecar_payload)
-            sidecar_payload["prewarmIdHash"] = self._hash_hint(
-                str(sidecar_payload.pop("prewarmId") or "")
-            )
+            sidecar_payload["prewarmIdHash"] = self._hash_hint(str(sidecar_payload.pop("prewarmId") or ""))
             payload["sidecarPayload"] = sidecar_payload
         return payload
 
@@ -369,16 +351,12 @@ class RustAudioPrewarmManager:
         sidecar_payload = payload.get("sidecarPayload")
         if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
             sidecar_payload = dict(sidecar_payload)
-            sidecar_payload["prewarmIdHash"] = self._hash_hint(
-                str(sidecar_payload.pop("prewarmId") or "")
-            )
+            sidecar_payload["prewarmIdHash"] = self._hash_hint(str(sidecar_payload.pop("prewarmId") or ""))
             payload["sidecarPayload"] = sidecar_payload
         stop_payload = payload.get("stop")
         if isinstance(stop_payload, dict) and "prewarmId" in stop_payload:
             stop_payload = dict(stop_payload)
-            stop_payload["prewarmIdHash"] = self._hash_hint(
-                str(stop_payload.pop("prewarmId") or "")
-            )
+            stop_payload["prewarmIdHash"] = self._hash_hint(str(stop_payload.pop("prewarmId") or ""))
             payload["stop"] = stop_payload
         return payload
 
@@ -465,10 +443,7 @@ class RustAudioPrewarmManager:
                 keep_started_session = (
                     self._start_generation == start_generation
                     and bool(Config.MIC_ALWAYS_ON or temporary)
-                    and not (
-                        self._paused_for_active_capture
-                        or self._paused_for_device_refresh
-                    )
+                    and not (self._paused_for_active_capture or self._paused_for_device_refresh)
                 )
                 if keep_started_session:
                     # Reserve the returned session before releasing the lock.
@@ -496,10 +471,7 @@ class RustAudioPrewarmManager:
                 return False
 
             with self._lock:
-                if (
-                    self._start_generation != start_generation
-                    or self._prewarm_id != prewarm_id
-                ):
+                if self._start_generation != start_generation or self._prewarm_id != prewarm_id:
                     self._last_start_duration_ms = round(
                         max(0.0, time.monotonic() - attempt_started) * 1000.0,
                         3,
@@ -576,14 +548,10 @@ class RustAudioPrewarmManager:
                     responseMs=shell_response_ms,
                     durationMs=self._last_start_duration_ms,
                     activeCaptureResumeGapMs=(
-                        self._last_active_capture_resume_gap_ms
-                        if active_resume_started_at > 0
-                        else None
+                        self._last_active_capture_resume_gap_ms if active_resume_started_at > 0 else None
                     ),
                     activeCaptureStopToReadyMs=(
-                        self._last_active_capture_stop_to_ready_ms
-                        if active_resume_started_at > 0
-                        else None
+                        self._last_active_capture_stop_to_ready_ms if active_resume_started_at > 0 else None
                     ),
                     temporaryIdlePrewarm=self._temporary_idle_prewarm,
                 )
@@ -633,9 +601,7 @@ class RustAudioPrewarmManager:
         channels = max(1, int(getattr(Config, "CHANNELS", 1) or 1))
         block_size = max(64, int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512))
         configured_prebuffer_ms = int(getattr(Config, "MIC_PREBUFFER_MS", 400) or 0)
-        requested_prebuffer_ms = (
-            configured_prebuffer_ms if prebuffer_ms is None else int(prebuffer_ms)
-        )
+        requested_prebuffer_ms = configured_prebuffer_ms if prebuffer_ms is None else int(prebuffer_ms)
         # Normal idle prewarm stays on the user's short rolling buffer. An
         # explicit hotkey may request a longer, still tightly bounded buffer
         # while the lazily loaded transcription runtime becomes ready. The
@@ -790,18 +756,12 @@ class RustAudioPrewarmManager:
         """
 
         stored_hash = str(signature.get("native_endpoint_id_hash") or "").strip()
-        requested_hash = str(
-            requested_selection.get("nativeEndpointIdHash") or ""
-        ).strip()
+        requested_hash = str(requested_selection.get("nativeEndpointIdHash") or "").strip()
         if stored_hash or requested_hash:
             return bool(stored_hash and requested_hash and stored_hash == requested_hash)
 
-        stored_preference = cls._normalized_device_preference(
-            signature.get("device_preference")
-        )
-        requested_preference = cls._normalized_device_preference(
-            requested_selection.get("devicePreference")
-        )
+        stored_preference = cls._normalized_device_preference(signature.get("device_preference"))
+        requested_preference = cls._normalized_device_preference(requested_selection.get("devicePreference"))
         return stored_preference == requested_preference == "default"
 
     def attach_active_capture(
@@ -822,11 +782,7 @@ class RustAudioPrewarmManager:
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
-            if (
-                self._paused_for_device_refresh
-                or self._active_capture_attached
-                or not self._prewarm_id
-            ):
+            if self._paused_for_device_refresh or self._active_capture_attached or not self._prewarm_id:
                 return None
             signature = dict(self._stream_signature)
             if int(signature.get("sample_rate") or 0) != int(sample_rate):
@@ -837,24 +793,16 @@ class RustAudioPrewarmManager:
                 return None
             candidate_prewarm_id = self._prewarm_id
             requested_device = self._normalized_device_preference(device)
-            stored_device = self._normalized_device_preference(
-                signature.get("device_preference")
-            )
-            configured_device = str(
-                getattr(Config, "MIC_DEVICE", "default") or "default"
-            )
+            stored_device = self._normalized_device_preference(signature.get("device_preference"))
+            configured_device = str(getattr(Config, "MIC_DEVICE", "default") or "default")
             favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
             device_identity_matches = bool(
                 requested_device == stored_device
-                and configured_device == str(
-                    signature.get("configured_device") or "default"
-                )
+                and configured_device == str(signature.get("configured_device") or "default")
                 and favorite_mic == str(signature.get("favorite_mic") or "")
             )
             if not device_identity_matches:
-                stored_endpoint_hash = str(
-                    signature.get("native_endpoint_id_hash") or ""
-                ).strip()
+                stored_endpoint_hash = str(signature.get("native_endpoint_id_hash") or "").strip()
                 rejection_reason = "device_route_generation_mismatch"
                 self._adoption_device_identity_rejection_count += 1
                 self._last_adoption_rejection_reason = rejection_reason
@@ -894,15 +842,9 @@ class RustAudioPrewarmManager:
                 "prewarm_id": prewarm_id,
                 "signature": signature,
                 "captureRoute": {
-                    "devicePreference": str(
-                        signature.get("device_preference") or "default"
-                    ),
-                    "portAudioLabel": str(
-                        signature.get("port_audio_label") or ""
-                    ),
-                    "nativeEndpointIdHash": (
-                        str(signature.get("native_endpoint_id_hash") or "") or None
-                    ),
+                    "devicePreference": str(signature.get("device_preference") or "default"),
+                    "portAudioLabel": str(signature.get("port_audio_label") or ""),
+                    "nativeEndpointIdHash": (str(signature.get("native_endpoint_id_hash") or "") or None),
                 },
                 "routeGeneration": signature.get("route_generation"),
                 "start": self._redacted_start_payload_locked(),
@@ -927,11 +869,7 @@ class RustAudioPrewarmManager:
         with self._lock:
             if not Config.MIC_ALWAYS_ON and not self._temporary_idle_prewarm:
                 return None
-            if (
-                self._paused_for_device_refresh
-                or self._active_capture_attached
-                or not self._prewarm_id
-            ):
+            if self._paused_for_device_refresh or self._active_capture_attached or not self._prewarm_id:
                 return None
             signature = self._stream_signature
             if int(signature.get("sample_rate") or 0) != int(sample_rate):
@@ -940,19 +878,13 @@ class RustAudioPrewarmManager:
                 return None
             if int(signature.get("block_size") or 0) != int(block_size):
                 return None
-            configured_device = str(
-                getattr(Config, "MIC_DEVICE", "default") or "default"
-            )
+            configured_device = str(getattr(Config, "MIC_DEVICE", "default") or "default")
             favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
-            if configured_device != str(
-                signature.get("configured_device") or "default"
-            ):
+            if configured_device != str(signature.get("configured_device") or "default"):
                 return None
             if favorite_mic != str(signature.get("favorite_mic") or ""):
                 return None
-            return self._normalized_device_preference(
-                signature.get("device_preference")
-            )
+            return self._normalized_device_preference(signature.get("device_preference"))
 
     def commit_active_capture(self, prewarm_id: str) -> bool:
         """Commit a leased prewarm only after native capture returned ready.
@@ -1086,9 +1018,7 @@ class RustAudioPrewarmManager:
             prewarm_id = self._prewarm_id
             active = bool(prewarm_id)
             had_previous_session = (
-                self._stream_start_count > 0
-                or self._stream_close_count > 0
-                or bool(self._last_transition)
+                self._stream_start_count > 0 or self._stream_close_count > 0 or bool(self._last_transition)
             )
             self._last_health_check_at = time.monotonic()
             self._last_health_check_reason = reason
@@ -1134,10 +1064,7 @@ class RustAudioPrewarmManager:
                 return True
             if not success and error_code in _TRANSIENT_HEALTH_STATUS_ERRORS:
                 health_error = str(
-                    response.get("fallbackReason")
-                    or response_payload.get("reason")
-                    or error_code
-                    or "statusUnknown"
+                    response.get("fallbackReason") or response_payload.get("reason") or error_code or "statusUnknown"
                 )
                 with self._lock:
                     self._last_status_payload = dict(response_payload)
@@ -1152,8 +1079,7 @@ class RustAudioPrewarmManager:
                         responseMs=response_ms,
                     )
                 logger.debug(
-                    "Rust mic prewarm status unavailable; keeping existing session "
-                    f"({reason}, status={error_code})"
+                    f"Rust mic prewarm status unavailable; keeping existing session ({reason}, status={error_code})"
                 )
                 return True
             status_active = success and bool(response_payload.get("active"))
@@ -1161,8 +1087,8 @@ class RustAudioPrewarmManager:
                 self._last_status_payload = dict(response_payload)
                 self._last_health_check_active = status_active
                 self._last_health_response_ms = response_ms
-                self._last_health_error = "" if status_active else (
-                    str(response_payload.get("reason") or error_code or "inactive")
+                self._last_health_error = (
+                    "" if status_active else (str(response_payload.get("reason") or error_code or "inactive"))
                 )
             if status_active:
                 return True
@@ -1225,11 +1151,7 @@ class RustAudioPrewarmManager:
                 response_payload = {}
             response_success = bool(response.get("success")) if isinstance(response, dict) else False
             response_error = (
-                str(
-                    response.get("fallbackReason")
-                    or response.get("errorCode")
-                    or "audioPrewarmStopFailed"
-                )
+                str(response.get("fallbackReason") or response.get("errorCode") or "audioPrewarmStopFailed")
                 if isinstance(response, dict) and not response_success
                 else ""
             )
@@ -1254,9 +1176,7 @@ class RustAudioPrewarmManager:
             if response_success:
                 logger.debug(f"Rust mic prewarm session stopped ({reason})")
             else:
-                logger.debug(
-                    f"Rust mic prewarm stop was not accepted ({reason}): {response_error}"
-                )
+                logger.debug(f"Rust mic prewarm stop was not accepted ({reason}): {response_error}")
         except Exception as exc:
             with self._lock:
                 self._last_error = str(exc)

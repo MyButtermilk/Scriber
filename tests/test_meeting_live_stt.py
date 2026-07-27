@@ -7,7 +7,6 @@ import pytest
 
 from src.meeting_live_stt import SonioxMeetingStream
 
-
 _CLOSED = object()
 
 
@@ -152,18 +151,18 @@ async def test_soniox_meeting_stream_uses_stable_upserts_and_persists_final_turn
     )
     await stream.start()
     stream.enqueue(b"\0\0" * 160)
-    await websocket.push({
-        "tokens": [
-            {"text": "Hello", "is_final": False, "start_ms": 100, "end_ms": 300, "speaker": "1"}
-        ]
-    })
-    await websocket.push({
-        "tokens": [
-            {"text": "Hello", "is_final": True, "start_ms": 100, "end_ms": 300, "speaker": "1"},
-            {"text": " world", "is_final": True, "start_ms": 300, "end_ms": 500, "speaker": "1"},
-            {"text": "<end>", "is_final": True},
-        ]
-    })
+    await websocket.push(
+        {"tokens": [{"text": "Hello", "is_final": False, "start_ms": 100, "end_ms": 300, "speaker": "1"}]}
+    )
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "Hello", "is_final": True, "start_ms": 100, "end_ms": 300, "speaker": "1"},
+                {"text": " world", "is_final": True, "start_ms": 300, "end_ms": 500, "speaker": "1"},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: any(segment.is_final for segment in segments))
     await stream.stop()
 
@@ -202,14 +201,16 @@ async def test_soniox_meeting_stream_preserves_each_contiguous_speaker_run():
         session_id="speaker-session",
     )
     await stream.start()
-    await websocket.push({
-        "tokens": [
-            {"text": "Alice", "is_final": True, "start_ms": 0, "end_ms": 100, "speaker": "0"},
-            {"text": " and", "is_final": True, "start_ms": 100, "end_ms": 200, "speaker": "1"},
-            {"text": " Alice", "is_final": True, "start_ms": 200, "end_ms": 300, "speaker": "0"},
-            {"text": "<end>", "is_final": True},
-        ]
-    })
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "Alice", "is_final": True, "start_ms": 0, "end_ms": 100, "speaker": "0"},
+                {"text": " and", "is_final": True, "start_ms": 100, "end_ms": 200, "speaker": "1"},
+                {"text": " Alice", "is_final": True, "start_ms": 200, "end_ms": 300, "speaker": "0"},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: len([item for item in segments if item.is_final]) == 3)
     await stream.stop()
 
@@ -252,24 +253,28 @@ async def test_soniox_meeting_stream_keeps_stable_id_with_leading_speakerless_to
         session_id="leading-session",
     )
     await stream.start()
-    await websocket.push({
-        "tokens": [
-            {"text": "Hello", "is_final": False, "start_ms": 10, "end_ms": 100},
-        ]
-    })
-    await websocket.push({
-        "tokens": [
-            {
-                "text": " ",
-                "is_final": True,
-                "start_ms": 0,
-                "end_ms": 10,
-                "speaker": "ignored-whitespace-speaker",
-            },
-            {"text": "Hello", "is_final": True, "start_ms": 10, "end_ms": 100, "speaker": "0"},
-            {"text": "<end>", "is_final": True},
-        ]
-    })
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "Hello", "is_final": False, "start_ms": 10, "end_ms": 100},
+            ]
+        }
+    )
+    await websocket.push(
+        {
+            "tokens": [
+                {
+                    "text": " ",
+                    "is_final": True,
+                    "start_ms": 0,
+                    "end_ms": 10,
+                    "speaker": "ignored-whitespace-speaker",
+                },
+                {"text": "Hello", "is_final": True, "start_ms": 10, "end_ms": 100, "speaker": "0"},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: any(item.is_final for item in segments))
     await stream.stop()
 
@@ -311,12 +316,14 @@ async def test_soniox_meeting_stream_reconnects_after_send_failure_and_marks_one
     stream.enqueue(b"\0\0" * 160)
     await _eventually(lambda: len(second.sent) >= 1)
     stream.enqueue(b"\0\0" * 160)
-    await second.push({
-        "tokens": [
-            {"text": "Recovered", "is_final": True, "start_ms": 0, "end_ms": 10},
-            {"text": "<end>", "is_final": True},
-        ]
-    })
+    await second.push(
+        {
+            "tokens": [
+                {"text": "Recovered", "is_final": True, "start_ms": 0, "end_ms": 10},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: any(segment.is_final for segment in segments))
     await stream.stop()
 
@@ -549,15 +556,15 @@ async def test_live_timestamps_preserve_dropped_frame_gap():
         stream.enqueue(b"\0\0" * 160)
     assert stream.dropped_frames == 4
     websocket.release_first_audio.set()
-    await _eventually(
-        lambda: sum(isinstance(item, bytes) for item in websocket.sent) == 17
+    await _eventually(lambda: sum(isinstance(item, bytes) for item in websocket.sent) == 17)
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "After gap", "is_final": True, "start_ms": 10, "end_ms": 30},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
     )
-    await websocket.push({
-        "tokens": [
-            {"text": "After gap", "is_final": True, "start_ms": 10, "end_ms": 30},
-            {"text": "<end>", "is_final": True},
-        ]
-    })
     await _eventually(lambda: any(segment.is_final for segment in segments))
     await stream.stop()
 
@@ -587,11 +594,7 @@ async def test_soniox_meeting_stream_reports_redacted_interim_latency_snapshot()
     await stream.start()
     for _ in range(100):
         stream.enqueue(b"\0\0" * 160)
-    await websocket.push({
-        "tokens": [
-            {"text": "Measured", "is_final": False, "start_ms": 0, "end_ms": 100}
-        ]
-    })
+    await websocket.push({"tokens": [{"text": "Measured", "is_final": False, "start_ms": 0, "end_ms": 100}]})
     await _eventually(lambda: bool(segments))
     snapshot = stream.snapshot()
     await stream.stop()
@@ -627,18 +630,26 @@ async def test_smart_turn_merges_incomplete_provider_endpoints_for_microphone():
     )
     await stream.start()
     stream.enqueue((2_000).to_bytes(2, "little", signed=True) * 160)
-    await websocket.push({"tokens": [
-        {"text": "I think we should", "is_final": True, "start_ms": 0, "end_ms": 600},
-        {"text": "<end>", "is_final": True},
-    ]})
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "I think we should", "is_final": True, "start_ms": 0, "end_ms": 600},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: bool(segments))
     assert not any(segment.is_final for segment in segments)
 
     stream.enqueue((2_000).to_bytes(2, "little", signed=True) * 160)
-    await websocket.push({"tokens": [
-        {"text": " ship Friday.", "is_final": True, "start_ms": 700, "end_ms": 1_100},
-        {"text": "<end>", "is_final": True},
-    ]})
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": " ship Friday.", "is_final": True, "start_ms": 700, "end_ms": 1_100},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
     await _eventually(lambda: any(segment.is_final for segment in segments))
     snapshot = stream.snapshot()
     await stream.stop()

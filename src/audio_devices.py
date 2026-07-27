@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-import re
 import hashlib
+import re
 import sys
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 _DEVICE_NAME_PREFIX_RE = re.compile(r"\((\d+)\s*-\s*", re.IGNORECASE)
 _DEFAULT_SUFFIX_RE = re.compile(r"\s*\(default\)\s*$", re.IGNORECASE)
@@ -413,9 +414,9 @@ def list_unique_input_microphones(
             if not normalized_name:
                 continue
 
-            is_default = (
-                default_idx is not None and idx == default_idx
-            ) or (default_norm and normalized_name == default_norm)
+            is_default = (default_idx is not None and idx == default_idx) or (
+                default_norm and normalized_name == default_norm
+            )
 
             entry = MicrophoneEntry(
                 index=idx,
@@ -452,24 +453,13 @@ def list_unique_input_microphones(
 def normalize_native_endpoint_entry(raw: Mapping[str, Any]) -> NativeEndpointEntry | None:
     """Normalize a private native endpoint record without exposing raw endpoint IDs."""
     endpoint_id = str(
-        raw.get("endpointId")
-        or raw.get("endpoint_id")
-        or raw.get("id")
-        or raw.get("deviceId")
-        or ""
+        raw.get("endpointId") or raw.get("endpoint_id") or raw.get("id") or raw.get("deviceId") or ""
     ).strip()
     endpoint_hash = str(
-        raw.get("endpointIdHash")
-        or raw.get("endpoint_id_hash")
-        or hash_native_endpoint_id(endpoint_id)
-        or ""
+        raw.get("endpointIdHash") or raw.get("endpoint_id_hash") or hash_native_endpoint_id(endpoint_id) or ""
     ).strip()
     friendly_name = str(
-        raw.get("friendlyName")
-        or raw.get("friendly_name")
-        or raw.get("name")
-        or raw.get("label")
-        or ""
+        raw.get("friendlyName") or raw.get("friendly_name") or raw.get("name") or raw.get("label") or ""
     ).strip()
     flow = normalize_endpoint_flow(raw.get("flow") or raw.get("dataFlow") or raw.get("data_flow"))
     normalized_name = normalize_device_name(friendly_name)
@@ -559,11 +549,7 @@ def _native_device_flow(device: Any, audio_utilities: Any | None = None) -> str:
     if value is not None:
         return normalize_endpoint_flow(value)
 
-    get_data_flow = (
-        getattr(audio_utilities, "GetEndpointDataFlow", None)
-        if audio_utilities is not None
-        else None
-    )
+    get_data_flow = getattr(audio_utilities, "GetEndpointDataFlow", None) if audio_utilities is not None else None
     if callable(get_data_flow):
         try:
             return normalize_endpoint_flow(get_data_flow(device, outputType=1))
@@ -594,9 +580,7 @@ def _native_device_is_active(device: Any) -> bool:
     if value is None:
         return True
     normalized = str(value).strip().lower()
-    return normalized in {"1", "active", "audiodevicestate.active"} or normalized.endswith(
-        ".active"
-    )
+    return normalized in {"1", "active", "audiodevicestate.active"} or normalized.endswith(".active")
 
 
 def collect_native_capture_endpoint_inventory(audio_utilities: Any | None = None) -> list[dict[str, Any]]:
@@ -849,13 +833,8 @@ def resolve_input_microphone_device(
                     channels=compatible_channels,
                 ):
                     log_info(
-                        "Microphone candidate '{}' (index {}) rejected at {} Hz/{} ch; "
-                        "trying next host variant".format(
-                            dev_name,
-                            idx,
-                            wanted_rate,
-                            compatible_channels,
-                        )
+                        f"Microphone candidate '{dev_name}' (index {idx}) rejected at {wanted_rate} Hz/{compatible_channels} ch; "
+                        "trying next host variant"
                     )
                     continue
 
@@ -863,9 +842,7 @@ def resolve_input_microphone_device(
                     log_info(f"Matched microphone '{target}' to '{dev_name}' (normalized match)")
                 return str(idx)
 
-            log_warning(
-                f"All matched variants for microphone '{target}' failed compatibility checks; skipping it"
-            )
+            log_warning(f"All matched variants for microphone '{target}' failed compatibility checks; skipping it")
             return None
         except Exception:
             return None

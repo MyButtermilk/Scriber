@@ -7,7 +7,6 @@ from pathlib import Path
 
 from scripts.smoke_rust_audio_app_prewarm import validate_smoke
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -65,16 +64,14 @@ def _manager_health_snapshot(
 
 
 def test_rust_audio_app_prewarm_smoke_script_documents_app_lifecycle_contract() -> None:
-    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_app_prewarm.py").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "smoke_rust_audio_app_prewarm.py").read_text(encoding="utf-8")
 
     assert "RustAudioPrewarmManager" in script
     assert "RustPrototypeFrameSource" in script
     assert "audioPrewarmStart" in script
     assert "audioCaptureStart" in script
     assert "prewarmId" in script
-    assert "capture_route=(adopted or {}).get(\"captureRoute\")" in script
+    assert 'capture_route=(adopted or {}).get("captureRoute")' in script
     assert "managerResume" in script
     assert "adoptedPrewarm" in script
     assert "healthRestartCount" in script
@@ -224,10 +221,7 @@ def test_rust_audio_app_prewarm_validation_rejects_missing_recent_events() -> No
     )
 
     assert "managerPreAdoptionHealth must prove active audioPrewarmStatus" in errors
-    assert (
-        "managerPostResumeHealth must prove active audioPrewarmStatus when resume is requested"
-        in errors
-    )
+    assert "managerPostResumeHealth must prove active audioPrewarmStatus when resume is requested" in errors
 
 
 def test_rust_audio_app_prewarm_validation_rejects_mid_session_failure() -> None:
@@ -257,8 +251,5 @@ def test_rust_audio_app_prewarm_validation_rejects_mid_session_failure() -> None
 
     assert "sourceFinal.midSessionFailureReason must be empty" in errors
     assert "sourceFinal.fallbackReason must be empty" in errors
-    assert (
-        "sourceFinal.framePipeReaderEndReason must be stopRequested, endOfStream, or empty"
-        in errors
-    )
+    assert "sourceFinal.framePipeReaderEndReason must be stopRequested, endOfStream, or empty" in errors
     assert "sourceFinal.lastError must be empty" in errors

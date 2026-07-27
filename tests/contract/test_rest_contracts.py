@@ -337,9 +337,7 @@ def test_frontend_performance_contract_records_bounded_long_tasks(monkeypatch, t
         response = ctl.record_frontend_performance(request)
         replayed = ctl.record_frontend_performance({**request, "droppedEntries": 1})
         replayed = ctl.record_frontend_performance({**request, "droppedEntries": 1})
-        forged = ctl.record_frontend_performance(
-            {**request, "entries": [], "heartbeatSequence": 999}
-        )
+        forged = ctl.record_frontend_performance({**request, "entries": [], "heartbeatSequence": 999})
         assert ctl.request_frontend_performance_flush("another-webview") is None
         flush_request = ctl.request_frontend_performance_flush("webview-123")
         assert flush_request is not None
@@ -844,9 +842,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
         validate_audio_diagnostics_payload(invalid)
 
     invalid = copy.deepcopy(valid)
-    invalid["microphone"]["prewarm"]["lastStatus"]["sidecarPayload"] = {
-        "prewarmId": "raw-prewarm-id"
-    }
+    invalid["microphone"]["prewarm"]["lastStatus"]["sidecarPayload"] = {"prewarmId": "raw-prewarm-id"}
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 
@@ -863,9 +859,7 @@ def test_audio_diagnostics_contract_rejects_incompatible_payload() -> None:
     validate_audio_diagnostics_payload(idle_warning)
 
     invalid = copy.deepcopy(idle_warning)
-    invalid["watchdog"]["lastWarning"]["diagnostics"]["lastStatus"]["raw"] = {
-        "prewarmId": "raw-prewarm-id"
-    }
+    invalid["watchdog"]["lastWarning"]["diagnostics"]["lastStatus"]["raw"] = {"prewarmId": "raw-prewarm-id"}
     with pytest.raises(RESTContractError):
         validate_audio_diagnostics_payload(invalid)
 

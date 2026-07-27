@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_SCENARIOS = [
     "usb-add",
     "usb-remove",
@@ -150,9 +149,7 @@ def summarize_change(before: list[Device], after: list[Device]) -> dict[str, Any
         "beforeDefault": device_signature([before_default]) if before_default else [],
         "afterDefault": device_signature([after_default]) if after_default else [],
         "defaultChanged": bool(
-            before_default
-            and after_default
-            and before_default.device_id != after_default.device_id
+            before_default and after_default and before_default.device_id != after_default.device_id
         ),
     }
 
@@ -189,9 +186,7 @@ def rust_inventory_signature(audio_diagnostics: dict[str, Any] | None) -> list[d
                 "friendlyName": friendly_name,
                 "flow": str(endpoint.get("flow") or ""),
                 "isDefault": bool(endpoint.get("isDefault")),
-                "defaultRoles": [
-                    str(role) for role in default_roles if str(role or "").strip()
-                ],
+                "defaultRoles": [str(role) for role in default_roles if str(role or "").strip()],
             }
         )
     return result
@@ -248,11 +243,7 @@ def device_monitor_snapshot(audio_diagnostics: dict[str, Any] | None) -> dict[st
     monitor = _device_monitor_payload(audio_diagnostics)
     if not monitor:
         return {}
-    snapshot = {
-        key: monitor.get(key)
-        for key in DEVICE_MONITOR_SNAPSHOT_FIELDS
-        if key in monitor
-    }
+    snapshot = {key: monitor.get(key) for key in DEVICE_MONITOR_SNAPSHOT_FIELDS if key in monitor}
     raw_hint = monitor.get("lastNativeHint")
     if isinstance(raw_hint, dict):
         snapshot["lastNativeHint"] = {
@@ -307,12 +298,10 @@ def summarize_device_monitor_refresh(
         "nativeHintPortAudioDelta": _counter_delta(before, after, "nativeHintPortAudioCount"),
         "pendingRefreshObserved": bool(before.get("pendingRefresh") or after.get("pendingRefresh")),
         "pendingRefreshRequiresPortAudioObserved": bool(
-            before.get("pendingRefreshRequiresPortAudio")
-            or after.get("pendingRefreshRequiresPortAudio")
+            before.get("pendingRefreshRequiresPortAudio") or after.get("pendingRefreshRequiresPortAudio")
         ),
         "refreshDeferredUntilIdleObserved": bool(
-            before.get("refreshDeferredUntilIdle")
-            or after.get("refreshDeferredUntilIdle")
+            before.get("refreshDeferredUntilIdle") or after.get("refreshDeferredUntilIdle")
         ),
         "before": before,
         "after": after,
@@ -321,11 +310,7 @@ def summarize_device_monitor_refresh(
 
 def omit_raw_endpoint_ids(value: Any) -> Any:
     if isinstance(value, dict):
-        return {
-            key: omit_raw_endpoint_ids(item)
-            for key, item in value.items()
-            if key != "endpointId"
-        }
+        return {key: omit_raw_endpoint_ids(item) for key, item in value.items() if key != "endpointId"}
     if isinstance(value, list):
         return [omit_raw_endpoint_ids(item) for item in value]
     return value
@@ -341,12 +326,8 @@ def summarize_rust_inventory_change(
     after = rust_inventory_signature(after_audio)
     before_hashes = {str(endpoint["endpointIdHash"]) for endpoint in before}
     after_hashes = {str(endpoint["endpointIdHash"]) for endpoint in after}
-    before_default = sorted(
-        str(endpoint["endpointIdHash"]) for endpoint in before if endpoint.get("isDefault")
-    )
-    after_default = sorted(
-        str(endpoint["endpointIdHash"]) for endpoint in after if endpoint.get("isDefault")
-    )
+    before_default = sorted(str(endpoint["endpointIdHash"]) for endpoint in before if endpoint.get("isDefault"))
+    after_default = sorted(str(endpoint["endpointIdHash"]) for endpoint in after if endpoint.get("isDefault"))
     return {
         "availableBefore": bool(before_inventory.get("available")),
         "availableAfter": bool(after_inventory.get("available")),
@@ -356,14 +337,8 @@ def summarize_rust_inventory_change(
         "afterCount": len(after),
         "before": before,
         "after": after,
-        "added": [
-            endpoint for endpoint in after if endpoint["endpointIdHash"] not in before_hashes
-        ],
-        "removed": [
-            endpoint
-            for endpoint in before
-            if endpoint["endpointIdHash"] not in after_hashes
-        ],
+        "added": [endpoint for endpoint in after if endpoint["endpointIdHash"] not in before_hashes],
+        "removed": [endpoint for endpoint in before if endpoint["endpointIdHash"] not in after_hashes],
         "defaultChanged": before_default != after_default,
     }
 
@@ -380,10 +355,7 @@ def evaluate_expectations(
 ) -> list[str]:
     failures: list[str] = []
     has_explicit_expectation = bool(
-        expect_added
-        or expect_removed
-        or expect_default_changed
-        or expect_favorite_fallback
+        expect_added or expect_removed or expect_default_changed or expect_favorite_fallback
     )
     if not has_explicit_expectation and device_signature(before) == device_signature(after):
         failures.append("expected microphone list/default marker to change or an explicit expectation flag")
@@ -518,10 +490,12 @@ def build_plan_entry(scenario: str, *, base_url: str, token_required: bool) -> d
     if token_required:
         command_parts.extend(["--token", "<session token>"])
     command_parts.extend(flag_args(flags))
-    command_parts.extend([
-        "--output",
-        f"tmp\\hybrid-baseline\\microphone-hardware-{scenario}.json",
-    ])
+    command_parts.extend(
+        [
+            "--output",
+            f"tmp\\hybrid-baseline\\microphone-hardware-{scenario}.json",
+        ]
+    )
     return {
         "scenario": scenario,
         "instruction": SCENARIO_INSTRUCTIONS[scenario],
@@ -550,8 +524,7 @@ def main(argv: list[str]) -> int:
         "assumeCompleted": False,
         "plan": plan,
         "instructions": [
-            {"scenario": scenario, "instruction": SCENARIO_INSTRUCTIONS[scenario]}
-            for scenario in scenarios
+            {"scenario": scenario, "instruction": SCENARIO_INSTRUCTIONS[scenario]} for scenario in scenarios
         ],
         "result": None,
     }
@@ -566,7 +539,9 @@ def main(argv: list[str]) -> int:
     before = client.get_microphones()
     settings_before = client.get_settings()
     audio_before = safe_audio_diagnostics(client)
-    instruction = args.instruction or "Perform the planned hardware action, wait until Windows settles, then press Enter."
+    instruction = (
+        args.instruction or "Perform the planned hardware action, wait until Windows settles, then press Enter."
+    )
     if not args.assume_completed:
         print(instruction)
         input()

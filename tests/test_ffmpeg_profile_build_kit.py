@@ -4,7 +4,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_KIT_PATH = REPO_ROOT / "scripts" / "ffmpeg" / "create_profile_b_build_kit.py"
 VALIDATOR_PATH = REPO_ROOT / "scripts" / "ffmpeg" / "validate_ffmpeg_profile.py"
@@ -92,7 +91,7 @@ def test_create_profile_b_build_kit_writes_reproducible_artifacts(tmp_path: Path
     assert "--enable-libmp3lame" in args_text
     assert "--enable-protocol=pipe" in args_text
     assert "--enable-protocol=https" not in args_text
-    assert "./configure --prefix=\"$PREFIX_DIR\"" in script_text
+    assert './configure --prefix="$PREFIX_DIR"' in script_text
     assert "+  --" not in script_text
     assert "--enable-demuxer=pcm_s16le" in script_text
     assert "--enable-muxer=wav" in script_text

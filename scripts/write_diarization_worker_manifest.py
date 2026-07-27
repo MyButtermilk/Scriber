@@ -4,6 +4,7 @@ The output is bundled next to the executable by the signed installer/updater.
 Runtime code refuses a frozen worker that lacks this manifest or whose digest,
 size, protocol, engine version, or static-link identity does not match.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -12,7 +13,6 @@ import json
 import subprocess
 from pathlib import Path
 from typing import Any
-
 
 WORKER_NAME = "scriber-diarization-sidecar"
 WORKER_FILE = f"{WORKER_NAME}.exe"
@@ -41,11 +41,7 @@ def _probe(executable: Path, argument: str) -> dict[str, Any]:
         timeout=10,
         check=False,
     )
-    if (
-        process.returncode != 0
-        or len(process.stdout) > MAX_CONTROL_BYTES
-        or len(process.stderr) > MAX_CONTROL_BYTES
-    ):
+    if process.returncode != 0 or len(process.stdout) > MAX_CONTROL_BYTES or len(process.stderr) > MAX_CONTROL_BYTES:
         raise RuntimeError("Diarization worker version probe failed.")
     try:
         payload = json.loads(process.stdout.decode("utf-8"))

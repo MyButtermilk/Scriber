@@ -22,9 +22,7 @@ from backend_runtime.launcher import (
     validate_application_layer,
     validate_runtime_layer,
 )
-from scripts.stage_backend_application_layer import stage_application_layer
-from scripts.stage_backend_application_layer import validate_staged_application_layer
-
+from scripts.stage_backend_application_layer import stage_application_layer, validate_staged_application_layer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_KEY = "a" * 64
@@ -59,9 +57,7 @@ def _write_runtime_manifest(runtime_root: Path, executable: Path) -> dict[str, o
             ],
         },
     }
-    (runtime_root / "runtime-layer-manifest.json").write_text(
-        json.dumps(manifest), encoding="utf-8"
-    )
+    (runtime_root / "runtime-layer-manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
     return manifest
 
 
@@ -78,9 +74,7 @@ def _layered_runtime(tmp_path: Path) -> tuple[Path, Path, dict[str, object]]:
 def test_application_layer_is_physical_complete_and_bound_to_runtime(tmp_path: Path) -> None:
     runtime_root, executable, expected_runtime = _layered_runtime(tmp_path)
 
-    runtime_manifest = validate_runtime_layer(
-        runtime_root, executable_path=executable
-    )
+    runtime_manifest = validate_runtime_layer(runtime_root, executable_path=executable)
     app_manifest = validate_application_layer(runtime_root, runtime_manifest)
 
     assert runtime_manifest == expected_runtime
@@ -132,9 +126,7 @@ def test_physical_application_import_check_is_repeatable_without_bytecode(
         "raise SystemExit(launch_application(Path(sys.argv_orig[1])))"
     )
     # Keep the runtime root out of the application argv that backend_worker sees.
-    command = command.replace(
-        "import sys;", "import sys; sys.argv_orig=list(sys.argv);"
-    )
+    command = command.replace("import sys;", "import sys; sys.argv_orig=list(sys.argv);")
     env = os.environ.copy()
     env.pop("PYTHONDONTWRITEBYTECODE", None)
 
@@ -155,8 +147,7 @@ def test_physical_application_import_check_is_repeatable_without_bytecode(
         )
 
     assert not any(
-        path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"}
-        for path in (runtime_root / "app").rglob("*")
+        path.name == "__pycache__" or path.suffix in {".pyc", ".pyo"} for path in (runtime_root / "app").rglob("*")
     )
 
 
@@ -198,11 +189,7 @@ def test_direct_pipecat_imports_use_exact_frozen_runtime_modules() -> None:
         tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                direct_modules.update(
-                    alias.name
-                    for alias in node.names
-                    if alias.name.startswith("pipecat.")
-                )
+                direct_modules.update(alias.name for alias in node.names if alias.name.startswith("pipecat."))
             elif (
                 isinstance(node, ast.ImportFrom)
                 and node.level == 0
@@ -213,9 +200,7 @@ def test_direct_pipecat_imports_use_exact_frozen_runtime_modules() -> None:
 
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
     missing = direct_modules - frozen_modules
-    assert not missing, (
-        f"Direct Pipecat imports absent from frozen runtime: {sorted(missing)}"
-    )
+    assert not missing, f"Direct Pipecat imports absent from frozen runtime: {sorted(missing)}"
     assert "pipecat.transports.base_input" in direct_modules
 
 
@@ -234,14 +219,10 @@ def test_pipeline_provider_wrappers_are_static_lazy_imports_for_packaging() -> N
     source = REPO_ROOT / "src" / "pipeline.py"
     tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
     static_imports = {
-        node.module
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+        node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
     }
     module_level_imports = {
-        node.module
-        for node in tree.body
-        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
+        node.module for node in tree.body if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module
     }
 
     assert expected_modules <= static_imports
@@ -269,9 +250,7 @@ def test_application_layer_stages_only_tracked_files(tmp_path: Path) -> None:
 
 
 def test_pyinstaller_spec_freezes_launcher_and_not_first_party_application() -> None:
-    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
     excludes = spec.split("excludes=[", 1)[1].split("],\n    noarchive", 1)[0]
 
     assert '[str(repo_root / "backend_runtime" / "launcher.py")]' in spec
@@ -283,18 +262,14 @@ def test_pyinstaller_spec_freezes_launcher_and_not_first_party_application() -> 
 
 
 def test_numpy_product_overlay_is_validated_safe_fail_closed_and_pyinstaller_scoped() -> None:
-    builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
-        encoding="utf-8"
-    )
-    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
-    overlay_function = builder.split(
-        "function New-ValidatedNumPyPyInstallerOverlay", 1
-    )[1].split("function Invoke-TimedStep", 1)[0]
-    pyinstaller_block = builder.split(
-        'Invoke-TimedStep -Label "pyinstaller-build"', 1
-    )[1].split('Invoke-TimedStep -Label "frozen-runtime-layer-check"', 1)[0]
+    builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
+    overlay_function = builder.split("function New-ValidatedNumPyPyInstallerOverlay", 1)[1].split(
+        "function Invoke-TimedStep", 1
+    )[0]
+    pyinstaller_block = builder.split('Invoke-TimedStep -Label "pyinstaller-build"', 1)[1].split(
+        'Invoke-TimedStep -Label "frozen-runtime-layer-check"', 1
+    )[0]
 
     assert "scripts\\validate_numpy_noblas_wheel.py" in overlay_function
     assert "--lock $lockPath" in overlay_function
@@ -329,9 +304,7 @@ def test_numpy_product_overlay_is_validated_safe_fail_closed_and_pyinstaller_sco
 
 
 def test_runtime_cache_key_source_excludes_application_code() -> None:
-    script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
     runtime_block = script.split("$backendRuntimeEntries = New-EntryList", 1)[1].split(
         'Write-KeyFile -Name "backend-runtime.txt"', 1
     )[0]
@@ -339,10 +312,7 @@ def test_runtime_cache_key_source_excludes_application_code() -> None:
 
     assert '"backend_runtime"' in runtime_block
     assert '"requirements-base.txt"' in runtime_block
-    assert (
-        '"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"'
-        in runtime_block
-    )
+    assert '"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"' in runtime_block
     assert '"packaging/wheels/numpy-noblas-wheel-lock-v1.json"' in runtime_block
     assert '"scripts/validate_numpy_noblas_wheel.py"' in runtime_block
     assert '"src"' not in runtime_block
@@ -351,12 +321,8 @@ def test_runtime_cache_key_source_excludes_application_code() -> None:
 
 
 def test_backend_runtime_prepares_locked_punkt_data_for_child_processes_only() -> None:
-    builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(
-        encoding="utf-8"
-    )
-    cache_script = (
-        REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1"
-    ).read_text(encoding="utf-8")
+    builder = (REPO_ROOT / "scripts" / "build_tauri_backend_sidecar.ps1").read_text(encoding="utf-8")
+    cache_script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
 
     for relative_path in (
         "packaging/nltk-punkt-tab-lock-v1.json",
@@ -371,9 +337,7 @@ def test_backend_runtime_prepares_locked_punkt_data_for_child_processes_only() -
     assert "$env:SCRIBER_NLTK_DATA_ROOT = $script:NltkDataRoot" in builder
     assert "Remove-Item Env:SCRIBER_NLTK_DATA_ROOT" in builder
 
-    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(
-        encoding="utf-8"
-    )
+    spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
     assert 'os.environ.get("SCRIBER_NLTK_DATA_ROOT")' in spec
     assert "Discard all" in spec
     assert 'startswith("nltk_data/")' in spec

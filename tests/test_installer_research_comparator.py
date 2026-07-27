@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import subprocess
@@ -16,9 +15,8 @@ from scripts.installer_research.comparator import (
     accept_baseline,
     evaluate_candidate,
 )
-from scripts.perf.installer_size.evaluator import validate_result
 from scripts.installer_research.inventory import InventoryError
-
+from scripts.perf.installer_size.evaluator import validate_result
 
 EVALUATOR_HASH = "1" * 64
 TOOLCHAIN_HASH = "2" * 64
@@ -142,9 +140,7 @@ def _inventory(
 
 
 def _accepted_baseline() -> dict:
-    first = _inventory(
-        replica_id="baseline-1", build_root_sha256="1" * 64
-    )
+    first = _inventory(replica_id="baseline-1", build_root_sha256="1" * 64)
     return accept_baseline(first)
 
 
@@ -218,9 +214,13 @@ def _timing_evidence(
             }
         )
     for pair in range(1, 21):
-        order = ("baseline", "candidate") if pair % 2 else (
-            "candidate",
-            "baseline",
+        order = (
+            ("baseline", "candidate")
+            if pair % 2
+            else (
+                "candidate",
+                "baseline",
+            )
         )
         label = "AB" if pair % 2 else "BA"
         for position, variant in enumerate(order, start=1):
@@ -339,9 +339,7 @@ def _evaluate(candidate: dict, **kwargs) -> dict:
         gate_results=gates,
         install_measurements=measurements,
         install_measurements_sha256=(
-            kwargs.pop("install_measurements_sha256", TIMING_SHA)
-            if measurements is not None
-            else None
+            kwargs.pop("install_measurements_sha256", TIMING_SHA) if measurements is not None else None
         ),
         **kwargs,
     )
@@ -393,9 +391,7 @@ def test_accept_single_baseline_binds_one_raw_inventory_hash() -> None:
             "installed_inventory_missing",
         ),
         (
-            lambda value: value["payload"].update(
-                stagedInstalledParity={"ok": False}
-            ),
+            lambda value: value["payload"].update(stagedInstalledParity={"ok": False}),
             "staged_installed_parity_failed",
         ),
     ],
@@ -414,17 +410,13 @@ def test_accept_single_baseline_rejects_incomplete_inventory(
 
 
 def test_legacy_v1_pair_reader_preserves_reproducibility_rejection() -> None:
-    first = _inventory(
-        replica_id="baseline-replica-1", build_root_sha256="1" * 64
-    )
+    first = _inventory(replica_id="baseline-replica-1", build_root_sha256="1" * 64)
     second = _inventory(
         semantic_hash="f" * 64,
         replica_id="baseline-replica-2",
         build_root_sha256="2" * 64,
     )
-    second["payload"]["staged"]["components"]["backend-executable"][
-        "allocationListSha256"
-    ] = "0" * 64
+    second["payload"]["staged"]["components"]["backend-executable"]["allocationListSha256"] = "0" * 64
 
     baseline = accept_baseline(first, second)
 
@@ -528,18 +520,13 @@ def test_one_arbitrary_external_pass_gate_cannot_authorize_keep() -> None:
         "packetId": "packet-001",
         "parentChampionId": "baseline",
         "sourceCommit": SOURCE_COMMIT,
-        "gates": {
-            "arbitrary": {"status": "pass", "evidenceSha256": "e" * 64}
-        },
+        "gates": {"arbitrary": {"status": "pass", "evidenceSha256": "e" * 64}},
     }
 
     result = _evaluate(candidate, gate_results=weak_evidence)
 
     assert result["decision"] == "measure_only"
-    assert all(
-        result["gates"][name]["status"] == "not_run"
-        for name in MANDATORY_EXTERNAL_GATES
-    )
+    assert all(result["gates"][name]["status"] == "not_run" for name in MANDATORY_EXTERNAL_GATES)
 
 
 def test_passing_external_gate_requires_an_evidence_hash() -> None:
@@ -589,9 +576,7 @@ def test_timing_provenance_mismatch_is_invalid_measurement() -> None:
 
     assert result["decision"] == "invalid_measurement"
     assert result["reasonCodes"] == ["invalid_install_timing_evidence"]
-    assert "sourceCommit_mismatch" in result["gates"]["installTimingRegression"][
-        "errorCodes"
-    ]
+    assert "sourceCommit_mismatch" in result["gates"]["installTimingRegression"]["errorCodes"]
 
 
 def test_ten_timing_pairs_are_insufficient_for_keep() -> None:
@@ -608,9 +593,7 @@ def test_ten_timing_pairs_are_insufficient_for_keep() -> None:
     result = _evaluate(candidate, install_measurements=timing)
 
     assert result["decision"] == "invalid_measurement"
-    assert "pair_count_below_twenty" in result["gates"][
-        "installTimingRegression"
-    ]["errorCodes"]
+    assert "pair_count_below_twenty" in result["gates"]["installTimingRegression"]["errorCodes"]
     assert "result_install_measurement_pairs_invalid" in {
         finding["code"] for finding in validate_result(result, expected_run_id=RUN_ID)
     }
@@ -641,9 +624,7 @@ def test_relative_threshold_uses_ceiling_and_can_dominate_absolute_threshold() -
         hypothesis="Meet the exact 25-basis-point boundary.",
         source_commit=SOURCE_COMMIT,
         gate_results=_passing_gates(packet_id="packet-relative"),
-        install_measurements=_timing_evidence(
-            baseline["inventory"], candidate, packet_id="packet-relative"
-        ),
+        install_measurements=_timing_evidence(baseline["inventory"], candidate, packet_id="packet-relative"),
         install_measurements_sha256=TIMING_SHA,
     )
 
@@ -738,9 +719,7 @@ def test_combined_gate_uses_exact_ceiling_when_one_percent_dominates() -> None:
             source_commit=SOURCE_COMMIT,
             comparison_kind="compression",
             gate_results=_passing_gates(packet_id=packet_id),
-            install_measurements=_timing_evidence(
-                baseline["inventory"], candidate, packet_id=packet_id
-            ),
+            install_measurements=_timing_evidence(baseline["inventory"], candidate, packet_id=packet_id),
             install_measurements_sha256=TIMING_SHA,
         )
 
@@ -855,9 +834,7 @@ def test_evaluate_cli_hashes_and_validates_timing_evidence(tmp_path: Path) -> No
     from scripts.perf.installer_size.doctor import current_installer_evaluator_hash
 
     evaluator_hash = current_installer_evaluator_hash(REPO_ROOT)
-    first = _inventory(
-        replica_id="baseline-1", build_root_sha256="1" * 64
-    )
+    first = _inventory(replica_id="baseline-1", build_root_sha256="1" * 64)
     first["evaluatorHash"] = evaluator_hash
     baseline = accept_baseline(first)
     candidate = _inventory(
@@ -920,6 +897,4 @@ def test_evaluate_cli_hashes_and_validates_timing_evidence(tmp_path: Path) -> No
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(paths["result"].read_text(encoding="utf-8"))
     assert result["decision"] == "keep"
-    assert result["installMeasurements"]["evidenceSha256"] == hashlib.sha256(
-        paths["timing"].read_bytes()
-    ).hexdigest()
+    assert result["installMeasurements"]["evidenceSha256"] == hashlib.sha256(paths["timing"].read_bytes()).hexdigest()

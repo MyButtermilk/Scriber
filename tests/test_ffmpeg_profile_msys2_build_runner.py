@@ -4,7 +4,6 @@ import json
 import subprocess
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT_PATH = REPO_ROOT / "scripts" / "ffmpeg" / "build_profile_b_msys2.ps1"
 

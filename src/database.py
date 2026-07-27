@@ -1,14 +1,14 @@
 """
 Local SQLite database for persisting transcripts.
 """
+
 import atexit
-import json
 import re
 import sqlite3
 import threading
-from dataclasses import asdict
-from typing import Optional, List, Any, Iterable
+from collections.abc import Iterable
 from datetime import datetime
+from typing import Any
 
 from loguru import logger
 
@@ -69,7 +69,7 @@ def _sync_fts_row(conn: sqlite3.Connection, transcript_id: str) -> None:
 
 def _get_connection() -> sqlite3.Connection:
     """Get or create a thread-local database connection.
-    
+
     SQLite connections are not thread-safe, so we maintain one connection
     per thread. This avoids the overhead of opening a new connection for
     every database operation (~10-50ms savings per call).
@@ -266,7 +266,8 @@ def save_transcript(record: Any) -> None:
             summary_format = "markdown"
         # Map camelCase to snake_case for database
         with _get_connection() as conn:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO transcripts
                 (id, title, date, duration, status, type, language, step, 
                  source_url, channel, thumbnail_url, content, preview, created_at, updated_at,
@@ -292,28 +293,30 @@ def save_transcript(record: Any) -> None:
                     summary_status = excluded.summary_status,
                     summary_error = excluded.summary_error,
                     summary_updated_at = excluded.summary_updated_at
-            """, (
-                data.get("id"),
-                data.get("title", ""),
-                data.get("date", ""),
-                data.get("duration", ""),
-                data.get("status", ""),
-                data.get("type", ""),
-                data.get("language", ""),
-                data.get("step", ""),
-                data.get("sourceUrl", ""),
-                data.get("channel", ""),
-                data.get("thumbnailUrl", ""),
-                data.get("content", ""),
-                preview,
-                data.get("createdAt", datetime.now().isoformat()),
-                data.get("updatedAt", datetime.now().isoformat()),
-                summary,
-                summary_format,
-                data.get("summaryStatus", "completed" if data.get("summary") else "idle"),
-                data.get("summaryError", ""),
-                data.get("summaryUpdatedAt", ""),
-            ))
+            """,
+                (
+                    data.get("id"),
+                    data.get("title", ""),
+                    data.get("date", ""),
+                    data.get("duration", ""),
+                    data.get("status", ""),
+                    data.get("type", ""),
+                    data.get("language", ""),
+                    data.get("step", ""),
+                    data.get("sourceUrl", ""),
+                    data.get("channel", ""),
+                    data.get("thumbnailUrl", ""),
+                    data.get("content", ""),
+                    preview,
+                    data.get("createdAt", datetime.now().isoformat()),
+                    data.get("updatedAt", datetime.now().isoformat()),
+                    summary,
+                    summary_format,
+                    data.get("summaryStatus", "completed" if data.get("summary") else "idle"),
+                    data.get("summaryError", ""),
+                    data.get("summaryUpdatedAt", ""),
+                ),
+            )
             transcript_id = data.get("id", "")
             if transcript_id:
                 _sync_fts_row(conn, transcript_id)
@@ -323,7 +326,7 @@ def save_transcript(record: Any) -> None:
         raise
 
 
-def load_all_transcripts() -> List[dict]:
+def load_all_transcripts() -> list[dict]:
     """Load all transcripts from database, newest first."""
     try:
         with _get_connection() as conn:
@@ -335,35 +338,37 @@ def load_all_transcripts() -> List[dict]:
 
             transcripts = []
             for row in rows:
-                transcripts.append({
-                    "id": row["id"],
-                    "title": row["title"],
-                    "date": row["date"],
-                    "duration": row["duration"],
-                    "status": row["status"],
-                    "type": row["type"],
-                    "language": row["language"],
-                    "step": row["step"],
-                    "sourceUrl": row["source_url"],
-                    "channel": row["channel"],
-                    "thumbnailUrl": row["thumbnail_url"],
-                    "content": row["content"],
-                    "preview": row["preview"],
-                    "createdAt": row["created_at"],
-                    "updatedAt": row["updated_at"],
-                    "summary": row["summary"],
-                    "summaryFormat": row["summary_format"] or "markdown",
-                    "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
-                    "summaryError": row["summary_error"] or "",
-                    "summaryUpdatedAt": row["summary_updated_at"] or "",
-                })
+                transcripts.append(
+                    {
+                        "id": row["id"],
+                        "title": row["title"],
+                        "date": row["date"],
+                        "duration": row["duration"],
+                        "status": row["status"],
+                        "type": row["type"],
+                        "language": row["language"],
+                        "step": row["step"],
+                        "sourceUrl": row["source_url"],
+                        "channel": row["channel"],
+                        "thumbnailUrl": row["thumbnail_url"],
+                        "content": row["content"],
+                        "preview": row["preview"],
+                        "createdAt": row["created_at"],
+                        "updatedAt": row["updated_at"],
+                        "summary": row["summary"],
+                        "summaryFormat": row["summary_format"] or "markdown",
+                        "summaryStatus": row["summary_status"] or ("completed" if row["summary"] else "idle"),
+                        "summaryError": row["summary_error"] or "",
+                        "summaryUpdatedAt": row["summary_updated_at"] or "",
+                    }
+                )
             return transcripts
     except Exception as e:
         logger.error(f"Failed to load transcripts: {e}")
         return []
 
 
-def load_transcript_metadata() -> List[dict]:
+def load_transcript_metadata() -> list[dict]:
     """Load transcript metadata without content for fast list views.
 
     PERFORMANCE OPTIMIZATION: Excludes content and summary fields which can be
@@ -384,30 +389,32 @@ def load_transcript_metadata() -> List[dict]:
 
             transcripts = []
             for row in rows:
-                transcripts.append({
-                    "id": row["id"],
-                    "title": row["title"],
-                    "date": row["date"],
-                    "duration": row["duration"],
-                    "status": row["status"],
-                    "type": row["type"],
-                    "language": row["language"],
-                    "step": row["step"],
-                    "sourceUrl": row["source_url"],
-                    "channel": row["channel"],
-                    "thumbnailUrl": row["thumbnail_url"],
-                    "createdAt": row["created_at"],
-                    "updatedAt": row["updated_at"],
-                    "summaryStatus": row["summary_status"] or "idle",
-                    "summaryFormat": row["summary_format"] or "markdown",
-                    "summaryError": row["summary_error"] or "",
-                    "summaryUpdatedAt": row["summary_updated_at"] or "",
-                    # content and summary are NOT loaded - loaded on demand
-                    "content": "",
-                    "summary": "",
-                    # Preview text for list display (first ~100 chars)
-                    "_previewText": row["preview"] or "",
-                })
+                transcripts.append(
+                    {
+                        "id": row["id"],
+                        "title": row["title"],
+                        "date": row["date"],
+                        "duration": row["duration"],
+                        "status": row["status"],
+                        "type": row["type"],
+                        "language": row["language"],
+                        "step": row["step"],
+                        "sourceUrl": row["source_url"],
+                        "channel": row["channel"],
+                        "thumbnailUrl": row["thumbnail_url"],
+                        "createdAt": row["created_at"],
+                        "updatedAt": row["updated_at"],
+                        "summaryStatus": row["summary_status"] or "idle",
+                        "summaryFormat": row["summary_format"] or "markdown",
+                        "summaryError": row["summary_error"] or "",
+                        "summaryUpdatedAt": row["summary_updated_at"] or "",
+                        # content and summary are NOT loaded - loaded on demand
+                        "content": "",
+                        "summary": "",
+                        # Preview text for list display (first ~100 chars)
+                        "_previewText": row["preview"] or "",
+                    }
+                )
             return transcripts
     except Exception as e:
         logger.error(f"Failed to load transcript metadata: {e}")
@@ -436,11 +443,7 @@ def load_transcript_metadata_page(
                 clauses.append("type = ?")
                 params.append(transcript_type)
             excluded = tuple(
-                dict.fromkeys(
-                    str(transcript_id).strip()
-                    for transcript_id in exclude_ids
-                    if str(transcript_id).strip()
-                )
+                dict.fromkeys(str(transcript_id).strip() for transcript_id in exclude_ids if str(transcript_id).strip())
             )
             if excluded:
                 clauses.append(f"id NOT IN ({','.join('?' for _ in excluded)})")
@@ -458,8 +461,7 @@ def load_transcript_metadata_page(
                     "SELECT id, title, date, duration, status, type, language, step, "
                     "source_url, channel, thumbnail_url, created_at, updated_at, preview, "
                     "summary_format, summary_status, summary_error, summary_updated_at "
-                    "FROM transcripts" + where_clause +
-                    " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+                    "FROM transcripts" + where_clause + " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                     [*params, limit, offset],
                 ).fetchall()
                 if limit > 0
@@ -510,14 +512,11 @@ def load_transcript_metadata_page(
         }
 
 
-def get_transcript(transcript_id: str) -> Optional[dict]:
+def get_transcript(transcript_id: str) -> dict | None:
     """Get a single transcript by ID."""
     try:
         with _get_connection() as conn:
-            cursor = conn.execute(
-                "SELECT * FROM transcripts WHERE id = ?", 
-                (transcript_id,)
-            )
+            cursor = conn.execute("SELECT * FROM transcripts WHERE id = ?", (transcript_id,))
             row = cursor.fetchone()
             if row:
                 return {
@@ -619,7 +618,7 @@ def update_transcript_summary(
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (summary, normalized_format, updated_at, updated_at, transcript_id)
+                (summary, normalized_format, updated_at, updated_at, transcript_id),
             )
             _sync_fts_row(conn, transcript_id)
             conn.commit()
@@ -634,9 +633,9 @@ def update_transcript_summary_state(
     *,
     status: str,
     error: str = "",
-    summary: Optional[str] = None,
-    summary_format: Optional[str] = None,
-    step: Optional[str] = None,
+    summary: str | None = None,
+    summary_format: str | None = None,
+    step: str | None = None,
 ) -> bool:
     """Update persisted summary lifecycle state without changing transcription status."""
     try:
@@ -711,15 +710,12 @@ def search_transcript_metadata(
                     "t.summary_format, t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts_fts f "
                     "JOIN transcripts t ON t.rowid = f.rowid "
-                    "WHERE transcripts_fts MATCH ? " + type_clause +
-                    "ORDER BY bm25(transcripts_fts), t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
+                    "WHERE transcripts_fts MATCH ? "
+                    + type_clause
+                    + "ORDER BY bm25(transcripts_fts), t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
                 total = conn.execute(total_sql, [fts_q, *params]).fetchone()["c"]
-                rows = (
-                    conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall()
-                    if limit > 0
-                    else []
-                )
+                rows = conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall() if limit > 0 else []
             else:
                 like = f"%{q.lower()}%"
                 total_sql = (
@@ -735,41 +731,40 @@ def search_transcript_metadata(
                     "FROM transcripts t "
                     "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR "
                     "LOWER(scriber_summary_text(t.summary, t.summary_format)) LIKE ? OR LOWER(t.channel) LIKE ?) "
-                    + ("AND t.type = ? " if transcript_type else "") +
-                    "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
+                    + ("AND t.type = ? " if transcript_type else "")
+                    + "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
                 args = [like, like, like, like]
                 if transcript_type:
                     args.append(transcript_type)
                 total = conn.execute(total_sql, args).fetchone()["c"]
-                rows = (
-                    conn.execute(rows_sql, [*args, limit, offset]).fetchall()
-                    if limit > 0
-                    else []
-                )
+                rows = conn.execute(rows_sql, [*args, limit, offset]).fetchall() if limit > 0 else []
 
-            items = [{
-                "id": row["id"],
-                "title": row["title"],
-                "date": row["date"],
-                "duration": row["duration"],
-                "status": row["status"],
-                "type": row["type"],
-                "language": row["language"],
-                "step": row["step"],
-                "sourceUrl": row["source_url"],
-                "channel": row["channel"],
-                "thumbnailUrl": row["thumbnail_url"],
-                "createdAt": row["created_at"],
-                "updatedAt": row["updated_at"],
-                "summaryFormat": row["summary_format"] or "markdown",
-                "summaryStatus": row["summary_status"] or "idle",
-                "summaryError": row["summary_error"] or "",
-                "summaryUpdatedAt": row["summary_updated_at"] or "",
-                "content": "",
-                "summary": "",
-                "_previewText": row["preview"] or "",
-            } for row in rows]
+            items = [
+                {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "date": row["date"],
+                    "duration": row["duration"],
+                    "status": row["status"],
+                    "type": row["type"],
+                    "language": row["language"],
+                    "step": row["step"],
+                    "sourceUrl": row["source_url"],
+                    "channel": row["channel"],
+                    "thumbnailUrl": row["thumbnail_url"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                    "summaryFormat": row["summary_format"] or "markdown",
+                    "summaryStatus": row["summary_status"] or "idle",
+                    "summaryError": row["summary_error"] or "",
+                    "summaryUpdatedAt": row["summary_updated_at"] or "",
+                    "content": "",
+                    "summary": "",
+                    "_previewText": row["preview"] or "",
+                }
+                for row in rows
+            ]
 
             return {
                 "items": items,

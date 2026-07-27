@@ -8,10 +8,10 @@ import os
 import struct
 import subprocess
 import tempfile
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any, Callable
-
+from typing import Any
 
 MANIFEST_NAME = "scriber-autoresearch-runtime-attestation.json"
 MANIFEST_KIND = "scriber-autoresearch-runtime-attestation"
@@ -27,9 +27,7 @@ COMPONENT_PATHS = {
 # after a measurement. All tracked and non-ignored untracked source files not
 # covered by these explicit exclusions participate in the digest.
 EXCLUDED_PATH_PREFIXES = ("benchmarks/results/",)
-EXCLUDED_PATH_SEGMENTS = frozenset(
-    {"build", "tmp", "target", "targets", "venv", ".venv", "node_modules"}
-)
+EXCLUDED_PATH_SEGMENTS = frozenset({"build", "tmp", "target", "targets", "venv", ".venv", "node_modules"})
 
 
 class AttestationError(RuntimeError):
@@ -129,11 +127,7 @@ def source_identity(repo_root: Path) -> dict[str, Any]:
         "--exclude-standard",
     )
     relative_paths = sorted(
-        {
-            raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-            for raw in listed.split(b"\0")
-            if raw
-        },
+        {raw.decode("utf-8", errors="surrogateescape").replace("\\", "/") for raw in listed.split(b"\0") if raw},
         key=lambda value: value.encode("utf-8", errors="surrogateescape"),
     )
 
@@ -271,7 +265,7 @@ def write_attestation(
     payload: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "kind": MANIFEST_KIND,
-        "createdAtUtc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "createdAtUtc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "mode": "explicit-post-build-snapshot",
         "applicationVersion": expected_version,
         "source": source,
@@ -354,9 +348,13 @@ def verify_attestation(
         if recorded_source.get("head") != current_source["head"]:
             errors.append(_error("source_head_mismatch", "Git HEAD differs from the attested build source"))
         if recorded_source.get("contentSha256") != current_source["contentSha256"]:
-            errors.append(_error("source_content_mismatch", "Working-tree content differs from the attested build source"))
+            errors.append(
+                _error("source_content_mismatch", "Working-tree content differs from the attested build source")
+            )
         if recorded_source.get("fileCount") != current_source["fileCount"]:
-            errors.append(_error("source_file_set_mismatch", "Working-tree file set differs from the attested build source"))
+            errors.append(
+                _error("source_file_set_mismatch", "Working-tree file set differs from the attested build source")
+            )
     if manifest.get("applicationVersion") != expected_version:
         errors.append(_error("application_version_mismatch", "Source application version differs from the attestation"))
 
@@ -378,12 +376,18 @@ def verify_attestation(
             continue
         actual_sha256 = _sha256_file(path)
         if recorded.get("sha256") != actual_sha256:
-            errors.append(_error("component_hash_mismatch", f"{name} SHA-256 differs from the attestation", component=name))
+            errors.append(
+                _error("component_hash_mismatch", f"{name} SHA-256 differs from the attestation", component=name)
+            )
         if recorded.get("sizeBytes") != path.stat().st_size:
-            errors.append(_error("component_size_mismatch", f"{name} size differs from the attestation", component=name))
+            errors.append(
+                _error("component_size_mismatch", f"{name} size differs from the attestation", component=name)
+            )
         actual_version = version_reader(path)
         if recorded.get("peVersion") != actual_version:
-            errors.append(_error("component_version_changed", f"{name} PE version differs from the attestation", component=name))
+            errors.append(
+                _error("component_version_changed", f"{name} PE version differs from the attestation", component=name)
+            )
         if name in {"desktop", "audioSidecar"} and actual_version and actual_version != expected_version:
             errors.append(_error("component_version_mismatch", f"{name} version differs from source", component=name))
 

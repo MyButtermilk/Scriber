@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -148,10 +147,7 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         },
         "requirements": [
             "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
-            (
-                "The synthetic mode uses SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 "
-                "through the shared sidecar client."
-            ),
+            ("The synthetic mode uses SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 through the shared sidecar client."),
             (
                 "The wasapi mode starts a real passive WASAPI idle capture stream; "
                 "normal WASAPI capture is enabled by default."
@@ -208,11 +204,7 @@ def main(argv: list[str] | None = None) -> int:
         "sidecar": {
             "exe": str(sidecar_exe),
             "exists": sidecar_exe.is_file(),
-            "sha256": (
-                hashlib.sha256(sidecar_exe.read_bytes()).hexdigest()
-                if sidecar_exe.is_file()
-                else None
-            ),
+            "sha256": (hashlib.sha256(sidecar_exe.read_bytes()).hexdigest() if sidecar_exe.is_file() else None),
         },
         "requested": {
             "durationSec": args.duration_sec,
@@ -237,14 +229,10 @@ def main(argv: list[str] | None = None) -> int:
     prewarm = payload.get("prewarm")
     payload["summary"] = {
         "prewarmOk": bool(isinstance(prewarm, dict) and prewarm.get("ok")),
-        "totalBlocksObserved": int(
-            prewarm.get("stop", {}).get("totalBlocksObserved") or 0
-        )
+        "totalBlocksObserved": int(prewarm.get("stop", {}).get("totalBlocksObserved") or 0)
         if isinstance(prewarm, dict)
         else 0,
-        "bufferedAudioFrames": int(
-            prewarm.get("stop", {}).get("bufferedAudioFrames") or 0
-        )
+        "bufferedAudioFrames": int(prewarm.get("stop", {}).get("bufferedAudioFrames") or 0)
         if isinstance(prewarm, dict)
         else 0,
     }

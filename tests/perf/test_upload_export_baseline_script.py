@@ -54,13 +54,14 @@ def test_upload_export_baseline_script_writes_benchmark_artifact(tmp_path: Path)
 
 def test_hybrid_baseline_runner_wires_upload_export_benchmark():
     repo_root = Path(__file__).resolve().parents[2]
-    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    script = (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
     assert "measure_upload_export_baseline.py" in script
     assert "Invoke-UploadExportBenchmark" in script
     assert "upload_export_under_load" in script
-    assert "not_automated_yet" not in script.split(
-        "upload_export_under_load", maxsplit=1
-    )[1].split("websocket_events_and_json_serialize_cost", maxsplit=1)[0]
+    assert (
+        "not_automated_yet"
+        not in script.split("upload_export_under_load", maxsplit=1)[1].split(
+            "websocket_events_and_json_serialize_cost", maxsplit=1
+        )[0]
+    )

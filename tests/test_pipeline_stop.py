@@ -1,8 +1,8 @@
 import asyncio
 import gc
 import hashlib
-import io
 import inspect
+import io
 import threading
 import weakref
 from enum import StrEnum
@@ -20,33 +20,33 @@ from pipecat.frames.frames import (
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
-from pipecat.workers.runner import WorkerRunner
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.stt_service import SegmentedSTTService
+from pipecat.transcriptions.language import Language
 from pipecat.turns.user_start import VADUserTurnStartStrategy
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
-from pipecat.transcriptions.language import Language
+from pipecat.workers.runner import WorkerRunner
 from websockets.protocol import State
 
+import src.pipeline as pipeline_module
 from src.config import Config
 from src.microphone import MicrophoneInput
-import src.pipeline as pipeline_module
 from src.pipeline import (
     LIVE_STT_STOP_END_FRAME_FINALIZES,
     LIVE_STT_STOP_PROVIDER_MANUAL,
     LIVE_STT_STOP_VAD_FLUSH_BEFORE_END,
-    _AnalyzerCache,
-    _create_soniox_smart_turn_processor,
     PipecatVadSpeechObserver,
     ScriberPipeline,
     SegmentedSTTRecordingGate,
     SonioxAsyncProcessor,
     TranscriptionCallbackProcessor,
+    _AnalyzerCache,
+    _create_soniox_smart_turn_processor,
     _format_speaker_transcript_tokens,
     _live_analyzer_diagnostics,
     _live_analyzer_requirements,
-    _live_service_uses_native_streaming,
     _live_recording_gate_needed,
+    _live_service_uses_native_streaming,
     _live_stt_stop_strategy,
     _ordered_live_pipeline_steps,
     _ProviderIngressDrainProcessor,
@@ -68,9 +68,7 @@ def test_rust_capture_wav_plan_is_limited_to_exact_speechmatics_batch_route(monk
     monkeypatch.delenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL", raising=False)
     monkeypatch.delenv("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", raising=False)
     endpoint_sha256 = hashlib.sha256(
-        pipeline_module.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode(
-            "utf-8"
-        )
+        pipeline_module.SPEECHMATICS_BATCH_DEFAULT_BASE_URL.rstrip("/").encode("utf-8")
     ).hexdigest()
     route = freeze_provider_route(
         workload="live_mic",
@@ -174,17 +172,18 @@ def test_rust_capture_wav_plan_is_limited_to_exact_speechmatics_batch_route(monk
     )
     # The route is an immutable start-time snapshot. A later env mutation must
     # not change the already-frozen candidate decision.
-    assert enabled_plan(
-        "speechmatics_async",
-        sample_rate=16_000,
-        channels=1,
-        execution_route=route,
-    ) == plan
+    assert (
+        enabled_plan(
+            "speechmatics_async",
+            sample_rate=16_000,
+            channels=1,
+            execution_route=route,
+        )
+        == plan
+    )
 
     baseline_route = dict(route)
-    baseline_route["audio_preparation_implementation"] = (
-        "python_reserved_wav_header_v1"
-    )
+    baseline_route["audio_preparation_implementation"] = "python_reserved_wav_header_v1"
     assert (
         enabled_plan(
             "speechmatics_async",
@@ -293,16 +292,22 @@ def test_live_analyzer_diagnostics_distinguish_disabled_silero_from_gate(monkeyp
 def test_live_recording_gate_preserves_one_turn_without_vad(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
-    assert _live_recording_gate_needed(
-        "azure_mai",
-        segmented_service=False,
-        vad_attached=False,
-    ) is True
-    assert _live_recording_gate_needed(
-        "deepgram",
-        segmented_service=False,
-        vad_attached=True,
-    ) is False
+    assert (
+        _live_recording_gate_needed(
+            "azure_mai",
+            segmented_service=False,
+            vad_attached=False,
+        )
+        is True
+    )
+    assert (
+        _live_recording_gate_needed(
+            "deepgram",
+            segmented_service=False,
+            vad_attached=True,
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(
@@ -325,15 +330,15 @@ def test_live_stt_stop_strategy_keeps_provider_manual_soniox_path(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
     assert _live_stt_stop_strategy("soniox") == LIVE_STT_STOP_PROVIDER_MANUAL
+    assert _live_stt_stop_strategy("azure_mai", segmented_service=True) == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
     assert (
-        _live_stt_stop_strategy("azure_mai", segmented_service=True)
-        == LIVE_STT_STOP_VAD_FLUSH_BEFORE_END
+        _live_recording_gate_needed(
+            "soniox",
+            segmented_service=False,
+            vad_attached=False,
+        )
+        is False
     )
-    assert _live_recording_gate_needed(
-        "soniox",
-        segmented_service=False,
-        vad_attached=False,
-    ) is False
 
 
 def test_analyzer_warmup_instances_are_claimed_once_per_session(monkeypatch):
@@ -652,9 +657,7 @@ async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before
         )
         await asyncio.wait_for(provider.last_audio_started.wait(), timeout=1.0)
 
-        drain_task = asyncio.create_task(
-            pipeline._await_provider_ingress_audio_drain(source)
-        )
+        drain_task = asyncio.create_task(pipeline._await_provider_ingress_audio_drain(source))
         await asyncio.sleep(0.02)
         assert drain_task.done() is False
 
@@ -722,11 +725,16 @@ async def test_provider_ingress_drain_unavailable_with_task_fails_closed():
 
 
 def test_soniox_token_formatter_preserves_speaker_zero_and_numbers_by_first_appearance():
-    assert _format_speaker_transcript_tokens([
-        {"speaker": 0, "text": " First"},
-        {"speaker": 0, "text": " turn."},
-        {"speaker": 4, "text": " Reply."},
-    ]) == "[Speaker 1]: First turn.\n\n[Speaker 2]: Reply."
+    assert (
+        _format_speaker_transcript_tokens(
+            [
+                {"speaker": 0, "text": " First"},
+                {"speaker": 0, "text": " turn."},
+                {"speaker": 4, "text": " Reply."},
+            ]
+        )
+        == "[Speaker 1]: First turn.\n\n[Speaker 2]: Reply."
+    )
 
 
 def test_direct_file_timeout_budgets_scale_to_five_hours_and_remain_bounded():
@@ -841,20 +849,14 @@ async def test_pipecat_owned_file_request_state_is_terminal_only_after_success(
 
 
 @pytest.mark.asyncio
-async def test_deepgram_direct_uses_frozen_model_after_config_changes(
-    monkeypatch, tmp_path
-):
+async def test_deepgram_direct_uses_frozen_model_after_config_changes(monkeypatch, tmp_path):
     source = tmp_path / "deepgram.wav"
     source.write_bytes(b"audio")
     captured = {}
 
     async def fake_transcribe(**kwargs):
         captured.update(kwargs)
-        return {
-            "results": {
-                "channels": [{"alternatives": [{"transcript": "done", "words": []}]}]
-            }
-        }
+        return {"results": {"channels": [{"alternatives": [{"transcript": "done", "words": []}]}]}}
 
     monkeypatch.setattr(
         "src.cloud_async_stt.transcribe_with_deepgram_pre_recorded",
@@ -881,9 +883,7 @@ async def test_deepgram_direct_uses_frozen_model_after_config_changes(
 
 
 @pytest.mark.asyncio
-async def test_gemini_direct_uses_frozen_model_after_config_changes(
-    monkeypatch, tmp_path
-):
+async def test_gemini_direct_uses_frozen_model_after_config_changes(monkeypatch, tmp_path):
     source = tmp_path / "gemini.wav"
     source.write_bytes(b"audio")
     captured = {}
@@ -914,9 +914,7 @@ async def test_gemini_direct_uses_frozen_model_after_config_changes(
 
 
 @pytest.mark.asyncio
-async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(
-    monkeypatch, tmp_path
-):
+async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(monkeypatch, tmp_path):
     source = tmp_path / "azure.mp3"
     source.write_bytes(b"audio")
     captured = {}
@@ -1106,8 +1104,7 @@ async def test_soniox_async_terminal_frame_streams_spooled_audio():
     await processor.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
 
     assert any(
-        isinstance(frame, TranscriptionFrame) and frame.text == "streamed transcript"
-        for frame, _direction in captured
+        isinstance(frame, TranscriptionFrame) and frame.text == "streamed transcript" for frame, _direction in captured
     )
     assert processor._buffer_size == 0
 
@@ -1729,9 +1726,7 @@ async def test_installed_groq_pipecat_request_shape_uses_bound_model():
             captured.update(kwargs)
             return SimpleNamespace(text="done")
 
-    service._client = SimpleNamespace(
-        audio=SimpleNamespace(transcriptions=_Transcriptions())
-    )
+    service._client = SimpleNamespace(audio=SimpleNamespace(transcriptions=_Transcriptions()))
     response = await service._transcribe(b"wav-bytes")
 
     assert response.text == "done"
@@ -2021,9 +2016,7 @@ def test_speechmatics_factory_disables_labeled_diarization_by_default(monkeypatc
         model="enhanced",
         language="de-DE",
         custom_vocab="Scriber, Pipecat",
-        provider_endpoint_sha256=hashlib.sha256(
-            realtime_url.encode("utf-8")
-        ).hexdigest(),
+        provider_endpoint_sha256=hashlib.sha256(realtime_url.encode("utf-8")).hexdigest(),
     )
     monkeypatch.setattr(Config, "LANGUAGE", "en-US")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed")
@@ -2342,16 +2335,17 @@ def test_vad_disabled_terminal_provider_gate_does_not_enable_segment_wait(monkey
     needs_vad, _uses_smart_turn = _live_analyzer_requirements("azure_mai")
 
     assert needs_vad is False
-    assert _live_recording_gate_needed(
-        "azure_mai",
-        segmented_service=False,
-        vad_attached=needs_vad,
-    ) is True
+    assert (
+        _live_recording_gate_needed(
+            "azure_mai",
+            segmented_service=False,
+            vad_attached=needs_vad,
+        )
+        is True
+    )
 
     pipeline = ScriberPipeline(service_name="azure_mai", on_status_change=None)
-    pipeline.pipeline = _DummyRuntimePipelineGraph(
-        [SegmentedSTTRecordingGate(vad_segmentation_enabled=False)]
-    )
+    pipeline.pipeline = _DummyRuntimePipelineGraph([SegmentedSTTRecordingGate(vad_segmentation_enabled=False)])
 
     assert pipeline._requires_pre_endframe_stt_finalization() is False
 
@@ -2416,9 +2410,7 @@ async def test_async_vad_commit_timeout_is_a_provider_failure(monkeypatch):
     monkeypatch.setenv("SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS", "1")
     pipeline = ScriberPipeline(service_name="openai", on_status_change=None)
     pipeline.pipeline = _DummyRuntimePipelineGraph([])
-    pipeline._wait_for_new_final_transcription_or_done = AsyncMock(
-        return_value="timeout"
-    )
+    pipeline._wait_for_new_final_transcription_or_done = AsyncMock(return_value="timeout")
 
     result = await pipeline._await_async_vad_commit_final(
         after_generation=0,
@@ -2438,9 +2430,7 @@ async def test_terminal_buffered_provider_skips_segmented_final_wait():
     pipeline._start_done.clear()
     pipeline.task = _RecordingStopTask(pipeline._start_done, events)
     pipeline.audio_input = _DummyAudioInput(events)
-    pipeline.pipeline = _DummyRuntimePipelineGraph(
-        [SegmentedSTTRecordingGate(vad_segmentation_enabled=False)]
-    )
+    pipeline.pipeline = _DummyRuntimePipelineGraph([SegmentedSTTRecordingGate(vad_segmentation_enabled=False)])
     pipeline._wait_for_new_final_transcription_or_done = AsyncMock(
         side_effect=AssertionError("terminal-buffered providers must not enter segmented wait")
     )
@@ -2449,18 +2439,14 @@ async def test_terminal_buffered_provider_skips_segmented_final_wait():
         events.append("provider_ingress_drained")
         return True
 
-    pipeline._await_provider_ingress_audio_drain = AsyncMock(
-        side_effect=_drain_provider_ingress
-    )
+    pipeline._await_provider_ingress_audio_drain = AsyncMock(side_effect=_drain_provider_ingress)
 
     await pipeline.stop(timeout_secs=1.0)
 
     pipeline._wait_for_new_final_transcription_or_done.assert_not_awaited()
     assert events.index("audio_stop") < events.index("task_stop_when_done")
     assert events.index("audio_stop") < events.index("provider_ingress_drained")
-    assert events.index("provider_ingress_drained") < events.index(
-        "task_stop_when_done"
-    )
+    assert events.index("provider_ingress_drained") < events.index("task_stop_when_done")
 
 
 @pytest.mark.asyncio
@@ -2515,9 +2501,7 @@ async def test_segmented_stop_serializes_prewarm_handoff_with_cleanup(monkeypatc
     )
     pipeline.audio_input = audio_input
 
-    segmented_stop = asyncio.create_task(
-        pipeline._stop_audio_capture_for_segmented_finalization()
-    )
+    segmented_stop = asyncio.create_task(pipeline._stop_audio_capture_for_segmented_finalization())
     assert await asyncio.to_thread(prewarm.resume_started.wait, 1.0)
     full_cleanup = asyncio.create_task(pipeline._cleanup_audio_input())
     await asyncio.sleep(0.02)
@@ -2690,13 +2674,14 @@ def test_pipeline_delegates_audio_diagnostics_and_health():
     pipeline.audio_input = audio_input
 
     assert pipeline.audio_diagnostics() == {"running": True, "streamActive": False}
-    assert pipeline.ensure_audio_health(
-        reason="test",
-        max_callback_gap_seconds=3.0,
-    ) is True
-    assert audio_input.health_calls == [
-        {"reason": "test", "max_callback_gap_seconds": 3.0}
-    ]
+    assert (
+        pipeline.ensure_audio_health(
+            reason="test",
+            max_callback_gap_seconds=3.0,
+        )
+        is True
+    )
+    assert audio_input.health_calls == [{"reason": "test", "max_callback_gap_seconds": 3.0}]
 
 
 def test_pipeline_audio_diagnostics_merges_pipecat_vad_snapshot():
@@ -2789,9 +2774,7 @@ async def test_live_vad_finalization_flushes_when_hotkey_stops_during_speech():
     flushed = await pipeline._flush_live_vad_finalization_turn()
 
     assert flushed is True
-    assert runtime_pipeline.pushed == [
-        (VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM)
-    ]
+    assert runtime_pipeline.pushed == [(VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM)]
 
 
 @pytest.mark.asyncio
@@ -2841,9 +2824,7 @@ async def test_segmented_stt_gate_can_pass_vad_segments_when_enabled():
 async def test_transcription_callback_uses_plain_text_without_diarization():
     captured: list[tuple[str, bool]] = []
     pushed = []
-    processor = TranscriptionCallbackProcessor(
-        lambda text, is_final: captured.append((text, is_final))
-    )
+    processor = TranscriptionCallbackProcessor(lambda text, is_final: captured.append((text, is_final)))
 
     async def _capture_push(frame, direction):
         pushed.append((frame, direction))
@@ -2924,9 +2905,7 @@ async def test_transcription_callback_formats_soniox_speaker_tokens_when_enabled
         FrameDirection.DOWNSTREAM,
     )
 
-    assert captured == [
-        ("[Speaker 1]: Hallo Welt\n\n[Speaker 2]: Antwort", True)
-    ]
+    assert captured == [("[Speaker 1]: Hallo Welt\n\n[Speaker 2]: Antwort", True)]
     assert len(pushed) == 1
 
 

@@ -38,19 +38,19 @@ from scripts.perf.installer_size.state import (
     effective_finalization_reserve,
     file_sha256,
     format_utc,
-    git_snapshot,
     git_parent_oids,
+    git_snapshot,
     git_tree_oid,
     initialize_run,
     load_json_object,
     load_manifest,
     load_progress,
     packet_completed_ledger_payload,
-    pending_packet_requires_resume,
     paths_for,
+    pending_packet_requires_resume,
     remaining_seconds,
-    safe_packet_id,
     safe_lane_id,
+    safe_packet_id,
     store_immutable_json,
     summarize,
     utc_now,
@@ -58,7 +58,6 @@ from scripts.perf.installer_size.state import (
     write_json_atomic,
     write_preflight,
 )
-
 
 POWERSHELL_PACKET_ENTRYPOINT = "scripts/run_installer_size_packet.ps1"
 MAX_CAPTURE_CHARS = 4096
@@ -394,9 +393,7 @@ def _validate_dispatch_policy(
         if arguments != expected_arguments:
             raise StateError("packet producer arguments differ from the exact RunId/mode/timing policy")
         return
-    raise StateError(
-        "packet dispatch must use only the frozen installer-size packet producer"
-    )
+    raise StateError("packet dispatch must use only the frozen installer-size packet producer")
 
 
 def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
@@ -587,9 +584,7 @@ def _gate_status(value: Any) -> str:
 def _lower_sha256(value: Any) -> bool:
     text = str(value or "")
     return bool(
-        len(text) == 64
-        and text == text.casefold()
-        and all(character in "0123456789abcdef" for character in text)
+        len(text) == 64 and text == text.casefold() and all(character in "0123456789abcdef" for character in text)
     )
 
 
@@ -627,9 +622,7 @@ def _validate_exact_pass_gates(
 def _evidence_value_is_path_redacted(value: Any, repo_root: Path) -> bool:
     if isinstance(value, dict):
         return all(
-            isinstance(key, str)
-            and _evidence_value_is_path_redacted(item, repo_root)
-            for key, item in value.items()
+            isinstance(key, str) and _evidence_value_is_path_redacted(item, repo_root) for key, item in value.items()
         )
     if isinstance(value, list):
         return all(_evidence_value_is_path_redacted(item, repo_root) for item in value)
@@ -661,11 +654,7 @@ def _youtube_capability_list(value: Any, *, nonempty: bool = False) -> bool:
         isinstance(value, list)
         and (bool(value) or not nonempty)
         and value == sorted(set(value))
-        and all(
-            isinstance(item, str)
-            and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item)
-            for item in value
-        )
+        and all(isinstance(item, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", item) for item in value)
     )
 
 
@@ -688,9 +677,7 @@ def _youtube_diagnostics_valid(value: Any) -> bool:
         value.get("comparisonPolicy") != YOUTUBE_CAPABILITY_COMPARISON_POLICY
         or not isinstance(value.get("optionalParity"), bool)
         or any(
-            not _youtube_capability_list(
-                value.get(field), nonempty=field == "requiredCapabilities"
-            )
+            not _youtube_capability_list(value.get(field), nonempty=field == "requiredCapabilities")
             for field in list_fields
         )
     ):
@@ -704,8 +691,7 @@ def _youtube_diagnostics_valid(value: Any) -> bool:
     only_candidate = sorted(candidate_optional - baseline_optional)
     return (
         value["baselineMissingRequiredCapabilities"] == sorted(required - baseline)
-        and value["candidateMissingRequiredCapabilities"]
-        == sorted(required - candidate)
+        and value["candidateMissingRequiredCapabilities"] == sorted(required - candidate)
         and value["optionalOnlyInBaseline"] == only_baseline
         and value["optionalOnlyInCandidate"] == only_candidate
         and value["optionalParity"] == (not only_baseline and not only_candidate)
@@ -760,8 +746,7 @@ def _youtube_pair_attempt_valid(
             and attempt.get("cleanupVerified") is True
             and diagnostics["baselineMissingRequiredCapabilities"] == []
             and diagnostics["candidateMissingRequiredCapabilities"] == []
-            and attempt["semanticCapabilities"]
-            == diagnostics["baselineObservedCapabilities"]
+            and attempt["semanticCapabilities"] == diagnostics["baselineObservedCapabilities"]
         )
     return (
         attempt.get("reasonCode") == "candidate_probe_failed"
@@ -769,8 +754,7 @@ def _youtube_pair_attempt_valid(
         and attempt.get("candidateFailureCode") in YOUTUBE_PUBLIC_FAILURE_CODES
         and diagnostics["baselineMissingRequiredCapabilities"] == []
         and diagnostics["candidateObservedCapabilities"] == []
-        and diagnostics["candidateMissingRequiredCapabilities"]
-        == diagnostics["requiredCapabilities"]
+        and diagnostics["candidateMissingRequiredCapabilities"] == diagnostics["requiredCapabilities"]
         and attempt["semanticCapabilities"] == []
     )
 
@@ -939,17 +923,10 @@ def _youtube_parallel_attempt_valid(
             or not _youtube_nonnegative_int(worker.get("durationNs"))
             or not _youtube_capability_list(worker.get("semanticCapabilities"))
             or not _youtube_capability_list(worker.get("missingRequiredCapabilities"))
-            or worker["missingRequiredCapabilities"]
-            != sorted(required - set(worker["semanticCapabilities"]))
+            or worker["missingRequiredCapabilities"] != sorted(required - set(worker["semanticCapabilities"]))
             or not isinstance(worker.get("cleanupVerified"), bool)
-            or (
-                worker["status"] == "pass"
-                and worker.get("failureCode") is not None
-            )
-            or (
-                worker["status"] == "fail"
-                and worker.get("failureCode") not in YOUTUBE_PUBLIC_FAILURE_CODES
-            )
+            or (worker["status"] == "pass" and worker.get("failureCode") is not None)
+            or (worker["status"] == "fail" and worker.get("failureCode") not in YOUTUBE_PUBLIC_FAILURE_CODES)
         ):
             return False
     workers_pass = all(worker["status"] == "pass" for worker in attempt["workers"])
@@ -957,14 +934,10 @@ def _youtube_parallel_attempt_valid(
     cleanup_pass = all(worker["cleanupVerified"] for worker in attempt["workers"])
     diagnostics = attempt["capabilityDiagnostics"]
     if (
-        diagnostics["baselineObservedCapabilities"]
-        != attempt["workers"][0]["semanticCapabilities"]
-        or diagnostics["candidateObservedCapabilities"]
-        != attempt["workers"][1]["semanticCapabilities"]
-        or diagnostics["baselineMissingRequiredCapabilities"]
-        != attempt["workers"][0]["missingRequiredCapabilities"]
-        or diagnostics["candidateMissingRequiredCapabilities"]
-        != attempt["workers"][1]["missingRequiredCapabilities"]
+        diagnostics["baselineObservedCapabilities"] != attempt["workers"][0]["semanticCapabilities"]
+        or diagnostics["candidateObservedCapabilities"] != attempt["workers"][1]["semanticCapabilities"]
+        or diagnostics["baselineMissingRequiredCapabilities"] != attempt["workers"][0]["missingRequiredCapabilities"]
+        or diagnostics["candidateMissingRequiredCapabilities"] != attempt["workers"][1]["missingRequiredCapabilities"]
     ):
         return False
     if expected_status == "pass":
@@ -976,10 +949,7 @@ def _youtube_parallel_attempt_valid(
             and attempt.get("capabilityParity") is True
             and attempt.get("cleanupVerified") is True
         )
-    return (
-        attempt.get("reasonCode") == "candidate_parallel_probe_failed"
-        and not workers_pass
-    )
+    return attempt.get("reasonCode") == "candidate_parallel_probe_failed" and not workers_pass
 
 
 def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
@@ -1016,10 +986,7 @@ def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
     if (
         not isinstance(policy, dict)
         or set(policy) != policy_fields
-        or any(
-            not _youtube_exact_policy_value(policy.get(field), expected)
-            for field, expected in fixed_policy.items()
-        )
+        or any(not _youtube_exact_policy_value(policy.get(field), expected) for field, expected in fixed_policy.items())
         or not isinstance(policy.get("aclMode"), str)
         or not policy["aclMode"].strip()
         or not _youtube_nonnegative_int(policy.get("workspaceCount"))
@@ -1164,14 +1131,12 @@ def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
         or parallel.get("workerCount") != 2
         or parallel.get("distinctPrivateWorkspaces") is not True
         or parallel.get("capabilityParity") is not True
-        or parallel.get("capabilityComparisonPolicy")
-        != YOUTUBE_CAPABILITY_COMPARISON_POLICY
+        or parallel.get("capabilityComparisonPolicy") != YOUTUBE_CAPABILITY_COMPARISON_POLICY
         or parallel.get("cleanupVerified") is not True
         or not isinstance(attempts, list)
         or len(attempts) not in {1, 2}
         or not _youtube_diagnostics_valid(parallel.get("capabilityDiagnostics"))
-        or parallel["capabilityDiagnostics"]["requiredCapabilities"]
-        != first_case_required
+        or parallel["capabilityDiagnostics"]["requiredCapabilities"] != first_case_required
     ):
         return False
     parallel_recovered = len(attempts) == 2
@@ -1202,8 +1167,7 @@ def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
     if (
         not parallel_valid
         or parallel.get("selectedAttempt") != selected_name
-        or parallel.get("capabilityDiagnostics")
-        != selected_parallel["capabilityDiagnostics"]
+        or parallel.get("capabilityDiagnostics") != selected_parallel["capabilityDiagnostics"]
         or not _youtube_recovery_valid(
             parallel.get("recovery"),
             recovered=parallel_recovered,
@@ -1241,8 +1205,7 @@ def _candidate_youtube_v2_contract_valid(payload: dict[str, Any]) -> bool:
         or not _youtube_nonnegative_int(summary.get("failedCandidateOnlyRecoveries"))
         or summary.get("failedCandidateOnlyRecoveries") != 0
         or recovered_count > 1
-        or summary.get("recoveredLogicalSampleId")
-        != (recovered_ids[0] if recovered_ids else None)
+        or summary.get("recoveredLogicalSampleId") != (recovered_ids[0] if recovered_ids else None)
     ):
         return False
     performance = payload.get("performance")
@@ -1298,15 +1261,9 @@ def _validate_youtube_detail_evidence(
     packet_id = str(packet.get("packetId") or "")
     expected_relative = {
         "baseline-youtube-holdout": "preflight/youtube-holdouts.snapshot.json",
-        "candidate-youtube-holdout": (
-            f"packet-evidence/{packet_id}/youtube-holdouts-candidate.json"
-        ),
+        "candidate-youtube-holdout": (f"packet-evidence/{packet_id}/youtube-holdouts-candidate.json"),
     }.get(kind)
-    if (
-        expected_relative is None
-        or relative != expected_relative
-        or not _lower_sha256(expected_sha)
-    ):
+    if expected_relative is None or relative != expected_relative or not _lower_sha256(expected_sha):
         return [
             _finding(
                 "youtube_detail_evidence_binding_mismatch",
@@ -1327,9 +1284,7 @@ def _validate_youtube_detail_evidence(
         for part in parts:
             current = current / part
             info = current.lstat()
-            if current.is_symlink() or bool(
-                getattr(info, "st_file_attributes", 0) & 0x400
-            ):
+            if current.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & 0x400):
                 raise OSError("reparse point")
     except OSError:
         return [
@@ -1375,9 +1330,7 @@ def _validate_youtube_detail_evidence(
                     "candidate YouTube evidence differs from this packet",
                 )
             )
-        if payload.get("reasonCodes") != [] or not _candidate_youtube_v2_contract_valid(
-            payload
-        ):
+        if payload.get("reasonCodes") != [] or not _candidate_youtube_v2_contract_valid(payload):
             findings.append(
                 _finding(
                     "youtube_detail_evidence_v2_policy_invalid",
@@ -1393,8 +1346,7 @@ def _validate_youtube_detail_evidence(
             )
     else:
         if (
-            payload.get("holdoutSnapshotContract")
-            != "InstallerSizeYoutubeHoldoutsV1"
+            payload.get("holdoutSnapshotContract") != "InstallerSizeYoutubeHoldoutsV1"
             or payload.get("schemaVersion") != 1
             or payload.get("runId") != context.run_id
         ):
@@ -1416,11 +1368,7 @@ def _validate_youtube_detail_evidence(
             seen: set[str] = set()
             for case in cases:
                 case_id = case.get("id") if isinstance(case, dict) else None
-                probe_sha = (
-                    case.get("probeEvidenceSha256")
-                    if isinstance(case, dict)
-                    else None
-                )
+                probe_sha = case.get("probeEvidenceSha256") if isinstance(case, dict) else None
                 if (
                     not isinstance(case_id, str)
                     or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", case_id)
@@ -1436,12 +1384,7 @@ def _validate_youtube_detail_evidence(
                     )
                     continue
                 seen.add(case_id)
-                probe_path = (
-                    paths_for(context).root
-                    / "preflight"
-                    / "youtube-holdout-probes"
-                    / f"{case_id}.json"
-                )
+                probe_path = paths_for(context).root / "preflight" / "youtube-holdout-probes" / f"{case_id}.json"
                 if (
                     not probe_path.is_file()
                     or probe_path.is_symlink()
@@ -1524,13 +1467,7 @@ def _validate_packet_gate_evidence(
         for name in sorted(FINAL_EXTERNAL_GATES):
             gate = gates.get(name)
             expected_sha = gate.get("evidenceSha256") if isinstance(gate, dict) else None
-            artifact_path = (
-                paths.root
-                / "packet-evidence"
-                / packet_id
-                / "gates"
-                / f"{name}.json"
-            )
+            artifact_path = paths.root / "packet-evidence" / packet_id / "gates" / f"{name}.json"
             if not artifact_path.is_file() or artifact_path.stat().st_size > 65_536:
                 findings.append(
                     _finding(
@@ -1574,8 +1511,7 @@ def _validate_packet_gate_evidence(
                 "status": "pass",
             }
             if set(artifact) != artifact_fields or any(
-                artifact.get(field) != expected
-                for field, expected in artifact_bindings.items()
+                artifact.get(field) != expected for field, expected in artifact_bindings.items()
             ):
                 findings.append(
                     _finding(
@@ -1667,9 +1603,7 @@ def _validate_final_full_suite_evidence(
         return [], None
     paths = paths_for(context)
     packet_id = str(packet.get("packetId") or "")
-    evidence_path = (
-        paths.root / "packet-evidence" / packet_id / "full-suite-evidence.json"
-    )
+    evidence_path = paths.root / "packet-evidence" / packet_id / "full-suite-evidence.json"
     if not evidence_path.is_file():
         return [
             _finding(
@@ -1707,9 +1641,7 @@ def _validate_final_full_suite_evidence(
         "packetId": packet_id,
         "sourceCommit": packet.get("sourceCommit"),
         "championSha256": packet.get("action", {}).get("championSha256"),
-        "championSourceTreeOid": packet.get("action", {}).get(
-            "championSourceTreeOid"
-        ),
+        "championSourceTreeOid": packet.get("action", {}).get("championSourceTreeOid"),
     }
     for field, expected in bindings.items():
         if evidence.get(field) != expected:
@@ -1731,13 +1663,7 @@ def _validate_final_full_suite_evidence(
         for name in sorted(FINAL_FULL_SUITE_GATES):
             gate = gates.get(name)
             expected_sha = gate.get("evidenceSha256") if isinstance(gate, dict) else None
-            artifact_path = (
-                paths.root
-                / "packet-evidence"
-                / packet_id
-                / "full-suite"
-                / f"{name}.json"
-            )
+            artifact_path = paths.root / "packet-evidence" / packet_id / "full-suite" / f"{name}.json"
             if not artifact_path.is_file() or artifact_path.stat().st_size > 65_536:
                 findings.append(
                     _finding(
@@ -1756,9 +1682,7 @@ def _validate_final_full_suite_evidence(
             try:
                 artifact = load_json_object(artifact_path)
             except StateError as exc:
-                findings.append(
-                    _finding("final_full_suite_artifact_invalid", str(exc))
-                )
+                findings.append(_finding("final_full_suite_artifact_invalid", str(exc)))
                 continue
             expected_artifact = {
                 "fullSuiteGateArtifactContract": "InstallerResearchFullSuiteGateArtifactV1",
@@ -1770,8 +1694,7 @@ def _validate_final_full_suite_evidence(
                 "status": "pass",
             }
             if set(artifact) != {*expected_artifact, "checks"} or any(
-                artifact.get(field) != expected
-                for field, expected in expected_artifact.items()
+                artifact.get(field) != expected for field, expected in expected_artifact.items()
             ):
                 findings.append(
                     _finding(
@@ -1808,10 +1731,7 @@ def _validate_final_full_suite_evidence(
                         f"retained full-suite artifact {name} contains a local path",
                     )
                 )
-    if (
-        evidence_path.stat().st_size > 65_536
-        or not _evidence_value_is_path_redacted(evidence, context.repo_root)
-    ):
+    if evidence_path.stat().st_size > 65_536 or not _evidence_value_is_path_redacted(evidence, context.repo_root):
         findings.append(
             _finding(
                 "final_full_suite_evidence_unsafe",
@@ -1830,7 +1750,9 @@ def _validate_result_bindings(
     if payload.get("packetId") != packet.get("packetId"):
         findings.append(_finding("result_packet_id_mismatch", "result packetId differs from the immutable packet"))
     if payload.get("sourceCommit") != packet.get("sourceCommit"):
-        findings.append(_finding("result_source_commit_mismatch", "result sourceCommit differs from the immutable packet"))
+        findings.append(
+            _finding("result_source_commit_mismatch", "result sourceCommit differs from the immutable packet")
+        )
     expected_parent = str(packet.get("parentChampionId") or "")
     if payload.get("parentChampionId") != expected_parent:
         findings.append(_finding("result_parent_champion_mismatch", "result parentChampionId is stale"))
@@ -1838,23 +1760,34 @@ def _validate_result_bindings(
         findings.append(_finding("result_hypothesis_mismatch", "result hypothesis differs from the immutable packet"))
     action = packet.get("action", {})
     if payload.get("comparisonKind") != action.get("comparisonKind"):
-        findings.append(_finding("result_comparison_kind_mismatch", "result comparisonKind differs from the immutable packet"))
+        findings.append(
+            _finding("result_comparison_kind_mismatch", "result comparisonKind differs from the immutable packet")
+        )
     if payload.get("compression") != action.get("compression"):
         findings.append(_finding("result_compression_mismatch", "result compression differs from the immutable packet"))
-    if (
-        action.get("comparisonKind") == "compression"
-        and payload.get("payload", {}).get("semanticTreeSha256") != action.get("payloadTreeSha256")
-    ):
-        findings.append(_finding("result_compression_payload_mismatch", "compression result changed the frozen champion payload tree"))
+    if action.get("comparisonKind") == "compression" and payload.get("payload", {}).get(
+        "semanticTreeSha256"
+    ) != action.get("payloadTreeSha256"):
+        findings.append(
+            _finding(
+                "result_compression_payload_mismatch", "compression result changed the frozen champion payload tree"
+            )
+        )
     manifest = load_manifest(context)
     bindings = manifest["bindings"]
     if payload.get("evaluatorHash") != bindings.get("evaluatorHash"):
-        findings.append(_finding("result_evaluator_hash_mismatch", "result evaluatorHash differs from the baseline binding"))
+        findings.append(
+            _finding("result_evaluator_hash_mismatch", "result evaluatorHash differs from the baseline binding")
+        )
     if payload.get("toolchainHash") != bindings.get("toolchainHash"):
-        findings.append(_finding("result_toolchain_hash_mismatch", "result toolchainHash differs from the baseline binding"))
+        findings.append(
+            _finding("result_toolchain_hash_mismatch", "result toolchainHash differs from the baseline binding")
+        )
     attribution = payload.get("attribution")
     if not isinstance(attribution, dict) or attribution.get("componentMapSha256") != bindings.get("componentMapSha256"):
-        findings.append(_finding("result_component_map_mismatch", "result component map differs from the baseline binding"))
+        findings.append(
+            _finding("result_component_map_mismatch", "result component map differs from the baseline binding")
+        )
     gates = payload.get("gates")
     if payload.get("decision") == "keep":
         if not isinstance(gates, dict):
@@ -1862,24 +1795,35 @@ def _validate_result_bindings(
         else:
             missing = sorted(REQUIRED_KEEP_PASS_GATES - set(gates))
             if missing:
-                findings.append(_finding("keep_mandatory_gates_missing", "kept result omits mandatory gates: " + ", ".join(missing)))
+                findings.append(
+                    _finding("keep_mandatory_gates_missing", "kept result omits mandatory gates: " + ", ".join(missing))
+                )
             incomplete = sorted(name for name in REQUIRED_KEEP_PASS_GATES if _gate_status(gates.get(name)) != "pass")
             if incomplete:
-                findings.append(_finding("keep_gate_not_passed", "kept result contains incomplete or failed gates: " + ", ".join(incomplete)))
+                findings.append(
+                    _finding(
+                        "keep_gate_not_passed",
+                        "kept result contains incomplete or failed gates: " + ", ".join(incomplete),
+                    )
+                )
             comparison_kind = payload.get("comparisonKind")
             comparison_statuses = (
-                ("pass", "not_applicable")
-                if comparison_kind == "payload"
-                else ("not_applicable", "pass")
+                ("pass", "not_applicable") if comparison_kind == "payload" else ("not_applicable", "pass")
             )
             if (
                 _gate_status(gates.get("compressionBinding")) != comparison_statuses[0]
                 or _gate_status(gates.get("semanticPayloadIdentity")) != comparison_statuses[1]
             ):
-                findings.append(_finding("keep_comparison_gate_mismatch", "kept result has invalid comparison-kind gate statuses"))
+                findings.append(
+                    _finding("keep_comparison_gate_mismatch", "kept result has invalid comparison-kind gate statuses")
+                )
             expected_combined_status = "not_applicable" if comparison_kind == "payload" else "pass"
             if _gate_status(gates.get("combinedInstall50")) != expected_combined_status:
-                findings.append(_finding("keep_combined_metric_gate_mismatch", "kept result has an invalid 50-Mbit combined metric gate"))
+                findings.append(
+                    _finding(
+                        "keep_combined_metric_gate_mismatch", "kept result has an invalid 50-Mbit combined metric gate"
+                    )
+                )
             gate_findings, _gate_evidence_sha = _validate_packet_gate_evidence(
                 context,
                 packet,
@@ -1910,7 +1854,9 @@ def _validate_inventory_result(
     }
     for field, value in expected.items():
         if payload.get(field) != value:
-            findings.append(_finding(f"inventory_{field}_mismatch", f"inventory {field} differs from the frozen packet/run binding"))
+            findings.append(
+                _finding(f"inventory_{field}_mismatch", f"inventory {field} differs from the frozen packet/run binding")
+            )
     provenance = payload.get("buildProvenance")
     if not isinstance(provenance, dict) or provenance.get("replicaId") != packet.get("packetId"):
         findings.append(_finding("inventory_replicaId_mismatch", "inventory replicaId differs from packetId"))
@@ -1921,11 +1867,17 @@ def _validate_inventory_result(
     component_map = payload.get("componentMap")
     expected_component_map = file_sha256(context.repo_root / "packaging" / "installer-component-map-v1.json")
     if not isinstance(component_map, dict) or component_map.get("sha256") != expected_component_map:
-        findings.append(_finding("inventory_component_map_mismatch", "inventory component map differs from the frozen map"))
+        findings.append(
+            _finding("inventory_component_map_mismatch", "inventory component map differs from the frozen map")
+        )
     if packet["action"]["kind"] == "baseline-replica" and payload.get("compression") != "bzip2":
         findings.append(_finding("baseline_compression_mismatch", "baseline inventory is not bzip2"))
     installed = payload.get("payload", {}).get("installed") if isinstance(payload.get("payload"), dict) else None
-    if not isinstance(installed, dict) or not isinstance(installed.get("totalBytes"), int) or installed.get("totalBytes", 0) <= 0:
+    if (
+        not isinstance(installed, dict)
+        or not isinstance(installed.get("totalBytes"), int)
+        or installed.get("totalBytes", 0) <= 0
+    ):
         findings.append(_finding("inventory_installed_payload_missing", "inventory lacks a positive installed payload"))
     return findings
 
@@ -1946,14 +1898,22 @@ def _validate_final_replica_against_champion(
         "installer.length": (inventory.get("installer", {}).get("length"), champion.get("installer", {}).get("length")),
         "payload.stagedBytes": (staged.get("totalBytes"), champion.get("payload", {}).get("stagedBytes")),
         "payload.installedBytes": (installed.get("totalBytes"), champion.get("payload", {}).get("installedBytes")),
-        "payload.semanticTreeSha256": (staged.get("semanticTreeSha256"), champion.get("payload", {}).get("semanticTreeSha256")),
+        "payload.semanticTreeSha256": (
+            staged.get("semanticTreeSha256"),
+            champion.get("payload", {}).get("semanticTreeSha256"),
+        ),
         "payload.fileListSha256": (staged.get("fileListSha256"), champion.get("payload", {}).get("fileListSha256")),
-        "attribution.pyzInventorySha256": (pyz.get("inventorySha256"), champion.get("attribution", {}).get("pyzInventorySha256")),
+        "attribution.pyzInventorySha256": (
+            pyz.get("inventorySha256"),
+            champion.get("attribution", {}).get("pyzInventorySha256"),
+        ),
         "compression": (inventory.get("compression"), champion.get("compression")),
     }
     for field, (actual, expected) in comparisons.items():
         if actual != expected:
-            findings.append(_finding("final_replica_champion_mismatch", f"final replica differs from champion at {field}"))
+            findings.append(
+                _finding("final_replica_champion_mismatch", f"final replica differs from champion at {field}")
+            )
     return findings
 
 
@@ -1968,7 +1928,11 @@ def _validate_final_timing(
     evidence_path = paths.root / "packet-evidence" / str(packet["packetId"]) / "install-timing.json"
     if not evidence_path.is_file():
         return (
-            [_finding("final_timing_evidence_missing", "final replica 2 requires fresh counterbalanced timing evidence")],
+            [
+                _finding(
+                    "final_timing_evidence_missing", "final replica 2 requires fresh counterbalanced timing evidence"
+                )
+            ],
             None,
             None,
         )
@@ -1993,7 +1957,12 @@ def _validate_final_timing(
         return [_finding("final_timing_evidence_invalid", str(exc))], None, evidence_sha
     findings: list[dict[str, Any]] = []
     if invalid or gate.get("status") != "pass":
-        findings.append(_finding("final_timing_regression_gate_failed", "final timing evidence is invalid or exceeds the five-percent p50/p95 regression gate"))
+        findings.append(
+            _finding(
+                "final_timing_regression_gate_failed",
+                "final timing evidence is invalid or exceeds the five-percent p50/p95 regression gate",
+            )
+        )
     baseline_total = summary.get("baseline", {}).get("totalInstallNanoseconds50P50")
     candidate_total = summary.get("candidate", {}).get("totalInstallNanoseconds50P50")
     if (
@@ -2002,15 +1971,13 @@ def _validate_final_timing(
         or isinstance(candidate_total, bool)
         or not isinstance(candidate_total, int)
     ):
-        findings.append(_finding("final_combined_timing_missing", "final timing summary has no combined 50-Mbit/s p50 values"))
+        findings.append(
+            _finding("final_combined_timing_missing", "final timing summary has no combined 50-Mbit/s p50 values")
+        )
     else:
         required = max(
             MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS,
-            (
-                int(baseline_total)
-                + MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR
-                - 1
-            )
+            (int(baseline_total) + MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR - 1)
             // MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR,
         )
         actual = int(baseline_total) - int(candidate_total)
@@ -2046,7 +2013,9 @@ def _validate_final_protocol(
     except StateError as exc:
         return [_finding("final_champion_provenance_missing", str(exc))], None, None, None, {}
     if champion != champion_result:
-        findings.append(_finding("final_champion_copy_mismatch", "champion.json differs from its immutable packet result"))
+        findings.append(
+            _finding("final_champion_copy_mismatch", "champion.json differs from its immutable packet result")
+        )
     findings.extend(_validate_result_bindings(context, champion_packet, champion))
     if champion.get("decision") != "keep":
         findings.append(_finding("final_champion_decision_invalid", "final champion is not a kept result"))
@@ -2073,7 +2042,9 @@ def _validate_final_protocol(
 
     accepted_ids = progress.get("finalReplicaPacketIds")
     if not isinstance(accepted_ids, list) or len(accepted_ids) != 2 or len(set(accepted_ids)) != 2:
-        findings.append(_finding("final_replica_count_invalid", "final protocol requires exactly two accepted fresh replicas"))
+        findings.append(
+            _finding("final_replica_count_invalid", "final protocol requires exactly two accepted fresh replicas")
+        )
         return findings, None, None, None, {}
     replica_ordinals: set[int] = set()
     build_root_hashes: set[str] = set()
@@ -2089,13 +2060,15 @@ def _validate_final_protocol(
             findings.append(_finding("final_replica_provenance_missing", str(exc)))
             continue
         if packet.get("action", {}).get("kind") != "final-replica":
-            findings.append(_finding("final_replica_packet_kind_invalid", "accepted final evidence is not a final-replica packet"))
+            findings.append(
+                _finding("final_replica_packet_kind_invalid", "accepted final evidence is not a final-replica packet")
+            )
             continue
         if packet.get("action", {}).get("championSha256") != file_sha256(paths.champion):
-            findings.append(_finding("final_replica_champion_binding_mismatch", "final replica is bound to another champion"))
-        champion_tree_binding = packet.get("action", {}).get(
-            "championSourceTreeOid"
-        )
+            findings.append(
+                _finding("final_replica_champion_binding_mismatch", "final replica is bound to another champion")
+            )
+        champion_tree_binding = packet.get("action", {}).get("championSourceTreeOid")
         try:
             packet_tree = git_tree_oid(
                 context.repo_root,
@@ -2108,10 +2081,7 @@ def _validate_final_protocol(
         except StateError as exc:
             findings.append(_finding("final_source_tree_unavailable", str(exc)))
         else:
-            if (
-                champion_tree_binding != packet_tree
-                or champion_tree_binding != champion_tree
-            ):
+            if champion_tree_binding != packet_tree or champion_tree_binding != champion_tree:
                 findings.append(
                     _finding(
                         "final_source_tree_binding_mismatch",
@@ -2146,9 +2116,13 @@ def _validate_final_protocol(
     if replica_ordinals != {1, 2}:
         findings.append(_finding("final_replica_ordinals_invalid", "final protocol requires replica ordinals 1 and 2"))
     if len(build_root_hashes) != 2:
-        findings.append(_finding("final_replica_build_roots_reused", "final replicas must come from distinct fresh build roots"))
+        findings.append(
+            _finding("final_replica_build_roots_reused", "final replicas must come from distinct fresh build roots")
+        )
     if progress.get("activePacketId") or paths.pending_packet.is_file():
-        findings.append(_finding("final_packet_still_active", "final protocol cannot close with an active or pending packet"))
+        findings.append(
+            _finding("final_packet_still_active", "final protocol cannot close with an active or pending packet")
+        )
     return (
         findings,
         final_timing_summary,
@@ -2193,8 +2167,7 @@ def _record_packet_learning(
     lane["durationEwmaSeconds"] = round(
         max(0.0, duration_seconds)
         if prior_duration is None
-        else ewma_alpha * max(0.0, duration_seconds)
-        + (1.0 - ewma_alpha) * float(prior_duration),
+        else ewma_alpha * max(0.0, duration_seconds) + (1.0 - ewma_alpha) * float(prior_duration),
         6,
     )
     lane["experiments"] = int(lane.get("experiments", 0)) + 1
@@ -2221,22 +2194,14 @@ def _record_packet_learning(
         elif decision == "discard":
             lane["beta"] = float(lane.get("beta", 0)) + 1.0
             lane["validDiscards"] = int(lane.get("validDiscards", 0)) + 1
-            reason_codes = [
-                item
-                for item in result.get("reasonCodes", [])
-                if isinstance(item, str)
-            ]
+            reason_codes = [item for item in result.get("reasonCodes", []) if isinstance(item, str)]
             lane.setdefault("validDiscardReasons", []).append(
                 {"packetId": packet["packetId"], "reasonCodes": reason_codes}
             )
-            progress["validDiscardsWithoutEvidence"] = int(
-                progress.get("validDiscardsWithoutEvidence", 0)
-            ) + 1
+            progress["validDiscardsWithoutEvidence"] = int(progress.get("validDiscardsWithoutEvidence", 0)) + 1
             if lane["validDiscards"] >= int(policy["lockAfterValidDiscards"]):
                 lane["locked"] = True
-            if progress["validDiscardsWithoutEvidence"] >= int(
-                policy["plateauAfterValidDiscards"]
-            ):
+            if progress["validDiscardsWithoutEvidence"] >= int(policy["plateauAfterValidDiscards"]):
                 progress["phase"] = "plateau"
     beta_total = float(lane.get("alpha", 0)) + float(lane.get("beta", 0))
     lane["posteriorKeepProbability"] = round(
@@ -2396,8 +2361,7 @@ def _start_session_locked(
                 }
                 return 2, payload
         if accepted_baseline_replica_packet_id(context, 1) or (
-            paths.baseline.is_file()
-            and load_json_object(paths.baseline).get("accepted") is False
+            paths.baseline.is_file() and load_json_object(paths.baseline).get("accepted") is False
         ):
             baseline_acceptance = _accept_baseline(context)
             if not paths.baseline.is_file():
@@ -2506,9 +2470,7 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
         pending = load_json_object(paths.pending_packet)
         remaining = state.get("remainingSeconds")
         action = pending.get("action") if isinstance(pending, dict) else None
-        timeout_seconds = (
-            action.get("timeoutSeconds") if isinstance(action, dict) else None
-        )
+        timeout_seconds = action.get("timeoutSeconds") if isinstance(action, dict) else None
         if remaining == 0:
             safe = "abandon-pending-deadline-expired"
         elif (
@@ -2516,19 +2478,14 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
             and action.get("kind") == "measure-candidate"
             and isinstance(remaining, int)
             and isinstance(timeout_seconds, int)
-            and remaining
-            <= int(state["effectiveFinalizationReserveSeconds"])
-            + timeout_seconds
+            and remaining <= int(state["effectiveFinalizationReserveSeconds"]) + timeout_seconds
         ):
             safe = "abandon-pending-for-finalization-reserve"
         else:
             safe = "dispatch-existing-packet"
     elif not accepted_baseline_replica_packet_id(context, 1):
         safe = "formulate-baseline-replica-1-packet"
-    elif (
-        paths.baseline.is_file()
-        and load_json_object(paths.baseline).get("accepted") is False
-    ):
+    elif paths.baseline.is_file() and load_json_object(paths.baseline).get("accepted") is False:
         safe = "start-new-run-id-after-baseline-rejection"
     elif not paths.baseline.is_file() or not state["researchStartedAtUtc"]:
         safe = "accept-baseline-and-arm-fixed-deadline"
@@ -2544,11 +2501,7 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
     else:
         reserve = int(state["effectiveFinalizationReserveSeconds"])
         lane_policy = context.config["lanePolicy"]
-        exploration_due = (
-            (int(state.get("packetSequence", 0)) + 1)
-            % int(lane_policy["explorationEveryPackets"])
-            == 0
-        )
+        exploration_due = (int(state.get("packetSequence", 0)) + 1) % int(lane_policy["explorationEveryPackets"]) == 0
         if int(state["remainingSeconds"] or 0) <= reserve:
             safe = "begin-finalization"
         elif exploration_due:
@@ -2556,11 +2509,7 @@ def recommend_next(context, *, now: datetime | None = None) -> dict[str, Any]:
         else:
             safe = "formulate-next-hypothesis-packet"
     lane_policy = context.config["lanePolicy"]
-    exploration_due = (
-        (int(state.get("packetSequence", 0)) + 1)
-        % int(lane_policy["explorationEveryPackets"])
-        == 0
-    )
+    exploration_due = (int(state.get("packetSequence", 0)) + 1) % int(lane_policy["explorationEveryPackets"]) == 0
     return {
         "recommendationContract": "InstallerSizeRecommendationV1",
         "schemaVersion": 1,
@@ -2611,19 +2560,17 @@ def _accept_baseline(context) -> subprocess.CompletedProcess[str] | None:
     paths = paths_for(context)
     if paths.baseline.is_file():
         return None
-    baseline_python = (
-        paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe"
-    )
+    baseline_python = paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe"
     evaluator = context.repo_root / "scripts" / "installer_research.py"
     command = [
-            str(baseline_python),
-            str(evaluator),
-            "accept-baseline",
-            "--inventory",
-            str(paths.baseline_replica(1)),
-            "--output",
-            str(paths.baseline),
-        ]
+        str(baseline_python),
+        str(evaluator),
+        "accept-baseline",
+        "--inventory",
+        str(paths.baseline_replica(1)),
+        "--output",
+        str(paths.baseline),
+    ]
     try:
         return subprocess.run(
             command,
@@ -2710,9 +2657,7 @@ def _check_packet_phase(context, packet: dict[str, Any], *, now: datetime | None
                     raise StateError("exploration packet is allowed only at the frozen cadence")
                 if lane_state is not None:
                     raise StateError("exploration packet must use an untested lane")
-                if not isinstance(expected, int) or expected < int(
-                    lane_policy["minimumExplorationPotentialBytes"]
-                ):
+                if not isinstance(expected, int) or expected < int(lane_policy["minimumExplorationPotentialBytes"]):
                     raise StateError("exploration packet potential is below the frozen minimum")
             expected_parent = str(progress.get("championId") or "baseline")
             if packet.get("parentChampionId") != expected_parent:
@@ -2728,30 +2673,22 @@ def _check_packet_phase(context, packet: dict[str, Any], *, now: datetime | None
                     str(parent_source or ""),
                 )
                 if packet.get("parentSourceTreeOid") != expected_parent_tree:
-                    raise StateError(
-                        "candidate packet parentSourceTreeOid is stale"
-                    )
+                    raise StateError("candidate packet parentSourceTreeOid is stale")
                 parents = git_parent_oids(
                     context.repo_root,
                     str(packet["sourceCommit"]),
                 )
                 if len(parents) != 1:
-                    raise StateError(
-                        "payload candidate sourceCommit must be a non-merge commit"
-                    )
+                    raise StateError("payload candidate sourceCommit must be a non-merge commit")
                 actual_parent_tree = git_tree_oid(
                     context.repo_root,
                     parents[0],
                 )
                 if actual_parent_tree != expected_parent_tree:
-                    raise StateError(
-                        "payload candidate is not based on the current champion source tree"
-                    )
+                    raise StateError("payload candidate is not based on the current champion source tree")
             else:
                 parent = (
-                    load_json_object(paths.champion)
-                    if progress.get("championId")
-                    else load_json_object(paths.baseline)
+                    load_json_object(paths.champion) if progress.get("championId") else load_json_object(paths.baseline)
                 )
                 parent_tree = (
                     parent.get("payload", {}).get("semanticTreeSha256")
@@ -2784,9 +2721,7 @@ def _check_packet_phase(context, packet: dict[str, Any], *, now: datetime | None
                 str(champion.get("sourceCommit") or ""),
             )
             if expected_tree != packet_tree or expected_tree != champion_tree:
-                raise StateError(
-                    "final replica source tree differs from the kept champion tree"
-                )
+                raise StateError("final replica source tree differs from the kept champion tree")
             if packet["action"]["championSha256"] != file_sha256(paths.champion):
                 raise StateError("final replica championSha256 is stale")
             accepted = progress.get("finalReplicaPacketIds", [])
@@ -2794,8 +2729,7 @@ def _check_packet_phase(context, packet: dict[str, Any], *, now: datetime | None
                 raise StateError("final replica progress is invalid")
             replica = packet["action"]["replica"]
             accepted_ordinals = {
-                load_json_object(paths.packet(packet_id))["action"]["replica"]
-                for packet_id in accepted
+                load_json_object(paths.packet(packet_id))["action"]["replica"] for packet_id in accepted
             }
             if replica in accepted_ordinals:
                 raise StateError(f"final replica {replica} is already accepted")
@@ -2872,13 +2806,9 @@ def _dispatch_next_locked(
     final_timing_sha256: str | None = None
     final_gate_evidence_sha256: str | None = None
     final_full_suite_sha256: str | None = None
-    packet_gate_evidence_path = (
-        paths.root / "packet-evidence" / packet_id / "gate-evidence.json"
-    )
+    packet_gate_evidence_path = paths.root / "packet-evidence" / packet_id / "gate-evidence.json"
     packet_gate_evidence_sha256 = (
-        file_sha256(packet_gate_evidence_path)
-        if packet_gate_evidence_path.is_file()
-        else None
+        file_sha256(packet_gate_evidence_path) if packet_gate_evidence_path.is_file() else None
     )
     if exit_code in (0, 1) and result_path.is_file():
         payload = load_result(result_path)
@@ -2900,19 +2830,19 @@ def _dispatch_next_locked(
                     "invalid_measurement",
                     "measure_only",
                 }:
-                    result_findings.append(_finding("candidate_decision_invalid", "candidate evaluator returned an invalid terminal decision"))
+                    result_findings.append(
+                        _finding(
+                            "candidate_decision_invalid", "candidate evaluator returned an invalid terminal decision"
+                        )
+                    )
                     decision = "crash"
                 if decision == "keep":
                     progress["championId"] = packet_id
         else:
             result_findings = _validate_final_replica_against_champion(context, packet, payload)
-            gate_findings, final_gate_evidence_sha256 = (
-                _validate_final_gate_evidence(context, packet)
-            )
+            gate_findings, final_gate_evidence_sha256 = _validate_final_gate_evidence(context, packet)
             result_findings.extend(gate_findings)
-            suite_findings, final_full_suite_sha256 = (
-                _validate_final_full_suite_evidence(context, packet)
-            )
+            suite_findings, final_full_suite_sha256 = _validate_final_full_suite_evidence(context, packet)
             result_findings.extend(suite_findings)
             timing_findings, final_timing_summary, final_timing_sha256 = _validate_final_timing(
                 context,
@@ -2977,9 +2907,7 @@ def _dispatch_next_locked(
     progress["activePacketId"] = None
     if packet["action"]["kind"] == "baseline-replica" and decision == "baseline_accept":
         progress["baselineReplicasAccepted"] = sum(
-            1
-            for index in range(1, baseline_replica_count(context) + 1)
-            if paths.baseline_replica(index).is_file()
+            1 for index in range(1, baseline_replica_count(context) + 1) if paths.baseline_replica(index).is_file()
         )
     progress["updatedAtUtc"] = format_utc(finished)
     write_json_atomic(paths.progress, progress)
@@ -3056,8 +2984,7 @@ def _dispatch_next_locked(
     return (
         0
         if (
-            decision
-            in {"baseline_accept", "final_replica_accept", "keep", "discard", "measure_only"}
+            decision in {"baseline_accept", "final_replica_accept", "keep", "discard", "measure_only"}
             and baseline_ready
         )
         else 2,

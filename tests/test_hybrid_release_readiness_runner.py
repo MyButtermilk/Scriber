@@ -10,7 +10,6 @@ import pytest
 
 from src.version import __version__
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RUNNER_SCRIPT = REPO_ROOT / "scripts" / "run_hybrid_release_readiness.ps1"
 
@@ -281,7 +280,9 @@ def test_hybrid_release_readiness_runner_can_plan_microphone_matrix_run(tmp_path
     assert payload["microphoneMatrixPollSec"] == 0.5
     assert payload["microphoneMatrixForceRefreshEachPoll"] is False
 
-    hardware_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    hardware_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     assert hardware_evidence["external"] is False
     assert hardware_evidence["producer"] == "scripts\\run_microphone_hardware_matrix.ps1"
     assert hardware_evidence["waitSec"] == 75
@@ -380,13 +381,15 @@ def test_hybrid_release_readiness_runner_can_plan_release_build(tmp_path: Path) 
     )
     assert "build_windows.ps1" in payload["releaseBuildCommand"]
     assert "-Bundles nsis" in payload["releaseBuildCommand"]
-    assert "-ReleaseBaseUrl https://github.com/MyButtermilk/Scriber/releases/latest/download" in payload[
-        "releaseBuildCommand"
-    ]
+    assert (
+        "-ReleaseBaseUrl https://github.com/MyButtermilk/Scriber/releases/latest/download"
+        in payload["releaseBuildCommand"]
+    )
     assert "-EnableTauriUpdater" in payload["releaseBuildCommand"]
-    assert "-UpdaterEndpoint https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json" in payload[
-        "releaseBuildCommand"
-    ]
+    assert (
+        "-UpdaterEndpoint https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
+        in payload["releaseBuildCommand"]
+    )
     assert "-UpdaterPublicKey test-public-key" in payload["releaseBuildCommand"]
     assert "-RequireUpdaterSignatures" in payload["releaseBuildCommand"]
     assert "-RequireAuthenticodeSignature" in payload["releaseBuildCommand"]
@@ -398,13 +401,17 @@ def test_hybrid_release_readiness_runner_can_plan_release_build(tmp_path: Path) 
     assert "-RunMediaPreparationSmoke" in payload["releaseBuildCommand"]
     assert "-RunRuntimeDependencyFootprint" in payload["releaseBuildCommand"]
 
-    signed_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "signedTauriUpdaterMetadata")
+    signed_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "signedTauriUpdaterMetadata"
+    )
     assert signed_evidence["producer"] == "scripts\\build_windows.ps1"
     assert signed_evidence["releaseBuild"]["run"] is True
     assert signed_evidence["releaseBuild"]["enableTauriUpdater"] is True
     assert signed_evidence["releaseBuild"]["requireUpdaterSignatures"] is True
     assert signed_evidence["releaseBuild"]["releaseBaseUrlConfigured"] is True
-    authenticode_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "authenticodeSignatures")
+    authenticode_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "authenticodeSignatures"
+    )
     assert authenticode_evidence["generatedByReleaseBuild"] is True
     assert authenticode_evidence["releaseBuildReport"].endswith("release-metadata\\authenticode.json")
 
@@ -454,7 +461,9 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_sidecar_smoke
     assert "--prewarm-duration-sec 0.75" in rust_command["command"]
     assert "--sidecar-exe" in rust_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
     assert matrix_evidence["requireRustEndpointInventory"] is True
     assert matrix_evidence["requireDeviceRefreshEvidence"] is True
@@ -489,7 +498,9 @@ def test_hybrid_release_readiness_runner_treats_sidecar_prewarm_adoption_as_requ
     assert rust_evidence["producer"] == "required external report"
     rust_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioSidecarSmoke")
     assert "required external report" in rust_command["command"]
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     assert matrix_evidence["requireRustEndpointInventory"] is True
     assert matrix_evidence["requireDeviceRefreshEvidence"] is True
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
@@ -538,7 +549,9 @@ def test_hybrid_release_readiness_runner_plans_required_rust_audio_prewarm_sidec
     assert "--prebuffer-ms 500" in prewarm_command["command"]
     assert "--sidecar-exe" in prewarm_command["command"]
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
     assert matrix_evidence["requireRustEndpointInventory"] is False
     assert matrix_evidence["requireDeviceRefreshEvidence"] is False
@@ -590,7 +603,9 @@ def test_hybrid_release_readiness_runner_plans_required_long_rust_audio_app_prew
     assert "--prewarm-duration-sec 1800" in app_command["command"]
     assert "--capture-cycles 1" in app_command["command"]
     assert "--sidecar-exe" in app_command["command"]
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     matrix_command = next(entry for entry in payload["commands"] if entry["name"] == "microphoneMatrixValidation")
     assert matrix_evidence["requireRustEndpointInventory"] is True
     assert matrix_evidence["requireDeviceRefreshEvidence"] is True
@@ -631,7 +646,9 @@ def test_hybrid_release_readiness_runner_treats_app_prewarm_min_duration_as_requ
     assert app_evidence["minCaptureCycles"] == 0
     app_command = next(entry for entry in payload["commands"] if entry["name"] == "rustAudioAppPrewarmSmoke")
     assert "required external report" in app_command["command"]
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "physicalMicrophoneMatrix"
+    )
     assert matrix_evidence["requireRustEndpointInventory"] is True
     assert matrix_evidence["requireDeviceRefreshEvidence"] is True
     readiness_command = next(entry for entry in payload["commands"] if entry["name"] == "hybridReleaseReadiness")
@@ -803,7 +820,9 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    live_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke"
+    )
     assert live_evidence["required"] is True
     assert live_evidence["external"] is True
     assert live_evidence["report"].endswith("installed-live-recording-smoke.json")
@@ -819,7 +838,9 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     assert "--min-installed-live-recording-duration-sec 600" in readiness_command["command"]
 
 
-def test_hybrid_release_readiness_runner_treats_installed_live_recording_min_duration_as_required(tmp_path: Path) -> None:
+def test_hybrid_release_readiness_runner_treats_installed_live_recording_min_duration_as_required(
+    tmp_path: Path,
+) -> None:
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -836,7 +857,9 @@ def test_hybrid_release_readiness_runner_treats_installed_live_recording_min_dur
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["requireInstalledLiveRecordingSmoke"] is False
-    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    live_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke"
+    )
     assert live_evidence["required"] is True
     assert live_evidence["minDurationSec"] == 600
     live_command = next(entry for entry in payload["commands"] if entry["name"] == "installedLiveRecordingSmoke")
@@ -864,7 +887,9 @@ def test_hybrid_release_readiness_runner_plans_required_installed_live_recording
     payload = json.loads(result.stdout)
     assert payload["requireInstalledLiveRecordingSmoke"] is False
     assert payload["requireInstalledLiveRecordingRustAudio"] is True
-    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    live_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke"
+    )
     assert live_evidence["required"] is True
     assert live_evidence["requireRustAudio"] is True
     assert live_evidence["rustPrewarmAdoptionRequired"] is True
@@ -919,7 +944,9 @@ def test_hybrid_release_readiness_runner_can_run_installed_live_recording_smoke(
     assert payload["installedLiveRecordingRustAudioCaptureMode"] == "wasapi"
     assert payload["installedLiveRecordingMicAlwaysOn"] is True
 
-    live_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke")
+    live_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "installedLiveRecordingSmoke"
+    )
     assert live_evidence["required"] is True
     assert live_evidence["external"] is False
     assert live_evidence["producer"] == "scripts\\smoke_windows_installer.ps1"
@@ -1025,7 +1052,10 @@ def test_hybrid_release_readiness_runner_plans_full_rust_audio_promotion_gate(tm
     assert "required external report" in command_by_name["rustAudioAppPrewarmSmoke"]
     assert "RunRustAudioAppPrewarmSmoke" in command_by_name["rustAudioAppPrewarmSmoke"]
     assert "required external report" in command_by_name["recordingHotPathPythonRustComparison"]
-    assert "run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic" in command_by_name["recordingHotPathPythonRustComparison"]
+    assert (
+        "run_recording_hot_path_comparison.ps1 -RustAlwaysOnMic"
+        in command_by_name["recordingHotPathPythonRustComparison"]
+    )
     assert "required external report" in command_by_name["installedLiveRecordingSmoke"]
     readiness_command = command_by_name["hybridReleaseReadiness"]
     assert "--require-rust-audio-sidecar-smoke" in readiness_command
@@ -1058,7 +1088,9 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_smo
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    injection_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionSmoke")
+    injection_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionSmoke"
+    )
     assert injection_evidence["required"] is True
     assert injection_evidence["external"] is True
     assert injection_evidence["report"].endswith("tauri-text-injection-smoke.json")
@@ -1137,7 +1169,9 @@ def test_hybrid_release_readiness_runner_plans_required_tauri_text_injection_mat
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix"
+    )
     assert matrix_evidence["required"] is True
     assert matrix_evidence["external"] is True
     assert matrix_evidence["report"].endswith("tauri-text-injection-matrix.json")
@@ -1182,7 +1216,9 @@ def test_hybrid_release_readiness_runner_can_plan_tauri_text_injection_matrix_bu
     payload = json.loads(result.stdout)
     assert payload["runTauriTextInjectionMatrixBuilder"] is True
     assert payload["tauriTextInjectionMatrixInputDir"] == str(input_dir)
-    matrix_evidence = next(entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix")
+    matrix_evidence = next(
+        entry for entry in payload["requiredEvidence"] if entry["name"] == "tauriTextInjectionMatrix"
+    )
     assert matrix_evidence["required"] is True
     assert matrix_evidence["external"] is False
     assert matrix_evidence["producer"] == "scripts\\build_tauri_text_injection_matrix.py"
@@ -1276,21 +1312,11 @@ def test_hybrid_plan_can_require_full_meeting_release_matrix(tmp_path: Path) -> 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["requireMeetingReleaseMatrix"] is True
-    evidence = next(
-        item for item in payload["requiredEvidence"] if item["name"] == "meetingReleaseMatrix"
-    )
+    evidence = next(item for item in payload["requiredEvidence"] if item["name"] == "meetingReleaseMatrix")
     assert evidence["required"] is True
     assert evidence["expectedAppVersion"] == __version__
-    command = next(
-        item["command"]
-        for item in payload["commands"]
-        if item["name"] == "meetingReleaseMatrixValidation"
-    )
+    command = next(item["command"] for item in payload["commands"] if item["name"] == "meetingReleaseMatrixValidation")
     assert "validate_meeting_release_matrix.py" in command
     assert f"--expected-app-version {__version__}" in command
-    aggregate = next(
-        item["command"]
-        for item in payload["commands"]
-        if item["name"] == "hybridReleaseReadiness"
-    )
+    aggregate = next(item["command"] for item in payload["commands"] if item["name"] == "hybridReleaseReadiness")
     assert "--require-meeting-release-matrix" in aggregate

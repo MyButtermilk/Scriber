@@ -7,24 +7,21 @@ import shutil
 import subprocess
 import sys
 from dataclasses import FrozenInstanceError
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.perf import autoresearch_profiles
 from scripts.installer_research.comparator import accept_baseline
 from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context
 from scripts.perf.installer_size import doctor, evaluator, runner, state
 
-
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
-FIXED_NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=timezone.utc)
+FIXED_NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=UTC)
 UX_FILE_HASHES = {
     "scripts/perf/doctor.py": "281f9c90b925ee564f899d4080dde23f378fd0ba63af45b59869b5a9fd291e9b",
     "scripts/perf/evaluator/local_wux.py": "30f202ebd06654f48bc2138036502331132c6ba99355032924c837010cc6a215",
@@ -204,9 +201,7 @@ def _candidate_youtube_evidence(
             "candidateProbeFailuresBlocking": True,
             "candidateProbeRetryCount": 1,
             "candidateProbeRetryScope": "global-candidate-only",
-            "candidateFailureConfirmationPolicy": (
-                "single-immediate-complete-confirmation-v1"
-            ),
+            "candidateFailureConfirmationPolicy": ("single-immediate-complete-confirmation-v1"),
             "maximumCandidateOnlyRecoveries": 1,
             "confirmationAttemptsPersisted": True,
             "normalPairConfirmationOrder": ["baseline", "candidate"],
@@ -351,23 +346,14 @@ def make_repo(tmp_path: Path):
     write_json(profile_root / "config.json", profile_config())
     (profile_root / "GOAL.md").write_text("test installer goal\n", encoding="utf-8")
     holdouts = json.loads(
-        (
-            REPO_ROOT
-            / "scripts"
-            / "perf"
-            / "profiles"
-            / "installer-size"
-            / "youtube-holdouts.json"
-        ).read_text(encoding="utf-8")
+        (REPO_ROOT / "scripts" / "perf" / "profiles" / "installer-size" / "youtube-holdouts.json").read_text(
+            encoding="utf-8"
+        )
     )
     write_json(profile_root / "youtube-holdouts.json", holdouts)
     (repo_root / "protected.txt").write_text("frozen evaluator\n", encoding="utf-8")
-    (repo_root / "requirements-base.txt").write_text(
-        "runtime-fixture==1\n", encoding="utf-8"
-    )
-    (repo_root / "requirements-build.txt").write_text(
-        "build-fixture==1\n", encoding="utf-8"
-    )
+    (repo_root / "requirements-base.txt").write_text("runtime-fixture==1\n", encoding="utf-8")
+    (repo_root / "requirements-build.txt").write_text("build-fixture==1\n", encoding="utf-8")
     (repo_root / ".gitignore").write_text("/autoresearch-results/\n", encoding="utf-8")
     git(repo_root, "init")
     git(repo_root, "add", ".")
@@ -407,9 +393,7 @@ def _create_directory_reparse_point(link: Path, target: Path) -> None:
         timeout=10,
     )
     if result.returncode != 0 or not link.exists():
-        pytest.skip(
-            f"directory symlinks and junctions are unavailable: {result.stderr}"
-        )
+        pytest.skip(f"directory symlinks and junctions are unavailable: {result.stderr}")
 
 
 def test_profile_context_is_immutable_and_namespaced(tmp_path: Path) -> None:
@@ -481,12 +465,8 @@ def test_session_init_does_not_claim_a_research_start_or_manifest(tmp_path: Path
     assert paths.packets_dir.is_dir()
     assert paths.packet_results_dir.is_dir()
     assert paths.final_dir.is_dir()
-    assert paths.baseline_requirements_base.read_bytes() == (
-        context.repo_root / "requirements-base.txt"
-    ).read_bytes()
-    assert paths.baseline_requirements_build.read_bytes() == (
-        context.repo_root / "requirements-build.txt"
-    ).read_bytes()
+    assert paths.baseline_requirements_base.read_bytes() == (context.repo_root / "requirements-base.txt").read_bytes()
+    assert paths.baseline_requirements_build.read_bytes() == (context.repo_root / "requirements-build.txt").read_bytes()
     assert session_init["baselineRequirementSources"] == [
         {
             "name": path.name,
@@ -584,9 +564,7 @@ def test_fresh_init_process_abort_leaves_only_ignorable_staging(
     assert paths.root.is_dir()
     assert session_init == state.load_session_init(context)
     assert state.load_progress(context)["phase"] == "prepare"
-    assert [row["event"] for row in state.read_ledger(paths.ledger)] == [
-        "run_initialized"
-    ]
+    assert [row["event"] for row in state.read_ledger(paths.ledger)] == ["run_initialized"]
     assert orphaned_attempts[0].is_dir()
 
 
@@ -612,9 +590,7 @@ def test_fresh_init_abort_after_atomic_promotion_is_resumable(
     paths = state.paths_for(context)
     assert state.load_session_init(context)["runId"] == RUN_ID
     assert state.load_progress(context)["phase"] == "prepare"
-    assert [row["event"] for row in state.read_ledger(paths.ledger)] == [
-        "run_initialized"
-    ]
+    assert [row["event"] for row in state.read_ledger(paths.ledger)] == ["run_initialized"]
 
     monkeypatch.setattr(state, "_promote_initialization_staging", original_promote)
     with pytest.raises(state.StateError, match="use -Resume"):
@@ -650,9 +626,8 @@ def test_next_before_start_does_not_poison_fresh_run(tmp_path: Path) -> None:
     with pytest.raises(state.StateError, match="pending-packet"):
         runner.dispatch_next(context, now=FIXED_NOW)
 
-    with state.acquire_dispatch_lock(context):
-        with pytest.raises(state.StateError, match="still active"):
-            runner.start_session(context, resume=False, now=FIXED_NOW)
+    with state.acquire_dispatch_lock(context), pytest.raises(state.StateError, match="still active"):
+        runner.start_session(context, resume=False, now=FIXED_NOW)
 
     paths, session_init = state.initialize_run(
         context,
@@ -773,13 +748,12 @@ def test_resume_recovers_interrupted_dispatch_without_replaying_it(tmp_path: Pat
         },
     )
 
-    with state.acquire_dispatch_lock(context):
-        with pytest.raises(state.StateError, match="still active"):
-            state.initialize_run(
-                context,
-                resume=True,
-                now=FIXED_NOW + timedelta(seconds=30),
-            )
+    with state.acquire_dispatch_lock(context), pytest.raises(state.StateError, match="still active"):
+        state.initialize_run(
+            context,
+            resume=True,
+            now=FIXED_NOW + timedelta(seconds=30),
+        )
 
     state.initialize_run(
         context,
@@ -860,9 +834,7 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
             "packetId": packet_id,
             "packetSha256": state.file_sha256(paths.packet(packet_id)),
             "startedAtUtc": state.format_utc(FIXED_NOW),
-            "finishedAtUtc": state.format_utc(
-                FIXED_NOW + timedelta(seconds=replica)
-            ),
+            "finishedAtUtc": state.format_utc(FIXED_NOW + timedelta(seconds=replica)),
             "exitCode": 0,
             "dispatchError": None,
             "stdout": "",
@@ -901,8 +873,7 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
     first_events = [
         row
         for row in state.read_ledger(paths.ledger)
-        if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == "baseline-1"
+        if row["event"] == "packet_completed" and row["payload"]["packetId"] == "baseline-1"
     ]
     assert len(first_events) == 1
 
@@ -915,8 +886,7 @@ def test_resume_reconciles_completed_packet_commit_tail_idempotently(
     first_events_after_second_resume = [
         row
         for row in state.read_ledger(paths.ledger)
-        if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == "baseline-1"
+        if row["event"] == "packet_completed" and row["payload"]["packetId"] == "baseline-1"
     ]
     assert len(first_events_after_second_resume) == 1
 
@@ -989,8 +959,7 @@ def test_resume_commits_no_result_crash_tail_without_replay(tmp_path: Path) -> N
     completed = [
         row
         for row in state.read_ledger(paths.ledger)
-        if row["event"] == "packet_completed"
-        and row["payload"]["packetId"] == packet["packetId"]
+        if row["event"] == "packet_completed" and row["payload"]["packetId"] == packet["packetId"]
     ]
     assert len(completed) == 1
     assert completed[0]["payload"]["decision"] == "crash"
@@ -1052,9 +1021,7 @@ def test_resume_finishes_second_keep_over_prior_champion(tmp_path: Path) -> None
         "stdout": "",
         "stderr": "",
         "resultContract": "InstallerResearchResultV1",
-        "resultSha256": state.file_sha256(
-            paths.packet_result(packet["packetId"])
-        ),
+        "resultSha256": state.file_sha256(paths.packet_result(packet["packetId"])),
         "resultFindings": [],
         "gateEvidenceSha256": None,
         "finalGateEvidenceSha256": None,
@@ -1111,9 +1078,7 @@ def test_recommendation_requires_resume_for_completion_tail(tmp_path: Path) -> N
         },
     )
 
-    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == (
-        "resume-run-to-reconcile-pending-tail"
-    )
+    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == ("resume-run-to-reconcile-pending-tail")
 
 
 def test_recommendation_requires_resume_for_interruption_tail(
@@ -1153,9 +1118,7 @@ def test_recommendation_requires_resume_for_interruption_tail(
 
     assert state.load_progress(context)["activePacketId"] is None
     assert paths.interruption(packet["packetId"]).is_file()
-    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == (
-        "resume-run-to-reconcile-pending-tail"
-    )
+    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == ("resume-run-to-reconcile-pending-tail")
 
 
 def test_recommendation_requires_resume_for_abandonment_tail(
@@ -1180,9 +1143,7 @@ def test_recommendation_requires_resume_for_abandonment_tail(
         )
 
     assert paths.abandoned_packet(packet["packetId"]).is_file()
-    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == (
-        "resume-run-to-reconcile-pending-tail"
-    )
+    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == ("resume-run-to-reconcile-pending-tail")
 
 
 def test_ledger_is_append_only_and_hash_chained(tmp_path: Path) -> None:
@@ -1261,9 +1222,7 @@ def _write_arm_inputs(context) -> tuple[state.RunPaths, dict, dict]:
             payload={
                 "packetId": packet_id,
                 "decision": "baseline_accept",
-                "resultSha256": state.file_sha256(
-                    paths.baseline_replica(replica)
-                ),
+                "resultSha256": state.file_sha256(paths.baseline_replica(replica)),
             },
             now=FIXED_NOW,
         )
@@ -1395,9 +1354,7 @@ def test_arm_writes_one_immutable_manifest_and_resume_preserves_deadline(
     assert manifest["baselineReplicaCount"] == 1
     assert manifest["bindings"]["baselineReplicaCount"] == 1
     assert "baselineReplica2Sha256" not in manifest["bindings"]
-    assert manifest["bindings"]["environmentManifestSha256"] == state.file_sha256(
-        paths.environment_manifest
-    )
+    assert manifest["bindings"]["environmentManifestSha256"] == state.file_sha256(paths.environment_manifest)
     original_manifest_sha = state.file_sha256(paths.manifest)
 
     _paths, resumed = state.initialize_run(
@@ -1445,9 +1402,7 @@ def test_resume_repairs_progress_clock_only_from_immutable_manifest(
     assert repaired["baselineReplicasAccepted"] == 1
     assert repaired["researchStartedAtUtc"] == armed["researchStartedAtUtc"]
     assert repaired["researchDeadlineUtc"] == armed["researchDeadlineUtc"]
-    assert state.read_ledger(paths.ledger)[-1]["event"] == (
-        "progress_clock_recovered_from_manifest"
-    )
+    assert state.read_ledger(paths.ledger)[-1]["event"] == ("progress_clock_recovered_from_manifest")
 
 
 def test_resume_heals_interrupted_manifest_arm_without_extending_deadline(
@@ -1484,11 +1439,7 @@ def test_resume_heals_interrupted_manifest_arm_without_extending_deadline(
     repaired = state.load_progress(context)
     assert repaired["researchStartedAtUtc"] == armed["researchStartedAtUtc"]
     assert repaired["researchDeadlineUtc"] == armed["researchDeadlineUtc"]
-    clock_events = [
-        row
-        for row in state.read_ledger(paths.ledger)
-        if row["event"] == "research_clock_started"
-    ]
+    clock_events = [row for row in state.read_ledger(paths.ledger) if row["event"] == "research_clock_started"]
     assert len(clock_events) == 1
     assert clock_events[0]["payload"]["recoveredAfterInterruptedArm"] is True
 
@@ -1513,9 +1464,7 @@ def test_manifest_cannot_rebind_a_changed_protected_input(tmp_path: Path) -> Non
         state.load_manifest(context)
 
     session_init = state.load_json_object(paths.session_init)
-    session_init["protectedInputHashes"]["protected.txt"] = state.file_sha256(
-        protected
-    )
+    session_init["protectedInputHashes"]["protected.txt"] = state.file_sha256(protected)
     state.write_json_atomic(paths.session_init, session_init)
     with pytest.raises(state.StateError, match="immutable ledger binding"):
         state.load_manifest(context)
@@ -1527,14 +1476,9 @@ def test_holdout_contract_never_treats_route_rewrite_as_proof(tmp_path: Path) ->
     paths = state.paths_for(context)
 
     missing_findings, _ = doctor.validate_holdouts(context)
-    assert any(
-        item["code"] == "youtube_holdout_snapshot_missing_or_invalid"
-        for item in missing_findings
-    )
+    assert any(item["code"] == "youtube_holdout_snapshot_missing_or_invalid" for item in missing_findings)
 
-    fixture = json.loads(
-        (context.config_path.parent / "youtube-holdouts.json").read_text(encoding="utf-8")
-    )
+    fixture = json.loads((context.config_path.parent / "youtube-holdouts.json").read_text(encoding="utf-8"))
     runtime_identity = {
         "name": "deno",
         "version": "2.9.2",
@@ -1730,7 +1674,12 @@ def test_toolchain_doctor_rehashes_and_executes_every_pinned_tool(
         "node": toolchain_root / "node" / "node.exe",
         "npm": toolchain_root / "node" / "node_modules" / "npm" / "bin" / "npm-cli.js",
         "tauri": repo_root / "Frontend" / "node_modules" / "@tauri-apps" / "cli" / "tauri.js",
-        "nativeTauriCli": repo_root / "Frontend" / "node_modules" / "@tauri-apps" / "cli-win32-x64-msvc" / "cli.win32-x64-msvc.node",
+        "nativeTauriCli": repo_root
+        / "Frontend"
+        / "node_modules"
+        / "@tauri-apps"
+        / "cli-win32-x64-msvc"
+        / "cli.win32-x64-msvc.node",
         "unrelatedNodeModule": repo_root / "Frontend" / "node_modules" / "fixture-package" / "index.js",
         "frontendPackageLock": repo_root / "Frontend" / "package-lock.json",
         "nodeArchive": toolchain_root / "downloads" / f"node-v{node_version}-win-x64.zip",
@@ -1779,12 +1728,8 @@ def test_toolchain_doctor_rehashes_and_executes_every_pinned_tool(
             "cli.win32-x64-msvc.node",
             "tauri-cli 2.8.4",
         ),
-        "frontendNodeModules": doctor._plain_tree_identity(
-            repo_root / "Frontend" / "node_modules"
-        ),
-        "frontendPackageLock": identity(
-            "frontendPackageLock", "package-lock.json", "lockfile-v3"
-        ),
+        "frontendNodeModules": doctor._plain_tree_identity(repo_root / "Frontend" / "node_modules"),
+        "frontendPackageLock": identity("frontendPackageLock", "package-lock.json", "lockfile-v3"),
         "nodeArchive": {
             "fileName": files["nodeArchive"].name,
             "length": files["nodeArchive"].stat().st_size,
@@ -1793,20 +1738,14 @@ def test_toolchain_doctor_rehashes_and_executes_every_pinned_tool(
         },
         "rustc": identity("rustc", "rustc.exe", "rustc 1.97.0 (fixture)"),
         "cargo": identity("cargo", "cargo.exe", "cargo 1.97.0 (fixture)"),
-        "rustfmt": identity(
-            "rustfmt", "rustfmt.exe", "rustfmt 1.8.0-stable (fixture)"
-        ),
-        "clippyDriver": identity(
-            "clippyDriver", "clippy-driver.exe", "clippy 0.1.97 (fixture)"
-        ),
+        "rustfmt": identity("rustfmt", "rustfmt.exe", "rustfmt 1.8.0-stable (fixture)"),
+        "clippyDriver": identity("clippyDriver", "clippy-driver.exe", "clippy 0.1.97 (fixture)"),
         "rustToolchain": "1.97.0",
         "nsis": {
             **identity("nsis", "makensis.exe", "v3.11"),
             "relativePath": "Bin/makensis.exe",
         },
-        "nsisTree": doctor._plain_tree_identity(
-            tmp_path / "localapp" / "tauri" / "NSIS"
-        ),
+        "nsisTree": doctor._plain_tree_identity(tmp_path / "localapp" / "tauri" / "NSIS"),
     }
     write_json(paths.toolchain_manifest, payload)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localapp"))
@@ -1857,9 +1796,7 @@ def test_toolchain_doctor_rehashes_and_executes_every_pinned_tool(
     payload.pop("nsisTree")
     write_json(paths.toolchain_manifest, payload)
     findings, _evidence = doctor.validate_toolchain_manifest(context)
-    assert any(
-        item["code"] == "toolchain_nsis_tree_identity_invalid" for item in findings
-    )
+    assert any(item["code"] == "toolchain_nsis_tree_identity_invalid" for item in findings)
 
 
 def test_baseline_doctor_recomputes_authoritative_acceptance(
@@ -1962,6 +1899,7 @@ def test_next_dispatches_exactly_one_existing_packet(
     state.set_pending_packet(context, packet)
     calls = []
     monkeypatch.setattr(runner, "current_installer_evaluator_hash", lambda _root: "e" * 64)
+
     def passing_doctor(_context, *, phase, **_kwargs):
         return {
             "doctorContract": "InstallerSizeDoctorV1",
@@ -1973,6 +1911,7 @@ def test_next_dispatches_exactly_one_existing_packet(
         }
 
     monkeypatch.setattr(runner, "run_doctor", passing_doctor)
+
     def fake_dispatch(_context, received):
         calls.append(received["packetId"])
         component = {
@@ -2059,9 +1998,10 @@ def test_next_dispatches_exactly_one_existing_packet(
     manifest = state.load_manifest(context)
     assert manifest["baselineReplicaCount"] == 1
     assert "baselineReplica2Sha256" not in manifest["bindings"]
-    assert runner.recommend_next(context, now=FIXED_NOW + timedelta(minutes=6))[
-        "safeNextStep"
-    ] != "formulate-baseline-replica-2-packet"
+    assert (
+        runner.recommend_next(context, now=FIXED_NOW + timedelta(minutes=6))["safeNextStep"]
+        != "formulate-baseline-replica-2-packet"
+    )
     with pytest.raises(state.StateError, match="one existing pending-packet"):
         runner.dispatch_next(context, now=FIXED_NOW + timedelta(seconds=2))
 
@@ -2116,9 +2056,7 @@ def test_failed_baseline_output_is_quarantined_and_never_arms(
     assert not paths.baseline_replica(1).exists()
     assert paths.failed_result(packet["packetId"]).is_file()
     assert state.accepted_baseline_replica_packet_id(context, 1) is None
-    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == (
-        "formulate-baseline-replica-1-packet"
-    )
+    assert runner.recommend_next(context, now=FIXED_NOW)["safeNextStep"] == ("formulate-baseline-replica-1-packet")
     assert not paths.manifest.exists()
 
 
@@ -2175,9 +2113,7 @@ def test_rejected_single_baseline_is_run_id_fatal(tmp_path: Path) -> None:
             payload={
                 "packetId": packet_id,
                 "decision": "baseline_accept",
-                "resultSha256": state.file_sha256(
-                    paths.baseline_replica(replica)
-                ),
+                "resultSha256": state.file_sha256(paths.baseline_replica(replica)),
             },
             now=FIXED_NOW,
         )
@@ -2265,9 +2201,7 @@ def test_missing_single_baseline_artifact_is_retryable(
             payload={
                 "packetId": packet_id,
                 "decision": "baseline_accept",
-                "resultSha256": state.file_sha256(
-                    paths.baseline_replica(replica)
-                ),
+                "resultSha256": state.file_sha256(paths.baseline_replica(replica)),
             },
             now=FIXED_NOW,
         )
@@ -2286,9 +2220,7 @@ def test_missing_single_baseline_artifact_is_retryable(
     assert exit_code == 2
     assert payload["phase"] == "baseline-validation"
     assert payload["baselineAcceptance"]["exitCode"] == 124
-    assert payload["requiredActions"][0]["id"] == (
-        "retry-baseline-acceptance"
-    )
+    assert payload["requiredActions"][0]["id"] == ("retry-baseline-acceptance")
     assert not paths.manifest.exists()
 
 
@@ -2313,9 +2245,7 @@ def test_baseline_acceptance_uses_attested_run_interpreter(
     assert result is not None and result.returncode == 0
     command = captured["command"]
     assert isinstance(command, list)
-    assert Path(command[0]) == (
-        paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe"
-    )
+    assert Path(command[0]) == (paths.environment_manifest.parent / ".venv" / "Scripts" / "python.exe")
     assert Path(command[0]) != context.repo_root / "scripts" / "project-python.cmd"
     assert Path(command[1]) == context.repo_root / "scripts" / "installer_research.py"
     assert command[2] == "accept-baseline"
@@ -2397,9 +2327,7 @@ def test_every_packet_dispatch_runs_a_fresh_fail_closed_doctor(
         lambda *_args, **_kwargs: {
             "doctorContract": "InstallerSizeDoctorV1",
             "ok": False,
-            "findings": [
-                {"level": "block", "code": "preflight_evidence_drift"}
-            ],
+            "findings": [{"level": "block", "code": "preflight_evidence_drift"}],
         },
     )
     monkeypatch.setattr(
@@ -2435,10 +2363,7 @@ def test_prepare_doctor_revalidates_an_existing_preflight_record(
     report = doctor.run_doctor(context, phase="prepare", now=FIXED_NOW)
 
     assert report["ok"] is False
-    assert any(
-        item["code"] == "preflight_evidence_drift"
-        for item in report["findings"]
-    )
+    assert any(item["code"] == "preflight_evidence_drift" for item in report["findings"])
 
 
 def test_packet_timeout_and_dispatch_driver_are_fail_closed(tmp_path: Path) -> None:
@@ -2658,10 +2583,13 @@ def test_abandon_pending_is_immutable_and_resume_idempotent(tmp_path: Path) -> N
     )
     first = _payload_packet(context, packet_id="stale-reserve")
     state.set_pending_packet(context, first)
-    assert runner.recommend_next(
-        context,
-        now=FIXED_NOW + timedelta(hours=11),
-    )["safeNextStep"] == "abandon-pending-for-finalization-reserve"
+    assert (
+        runner.recommend_next(
+            context,
+            now=FIXED_NOW + timedelta(hours=11),
+        )["safeNextStep"]
+        == "abandon-pending-for-finalization-reserve"
+    )
     tombstone = state.abandon_pending_packet(
         context,
         reason="finalization_reserve",
@@ -2675,10 +2603,13 @@ def test_abandon_pending_is_immutable_and_resume_idempotent(tmp_path: Path) -> N
     second = _payload_packet(context, packet_id="abandon-crash-window")
     state.set_pending_packet(context, second)
     abandoned_at = FIXED_NOW + timedelta(hours=11, minutes=1)
-    assert runner.recommend_next(
-        context,
-        now=FIXED_NOW + timedelta(hours=12),
-    )["safeNextStep"] == "abandon-pending-deadline-expired"
+    assert (
+        runner.recommend_next(
+            context,
+            now=FIXED_NOW + timedelta(hours=12),
+        )["safeNextStep"]
+        == "abandon-pending-deadline-expired"
+    )
     interrupted_tombstone = {
         "abandonContract": "InstallerSizePacketAbandonmentV1",
         "schemaVersion": 1,
@@ -2703,11 +2634,7 @@ def test_abandon_pending_is_immutable_and_resume_idempotent(tmp_path: Path) -> N
         "stale-reserve",
         "abandon-crash-window",
     ]
-    events = [
-        row
-        for row in state.read_ledger(paths.ledger)
-        if row["event"] == "packet_abandoned_before_dispatch"
-    ]
+    events = [row for row in state.read_ledger(paths.ledger) if row["event"] == "packet_abandoned_before_dispatch"]
     assert [row["payload"]["packetId"] for row in events] == [
         "stale-reserve",
         "abandon-crash-window",
@@ -2883,11 +2810,7 @@ def test_keep_gate_hashes_must_rehash_retained_packet_artifacts(tmp_path: Path) 
         "packetId": "candidate-retained-gates",
         "sourceCommit": git(context.repo_root, "rev-parse", "HEAD"),
     }
-    evidence_root = (
-        state.paths_for(context).root
-        / "packet-evidence"
-        / packet["packetId"]
-    )
+    evidence_root = state.paths_for(context).root / "packet-evidence" / packet["packetId"]
     youtube_detail_path = evidence_root / "youtube-holdouts-candidate.json"
     write_json(
         youtube_detail_path,
@@ -2916,10 +2839,7 @@ def test_keep_gate_hashes_must_rehash_retained_packet_artifacts(tmp_path: Path) 
                 "detailEvidence": (
                     {
                         "kind": "candidate-youtube-holdout",
-                        "relativePath": (
-                            f"packet-evidence/{packet['packetId']}/"
-                            "youtube-holdouts-candidate.json"
-                        ),
+                        "relativePath": (f"packet-evidence/{packet['packetId']}/youtube-holdouts-candidate.json"),
                         "sha256": state.file_sha256(youtube_detail_path),
                     }
                     if name == "youtubeWorkflow"
@@ -2963,19 +2883,14 @@ def test_keep_gate_hashes_must_rehash_retained_packet_artifacts(tmp_path: Path) 
     )
     assert any(item["code"] == "gate_artifact_hash_mismatch" for item in findings)
 
-    youtube_detail_path.write_text(
-        youtube_detail_path.read_text(encoding="utf-8") + " ", encoding="utf-8"
-    )
+    youtube_detail_path.write_text(youtube_detail_path.read_text(encoding="utf-8") + " ", encoding="utf-8")
     findings, _evidence_sha = runner._validate_packet_gate_evidence(
         context,
         packet,
         expected_parent_champion_id="baseline",
         result_gates=gates,
     )
-    assert any(
-        item["code"] == "youtube_detail_evidence_hash_mismatch"
-        for item in findings
-    )
+    assert any(item["code"] == "youtube_detail_evidence_hash_mismatch" for item in findings)
 
 
 def test_candidate_youtube_v2_reader_enforces_policy_and_global_recovery() -> None:
@@ -3012,16 +2927,9 @@ def test_candidate_youtube_v2_reader_enforces_policy_and_global_recovery() -> No
     assert runner._candidate_youtube_v2_contract_valid(invented_recovery) is False
 
     cap_regression_confirmation = json.loads(json.dumps(recovered))
-    confirmation = cap_regression_confirmation["cases"][0]["pairs"][0][
-        "attempts"
-    ][1]
-    confirmation["capabilityDiagnostics"][
-        "candidateMissingRequiredCapabilities"
-    ] = ["metadata"]
-    assert (
-        runner._candidate_youtube_v2_contract_valid(cap_regression_confirmation)
-        is False
-    )
+    confirmation = cap_regression_confirmation["cases"][0]["pairs"][0]["attempts"][1]
+    confirmation["capabilityDiagnostics"]["candidateMissingRequiredCapabilities"] = ["metadata"]
+    assert runner._candidate_youtube_v2_contract_valid(cap_regression_confirmation) is False
 
 
 def test_final_full_suite_rehashes_every_retained_gate_artifact(tmp_path: Path) -> None:
@@ -3040,11 +2948,7 @@ def test_final_full_suite_rehashes_every_retained_gate_artifact(tmp_path: Path) 
             ),
         },
     }
-    evidence_root = (
-        state.paths_for(context).root
-        / "packet-evidence"
-        / packet["packetId"]
-    )
+    evidence_root = state.paths_for(context).root / "packet-evidence" / packet["packetId"]
     gates: dict[str, dict[str, str]] = {}
     for name in sorted(runner.FINAL_FULL_SUITE_GATES):
         artifact_path = evidence_root / "full-suite" / f"{name}.json"
@@ -3084,9 +2988,7 @@ def test_final_full_suite_rehashes_every_retained_gate_artifact(tmp_path: Path) 
         packet,
     )
     assert findings == []
-    assert evidence_sha == state.file_sha256(
-        evidence_root / "full-suite-evidence.json"
-    )
+    assert evidence_sha == state.file_sha256(evidence_root / "full-suite-evidence.json")
 
     artifact = evidence_root / "full-suite" / "pythonPytest.json"
     artifact.write_text(artifact.read_text(encoding="utf-8") + " ", encoding="utf-8")
@@ -3094,10 +2996,7 @@ def test_final_full_suite_rehashes_every_retained_gate_artifact(tmp_path: Path) 
         context,
         packet,
     )
-    assert any(
-        item["code"] == "final_full_suite_artifact_hash_mismatch"
-        for item in findings
-    )
+    assert any(item["code"] == "final_full_suite_artifact_hash_mismatch" for item in findings)
 
 
 def test_bounded_dispatch_invokes_process_tree_cleanup_on_timeout(
@@ -3224,9 +3123,7 @@ def test_lane_learning_locks_plateaus_and_expands_final_reserve(tmp_path: Path) 
     assert locked["locked"] is True
     assert locked["lastExpectedReductionBytes"] == 500000
     assert locked["lastActualReductionBytes"] == 400000
-    assert locked["validDiscardReasons"][0]["reasonCodes"] == [
-        "gate_failed:installTimingRegression"
-    ]
+    assert locked["validDiscardReasons"][0]["reasonCodes"] == ["gate_failed:installTimingRegression"]
     assert progress["validDiscardsWithoutEvidence"] == 10
     assert progress["phase"] == "plateau"
     assert update["plateau"] is True
@@ -3463,11 +3360,7 @@ def test_ux_evaluator_and_doctor_files_remain_byte_identical() -> None:
     # the same change; installer-size experiments must still leave it intact.
     for relative, expected in UX_FILE_HASHES.items():
         canonical_bytes = (
-            (REPO_ROOT / relative)
-            .read_text(encoding="utf-8")
-            .replace("\r\n", "\n")
-            .replace("\r", "\n")
-            .encode("utf-8")
+            (REPO_ROOT / relative).read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
         )
         actual = hashlib.sha256(canonical_bytes).hexdigest()
         assert actual == expected, relative
@@ -3486,19 +3379,12 @@ def test_root_wrappers_keep_ux_as_default_and_route_installer_explicitly() -> No
         REPO_ROOT / "scripts" / "perf" / "installer_size" / "runner.py"
     ).read_text(encoding="utf-8")
     assert 'if ($Profile -eq "installer-size")' in next_wrapper
-    assert 'scripts\\perf\\autoresearch_state.py' in next_wrapper
+    assert "scripts\\perf\\autoresearch_state.py" in next_wrapper
 
 
 def test_profile_config_protects_every_existing_evaluator_input() -> None:
     config = json.loads(
-        (
-            REPO_ROOT
-            / "scripts"
-            / "perf"
-            / "profiles"
-            / "installer-size"
-            / "config.json"
-        ).read_text(encoding="utf-8")
+        (REPO_ROOT / "scripts" / "perf" / "profiles" / "installer-size" / "config.json").read_text(encoding="utf-8")
     )
     assert config["durationSeconds"] == 43200
     assert config["baselineReplicas"] == 1

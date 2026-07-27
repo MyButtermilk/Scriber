@@ -8,7 +8,6 @@ from pathlib import Path
 from scripts.smoke_microphone_hardware_matrix import DEFAULT_SCENARIOS
 from scripts.validate_microphone_hardware_matrix import validate_matrix
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,50 +54,102 @@ def write_success_matrix(directory: Path) -> None:
     write_artifact(
         directory,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
     )
     write_artifact(
         directory,
         "usb-remove",
-        expectations={"expectAdded": "", "expectRemoved": "usb", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "",
+            "expectRemoved": "usb",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [], "removed": [{"deviceId": "USB Mic", "label": "USB Mic"}], "defaultChanged": False},
     )
     write_artifact(
         directory,
         "dock-disconnect",
-        expectations={"expectAdded": "", "expectRemoved": "dock", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "",
+            "expectRemoved": "dock",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [], "removed": [{"deviceId": "Dock Mic", "label": "Dock Mic"}], "defaultChanged": False},
     )
     write_artifact(
         directory,
         "dock-connect",
-        expectations={"expectAdded": "dock", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "dock",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "Dock Mic", "label": "Dock Mic"}], "removed": [], "defaultChanged": False},
     )
     write_artifact(
         directory,
         "bluetooth-add",
-        expectations={"expectAdded": "bluetooth", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
-        change={"added": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}], "removed": [], "defaultChanged": False},
+        expectations={
+            "expectAdded": "bluetooth",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
+        change={
+            "added": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}],
+            "removed": [],
+            "defaultChanged": False,
+        },
     )
     write_artifact(
         directory,
         "bluetooth-remove",
-        expectations={"expectAdded": "", "expectRemoved": "bluetooth", "expectDefaultChanged": False, "expectFavoriteFallback": False},
-        change={"added": [], "removed": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}], "defaultChanged": False},
+        expectations={
+            "expectAdded": "",
+            "expectRemoved": "bluetooth",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
+        change={
+            "added": [],
+            "removed": [{"deviceId": "Bluetooth Headset", "label": "Bluetooth Headset"}],
+            "defaultChanged": False,
+        },
     )
     write_artifact(
         directory,
         "default-mic-change",
-        expectations={"expectAdded": "", "expectRemoved": "", "expectDefaultChanged": True, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "",
+            "expectRemoved": "",
+            "expectDefaultChanged": True,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [], "removed": [], "defaultChanged": True},
     )
     write_artifact(
         directory,
         "favorite-fallback",
-        expectations={"expectAdded": "", "expectRemoved": "favorite", "expectDefaultChanged": False, "expectFavoriteFallback": True},
-        change={"added": [], "removed": [{"deviceId": "Favorite Mic", "label": "Favorite Mic"}], "defaultChanged": False},
+        expectations={
+            "expectAdded": "",
+            "expectRemoved": "favorite",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": True,
+        },
+        change={
+            "added": [],
+            "removed": [{"deviceId": "Favorite Mic", "label": "Favorite Mic"}],
+            "defaultChanged": False,
+        },
         settings_after={"micDevice": "Built-in Mic", "favoriteMic": "Favorite Mic", "favoriteMicAvailable": False},
     )
 
@@ -128,7 +179,12 @@ def test_validate_matrix_rejects_plan_only_and_placeholder_expectation(tmp_path:
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "<usb label substring>", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "<usb label substring>",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         plan_only=True,
     )
@@ -145,7 +201,12 @@ def test_validate_matrix_accepts_required_rust_endpoint_inventory(tmp_path: Path
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         rust_change={
             "availableAfter": True,
@@ -187,7 +248,12 @@ def test_validate_matrix_rejects_missing_required_rust_endpoint_inventory(tmp_pa
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
     )
 
@@ -206,7 +272,12 @@ def test_validate_matrix_accepts_required_device_refresh_evidence(tmp_path: Path
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         device_refresh={
             "availableAfter": True,
@@ -241,7 +312,12 @@ def test_validate_matrix_rejects_unredacted_hardware_evidence(tmp_path: Path) ->
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         rust_change={
             "availableAfter": True,
@@ -304,13 +380,9 @@ def test_validate_matrix_rejects_unredacted_hardware_evidence(tmp_path: Path) ->
     failures = result["scenarios"][0]["failures"]
     assert (
         "artifact contains raw native endpoint ID at "
-        "result.rustNativeEndpointInventoryChange.added[0].diagnostics.endpointId"
-        in failures
+        "result.rustNativeEndpointInventoryChange.added[0].diagnostics.endpointId" in failures
     )
-    assert (
-        "artifact contains raw Scriber pipe name at result.deviceMonitorRefresh.after.debug.framePipe"
-        in failures
-    )
+    assert "artifact contains raw Scriber pipe name at result.deviceMonitorRefresh.after.debug.framePipe" in failures
     assert (
         "artifact contains unredacted token-like value at result.deviceMonitorRefresh.after.debug.sessionToken"
         in failures
@@ -321,7 +393,12 @@ def test_validate_matrix_rejects_forced_refresh_when_device_refresh_evidence_req
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         device_refresh={
             "availableAfter": True,
@@ -355,7 +432,12 @@ def test_validate_matrix_rejects_device_refresh_without_native_tauri_hint(tmp_pa
     write_artifact(
         tmp_path,
         "usb-add",
-        expectations={"expectAdded": "usb", "expectRemoved": "", "expectDefaultChanged": False, "expectFavoriteFallback": False},
+        expectations={
+            "expectAdded": "usb",
+            "expectRemoved": "",
+            "expectDefaultChanged": False,
+            "expectFavoriteFallback": False,
+        },
         change={"added": [{"deviceId": "USB Mic", "label": "USB Mic"}], "removed": [], "defaultChanged": False},
         device_refresh={
             "availableAfter": True,
@@ -385,10 +467,7 @@ def test_validate_matrix_rejects_device_refresh_without_native_tauri_hint(tmp_pa
     assert result["ok"] is False
     failures = result["scenarios"][0]["failures"]
     assert "device monitor nativeHintDelta must show at least one native Tauri refresh hint" in failures
-    assert (
-        "device monitor nativeHintPortAudioDelta must show a native hint requested PortAudio refresh"
-        in failures
-    )
+    assert "device monitor nativeHintPortAudioDelta must show a native hint requested PortAudio refresh" in failures
 
 
 def test_validate_matrix_cli_writes_summary(tmp_path: Path) -> None:

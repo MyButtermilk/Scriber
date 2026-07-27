@@ -4,10 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from benchmarks.windows import endpoint_probe
-from benchmarks.windows import app_ux_collector
-from benchmarks.windows import trace_collector
-
+from benchmarks.windows import app_ux_collector, endpoint_probe, trace_collector
 
 EXPECTED_SCENARIOS = (
     "cold_app_launch",
@@ -131,9 +128,7 @@ def _payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
                 "backendStartedAt": "2026-07-15T12:00:00Z",
                 "frontendReadyReceivedAt": "2026-07-15T12:00:01Z",
             }
-            generation = endpoint_probe.process_generation_fingerprint(
-                generation_payload
-            )
+            generation = endpoint_probe.process_generation_fingerprint(generation_payload)
             generation_payload["fingerprint"] = generation
             generation_artifact = _write_artifact(
                 root,
@@ -248,11 +243,7 @@ def _validate(root: Path, payload: dict[str, object], count: int = 2) -> dict[st
 
 def _lifecycle_payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
     full = _payload(root, samples_per_scenario=samples_per_scenario)
-    samples = [
-        sample
-        for sample in full["samples"]
-        if sample["scenario"] in endpoint_probe.APP_UX_LIFECYCLE_SCENARIOS
-    ]
+    samples = [sample for sample in full["samples"] if sample["scenario"] in endpoint_probe.APP_UX_LIFECYCLE_SCENARIOS]
     resource_payload = {
         "runId": full["runId"],
         "installedExeSha256": full["installedExeSha256"],
@@ -261,9 +252,7 @@ def _lifecycle_payload(root: Path, samples_per_scenario: int = 2) -> dict[str, o
         "idleCpuPercent": 0.3,
         "workingSetMb": 190.0,
     }
-    resource_artifact = _write_artifact(
-        root, "lifecycle-resource.json", resource_payload
-    )
+    resource_artifact = _write_artifact(root, "lifecycle-resource.json", resource_payload)
     return {
         "schemaVersion": 1,
         "contract": endpoint_probe.APP_UX_LIFECYCLE_IMPORT_CONTRACT,
@@ -272,9 +261,7 @@ def _lifecycle_payload(root: Path, samples_per_scenario: int = 2) -> dict[str, o
         "harnessManifestSha256": full["harnessManifestSha256"],
         "samplesPerScenario": samples_per_scenario,
         "scenarioOrder": [
-            scenario
-            for scenario in EXPECTED_SCENARIOS
-            if scenario in endpoint_probe.APP_UX_LIFECYCLE_SCENARIOS
+            scenario for scenario in EXPECTED_SCENARIOS if scenario in endpoint_probe.APP_UX_LIFECYCLE_SCENARIOS
         ],
         "samples": samples,
         "resourceEvidence": {**resource_payload, "artifact": resource_artifact},
@@ -319,18 +306,13 @@ def test_complete_hash_bound_nine_scenario_matrix_is_eligible(tmp_path: Path) ->
         "working_set_mb": 180.0,
     }
     assert all(
-        item["sampleCount"] == 2 and item["metricEligible"] is True
-        for item in result["scenarioResults"].values()
+        item["sampleCount"] == 2 and item["metricEligible"] is True for item in result["scenarioResults"].values()
     )
 
 
 def test_twenty_generic_show_window_samples_cannot_stand_in_for_matrix(tmp_path: Path) -> None:
     payload = _payload(tmp_path, samples_per_scenario=20)
-    payload["samples"] = [
-        sample
-        for sample in payload["samples"]
-        if sample["scenario"] == "warm_app_activation"
-    ]
+    payload["samples"] = [sample for sample in payload["samples"] if sample["scenario"] == "warm_app_activation"]
     payload["resourceEvidence"]["sampleCount"] = 20
 
     result = _validate(tmp_path, payload, count=20)
@@ -362,10 +344,7 @@ def test_duplicate_iteration_does_not_inflate_scenario_count(tmp_path: Path) -> 
     result = _validate(tmp_path, payload)
 
     assert result["metricEligible"] is False
-    assert any(
-        "duplicate_scenario_iteration" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
-    )
+    assert any("duplicate_scenario_iteration" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
 def test_tampered_uia_artifact_blocks_sample(tmp_path: Path) -> None:
@@ -375,10 +354,7 @@ def test_tampered_uia_artifact_blocks_sample(tmp_path: Path) -> None:
     result = _validate(tmp_path, payload)
 
     assert result["metricEligible"] is False
-    assert any(
-        "stable_frame_artifact_sha256_mismatch" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
-    )
+    assert any("stable_frame_artifact_sha256_mismatch" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
 def test_unbound_or_tampered_process_generation_blocks_sample(tmp_path: Path) -> None:
@@ -392,8 +368,7 @@ def test_unbound_or_tampered_process_generation_blocks_sample(tmp_path: Path) ->
 
     assert result["metricEligible"] is False
     assert any(
-        "process_generation_artifact_sha256_mismatch" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
+        "process_generation_artifact_sha256_mismatch" in invalid["reasons"] for invalid in result["invalidSamples"]
     )
 
 
@@ -404,28 +379,19 @@ def test_duplicate_sample_id_is_not_accepted_across_scenarios(tmp_path: Path) ->
     result = _validate(tmp_path, payload)
 
     assert result["metricEligible"] is False
-    assert any(
-        "duplicate_sample_id" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
-    )
+    assert any("duplicate_sample_id" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
 def test_lifecycle_scenario_requires_installed_event_artifact(tmp_path: Path) -> None:
     payload = _payload(tmp_path)
-    sample = next(
-        item
-        for item in payload["samples"]
-        if item["scenario"] == "provider_result_to_completed_visible"
-    )
+    sample = next(item for item in payload["samples"] if item["scenario"] == "provider_result_to_completed_visible")
     sample.pop("eventEvidence")
 
     result = _validate(tmp_path, payload)
 
     assert result["metricEligible"] is False
     invalid = next(
-        item
-        for item in result["invalidSamples"]
-        if item["scenario"] == "provider_result_to_completed_visible"
+        item for item in result["invalidSamples"] if item["scenario"] == "provider_result_to_completed_visible"
     )
     assert "installed_runtime_event_unproven" in invalid["reasons"]
     assert "event_artifact_binding_missing" in invalid["reasons"]
@@ -500,10 +466,7 @@ def test_lifecycle_import_fails_closed_for_missing_or_uia_scenario(tmp_path: Pat
     assert result["metricEligible"] is False
     assert "invalid_samples" in result["reasons"]
     assert "scenario_sample_count:session_finished_to_history_visible" in result["reasons"]
-    assert any(
-        "non_lifecycle_scenario_in_import" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
-    )
+    assert any("non_lifecycle_scenario_in_import" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
 def test_lifecycle_import_rejects_tampered_installed_event(tmp_path: Path) -> None:
@@ -515,10 +478,7 @@ def test_lifecycle_import_rejects_tampered_installed_event(tmp_path: Path) -> No
     result = _validate_lifecycle(tmp_path, payload)
 
     assert result["metricEligible"] is False
-    assert any(
-        "event_artifact_sha256_mismatch" in invalid["reasons"]
-        for invalid in result["invalidSamples"]
-    )
+    assert any("event_artifact_sha256_mismatch" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
 def test_trace_collector_rejects_generic_app_ux_qpc_events(tmp_path: Path) -> None:
@@ -549,12 +509,8 @@ def test_trace_collector_rejects_generic_app_ux_qpc_events(tmp_path: Path) -> No
 
 
 def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
-    action = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_action.ps1").read_text(
-        encoding="utf-8"
-    )
-    observer = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_observer.ps1").read_text(
-        encoding="utf-8"
-    )
+    action = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_action.ps1").read_text(encoding="utf-8")
+    observer = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_observer.ps1").read_text(encoding="utf-8")
 
     assert "[long]$ProcessCreationTime100ns" in action
     assert "[string]$ControlAutomationId" in action
@@ -580,14 +536,11 @@ def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
 
 
 def test_collector_uses_real_uia_and_requires_installed_lifecycle_import() -> None:
-    collector = (
-        endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_collector.py"
-    ).read_text(encoding="utf-8")
+    collector = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_collector.py").read_text(encoding="utf-8")
     schema = json.loads(
-        (
-            endpoint_probe.REPO_ROOT
-            / "benchmarks/windows/app_ux_lifecycle_import.schema.json"
-        ).read_text(encoding="utf-8")
+        (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_lifecycle_import.schema.json").read_text(
+            encoding="utf-8"
+        )
     )
 
     assert "app_action.ps1" in collector
@@ -632,23 +585,17 @@ def test_collector_prepare_only_pins_run_binary_harness_and_schema(tmp_path: Pat
     )
 
     assert exit_code == 0
-    request = json.loads(
-        (output.parent / "app-ux-lifecycle-request.json").read_text(encoding="utf-8")
-    )
+    request = json.loads((output.parent / "app-ux-lifecycle-request.json").read_text(encoding="utf-8"))
     assert request["runId"] == run_id
     assert request["installedExeSha256"] == _sha(executable)
-    assert request["harnessManifestSha256"] == endpoint_probe.app_ux_harness_manifest_sha256(
-        endpoint_probe.REPO_ROOT
-    )
+    assert request["harnessManifestSha256"] == endpoint_probe.app_ux_harness_manifest_sha256(endpoint_probe.REPO_ROOT)
     assert request["samplesPerScenario"] == 2
     assert request["requiredImportContract"] == endpoint_probe.APP_UX_LIFECYCLE_IMPORT_CONTRACT
     schema_path = endpoint_probe.REPO_ROOT / request["importSchema"]["path"]
     assert request["importSchema"]["sha256"] == _sha(schema_path)
 
 
-def test_collector_uia_only_is_diagnostic_and_cannot_fabricate_lifecycle_evidence(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_collector_uia_only_is_diagnostic_and_cannot_fabricate_lifecycle_evidence(tmp_path: Path, monkeypatch) -> None:
     install_root = tmp_path / "installed"
     install_root.mkdir()
     executable = install_root / "scriber-desktop.exe"
@@ -679,15 +626,11 @@ def test_collector_uia_only_is_diagnostic_and_cannot_fabricate_lifecycle_evidenc
     )
 
     package = json.loads(output.read_text(encoding="utf-8"))
-    validation = json.loads(
-        (output.parent / "app-ux-validation.json").read_text(encoding="utf-8")
-    )
+    validation = json.loads((output.parent / "app-ux-validation.json").read_text(encoding="utf-8"))
     assert exit_code == 2
     assert package["collector"]["diagnosticUiaOnly"] is True
     assert package["collector"]["lifecycleImport"] is None
-    assert package["collector"]["failures"] == [
-        {"iteration": 1, "error": "diagnostic-stop-before-ui"}
-    ]
+    assert package["collector"]["failures"] == [{"iteration": 1, "error": "diagnostic-stop-before-ui"}]
     assert package["samples"] == []
     assert validation["metricEligible"] is False
     for scenario in endpoint_probe.APP_UX_LIFECYCLE_SCENARIOS:

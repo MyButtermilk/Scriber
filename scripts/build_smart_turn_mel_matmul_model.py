@@ -11,7 +11,6 @@ import onnx
 from onnx import TensorProto, helper, numpy_helper
 from pipecat.audio.turn.smart_turn import _whisper_features
 
-
 MODEL_NAME = "smart-turn-mel-matmul.onnx"
 MODEL_OPSET = 17
 MODEL_IR_VERSION = 10

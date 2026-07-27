@@ -4,10 +4,9 @@ import argparse
 import json
 import shlex
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -91,7 +90,7 @@ DISALLOWED_PROFILE_B_TOKENS = {
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def repo_relative(path: Path) -> str:

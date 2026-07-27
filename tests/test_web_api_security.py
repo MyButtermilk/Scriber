@@ -10,7 +10,6 @@ from aiohttp import FormData, WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
-from src.config import Config
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
@@ -284,9 +283,7 @@ async def test_live_mic_start_runtime_failures_are_structured_and_cors_safe(
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     ctl = ScriberWebController(asyncio.get_running_loop())
     ctl.start_listening = AsyncMock(  # type: ignore[method-assign]
-        side_effect=exception_type(
-            "No module named 'pipecat.transports.base_input' in C:\\private\\runtime"
-        )
+        side_effect=exception_type("No module named 'pipecat.transports.base_input' in C:\\private\\runtime")
     )
     client = TestClient(TestServer(web_api.create_app(ctl)))
     await client.start_server()
@@ -306,8 +303,7 @@ async def test_live_mic_start_runtime_failures_are_structured_and_cors_safe(
         "type": "error",
         "title": "Live microphone unavailable",
         "message": (
-            "Scriber could not load the live microphone runtime. Restart or "
-            "reinstall Scriber, then try again."
+            "Scriber could not load the live microphone runtime. Restart or reinstall Scriber, then try again."
         ),
         "category": "runtime_unavailable",
         "code": "live_mic_runtime_unavailable",
@@ -491,9 +487,7 @@ async def test_live_mic_toggle_propagates_start_rejection(monkeypatch, tmp_path,
 
     assert response.status == 400
     assert payload["code"] == "voice_enrollment_active"
-    assert payload["message"] == (
-        "Wait for the Voice Library sample to finish before starting Live Mic."
-    )
+    assert payload["message"] == ("Wait for the Voice Library sample to finish before starting Live Mic.")
     assert ctl.get_state()["listening"] is False
 
 
@@ -885,9 +879,7 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         assert frontend_ready_get.status == 200
         assert (await frontend_ready_get.json())["lastSeen"]["locationOrigin"] == "http://tauri.localhost"
 
-        frontend_performance_unauthorized = await client.get(
-            "/api/runtime/frontend-performance"
-        )
+        frontend_performance_unauthorized = await client.get("/api/runtime/frontend-performance")
         assert frontend_performance_unauthorized.status == 401
         frontend_performance_flush_unauthorized = await client.post(
             "/api/runtime/frontend-performance/flush-request",
@@ -983,8 +975,7 @@ async def test_session_token_middleware_and_shutdown_endpoint(monkeypatch, tmp_p
         log_dir = tmp_path / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "zz-test-debug.log").write_text(
-            "... 12:34:56.789 ERROR [web_api    ] [------] [web_api        ] "
-            "failed with OPENAI_API_KEY=secret-value\n",
+            "... 12:34:56.789 ERROR [web_api    ] [------] [web_api        ] failed with OPENAI_API_KEY=secret-value\n",
             encoding="utf-8",
         )
         logs = await client.get("/api/runtime/logs?limit=10", headers={"X-Scriber-Token": "secret"})
@@ -1543,10 +1534,7 @@ def test_validate_summarization_model_accepts_known_prefixes():
         == "google/gemini-2.5-flash-lite:nitro"
     )
     assert web_api._validate_summarization_model("openai/gpt-oss-120b") == "openai/gpt-oss-120b"
-    assert (
-        web_api._validate_summarization_model("openai/gpt-oss-120b:cerebras")
-        == "openai/gpt-oss-120b:cerebras"
-    )
+    assert web_api._validate_summarization_model("openai/gpt-oss-120b:cerebras") == "openai/gpt-oss-120b:cerebras"
     assert web_api._validate_summarization_model("cerebras/gemma-4-31b") == "cerebras/gemma-4-31b"
     assert web_api._validate_summarization_model("celeris-1") == "celeris-1"
 

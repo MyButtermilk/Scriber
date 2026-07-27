@@ -140,10 +140,18 @@ def test_metadata_page_filters_incomplete_rows_and_paginates_in_sql(monkeypatch,
 
     try:
         database.init_database()
-        database.save_transcript(_record("mic-old", created_at="2026-01-01T00:00:00", status="completed", transcript_type="mic"))
-        database.save_transcript(_record("file", created_at="2026-01-02T00:00:00", status="completed", transcript_type="file"))
-        database.save_transcript(_record("mic-new", created_at="2026-01-03T00:00:00", status="completed", transcript_type="mic"))
-        database.save_transcript(_record("mic-active", created_at="2026-01-04T00:00:00", status="processing", transcript_type="mic"))
+        database.save_transcript(
+            _record("mic-old", created_at="2026-01-01T00:00:00", status="completed", transcript_type="mic")
+        )
+        database.save_transcript(
+            _record("file", created_at="2026-01-02T00:00:00", status="completed", transcript_type="file")
+        )
+        database.save_transcript(
+            _record("mic-new", created_at="2026-01-03T00:00:00", status="completed", transcript_type="mic")
+        )
+        database.save_transcript(
+            _record("mic-active", created_at="2026-01-04T00:00:00", status="processing", transcript_type="mic")
+        )
 
         first = database.load_transcript_metadata_page(transcript_type="mic", limit=1)
         second = database.load_transcript_metadata_page(transcript_type="mic", offset=1, limit=1)
@@ -159,10 +167,7 @@ def test_metadata_page_filters_incomplete_rows_and_paginates_in_sql(monkeypatch,
             include_incomplete=True,
             exclude_ids=("mic-active",),
         )
-        indexes = {
-            row[1]
-            for row in database._get_connection().execute("PRAGMA index_list(transcripts)").fetchall()
-        }
+        indexes = {row[1] for row in database._get_connection().execute("PRAGMA index_list(transcripts)").fetchall()}
 
         assert first["total"] == 2
         assert first["items"][0]["id"] == "mic-new"
@@ -201,15 +206,19 @@ def test_transcript_upsert_keeps_rowid_stable(monkeypatch, tmp_path):
     try:
         database.init_database()
         database.save_transcript(record)
-        first_rowid = database._get_connection().execute(
-            "SELECT rowid FROM transcripts WHERE id = ?", (record["id"],)
-        ).fetchone()[0]
+        first_rowid = (
+            database._get_connection()
+            .execute("SELECT rowid FROM transcripts WHERE id = ?", (record["id"],))
+            .fetchone()[0]
+        )
 
         record.update({"title": "After", "content": "after"})
         database.save_transcript(record)
-        second_rowid = database._get_connection().execute(
-            "SELECT rowid FROM transcripts WHERE id = ?", (record["id"],)
-        ).fetchone()[0]
+        second_rowid = (
+            database._get_connection()
+            .execute("SELECT rowid FROM transcripts WHERE id = ?", (record["id"],))
+            .fetchone()[0]
+        )
 
         assert second_rowid == first_rowid
         assert database.get_transcript(record["id"])["title"] == "After"
@@ -243,8 +252,7 @@ def test_database_init_repairs_equal_count_fts_rowid_corruption(monkeypatch, tmp
         ).fetchone()[0]
         conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (record["id"],))
         conn.execute(
-            "INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel) "
-            "VALUES (?, ?, ?, ?, '', '')",
+            "INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel) VALUES (?, ?, ?, ?, '', '')",
             (rowid + 1000, "orphan", "orphan", "wrong content"),
         )
         conn.commit()
@@ -313,9 +321,7 @@ def test_existing_transcript_ids_chunks_large_input(monkeypatch, tmp_path):
         )
         conn.commit()
 
-        assert database.existing_transcript_ids(
-            [*transcript_ids, "bulk-0001", "missing"]
-        ) == set(transcript_ids)
+        assert database.existing_transcript_ids([*transcript_ids, "bulk-0001", "missing"]) == set(transcript_ids)
     finally:
         database._close_all_connections()
 
@@ -371,9 +377,7 @@ def test_database_migrates_existing_nonempty_summary_to_markdown(monkeypatch, tm
     monkeypatch.setattr(database, "_DB_PATH", db_path)
     try:
         database.init_database()
-        database.save_transcript(
-            _summary_record("legacy", "## Legacy summary", "markdown")
-        )
+        database.save_transcript(_summary_record("legacy", "## Legacy summary", "markdown"))
         database._close_all_connections()
         with sqlite3.connect(db_path) as conn:
             conn.execute("ALTER TABLE transcripts DROP COLUMN summary_format")
@@ -413,9 +417,7 @@ def test_summary_state_failure_preserves_existing_format(monkeypatch, tmp_path):
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
     try:
         database.init_database()
-        database.save_transcript(
-            _summary_record("preserve-format", "## Legacy", "markdown")
-        )
+        database.save_transcript(_summary_record("preserve-format", "## Legacy", "markdown"))
         assert database.update_transcript_summary_state(
             "preserve-format",
             status="failed",

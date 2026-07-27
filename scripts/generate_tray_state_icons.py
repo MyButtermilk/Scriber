@@ -13,10 +13,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PIL import Image, ImageDraw
-
 from generate_windows_app_icon import TRAY_SIZES
-
+from PIL import Image, ImageDraw
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ICON_DIR = REPO_ROOT / "Frontend" / "src-tauri" / "icons"

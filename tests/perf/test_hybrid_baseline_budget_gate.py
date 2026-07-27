@@ -5,9 +5,7 @@ from pathlib import Path
 
 def read_runner() -> str:
     repo_root = Path(__file__).resolve().parents[2]
-    return (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(
-        encoding="utf-8"
-    )
+    return (repo_root / "scripts" / "measure_hybrid_baseline.ps1").read_text(encoding="utf-8")
 
 
 def test_hybrid_baseline_runner_exposes_phase8_startup_budget() -> None:
@@ -32,7 +30,10 @@ def test_hybrid_baseline_runner_can_fail_on_performance_budget() -> None:
     assert 'status = $(if ($p95 -le $MaxP95Ms) { "passed" } else { "failed" })' in script
     assert "failedBudgets = @($notPassed | ForEach-Object { $_.name })" in script
     assert "if ($FailOnPerformanceBudget -and -not $result.performanceBudget.complete)" in script
-    assert "exit 1" in script.split(
-        "if ($FailOnPerformanceBudget -and -not $result.performanceBudget.complete)",
-        maxsplit=1,
-    )[1]
+    assert (
+        "exit 1"
+        in script.split(
+            "if ($FailOnPerformanceBudget -and -not $result.performanceBudget.complete)",
+            maxsplit=1,
+        )[1]
+    )
