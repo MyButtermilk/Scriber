@@ -12,6 +12,7 @@ export default defineConfig({
   test: {
     name: "components",
     environment: "jsdom",
+    execArgv: ["--no-experimental-webstorage"],
     setupFiles: [path.resolve(import.meta.dirname, "vitest.setup.ts")],
     include: ["client/src/**/*.test.tsx"],
     clearMocks: true,
