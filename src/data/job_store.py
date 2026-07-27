@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -19,12 +19,13 @@ from loguru import logger
 from src.runtime.paths import database_path
 
 
-class JobType(StrEnum):
+# Keep the established ``str(member)`` representation; SQLite stores ``.value``.
+class JobType(str, Enum):  # noqa: UP042
     YOUTUBE = "youtube"
     FILE = "file"
 
 
-class JobStatus(StrEnum):
+class JobStatus(str, Enum):  # noqa: UP042
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"

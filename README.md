@@ -330,8 +330,18 @@ Frontend\src-tauri\target\release\bundle\nsis\
 
 ### Test
 
+Ruff is intentionally separate from the Windows test dependency closure.
+Install the CI-pinned version once in Scriber's project environment:
+
+```powershell
+scripts\project-python.cmd -m pip install ruff==0.15.22
+```
+
 ```powershell
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
+scripts\project-python.cmd -m ruff check src\core src\runtime src\data
+scripts\project-python.cmd -m ruff format --check src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
 
 ```powershell

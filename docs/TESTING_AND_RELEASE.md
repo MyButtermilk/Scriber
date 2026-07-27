@@ -11,15 +11,29 @@ Run from repository root unless specified.
 
 Python (always through Scriber's project environment, never bare `python`):
 
+Ruff is intentionally separate from the Windows test dependency closure.
+Install the CI-pinned version once in Scriber's project environment:
+
+```powershell
+scripts\project-python.cmd -m pip install ruff==0.15.22
+```
+
 ```powershell
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
+scripts\project-python.cmd -m ruff check src\core src\runtime src\data
+scripts\project-python.cmd -m ruff format --check src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
 Windows CPython 3.13 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
-suite without changing the broader application dependency policy. CI also pins
-the pip resolver version and validates the result with `pip check`.
+suite without changing the broader application dependency policy. `mypy` runs
+in that complete Windows environment after pytest. Ruff remains an independent,
+lightweight Ubuntu gate that installs only `ruff==0.15.22` and intentionally
+stays out of `requirements-test.txt`. Both static gates are deliberately
+limited to `src/core`, `src/runtime`, and `src/data`. CI also pins the pip
+resolver version and validates the complete test environment with `pip check`.
 
 Frontend:
 

@@ -44,6 +44,10 @@ jobs:
           python -m pytest -n 4 --dist loadfile -ra `
             --junitxml build\test-results\python-full-suite.xml
 
+      - name: Typecheck scoped Python modules
+        shell: pwsh
+        run: python -m mypy src\core src\runtime src\data
+
       - name: Upload Python test results
         if: always()
         uses: actions/upload-artifact@v7

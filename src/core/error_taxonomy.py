@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from enum import StrEnum
+from enum import Enum
 
 
-class ErrorCategory(StrEnum):
+# Keep the established ``str(member)`` representation; persisted values use ``.value``.
+class ErrorCategory(str, Enum):  # noqa: UP042
     TRANSIENT_NETWORK = "transient_network"
     TRANSIENT_PROVIDER = "transient_provider"
     AUTH_INVALID = "auth_invalid"

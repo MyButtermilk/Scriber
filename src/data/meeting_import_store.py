@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path, PurePosixPath
 from typing import Any
 from uuid import uuid4
@@ -17,7 +17,8 @@ from uuid import uuid4
 from src.runtime.paths import database_path
 
 
-class MeetingImportStatus(StrEnum):
+# Keep the established ``str(member)`` representation; SQLite stores ``.value``.
+class MeetingImportStatus(str, Enum):  # noqa: UP042
     CREATED = "created"
     RECEIVING = "receiving"
     RECEIVED = "received"

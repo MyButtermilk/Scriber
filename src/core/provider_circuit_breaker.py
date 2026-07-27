@@ -3,10 +3,11 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 
-class CircuitState(StrEnum):
+# Keep the established ``str(member)`` representation used by diagnostics.
+class CircuitState(str, Enum):  # noqa: UP042
     CLOSED = "closed"
     OPEN = "open"
     HALF_OPEN = "half_open"

@@ -19,7 +19,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
+from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
@@ -47,7 +47,8 @@ class UnsafeSnapshotValue(ValueError):
     pass
 
 
-class AttemptState(StrEnum):
+# Keep the established ``str(member)`` representation; SQLite stores ``.value``.
+class AttemptState(str, Enum):  # noqa: UP042
     QUEUED = "queued"
     RESOLVING_SOURCE = "resolving_source"
     SOURCE_READY = "source_ready"
@@ -100,13 +101,13 @@ ALLOWED_ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
 }
 
 
-class AlignmentQuality(StrEnum):
+class AlignmentQuality(str, Enum):  # noqa: UP042
     EXACT_WORD = "exact_word"
     PROVIDER_SEGMENT = "provider_segment"
     ESTIMATED = "estimated"
 
 
-class SourceAssetState(StrEnum):
+class SourceAssetState(str, Enum):  # noqa: UP042
     AVAILABLE = "available"
     PURGE_PENDING = "purge_pending"
     PURGED = "purged"

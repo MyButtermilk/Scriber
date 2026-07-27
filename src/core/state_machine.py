@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
+from enum import Enum
 
 
-class RecordingState(StrEnum):
+# Keep the established ``str(member)`` representation used by diagnostics.
+class RecordingState(str, Enum):  # noqa: UP042
     IDLE = "idle"
     INITIALIZING = "initializing"
     RECORDING = "recording"

@@ -1593,9 +1593,25 @@ Pipecat/provider packages from producing misleading failures. The launcher also
 checks the `pipecat-ai` version against the exact pin in
 `requirements-base.txt` before it executes the requested command.
 
+Ruff is intentionally separate from the Windows test dependency closure.
+Install the CI-pinned version once in Scriber's project environment:
+
+```powershell
+scripts\project-python.cmd -m pip install ruff==0.15.22
+```
+
 ```powershell
 scripts\project-python.cmd -m pytest
+scripts\project-python.cmd -m ruff check src\core src\runtime src\data
+scripts\project-python.cmd -m ruff format --check src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
+
+CI keeps Ruff as a lightweight Ubuntu job pinned to `ruff==0.15.22`. The full
+Windows Python suite installs `mypy==2.3.0` from the locked test closure and
+runs the same scoped type check after pytest. Keep both gates limited to
+`src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
+expands the baseline.
 
 ```powershell
 cd Frontend
