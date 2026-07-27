@@ -1279,7 +1279,41 @@ jobs:
           }
           $cacheSummaryPath = "build\release-cache-summary.json"
           New-Item -ItemType Directory -Force -Path (Split-Path -Parent $cacheSummaryPath) | Out-Null
+          $plannerFingerprints = [ordered]@{
+            backendSidecar = "${{ needs.release-plan.outputs.backend-sidecar-hash }}"
+            backendRuntime = "${{ needs.release-plan.outputs.backend-runtime-hash }}"
+            tauriAppBinary = "${{ needs.release-plan.outputs.tauri-app-binary-hash }}"
+          }
+          $packagerFingerprints = [ordered]@{
+            backendSidecar = "${{ steps.final-cache-keys.outputs.backend-sidecar-hash }}"
+            backendRuntime = "${{ steps.final-cache-keys.outputs.backend-runtime-hash }}"
+            tauriAppBinary = "${{ steps.final-cache-keys.outputs.tauri-app-binary-hash }}"
+          }
+          $componentMatches = [ordered]@{
+            backendSidecar = $plannerFingerprints.backendSidecar -ceq $packagerFingerprints.backendSidecar
+            backendRuntime = $plannerFingerprints.backendRuntime -ceq $packagerFingerprints.backendRuntime
+            tauriAppBinary = $plannerFingerprints.tauriAppBinary -ceq $packagerFingerprints.tauriAppBinary
+          }
           [ordered]@{
+            schemaVersion = 2
+            runIdentity = [ordered]@{
+              repository = "${{ github.repository }}"
+              runId = [int64]"${{ github.run_id }}"
+              headSha = ([string]$env:GITHUB_SHA).Trim().ToLowerInvariant()
+              eventName = "${{ github.event_name }}"
+              ref = [string]$env:GITHUB_REF
+            }
+            cacheKeyParity = [ordered]@{
+              apiVersion = "1"
+              planner = $plannerFingerprints
+              packager = $packagerFingerprints
+              componentMatches = $componentMatches
+              allMatch = (
+                $componentMatches.backendSidecar -and
+                $componentMatches.backendRuntime -and
+                $componentMatches.tauriAppBinary
+              )
+            }
             generatedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
             refreshReleaseCacheArtifacts = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS
             saveActionsCaches = $env:SCRIBER_SAVE_ACTIONS_CACHES

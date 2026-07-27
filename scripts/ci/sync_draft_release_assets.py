@@ -1,8 +1,10 @@
 """Create or replace one draft release's assets through numeric GitHub IDs.
 
-The mutation flow deliberately never uploads through a tag lookup.  A release is
-discovered once through bounded list pagination, bound to its numeric database
-ID, and then re-read by that ID immediately before every DELETE or upload.
+The mutation flow deliberately never uploads through a tag lookup.  An existing
+release is discovered through bounded list pagination.  A newly created release
+is instead bound from its POST-returned numeric ID because the release list can
+lag behind GET-by-ID.  Every release is re-read by ID immediately before each
+DELETE or upload.
 """
 
 from __future__ import annotations
@@ -248,6 +250,33 @@ def _require_tag_binding(
     )
 
 
+def _require_draft_binding(
+    api: GitHubDraftPublisherApi,
+    *,
+    repository: str,
+    release_id: int,
+    release_tag: str,
+    expected_metadata: GeneratedReleaseMetadata,
+    created_in_this_run: bool,
+) -> None:
+    if created_in_this_run:
+        _require_bound_draft(
+            api,
+            repository=repository,
+            release_id=release_id,
+            release_tag=release_tag,
+            expected_metadata=expected_metadata,
+        )
+        return
+    _require_tag_binding(
+        api,
+        repository=repository,
+        release_id=release_id,
+        release_tag=release_tag,
+        expected_metadata=expected_metadata,
+    )
+
+
 def _create_or_bind_draft(
     api: GitHubDraftPublisherApi,
     *,
@@ -307,12 +336,13 @@ def _create_or_bind_draft(
         if release.get("draft") is False:
             raise ValueError("Refusing to mutate a published GitHub release.") from error
         raise
-    _require_tag_binding(
+    _require_draft_binding(
         api,
         repository=repository,
         release_id=release_id,
         release_tag=release_tag,
         expected_metadata=expected_metadata,
+        created_in_this_run=created,
     )
     return release_id, created
 
@@ -442,12 +472,13 @@ def sync_draft_release_assets(
         if stale["assetId"] in remaining_ids:
             raise ValueError("GitHub still returns an asset after its exact-ID deletion.")
 
-    _require_tag_binding(
+    _require_draft_binding(
         api,
         repository=repository,
         release_id=release_id,
         release_tag=release_tag,
         expected_metadata=expected_metadata,
+        created_in_this_run=created,
     )
     if _listed_assets(api, repository=repository, release_id=release_id, complete=False):
         raise ValueError("The bound GitHub draft was not empty after asset cleanup.")
@@ -511,12 +542,13 @@ def sync_draft_release_assets(
             uploaded=uploaded,
         )
 
-    _require_tag_binding(
+    _require_draft_binding(
         api,
         repository=repository,
         release_id=release_id,
         release_tag=release_tag,
         expected_metadata=expected_metadata,
+        created_in_this_run=created,
     )
     final_assets = _listed_assets(
         api,
@@ -549,14 +581,17 @@ def sync_draft_release_assets(
     } != set(expected):
         raise ValueError("Release verification directory does not contain the exact downloaded asset set.")
 
-    # Re-read both the tag binding and complete numeric asset set after every
-    # download so the report describes one stable, still-draft release.
-    _require_tag_binding(
+    # Re-read the stable binding and complete numeric asset set after every
+    # download so the report describes one stable, still-draft release.  A
+    # draft created by this run remains ID-bound while list visibility catches
+    # up; pre-existing drafts retain the bounded tag-discovery check.
+    _require_draft_binding(
         api,
         repository=repository,
         release_id=release_id,
         release_tag=release_tag,
         expected_metadata=expected_metadata,
+        created_in_this_run=created,
     )
     stable_assets = _listed_assets(
         api,

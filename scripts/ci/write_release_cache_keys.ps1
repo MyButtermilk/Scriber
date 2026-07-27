@@ -47,10 +47,21 @@ function Get-FileSha256 {
     )) {
         [void]$textExtensions.Add($extension)
     }
+    $textFileNames = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    # Keep extensionless and dotfile classification explicit. Some binary
+    # runtime/model inputs also have no reliable extension and must remain
+    # byte-hashed rather than decoded as text.
+    foreach ($name in @(
+        ".gitkeep", ".node-version", "Cargo.lock", "Dockerfile", "LICENSE", "Makefile"
+    )) {
+        [void]$textFileNames.Add($name)
+    }
     $fileName = [System.IO.Path]::GetFileName($Path)
     $isText = (
         $textExtensions.Contains([System.IO.Path]::GetExtension($Path)) -or
-        $fileName -in @("Cargo.lock", "Dockerfile", "LICENSE", "Makefile", ".node-version")
+        $textFileNames.Contains($fileName)
     )
     if ($isText) {
         return Get-StringSha256 -Value ([System.IO.File]::ReadAllText($Path))

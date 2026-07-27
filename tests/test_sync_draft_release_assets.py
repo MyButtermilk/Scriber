@@ -62,6 +62,7 @@ class FakePublisherApi:
         live_target: str = TARGET_COMMIT,
         release_metadata: dict[str, str] | None = None,
         generated_notes_response: dict[str, Any] | None = None,
+        lag_created_release_in_list: bool = False,
     ) -> None:
         metadata = release_metadata or {}
         self.releases: dict[int, dict[str, Any]] = (
@@ -96,6 +97,10 @@ class FakePublisherApi:
         self.tag_exists = tag_exists
         self.live_target = live_target
         self.release_reads = 0
+        self.release_by_id_reads: list[int] = []
+        self.release_list_reads = 0
+        self.lag_created_release_in_list = lag_created_release_in_list
+        self.created_release_id: int | None = None
         self.next_release_id = 77
         self.next_asset_id = 100
         self.post_payloads: list[dict[str, Any]] = []
@@ -157,6 +162,7 @@ class FakePublisherApi:
         if release_id not in self.releases:
             raise FakeNotFound(f"Release {release_id} was deleted.")
         self.release_reads += 1
+        self.release_by_id_reads.append(release_id)
         self._apply_release_read_action(release_id)
         if release_id not in self.releases:
             raise FakeNotFound(f"Release {release_id} was deleted.")
@@ -164,7 +170,13 @@ class FakePublisherApi:
 
     def get_json_list(self, path: str) -> list[dict[str, Any]]:
         if "/releases?per_page=100&page=" in path:
-            return [dict(release) for release in self.releases.values()] if path.endswith("page=1") else []
+            self.release_list_reads += 1
+            if not path.endswith("page=1"):
+                return []
+            releases = self.releases.values()
+            if self.lag_created_release_in_list and self.created_release_id is not None:
+                releases = (release for release in releases if release["id"] != self.created_release_id)
+            return [dict(release) for release in releases]
         match = re.fullmatch(
             rf"/repos/{re.escape(REPOSITORY)}/releases/([0-9]+)/assets\?per_page=100&page=([0-9]+)",
             path,
@@ -204,6 +216,7 @@ class FakePublisherApi:
         )
         self.releases[release_id] = created
         self.assets[release_id] = []
+        self.created_release_id = release_id
         return dict(created)
 
     def delete(self, path: str) -> None:
@@ -371,6 +384,23 @@ def test_missing_release_is_created_as_empty_draft_then_uploaded_by_numeric_id(t
     ]
     assert {call["releaseId"] for call in api.upload_calls} == {77}
     assert {asset["assetId"] for asset in report["assets"]} == set(api.downloaded_ids)
+
+
+def test_created_draft_stays_id_bound_while_release_list_visibility_lags(tmp_path: Path) -> None:
+    api = FakePublisherApi(
+        exists=False,
+        lag_created_release_in_list=True,
+    )
+
+    report = _sync(api, tmp_path)
+
+    assert report["created"] is True
+    assert report["releaseId"] == 77
+    assert api.created_release_id == 77
+    assert api.release_list_reads == 2
+    assert api.release_by_id_reads
+    assert set(api.release_by_id_reads) == {77}
+    assert {call["releaseId"] for call in api.upload_calls} == {77}
 
 
 @pytest.mark.parametrize(

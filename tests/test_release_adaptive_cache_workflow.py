@@ -54,6 +54,28 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "merge-multiple: true" in workflow
 
 
+def test_release_cache_summary_carries_run_bound_cross_runner_fingerprints() -> None:
+    raw = _read(".github/workflows/release-windows.yml")
+    workflow = yaml.safe_load(raw)
+    build = workflow["jobs"]["build-windows"]
+    report = next(step for step in build["steps"] if step["name"] == "Report release cache hits")
+    script = report["run"]
+
+    assert "schemaVersion = 2" in script
+    assert 'repository = "${{ github.repository }}"' in script
+    assert 'runId = [int64]"${{ github.run_id }}"' in script
+    assert "headSha = ([string]$env:GITHUB_SHA).Trim().ToLowerInvariant()" in script
+    assert 'eventName = "${{ github.event_name }}"' in script
+    assert "ref = [string]$env:GITHUB_REF" in script
+    assert 'apiVersion = "1"' in script
+    assert "planner = $plannerFingerprints" in script
+    assert "packager = $packagerFingerprints" in script
+    assert "componentMatches = $componentMatches" in script
+    assert "$componentMatches.backendSidecar -and" in script
+    assert "$componentMatches.backendRuntime -and" in script
+    assert "$componentMatches.tauriAppBinary" in script
+
+
 def test_release_quality_suite_is_a_direct_gate_without_breaking_warm_fallback() -> None:
     raw = _read(".github/workflows/release-windows.yml")
     workflow = yaml.safe_load(raw)
@@ -320,13 +342,16 @@ def test_release_cache_key_files_are_lf_utf8_without_bom(tmp_path: Path) -> None
     assert "MakeRelativeUri" not in writer
 
 
-def test_backend_cache_keys_ignore_spec_checkout_line_endings() -> None:
+def test_backend_cache_keys_ignore_text_checkout_line_endings() -> None:
     if shutil.which("pwsh") is None:
         pytest.skip("PowerShell 7 is required for release-script validation")
 
     spec_path = REPO_ROOT / "packaging/scriber-backend.spec"
-    original = spec_path.read_bytes()
-    normalized = original.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    gitkeep_path = REPO_ROOT / "src/assets/.gitkeep"
+    original_spec = spec_path.read_bytes()
+    original_gitkeep = gitkeep_path.read_bytes()
+    normalized_spec = original_spec.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    normalized_gitkeep = original_gitkeep.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
     output_lf = REPO_ROOT / "build" / f"test-cache-keys-lf-{uuid.uuid4().hex}"
     output_crlf = REPO_ROOT / "build" / f"test-cache-keys-crlf-{uuid.uuid4().hex}"
 
@@ -347,19 +372,23 @@ def test_backend_cache_keys_ignore_spec_checkout_line_endings() -> None:
         )
 
     try:
-        spec_path.write_bytes(normalized.encode("utf-8"))
+        spec_path.write_bytes(normalized_spec.encode("utf-8"))
+        gitkeep_path.write_bytes(normalized_gitkeep.encode("utf-8"))
         write_keys(output_lf)
-        spec_path.write_bytes(normalized.replace("\n", "\r\n").encode("utf-8"))
+        spec_path.write_bytes(normalized_spec.replace("\n", "\r\n").encode("utf-8"))
+        gitkeep_path.write_bytes(normalized_gitkeep.replace("\n", "\r\n").encode("utf-8"))
         write_keys(output_crlf)
 
         lf_manifests = {path.name: path.read_bytes() for path in output_lf.glob("*.txt")}
         crlf_manifests = {path.name: path.read_bytes() for path in output_crlf.glob("*.txt")}
         assert lf_manifests == crlf_manifests
         assert b"packaging/scriber-backend.spec" in lf_manifests["backend-runtime.txt"]
+        assert b"src/assets/.gitkeep" in lf_manifests["backend-sidecar.txt"]
         assert lf_manifests["backend-runtime.txt"] == crlf_manifests["backend-runtime.txt"]
         assert lf_manifests["backend-sidecar.txt"] == crlf_manifests["backend-sidecar.txt"]
     finally:
-        spec_path.write_bytes(original)
+        spec_path.write_bytes(original_spec)
+        gitkeep_path.write_bytes(original_gitkeep)
         shutil.rmtree(output_lf, ignore_errors=True)
         shutil.rmtree(output_crlf, ignore_errors=True)
 
