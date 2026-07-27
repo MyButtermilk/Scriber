@@ -11,7 +11,7 @@ downloads/
 transcripts.db
 transcripts.db-wal
 transcripts.db-shm
-settings.json
+/settings.json
 .scriber.lock
 tmp/
 /build/
