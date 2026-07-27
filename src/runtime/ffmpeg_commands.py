@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-
 DEFAULT_AUDIO_SAMPLE_RATE = 16000
 DEFAULT_AUDIO_CHANNELS = 1
 DEFAULT_OPUS_BITRATE = "64k"
@@ -150,9 +149,19 @@ def meeting_lossless_archive_args(
         maps.extend(["-map", f"{index}:a:0"])
         metadata.extend([f"-metadata:s:a:{index}", f"title={title}"])
     return [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        *inputs, *maps, "-c:a", "copy" if stream_copy else "flac",
-        *metadata, "-f", "matroska",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        *inputs,
+        *maps,
+        "-c:a",
+        "copy" if stream_copy else "flac",
+        *metadata,
+        "-f",
+        "matroska",
         _path_arg(target_path),
     ]
 
@@ -164,9 +173,25 @@ def lossless_flac_track_args(
 ) -> list[str]:
     """Encode one canonical meeting PCM track as a lossless FLAC working file."""
     return [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        "-i", _path_arg(source_path), "-map", "0:a:0", "-vn",
-        "-c:a", "flac", "-ar", "16000", "-ac", "1", "-f", "flac",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        _path_arg(source_path),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-c:a",
+        "flac",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        "-f",
+        "flac",
         _path_arg(target_path),
     ]
 
@@ -202,24 +227,39 @@ def meeting_opus_playback_args(
     inputs: list[str] = []
     for path in source_paths:
         inputs.extend(["-i", _path_arg(path)])
-    delay_filters = [
-        f"[{index}:a]adelay={origin}:all=1[a{index}]"
-        for index, origin in enumerate(origins)
-    ]
+    delay_filters = [f"[{index}:a]adelay={origin}:all=1[a{index}]" for index, origin in enumerate(origins)]
     if len(source_paths) == 1:
         filter_graph = delay_filters[0]
         output_label = "[a0]"
     else:
         labels = "".join(f"[a{index}]" for index in range(len(source_paths)))
-        filter_graph = ";".join([
-            *delay_filters,
-            f"{labels}amix=inputs={len(source_paths)}:duration=longest:normalize=0[a]",
-        ])
+        filter_graph = ";".join(
+            [
+                *delay_filters,
+                f"{labels}amix=inputs={len(source_paths)}:duration=longest:normalize=0[a]",
+            ]
+        )
         output_label = "[a]"
     return [
-        ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-        *inputs, "-filter_complex", filter_graph, "-map", output_label,
-        "-c:a", "libopus", "-b:a", "64k", "-ar", "16000", "-ac", "1",
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        filter_graph,
+        "-map",
+        output_label,
+        "-c:a",
+        "libopus",
+        "-b:a",
+        "64k",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
         _path_arg(target_path),
     ]
 
@@ -409,13 +449,15 @@ def ffprobe_video_stream_args(
     ]
     if not include_all_streams:
         args.extend(["-select_streams", "v:0"])
-    args.extend([
-        "-show_entries",
-        "stream=codec_type",
-        "-of",
-        "default=noprint_wrappers=1:nokey=1",
-        _path_arg(file_path),
-    ])
+    args.extend(
+        [
+            "-show_entries",
+            "stream=codec_type",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            _path_arg(file_path),
+        ]
+    )
     return args
 
 

@@ -12,12 +12,26 @@ from typing import Any
 from src.runtime.paths import app_root, is_frozen, repo_root
 from src.runtime.quickjs_runtime_lock import (
     HARDENED_ENGINE as _LOCKED_QUICKJS_ENGINE,
+)
+from src.runtime.quickjs_runtime_lock import (
     LICENSE as _LOCKED_QUICKJS_LICENSE,
+)
+from src.runtime.quickjs_runtime_lock import (
     MANIFEST as _LOCKED_QUICKJS_MANIFEST,
+)
+from src.runtime.quickjs_runtime_lock import (
     SELF_TEST_ARGUMENTS as _QUICKJS_SELF_TEST_ARGUMENTS,
+)
+from src.runtime.quickjs_runtime_lock import (
     SELF_TEST_STDOUT as _QUICKJS_SELF_TEST_STDOUT,
+)
+from src.runtime.quickjs_runtime_lock import (
     SELF_TEST_TIMEOUT_SECONDS as _QUICKJS_SELF_TEST_TIMEOUT_SECONDS,
+)
+from src.runtime.quickjs_runtime_lock import (
     WRAPPER as _LOCKED_QUICKJS_WRAPPER,
+)
+from src.runtime.quickjs_runtime_lock import (
     LockedRuntimeFile,
 )
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs
@@ -115,11 +129,7 @@ def _quickjs_self_test_matches(candidate: Path) -> bool:
         )
     except (OSError, subprocess.SubprocessError):
         return False
-    return (
-        result.returncode == 0
-        and result.stdout == _QUICKJS_SELF_TEST_STDOUT
-        and result.stderr == b""
-    )
+    return result.returncode == 0 and result.stdout == _QUICKJS_SELF_TEST_STDOUT and result.stderr == b""
 
 
 def _resolve_frozen_quickjs_wrapper(candidate: Path) -> str | None:
@@ -310,6 +320,5 @@ def require_media_tool(tool: str) -> str:
     env_name = _TOOL_ENV.get(tool)
     env_hint = f", set {env_name}" if env_name else ""
     raise RuntimeError(
-        f"{tool} not found. Install {tool}, add it to PATH{env_hint}, "
-        f"or place it under a bundled tools directory."
+        f"{tool} not found. Install {tool}, add it to PATH{env_hint}, or place it under a bundled tools directory."
     )

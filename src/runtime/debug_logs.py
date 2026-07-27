@@ -13,7 +13,6 @@ from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offset
 from src.runtime.paths import data_dir, logs_dir, repo_root
 from src.runtime.support_bundle import is_sensitive_key, redact_text
 
-
 _LOG_PATTERNS = ("*.log", "*.jsonl", "*crash*.json", "*crash*.jsonl")
 _MAX_BYTES_PER_FILE = 512_000
 _MAX_FILES = 24
@@ -54,9 +53,7 @@ _PUBLIC_META_KEYS = {
     "status",
     "total",
 }
-_PUBLIC_NUMERIC_META_KEY_RE = re.compile(
-    r"(?:_ms|Ms|_count|Count|_chars|Chars|_bytes|Bytes|_hz|Hz)$"
-)
+_PUBLIC_NUMERIC_META_KEY_RE = re.compile(r"(?:_ms|Ms|_count|Count|_chars|Chars|_bytes|Bytes|_hz|Hz)$")
 _MAX_PUBLIC_META_DEPTH = 4
 # Keep the interactive console light even when it opens an older structured log
 # whose ``meta`` still contains an O(n²) timing matrix. The complete record stays
@@ -400,11 +397,7 @@ def _is_public_meta_key(key: str, value: Any) -> bool:
 
 
 def _is_finite_number(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(float(value))
-    )
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
 
 def _infer_level(message: str) -> str:

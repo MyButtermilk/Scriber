@@ -5,10 +5,11 @@ the canonical post-meeting transcript. Audio capture and provider orchestration
 sit above this module; all mutations here are short SQLite transactions so an
 interrupted desktop process can recover the last durable state.
 """
+
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import re
 import shutil
@@ -22,7 +23,6 @@ from typing import Any, Iterable
 from uuid import uuid4
 
 from src import database as db
-
 
 OPEN_STATES = frozenset({"starting", "recording", "paused", "stopping", "finalizing", "analyzing"})
 TERMINAL_STATES = frozenset(
@@ -41,9 +41,7 @@ VOICE_PROFILE_MATCH_MARGIN = 0.08
 # an additional previous-base tail, so one corrupt base row cannot invalidate
 # the rest of a long meeting's recovery interval.
 TRANSCRIPT_CHECKPOINT_BASE_INTERVAL = 20
-FINAL_PROVIDER_RETRY_STATES = frozenset(
-    {"finalization_failed", "capture_failed", "interrupted"}
-)
+FINAL_PROVIDER_RETRY_STATES = frozenset({"finalization_failed", "capture_failed", "interrupted"})
 MEETING_PROCESSING_PHASES = frozenset({"finalize", "analysis"})
 MEETING_PROCESSING_STATE_BY_PHASE = {
     "finalize": "finalizing",
@@ -109,10 +107,7 @@ def _generated_speaker_profile_name(profile_id: str) -> str:
 
 
 def _is_generated_speaker_profile_name(profile_id: str, display_name: str) -> bool:
-    return (
-        " ".join(str(display_name).split()).casefold()
-        == _generated_speaker_profile_name(profile_id).casefold()
-    )
+    return " ".join(str(display_name).split()).casefold() == _generated_speaker_profile_name(profile_id).casefold()
 
 
 def _stable_meeting_speaker_id(
@@ -123,9 +118,7 @@ def _stable_meeting_speaker_id(
 ) -> str:
     """Return the existing content-stable, meeting-local speaker identity."""
     return hashlib.sha256(
-        f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode(
-            "utf-8"
-        )
+        f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode("utf-8")
     ).hexdigest()[:32]
 
 
@@ -152,10 +145,9 @@ def _action_collision_id(
     """Resolve legacy/model ID collisions without dropping a new action."""
     citation_key = "\0".join(sorted(set(segment_ids)))
     digest = hashlib.sha256(
-        (
-            "meeting-action-collision-v1\0"
-            f"{preferred_id}\0{_action_semantic_key(text)}\0{citation_key}\0{salt}"
-        ).encode("utf-8")
+        (f"meeting-action-collision-v1\0{preferred_id}\0{_action_semantic_key(text)}\0{citation_key}\0{salt}").encode(
+            "utf-8"
+        )
     ).hexdigest()[:20]
     return f"action-{digest}"
 
@@ -182,13 +174,8 @@ def _action_user_match_score(incoming: dict[str, Any], existing: dict[str, Any])
     incoming_tokens = set(incoming_key.split())
     existing_tokens = set(existing_key.split())
     token_union = incoming_tokens | existing_tokens
-    token_similarity = (
-        len(incoming_tokens & existing_tokens) / len(token_union)
-        if token_union else 0.0
-    )
-    citation_similarity = len(overlap) / max(
-        1, min(len(incoming_citations), len(existing_citations))
-    )
+    token_similarity = len(incoming_tokens & existing_tokens) / len(token_union) if token_union else 0.0
+    citation_similarity = len(overlap) / max(1, min(len(incoming_citations), len(existing_citations)))
     if token_similarity < 0.45:
         return None
     return 1_000.0 + token_similarity * 100.0 + citation_similarity * 10.0
@@ -339,11 +326,7 @@ class MeetingStore:
                 # A primary-key collision across Meetings is practically
                 # impossible, but must not link a segment to another Meeting.
                 continue
-            display_name = str(
-                speaker["display_name"]
-                or speaker["label"]
-                or MEETING_AUDIO_SPEAKER_LABEL
-            )
+            display_name = str(speaker["display_name"] or speaker["label"] or MEETING_AUDIO_SPEAKER_LABEL)
             conn.execute(
                 """UPDATE meeting_segments SET speaker_id=?,speaker_label=?
                    WHERE meeting_id=? AND revision='canonical' AND source='system'
@@ -687,9 +670,7 @@ class MeetingStore:
                     "ALTER TABLE speaker_profiles ADD COLUMN enrollment_sample_count INTEGER NOT NULL DEFAULT 0"
                 )
             if "enrollment_weight_sum" not in profile_columns:
-                conn.execute(
-                    "ALTER TABLE speaker_profiles ADD COLUMN enrollment_weight_sum REAL NOT NULL DEFAULT 0.0"
-                )
+                conn.execute("ALTER TABLE speaker_profiles ADD COLUMN enrollment_weight_sum REAL NOT NULL DEFAULT 0.0")
             if "enrollment_resultant_norm" not in profile_columns:
                 conn.execute(
                     "ALTER TABLE speaker_profiles ADD COLUMN enrollment_resultant_norm REAL NOT NULL DEFAULT 0.0"
@@ -721,26 +702,16 @@ class MeetingStore:
                        CHECK(origin IN ('captured','imported'))"""
                 )
             if "transcript_edit_version" not in meeting_columns:
-                conn.execute(
-                    "ALTER TABLE meetings ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0"
-                )
+                conn.execute("ALTER TABLE meetings ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0")
             if "processing_phase" not in meeting_columns:
-                conn.execute(
-                    "ALTER TABLE meetings ADD COLUMN processing_phase TEXT NOT NULL DEFAULT ''"
-                )
+                conn.execute("ALTER TABLE meetings ADD COLUMN processing_phase TEXT NOT NULL DEFAULT ''")
             if "processing_progress" not in meeting_columns:
                 conn.execute("ALTER TABLE meetings ADD COLUMN processing_progress REAL")
             if "processing_status" not in meeting_columns:
-                conn.execute(
-                    "ALTER TABLE meetings ADD COLUMN processing_status TEXT NOT NULL DEFAULT ''"
-                )
+                conn.execute("ALTER TABLE meetings ADD COLUMN processing_status TEXT NOT NULL DEFAULT ''")
             if "processing_progress_updated_at" not in meeting_columns:
-                conn.execute(
-                    "ALTER TABLE meetings ADD COLUMN processing_progress_updated_at TEXT"
-                )
-            asset_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(meeting_audio_assets)")
-            }
+                conn.execute("ALTER TABLE meetings ADD COLUMN processing_progress_updated_at TEXT")
+            asset_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_audio_assets)")}
             if "track_manifest_version" not in asset_columns:
                 conn.execute(
                     """ALTER TABLE meeting_audio_assets ADD COLUMN track_manifest_version
@@ -768,14 +739,10 @@ class MeetingStore:
                        CHECK(alignment_quality IN ('exact_word','provider_segment','estimated'))"""
                 )
             if "edit_version" not in segment_columns:
-                conn.execute(
-                    "ALTER TABLE meeting_segments ADD COLUMN edit_version INTEGER NOT NULL DEFAULT 0"
-                )
+                conn.execute("ALTER TABLE meeting_segments ADD COLUMN edit_version INTEGER NOT NULL DEFAULT 0")
             if "edited_at" not in segment_columns:
                 conn.execute("ALTER TABLE meeting_segments ADD COLUMN edited_at TEXT")
-            speaker_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(meeting_speakers)")
-            }
+            speaker_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_speakers)")}
             if "display_name_source" not in speaker_columns:
                 conn.execute(
                     """ALTER TABLE meeting_speakers ADD COLUMN display_name_source TEXT
@@ -792,9 +759,7 @@ class MeetingStore:
                 "participant_link_source",
             ):
                 if name not in speaker_columns:
-                    conn.execute(
-                        f"ALTER TABLE meeting_speakers ADD COLUMN {name} TEXT NOT NULL DEFAULT ''"
-                    )
+                    conn.execute(f"ALTER TABLE meeting_speakers ADD COLUMN {name} TEXT NOT NULL DEFAULT ''")
             # A previous Meeting rename flow could accidentally promote the
             # generated placeholder (for example ``Speaker a1b2c3``) to a
             # user-named biometric profile. Repair only the exact generated
@@ -831,8 +796,7 @@ class MeetingStore:
                     (generated_profile_id,),
                 )
             checkpoint_columns = {
-                row["name"]
-                for row in conn.execute("PRAGMA table_info(meeting_transcript_checkpoints)")
+                row["name"] for row in conn.execute("PRAGMA table_info(meeting_transcript_checkpoints)")
             }
             if "frontiers_json" not in checkpoint_columns:
                 conn.execute(
@@ -855,23 +819,21 @@ class MeetingStore:
             if "supersedes_id" not in output_columns:
                 conn.execute("ALTER TABLE meeting_outputs ADD COLUMN supersedes_id TEXT")
             if "transcript_revision" not in output_columns:
-                conn.execute("ALTER TABLE meeting_outputs ADD COLUMN transcript_revision TEXT NOT NULL DEFAULT 'canonical'")
+                conn.execute(
+                    "ALTER TABLE meeting_outputs ADD COLUMN transcript_revision TEXT NOT NULL DEFAULT 'canonical'"
+                )
             if "provider" not in output_columns:
                 conn.execute("ALTER TABLE meeting_outputs ADD COLUMN provider TEXT NOT NULL DEFAULT ''")
             if "transcript_edit_version" not in output_columns:
                 conn.execute(
                     "ALTER TABLE meeting_outputs ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0"
                 )
-            output_version_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(meeting_output_versions)")
-            }
+            output_version_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_output_versions)")}
             if "transcript_edit_version" not in output_version_columns:
                 conn.execute(
                     "ALTER TABLE meeting_output_versions ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0"
                 )
-            action_item_columns = {
-                row["name"] for row in conn.execute("PRAGMA table_info(meeting_action_items)")
-            }
+            action_item_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_action_items)")}
             if "provenance" not in action_item_columns:
                 conn.execute(
                     """ALTER TABLE meeting_action_items ADD COLUMN provenance TEXT NOT NULL
@@ -964,16 +926,10 @@ class MeetingStore:
                 (now, now),
             )
             conn.commit()
-            return (
-                int(analysis_cursor.rowcount)
-                + int(finalization_cursor.rowcount)
-                + int(interrupted_cursor.rowcount)
-            )
+            return int(analysis_cursor.rowcount) + int(finalization_cursor.rowcount) + int(interrupted_cursor.rowcount)
 
     @staticmethod
-    def _restore_latest_transcript_checkpoint_conn(
-        conn: sqlite3.Connection, meeting_id: str, now: str
-    ) -> int:
+    def _restore_latest_transcript_checkpoint_conn(conn: sqlite3.Connection, meeting_id: str, now: str) -> int:
         """Restore missing live segments from the newest checksum-valid snapshot.
 
         Checkpoints never overwrite rows that survived the interruption. This
@@ -991,13 +947,16 @@ class MeetingStore:
 
         def validated_payload(
             checkpoint: sqlite3.Row,
-        ) -> tuple[
-            str,
-            list[dict[str, Any]],
-            int | None,
-            list[dict[str, Any]],
-            int | None,
-        ] | None:
+        ) -> (
+            tuple[
+                str,
+                list[dict[str, Any]],
+                int | None,
+                list[dict[str, Any]],
+                int | None,
+            ]
+            | None
+        ):
             raw_snapshot = str(checkpoint["snapshot_json"])
             if hashlib.sha256(raw_snapshot.encode("utf-8")).hexdigest() != checkpoint["snapshot_sha256"]:
                 return None
@@ -1014,10 +973,7 @@ class MeetingStore:
                 if not isinstance(raw_logical, dict):
                     return None
                 try:
-                    logical = {
-                        str(key): max(0, int(value))
-                        for key, value in raw_logical.items()
-                    }
+                    logical = {str(key): max(0, int(value)) for key, value in raw_logical.items()}
                     scalar_frontier = min(logical.values()) if logical else 0
                 except (TypeError, ValueError):
                     return None
@@ -1032,11 +988,7 @@ class MeetingStore:
                     except (TypeError, ValueError):
                         valid_segments = False
                         break
-                    frontier = (
-                        logical.get(source, 0)
-                        if source in {"microphone", "system"}
-                        else scalar_frontier
-                    )
+                    frontier = logical.get(source, 0) if source in {"microphone", "system"} else scalar_frontier
                     if end_ms > frontier:
                         valid_segments = False
                         break
@@ -1081,11 +1033,7 @@ class MeetingStore:
                         end_ms = int(item.get("endMs", 0))
                     except (TypeError, ValueError):
                         return None
-                    frontier = (
-                        logical.get(source, 0)
-                        if source in {"microphone", "system"}
-                        else scalar_frontier
-                    )
+                    frontier = logical.get(source, 0) if source in {"microphone", "system"} else scalar_frontier
                     if end_ms > frontier:
                         return None
                 return (
@@ -1115,10 +1063,7 @@ class MeetingStore:
                 (fallback_base_sequence, fallback_items),
             )
             for candidate_base_sequence, candidate_items in recovery_paths:
-                base = (
-                    by_sequence.get(int(candidate_base_sequence))
-                    if candidate_base_sequence is not None else None
-                )
+                base = by_sequence.get(int(candidate_base_sequence)) if candidate_base_sequence is not None else None
                 if base is None:
                     continue
                 validated_base = validated_payload(base)
@@ -1251,10 +1196,13 @@ class MeetingStore:
     def delete(self, meeting_id: str) -> bool:
         self.get(meeting_id)
         with db._get_connection() as conn:
-            affected_profiles = [row["profile_id"] for row in conn.execute(
-                "SELECT DISTINCT profile_id FROM speaker_profile_observations WHERE meeting_id=?",
-                (meeting_id,),
-            ).fetchall()]
+            affected_profiles = [
+                row["profile_id"]
+                for row in conn.execute(
+                    "SELECT DISTINCT profile_id FROM speaker_profile_observations WHERE meeting_id=?",
+                    (meeting_id,),
+                ).fetchall()
+            ]
             cursor = conn.execute("DELETE FROM meetings WHERE id=?", (meeting_id,))
             for profile_id in affected_profiles:
                 self._recompute_speaker_profile_conn(conn, profile_id, _utc_now())
@@ -1274,19 +1222,27 @@ class MeetingStore:
         return {"items": [self._meeting(row) for row in rows], "total": total, "limit": limit, "offset": offset}
 
     def active(self) -> dict[str, Any] | None:
-        row = db._get_connection().execute(
-            """SELECT * FROM meetings
+        row = (
+            db._get_connection()
+            .execute(
+                """SELECT * FROM meetings
                WHERE state IN ('starting','recording','paused','stopping','finalizing','analyzing')
                ORDER BY created_at DESC LIMIT 1"""
-        ).fetchone()
+            )
+            .fetchone()
+        )
         return self._meeting(row) if row is not None else None
 
     def discarded_meeting_ids(self, *, limit: int = 1000) -> list[str]:
-        rows = db._get_connection().execute(
-            """SELECT id FROM meetings WHERE state='discarded'
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT id FROM meetings WHERE state='discarded'
                ORDER BY updated_at ASC,id ASC LIMIT ?""",
-            (max(1, min(10_000, int(limit))),),
-        ).fetchall()
+                (max(1, min(10_000, int(limit))),),
+            )
+            .fetchall()
+        )
         return [str(row["id"]) for row in rows]
 
     def transition(
@@ -1305,18 +1261,16 @@ class MeetingStore:
             raise InvalidMeetingTransition(f"Cannot transition {current['state']} to {new_state}.")
         now = _utc_now()
         started_at = now if new_state == "recording" and not current.get("startedAt") else current.get("startedAt")
-        ended_at = now if new_state in TERMINAL_STATES or new_state in {"stopping", "finalizing"} else current.get("endedAt")
+        ended_at = (
+            now if new_state in TERMINAL_STATES or new_state in {"stopping", "finalizing"} else current.get("endedAt")
+        )
         metadata = capture_metadata if capture_metadata is not None else current.get("captureMetadata", {})
         # A progress value belongs to exactly one processing run.  Preserve the
         # finalization -> analysis hand-off because it is one continuous
         # workflow, but never let a terminal state or retry inherit an older
         # run's percentage.
         clear_processing_progress = bool(
-            new_state != current["state"]
-            and not (
-                current["state"] == "finalizing"
-                and new_state == "analyzing"
-            )
+            new_state != current["state"] and not (current["state"] == "finalizing" and new_state == "analyzing")
         )
         with db._get_connection() as conn:
             cursor = conn.execute(
@@ -1374,9 +1328,7 @@ class MeetingStore:
         try:
             normalized_progress = float(progress)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Meeting processing progress must be a finite number."
-            ) from exc
+            raise ValueError("Meeting processing progress must be a finite number.") from exc
         if not math.isfinite(normalized_progress):
             raise ValueError("Meeting processing progress must be a finite number.")
         normalized_progress = max(0.0, min(1.0, normalized_progress))
@@ -1468,9 +1420,7 @@ class MeetingStore:
         if isinstance(allowed_providers, (str, bytes)):
             raise ValueError("Allowed final transcription providers must be a collection.")
         normalized_allowed = {
-            str(provider or "").strip().lower()
-            for provider in allowed_providers
-            if str(provider or "").strip()
+            str(provider or "").strip().lower() for provider in allowed_providers if str(provider or "").strip()
         }
         if not target_provider or target_provider not in normalized_allowed:
             raise ValueError("Unsupported final meeting transcription provider.")
@@ -1498,26 +1448,16 @@ class MeetingStore:
                         "Final transcription provider changes require a recoverable failed Meeting state."
                     )
                 if current_provider != observed_provider:
-                    raise MeetingConflict(
-                        "Meeting final transcription provider changed concurrently."
-                    )
+                    raise MeetingConflict("Meeting final transcription provider changed concurrently.")
                 metadata = _loads(row["capture_metadata_json"], {})
                 if not isinstance(metadata, dict):
                     metadata = {}
                 if target_provider == current_provider:
                     conn.commit()
                     return current_provider
-                if (
-                    metadata.get("reprocessKind") == "full_transcript"
-                    and final_model is None
-                ):
-                    raise ValueError(
-                        "A full Meeting reprocess provider change requires its frozen model."
-                    )
-                if (
-                    final_model is not None
-                    and metadata.get("reprocessKind") == "full_transcript"
-                ):
+                if metadata.get("reprocessKind") == "full_transcript" and final_model is None:
+                    raise ValueError("A full Meeting reprocess provider change requires its frozen model.")
+                if final_model is not None and metadata.get("reprocessKind") == "full_transcript":
                     metadata["reprocessFinalModel"] = str(final_model).strip()
                 cursor = conn.execute(
                     """UPDATE meetings SET final_provider=?,capture_metadata_json=?,updated_at=?
@@ -1532,9 +1472,7 @@ class MeetingStore:
                     ),
                 )
                 if int(cursor.rowcount or 0) != 1:
-                    raise MeetingConflict(
-                        "Meeting changed before the final transcription provider could be reserved."
-                    )
+                    raise MeetingConflict("Meeting changed before the final transcription provider could be reserved.")
                 conn.commit()
                 return current_provider
             except Exception:
@@ -1574,17 +1512,13 @@ class MeetingStore:
                     raise MeetingNotFound(f"Meeting not found: {meeting_id}")
                 previous_state = str(row["state"])
                 if previous_state not in {"ready", "analysis_failed"}:
-                    raise MeetingConflict(
-                        "Only a completed Meeting can start full transcript reprocessing."
-                    )
+                    raise MeetingConflict("Only a completed Meeting can start full transcript reprocessing.")
                 metadata = _loads(row["capture_metadata_json"], {})
                 if not isinstance(metadata, dict):
                     metadata = {}
                 metadata["reprocessRequestedAt"] = now
                 metadata["reprocessKind"] = "full_transcript"
-                metadata["reprocessPreviousProvider"] = str(
-                    row["final_provider"] or ""
-                )
+                metadata["reprocessPreviousProvider"] = str(row["final_provider"] or "")
                 metadata["reprocessPreviousState"] = previous_state
                 metadata["reprocessFinalModel"] = str(final_model or "").strip()
                 cursor = conn.execute(
@@ -1654,8 +1588,12 @@ class MeetingStore:
                 )
                 conn.commit()
                 return {
-                    "id": note_id, "meetingId": meeting_id, "body": "", "atMs": at_ms,
-                    "createdAt": created_at, "updatedAt": now,
+                    "id": note_id,
+                    "meetingId": meeting_id,
+                    "body": "",
+                    "atMs": at_ms,
+                    "createdAt": created_at,
+                    "updatedAt": now,
                 }
             conn.execute(
                 """INSERT INTO meeting_notes(id,meeting_id,body,at_ms,created_at,updated_at)
@@ -1665,7 +1603,14 @@ class MeetingStore:
                 (note_id, meeting_id, body, at_ms, created_at, now),
             )
             conn.commit()
-        return {"id": note_id, "meetingId": meeting_id, "body": body, "atMs": at_ms, "createdAt": created_at, "updatedAt": now}
+        return {
+            "id": note_id,
+            "meetingId": meeting_id,
+            "body": body,
+            "atMs": at_ms,
+            "createdAt": created_at,
+            "updatedAt": now,
+        }
 
     def add_audio_chunk(
         self,
@@ -1731,13 +1676,8 @@ class MeetingStore:
         if ended_at_ms <= started_at_ms:
             raise ValueError("Meeting audio chunk must have a positive duration.")
         relative_path = str(relative_path).replace("\\", "/").strip("/")
-        expected_relative_path = (
-            Path(meeting_id) / "audio" / f"{source}-{sequence:06d}.wav"
-        ).as_posix()
-        if (
-            not _allow_legacy_path
-            and relative_path != expected_relative_path
-        ):
+        expected_relative_path = (Path(meeting_id) / "audio" / f"{source}-{sequence:06d}.wav").as_posix()
+        if not _allow_legacy_path and relative_path != expected_relative_path:
             raise ValueError("Meeting audio chunk path is not canonical.")
         sha256 = str(sha256).lower()
         if not re.fullmatch(r"[0-9a-f]{64}", sha256):
@@ -1752,20 +1692,32 @@ class MeetingStore:
                         ended_at_ms,state,sha256,created_at)
                        VALUES (?,?,?,?,?,?,?,'prepared',?,?)""",
                     (
-                        chunk_id, meeting_id, source, sequence, relative_path,
-                        started_at_ms, ended_at_ms, sha256, now,
+                        chunk_id,
+                        meeting_id,
+                        source,
+                        sequence,
+                        relative_path,
+                        started_at_ms,
+                        ended_at_ms,
+                        sha256,
+                        now,
                     ),
                 )
                 conn.commit()
             except sqlite3.IntegrityError as exc:
                 conn.rollback()
-                raise MeetingConflict(
-                    f"Meeting audio sequence {source}:{sequence} is already reserved."
-                ) from exc
+                raise MeetingConflict(f"Meeting audio sequence {source}:{sequence} is already reserved.") from exc
         return {
-            "id": chunk_id, "meetingId": meeting_id, "source": source, "sequence": sequence,
-            "relativePath": relative_path, "startedAtMs": started_at_ms, "endedAtMs": ended_at_ms,
-            "state": "prepared", "sha256": sha256, "createdAt": now,
+            "id": chunk_id,
+            "meetingId": meeting_id,
+            "source": source,
+            "sequence": sequence,
+            "relativePath": relative_path,
+            "startedAtMs": started_at_ms,
+            "endedAtMs": ended_at_ms,
+            "state": "prepared",
+            "sha256": sha256,
+            "createdAt": now,
         }
 
     @staticmethod
@@ -1779,15 +1731,9 @@ class MeetingStore:
                GROUP BY source""",
             (meeting_id,),
         ).fetchall()
-        physical = {
-            str(row["source"]): max(0, int(row["frontier"]))
-            for row in rows
-            if int(row["frontier"] or 0) > 0
-        }
+        physical = {str(row["source"]): max(0, int(row["frontier"])) for row in rows if int(row["frontier"] or 0) > 0}
         logical: dict[str, int] = {}
-        microphone_frontier = max(
-            physical.get("microphone", 0), physical.get("mic_clean", 0)
-        )
+        microphone_frontier = max(physical.get("microphone", 0), physical.get("mic_clean", 0))
         if microphone_frontier:
             logical["microphone"] = microphone_frontier
         if physical.get("system", 0):
@@ -1804,11 +1750,13 @@ class MeetingStore:
         now: str,
     ) -> None:
         physical, logical, cutoff_ms = cls._checkpoint_frontiers_conn(conn, meeting_id)
-        commit_ordinal = int(conn.execute(
-            """SELECT COALESCE(MAX(commit_ordinal),0)+1
+        commit_ordinal = int(
+            conn.execute(
+                """SELECT COALESCE(MAX(commit_ordinal),0)+1
                FROM meeting_transcript_checkpoints WHERE meeting_id=?""",
-            (meeting_id,),
-        ).fetchone()[0])
+                (meeting_id,),
+            ).fetchone()[0]
+        )
 
         # Delta checkpoints point directly at checksum-valid compact bases.
         # The second base/tail is recovery redundancy for a single corrupt row;
@@ -1844,39 +1792,38 @@ class MeetingStore:
         def segment_watermarks(base: sqlite3.Row | None) -> dict[str, int]:
             base_frontiers = _loads(base["frontiers_json"], {}) if base is not None else {}
             raw = base_frontiers.get("segments", {}) if isinstance(base_frontiers, dict) else {}
-            return {
-                source: int(raw.get(source, -1))
-                for source in ("microphone", "system", "mixed")
-            }
+            return {source: int(raw.get(source, -1)) for source in ("microphone", "system", "mixed")}
 
         def rows_since(base: sqlite3.Row | None) -> list[sqlite3.Row]:
             if base is None:
-                return list(conn.execute(
-                    """SELECT id,source,speaker_id,speaker_label,start_ms,end_ms,text,confidence,
+                return list(
+                    conn.execute(
+                        """SELECT id,source,speaker_id,speaker_label,start_ms,end_ms,text,confidence,
                               alignment_quality,sequence
                        FROM meeting_segments
                        WHERE meeting_id=? AND revision='live' AND is_final=1
                        ORDER BY start_ms,sequence,id""",
-                    (meeting_id,),
-                ).fetchall())
+                        (meeting_id,),
+                    ).fetchall()
+                )
             watermarks = segment_watermarks(base)
             selected: list[sqlite3.Row] = []
             for source in ("microphone", "system", "mixed"):
                 frontier = logical.get(source, 0) if source != "mixed" else cutoff_ms
                 if frontier <= 0:
                     continue
-                selected.extend(conn.execute(
-                    """SELECT id,source,speaker_id,speaker_label,start_ms,end_ms,text,confidence,
+                selected.extend(
+                    conn.execute(
+                        """SELECT id,source,speaker_id,speaker_label,start_ms,end_ms,text,confidence,
                               alignment_quality,sequence
                        FROM meeting_segments
                        WHERE meeting_id=? AND revision='live' AND is_final=1
                          AND source=? AND sequence>? AND end_ms<=?
                        ORDER BY start_ms,sequence,id""",
-                    (meeting_id, source, watermarks[source], frontier),
-                ).fetchall())
-            selected.sort(
-                key=lambda row: (int(row["start_ms"]), int(row["sequence"]), str(row["id"]))
-            )
+                        (meeting_id, source, watermarks[source], frontier),
+                    ).fetchall()
+                )
+            selected.sort(key=lambda row: (int(row["start_ms"]), int(row["sequence"]), str(row["id"])))
             return selected
 
         def serialize_tail(
@@ -1887,22 +1834,24 @@ class MeetingStore:
             for row in rows:
                 source = str(row["source"])
                 end_ms = max(0, int(row["end_ms"]))
-                frontier = (
-                    logical.get(source, 0)
-                    if source in {"microphone", "system"}
-                    else cutoff_ms
-                )
+                frontier = logical.get(source, 0) if source in {"microphone", "system"} else cutoff_ms
                 if frontier <= 0 or end_ms > frontier:
                     continue
-                items.append({
-                    "id": row["id"], "source": source,
-                    "speakerId": row["speaker_id"], "speakerLabel": row["speaker_label"],
-                    "startMs": row["start_ms"], "endMs": row["end_ms"],
-                    "durationMs": max(0, end_ms - int(row["start_ms"])),
-                    "text": row["text"], "confidence": row["confidence"],
-                    "alignmentQuality": row["alignment_quality"],
-                    "sequence": row["sequence"],
-                })
+                items.append(
+                    {
+                        "id": row["id"],
+                        "source": source,
+                        "speakerId": row["speaker_id"],
+                        "speakerLabel": row["speaker_label"],
+                        "startMs": row["start_ms"],
+                        "endMs": row["end_ms"],
+                        "durationMs": max(0, end_ms - int(row["start_ms"])),
+                        "text": row["text"],
+                        "confidence": row["confidence"],
+                        "alignmentQuality": row["alignment_quality"],
+                        "sequence": row["sequence"],
+                    }
+                )
                 watermarks[source] = max(watermarks.get(source, -1), int(row["sequence"]))
             return items, watermarks
 
@@ -1916,9 +1865,7 @@ class MeetingStore:
         fallback_snapshot: list[dict[str, Any]] = []
         fallback_base_sequence: int | None = None
         if fallback_base is not None:
-            fallback_snapshot, _fallback_frontiers = serialize_tail(
-                rows_since(fallback_base), fallback_base
-            )
+            fallback_snapshot, _fallback_frontiers = serialize_tail(rows_since(fallback_base), fallback_base)
             fallback_total = int(fallback_base["segment_count"]) + len(fallback_snapshot)
             if fallback_total == total_segment_count:
                 fallback_base_sequence = int(fallback_base["sequence"])
@@ -1929,25 +1876,25 @@ class MeetingStore:
             "physical": physical,
             "segments": segment_frontiers,
         }
-        snapshot_json = _json({
-            "schemaVersion": TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION,
-            "kind": checkpoint_kind,
-            "baseSequence": base_sequence,
-            "fallbackBaseSequence": fallback_base_sequence,
-            "frontiers": frontiers,
-            "totalSegmentCount": total_segment_count,
-            "segments": snapshot,
-            "fallbackSegments": fallback_snapshot,
-        })
+        snapshot_json = _json(
+            {
+                "schemaVersion": TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION,
+                "kind": checkpoint_kind,
+                "baseSequence": base_sequence,
+                "fallbackBaseSequence": fallback_base_sequence,
+                "frontiers": frontiers,
+                "totalSegmentCount": total_segment_count,
+                "segments": snapshot,
+                "fallbackSegments": fallback_snapshot,
+            }
+        )
         snapshot_sha256 = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
         source_rows = conn.execute(
             """SELECT DISTINCT source FROM meeting_audio_chunks
                WHERE meeting_id=? AND sequence=? AND state='complete' ORDER BY source""",
             (meeting_id, sequence),
         ).fetchall()
-        checkpoint_id = hashlib.sha256(
-            f"{meeting_id}\0{sequence}".encode("utf-8")
-        ).hexdigest()[:32]
+        checkpoint_id = hashlib.sha256(f"{meeting_id}\0{sequence}".encode("utf-8")).hexdigest()[:32]
         conn.execute(
             """INSERT INTO meeting_transcript_checkpoints
                (id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,
@@ -1960,9 +1907,18 @@ class MeetingStore:
                snapshot_json=excluded.snapshot_json,
                snapshot_sha256=excluded.snapshot_sha256,updated_at=excluded.updated_at""",
             (
-                checkpoint_id, meeting_id, sequence, cutoff_ms, total_segment_count,
-                _json([row["source"] for row in source_rows]), _json(frontiers),
-                commit_ordinal, snapshot_json, snapshot_sha256, now, now,
+                checkpoint_id,
+                meeting_id,
+                sequence,
+                cutoff_ms,
+                total_segment_count,
+                _json([row["source"] for row in source_rows]),
+                _json(frontiers),
+                commit_ordinal,
+                snapshot_json,
+                snapshot_sha256,
+                now,
+                now,
             ),
         )
         checkpoint_rows = conn.execute(
@@ -1991,10 +1947,12 @@ class MeetingStore:
                     break
         if len(valid_fulls) == 2:
             oldest_retained_commit = int(valid_fulls[-1]["commit_ordinal"])
-            tombstone = _json({
-                "schemaVersion": TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION,
-                "kind": "pruned",
-            })
+            tombstone = _json(
+                {
+                    "schemaVersion": TRANSCRIPT_CHECKPOINT_SCHEMA_VERSION,
+                    "kind": "pruned",
+                }
+            )
             tombstone_sha256 = hashlib.sha256(tombstone.encode("utf-8")).hexdigest()
             conn.execute(
                 """UPDATE meeting_transcript_checkpoints
@@ -2002,8 +1960,12 @@ class MeetingStore:
                    WHERE meeting_id=? AND commit_ordinal<?
                      AND id NOT IN (?,?)""",
                 (
-                    tombstone, tombstone_sha256, meeting_id, oldest_retained_commit,
-                    str(valid_fulls[0]["id"]), str(valid_fulls[1]["id"]),
+                    tombstone,
+                    tombstone_sha256,
+                    meeting_id,
+                    oldest_retained_commit,
+                    str(valid_fulls[0]["id"]),
+                    str(valid_fulls[1]["id"]),
                 ),
             )
 
@@ -2031,9 +1993,7 @@ class MeetingStore:
             if row["state"] == "complete":
                 return self._audio_chunk_dict(row)
             if row["state"] != "prepared":
-                raise MeetingConflict(
-                    f"Meeting audio chunk cannot complete from {row['state']}."
-                )
+                raise MeetingConflict(f"Meeting audio chunk cannot complete from {row['state']}.")
             cursor = conn.execute(
                 "UPDATE meeting_audio_chunks SET state='complete' WHERE id=? AND state='prepared'",
                 (row["id"],),
@@ -2043,9 +2003,7 @@ class MeetingStore:
                 raise MeetingConflict("Prepared meeting audio chunk changed concurrently.")
             self._write_transcript_checkpoint_conn(conn, meeting_id, int(sequence), now)
             conn.commit()
-            completed = conn.execute(
-                "SELECT * FROM meeting_audio_chunks WHERE id=?", (row["id"],)
-            ).fetchone()
+            completed = conn.execute("SELECT * FROM meeting_audio_chunks WHERE id=?", (row["id"],)).fetchone()
             checkpoint = conn.execute(
                 """SELECT id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,
                           frontiers_json,commit_ordinal,snapshot_sha256,created_at,updated_at
@@ -2061,17 +2019,19 @@ class MeetingStore:
     @staticmethod
     def _audio_chunk_dict(row: sqlite3.Row) -> dict[str, Any]:
         return {
-            "id": row["id"], "meetingId": row["meeting_id"],
-            "source": row["source"], "sequence": row["sequence"],
+            "id": row["id"],
+            "meetingId": row["meeting_id"],
+            "source": row["source"],
+            "sequence": row["sequence"],
             "relativePath": row["relative_path"],
-            "startedAtMs": row["started_at_ms"], "endedAtMs": row["ended_at_ms"],
-            "state": row["state"], "sha256": row["sha256"],
+            "startedAtMs": row["started_at_ms"],
+            "endedAtMs": row["ended_at_ms"],
+            "state": row["state"],
+            "sha256": row["sha256"],
             "createdAt": row["created_at"],
         }
 
-    def _transcript_checkpoints_conn(
-        self, conn: sqlite3.Connection, meeting_id: str
-    ) -> list[dict[str, Any]]:
+    def _transcript_checkpoints_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             """SELECT id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,frontiers_json,
                       commit_ordinal,
@@ -2142,9 +2102,7 @@ class MeetingStore:
         shutil.move(str(path), str(destination))
         return destination
 
-    def _legacy_orphan_start_ms(
-        self, meeting_id: str, source: str, sequence: int
-    ) -> int | None:
+    def _legacy_orphan_start_ms(self, meeting_id: str, source: str, sequence: int) -> int | None:
         conn = db._get_connection()
         if sequence == 0:
             existing = conn.execute(
@@ -2165,11 +2123,13 @@ class MeetingStore:
         if previous is None:
             return None
         previous_end = int(previous["ended_at_ms"])
-        gap_end = int(conn.execute(
-            """SELECT COALESCE(MAX(ended_at_ms),0) FROM meeting_audio_gaps
+        gap_end = int(
+            conn.execute(
+                """SELECT COALESCE(MAX(ended_at_ms),0) FROM meeting_audio_gaps
                WHERE meeting_id=? AND source IN (?, 'all') AND started_at_ms>=?""",
-            (meeting_id, source, previous_end),
-        ).fetchone()[0])
+                (meeting_id, source, previous_end),
+            ).fetchone()[0]
+        )
         return max(previous_end, gap_end)
 
     def reconcile_audio_chunks(self, meetings_root: Path) -> dict[str, int]:
@@ -2185,9 +2145,11 @@ class MeetingStore:
         if not root.is_dir():
             return result
         try:
-            prepared_rows = db._get_connection().execute(
-                "SELECT * FROM meeting_audio_chunks WHERE state='prepared' ORDER BY created_at,id"
-            ).fetchall()
+            prepared_rows = (
+                db._get_connection()
+                .execute("SELECT * FROM meeting_audio_chunks WHERE state='prepared' ORDER BY created_at,id")
+                .fetchall()
+            )
         except sqlite3.OperationalError:
             prepared_rows = []
 
@@ -2200,23 +2162,17 @@ class MeetingStore:
                 continue
             source = str(row["source"])
             sequence = int(row["sequence"])
-            expected_relative = (
-                Path(meeting_id) / "audio" / f"{source}-{sequence:06d}.wav"
-            ).as_posix()
+            expected_relative = (Path(meeting_id) / "audio" / f"{source}-{sequence:06d}.wav").as_posix()
             if str(row["relative_path"]).replace("\\", "/") != expected_relative:
                 supplied = (root / str(row["relative_path"])).resolve()
                 if supplied.is_relative_to(root) and supplied.is_file():
                     self._quarantine_audio_file(supplied)
                     result["quarantined"] += 1
-                self.quarantine_audio_chunk(
-                    meeting_id, str(row["id"]), reason="prepared_path_not_canonical"
-                )
+                self.quarantine_audio_chunk(meeting_id, str(row["id"]), reason="prepared_path_not_canonical")
                 result["quarantined"] += 1
                 continue
             final_path = root / Path(expected_relative)
-            partial_path = final_path.with_name(
-                final_path.name.removesuffix(".wav") + ".partial.wav"
-            )
+            partial_path = final_path.with_name(final_path.name.removesuffix(".wav") + ".partial.wav")
             prepared_partials.add(partial_path.resolve())
 
             def valid(path: Path) -> bool:
@@ -2264,9 +2220,7 @@ class MeetingStore:
                 if candidate.is_file():
                     self._quarantine_audio_file(candidate)
                     result["quarantined"] += 1
-            self.quarantine_audio_chunk(
-                meeting_id, str(row["id"]), reason="prepared_audio_missing_or_corrupt"
-            )
+            self.quarantine_audio_chunk(meeting_id, str(row["id"]), reason="prepared_audio_missing_or_corrupt")
 
         # A partial without a prepared row cannot prove its sequence or digest.
         for partial_path in root.glob("*/audio/*.partial.wav"):
@@ -2278,9 +2232,7 @@ class MeetingStore:
         try:
             referenced = {
                 str(row["relative_path"]).replace("\\", "/")
-                for row in db._get_connection().execute(
-                    "SELECT relative_path FROM meeting_audio_chunks"
-                ).fetchall()
+                for row in db._get_connection().execute("SELECT relative_path FROM meeting_audio_chunks").fetchall()
             }
         except sqlite3.OperationalError:
             referenced = set()
@@ -2407,9 +2359,22 @@ class MeetingStore:
                    track_manifest_version=excluded.track_manifest_version,
                    track_manifest_json=excluded.track_manifest_json,
                    equality_verified=excluded.equality_verified""",
-                (asset_id, meeting_id, kind, relative_path, codec, sample_rate, channels,
-                 duration_ms, byte_size, sha256, track_manifest_version, _json(manifest),
-                 int(equality_verified), now),
+                (
+                    asset_id,
+                    meeting_id,
+                    kind,
+                    relative_path,
+                    codec,
+                    sample_rate,
+                    channels,
+                    duration_ms,
+                    byte_size,
+                    sha256,
+                    track_manifest_version,
+                    _json(manifest),
+                    int(equality_verified),
+                    now,
+                ),
             )
             row = conn.execute(
                 """SELECT * FROM meeting_audio_assets
@@ -2436,8 +2401,15 @@ class MeetingStore:
         if not tracks:
             raise ValueError("Meeting audio track manifest must not be empty.")
         required = {
-            "source", "streamIndex", "codec", "sampleRate", "channels",
-            "timelineOriginMs", "durationMs", "sampleCount", "pcmSha256",
+            "source",
+            "streamIndex",
+            "codec",
+            "sampleRate",
+            "channels",
+            "timelineOriginMs",
+            "durationMs",
+            "sampleCount",
+            "pcmSha256",
             "equalityVerified",
         }
         normalized: list[dict[str, Any]] = []
@@ -2448,8 +2420,12 @@ class MeetingStore:
             track_codec = str(item.get("codec") or "").strip().lower()
             integers: dict[str, int] = {}
             for field in (
-                "streamIndex", "sampleRate", "channels", "timelineOriginMs",
-                "durationMs", "sampleCount",
+                "streamIndex",
+                "sampleRate",
+                "channels",
+                "timelineOriginMs",
+                "durationMs",
+                "sampleCount",
             ):
                 value = item.get(field)
                 if isinstance(value, bool) or not isinstance(value, int):
@@ -2477,18 +2453,20 @@ class MeetingStore:
             equality = item.get("equalityVerified")
             if not isinstance(equality, bool):
                 raise ValueError("Meeting audio track equality verification must be boolean.")
-            normalized.append({
-                "source": source,
-                "streamIndex": integers["streamIndex"],
-                "codec": track_codec,
-                "sampleRate": integers["sampleRate"],
-                "channels": integers["channels"],
-                "timelineOriginMs": integers["timelineOriginMs"],
-                "durationMs": integers["durationMs"],
-                "sampleCount": integers["sampleCount"],
-                "pcmSha256": pcm_sha256,
-                "equalityVerified": equality,
-            })
+            normalized.append(
+                {
+                    "source": source,
+                    "streamIndex": integers["streamIndex"],
+                    "codec": track_codec,
+                    "sampleRate": integers["sampleRate"],
+                    "channels": integers["channels"],
+                    "timelineOriginMs": integers["timelineOriginMs"],
+                    "durationMs": integers["durationMs"],
+                    "sampleCount": integers["sampleCount"],
+                    "pcmSha256": pcm_sha256,
+                    "equalityVerified": equality,
+                }
+            )
         if [item["streamIndex"] for item in normalized] != list(range(len(normalized))):
             raise ValueError("Meeting audio track stream indexes must be ordered and contiguous.")
         if len({item["source"] for item in normalized}) != len(normalized):
@@ -2501,10 +2479,15 @@ class MeetingStore:
         if not isinstance(manifest, list):
             manifest = []
         return {
-            "id": row["id"], "meetingId": row["meeting_id"], "kind": row["kind"],
-            "relativePath": row["relative_path"], "codec": row["codec"],
-            "sampleRate": row["sample_rate"], "channels": row["channels"],
-            "durationMs": row["duration_ms"], "byteSize": row["byte_size"],
+            "id": row["id"],
+            "meetingId": row["meeting_id"],
+            "kind": row["kind"],
+            "relativePath": row["relative_path"],
+            "codec": row["codec"],
+            "sampleRate": row["sample_rate"],
+            "channels": row["channels"],
+            "durationMs": row["duration_ms"],
+            "byteSize": row["byte_size"],
             "sha256": row["sha256"],
             "trackManifestVersion": row["track_manifest_version"],
             "trackManifest": manifest,
@@ -2512,9 +2495,7 @@ class MeetingStore:
             "createdAt": row["created_at"],
         }
 
-    def _audio_assets_conn(
-        self, conn: sqlite3.Connection, meeting_id: str
-    ) -> list[dict[str, Any]]:
+    def _audio_assets_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_audio_assets WHERE meeting_id=? ORDER BY created_at,kind", (meeting_id,)
         ).fetchall()
@@ -2526,12 +2507,16 @@ class MeetingStore:
 
     def expired_audio_meetings(self, *, now: datetime | None = None) -> list[str]:
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        rows = db._get_connection().execute(
-            """SELECT id,ended_at,audio_retention_days FROM meetings
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT id,ended_at,audio_retention_days FROM meetings
                WHERE audio_retention_days>0 AND ended_at IS NOT NULL
                  AND state NOT IN ('starting','recording','paused','stopping','finalizing','analyzing')
                  AND EXISTS(SELECT 1 FROM meeting_audio_chunks c WHERE c.meeting_id=meetings.id)"""
-        ).fetchall()
+            )
+            .fetchall()
+        )
         expired = []
         for row in rows:
             try:
@@ -2556,23 +2541,31 @@ class MeetingStore:
             conn.commit()
 
     def next_audio_chunk_sequence(self, meeting_id: str, source: str) -> int:
-        row = db._get_connection().execute(
-            "SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_audio_chunks WHERE meeting_id = ? AND source = ?",
-            (meeting_id, source),
-        ).fetchone()
+        row = (
+            db._get_connection()
+            .execute(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_audio_chunks WHERE meeting_id = ? AND source = ?",
+                (meeting_id, source),
+            )
+            .fetchone()
+        )
         return int(row[0])
 
     def next_audio_offset_ms(self, meeting_id: str, source: str) -> int:
         conn = db._get_connection()
-        chunk_end = int(conn.execute(
-            """SELECT COALESCE(MAX(ended_at_ms), 0) FROM meeting_audio_chunks
+        chunk_end = int(
+            conn.execute(
+                """SELECT COALESCE(MAX(ended_at_ms), 0) FROM meeting_audio_chunks
                WHERE meeting_id = ? AND source = ? AND state='complete'""",
-            (meeting_id, source),
-        ).fetchone()[0])
-        gap_end = int(conn.execute(
-            "SELECT COALESCE(MAX(ended_at_ms), 0) FROM meeting_audio_gaps WHERE meeting_id = ? AND source IN (?, 'all')",
-            (meeting_id, source),
-        ).fetchone()[0])
+                (meeting_id, source),
+            ).fetchone()[0]
+        )
+        gap_end = int(
+            conn.execute(
+                "SELECT COALESCE(MAX(ended_at_ms), 0) FROM meeting_audio_gaps WHERE meeting_id = ? AND source IN (?, 'all')",
+                (meeting_id, source),
+            ).fetchone()[0]
+        )
         return max(chunk_end, gap_end)
 
     def add_audio_gap(
@@ -2598,21 +2591,31 @@ class MeetingStore:
             )
             conn.commit()
         return {
-            "id": gap_id, "meetingId": meeting_id, "source": source,
-            "startedAtMs": start, "endedAtMs": end, "reason": reason[:80], "createdAt": now,
+            "id": gap_id,
+            "meetingId": meeting_id,
+            "source": source,
+            "startedAtMs": start,
+            "endedAtMs": end,
+            "reason": reason[:80],
+            "createdAt": now,
         }
 
-    def _audio_gaps_conn(
-        self, conn: sqlite3.Connection, meeting_id: str
-    ) -> list[dict[str, Any]]:
+    def _audio_gaps_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_audio_gaps WHERE meeting_id = ? ORDER BY started_at_ms, id", (meeting_id,)
         ).fetchall()
-        return [{
-            "id": row["id"], "meetingId": row["meeting_id"], "source": row["source"],
-            "startedAtMs": row["started_at_ms"], "endedAtMs": row["ended_at_ms"],
-            "reason": row["reason"], "createdAt": row["created_at"],
-        } for row in rows]
+        return [
+            {
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "source": row["source"],
+                "startedAtMs": row["started_at_ms"],
+                "endedAtMs": row["ended_at_ms"],
+                "reason": row["reason"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ]
 
     def audio_gaps(self, meeting_id: str) -> list[dict[str, Any]]:
         self.get(meeting_id)
@@ -2625,15 +2628,23 @@ class MeetingStore:
         if source:
             where += " AND source = ?"
             params = (meeting_id, source)
-        rows = db._get_connection().execute(
-            f"SELECT * FROM meeting_audio_chunks WHERE {where} ORDER BY source, sequence", params
-        ).fetchall()
+        rows = (
+            db._get_connection()
+            .execute(f"SELECT * FROM meeting_audio_chunks WHERE {where} ORDER BY source, sequence", params)
+            .fetchall()
+        )
         return [
             {
-                "id": row["id"], "meetingId": row["meeting_id"], "source": row["source"],
-                "sequence": row["sequence"], "relativePath": row["relative_path"],
-                "startedAtMs": row["started_at_ms"], "endedAtMs": row["ended_at_ms"],
-                "state": row["state"], "sha256": row["sha256"], "createdAt": row["created_at"],
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "source": row["source"],
+                "sequence": row["sequence"],
+                "relativePath": row["relative_path"],
+                "startedAtMs": row["started_at_ms"],
+                "endedAtMs": row["ended_at_ms"],
+                "state": row["state"],
+                "sha256": row["sha256"],
+                "createdAt": row["created_at"],
             }
             for row in rows
         ]
@@ -2655,8 +2666,15 @@ class MeetingStore:
                 """INSERT INTO meeting_audio_gaps
                    (id,meeting_id,source,started_at_ms,ended_at_ms,reason,created_at)
                    VALUES (?,?,?,?,?,?,?)""",
-                (uuid4().hex, meeting_id, row["source"], row["started_at_ms"], row["ended_at_ms"],
-                 str(reason)[:120], _utc_now()),
+                (
+                    uuid4().hex,
+                    meeting_id,
+                    row["source"],
+                    row["started_at_ms"],
+                    row["ended_at_ms"],
+                    str(reason)[:120],
+                    _utc_now(),
+                ),
             )
             conn.commit()
 
@@ -2690,14 +2708,18 @@ class MeetingStore:
 
     def pending_audio_chunk_purges(self, meeting_id: str) -> list[dict[str, Any]]:
         self.get(meeting_id)
-        rows = db._get_connection().execute(
-            """
+        rows = (
+            db._get_connection()
+            .execute(
+                """
             SELECT * FROM meeting_audio_chunks
             WHERE meeting_id=? AND state='purge_pending'
             ORDER BY source,sequence
             """,
-            (meeting_id,),
-        ).fetchall()
+                (meeting_id,),
+            )
+            .fetchall()
+        )
         return [
             {
                 "id": row["id"],
@@ -2712,12 +2734,16 @@ class MeetingStore:
         ]
 
     def meetings_with_pending_audio_chunk_purges(self) -> list[str]:
-        rows = db._get_connection().execute(
-            """
+        rows = (
+            db._get_connection()
+            .execute(
+                """
             SELECT DISTINCT meeting_id FROM meeting_audio_chunks
             WHERE state='purge_pending' ORDER BY meeting_id
             """
-        ).fetchall()
+            )
+            .fetchall()
+        )
         return [str(row["meeting_id"]) for row in rows]
 
     def save_output(
@@ -2752,9 +2778,22 @@ class MeetingStore:
                         version,supersedes_id,transcript_revision,transcript_edit_version,
                         provider,created_at,updated_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (output_id, meeting_id, kind, schema_version, status, _json(payload),
-                     error_message, version, None, transcript_revision,
-                     transcript_edit_version, provider, now, now),
+                    (
+                        output_id,
+                        meeting_id,
+                        kind,
+                        schema_version,
+                        status,
+                        _json(payload),
+                        error_message,
+                        version,
+                        None,
+                        transcript_revision,
+                        transcript_edit_version,
+                        provider,
+                        now,
+                        now,
+                    ),
                 )
             else:
                 supersedes_id = uuid4().hex
@@ -2764,11 +2803,21 @@ class MeetingStore:
                         transcript_revision,transcript_edit_version,provider,status,
                         payload_json,error_message,created_at)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (supersedes_id, meeting_id, kind, schema_version, existing["version"],
-                     existing["supersedes_id"], existing["transcript_revision"],
-                     existing["transcript_edit_version"], existing["provider"],
-                     existing["status"], existing["payload_json"],
-                     existing["error_message"], existing["updated_at"]),
+                    (
+                        supersedes_id,
+                        meeting_id,
+                        kind,
+                        schema_version,
+                        existing["version"],
+                        existing["supersedes_id"],
+                        existing["transcript_revision"],
+                        existing["transcript_edit_version"],
+                        existing["provider"],
+                        existing["status"],
+                        existing["payload_json"],
+                        existing["error_message"],
+                        existing["updated_at"],
+                    ),
                 )
                 output_id = str(existing["id"])
                 version = int(existing["version"]) + 1
@@ -2776,24 +2825,40 @@ class MeetingStore:
                     """UPDATE meeting_outputs SET status=?,payload_json=?,error_message=?,
                        version=?,supersedes_id=?,transcript_revision=?,transcript_edit_version=?,
                        provider=?,updated_at=? WHERE id=?""",
-                    (status, _json(payload), error_message, version, supersedes_id,
-                     transcript_revision, transcript_edit_version, provider, now, output_id),
+                    (
+                        status,
+                        _json(payload),
+                        error_message,
+                        version,
+                        supersedes_id,
+                        transcript_revision,
+                        transcript_edit_version,
+                        provider,
+                        now,
+                        output_id,
+                    ),
                 )
             if kind == "analysis" and status == "completed":
-                self._sync_action_items_conn(
-                    conn, meeting_id, payload.get("actionItems", []), now=now
-                )
+                self._sync_action_items_conn(conn, meeting_id, payload.get("actionItems", []), now=now)
             conn.commit()
         except Exception:
             conn.rollback()
             raise
         return {
-            "id": output_id, "meetingId": meeting_id, "kind": kind,
-            "schemaVersion": schema_version, "status": status, "payload": payload,
-            "version": version, "supersedesId": supersedes_id,
+            "id": output_id,
+            "meetingId": meeting_id,
+            "kind": kind,
+            "schemaVersion": schema_version,
+            "status": status,
+            "payload": payload,
+            "version": version,
+            "supersedesId": supersedes_id,
             "transcriptRevision": transcript_revision,
-            "transcriptEditVersion": transcript_edit_version, "provider": provider,
-            "errorMessage": error_message, "createdAt": now, "updatedAt": now,
+            "transcriptEditVersion": transcript_edit_version,
+            "provider": provider,
+            "errorMessage": error_message,
+            "createdAt": now,
+            "updatedAt": now,
         }
 
     def get_analysis_chunk(
@@ -2809,12 +2874,16 @@ class MeetingStore:
             raise ValueError("Invalid meeting analysis cache stage.")
         if not re.fullmatch(r"[0-9a-f]{64}", str(input_sha256)):
             raise ValueError("Meeting analysis cache digest is invalid.")
-        row = db._get_connection().execute(
-            """SELECT payload_json FROM meeting_analysis_chunks
+        row = (
+            db._get_connection()
+            .execute(
+                """SELECT payload_json FROM meeting_analysis_chunks
                WHERE meeting_id=? AND stage=? AND input_sha256=? AND model=?
                  AND schema_version=?""",
-            (meeting_id, stage, input_sha256, str(model or ""), str(schema_version)),
-        ).fetchone()
+                (meeting_id, stage, input_sha256, str(model or ""), str(schema_version)),
+            )
+            .fetchone()
+        )
         payload = _loads(row["payload_json"], None) if row is not None else None
         return payload if isinstance(payload, dict) else None
 
@@ -2846,8 +2915,14 @@ class MeetingStore:
                    DO UPDATE SET payload_json=excluded.payload_json,
                                  updated_at=excluded.updated_at""",
                 (
-                    meeting_id, stage, input_sha256, str(model or ""),
-                    str(schema_version), _json(payload), now, now,
+                    meeting_id,
+                    stage,
+                    input_sha256,
+                    str(model or ""),
+                    str(schema_version),
+                    _json(payload),
+                    now,
+                    now,
                 ),
             )
             # Re-analysis after transcript edits may create new digests. Keep a
@@ -2881,11 +2956,7 @@ class MeetingStore:
             item_id = str(raw.get("id") or "").strip()[:96]
             text = str(raw.get("text") or "").strip()
             status = str(raw.get("status") or "open")
-            if (
-                not item_id
-                or not text
-                or status not in {"open", "done", "dismissed"}
-            ):
+            if not item_id or not text or status not in {"open", "done", "dismissed"}:
                 continue
             segment_ids = _action_segment_ids(raw.get("segmentIds"))
             semantic_key = _action_semantic_key(text)
@@ -2896,9 +2967,7 @@ class MeetingStore:
             )
             duplicate = seen_payloads.get(duplicate_key)
             if duplicate is not None:
-                duplicate["segmentIds"] = list(dict.fromkeys(
-                    [*duplicate["segmentIds"], *segment_ids]
-                ))
+                duplicate["segmentIds"] = list(dict.fromkeys([*duplicate["segmentIds"], *segment_ids]))
                 continue
             item = {
                 "id": item_id,
@@ -2919,9 +2988,7 @@ class MeetingStore:
             {
                 "id": str(row["id"]),
                 "text": str(row["text"]),
-                "segmentIds": _action_segment_ids(
-                    _loads(row["segment_ids_json"], [])
-                ),
+                "segmentIds": _action_segment_ids(_loads(row["segment_ids_json"], [])),
             }
             for row in existing_rows
             if bool(row["user_modified"])
@@ -2948,13 +3015,9 @@ class MeetingStore:
                 if (score := _action_user_match_score(incoming, existing)) is not None
             ]
             if candidates:
-                _score, matched_id, existing = max(
-                    candidates, key=lambda value: (value[0], value[1])
-                )
+                _score, matched_id, existing = max(candidates, key=lambda value: (value[0], value[1]))
                 matched_user_ids.add(matched_id)
-                merged_citations = list(dict.fromkeys([
-                    *existing["segmentIds"], *incoming["segmentIds"]
-                ]))
+                merged_citations = list(dict.fromkeys([*existing["segmentIds"], *incoming["segmentIds"]]))
                 conn.execute(
                     """UPDATE meeting_action_items
                        SET segment_ids_json=?,provenance='carried_user',updated_at=?
@@ -3010,18 +3073,30 @@ class MeetingStore:
                    WHERE meeting_action_items.meeting_id=excluded.meeting_id
                      AND meeting_action_items.user_modified=0""",
                 (
-                    item["id"], meeting_id, item["text"], item["owner"],
-                    item["dueDate"], item["status"], _json(item["segmentIds"]),
-                    0, "automatic", now, now,
+                    item["id"],
+                    meeting_id,
+                    item["text"],
+                    item["owner"],
+                    item["dueDate"],
+                    item["status"],
+                    _json(item["segmentIds"]),
+                    0,
+                    "automatic",
+                    now,
+                    now,
                 ),
             )
 
     def update_action_item(self, meeting_id: str, item_id: str, changes: dict[str, Any]) -> dict[str, Any]:
         self.get(meeting_id)
-        row = db._get_connection().execute(
-            "SELECT * FROM meeting_action_items WHERE meeting_id = ? AND id = ?",
-            (meeting_id, item_id),
-        ).fetchone()
+        row = (
+            db._get_connection()
+            .execute(
+                "SELECT * FROM meeting_action_items WHERE meeting_id = ? AND id = ?",
+                (meeting_id, item_id),
+            )
+            .fetchone()
+        )
         if row is None:
             raise MeetingNotFound("Meeting action item not found")
         text = str(changes.get("text", row["text"])).strip()
@@ -3059,8 +3134,12 @@ class MeetingStore:
         ).fetchall()
         return [
             {
-                "id": row["id"], "meetingId": row["meeting_id"], "text": row["text"],
-                "owner": row["owner"], "dueDate": row["due_date"], "status": row["status"],
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "text": row["text"],
+                "owner": row["owner"],
+                "dueDate": row["due_date"],
+                "status": row["status"],
                 "segmentIds": _loads(row["segment_ids_json"], []),
                 "userModified": bool(row["user_modified"]),
                 "provenance": str(row["provenance"] or "automatic"),
@@ -3072,9 +3151,7 @@ class MeetingStore:
 
     def action_items(self, meeting_id: str, *, item_id: str | None = None) -> list[dict[str, Any]]:
         self.get(meeting_id)
-        return self._action_items_conn(
-            db._get_connection(), meeting_id, item_id=item_id
-        )
+        return self._action_items_conn(db._get_connection(), meeting_id, item_id=item_id)
 
     def rename_speaker(self, meeting_id: str, speaker_id: str, display_name: str) -> int:
         self.get(meeting_id)
@@ -3109,9 +3186,7 @@ class MeetingStore:
             if current is not None and current["profile_id"]:
                 # Merely re-submitting an automatically generated placeholder
                 # must not turn it into a trusted/named Voice Library entry.
-                is_meaningful_name = not _is_generated_speaker_profile_name(
-                    str(current["profile_id"]), display_name
-                )
+                is_meaningful_name = not _is_generated_speaker_profile_name(str(current["profile_id"]), display_name)
                 conn.execute(
                     """UPDATE speaker_profiles SET display_name=?,
                        is_named=CASE WHEN ? THEN 1 ELSE is_named END,updated_at=?
@@ -3169,9 +3244,7 @@ class MeetingStore:
                 link_source = ""
             else:
                 participant_address = str(participant.get("address") or "").strip().lower()
-                participant_name = str(
-                    participant.get("name") or participant_address
-                ).strip()[:200]
+                participant_name = str(participant.get("name") or participant_address).strip()[:200]
                 if (
                     len(participant_name) > 200
                     or len(participant_address) > 320
@@ -3206,9 +3279,7 @@ class MeetingStore:
             "speakerId": speaker_id,
             "displayName": display_name,
             "confirmedAttendee": (
-                {"name": participant_name, "address": participant_address}
-                if participant_address
-                else None
+                {"name": participant_name, "address": participant_address} if participant_address else None
             ),
             "source": link_source,
             "confirmedAt": now,
@@ -3269,7 +3340,13 @@ class MeetingStore:
                 (thread_id, meeting_id, title.strip()[:160], now, now),
             )
             conn.commit()
-        return {"id": thread_id, "meetingId": meeting_id, "title": title.strip()[:160], "createdAt": now, "updatedAt": now}
+        return {
+            "id": thread_id,
+            "meetingId": meeting_id,
+            "title": title.strip()[:160],
+            "createdAt": now,
+            "updatedAt": now,
+        }
 
     def add_chat_message(
         self,
@@ -3298,8 +3375,12 @@ class MeetingStore:
             )
             conn.execute("UPDATE meeting_chat_threads SET updated_at = ? WHERE id = ?", (now, thread_id))
         return {
-            "id": message_id, "threadId": thread_id, "role": role, "content": content,
-            "citations": normalized_citations, "createdAt": now,
+            "id": message_id,
+            "threadId": thread_id,
+            "role": role,
+            "content": content,
+            "citations": normalized_citations,
+            "createdAt": now,
         }
 
     def chat_threads(self, meeting_id: str) -> list[dict[str, Any]]:
@@ -3313,22 +3394,31 @@ class MeetingStore:
             messages = conn.execute(
                 "SELECT * FROM meeting_chat_messages WHERE thread_id = ? ORDER BY created_at, id", (row["id"],)
             ).fetchall()
-            result.append({
-                "id": row["id"], "meetingId": meeting_id, "title": row["title"],
-                "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-                "messages": [{
-                    "id": message["id"], "threadId": row["id"], "role": message["role"],
-                    "content": message["content"], "citations": _loads(message["citations_json"], []),
-                    "createdAt": message["created_at"],
-                } for message in messages],
-            })
+            result.append(
+                {
+                    "id": row["id"],
+                    "meetingId": meeting_id,
+                    "title": row["title"],
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                    "messages": [
+                        {
+                            "id": message["id"],
+                            "threadId": row["id"],
+                            "role": message["role"],
+                            "content": message["content"],
+                            "citations": _loads(message["citations_json"], []),
+                            "createdAt": message["created_at"],
+                        }
+                        for message in messages
+                    ],
+                }
+            )
         return result
 
     @staticmethod
     def _speaker_library_enabled_conn(conn: sqlite3.Connection) -> bool:
-        row = conn.execute(
-            "SELECT enabled FROM speaker_library_state WHERE id=1"
-        ).fetchone()
+        row = conn.execute("SELECT enabled FROM speaker_library_state WHERE id=1").fetchone()
         return bool(row is not None and row["enabled"])
 
     def speaker_library_enabled(self) -> bool:
@@ -3348,19 +3438,29 @@ class MeetingStore:
             conn.commit()
 
     def speaker_profiles(self) -> list[dict[str, Any]]:
-        rows = db._get_connection().execute(
-            """SELECT id,display_name,is_named,sample_count,enrollment_sample_count,
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT id,display_name,is_named,sample_count,enrollment_sample_count,
                       enrolled_at,created_at,updated_at
                FROM speaker_profiles ORDER BY display_name"""
-        ).fetchall()
-        return [{
-            "id": row["id"], "displayName": row["display_name"], "sampleCount": row["sample_count"],
-            "isNamed": bool(row["is_named"]),
-            "enrolled": bool(row["enrollment_sample_count"]),
-            "enrollmentSampleCount": int(row["enrollment_sample_count"] or 0),
-            "enrolledAt": row["enrolled_at"] or "",
-            "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-        } for row in rows]
+            )
+            .fetchall()
+        )
+        return [
+            {
+                "id": row["id"],
+                "displayName": row["display_name"],
+                "sampleCount": row["sample_count"],
+                "isNamed": bool(row["is_named"]),
+                "enrolled": bool(row["enrollment_sample_count"]),
+                "enrollmentSampleCount": int(row["enrollment_sample_count"] or 0),
+                "enrolledAt": row["enrolled_at"] or "",
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ]
 
     def speaker_profile_preview_candidates(self) -> dict[str, dict[str, Any]]:
         """Return one private, retained-audio observation per learned profile.
@@ -3372,8 +3472,10 @@ class MeetingStore:
         a playback preview.
         """
 
-        rows = db._get_connection().execute(
-            """SELECT p.id AS profile_id,o.meeting_id,s.source,s.start_ms,s.end_ms,
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT p.id AS profile_id,o.meeting_id,s.source,s.start_ms,s.end_ms,
                       COALESCE(o.quality,0.0) AS quality,o.created_at
                FROM speaker_profiles p
                JOIN speaker_profile_observations o ON o.profile_id=p.id
@@ -3390,7 +3492,9 @@ class MeetingStore:
                  AND s.source IN ('microphone','system')
                  AND s.end_ms-s.start_ms>=2000
                ORDER BY p.id,quality DESC,(s.end_ms-s.start_ms) DESC,o.created_at DESC"""
-        ).fetchall()
+            )
+            .fetchall()
+        )
         selected: dict[str, dict[str, Any]] = {}
         for row in rows:
             profile_id = str(row["profile_id"])
@@ -3402,9 +3506,7 @@ class MeetingStore:
             duration_ms = min(8_000, segment_duration_ms)
             # Center long observations to avoid clipping a turn boundary while
             # preserving the original meeting-clock seek position.
-            start_ms = segment_start_ms + max(
-                0, (segment_duration_ms - duration_ms) // 2
-            )
+            start_ms = segment_start_ms + max(0, (segment_duration_ms - duration_ms) // 2)
             selected[profile_id] = {
                 "profileId": profile_id,
                 "meetingId": str(row["meeting_id"]),
@@ -3442,18 +3544,13 @@ class MeetingStore:
         if not valid:
             raise ValueError("At least one finite speaker embedding is required.")
         total_weight = sum(weight for _vector, weight in valid)
-        centroid = [
-            sum(vector[index] * weight for vector, weight in valid) / total_weight
-            for index in range(256)
-        ]
+        centroid = [sum(vector[index] * weight for vector, weight in valid) / total_weight for index in range(256)]
         norm = math.sqrt(sum(value * value for value in centroid))
         if not norm or not math.isfinite(norm):
             raise ValueError("Speaker embedding centroid is invalid.")
         return [value / norm for value in centroid]
 
-    def _enrollment_sum_values(
-        self, profile: sqlite3.Row
-    ) -> tuple[list[float] | None, int, float]:
+    def _enrollment_sum_values(self, profile: sqlite3.Row) -> tuple[list[float] | None, int, float]:
         """Return the privacy-minimal weighted enrollment sum.
 
         Early development databases stored a normalized seed without an
@@ -3476,11 +3573,7 @@ class MeetingStore:
         if not math.isfinite(resultant_norm) or resultant_norm <= 0:
             # Compatibility for the short development window that stored the
             # aggregate sum directly, and for the earlier normalized seed.
-            resultant_norm = (
-                stored_norm
-                if abs(stored_norm - 1.0) > 1e-4
-                else weight_sum
-            )
+            resultant_norm = stored_norm if abs(stored_norm - 1.0) > 1e-4 else weight_sum
         return (
             [value * resultant_norm for value in normalized],
             count,
@@ -3504,13 +3597,9 @@ class MeetingStore:
         if profile is None:
             return [], 0
         vectors: list[tuple[list[float], float]] = []
-        enrollment_sum, enrollment_count, _weight_sum = self._enrollment_sum_values(
-            profile
-        )
+        enrollment_sum, enrollment_count, _weight_sum = self._enrollment_sum_values(profile)
         if enrollment_sum is not None:
-            enrollment_norm = math.sqrt(
-                sum(value * value for value in enrollment_sum)
-            )
+            enrollment_norm = math.sqrt(sum(value * value for value in enrollment_sum))
             if enrollment_norm and math.isfinite(enrollment_norm):
                 vectors.append(
                     (
@@ -3520,9 +3609,7 @@ class MeetingStore:
                 )
         excluded = sorted(exclude_segment_ids or set())
         excluded_sql = (
-            f" AND (segment_id IS NULL OR segment_id NOT IN ({','.join('?' for _ in excluded)}))"
-            if excluded
-            else ""
+            f" AND (segment_id IS NULL OR segment_id NOT IN ({','.join('?' for _ in excluded)}))" if excluded else ""
         )
         meeting_sql = " AND meeting_id<>?" if exclude_meeting_id else ""
         params: tuple[Any, ...] = (
@@ -3585,23 +3672,14 @@ class MeetingStore:
                 ).fetchone()
                 if current is None:
                     raise MeetingNotFound("Speaker profile not found")
-                current_sum, current_count, current_weight = self._enrollment_sum_values(
-                    current
-                )
+                current_sum, current_count, current_weight = self._enrollment_sum_values(current)
                 enrollment_sum = list(sample_sum)
                 if current_sum is not None:
-                    enrollment_sum = [
-                        left + right
-                        for left, right in zip(current_sum, sample_sum, strict=True)
-                    ]
-                resultant_norm = math.sqrt(
-                    sum(value * value for value in enrollment_sum)
-                )
+                    enrollment_sum = [left + right for left, right in zip(current_sum, sample_sum, strict=True)]
+                resultant_norm = math.sqrt(sum(value * value for value in enrollment_sum))
                 if not resultant_norm or not math.isfinite(resultant_norm):
                     raise ValueError("Speaker enrollment centroid is invalid.")
-                enrollment_centroid = [
-                    value / resultant_norm for value in enrollment_sum
-                ]
+                enrollment_centroid = [value / resultant_norm for value in enrollment_sum]
                 conn.execute(
                     """UPDATE speaker_profiles SET display_name=?,is_named=1,
                        enrollment_embedding_blob=?,enrollment_sample_count=?,
@@ -3696,12 +3774,7 @@ class MeetingStore:
                 if centroid is not None:
                     scores.append(
                         (
-                            sum(
-                                left * right
-                                for left, right in zip(
-                                    normalized_embedding, centroid, strict=True
-                                )
-                            ),
+                            sum(left * right for left, right in zip(normalized_embedding, centroid, strict=True)),
                             candidate,
                         )
                     )
@@ -3733,26 +3806,35 @@ class MeetingStore:
                 """INSERT OR REPLACE INTO speaker_profile_observations
                    (id,profile_id,meeting_id,segment_id,similarity,embedding_blob,quality,created_at)
                    VALUES (?,?,?,?,?,?,?,?)""",
-                (hashlib.sha256(f"{profile_id}:{segment_id}".encode()).hexdigest()[:32],
-                 profile_id, meeting_id, segment_id, best_score, blob,
-                 bounded_quality, now),
+                (
+                    hashlib.sha256(f"{profile_id}:{segment_id}".encode()).hexdigest()[:32],
+                    profile_id,
+                    meeting_id,
+                    segment_id,
+                    best_score,
+                    blob,
+                    bounded_quality,
+                    now,
+                ),
             )
             self._recompute_speaker_profile_conn(conn, profile_id, now)
             profile = conn.execute(
                 "SELECT display_name,is_named,sample_count FROM speaker_profiles WHERE id=?", (profile_id,)
             ).fetchone()
-            independent_matches = int(conn.execute(
-                """SELECT COUNT(DISTINCT o.segment_id) FROM speaker_profile_observations o
+            independent_matches = int(
+                conn.execute(
+                    """SELECT COUNT(DISTINCT o.segment_id) FROM speaker_profile_observations o
                    JOIN meeting_segments s ON s.id=o.segment_id
                    WHERE o.profile_id=? AND o.meeting_id=? AND s.speaker_id=?
                      AND o.similarity>=?""",
-                (
-                    profile_id,
-                    meeting_id,
-                    speaker_id,
-                    VOICE_PROFILE_MATCH_THRESHOLD,
-                ),
-            ).fetchone()[0])
+                    (
+                        profile_id,
+                        meeting_id,
+                        speaker_id,
+                        VOICE_PROFILE_MATCH_THRESHOLD,
+                    ),
+                ).fetchone()[0]
+            )
             conn.execute(
                 "UPDATE meeting_speakers SET profile_id=?,confidence=?,updated_at=? WHERE meeting_id=? AND id=?",
                 (profile_id, best_score, now, meeting_id, speaker_id),
@@ -3771,7 +3853,9 @@ class MeetingStore:
                 )
             conn.commit()
         return {
-            "profileId": profile_id, "similarity": best_score, "matched": matched,
+            "profileId": profile_id,
+            "similarity": best_score,
+            "matched": matched,
             "autoNamed": bool(profile["is_named"] and independent_matches >= 2 and matched),
             "safePreselection": bool(profile["is_named"] and matched),
             "evidenceCount": independent_matches,
@@ -3799,9 +3883,7 @@ class MeetingStore:
             segment_id = str(raw.get("segmentId") or "").strip()
             if not speaker_id or not segment_id or segment_id in seen_segments:
                 raise ValueError("Voice reprocessing requires unique speaker segments.")
-            vector = self._weighted_embedding_centroid(
-                [(list(raw.get("embedding") or []), 1.0)]
-            )
+            vector = self._weighted_embedding_centroid([(list(raw.get("embedding") or []), 1.0)])
             quality = float(raw.get("quality", 1.0) or 0.0)
             if not math.isfinite(quality):
                 raise ValueError("Speaker sample quality must be finite.")
@@ -3826,9 +3908,7 @@ class MeetingStore:
         with db._get_connection() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                if conn.execute(
-                    "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
-                ).fetchone() is None:
+                if conn.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
                     raise MeetingNotFound(f"Meeting not found: {meeting_id}")
                 if not self._speaker_library_enabled_conn(conn):
                     raise VoiceLibraryDisabled("Voice Library is turned off.")
@@ -3849,14 +3929,10 @@ class MeetingStore:
                     expected_microphone_id = hashlib.sha256(
                         f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
                     ).hexdigest()[:32]
-                    if speaker_id != expected_microphone_id or any(
-                        item["source"] != "microphone" for item in items
-                    ):
+                    if speaker_id != expected_microphone_id or any(item["source"] != "microphone" for item in items):
                         raise MeetingNotFound("Meeting speaker not found")
                     selected_segment_ids = [item["segmentId"] for item in items]
-                    selected_placeholders = ",".join(
-                        "?" for _ in selected_segment_ids
-                    )
+                    selected_placeholders = ",".join("?" for _ in selected_segment_ids)
                     valid_count = int(
                         conn.execute(
                             f"""SELECT COUNT(*) FROM meeting_segments
@@ -3867,9 +3943,7 @@ class MeetingStore:
                         ).fetchone()[0]
                     )
                     if valid_count != len(selected_segment_ids):
-                        raise ValueError(
-                            "The local microphone segments changed before voice reprocessing completed."
-                        )
+                        raise ValueError("The local microphone segments changed before voice reprocessing completed.")
                     conn.execute(
                         """INSERT INTO meeting_speakers
                            (id,meeting_id,label,display_name,source_hint,profile_id,
@@ -3912,9 +3986,7 @@ class MeetingStore:
                 for item in prepared:
                     segment = segment_rows.get(item["segmentId"])
                     if segment is None or str(segment["speaker_id"] or "") != item["speakerId"]:
-                        raise ValueError(
-                            "Voice reprocessing segment does not belong to the selected speaker."
-                        )
+                        raise ValueError("Voice reprocessing segment does not belong to the selected speaker.")
                 replaced_segment_ids = set(segment_rows)
 
                 profiles = conn.execute("SELECT id FROM speaker_profiles").fetchall()
@@ -3928,26 +4000,16 @@ class MeetingStore:
                         exclude_meeting_id=meeting_id,
                     )
                     if vectors:
-                        candidate_centroids[profile_id] = (
-                            self._weighted_embedding_centroid(vectors)
-                        )
+                        candidate_centroids[profile_id] = self._weighted_embedding_centroid(vectors)
 
                 plans: dict[str, dict[str, Any]] = {}
                 for speaker_id, items in grouped.items():
                     speaker_centroid = self._weighted_embedding_centroid(
-                        [
-                            (item["embedding"], max(0.01, item["quality"]))
-                            for item in items
-                        ]
+                        [(item["embedding"], max(0.01, item["quality"])) for item in items]
                     )
                     scores = sorted(
                         (
-                            sum(
-                                left * right
-                                for left, right in zip(
-                                    speaker_centroid, centroid, strict=True
-                                )
-                            ),
+                            sum(left * right for left, right in zip(speaker_centroid, centroid, strict=True)),
                             profile_id,
                         )
                         for profile_id, centroid in candidate_centroids.items()
@@ -3969,15 +4031,9 @@ class MeetingStore:
                         "items": items,
                     }
 
-                old_profile_ids = {
-                    str(row["profile_id"])
-                    for row in speaker_rows.values()
-                    if row["profile_id"]
-                }
+                old_profile_ids = {str(row["profile_id"]) for row in speaker_rows.values() if row["profile_id"]}
                 if replaced_segment_ids:
-                    replaced_placeholders = ",".join(
-                        "?" for _ in replaced_segment_ids
-                    )
+                    replaced_placeholders = ",".join("?" for _ in replaced_segment_ids)
                     conn.execute(
                         f"""DELETE FROM speaker_profile_observations
                             WHERE meeting_id=?
@@ -4002,19 +4058,12 @@ class MeetingStore:
                                 now,
                             ),
                         )
-                    target_centroid = candidate_centroids.get(
-                        profile_id, plan["centroid"]
-                    )
+                    target_centroid = candidate_centroids.get(profile_id, plan["centroid"])
                     for item in plan["items"]:
                         similarity = sum(
-                            left * right
-                            for left, right in zip(
-                                item["embedding"], target_centroid, strict=True
-                            )
+                            left * right for left, right in zip(item["embedding"], target_centroid, strict=True)
                         )
-                        observation_id = hashlib.sha256(
-                            f"{profile_id}:{item['segmentId']}".encode()
-                        ).hexdigest()[:32]
+                        observation_id = hashlib.sha256(f"{profile_id}:{item['segmentId']}".encode()).hexdigest()[:32]
                         conn.execute(
                             """INSERT INTO speaker_profile_observations
                                (id,profile_id,meeting_id,segment_id,similarity,
@@ -4043,9 +4092,7 @@ class MeetingStore:
                         ),
                     )
 
-                affected_profiles = old_profile_ids | {
-                    str(plan["profileId"]) for plan in plans.values()
-                }
+                affected_profiles = old_profile_ids | {str(plan["profileId"]) for plan in plans.values()}
                 for profile_id in affected_profiles:
                     self._recompute_speaker_profile_conn(conn, profile_id, now)
 
@@ -4065,11 +4112,7 @@ class MeetingStore:
                         if profile is not None and bool(profile["is_named"])
                         else str(speaker["label"] or "")
                     )
-                    display_source = (
-                        "profile"
-                        if profile is not None and bool(profile["is_named"])
-                        else "anonymous"
-                    )
+                    display_source = "profile" if profile is not None and bool(profile["is_named"]) else "anonymous"
                     conn.execute(
                         """UPDATE meeting_speakers SET display_name=?,
                            display_name_source=?,updated_at=?
@@ -4180,12 +4223,8 @@ class MeetingStore:
             conn.commit()
         return int(cursor.rowcount)
 
-    def _recompute_speaker_profile_conn(
-        self, conn: sqlite3.Connection, profile_id: str, now: str
-    ) -> bool:
-        profile = conn.execute(
-            "SELECT is_named FROM speaker_profiles WHERE id=?", (profile_id,)
-        ).fetchone()
+    def _recompute_speaker_profile_conn(self, conn: sqlite3.Connection, profile_id: str, now: str) -> bool:
+        profile = conn.execute("SELECT is_named FROM speaker_profiles WHERE id=?", (profile_id,)).fetchone()
         if profile is None:
             return False
         vectors, sample_count = self._speaker_profile_vectors_conn(conn, profile_id)
@@ -4246,9 +4285,16 @@ class MeetingStore:
                     """INSERT OR REPLACE INTO speaker_profile_observations
                        (id,profile_id,meeting_id,segment_id,similarity,embedding_blob,quality,created_at)
                        VALUES (?,?,?,?,?,?,?,?)""",
-                    (replacement_id, target_profile_id, observation["meeting_id"],
-                     observation["segment_id"], observation["similarity"],
-                     observation["embedding_blob"], observation["quality"], observation["created_at"]),
+                    (
+                        replacement_id,
+                        target_profile_id,
+                        observation["meeting_id"],
+                        observation["segment_id"],
+                        observation["similarity"],
+                        observation["embedding_blob"],
+                        observation["quality"],
+                        observation["created_at"],
+                    ),
                 )
             target_sum, target_count, target_weight = self._enrollment_sum_values(target)
             source_sum, source_count, source_weight = self._enrollment_sum_values(source)
@@ -4256,18 +4302,11 @@ class MeetingStore:
                 merged_sum = [0.0] * 256
                 for vector in (target_sum, source_sum):
                     if vector is not None:
-                        merged_sum = [
-                            left + right
-                            for left, right in zip(merged_sum, vector, strict=True)
-                        ]
-                resultant_norm = math.sqrt(
-                    sum(value * value for value in merged_sum)
-                )
+                        merged_sum = [left + right for left, right in zip(merged_sum, vector, strict=True)]
+                resultant_norm = math.sqrt(sum(value * value for value in merged_sum))
                 if not resultant_norm or not math.isfinite(resultant_norm):
                     raise ValueError("Merged speaker enrollment centroid is invalid.")
-                merged_centroid = [
-                    value / resultant_norm for value in merged_sum
-                ]
+                merged_centroid = [value / resultant_norm for value in merged_sum]
                 conn.execute(
                     """UPDATE speaker_profiles SET enrollment_embedding_blob=?,
                        enrollment_sample_count=?,enrollment_weight_sum=?,
@@ -4357,20 +4396,25 @@ class MeetingStore:
                 (new_profile_id, f"Speaker {new_profile_id[:6]}", "[]", now, now),
             )
             for observation in observations:
-                replacement_id = hashlib.sha256(
-                    f"{new_profile_id}:{observation['segment_id']}".encode()
-                ).hexdigest()[:32]
+                replacement_id = hashlib.sha256(f"{new_profile_id}:{observation['segment_id']}".encode()).hexdigest()[
+                    :32
+                ]
                 conn.execute(
                     """INSERT INTO speaker_profile_observations
                        (id,profile_id,meeting_id,segment_id,similarity,embedding_blob,quality,created_at)
                        VALUES (?,?,?,?,?,?,?,?)""",
-                    (replacement_id, new_profile_id, observation["meeting_id"],
-                     observation["segment_id"], 1.0, observation["embedding_blob"],
-                     observation["quality"], observation["created_at"]),
+                    (
+                        replacement_id,
+                        new_profile_id,
+                        observation["meeting_id"],
+                        observation["segment_id"],
+                        1.0,
+                        observation["embedding_blob"],
+                        observation["quality"],
+                        observation["created_at"],
+                    ),
                 )
-                conn.execute(
-                    "DELETE FROM speaker_profile_observations WHERE id=?", (observation["id"],)
-                )
+                conn.execute("DELETE FROM speaker_profile_observations WHERE id=?", (observation["id"],))
             conn.execute(
                 """UPDATE meeting_speakers SET profile_id=?,confidence=1.0,
                    display_name=CASE WHEN display_name_source='profile' THEN label ELSE display_name END,
@@ -4387,8 +4431,10 @@ class MeetingStore:
             self._recompute_speaker_profile_conn(conn, old_profile_id, now)
             conn.commit()
         return {
-            "meetingId": meeting_id, "speakerId": speaker_id,
-            "oldProfileId": old_profile_id, "newProfileId": new_profile_id,
+            "meetingId": meeting_id,
+            "speakerId": speaker_id,
+            "oldProfileId": old_profile_id,
+            "newProfileId": new_profile_id,
         }
 
     def create_delivery(
@@ -4409,16 +4455,37 @@ class MeetingStore:
                    (id,meeting_id,kind,target,status,request_json,payload_version,
                     attempt_count,idempotency_key,next_attempt_at,created_at,updated_at)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (delivery_id, meeting_id, kind, target, status, _json(request_payload),
-                 1, 0, delivery_id, "", now, now),
+                (
+                    delivery_id,
+                    meeting_id,
+                    kind,
+                    target,
+                    status,
+                    _json(request_payload),
+                    1,
+                    0,
+                    delivery_id,
+                    "",
+                    now,
+                    now,
+                ),
             )
             conn.commit()
         return {
-            "id": delivery_id, "meetingId": meeting_id, "kind": kind, "target": target,
-            "status": status, "request": request_payload, "response": {}, "errorMessage": "",
-            "payloadVersion": 1, "attemptCount": 0, "idempotencyKey": delivery_id,
+            "id": delivery_id,
+            "meetingId": meeting_id,
+            "kind": kind,
+            "target": target,
+            "status": status,
+            "request": request_payload,
+            "response": {},
+            "errorMessage": "",
+            "payloadVersion": 1,
+            "attemptCount": 0,
+            "idempotencyKey": delivery_id,
             "nextAttemptAt": "",
-            "createdAt": now, "updatedAt": now,
+            "createdAt": now,
+            "updatedAt": now,
         }
 
     def update_delivery(
@@ -4446,32 +4513,44 @@ class MeetingStore:
 
     def deliveries(self, meeting_id: str) -> list[dict[str, Any]]:
         self.get(meeting_id)
-        rows = db._get_connection().execute(
-            "SELECT * FROM meeting_deliveries WHERE meeting_id = ? ORDER BY created_at DESC", (meeting_id,)
-        ).fetchall()
+        rows = (
+            db._get_connection()
+            .execute("SELECT * FROM meeting_deliveries WHERE meeting_id = ? ORDER BY created_at DESC", (meeting_id,))
+            .fetchall()
+        )
         return [self._delivery(row) for row in rows]
 
     @staticmethod
     def _delivery(row: sqlite3.Row) -> dict[str, Any]:
         return {
-            "id": row["id"], "meetingId": row["meeting_id"], "kind": row["kind"],
-            "target": row["target"], "status": row["status"],
-            "request": _loads(row["request_json"], {}), "response": _loads(row["response_json"], {}),
-            "errorMessage": row["error_message"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-            "payloadVersion": row["payload_version"], "attemptCount": row["attempt_count"],
-            "idempotencyKey": row["idempotency_key"], "nextAttemptAt": row["next_attempt_at"],
+            "id": row["id"],
+            "meetingId": row["meeting_id"],
+            "kind": row["kind"],
+            "target": row["target"],
+            "status": row["status"],
+            "request": _loads(row["request_json"], {}),
+            "response": _loads(row["response_json"], {}),
+            "errorMessage": row["error_message"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "payloadVersion": row["payload_version"],
+            "attemptCount": row["attempt_count"],
+            "idempotencyKey": row["idempotency_key"],
+            "nextAttemptAt": row["next_attempt_at"],
         }
 
-    def _notes_conn(
-        self, conn: sqlite3.Connection, meeting_id: str
-    ) -> list[dict[str, Any]]:
+    def _notes_conn(self, conn: sqlite3.Connection, meeting_id: str) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM meeting_notes WHERE meeting_id = ? ORDER BY created_at, id", (meeting_id,)
         ).fetchall()
         return [
             {
-                "id": row["id"], "meetingId": row["meeting_id"], "body": row["body"],
-                "atMs": row["at_ms"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "body": row["body"],
+                "atMs": row["at_ms"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
             }
             for row in rows
         ]
@@ -4501,9 +4580,7 @@ class MeetingStore:
             start_ms = int(item.get("startMs", 0))
             end_ms = int(item.get("endMs", 0))
             if end_ms < start_ms:
-                raise ValueError(
-                    "Meeting segment endMs must be greater than or equal to startMs."
-                )
+                raise ValueError("Meeting segment endMs must be greater than or equal to startMs.")
             # Normalize the copied input once so persistence and the returned
             # projection cannot disagree when callers supplied numeric strings.
             item["startMs"] = start_ms
@@ -4518,9 +4595,7 @@ class MeetingStore:
             if replace_revision is not None:
                 if advance_transcript_version_on_change:
                     if replace_revision != "canonical":
-                        raise ValueError(
-                            "Only a canonical transcript replacement can advance its version."
-                        )
+                        raise ValueError("Only a canonical transcript replacement can advance its version.")
                     prior_snapshot = [
                         tuple(row)
                         for row in conn.execute(
@@ -4548,11 +4623,7 @@ class MeetingStore:
                     raise ValueError("Invalid meeting segment alignment quality.")
                 speaker_label = str(item.get("speakerLabel", "")).strip()
                 speaker_id = item.get("speakerId")
-                if (
-                    revision == "canonical"
-                    and source == "system"
-                    and not speaker_label
-                ):
+                if revision == "canonical" and source == "system" and not speaker_label:
                     speaker_label = MEETING_AUDIO_SPEAKER_LABEL
                 if not speaker_id and speaker_label:
                     speaker_id = _stable_meeting_speaker_id(
@@ -4569,10 +4640,21 @@ class MeetingStore:
                         (speaker_id, meeting_id, speaker_label, speaker_label, source, now, now),
                     )
                 values = (
-                    segment_id, meeting_id, revision, source, str(item.get("providerSegmentId", "")),
-                    speaker_id, speaker_label, item["startMs"],
-                    item["endMs"], str(item.get("text", "")), item.get("confidence"),
-                    alignment_quality, int(bool(item.get("isFinal", True))), sequence, now,
+                    segment_id,
+                    meeting_id,
+                    revision,
+                    source,
+                    str(item.get("providerSegmentId", "")),
+                    speaker_id,
+                    speaker_label,
+                    item["startMs"],
+                    item["endMs"],
+                    str(item.get("text", "")),
+                    item.get("confidence"),
+                    alignment_quality,
+                    int(bool(item.get("isFinal", True))),
+                    sequence,
+                    now,
                 )
                 conn.execute(
                     """INSERT INTO meeting_segments (
@@ -4586,10 +4668,19 @@ class MeetingStore:
                        alignment_quality=excluded.alignment_quality,is_final=excluded.is_final""",
                     values,
                 )
-                created.append({**item, "id": segment_id, "meetingId": meeting_id, "revision": revision,
-                                "source": source, "speakerId": speaker_id,
-                                "speakerLabel": speaker_label, "alignmentQuality": alignment_quality,
-                                "sequence": sequence})
+                created.append(
+                    {
+                        **item,
+                        "id": segment_id,
+                        "meetingId": meeting_id,
+                        "revision": revision,
+                        "source": source,
+                        "speakerId": speaker_id,
+                        "speakerLabel": speaker_label,
+                        "alignmentQuality": alignment_quality,
+                        "sequence": sequence,
+                    }
+                )
             if advance_transcript_version_on_change:
                 current_snapshot = [
                     tuple(row)
@@ -4631,9 +4722,7 @@ class MeetingStore:
                             (now, meeting_id),
                         )
                         for profile_id in affected_profile_ids:
-                            self._recompute_speaker_profile_conn(
-                                conn, profile_id, now
-                            )
+                            self._recompute_speaker_profile_conn(conn, profile_id, now)
                     conn.execute(
                         """UPDATE meetings
                            SET transcript_edit_version=transcript_edit_version+1,
@@ -4676,28 +4765,23 @@ class MeetingStore:
         with db._get_connection() as conn:
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                if conn.execute(
-                    "SELECT 1 FROM meetings WHERE id=?", (meeting_id,)
-                ).fetchone() is None:
+                if conn.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
                     raise MeetingNotFound(f"Meeting not found: {meeting_id}")
-                existing = conn.execute(
-                    "SELECT * FROM meeting_segments WHERE id=?", (segment_id,)
-                ).fetchone()
+                existing = conn.execute("SELECT * FROM meeting_segments WHERE id=?", (segment_id,)).fetchone()
                 if existing is not None:
-                    if (
-                        str(existing["meeting_id"]) != meeting_id
-                        or str(existing["revision"]) != "live"
-                    ):
+                    if str(existing["meeting_id"]) != meeting_id or str(existing["revision"]) != "live":
                         raise MeetingConflict("Meeting segment id belongs to another transcript.")
                     conn.commit()
                     return self._segment(existing)
 
-                sequence = int(conn.execute(
-                    """SELECT COALESCE(MAX(sequence), -1) + 1
+                sequence = int(
+                    conn.execute(
+                        """SELECT COALESCE(MAX(sequence), -1) + 1
                        FROM meeting_segments
                        WHERE meeting_id=? AND revision='live' AND source=?""",
-                    (meeting_id, source),
-                ).fetchone()[0])
+                        (meeting_id, source),
+                    ).fetchone()[0]
+                )
                 if not speaker_id and speaker_label:
                     speaker_id = hashlib.sha256(
                         f"{meeting_id}\0live\0{source}\0{speaker_label.casefold()}".encode("utf-8")
@@ -4715,15 +4799,22 @@ class MeetingStore:
                        start_ms,end_ms,text,confidence,alignment_quality,is_final,sequence,created_at
                        ) VALUES (?,?, 'live',?,?,?,?,?,?,?,?,?,1,?,?)""",
                     (
-                        segment_id, meeting_id, source,
-                        str(item.get("providerSegmentId", "")), speaker_id, speaker_label,
-                        start_ms, end_ms, text, item.get("confidence"), alignment_quality,
-                        sequence, now,
+                        segment_id,
+                        meeting_id,
+                        source,
+                        str(item.get("providerSegmentId", "")),
+                        speaker_id,
+                        speaker_label,
+                        start_ms,
+                        end_ms,
+                        text,
+                        item.get("confidence"),
+                        alignment_quality,
+                        sequence,
+                        now,
                     ),
                 )
-                row = conn.execute(
-                    "SELECT * FROM meeting_segments WHERE id=?", (segment_id,)
-                ).fetchone()
+                row = conn.execute("SELECT * FROM meeting_segments WHERE id=?", (segment_id,)).fetchone()
                 conn.commit()
             except Exception:
                 conn.rollback()
@@ -4776,9 +4867,7 @@ class MeetingStore:
                 if meeting is None:
                     raise MeetingNotFound(f"Meeting not found: {meeting_id}")
                 if str(meeting["state"]) not in {"ready", "analysis_failed"}:
-                    raise MeetingConflict(
-                        "Transcript corrections are available after final transcription is complete."
-                    )
+                    raise MeetingConflict("Transcript corrections are available after final transcription is complete.")
                 current_version = int(meeting["transcript_edit_version"] or 0)
                 if current_version != int(expected_edit_version):
                     raise MeetingConflict(
@@ -4798,9 +4887,7 @@ class MeetingStore:
                         "meetingId": meeting_id,
                         "segment": self._segment(segment),
                         "transcriptEditVersion": current_version,
-                        "outputsStale": self._outputs_stale_conn(
-                            conn, meeting_id, current_version
-                        ),
+                        "outputsStale": self._outputs_stale_conn(conn, meeting_id, current_version),
                         "edit": None,
                     }
                 next_version = current_version + 1
@@ -4810,8 +4897,14 @@ class MeetingStore:
                        (id,meeting_id,segment_id,edit_version,operation,previous_text,text,created_at)
                        VALUES (?,?,?,?,?,?,?,?)""",
                     (
-                        edit_id, meeting_id, segment_id, next_version, operation,
-                        previous_text, normalized, now,
+                        edit_id,
+                        meeting_id,
+                        segment_id,
+                        next_version,
+                        operation,
+                        previous_text,
+                        normalized,
+                        now,
                     ),
                 )
                 conn.execute(
@@ -4824,9 +4917,7 @@ class MeetingStore:
                        WHERE id=?""",
                     (next_version, now, meeting_id),
                 )
-                updated = conn.execute(
-                    "SELECT * FROM meeting_segments WHERE id=?", (segment_id,)
-                ).fetchone()
+                updated = conn.execute("SELECT * FROM meeting_segments WHERE id=?", (segment_id,)).fetchone()
                 outputs_stale = self._outputs_stale_conn(conn, meeting_id, next_version)
                 conn.commit()
             except Exception:
@@ -4856,12 +4947,16 @@ class MeetingStore:
         *,
         expected_edit_version: int,
     ) -> dict[str, Any]:
-        row = db._get_connection().execute(
-            """SELECT previous_text FROM meeting_segment_edits
+        row = (
+            db._get_connection()
+            .execute(
+                """SELECT previous_text FROM meeting_segment_edits
                WHERE meeting_id=? AND segment_id=?
                ORDER BY edit_version DESC LIMIT 1""",
-            (meeting_id, segment_id),
-        ).fetchone()
+                (meeting_id, segment_id),
+            )
+            .fetchone()
+        )
         if row is None:
             raise MeetingConflict("This transcript segment has no correction to undo.")
         return self.edit_segment(
@@ -4874,39 +4969,52 @@ class MeetingStore:
 
     def segment_edit_history(self, meeting_id: str, segment_id: str) -> list[dict[str, Any]]:
         self.get(meeting_id)
-        rows = db._get_connection().execute(
-            """SELECT * FROM meeting_segment_edits
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT * FROM meeting_segment_edits
                WHERE meeting_id=? AND segment_id=?
                ORDER BY edit_version DESC""",
-            (meeting_id, segment_id),
-        ).fetchall()
+                (meeting_id, segment_id),
+            )
+            .fetchall()
+        )
         return [
             {
-                "id": row["id"], "meetingId": row["meeting_id"],
-                "segmentId": row["segment_id"], "editVersion": row["edit_version"],
-                "operation": row["operation"], "previousText": row["previous_text"],
-                "text": row["text"], "createdAt": row["created_at"],
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "segmentId": row["segment_id"],
+                "editVersion": row["edit_version"],
+                "operation": row["operation"],
+                "previousText": row["previous_text"],
+                "text": row["text"],
+                "createdAt": row["created_at"],
             }
             for row in rows
         ]
 
     @staticmethod
-    def _outputs_stale_conn(
-        conn: sqlite3.Connection, meeting_id: str, edit_version: int
-    ) -> bool:
-        return conn.execute(
-            """SELECT 1 FROM meeting_outputs
+    def _outputs_stale_conn(conn: sqlite3.Connection, meeting_id: str, edit_version: int) -> bool:
+        return (
+            conn.execute(
+                """SELECT 1 FROM meeting_outputs
                WHERE meeting_id=? AND status='completed' AND transcript_edit_version<?
                LIMIT 1""",
-            (meeting_id, int(edit_version)),
-        ).fetchone() is not None
+                (meeting_id, int(edit_version)),
+            ).fetchone()
+            is not None
+        )
 
     def next_segment_sequence(self, meeting_id: str, revision: str, source: str) -> int:
-        row = db._get_connection().execute(
-            """SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments
+        row = (
+            db._get_connection()
+            .execute(
+                """SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments
                WHERE meeting_id = ? AND revision = ? AND source = ?""",
-            (meeting_id, revision, source),
-        ).fetchone()
+                (meeting_id, revision, source),
+            )
+            .fetchone()
+        )
         return int(row[0])
 
     def search_segments(self, meeting_id: str, query: str, *, limit: int = 40) -> list[dict[str, Any]]:
@@ -4915,14 +5023,17 @@ class MeetingStore:
         if not terms:
             return []
         conn = db._get_connection()
-        revision = "canonical" if conn.execute(
-            "SELECT 1 FROM meeting_segments WHERE meeting_id=? AND revision='canonical' LIMIT 1",
-            (meeting_id,),
-        ).fetchone() else "live"
+        revision = (
+            "canonical"
+            if conn.execute(
+                "SELECT 1 FROM meeting_segments WHERE meeting_id=? AND revision='canonical' LIMIT 1",
+                (meeting_id,),
+            ).fetchone()
+            else "live"
+        )
         expression = " OR ".join(f'"{term.replace(chr(34), chr(34) * 2)}"' for term in terms[:16])
         scoped_expression = (
-            f'meeting_id:"{meeting_id.replace(chr(34), chr(34) * 2)}" AND '
-            f'revision:"{revision}" AND ({expression})'
+            f'meeting_id:"{meeting_id.replace(chr(34), chr(34) * 2)}" AND revision:"{revision}" AND ({expression})'
         )
         hits = conn.execute(
             """SELECT s.start_ms,s.end_ms FROM meeting_segments_fts f
@@ -4942,7 +5053,7 @@ class MeetingStore:
         params.insert(1, revision)
         rows = conn.execute(
             f"""SELECT * FROM meeting_segments WHERE meeting_id=? AND revision=?
-                AND ({' OR '.join(clauses)}) ORDER BY start_ms,sequence LIMIT ?""",
+                AND ({" OR ".join(clauses)}) ORDER BY start_ms,sequence LIMIT ?""",
             tuple(params),
         ).fetchall()
         return [self._segment(row) for row in rows]
@@ -4954,9 +5065,7 @@ class MeetingStore:
             # query to the same WAL read snapshot, then release SQLite before
             # doing JSON decoding and response assembly.
             conn.execute("BEGIN")
-            meeting_row = conn.execute(
-                "SELECT * FROM meetings WHERE id = ?", (meeting_id,)
-            ).fetchone()
+            meeting_row = conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
             if meeting_row is None:
                 raise MeetingNotFound(meeting_id)
             rows = conn.execute(
@@ -5037,10 +5146,7 @@ class MeetingStore:
         for row in speaker_rows:
             confidence = row["confidence"]
             confidence_value = (
-                float(confidence)
-                if isinstance(confidence, (int, float))
-                and math.isfinite(float(confidence))
-                else None
+                float(confidence) if isinstance(confidence, (int, float)) and math.isfinite(float(confidence)) else None
             )
             profile_is_named = bool(row["profile_is_named"])
             can_preselect = bool(
@@ -5056,11 +5162,7 @@ class MeetingStore:
                     "displayName": str(row["profile_display_name"] or "")[:120],
                     "confidence": confidence_value,
                     "evidenceCount": int(row["profile_evidence_count"] or 0),
-                    "matchState": (
-                        "applied"
-                        if str(row["display_name_source"] or "") == "profile"
-                        else "suggested"
-                    ),
+                    "matchState": ("applied" if str(row["display_name_source"] or "") == "profile" else "suggested"),
                     "canPreselect": can_preselect,
                     "requiresConfirmation": True,
                 }
@@ -5089,46 +5191,77 @@ class MeetingStore:
                 }
             )
         meeting["notes"] = [
-            {"id": row["id"], "meetingId": row["meeting_id"], "body": row["body"],
-             "atMs": row["at_ms"], "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+            {
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "body": row["body"],
+                "atMs": row["at_ms"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
             for row in note_rows
         ]
         meeting["actionItems"] = [
-            {"id": row["id"], "meetingId": row["meeting_id"], "text": row["text"],
-             "owner": row["owner"], "dueDate": row["due_date"], "status": row["status"],
-             "segmentIds": _loads(row["segment_ids_json"], []),
-             "userModified": bool(row["user_modified"]),
-             "provenance": str(row["provenance"] or "automatic"),
-             "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+            {
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "text": row["text"],
+                "owner": row["owner"],
+                "dueDate": row["due_date"],
+                "status": row["status"],
+                "segmentIds": _loads(row["segment_ids_json"], []),
+                "userModified": bool(row["user_modified"]),
+                "provenance": str(row["provenance"] or "automatic"),
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
             for row in action_item_rows
         ]
         meeting["audioGaps"] = [
-            {"id": row["id"], "meetingId": row["meeting_id"], "source": row["source"],
-             "startedAtMs": row["started_at_ms"], "endedAtMs": row["ended_at_ms"],
-             "reason": row["reason"], "createdAt": row["created_at"]}
+            {
+                "id": row["id"],
+                "meetingId": row["meeting_id"],
+                "source": row["source"],
+                "startedAtMs": row["started_at_ms"],
+                "endedAtMs": row["ended_at_ms"],
+                "reason": row["reason"],
+                "createdAt": row["created_at"],
+            }
             for row in audio_gap_rows
         ]
         meeting["audioAssets"] = [self._audio_asset_from_row(row) for row in audio_asset_rows]
         meeting["transcriptCheckpoints"] = [self._checkpoint_dict(row) for row in checkpoint_rows]
         meeting["outputs"] = [
             {
-                "id": row["id"], "kind": row["kind"], "schemaVersion": row["schema_version"],
-                "version": row["version"], "supersedesId": row["supersedes_id"],
-                "transcriptRevision": row["transcript_revision"], "provider": row["provider"],
+                "id": row["id"],
+                "kind": row["kind"],
+                "schemaVersion": row["schema_version"],
+                "version": row["version"],
+                "supersedesId": row["supersedes_id"],
+                "transcriptRevision": row["transcript_revision"],
+                "provider": row["provider"],
                 "transcriptEditVersion": row["transcript_edit_version"],
-                "status": row["status"], "payload": _loads(row["payload_json"], {}),
-                "errorMessage": row["error_message"], "updatedAt": row["updated_at"],
+                "status": row["status"],
+                "payload": _loads(row["payload_json"], {}),
+                "errorMessage": row["error_message"],
+                "updatedAt": row["updated_at"],
             }
             for row in outputs
         ]
         meeting["outputVersions"] = [
             {
-                "id": row["id"], "kind": row["kind"], "schemaVersion": row["schema_version"],
-                "version": row["version"], "supersedesId": row["supersedes_id"],
-                "transcriptRevision": row["transcript_revision"], "provider": row["provider"],
+                "id": row["id"],
+                "kind": row["kind"],
+                "schemaVersion": row["schema_version"],
+                "version": row["version"],
+                "supersedesId": row["supersedes_id"],
+                "transcriptRevision": row["transcript_revision"],
+                "provider": row["provider"],
                 "transcriptEditVersion": row["transcript_edit_version"],
-                "status": row["status"], "payload": _loads(row["payload_json"], {}),
-                "errorMessage": row["error_message"], "createdAt": row["created_at"],
+                "status": row["status"],
+                "payload": _loads(row["payload_json"], {}),
+                "errorMessage": row["error_message"],
+                "createdAt": row["created_at"],
             }
             for row in output_versions
         ]
@@ -5152,15 +5285,24 @@ class MeetingStore:
                 "updatedAt": str(row["processing_progress_updated_at"] or ""),
             }
         return {
-            "id": row["id"], "title": row["title"], "state": row["state"], "language": row["language"],
+            "id": row["id"],
+            "title": row["title"],
+            "state": row["state"],
+            "language": row["language"],
             "transcriptionMode": row["transcription_mode"],
-            "liveProvider": row["live_provider"], "finalProvider": row["final_provider"],
-            "analysisModel": row["analysis_model"], "aecEnabled": bool(row["aec_enabled"]),
+            "liveProvider": row["live_provider"],
+            "finalProvider": row["final_provider"],
+            "analysisModel": row["analysis_model"],
+            "aecEnabled": bool(row["aec_enabled"]),
             "voiceLibraryEnabled": bool(row["voice_library_enabled"]),
-            "consentConfirmed": bool(row["consent_confirmed"]), "origin": row["origin"],
+            "consentConfirmed": bool(row["consent_confirmed"]),
+            "origin": row["origin"],
             "startedAt": row["started_at"],
-            "endedAt": row["ended_at"], "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-            "errorCode": row["error_code"], "errorMessage": row["error_message"],
+            "endedAt": row["ended_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "errorCode": row["error_code"],
+            "errorMessage": row["error_message"],
             "captureMetadata": _loads(row["capture_metadata_json"], {}),
             "audioRetentionDays": int(row["audio_retention_days"] or 0),
             "smartTurnEnabled": bool(row["smart_turn_enabled"]),
@@ -5172,15 +5314,22 @@ class MeetingStore:
     @staticmethod
     def _segment(row: sqlite3.Row) -> dict[str, Any]:
         return {
-            "id": row["id"], "meetingId": row["meeting_id"], "revision": row["revision"],
-            "source": row["source"], "providerSegmentId": row["provider_segment_id"],
-            "speakerId": row["speaker_id"], "speakerLabel": row["speaker_label"],
-            "startMs": row["start_ms"], "endMs": row["end_ms"],
+            "id": row["id"],
+            "meetingId": row["meeting_id"],
+            "revision": row["revision"],
+            "source": row["source"],
+            "providerSegmentId": row["provider_segment_id"],
+            "speakerId": row["speaker_id"],
+            "speakerLabel": row["speaker_label"],
+            "startMs": row["start_ms"],
+            "endMs": row["end_ms"],
             "durationMs": max(0, int(row["end_ms"]) - int(row["start_ms"])),
             "text": row["text"],
-            "confidence": row["confidence"], "alignmentQuality": row["alignment_quality"],
+            "confidence": row["confidence"],
+            "alignmentQuality": row["alignment_quality"],
             "isFinal": bool(row["is_final"]),
-            "sequence": row["sequence"], "createdAt": row["created_at"],
+            "sequence": row["sequence"],
+            "createdAt": row["created_at"],
             "editVersion": int(row["edit_version"] or 0),
             "editedAt": row["edited_at"],
         }

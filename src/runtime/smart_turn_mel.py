@@ -6,7 +6,6 @@ import threading
 from pathlib import Path
 from typing import Any
 
-
 _MODEL_NAME = "smart-turn-mel-matmul.onnx"
 _MODEL_SHA256 = "64568feef60b122cd072163ba5c55e5018e5ffb22f6534ec2620ca3d33545f15"
 _MEL_FILTERS_SHA256 = "abbc49377876704082b17d436c19d91e2a1874fa73f5e2aa8a38df3943f73798"
@@ -61,9 +60,8 @@ def install_smart_turn_mel_acceleration(*, force: bool = False) -> bool:
 
     import numpy as np
     import onnxruntime as ort
-    _whisper_features = importlib.import_module(
-        "pipecat.audio.turn.smart_turn._whisper_features"
-    )
+
+    _whisper_features = importlib.import_module("pipecat.audio.turn.smart_turn._whisper_features")
 
     if not force and "+scriber.noblas." not in np.__version__:
         return False

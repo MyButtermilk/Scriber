@@ -17,7 +17,6 @@ from datetime import date
 from enum import StrEnum
 from typing import Iterable
 
-
 CAPABILITY_REVISION = "provider-audio-formats-v1"
 CAPABILITY_VERIFIED_AT = date(2026, 7, 20)
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
@@ -27,11 +26,7 @@ SPEECHMATICS_REALTIME_DEFAULT_BASE_URL = "wss://eu2.rt.speechmatics.com/v2"
 def speechmatics_batch_endpoint_is_custom(value: str | None) -> bool:
     """Return true without retaining or exposing the configured endpoint."""
 
-    configured = (
-        SPEECHMATICS_BATCH_DEFAULT_BASE_URL
-        if value is None
-        else str(value).strip()
-    ).rstrip("/")
+    configured = (SPEECHMATICS_BATCH_DEFAULT_BASE_URL if value is None else str(value).strip()).rstrip("/")
     return configured.casefold() != SPEECHMATICS_BATCH_DEFAULT_BASE_URL.casefold()
 
 
@@ -45,10 +40,7 @@ def speechmatics_realtime_base_url(value: str | None = None) -> str:
 def speechmatics_realtime_endpoint_is_custom(value: str | None) -> bool:
     """Return true when the configured realtime endpoint is not Pipecat's default."""
 
-    return (
-        speechmatics_realtime_base_url(value).casefold()
-        != SPEECHMATICS_REALTIME_DEFAULT_BASE_URL.casefold()
-    )
+    return speechmatics_realtime_base_url(value).casefold() != SPEECHMATICS_REALTIME_DEFAULT_BASE_URL.casefold()
 
 
 class AudioContainer(StrEnum):
@@ -242,9 +234,7 @@ def _capability(
     preferred_lossy_format: AudioInputFormat | None = None,
     preferred_lossless_format: AudioInputFormat | None = None,
     max_upload_bytes: int | None = None,
-    evidence_kind: CapabilityEvidenceKind = (
-        CapabilityEvidenceKind.OFFICIAL_ENDPOINT_DOCS
-    ),
+    evidence_kind: CapabilityEvidenceKind = (CapabilityEvidenceKind.OFFICIAL_ENDPOINT_DOCS),
     evidence_reference: str,
     active: bool = True,
 ) -> ProviderAudioInputCapabilities:
@@ -414,8 +404,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
             preferred_lossy_format=AudioInputFormat.OGG_OPUS,
             preferred_lossless_format=AudioInputFormat.FLAC,
             evidence_reference=(
-                "https://docs.smallest.ai/waves/v-4-0-0/documentation/"
-                "speech-to-text-pulse/pre-recorded/audio-formats"
+                "https://docs.smallest.ai/waves/v-4-0-0/documentation/speech-to-text-pulse/pre-recorded/audio-formats"
             ),
         )
         for provider in ("smallest", "smallest_async")
@@ -434,8 +423,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.OGG_OPUS,
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
         evidence_reference=(
-            "https://docs.smallest.ai/waves/documentation/"
-            "speech-to-text-pulse/realtime-web-socket/audio-formats"
+            "https://docs.smallest.ai/waves/documentation/speech-to-text-pulse/realtime-web-socket/audio-formats"
         ),
     ),
     _capability(
@@ -449,8 +437,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.OGG_OPUS,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=(
-            "https://www.assemblyai.com/docs/faq/"
-            "what-audio-and-video-file-types-are-supported-by-your-api"
+            "https://www.assemblyai.com/docs/faq/what-audio-and-video-file-types-are-supported-by-your-api"
         ),
     ),
     _capability(
@@ -460,10 +447,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         ProviderAudioRouteKind.REALTIME,
         realtime_formats=(AudioInputFormat.RAW_PCM16, AudioInputFormat.MULAW),
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference=(
-            "https://www.assemblyai.com/docs/streaming/guides/"
-            "stream_prerecorded_file_realtime"
-        ),
+        evidence_reference=("https://www.assemblyai.com/docs/streaming/guides/stream_prerecorded_file_realtime"),
     ),
     _capability(
         "deepgram_async",
@@ -553,10 +537,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         max_upload_bytes=300_000_000,
-        evidence_reference=(
-            "https://learn.microsoft.com/en-us/azure/ai-services/"
-            "speech-service/mai-transcribe"
-        ),
+        evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
     ),
     _capability(
         "openrouter_stt",
@@ -567,9 +548,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         direct_passthrough_formats=_WAV_MP3_FLAC,
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        evidence_reference=(
-            "https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"
-        ),
+        evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
         active=False,
     ),
     _capability(
@@ -593,10 +572,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         # inherit OGG_OPUS/WEBM_OPUS from another Cloud Speech surface.
         realtime_formats=(AudioInputFormat.RAW_PCM16,),
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference=(
-            "https://cloud.google.com/speech-to-text/docs/reference/rpc/"
-            "google.cloud.speech.v2"
-        ),
+        evidence_reference=("https://cloud.google.com/speech-to-text/docs/reference/rpc/google.cloud.speech.v2"),
     ),
     *(
         _capability(
@@ -609,10 +585,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
             batch_generic_containers=(AudioContainer.OGG,),
             preferred_lossy_format=AudioInputFormat.OGG_OPUS,
             preferred_lossless_format=AudioInputFormat.FLAC,
-            evidence_reference=(
-                "https://docs.gladia.io/chapters/limits-and-specifications/"
-                "supported-formats"
-            ),
+            evidence_reference=("https://docs.gladia.io/chapters/limits-and-specifications/supported-formats"),
         )
         for provider in ("gladia", "gladia_async")
     ),
@@ -656,9 +629,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
             AudioInputFormat.MULAW,
         ),
         preferred_lossless_format=AudioInputFormat.RAW_PCM16,
-        evidence_reference=(
-            "https://legacy.docs.speechmatics.com/en/real-time-appliance/api-v2/"
-        ),
+        evidence_reference=("https://legacy.docs.speechmatics.com/en/real-time-appliance/api-v2/"),
     ),
     *(
         _capability(
@@ -757,8 +728,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
 
 
 _CAPABILITY_INDEX = {
-    (entry.provider, entry.route, entry.model_family): entry
-    for entry in PROVIDER_AUDIO_CAPABILITY_MATRIX
+    (entry.provider, entry.route, entry.model_family): entry for entry in PROVIDER_AUDIO_CAPABILITY_MATRIX
 }
 
 _BATCH_ROUTE_BY_PROVIDER = {
@@ -822,11 +792,7 @@ def _normalized(value: object) -> str:
 
 def _coerce_route_kind(value: ProviderAudioRouteKind | str) -> ProviderAudioRouteKind:
     try:
-        return (
-            value
-            if isinstance(value, ProviderAudioRouteKind)
-            else ProviderAudioRouteKind(_normalized(value))
-        )
+        return value if isinstance(value, ProviderAudioRouteKind) else ProviderAudioRouteKind(_normalized(value))
     except ValueError as exc:
         raise UnsupportedProviderAudioRoute("Unknown provider audio route kind.") from exc
 
@@ -839,9 +805,7 @@ def coerce_audio_input_format(value: AudioInputFormat | str) -> AudioInputFormat
     try:
         return AudioInputFormat(_normalized(value))
     except ValueError as exc:
-        raise UnsupportedAudioInputFormat(
-            "Audio input must name an exact verified container/codec format."
-        ) from exc
+        raise UnsupportedAudioInputFormat("Audio input must name an exact verified container/codec format.") from exc
 
 
 def exact_audio_input_format(
@@ -851,14 +815,8 @@ def exact_audio_input_format(
     """Resolve an exact pair without inferring a codec from its container."""
 
     try:
-        container_value = (
-            container
-            if isinstance(container, AudioContainer)
-            else AudioContainer(_normalized(container))
-        )
-        codec_value = (
-            codec if isinstance(codec, AudioCodec) else AudioCodec(_normalized(codec))
-        )
+        container_value = container if isinstance(container, AudioContainer) else AudioContainer(_normalized(container))
+        codec_value = codec if isinstance(codec, AudioCodec) else AudioCodec(_normalized(codec))
         return _FORMAT_BY_PARTS[(container_value, codec_value)]
     except (KeyError, ValueError) as exc:
         raise UnsupportedAudioInputFormat(
@@ -877,9 +835,7 @@ def realtime_route_for_provider(provider: str) -> str | None:
 def realtime_pcm_preparation_implementation(provider: str) -> str | None:
     """Return the exact Pipecat PCM boundary implemented for a realtime key."""
 
-    return _REALTIME_PCM_PREPARATION_IMPLEMENTATION_BY_PROVIDER.get(
-        _normalized(provider)
-    )
+    return _REALTIME_PCM_PREPARATION_IMPLEMENTATION_BY_PROVIDER.get(_normalized(provider))
 
 
 def resolve_provider_audio_capabilities(
@@ -893,19 +849,13 @@ def resolve_provider_audio_capabilities(
     """Resolve only an exact, verified provider/route/model capability key."""
 
     if custom_endpoint:
-        raise UnsupportedProviderAudioRoute(
-            "Custom provider endpoints have no verified audio format capability."
-        )
+        raise UnsupportedProviderAudioRoute("Custom provider endpoints have no verified audio format capability.")
     key = (_normalized(provider), _normalized(route), _normalized(model_family))
     capability = _CAPABILITY_INDEX.get(key)
     if capability is None:
-        raise UnsupportedProviderAudioRoute(
-            "Provider route/model has no verified audio format capability."
-        )
+        raise UnsupportedProviderAudioRoute("Provider route/model has no verified audio format capability.")
     if not capability.active and not include_inactive:
-        raise InactiveProviderAudioRoute(
-            "Provider audio route is documented but not active in Scriber."
-        )
+        raise InactiveProviderAudioRoute("Provider audio route is documented but not active in Scriber.")
     return capability
 
 
@@ -921,13 +871,9 @@ def resolve_batch_provider_audio_capabilities(
     normalized_provider = _normalized(provider)
     route = batch_route_for_provider(normalized_provider)
     if route is None:
-        raise UnsupportedProviderAudioRoute(
-            "Provider key has no verified batch audio route."
-        )
+        raise UnsupportedProviderAudioRoute("Provider key has no verified batch audio route.")
     normalized_model = _normalized(model)
-    model_family = _BATCH_MODEL_FAMILY_ALIASES.get(
-        (normalized_provider, normalized_model), normalized_model
-    )
+    model_family = _BATCH_MODEL_FAMILY_ALIASES.get((normalized_provider, normalized_model), normalized_model)
     return resolve_provider_audio_capabilities(
         normalized_provider,
         route,
@@ -984,12 +930,8 @@ def require_exact_audio_input_format(
     route_kind: ProviderAudioRouteKind | str,
 ) -> AudioInputFormat:
     exact_format = coerce_audio_input_format(audio_format)
-    if not supports_exact_audio_input_format(
-        capability, exact_format, route_kind=route_kind
-    ):
-        raise UnsupportedAudioInputFormat(
-            "Exact audio format is not verified for this provider route/model."
-        )
+    if not supports_exact_audio_input_format(capability, exact_format, route_kind=route_kind):
+        raise UnsupportedAudioInputFormat("Exact audio format is not verified for this provider route/model.")
     return exact_format
 
 
@@ -1035,19 +977,11 @@ def select_audio_input_format(
 
     kind = _coerce_route_kind(route_kind)
     if not capability.active and not allow_inactive:
-        raise InactiveProviderAudioRoute(
-            "Provider audio route is documented but not active in Scriber."
-        )
+        raise InactiveProviderAudioRoute("Provider audio route is documented but not active in Scriber.")
     if kind != capability.route_kind or kind == ProviderAudioRouteKind.LOCAL_NO_UPLOAD:
-        raise UnsupportedProviderAudioRoute(
-            "Provider capability does not support this audio route kind."
-        )
+        raise UnsupportedProviderAudioRoute("Provider capability does not support this audio route kind.")
 
-    accepted = (
-        capability.batch_formats
-        if kind == ProviderAudioRouteKind.BATCH
-        else capability.realtime_formats
-    )
+    accepted = capability.batch_formats if kind == ProviderAudioRouteKind.BATCH else capability.realtime_formats
     if original_format is not None:
         exact_original = coerce_audio_input_format(original_format)
         if (
@@ -1078,9 +1012,7 @@ def select_audio_input_format(
                 capability_id=capability.capability_id,
                 capability_revision=capability.revision,
             )
-    raise UnsupportedAudioInputFormat(
-        "Provider route/model has no verified generated audio representation."
-    )
+    raise UnsupportedAudioInputFormat("Provider route/model has no verified generated audio representation.")
 
 
 def select_provider_audio_input_format(
@@ -1113,22 +1045,16 @@ def _validate_registry() -> None:
         raise RuntimeError("Provider audio capability keys must be unique.")
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         if not capability.direct_passthrough_formats <= capability.batch_formats:
-            raise RuntimeError(
-                f"{capability.capability_id} pass-through formats must be batch formats."
-            )
+            raise RuntimeError(f"{capability.capability_id} pass-through formats must be batch formats.")
         accepted = capability.batch_formats | capability.realtime_formats
         for preferred in (
             capability.preferred_lossy_format,
             capability.preferred_lossless_format,
         ):
             if preferred is not None and preferred not in accepted:
-                raise RuntimeError(
-                    f"{capability.capability_id} has an unsupported preferred format."
-                )
+                raise RuntimeError(f"{capability.capability_id} has an unsupported preferred format.")
         if capability.verified_at != CAPABILITY_VERIFIED_AT:
-            raise RuntimeError(
-                f"{capability.capability_id} has an unexpected verification date."
-            )
+            raise RuntimeError(f"{capability.capability_id} has an unexpected verification date.")
 
 
 _validate_registry()

@@ -46,7 +46,4 @@ LICENSE = LockedRuntimeFile(
 
 SELF_TEST_ARGUMENTS = ("--scriber-self-test",)
 SELF_TEST_TIMEOUT_SECONDS = 15
-SELF_TEST_STDOUT = (
-    b'{"contract":"ScriberYtDlpQuickJsFileV1","ok":true,'
-    b'"quickjsVersion":"0.15.0"}\n'
-)
+SELF_TEST_STDOUT = b'{"contract":"ScriberYtDlpQuickJsFileV1","ok":true,"quickjsVersion":"0.15.0"}\n'

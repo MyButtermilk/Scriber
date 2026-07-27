@@ -86,4 +86,3 @@ class ProviderCircuitBreaker:
             consecutive_failures=failures,
             opened_until_monotonic=opened_until,
         )
-

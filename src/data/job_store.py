@@ -204,9 +204,7 @@ class JobRecord:
             status=JobStatus(str(row["status"])),
             payload=payload if isinstance(payload, dict) else {},
             attempts=int(row["attempts"] or 0),
-            provider_request_state=str(
-                row["provider_request_state"] or PROVIDER_REQUEST_NOT_STARTED
-            ),
+            provider_request_state=str(row["provider_request_state"] or PROVIDER_REQUEST_NOT_STARTED),
             provider_request_attempt=int(row["provider_request_attempt"] or 0),
             next_retry_at=row["next_retry_at"] or "",
             last_error=row["last_error"] or "",
@@ -253,10 +251,7 @@ class JobStore:
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
-        if (
-            conn is None
-            or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation
-        ):
+        if conn is None or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -310,22 +305,15 @@ class JobStore:
                     ON jobs(transcript_id)
                     """
                 )
-                columns = {
-                    str(row["name"])
-                    for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
-                }
+                columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
                 provider_state_added = "provider_request_state" not in columns
                 provider_attempt_added = "provider_request_attempt" not in columns
                 if provider_state_added:
                     conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN provider_request_state "
-                        "TEXT NOT NULL DEFAULT 'not_started'"
+                        "ALTER TABLE jobs ADD COLUMN provider_request_state TEXT NOT NULL DEFAULT 'not_started'"
                     )
                 if provider_attempt_added:
-                    conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN provider_request_attempt "
-                        "INTEGER NOT NULL DEFAULT 0"
-                    )
+                    conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_attempt INTEGER NOT NULL DEFAULT 0")
                 if provider_state_added or provider_attempt_added:
                     # A pre-migration RUNNING row may already have crossed a
                     # billable remote boundary.  There is no durable evidence
@@ -361,8 +349,7 @@ class JobStore:
                         (
                             JobStatus.FAILED.value,
                             PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                            "Provider request outcome is unknown after upgrade; "
-                            "automatic replay was disabled.",
+                            "Provider request outcome is unknown after upgrade; automatic replay was disabled.",
                             JobStatus.QUEUED.value,
                         ),
                     )
@@ -374,9 +361,7 @@ class JobStore:
                 )
                 # Older builds could persist offset-aware retry timestamps. Normalize
                 # them once at startup so due-job queries stay indexable in SQLite.
-                retry_rows = conn.execute(
-                    "SELECT id, next_retry_at FROM jobs WHERE next_retry_at != ''"
-                ).fetchall()
+                retry_rows = conn.execute("SELECT id, next_retry_at FROM jobs WHERE next_retry_at != ''").fetchall()
                 retry_updates = []
                 for row in retry_rows:
                     raw_retry_at = str(row["next_retry_at"] or "")
@@ -815,8 +800,7 @@ class JobStore:
                 if (
                     row is None
                     or str(row["status"]) != JobStatus.RUNNING.value
-                    or int(row["provider_request_attempt"] or 0)
-                    != int(row["attempts"] or 0)
+                    or int(row["provider_request_attempt"] or 0) != int(row["attempts"] or 0)
                     or str(row["provider_request_state"])
                     not in {
                         PROVIDER_REQUEST_MAY_BE_COMMITTED,
@@ -892,9 +876,7 @@ class JobStore:
                 except json.JSONDecodeError:
                     payload = {}
                 attempt_id = (
-                    str(payload.get("providerResultAttemptId") or "").strip()
-                    if isinstance(payload, dict)
-                    else ""
+                    str(payload.get("providerResultAttemptId") or "").strip() if isinstance(payload, dict) else ""
                 )
                 if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", attempt_id):
                     conn.rollback()

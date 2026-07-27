@@ -4,12 +4,11 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Iterable, Any
+from typing import Any, Iterable
 from uuid import uuid4
 
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.paths import logs_dir
-
 
 CLEAR_STATE_FILENAME = "debug-log-clear-state.json"
 _MAX_CLEAR_STATE_BYTES = 1024 * 1024

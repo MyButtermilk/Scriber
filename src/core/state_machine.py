@@ -70,4 +70,3 @@ class RecordingStateMachine:
     def reset(self) -> None:
         self._state = RecordingState.IDLE
         self._history.clear()
-

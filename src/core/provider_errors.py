@@ -151,12 +151,17 @@ def _title_for(label: str, category: ErrorCategory) -> str:
 
 def _generic_provider_message(label: str, category: ErrorCategory) -> str:
     message = user_message_for_category(category)
-    if label and label != "STT provider" and category in {
-        ErrorCategory.AUTH_INVALID,
-        ErrorCategory.AUTH_EXPIRED,
-        ErrorCategory.PROVIDER_LIMIT,
-        ErrorCategory.TRANSIENT_PROVIDER,
-    }:
+    if (
+        label
+        and label != "STT provider"
+        and category
+        in {
+            ErrorCategory.AUTH_INVALID,
+            ErrorCategory.AUTH_EXPIRED,
+            ErrorCategory.PROVIDER_LIMIT,
+            ErrorCategory.TRANSIENT_PROVIDER,
+        }
+    ):
         return message.replace("STT service", label).replace("Provider", label)
     return message
 
@@ -441,7 +446,9 @@ def _classify_azure(provider: str, label: str, text: str, status: int | None, co
             f"{label} rate limit or quota reached. Wait briefly or check your Azure limits.",
             code=code or "429",
         )
-    if _is_5xx(status) or _has(text, "serviceunavailable", "internalservererror", "pipelineerror", "no healthy upstream"):
+    if _is_5xx(status) or _has(
+        text, "serviceunavailable", "internalservererror", "pipelineerror", "no healthy upstream"
+    ):
         return _make_error(
             provider,
             label,
@@ -468,88 +475,284 @@ def _classify_azure(provider: str, label: str, text: str, status: int | None, co
     return None
 
 
-def _classify_assemblyai(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
+def _classify_assemblyai(
+    provider: str, label: str, text: str, status: int | None, code: str
+) -> ProviderUserError | None:
     if status in {401, 403} or _has(text, "unauthorized", "forbidden", "invalid api key"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "AssemblyAI rejected the API key. Check it in Settings.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "AssemblyAI rejected the API key. Check it in Settings.",
+            code=code or str(status or ""),
+        )
     if status == 402 or _has(text, "payment required", "credit", "insufficient funds"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "AssemblyAI credits are exhausted. Check billing or switch provider.", code=code or "402", retryable=False)
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "AssemblyAI credits are exhausted. Check billing or switch provider.",
+            code=code or "402",
+            retryable=False,
+        )
     if status == 429 or _has(text, "too many requests", "rate limit"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "AssemblyAI rate limit reached. Wait briefly or lower request volume.", code=code or "429")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "AssemblyAI rate limit reached. Wait briefly or lower request volume.",
+            code=code or "429",
+        )
     if _is_audio_error(text, status, code):
-        return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "AssemblyAI could not process the recorded audio. Try a clearer or longer recording.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "AssemblyAI could not process the recorded audio. Try a clearer or longer recording.",
+            code=code or str(status or ""),
+        )
     if _is_5xx(status):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "AssemblyAI is temporarily unavailable. Please retry shortly.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "AssemblyAI is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
     return None
 
 
 def _classify_mistral(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
     if status in {401, 403} or _has(text, "authentication_error", "unauthorized", "forbidden", "invalid api key"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "Mistral rejected the API key. Check the Mistral key in Settings.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "Mistral rejected the API key. Check the Mistral key in Settings.",
+            code=code or str(status or ""),
+        )
     if status == 429 or _has(text, "rate_limit_error", "too many requests", "rate limit"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "Mistral rate limit reached. Wait briefly or lower request volume.", code=code or "429")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "Mistral rate limit reached. Wait briefly or lower request volume.",
+            code=code or "429",
+        )
     if _is_5xx(status) or _has(text, "server_error", "bad gateway", "service unavailable", "gateway timeout"):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "Mistral is temporarily unavailable. Please retry shortly.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Mistral is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
     if _has(text, "model_not_found", "model does not exist", "model not found", "unknown model") or (
         "model" in text and "not found" in text
     ):
-        return _make_error(provider, label, ErrorCategory.CONFIG_INVALID, "Mistral does not accept the configured model. Check the Mistral model setting.", code=code or str(status or ""))
-    if _is_audio_error(text, status, code) or _has(text, "unsupported file", "unsupported format", "duration", "file size"):
-        return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "Mistral could not process this audio. Use a supported format and keep recordings under the model limits.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.CONFIG_INVALID,
+            "Mistral does not accept the configured model. Check the Mistral model setting.",
+            code=code or str(status or ""),
+        )
+    if _is_audio_error(text, status, code) or _has(
+        text, "unsupported file", "unsupported format", "duration", "file size"
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "Mistral could not process this audio. Use a supported format and keep recordings under the model limits.",
+            code=code or str(status or ""),
+        )
     if status in {400, 422} or _has(text, "invalid_request_error", "validation error", "bad request"):
-        return _make_error(provider, label, ErrorCategory.CONFIG_INVALID, "Mistral rejected the transcription request. Check the model, language, and settings.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.CONFIG_INVALID,
+            "Mistral rejected the transcription request. Check the model, language, and settings.",
+            code=code or str(status or ""),
+        )
     return None
 
 
 def _classify_smallest(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
     if status == 401 or _has(text, "unauthorized", "missing or invalid authorization", "invalid api key"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "Smallest AI rejected the API key. Check the Smallest AI key in Settings.", code=code or "401")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "Smallest AI rejected the API key. Check the Smallest AI key in Settings.",
+            code=code or "401",
+        )
     if status == 403 or _has(text, "forbidden", "lacks permission"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "Smallest AI key is valid but not allowed for this workspace, product, or trial limit. Check the key in Settings.", code=code or "403")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "Smallest AI key is valid but not allowed for this workspace, product, or trial limit. Check the key in Settings.",
+            code=code or "403",
+        )
     if status == 429 or _has(text, "too many requests", "rate limit"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "Smallest AI rate limit reached. Wait briefly before retrying.", code=code or "429")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "Smallest AI rate limit reached. Wait briefly before retrying.",
+            code=code or "429",
+        )
     if _has(text, "nosuchkey"):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "Smallest AI could not find the uploaded audio object. Retry the transcription.", code=code or "NoSuchKey")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Smallest AI could not find the uploaded audio object. Retry the transcription.",
+            code=code or "NoSuchKey",
+        )
     if _is_audio_error(text, status, code):
-        return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "Smallest AI could not process this audio. Use a supported format and retry.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "Smallest AI could not process this audio. Use a supported format and retry.",
+            code=code or str(status or ""),
+        )
     if _is_5xx(status):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "Smallest AI is temporarily unavailable. Please retry shortly.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Smallest AI is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
     return None
 
 
 def _classify_deepgram(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
     code_l = code.lower()
     if status in {401, 403} or _has(text, "invalid_auth", "insufficient_permissions", "invalid credentials"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "Deepgram rejected the API key or model access. Check the Deepgram key and project permissions in Settings.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "Deepgram rejected the API key or model access. Check the Deepgram key and project permissions in Settings.",
+            code=code or str(status or ""),
+        )
     if status == 402 or _has(text, "asr_payment_required", "not have enough credits", "insufficient credits"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "Deepgram credits are exhausted. Check billing or switch provider.", code=code or "402", retryable=False)
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "Deepgram credits are exhausted. Check billing or switch provider.",
+            code=code or "402",
+            retryable=False,
+        )
     if status == 429 or _has(text, "too_many_requests", "too many requests", "rate limit"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "Deepgram rate limit reached. Wait briefly before retrying.", code=code or "429")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "Deepgram rate limit reached. Wait briefly before retrying.",
+            code=code or "429",
+        )
     if code_l == "data-0000" or _has(text, "payload cannot be decoded as audio"):
-        return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "Deepgram could not decode the streamed audio. Check the audio format and retry.", code=code or "DATA-0000")
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "Deepgram could not decode the streamed audio. Check the audio format and retry.",
+            code=code or "DATA-0000",
+        )
     if code_l == "net-0001":
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_NETWORK, "Deepgram stopped because no audio frames arrived for too long. Check mic input and retry.", code=code)
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_NETWORK,
+            "Deepgram stopped because no audio frames arrived for too long. Check mic input and retry.",
+            code=code,
+        )
     if code_l == "net-0000":
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "Deepgram did not return transcript data in time. Please retry shortly.", code=code)
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Deepgram did not return transcript data in time. Please retry shortly.",
+            code=code,
+        )
     if _is_audio_error(text, status, code):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_NETWORK, "Deepgram could not read the full audio request. Retry; if it repeats, check the connection and audio input.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_NETWORK,
+            "Deepgram could not read the full audio request. Retry; if it repeats, check the connection and audio input.",
+            code=code or str(status or ""),
+        )
     if _is_5xx(status):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "Deepgram is temporarily unavailable. Please retry shortly.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "Deepgram is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
     return None
 
 
 def _classify_openai(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
-    if status in {401, 403} or _has(text, "authentication_error", "invalid_api_key", "incorrect api key", "permissiondeniederror"):
-        return _make_error(provider, label, ErrorCategory.AUTH_INVALID, "OpenAI rejected the API key or project access. Check the OpenAI key in Settings.", code=code or str(status or ""))
-    if status == 429 or _has(text, "ratelimiterror", "rate_limit_error", "too many requests", "rate limit", "insufficient_quota", "quota"):
-        return _make_error(provider, label, ErrorCategory.PROVIDER_LIMIT, "OpenAI rate limit or quota reached. Wait briefly or check billing and limits.", code=code or "429")
+    if status in {401, 403} or _has(
+        text, "authentication_error", "invalid_api_key", "incorrect api key", "permissiondeniederror"
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUTH_INVALID,
+            "OpenAI rejected the API key or project access. Check the OpenAI key in Settings.",
+            code=code or str(status or ""),
+        )
+    if status == 429 or _has(
+        text, "ratelimiterror", "rate_limit_error", "too many requests", "rate limit", "insufficient_quota", "quota"
+    ):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            "OpenAI rate limit or quota reached. Wait briefly or check billing and limits.",
+            code=code or "429",
+        )
     if _is_5xx(status) or _has(text, "internalservererror", "server_error", "service unavailable"):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_PROVIDER, "OpenAI is temporarily unavailable. Please retry shortly.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            "OpenAI is temporarily unavailable. Please retry shortly.",
+            code=code or str(status or ""),
+        )
     if _has(text, "apiconnectionerror", "apitimerouterror", "timeout", "connection"):
-        return _make_error(provider, label, ErrorCategory.TRANSIENT_NETWORK, "Could not connect to OpenAI. Check your network and retry.", code=code)
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_NETWORK,
+            "Could not connect to OpenAI. Check your network and retry.",
+            code=code,
+        )
     if _is_audio_error(text, status, code) or _has(text, "unsupported file", "audio", "file format"):
-        return _make_error(provider, label, ErrorCategory.AUDIO_INVALID, "OpenAI could not process this audio. Use a supported audio format and retry.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            "OpenAI could not process this audio. Use a supported audio format and retry.",
+            code=code or str(status or ""),
+        )
     if status in {400, 422} or _has(text, "badrequesterror", "invalid_request_error"):
-        return _make_error(provider, label, ErrorCategory.CONFIG_INVALID, "OpenAI rejected the transcription request. Check the model and settings.", code=code or str(status or ""))
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.CONFIG_INVALID,
+            "OpenAI rejected the transcription request. Check the model and settings.",
+            code=code or str(status or ""),
+        )
     return None
 
 
@@ -592,14 +795,18 @@ def _classify_modulate(
             "Modulate credits or connection limits were reached. Wait briefly or check the Modulate plan.",
             code=code or str(status or "4029"),
         )
-    if _is_audio_error(text, status, code) or status == 422 or _has(
-        text,
-        "1003",
-        "unsupported audio_format",
-        "unsupported format",
-        "invalid sample_rate",
-        "invalid num_channels",
-        "100mb batch upload limit",
+    if (
+        _is_audio_error(text, status, code)
+        or status == 422
+        or _has(
+            text,
+            "1003",
+            "unsupported audio_format",
+            "unsupported format",
+            "invalid sample_rate",
+            "invalid num_channels",
+            "100mb batch upload limit",
+        )
     ):
         return _make_error(
             provider,

@@ -245,12 +245,8 @@ def meeting_max_duration_seconds(provider: str, model: str | None = None) -> int
     """Hard duration ceiling for the active Meeting finalization route, if known."""
     key = (provider or "").strip().lower()
     if key in {"mistral", "mistral_async"}:
-        selected_model = str(
-            model
-            or os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
-        ).strip().lower()
+        selected_model = str(model or os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")).strip().lower()
         # Voxtral Mini Transcribe 2 (2602) supports three hours. Preserve the
         # older 2507/unknown override conservatively at its 30-minute bound.
         return 10_800 if "2602" in selected_model else 1_800
     return get_capabilities(key).meeting_max_duration_seconds
-

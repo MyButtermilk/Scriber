@@ -8,7 +8,6 @@ import tempfile
 import wave
 from typing import BinaryIO
 
-
 _COPY_CHUNK_BYTES = 1024 * 1024
 SPOOL_MEMORY_LIMIT_BYTES = 10 * 1024 * 1024
 WAV_PCM16_HEADER_BYTES = 44

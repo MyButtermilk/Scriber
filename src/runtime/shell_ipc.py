@@ -44,11 +44,7 @@ _command_domain_locks = {
 
 
 def available() -> bool:
-    return (
-        sys.platform.startswith("win")
-        and bool(_configured_pipe_name())
-        and bool(_configured_token())
-    )
+    return sys.platform.startswith("win") and bool(_configured_pipe_name()) and bool(_configured_token())
 
 
 def diagnostic_snapshot() -> dict[str, Any]:
@@ -76,9 +72,7 @@ def diagnostic_snapshot() -> dict[str, Any]:
         "lastFallbackReason": last_fallback_reason,
         "lastResponse": last_response_summary,
         "lastCommandAgoSeconds": (
-            max(0.0, time.monotonic() - last_command_at)
-            if last_command_at is not None
-            else None
+            max(0.0, time.monotonic() - last_command_at) if last_command_at is not None else None
         ),
     }
 
@@ -205,9 +199,7 @@ def record_command_diagnostic(
     fallback_reason: str | None = None,
     response: dict[str, Any] | None = None,
 ) -> None:
-    error = None if success else " ".join(
-        part for part in (error_code, fallback_reason) if part
-    ) or "command failed"
+    error = None if success else " ".join(part for part in (error_code, fallback_reason) if part) or "command failed"
     _record_result(
         command,
         success,
@@ -278,9 +270,7 @@ def _inject_text_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         if value is not None:
             summary[key] = value
     requested_pre_delay_ms = payload.get("requestedPreDelayMs")
-    if isinstance(requested_pre_delay_ms, (int, float)) and not isinstance(
-        requested_pre_delay_ms, bool
-    ):
+    if isinstance(requested_pre_delay_ms, (int, float)) and not isinstance(requested_pre_delay_ms, bool):
         summary["requestedPreDelayMs"] = float(requested_pre_delay_ms)
     deadline_ms = payload.get("deadlineMs")
     if isinstance(deadline_ms, (int, float)) and not isinstance(deadline_ms, bool):
@@ -288,9 +278,7 @@ def _inject_text_payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
     markers = payload.get("markers")
     if isinstance(markers, list):
         summary["markers"] = [
-            str(marker)[:48]
-            for marker in markers
-            if isinstance(marker, str) and marker in {"clipboard_set", "paste"}
+            str(marker)[:48] for marker in markers if isinstance(marker, str) and marker in {"clipboard_set", "paste"}
         ]
     for key in ("restoreScheduled", "foregroundChanged"):
         value = payload.get(key)
@@ -413,15 +401,11 @@ def _call_shell_ipc_ordered(
     deadline = time.monotonic() + timeout_budget
     acquired = domain_lock.acquire(timeout=timeout_budget)
     if not acquired:
-        raise TimeoutError(
-            f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s"
-        )
+        raise TimeoutError(f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s")
     try:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError(
-                f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s"
-            )
+            raise TimeoutError(f"shell IPC {domain} command queue timed out after {timeout_budget:.3f}s")
         return _call_shell_ipc_windows(
             pipe_name,
             request_line,
@@ -510,17 +494,9 @@ def _response_ack_line(
 
     api_version = request.get("apiVersion")
     request_id = request.get("requestId")
-    if (
-        not isinstance(api_version, str)
-        or not api_version
-        or len(api_version.encode("utf-8")) > 16
-    ):
+    if not isinstance(api_version, str) or not api_version or len(api_version.encode("utf-8")) > 16:
         raise ValueError("shell IPC request apiVersion was invalid")
-    if (
-        not isinstance(request_id, str)
-        or not request_id
-        or len(request_id.encode("utf-8")) > 128
-    ):
+    if not isinstance(request_id, str) or not request_id or len(request_id.encode("utf-8")) > 128:
         raise ValueError("shell IPC request requestId was invalid")
 
     response = json.loads(response_line)
@@ -591,17 +567,13 @@ def _send_request_over_pipe_windows(
     ) -> int:
         wait_ms = remaining_ms()
         if wait_ms <= 0:
-            raise TimeoutError(
-                f"shell IPC {operation} timed out after {timeout_seconds:.3f}s"
-            )
+            raise TimeoutError(f"shell IPC {operation} timed out after {timeout_seconds:.3f}s")
         wait_result = kernel32.WaitForSingleObject(
             wintypes.HANDLE(overlapped.hEvent),
             wintypes.DWORD(wait_ms),
         )
         if wait_result == wait_timeout:
-            raise TimeoutError(
-                f"shell IPC {operation} timed out after {timeout_seconds:.3f}s"
-            )
+            raise TimeoutError(f"shell IPC {operation} timed out after {timeout_seconds:.3f}s")
         if wait_result != wait_object_0:
             error = ctypes.get_last_error() if wait_result == wait_failed else int(wait_result)
             raise OSError(error, f"WaitForSingleObject failed during {operation}")
@@ -654,9 +626,7 @@ def _send_request_over_pipe_windows(
     handle = invalid_handle_value
     while handle == invalid_handle_value:
         timeout_ms = remaining_ms()
-        if timeout_ms <= 0 or not kernel32.WaitNamedPipeW(
-            wintypes.LPCWSTR(pipe_name), wintypes.DWORD(timeout_ms)
-        ):
+        if timeout_ms <= 0 or not kernel32.WaitNamedPipeW(wintypes.LPCWSTR(pipe_name), wintypes.DWORD(timeout_ms)):
             raise OSError(ctypes.get_last_error(), "WaitNamedPipeW failed")
 
         handle = kernel32.CreateFileW(

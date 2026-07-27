@@ -22,17 +22,10 @@ from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
 from src.runtime.media_tools import require_media_tool
 from src.runtime.subprocess_utils import hidden_subprocess_kwargs, read_stream_limited
 
-
 PROVIDER_REPLAY_RUN_ID_ENV = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID"
-PROVIDER_REPLAY_FIXTURE_DURATION_MS_ENV = (
-    "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"
-)
-PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV = (
-    "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"
-)
-PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV = (
-    "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
-)
+PROVIDER_REPLAY_FIXTURE_DURATION_MS_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"
+PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"
+PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
 PROVIDER_REPLAY_RUNTIME_MODE = "tauri-supervised"
 PROVIDER_REPLAY_LAUNCH_KIND = "sidecar"
 PROVIDER_REPLAY_PARENT_EXE = "scriber-desktop.exe"
@@ -46,9 +39,7 @@ PROVIDER_REPLAY_AZURE_REGION = "northeurope"
 _AZURE_REPLAY_INPUT_SAMPLE_RATE = 48_000
 _AZURE_REPLAY_OUTPUT_SAMPLE_RATE = 16_000
 _AZURE_REPLAY_REFERENCE_CACHE_MAX_BYTES = 48 * 1024 * 1024
-_AZURE_REPLAY_REFERENCE_CACHE: dict[
-    tuple[str, int, str, int], bytes
-] = {}
+_AZURE_REPLAY_REFERENCE_CACHE: dict[tuple[str, int, str, int], bytes] = {}
 _AZURE_REPLAY_REFERENCE_CACHE_BYTES = 0
 _AZURE_REPLAY_REFERENCE_CACHE_LOCK = threading.Lock()
 _AZURE_REPLAY_URL = (
@@ -240,9 +231,7 @@ def _windows_process_identity(process_id: int) -> tuple[str, int] | None:
             ctypes.byref(user_time),
         ):
             return None
-        creation_100ns = (int(creation.dwHighDateTime) << 32) | int(
-            creation.dwLowDateTime
-        )
+        creation_100ns = (int(creation.dwHighDateTime) << 32) | int(creation.dwLowDateTime)
         if creation_100ns <= 0:
             return None
         return Path(buffer.value).name.casefold(), creation_100ns
@@ -330,16 +319,10 @@ class ProviderReplayRuntimeGate:
             launch_kind=os.getenv("SCRIBER_BACKEND_LAUNCH_KIND"),
             platform=sys.platform,
             backend_pid=backend_pid,
-            backend_creation_time_100ns=(
-                backend_identity[1] if backend_identity is not None else None
-            ),
+            backend_creation_time_100ns=(backend_identity[1] if backend_identity is not None else None),
             parent_pid=parent_pid,
-            parent_executable_name=(
-                parent_identity[0] if parent_identity is not None else None
-            ),
-            parent_creation_time_100ns=(
-                parent_identity[1] if parent_identity is not None else None
-            ),
+            parent_executable_name=(parent_identity[0] if parent_identity is not None else None),
+            parent_creation_time_100ns=(parent_identity[1] if parent_identity is not None else None),
         )
 
 
@@ -414,12 +397,8 @@ def create_azure_mai_replay_transport(
     if not raw_fixture_pcm_path:
         raise ValueError("provider replay fixture PCM path is missing")
     fixture_pcm_path = Path(raw_fixture_pcm_path)
-    capture_block_size = _provider_replay_capture_block_size_frames(
-        capture_block_size_frames
-    )
-    expected_audio_preparation_implementation = str(
-        expected_audio_preparation_implementation or ""
-    ).strip()
+    capture_block_size = _provider_replay_capture_block_size_frames(capture_block_size_frames)
+    expected_audio_preparation_implementation = str(expected_audio_preparation_implementation or "").strip()
     if expected_audio_preparation_implementation not in {
         "post_stop_ffmpeg_mp3_v1",
         "capture_time_ffmpeg_mp3_v1",
@@ -483,12 +462,7 @@ def create_azure_mai_replay_transport(
         )
         maximum_mp3_bytes = max(
             256 * 1024,
-            int(
-                (padded_duration_ms / 1000.0)
-                * 32
-                * 1024
-            )
-            + 64 * 1024,
+            int((padded_duration_ms / 1000.0) * 32 * 1024) + 64 * 1024,
         )
         audio = await asyncio.to_thread(
             _read_azure_replay_mp3_fully,
@@ -518,9 +492,7 @@ def _load_authoritative_azure_replay_pcm(
     authoritative_fixture_duration_ms: int,
     expected_fixture_pcm_sha256: str,
 ) -> bytes:
-    expected_frames = (
-        _AZURE_REPLAY_INPUT_SAMPLE_RATE * authoritative_fixture_duration_ms // 1000
-    )
+    expected_frames = _AZURE_REPLAY_INPUT_SAMPLE_RATE * authoritative_fixture_duration_ms // 1000
     expected_bytes = expected_frames * 2
     try:
         if path.is_symlink() or not path.is_file() or path.stat().st_size != expected_bytes:
@@ -557,11 +529,7 @@ def _azure_replay_block_tail_frames(
     authoritative_fixture_duration_ms: int,
     capture_block_size_frames: int,
 ) -> int:
-    fixture_frames = (
-        _AZURE_REPLAY_INPUT_SAMPLE_RATE
-        * int(authoritative_fixture_duration_ms)
-        // 1000
-    )
+    fixture_frames = _AZURE_REPLAY_INPUT_SAMPLE_RATE * int(authoritative_fixture_duration_ms) // 1000
     return (-fixture_frames) % int(capture_block_size_frames)
 
 
@@ -573,9 +541,7 @@ def _azure_replay_block_tail_duration_ms(
         authoritative_fixture_duration_ms,
         capture_block_size_frames,
     )
-    return (
-        tail_frames * 1000 + _AZURE_REPLAY_INPUT_SAMPLE_RATE - 1
-    ) // _AZURE_REPLAY_INPUT_SAMPLE_RATE
+    return (tail_frames * 1000 + _AZURE_REPLAY_INPUT_SAMPLE_RATE - 1) // _AZURE_REPLAY_INPUT_SAMPLE_RATE
 
 
 def _read_azure_replay_mp3_fully(
@@ -627,9 +593,7 @@ async def _run_azure_replay_ffmpeg_pipe(
             **hidden_subprocess_kwargs(),
         )
     except OSError as exc:
-        raise RuntimeError(
-            f"provider replay MAI {operation} could not start"
-        ) from exc
+        raise RuntimeError(f"provider replay MAI {operation} could not start") from exc
     if process.stdin is None or process.stdout is None or process.stderr is None:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
@@ -652,15 +616,11 @@ async def _run_azure_replay_ffmpeg_pipe(
         while chunk := await process.stdout.read(64 * 1024):
             output.extend(chunk)
             if len(output) > maximum_output_bytes:
-                raise RuntimeError(
-                    f"provider replay MAI {operation} output exceeds the bound"
-                )
+                raise RuntimeError(f"provider replay MAI {operation} output exceeds the bound")
 
     feed_task = asyncio.create_task(feed_input())
     output_task = asyncio.create_task(drain_output())
-    stderr_task = asyncio.create_task(
-        read_stream_limited(process.stderr, max_bytes=1024 * 1024)
-    )
+    stderr_task = asyncio.create_task(read_stream_limited(process.stderr, max_bytes=1024 * 1024))
     wait_task = asyncio.create_task(process.wait())
     tasks = (feed_task, output_task, stderr_task, wait_task)
     try:
@@ -722,10 +682,7 @@ def _azure_replay_reference_cache_put(
     with _AZURE_REPLAY_REFERENCE_CACHE_LOCK:
         if key in _AZURE_REPLAY_REFERENCE_CACHE:
             return
-        if (
-            _AZURE_REPLAY_REFERENCE_CACHE_BYTES + value_bytes
-            > _AZURE_REPLAY_REFERENCE_CACHE_MAX_BYTES
-        ):
+        if _AZURE_REPLAY_REFERENCE_CACHE_BYTES + value_bytes > _AZURE_REPLAY_REFERENCE_CACHE_MAX_BYTES:
             _AZURE_REPLAY_REFERENCE_CACHE.clear()
             _AZURE_REPLAY_REFERENCE_CACHE_BYTES = 0
         _AZURE_REPLAY_REFERENCE_CACHE[key] = value
@@ -744,21 +701,11 @@ async def _validate_azure_replay_mp3(
 ) -> None:
     duration_seconds = authoritative_fixture_duration_ms / 1000.0
     timeout_seconds = max(15.0, min(120.0, duration_seconds * 0.25 + 10.0))
-    padded_duration_ms = (
-        authoritative_fixture_duration_ms
-        + _azure_replay_block_tail_duration_ms(
-            authoritative_fixture_duration_ms,
-            capture_block_size_frames,
-        )
+    padded_duration_ms = authoritative_fixture_duration_ms + _azure_replay_block_tail_duration_ms(
+        authoritative_fixture_duration_ms,
+        capture_block_size_frames,
     )
-    maximum_decoded_bytes = (
-        int(
-            _AZURE_REPLAY_OUTPUT_SAMPLE_RATE
-            * padded_duration_ms
-            / 1000
-        )
-        + 4096
-    ) * 2
+    maximum_decoded_bytes = (int(_AZURE_REPLAY_OUTPUT_SAMPLE_RATE * padded_duration_ms / 1000) + 4096) * 2
     decode_command = [
         ffmpeg,
         "-hide_banner",
@@ -806,11 +753,7 @@ async def _validate_azure_replay_mp3(
     if not hmac.compare_digest(actual_decoded, expected_decoded):
         shared_bytes = min(len(actual_decoded), len(expected_decoded))
         first_different_byte = next(
-            (
-                index
-                for index in range(shared_bytes)
-                if actual_decoded[index] != expected_decoded[index]
-            ),
+            (index for index in range(shared_bytes) if actual_decoded[index] != expected_decoded[index]),
             shared_bytes,
         )
         # This branch is reachable only behind the private, frozen-runtime
@@ -897,9 +840,7 @@ async def prewarm_azure_mai_replay_validation(
     raw_fixture_path = str(authoritative_fixture_pcm_path or "").strip()
     if not raw_fixture_path:
         raise ValueError("provider replay fixture PCM path is missing")
-    capture_block_size = _provider_replay_capture_block_size_frames(
-        capture_block_size_frames
-    )
+    capture_block_size = _provider_replay_capture_block_size_frames(capture_block_size_frames)
     fixture_pcm = await asyncio.to_thread(
         _load_authoritative_azure_replay_pcm,
         Path(raw_fixture_path),
@@ -913,21 +854,9 @@ async def prewarm_azure_mai_replay_validation(
     )
     maximum_mp3_bytes = max(
         256 * 1024,
-        int(
-            (padded_duration_ms / 1000.0)
-            * 32
-            * 1024
-        )
-        + 64 * 1024,
+        int((padded_duration_ms / 1000.0) * 32 * 1024) + 64 * 1024,
     )
-    maximum_decoded_bytes = (
-        int(
-            _AZURE_REPLAY_OUTPUT_SAMPLE_RATE
-            * padded_duration_ms
-            / 1000
-        )
-        + 4096
-    ) * 2
+    maximum_decoded_bytes = (int(_AZURE_REPLAY_OUTPUT_SAMPLE_RATE * padded_duration_ms / 1000) + 4096) * 2
     timeout_seconds = max(
         15.0,
         min(120.0, (duration_ms / 1000.0) * 0.25 + 10.0),
@@ -1037,8 +966,8 @@ def _validate_speechmatics_replay_wav(
         raise RuntimeError("provider replay Speechmatics WAV chunks are incomplete")
     if len(fmt_chunk) < 16:
         raise RuntimeError("provider replay Speechmatics WAV fmt is truncated")
-    audio_format, channels, sample_rate, byte_rate, block_align, bits_per_sample = (
-        struct.unpack_from("<HHIIHH", fmt_chunk, 0)
+    audio_format, channels, sample_rate, byte_rate, block_align, bits_per_sample = struct.unpack_from(
+        "<HHIIHH", fmt_chunk, 0
     )
     if (
         audio_format != 1
@@ -1052,9 +981,7 @@ def _validate_speechmatics_replay_wav(
     if not data_chunk or len(data_chunk) % block_align:
         raise RuntimeError("provider replay Speechmatics PCM payload is invalid")
 
-    fixture_byte_length = int(
-        sample_rate * authoritative_fixture_duration_ms / 1000
-    ) * block_align
+    fixture_byte_length = int(sample_rate * authoritative_fixture_duration_ms / 1000) * block_align
     fixture_prefix = data_chunk[:fixture_byte_length]
     if len(fixture_prefix) != fixture_byte_length or not hmac.compare_digest(
         hashlib.sha256(fixture_prefix).hexdigest(),
@@ -1062,13 +989,8 @@ def _validate_speechmatics_replay_wav(
     ):
         raise RuntimeError("provider replay Speechmatics fixture prefix mismatch")
     trailing = data_chunk[fixture_byte_length:]
-    expected_trailing_frames = (
-        -(fixture_byte_length // block_align)
-    ) % capture_block_size_frames
-    if (
-        len(trailing) != expected_trailing_frames * block_align
-        or any(trailing)
-    ):
+    expected_trailing_frames = (-(fixture_byte_length // block_align)) % capture_block_size_frames
+    if len(trailing) != expected_trailing_frames * block_align or any(trailing):
         raise RuntimeError("provider replay Speechmatics fixture tail is invalid")
 
 
@@ -1099,9 +1021,7 @@ def _speechmatics_replay_json_v2(text: str, *, duration_ms: int) -> dict[str, An
             "type": "punctuation",
             "start_time": round(duration_seconds, 3),
             "end_time": round(duration_seconds, 3),
-            "alternatives": [
-                {"content": ".", "confidence": 1.0, "language": "en"}
-            ],
+            "alternatives": [{"content": ".", "confidence": 1.0, "language": "en"}],
         }
     )
     return {
@@ -1134,12 +1054,8 @@ def create_speechmatics_batch_replay_transport(
     expected_fixture_pcm_sha256 = str(expected_fixture_pcm_sha256 or "").lower()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_fixture_pcm_sha256):
         raise ValueError("provider replay fixture PCM digest is invalid")
-    capture_block_size = _provider_replay_capture_block_size_frames(
-        capture_block_size_frames
-    )
-    expected_audio_preparation_implementation = str(
-        expected_audio_preparation_implementation or ""
-    ).strip()
+    capture_block_size = _provider_replay_capture_block_size_frames(capture_block_size_frames)
+    expected_audio_preparation_implementation = str(expected_audio_preparation_implementation or "").strip()
     if expected_audio_preparation_implementation not in {
         "python_reserved_wav_header_v1",
         "wav_pcm16_file_v1",
@@ -1188,13 +1104,8 @@ def create_speechmatics_batch_replay_transport(
         }
         if config != expected_config:
             raise RuntimeError("provider replay Speechmatics config mismatch")
-        if (
-            audio_preparation_implementation
-            != expected_audio_preparation_implementation
-        ):
-            raise RuntimeError(
-                "provider replay Speechmatics audio preparation mismatch"
-            )
+        if audio_preparation_implementation != expected_audio_preparation_implementation:
+            raise RuntimeError("provider replay Speechmatics audio preparation mismatch")
         payload = await asyncio.to_thread(_read_binary_source_fully, audio_source)
         await asyncio.to_thread(
             _validate_speechmatics_replay_wav,
@@ -1278,9 +1189,7 @@ class LocalSonioxReplayServer:
     def __init__(self) -> None:
         self.text = provider_replay_fixture_text("soniox")
         self._final_message = self._build_final_message(self.text)
-        self.final_message_sha256 = hashlib.sha256(
-            self._final_message.encode("utf-8")
-        ).hexdigest()
+        self.final_message_sha256 = hashlib.sha256(self._final_message.encode("utf-8")).hexdigest()
         self.url: str | None = None
         self._server: Any | None = None
         self._connected = False
@@ -1419,9 +1328,7 @@ class ProviderReplayExecution:
     session_id: str | None = None
     watchdog_task: asyncio.Task | None = None
     auto_stop_task: asyncio.Task | None = None
-    authoritative_fixture_duration_ms: int = (
-        PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
-    )
+    authoritative_fixture_duration_ms: int = PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
     _closed: bool = False
     _pending_markers: list[tuple[str, int, int]] = field(default_factory=list)
 
@@ -1431,11 +1338,7 @@ class ProviderReplayExecution:
 
     @property
     def soniox_final_message_sha256(self) -> str | None:
-        return (
-            self.soniox_server.final_message_sha256
-            if self.soniox_server is not None
-            else None
-        )
+        return self.soniox_server.final_message_sha256 if self.soniox_server is not None else None
 
     def bind_session(self, session_id: str) -> dict[str, Any]:
         result = self.registry.bind_session(
@@ -1466,9 +1369,7 @@ class ProviderReplayExecution:
             if any(name == marker for name, _ticks, _frequency in self._pending_markers):
                 raise ProviderReplayConflict("provider replay marker already recorded")
             ticks, frequency = (
-                qpc_snapshot
-                if qpc_snapshot is not None
-                else self.registry.capture_marker_timestamp(marker)
+                qpc_snapshot if qpc_snapshot is not None else self.registry.capture_marker_timestamp(marker)
             )
             self._pending_markers.append((marker, int(ticks), int(frequency)))
             return {
@@ -1496,9 +1397,7 @@ class ProviderReplayExecution:
 
     def attach_capture_attestation(self, payload: dict[str, Any] | None) -> dict[str, Any]:
         if self.session_id is None:
-            raise ProviderReplayConflict(
-                "provider replay capture attestation requires a bound session"
-            )
+            raise ProviderReplayConflict("provider replay capture attestation requires a bound session")
         return self.registry.record_capture_attestation(
             run_id=self.run_id,
             sample_id=self.sample_id,
@@ -1511,9 +1410,7 @@ class ProviderReplayExecution:
         implementation: str,
     ) -> dict[str, Any]:
         if self.session_id is None:
-            raise ProviderReplayConflict(
-                "provider replay audio preparation requires a bound session"
-            )
+            raise ProviderReplayConflict("provider replay audio preparation requires a bound session")
         return self.registry.record_audio_preparation_attestation(
             run_id=self.run_id,
             sample_id=self.sample_id,
@@ -1555,9 +1452,7 @@ class ProviderReplayRegistry:
         monotonic: Callable[[], float] = time.monotonic,
         uuid_factory: Callable[[], UUID] = uuid4,
         qpc_clock: Callable[[], tuple[int, int]] = windows_qpc_snapshot,
-        authoritative_fixture_duration_ms: int = (
-            PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
-        ),
+        authoritative_fixture_duration_ms: int = (PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS),
     ) -> None:
         if ttl_seconds <= 0 or ttl_seconds > 1_200:
             raise ValueError("provider replay TTL must be in (0, 1200]")
@@ -1581,11 +1476,7 @@ class ProviderReplayRegistry:
         return bool(self.gate.enabled)
 
     def _require_enabled(self) -> tuple[str, str]:
-        if (
-            not self.gate.enabled
-            or self.gate.run_id is None
-            or self.gate.process_generation_fingerprint is None
-        ):
+        if not self.gate.enabled or self.gate.run_id is None or self.gate.process_generation_fingerprint is None:
             raise ProviderReplayDisabled("provider replay is not enabled")
         return self.gate.run_id, self.gate.process_generation_fingerprint
 
@@ -1598,12 +1489,16 @@ class ProviderReplayRegistry:
 
     def _expire_locked(self, now: float) -> None:
         for sample in self._samples.values():
-            if sample.state in {
-                "prepared",
-                "activation_armed",
-                "starting",
-                "armed",
-            } and now >= sample.expires_at_monotonic:
+            if (
+                sample.state
+                in {
+                    "prepared",
+                    "activation_armed",
+                    "starting",
+                    "armed",
+                }
+                and now >= sample.expires_at_monotonic
+            ):
                 sample.state = "expired"
 
     def _trim_locked(self) -> None:
@@ -1613,8 +1508,7 @@ class ProviderReplayRegistry:
             (
                 sample
                 for sample in self._samples.values()
-                if sample.state
-                not in {"prepared", "activation_armed", "starting", "armed"}
+                if sample.state not in {"prepared", "activation_armed", "starting", "armed"}
             ),
             key=lambda item: item.created_at_monotonic,
         )
@@ -1634,11 +1528,7 @@ class ProviderReplayRegistry:
         canonical_run = self._canonical_matching_run(run_id)
         canonical_sample = canonical_replay_uuid(sample_id)
         sample = self._samples.get(canonical_sample or "")
-        if (
-            sample is None
-            or not hmac.compare_digest(sample.run_id, canonical_run)
-            or sample.state == "expired"
-        ):
+        if sample is None or not hmac.compare_digest(sample.run_id, canonical_run) or sample.state == "expired":
             raise ProviderReplayNotFound("provider replay sample not found")
         if now >= sample.expires_at_monotonic:
             sample.state = "expired"
@@ -1660,8 +1550,7 @@ class ProviderReplayRegistry:
         with self._lock:
             self._expire_locked(now)
             if any(
-                sample.state
-                in {"prepared", "activation_armed", "starting", "armed"}
+                sample.state in {"prepared", "activation_armed", "starting", "armed"}
                 for sample in self._samples.values()
             ):
                 raise ProviderReplayConflict("another provider replay sample is active")
@@ -1677,8 +1566,7 @@ class ProviderReplayRegistry:
                 created_at_monotonic=now,
                 expires_at_monotonic=now + self._ttl_seconds,
                 expected_audio_preparation_implementation=(
-                    str(expected_audio_preparation_implementation or "").strip()
-                    or None
+                    str(expected_audio_preparation_implementation or "").strip() or None
                 ),
             )
             self._samples[sample_id] = sample
@@ -1713,10 +1601,9 @@ class ProviderReplayRegistry:
             )
             if sample.state != "prepared":
                 raise ProviderReplayConflict("provider replay sample is not prepared")
-            target_material = (
-                f"provider-replay-target-v1\0{target_process_id}\0"
-                f"{target_creation_time_100ns}"
-            ).encode("ascii")
+            target_material = (f"provider-replay-target-v1\0{target_process_id}\0{target_creation_time_100ns}").encode(
+                "ascii"
+            )
             sample.target_generation_sha256 = hashlib.sha256(target_material).hexdigest()
             sample.state = "unsupported"
             return self._public_locked(sample, now=now)
@@ -1742,13 +1629,10 @@ class ProviderReplayRegistry:
                 raise ProviderReplayConflict("provider replay sample is not prepared")
             normalized_activation = str(activation_kind or "").strip().lower()
             if normalized_activation not in {"hotkey", "button"}:
-                raise ProviderReplayConflict(
-                    "provider replay activation kind is invalid"
-                )
-            target_material = (
-                f"provider-replay-target-v1\0{target_process_id}\0"
-                f"{target_creation_time_100ns}"
-            ).encode("ascii")
+                raise ProviderReplayConflict("provider replay activation kind is invalid")
+            target_material = (f"provider-replay-target-v1\0{target_process_id}\0{target_creation_time_100ns}").encode(
+                "ascii"
+            )
             sample.target_generation_sha256 = hashlib.sha256(target_material).hexdigest()
             sample.activation_kind = normalized_activation
             sample.state = "activation_armed"
@@ -1778,13 +1662,8 @@ class ProviderReplayRegistry:
                 sample_id=sample_id,
                 now=now,
             )
-            if (
-                sample.state != "activation_armed"
-                or sample.activation_kind != normalized_activation
-            ):
-                raise ProviderReplayConflict(
-                    "provider replay activation binding failed"
-                )
+            if sample.state != "activation_armed" or sample.activation_kind != normalized_activation:
+                raise ProviderReplayConflict("provider replay activation binding failed")
             sample.state = "starting"
             return self._public_locked(sample, now=now)
 
@@ -1875,11 +1754,7 @@ class ProviderReplayRegistry:
                 raise ProviderReplayConflict("provider replay marker already recorded")
             if (qpc_ticks is None) != (qpc_frequency is None):
                 raise ProviderReplayDisabled("windows_qpc_invalid")
-            ticks, frequency = (
-                self._qpc_clock()
-                if qpc_ticks is None
-                else (int(qpc_ticks), int(qpc_frequency))
-            )
+            ticks, frequency = self._qpc_clock() if qpc_ticks is None else (int(qpc_ticks), int(qpc_frequency))
             if ticks <= 0 or frequency <= 0:
                 raise ProviderReplayDisabled("windows_qpc_invalid")
             artifact = {
@@ -1888,9 +1763,7 @@ class ProviderReplayRegistry:
                 "runId": sample.run_id,
                 "sampleId": sample.sample_id,
                 "sessionId": sample.session_id,
-                "processGenerationFingerprint": (
-                    self.gate.process_generation_fingerprint
-                ),
+                "processGenerationFingerprint": (self.gate.process_generation_fingerprint),
                 "source": source,
                 "marker": marker,
                 "qpcTicks": int(ticks),
@@ -1912,9 +1785,7 @@ class ProviderReplayRegistry:
         """Bind private frame-reader evidence to one armed replay sample."""
 
         if not isinstance(payload, dict):
-            raise ProviderReplayConflict(
-                "provider replay capture attestation is unavailable"
-            )
+            raise ProviderReplayConflict("provider replay capture attestation is unavailable")
         canonical_session = canonical_replay_uuid(session_id)
         if canonical_session is None:
             raise ProviderReplayConflict("provider replay session id is invalid")
@@ -1931,32 +1802,21 @@ class ProviderReplayRegistry:
                 or sample.session_id is None
                 or not hmac.compare_digest(sample.session_id, canonical_session)
             ):
-                raise ProviderReplayConflict(
-                    "provider replay capture attestation binding failed"
-                )
+                raise ProviderReplayConflict("provider replay capture attestation binding failed")
             if sample.capture_attestation is not None:
-                raise ProviderReplayConflict(
-                    "provider replay capture attestation already recorded"
-                )
+                raise ProviderReplayConflict("provider replay capture attestation already recorded")
             artifact: dict[str, Any] = {
                 "contractVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
                 "source": "rust_audio_frame_pipe_reader",
                 "runId": sample.run_id,
                 "sampleId": sample.sample_id,
                 "sessionId": sample.session_id,
-                "processGenerationFingerprint": (
-                    self.gate.process_generation_fingerprint
-                ),
+                "processGenerationFingerprint": (self.gate.process_generation_fingerprint),
             }
             # Copy only the bounded reader contract. In particular, a fixture
             # path or any arbitrary diagnostic context can never escape through
             # this status endpoint.
-            artifact.update(
-                {
-                    field_name: payload.get(field_name)
-                    for field_name in _CAPTURE_ATTESTATION_READER_FIELDS
-                }
-            )
+            artifact.update({field_name: payload.get(field_name) for field_name in _CAPTURE_ATTESTATION_READER_FIELDS})
             sample.capture_attestation = artifact
             return dict(artifact)
 
@@ -1985,21 +1845,15 @@ class ProviderReplayRegistry:
                 or sample.session_id is None
                 or not hmac.compare_digest(sample.session_id, canonical_session)
             ):
-                raise ProviderReplayConflict(
-                    "provider replay audio preparation binding failed"
-                )
+                raise ProviderReplayConflict("provider replay audio preparation binding failed")
             if sample.actual_audio_preparation_implementation is not None:
-                raise ProviderReplayConflict(
-                    "provider replay audio preparation already recorded"
-                )
+                raise ProviderReplayConflict("provider replay audio preparation already recorded")
             if (
                 not actual
                 or sample.expected_audio_preparation_implementation is None
                 or actual != sample.expected_audio_preparation_implementation
             ):
-                raise ProviderReplayConflict(
-                    "provider replay audio preparation mismatch"
-                )
+                raise ProviderReplayConflict("provider replay audio preparation mismatch")
             sample.actual_audio_preparation_implementation = actual
             return {
                 "expected": sample.expected_audio_preparation_implementation,
@@ -2031,9 +1885,7 @@ class ProviderReplayRegistry:
             "fixtureText": provider_replay_fixture_text(sample.provider),
             "fixtureTextSha256": provider_replay_fixture_sha256(sample.provider),
             "fixtureTextLength": len(provider_replay_fixture_text(sample.provider)),
-            "authoritativeFixtureDurationMs": (
-                self.authoritative_fixture_duration_ms
-            ),
+            "authoritativeFixtureDurationMs": (self.authoritative_fixture_duration_ms),
             "state": sample.state,
             "expiresInMs": max(
                 0,
@@ -2045,15 +1897,9 @@ class ProviderReplayRegistry:
             "activationKind": sample.activation_kind,
             "errorCode": sample.error_code,
             "captureAttestation": (
-                dict(sample.capture_attestation)
-                if sample.capture_attestation is not None
-                else None
+                dict(sample.capture_attestation) if sample.capture_attestation is not None else None
             ),
-            "audioPreparationImplementationExpected": (
-                sample.expected_audio_preparation_implementation
-            ),
-            "audioPreparationImplementationActual": (
-                sample.actual_audio_preparation_implementation
-            ),
+            "audioPreparationImplementationExpected": (sample.expected_audio_preparation_implementation),
+            "audioPreparationImplementationActual": (sample.actual_audio_preparation_implementation),
             "markers": [dict(item) for item in sample.markers.values()],
         }

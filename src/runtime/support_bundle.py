@@ -14,7 +14,6 @@ from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offset
 from src.runtime.paths import data_dir, logs_dir, repo_root, settings_path, support_bundles_dir
 from src.version import app_version
 
-
 _SENSITIVE_KEY_RE = re.compile(
     r"(api[_-]?key|speech[_-]?key|token|secret|password|credential|authorization|cookie|session)",
     re.IGNORECASE,
@@ -25,7 +24,7 @@ _ASSIGNMENT_SECRET_RE = re.compile(
 )
 _JSON_SECRET_RE = re.compile(
     r'(?i)(?<![A-Za-z0-9_-])("?[A-Za-z0-9_-]{0,128}'
-    r'(?:apiKey|api_key|speechKey|speech_key|token|secret|password|credential|authorization|cookie|session)'
+    r"(?:apiKey|api_key|speechKey|speech_key|token|secret|password|credential|authorization|cookie|session)"
     r'[A-Za-z0-9_-]{0,128}"?\s*:\s*)"[^"]*"'
 )
 _BEARER_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+")
@@ -134,9 +133,7 @@ def _redacted_environment() -> dict[str, Any]:
         "GROQ_",
     )
     selected = {
-        key: value
-        for key, value in os.environ.items()
-        if key.startswith(relevant_prefixes) or is_sensitive_key(key)
+        key: value for key, value in os.environ.items() if key.startswith(relevant_prefixes) or is_sensitive_key(key)
     }
     return redact_mapping(dict(sorted(selected.items())))
 

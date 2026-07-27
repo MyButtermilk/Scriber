@@ -75,10 +75,7 @@ class LatencyMetricsStore:
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
-        if (
-            conn is None
-            or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation
-        ):
+        if conn is None or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row

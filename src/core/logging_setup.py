@@ -9,7 +9,6 @@ from loguru import logger
 
 from src.runtime.paths import logs_dir
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 PRETTY_LOG_PATH = PROJECT_ROOT / "latest.log"
 STRUCTURED_LOG_PATH = PROJECT_ROOT / "latest.structured.jsonl"
@@ -55,11 +54,7 @@ def setup_logging(
     logger.configure(extra={"component": component, "trace": "------", "stage": component})
 
     fmt = (
-        "... {time:HH:mm:ss.SSS} {level:<5} "
-        "[{extra[component]:<11}] "
-        "[{extra[trace]:<6}] "
-        "[{extra[stage]:<15}] "
-        "{message}"
+        "... {time:HH:mm:ss.SSS} {level:<5} [{extra[component]:<11}] [{extra[trace]:<6}] [{extra[stage]:<15}] {message}"
     )
 
     level_name = _normalize_level(os.getenv("SCRIBER_LOG_LEVEL", "DEBUG"))

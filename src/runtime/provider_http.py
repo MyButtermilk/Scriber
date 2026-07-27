@@ -24,7 +24,6 @@ from uuid import uuid4
 
 import aiohttp
 
-
 _TRACE_LIMIT = 128
 _PROVIDER_LIMIT = 48
 _MARKER_LIMIT = 64
@@ -43,9 +42,7 @@ class ProviderRequestAcceptanceUnknown(RuntimeError):
 
     def __init__(self, provider: str) -> None:
         self.provider = _bounded_label(provider, limit=_PROVIDER_LIMIT)
-        super().__init__(
-            f"{self.provider} request outcome is unknown; automatic replay is disabled"
-        )
+        super().__init__(f"{self.provider} request outcome is unknown; automatic replay is disabled")
 
 
 class _ProviderHttpSessionView:
@@ -280,12 +277,8 @@ class ProviderHttpTransport:
             "sessionOpen": self.is_open,
             "activeRequestCount": active_count,
             "retainedRequestCount": len(items),
-            "connectionCreatedCount": sum(
-                1 for item in items if item.get("connection") == "created"
-            ),
-            "connectionReusedCount": sum(
-                1 for item in items if item.get("connection") == "reused"
-            ),
+            "connectionCreatedCount": sum(1 for item in items if item.get("connection") == "created"),
+            "connectionReusedCount": sum(1 for item in items if item.get("connection") == "reused"),
             "dnsCacheHitCount": sum(1 for item in items if item.get("dns") == "cache_hit"),
             "dnsCacheMissCount": sum(1 for item in items if item.get("dns") == "cache_miss"),
             "items": items,
@@ -362,9 +355,7 @@ class ProviderHttpTransport:
 
         async def queue_end(_session: Any, ctx: SimpleNamespace, _params: Any) -> None:
             if ctx.queue_started_ns:
-                ctx.queue_duration_ms = (
-                    time.perf_counter_ns() - ctx.queue_started_ns
-                ) / 1_000_000
+                ctx.queue_duration_ms = (time.perf_counter_ns() - ctx.queue_started_ns) / 1_000_000
 
         async def request_chunk(_session: Any, ctx: SimpleNamespace, _params: Any) -> None:
             now = time.perf_counter_ns()
@@ -451,11 +442,7 @@ class ProviderHttpTransport:
             "dns": ctx.dns,
             "requestChunkCount": min(1_000_000, int(ctx.request_chunk_count)),
             "responseChunkCount": min(1_000_000, int(ctx.response_chunk_count)),
-            "totalToHeadersMs": (
-                round((now - ctx.started_ns) / 1_000_000, 3)
-                if ctx.started_ns
-                else None
-            ),
+            "totalToHeadersMs": (round((now - ctx.started_ns) / 1_000_000, 3) if ctx.started_ns else None),
         }
         for key, value in (
             ("dnsMs", ctx.dns_duration_ms),

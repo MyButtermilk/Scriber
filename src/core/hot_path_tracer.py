@@ -4,7 +4,6 @@ import math
 import time
 from typing import Any, Callable
 
-
 # Issue #18 names are deliberately centralized here.  ``mark`` remains open to
 # the older diagnostic markers because persisted hot-path reports and support
 # tooling still consume their all-pairs segments.
@@ -132,9 +131,7 @@ class HotPathTracer:
 
         for i, (source_name, source_ts) in enumerate(ordered[:-1]):
             for target_name, target_ts in ordered[i + 1 :]:
-                result[f"{source_name}_to_{target_name}_ms"] = (
-                    target_ts - source_ts
-                ) / 1_000_000
+                result[f"{source_name}_to_{target_name}_ms"] = (target_ts - source_ts) / 1_000_000
         return result
 
     def canonical_kpis(
@@ -201,8 +198,5 @@ class HotPathTracer:
         if self._tauri_hotkey_received is not None:
             snapshot["tauriHotkeyReceived"] = dict(self._tauri_hotkey_received)
         if self._tauri_activation_received is not None:
-            snapshot["tauriActivationReceived"] = dict(
-                self._tauri_activation_received
-            )
+            snapshot["tauriActivationReceived"] = dict(self._tauri_activation_received)
         return snapshot
-

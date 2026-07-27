@@ -48,9 +48,7 @@ class CaptureTimeFfmpegEncoder:
         self._command = tuple(str(part) for part in command)
         self._sample_rate = int(sample_rate)
         self._channels = int(channels)
-        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(
-            maxsize=int(queue_capacity)
-        )
+        self._queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=int(queue_capacity))
         self._queued_pcm_limit = int(queued_pcm_limit)
         self._queued_pcm_bytes = 0
         self._stderr_limit = max(0, int(stderr_limit))
@@ -93,10 +91,7 @@ class CaptureTimeFfmpegEncoder:
         if len(pcm) % (2 * self._channels) != 0:
             self._invalidate("pcmFrameMisaligned")
             return False
-        if (
-            self._queue.full()
-            or self._queued_pcm_bytes + len(pcm) > self._queued_pcm_limit
-        ):
+        if self._queue.full() or self._queued_pcm_bytes + len(pcm) > self._queued_pcm_limit:
             self._invalidate("boundedQueueOverflow")
             return False
 
@@ -226,9 +221,7 @@ class CaptureTimeFfmpegEncoder:
                 while chunk := await process.stdout.read(64 * 1024):
                     output = self._output
                     if output is None:
-                        raise CaptureTimeEncoderError(
-                            "capture-time encoder output closed"
-                        )
+                        raise CaptureTimeEncoderError("capture-time encoder output closed")
                     output.write(chunk)
 
             capture_task = asyncio.create_task(
@@ -269,11 +262,7 @@ class CaptureTimeFfmpegEncoder:
             for task in (capture_task, stderr_task):
                 if task is not None and not task.done():
                     task.cancel()
-            pending = [
-                task
-                for task in (capture_task, stderr_task)
-                if task is not None
-            ]
+            pending = [task for task in (capture_task, stderr_task) if task is not None]
             if pending:
                 await asyncio.gather(*pending, return_exceptions=True)
 

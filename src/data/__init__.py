@@ -1,2 +1,1 @@
 """Data access components."""
-

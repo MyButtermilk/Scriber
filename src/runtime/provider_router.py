@@ -53,4 +53,3 @@ class ProviderRouter:
         category = classify_error_message(str(error))
         if is_retryable(category):
             self._breaker.on_failure(provider)
-

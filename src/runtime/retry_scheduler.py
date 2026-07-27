@@ -70,4 +70,3 @@ class RetryScheduler:
     @property
     def due_monotonic(self) -> float | None:
         return self._due_monotonic
-

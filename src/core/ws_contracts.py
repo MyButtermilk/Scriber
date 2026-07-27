@@ -189,14 +189,10 @@ def meeting_segment_event(meeting_id: str, segment: dict[str, Any]) -> dict[str,
         and not isinstance(end_ms, bool)
     ):
         segment_payload["durationMs"] = max(0, end_ms - start_ms)
-    return version_event_payload(
-        {"type": "meeting_segment", "meetingId": str(meeting_id), "segment": segment_payload}
-    )
+    return version_event_payload({"type": "meeting_segment", "meetingId": str(meeting_id), "segment": segment_payload})
 
 
-def meeting_checkpoint_event(
-    meeting_id: str, checkpoint: dict[str, Any]
-) -> dict[str, Any]:
+def meeting_checkpoint_event(meeting_id: str, checkpoint: dict[str, Any]) -> dict[str, Any]:
     """Publish redacted checkpoint metadata without transcript snapshot text."""
     return version_event_payload(
         {
@@ -238,9 +234,7 @@ def meeting_transcript_edited_event(
 
 
 def meeting_note_event(meeting_id: str, note: dict[str, Any]) -> dict[str, Any]:
-    return version_event_payload(
-        {"type": "meeting_note", "meetingId": str(meeting_id), "note": dict(note)}
-    )
+    return version_event_payload({"type": "meeting_note", "meetingId": str(meeting_id), "note": dict(note)})
 
 
 def meeting_audio_level_event(meeting_id: str, source: str, rms: float) -> dict[str, Any]:
@@ -249,9 +243,7 @@ def meeting_audio_level_event(meeting_id: str, source: str, rms: float) -> dict[
     )
 
 
-def meeting_live_status_event(
-    meeting_id: str, source: str, status: str, reconnect_count: int
-) -> dict[str, Any]:
+def meeting_live_status_event(meeting_id: str, source: str, status: str, reconnect_count: int) -> dict[str, Any]:
     return version_event_payload(
         {
             "type": "meeting_live_status",
@@ -417,14 +409,8 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
     elif event_type == "frontend_performance_flush":
         _require_string(payload, "sourceInstanceId", event_type)
         heartbeat_sequence = payload.get("heartbeatSequence")
-        if (
-            not isinstance(heartbeat_sequence, int)
-            or isinstance(heartbeat_sequence, bool)
-            or heartbeat_sequence < 1
-        ):
-            raise WSContractError(
-                "frontend_performance_flush event requires positive int 'heartbeatSequence'"
-            )
+        if not isinstance(heartbeat_sequence, int) or isinstance(heartbeat_sequence, bool) or heartbeat_sequence < 1:
+            raise WSContractError("frontend_performance_flush event requires positive int 'heartbeatSequence'")
     elif event_type in {"settings_updated", "transcribing"}:
         pass
     elif event_type in {"session_started", "session_finished"}:
@@ -449,8 +435,10 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
     elif event_type in {"meeting_segment", "meeting_note", "meeting_checkpoint"}:
         _require_string(payload, "meetingId", event_type)
         field = (
-            "segment" if event_type == "meeting_segment"
-            else "checkpoint" if event_type == "meeting_checkpoint"
+            "segment"
+            if event_type == "meeting_segment"
+            else "checkpoint"
+            if event_type == "meeting_checkpoint"
             else "note"
         )
         if not isinstance(payload.get(field), dict):
@@ -492,9 +480,7 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         if segment["endMs"] < segment["startMs"]:
             raise WSContractError("meeting_transcript_edited event endMs must not precede startMs")
         if segment["durationMs"] != segment["endMs"] - segment["startMs"]:
-            raise WSContractError(
-                "meeting_transcript_edited event durationMs must equal endMs - startMs"
-            )
+            raise WSContractError("meeting_transcript_edited event durationMs must equal endMs - startMs")
         _require_bool(segment, "isFinal", event_type)
         for number_field in ("transcriptEditVersion",):
             _require_number(payload, number_field, event_type)
@@ -505,14 +491,10 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _require_string(payload, "status", event_type)
         status = payload["status"]
         if status not in {"reconnecting", "recovered", "degraded"}:
-            raise WSContractError(
-                "meeting_live_status event status must be 'reconnecting', 'recovered', or 'degraded'"
-            )
+            raise WSContractError("meeting_live_status event status must be 'reconnecting', 'recovered', or 'degraded'")
         reconnect_count = payload.get("reconnectCount")
         if not isinstance(reconnect_count, int) or isinstance(reconnect_count, bool) or reconnect_count < 0:
-            raise WSContractError(
-                "meeting_live_status event requires non-negative int 'reconnectCount'"
-            )
+            raise WSContractError("meeting_live_status event requires non-negative int 'reconnectCount'")
     elif event_type in {"meeting_finalize_progress", "meeting_analysis_progress"}:
         _require_string(payload, "meetingId", event_type)
         _require_number(payload, "progress", event_type)
@@ -552,4 +534,3 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
     session_id = payload.get("sessionId")
     if session_id is not None and not isinstance(session_id, str):
         raise WSContractError("sessionId must be a string when present")
-

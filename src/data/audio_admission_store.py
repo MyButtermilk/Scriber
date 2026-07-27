@@ -17,7 +17,6 @@ from typing import Callable
 
 from src import database
 
-
 _SAFE_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _RESOURCE = "native_audio"
 
@@ -132,9 +131,7 @@ class AudioAdmissionStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
             previous_version = 0
             if row is not None:
                 current = self._from_row(row)
@@ -172,9 +169,7 @@ class AudioAdmissionStore:
                     _iso(now),
                 ),
             )
-            persisted = conn.execute(
-                "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
             conn.commit()
             return self._from_row(persisted)
         except Exception:
@@ -215,15 +210,11 @@ class AudioAdmissionStore:
                 ),
             )
             if cursor.rowcount != 1:
-                row = conn.execute(
-                    "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-                ).fetchone()
+                row = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
                 if row is not None:
                     raise AudioAdmissionConflict(self._from_row(row))
                 raise AudioAdmissionStoreError("Native audio lease no longer exists.")
-            persisted = conn.execute(
-                "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
             conn.commit()
             return self._from_row(persisted)
         except Exception:
@@ -261,15 +252,11 @@ class AudioAdmissionStore:
                 ),
             )
             if cursor.rowcount != 1:
-                row = conn.execute(
-                    "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-                ).fetchone()
+                row = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
                 if row is not None:
                     raise AudioAdmissionConflict(self._from_row(row))
                 raise AudioAdmissionStoreError("Native audio lease no longer exists.")
-            persisted = conn.execute(
-                "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
             conn.commit()
             return self._from_row(persisted)
         except Exception:
@@ -302,9 +289,7 @@ class AudioAdmissionStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM audio_admission_claims WHERE resource=?", (_RESOURCE,)).fetchone()
             if row is None:
                 conn.commit()
                 return None

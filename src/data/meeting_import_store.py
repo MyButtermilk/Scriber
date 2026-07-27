@@ -38,9 +38,7 @@ TERMINAL_IMPORT_STATUSES = frozenset(
     }
 )
 
-INCOMPLETE_UPLOAD_STATUSES = frozenset(
-    {MeetingImportStatus.CREATED, MeetingImportStatus.RECEIVING}
-)
+INCOMPLETE_UPLOAD_STATUSES = frozenset({MeetingImportStatus.CREATED, MeetingImportStatus.RECEIVING})
 
 RECOVERABLE_IMPORT_STATUSES = frozenset(
     {
@@ -81,15 +79,9 @@ ALLOWED_IMPORT_TRANSITIONS: dict[MeetingImportStatus, frozenset[MeetingImportSta
     MeetingImportStatus.WAITING_FOR_WORKSPACE: frozenset(
         {MeetingImportStatus.COMMITTING, MeetingImportStatus.CANCEL_REQUESTED, MeetingImportStatus.FAILED}
     ),
-    MeetingImportStatus.COMMITTING: frozenset(
-        {MeetingImportStatus.FINALIZING, MeetingImportStatus.FAILED}
-    ),
-    MeetingImportStatus.FINALIZING: frozenset(
-        {MeetingImportStatus.COMPLETED, MeetingImportStatus.FAILED}
-    ),
-    MeetingImportStatus.CANCEL_REQUESTED: frozenset(
-        {MeetingImportStatus.CANCELED, MeetingImportStatus.FAILED}
-    ),
+    MeetingImportStatus.COMMITTING: frozenset({MeetingImportStatus.FINALIZING, MeetingImportStatus.FAILED}),
+    MeetingImportStatus.FINALIZING: frozenset({MeetingImportStatus.COMPLETED, MeetingImportStatus.FAILED}),
+    MeetingImportStatus.CANCEL_REQUESTED: frozenset({MeetingImportStatus.CANCELED, MeetingImportStatus.FAILED}),
     MeetingImportStatus.COMPLETED: frozenset(),
     MeetingImportStatus.CANCELED: frozenset(),
     # A failed canonical finalization may be retried from the Meeting workspace.
@@ -222,9 +214,7 @@ class MeetingImportRecord:
             original_bytes=int(row["original_bytes"]) if row["original_bytes"] is not None else None,
             original_sha256=str(row["original_sha256"] or ""),
             normalized_relative_path=str(row["normalized_relative_path"] or ""),
-            normalized_bytes=(
-                int(row["normalized_bytes"]) if row["normalized_bytes"] is not None else None
-            ),
+            normalized_bytes=(int(row["normalized_bytes"]) if row["normalized_bytes"] is not None else None),
             normalized_sha256=str(row["normalized_sha256"] or ""),
             profile_snapshot=_json_object(row["profile_snapshot_json"]),
             probe=_json_object(row["probe_json"]),
@@ -317,8 +307,7 @@ class MeetingImportStore:
         connection = getattr(self._thread_local, "conn", None)
         if (
             connection is None
-            or getattr(self._thread_local, "connection_generation", -1)
-            != self._connection_generation
+            or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation
         ):
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             connection = sqlite3.connect(
@@ -454,9 +443,7 @@ class MeetingImportStore:
         return record
 
     def get(self, import_id: str) -> MeetingImportRecord | None:
-        row = self._connect().execute(
-            "SELECT * FROM meeting_import_jobs WHERE id = ?", (str(import_id),)
-        ).fetchone()
+        row = self._connect().execute("SELECT * FROM meeting_import_jobs WHERE id = ?", (str(import_id),)).fetchone()
         return MeetingImportRecord.from_row(row) if row is not None else None
 
     def require(self, import_id: str) -> MeetingImportRecord:
@@ -471,8 +458,10 @@ class MeetingImportStore:
             return None
         terminal_values = sorted(status.value for status in TERMINAL_IMPORT_STATUSES)
         placeholders = ",".join("?" for _ in terminal_values)
-        row = self._connect().execute(
-            f"""
+        row = (
+            self._connect()
+            .execute(
+                f"""
             SELECT * FROM meeting_import_jobs
             WHERE meeting_id = ?
             ORDER BY
@@ -482,8 +471,10 @@ class MeetingImportStore:
                 id DESC
             LIMIT 1
             """,
-            (clean_meeting_id, *terminal_values),
-        ).fetchone()
+                (clean_meeting_id, *terminal_values),
+            )
+            .fetchone()
+        )
         return MeetingImportRecord.from_row(row) if row is not None else None
 
     def delete(self, import_id: str) -> bool:
@@ -492,9 +483,7 @@ class MeetingImportStore:
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute(
-                    "SELECT status FROM meeting_import_jobs WHERE id = ?", (import_id,)
-                ).fetchone()
+                row = connection.execute("SELECT status FROM meeting_import_jobs WHERE id = ?", (import_id,)).fetchone()
                 if row is None:
                     connection.execute("ROLLBACK")
                     return False
@@ -527,11 +516,7 @@ class MeetingImportStore:
         error_code: str | None = None,
         error_message: str | None = None,
     ) -> MeetingImportRecord:
-        target = (
-            new_status
-            if isinstance(new_status, MeetingImportStatus)
-            else MeetingImportStatus(str(new_status))
-        )
+        target = new_status if isinstance(new_status, MeetingImportStatus) else MeetingImportStatus(str(new_status))
         expected = (
             expected_status
             if isinstance(expected_status, MeetingImportStatus)
@@ -545,13 +530,9 @@ class MeetingImportStore:
                 original_relative_path, field_name="original_relative_path", allow_empty=False
             )
         if original_bytes is not None:
-            updates["original_bytes"] = _nonnegative_int(
-                original_bytes, field_name="original_bytes", allow_none=False
-            )
+            updates["original_bytes"] = _nonnegative_int(original_bytes, field_name="original_bytes", allow_none=False)
         if original_sha256 is not None:
-            updates["original_sha256"] = _sha256(
-                original_sha256, field_name="original_sha256", allow_empty=False
-            )
+            updates["original_sha256"] = _sha256(original_sha256, field_name="original_sha256", allow_empty=False)
         if normalized_relative_path is not None:
             updates["normalized_relative_path"] = _relative_path(
                 normalized_relative_path,
@@ -563,9 +544,7 @@ class MeetingImportStore:
                 normalized_bytes, field_name="normalized_bytes", allow_none=False
             )
         if normalized_sha256 is not None:
-            updates["normalized_sha256"] = _sha256(
-                normalized_sha256, field_name="normalized_sha256", allow_empty=False
-            )
+            updates["normalized_sha256"] = _sha256(normalized_sha256, field_name="normalized_sha256", allow_empty=False)
         if probe is not None:
             if not isinstance(probe, dict):
                 raise ValueError("probe must be a JSON object.")
@@ -588,9 +567,7 @@ class MeetingImportStore:
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute(
-                    "SELECT * FROM meeting_import_jobs WHERE id = ?", (import_id,)
-                ).fetchone()
+                row = connection.execute("SELECT * FROM meeting_import_jobs WHERE id = ?", (import_id,)).fetchone()
                 if row is None:
                     raise MeetingImportNotFound(f"Meeting import {import_id!r} does not exist.")
                 current = MeetingImportRecord.from_row(row)
@@ -600,9 +577,7 @@ class MeetingImportStore:
                     )
                 if current.status == target:
                     if updates:
-                        raise MeetingImportConflict(
-                            "Idempotent transitions cannot mutate an already-entered state."
-                        )
+                        raise MeetingImportConflict("Idempotent transitions cannot mutate an already-entered state.")
                     connection.execute("COMMIT")
                     return current
                 if target not in ALLOWED_IMPORT_TRANSITIONS[current.status]:
@@ -656,14 +631,10 @@ class MeetingImportStore:
         return {
             "status": target.value,
             "received_bytes": current.received_bytes,
-            "original_relative_path": updates.get(
-                "original_relative_path", current.original_relative_path
-            ),
+            "original_relative_path": updates.get("original_relative_path", current.original_relative_path),
             "original_bytes": updates.get("original_bytes", current.original_bytes),
             "original_sha256": updates.get("original_sha256", current.original_sha256),
-            "normalized_relative_path": updates.get(
-                "normalized_relative_path", current.normalized_relative_path
-            ),
+            "normalized_relative_path": updates.get("normalized_relative_path", current.normalized_relative_path),
             "normalized_bytes": updates.get("normalized_bytes", current.normalized_bytes),
             "normalized_sha256": updates.get("normalized_sha256", current.normalized_sha256),
             "meeting_id": updates.get("meeting_id", current.meeting_id),
@@ -671,18 +642,12 @@ class MeetingImportStore:
 
     @staticmethod
     def _validate_state_values(status: MeetingImportStatus, values: dict[str, Any]) -> None:
-        at_or_after_receive = status in RECOVERABLE_IMPORT_STATUSES | {
-            MeetingImportStatus.COMPLETED
-        }
+        at_or_after_receive = status in RECOVERABLE_IMPORT_STATUSES | {MeetingImportStatus.COMPLETED}
         if at_or_after_receive:
             if not (
-                values["original_relative_path"]
-                and values["original_bytes"] is not None
-                and values["original_sha256"]
+                values["original_relative_path"] and values["original_bytes"] is not None and values["original_sha256"]
             ):
-                raise MeetingImportConflict(
-                    f"State {status.value} requires a verified original upload artifact."
-                )
+                raise MeetingImportConflict(f"State {status.value} requires a verified original upload artifact.")
         at_or_after_prepare = status in {
             MeetingImportStatus.WAITING_FOR_WORKSPACE,
             MeetingImportStatus.COMMITTING,
@@ -695,14 +660,16 @@ class MeetingImportStore:
                 and values["normalized_bytes"] is not None
                 and values["normalized_sha256"]
             ):
-                raise MeetingImportConflict(
-                    f"State {status.value} requires a verified normalized audio artifact."
-                )
-        if status in {
-            MeetingImportStatus.COMMITTING,
-            MeetingImportStatus.FINALIZING,
-            MeetingImportStatus.COMPLETED,
-        } and not values["meeting_id"]:
+                raise MeetingImportConflict(f"State {status.value} requires a verified normalized audio artifact.")
+        if (
+            status
+            in {
+                MeetingImportStatus.COMMITTING,
+                MeetingImportStatus.FINALIZING,
+                MeetingImportStatus.COMPLETED,
+            }
+            and not values["meeting_id"]
+        ):
             raise MeetingImportConflict(f"State {status.value} requires a Meeting workspace ID.")
 
     def begin_receiving(self, import_id: str) -> MeetingImportRecord:
@@ -713,17 +680,13 @@ class MeetingImportStore:
         )
 
     def update_receive_progress(self, import_id: str, received_bytes: int) -> MeetingImportRecord:
-        byte_count = _nonnegative_int(
-            received_bytes, field_name="received_bytes", allow_none=False
-        )
+        byte_count = _nonnegative_int(received_bytes, field_name="received_bytes", allow_none=False)
         assert byte_count is not None
         with self._lock:
             connection = self._connect()
             connection.execute("BEGIN IMMEDIATE")
             try:
-                row = connection.execute(
-                    "SELECT * FROM meeting_import_jobs WHERE id = ?", (import_id,)
-                ).fetchone()
+                row = connection.execute("SELECT * FROM meeting_import_jobs WHERE id = ?", (import_id,)).fetchone()
                 if row is None:
                     raise MeetingImportNotFound(f"Meeting import {import_id!r} does not exist.")
                 current = MeetingImportRecord.from_row(row)
@@ -838,9 +801,7 @@ class MeetingImportStore:
             expected_status=MeetingImportStatus.CANCEL_REQUESTED,
         )
 
-    def mark_failed(
-        self, import_id: str, *, error_code: str, error_message: str
-    ) -> MeetingImportRecord:
+    def mark_failed(self, import_id: str, *, error_code: str, error_message: str) -> MeetingImportRecord:
         with self._lock:
             current = self.require(import_id)
             if current.status == MeetingImportStatus.CANCEL_REQUESTED:
@@ -891,9 +852,7 @@ class MeetingImportStore:
                 query_limit,
             ),
         )
-        active_statuses = [
-            status for status in MeetingImportStatus if status not in TERMINAL_IMPORT_STATUSES
-        ]
+        active_statuses = [status for status in MeetingImportStatus if status not in TERMINAL_IMPORT_STATUSES]
         active = self._list_statuses_newest(active_statuses, limit=query_limit)
         remaining = query_limit - len(active)
         if remaining <= 0 or terminal_limit <= 0:
@@ -912,32 +871,38 @@ class MeetingImportStore:
             return []
         query_limit = max(1, min(MAX_MEETING_IMPORT_INBOX_ITEMS, int(limit)))
         placeholders = ",".join("?" for _ in values)
-        rows = self._connect().execute(
-            f"""
+        rows = (
+            self._connect()
+            .execute(
+                f"""
             SELECT * FROM meeting_import_jobs
             WHERE status IN ({placeholders})
             ORDER BY updated_at DESC, created_at DESC, id DESC
             LIMIT ?
             """,
-            (*values, query_limit),
-        ).fetchall()
+                (*values, query_limit),
+            )
+            .fetchall()
+        )
         return [MeetingImportRecord.from_row(row) for row in rows]
 
-    def _list_statuses(
-        self, statuses: Iterable[MeetingImportStatus], *, limit: int
-    ) -> list[MeetingImportRecord]:
+    def _list_statuses(self, statuses: Iterable[MeetingImportStatus], *, limit: int) -> list[MeetingImportRecord]:
         values = sorted({status.value for status in statuses})
         if not values:
             return []
         query_limit = max(1, min(10_000, int(limit)))
         placeholders = ",".join("?" for _ in values)
-        rows = self._connect().execute(
-            f"""
+        rows = (
+            self._connect()
+            .execute(
+                f"""
             SELECT * FROM meeting_import_jobs
             WHERE status IN ({placeholders})
             ORDER BY updated_at ASC, created_at ASC, id ASC
             LIMIT ?
             """,
-            (*values, query_limit),
-        ).fetchall()
+                (*values, query_limit),
+            )
+            .fetchall()
+        )
         return [MeetingImportRecord.from_row(row) for row in rows]

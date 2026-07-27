@@ -74,15 +74,9 @@ CANONICAL_SEGMENTS_FTS_SCHEMA_KEY = "canonical_segments_fts_schema_version"
 
 
 ALLOWED_ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
-    AttemptState.QUEUED: frozenset(
-        {AttemptState.RESOLVING_SOURCE, AttemptState.FAILED, AttemptState.CANCELED}
-    ),
-    AttemptState.RESOLVING_SOURCE: frozenset(
-        {AttemptState.SOURCE_READY, AttemptState.FAILED, AttemptState.CANCELED}
-    ),
-    AttemptState.SOURCE_READY: frozenset(
-        {AttemptState.TRANSCRIBING, AttemptState.FAILED, AttemptState.CANCELED}
-    ),
+    AttemptState.QUEUED: frozenset({AttemptState.RESOLVING_SOURCE, AttemptState.FAILED, AttemptState.CANCELED}),
+    AttemptState.RESOLVING_SOURCE: frozenset({AttemptState.SOURCE_READY, AttemptState.FAILED, AttemptState.CANCELED}),
+    AttemptState.SOURCE_READY: frozenset({AttemptState.TRANSCRIBING, AttemptState.FAILED, AttemptState.CANCELED}),
     AttemptState.TRANSCRIBING: frozenset(
         {AttemptState.PROVIDER_RESULT_READY, AttemptState.FAILED, AttemptState.CANCELED}
     ),
@@ -94,15 +88,9 @@ ALLOWED_ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
             AttemptState.CANCELED,
         }
     ),
-    AttemptState.DIARIZING: frozenset(
-        {AttemptState.CANONICALIZING, AttemptState.FAILED, AttemptState.CANCELED}
-    ),
-    AttemptState.CANONICALIZING: frozenset(
-        {AttemptState.COMMITTING, AttemptState.FAILED, AttemptState.CANCELED}
-    ),
-    AttemptState.COMMITTING: frozenset(
-        {AttemptState.COMPLETED, AttemptState.SUPERSEDED, AttemptState.FAILED}
-    ),
+    AttemptState.DIARIZING: frozenset({AttemptState.CANONICALIZING, AttemptState.FAILED, AttemptState.CANCELED}),
+    AttemptState.CANONICALIZING: frozenset({AttemptState.COMMITTING, AttemptState.FAILED, AttemptState.CANCELED}),
+    AttemptState.COMMITTING: frozenset({AttemptState.COMPLETED, AttemptState.SUPERSEDED, AttemptState.FAILED}),
     AttemptState.COMPLETED: frozenset(),
     AttemptState.SUPERSEDED: frozenset(),
     AttemptState.FAILED: frozenset(),
@@ -127,9 +115,7 @@ _FTS_TOKEN_RE = re.compile(r"\w+(?:-\w+)*", re.UNICODE)
 _SAFE_TOKEN_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 _URI_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-_COMMON_SECRET_VALUE_RE = re.compile(
-    r"(?i)(?:bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|xox[baprs]-\S+)"
-)
+_COMMON_SECRET_VALUE_RE = re.compile(r"(?i)(?:bearer\s+\S+|sk-[A-Za-z0-9_-]{12,}|xox[baprs]-\S+)")
 _EMBEDDED_WINDOWS_PATH_RE = re.compile(r"(?:^|\s)[A-Za-z]:[\\/]")
 _SENSITIVE_KEY_PARTS = frozenset(
     {
@@ -254,9 +240,7 @@ def _key_is_sensitive(key: str) -> bool:
     if normalized in _SENSITIVE_KEY_PARTS:
         return True
     return any(
-        normalized.startswith(f"{part}_")
-        or normalized.endswith(f"_{part}")
-        or f"_{part}_" in normalized
+        normalized.startswith(f"{part}_") or normalized.endswith(f"_{part}") or f"_{part}_" in normalized
         for part in _SENSITIVE_KEY_PARTS
     )
 
@@ -277,19 +261,13 @@ def _validate_safe_persisted_json(value: Any, *, field_name: str) -> Any:
                 if sensitive and safe_metadata:
                     if normalized.endswith(("_sha256", "_digest")):
                         if not isinstance(nested, str) or not _SHA256_RE.fullmatch(nested.lower()):
-                            raise UnsafeSnapshotValue(
-                                f"{path}.{raw_key} must contain only a SHA-256 digest."
-                            )
-                    elif normalized.endswith(("_present", "_presence")) and not isinstance(
-                        nested, bool
-                    ):
+                            raise UnsafeSnapshotValue(f"{path}.{raw_key} must contain only a SHA-256 digest.")
+                    elif normalized.endswith(("_present", "_presence")) and not isinstance(nested, bool):
                         raise UnsafeSnapshotValue(f"{path}.{raw_key} must be boolean metadata.")
                     elif normalized.endswith(("_count", "_length")) and (
                         isinstance(nested, bool) or not isinstance(nested, int) or nested < 0
                     ):
-                        raise UnsafeSnapshotValue(
-                            f"{path}.{raw_key} must be non-negative integer metadata."
-                        )
+                        raise UnsafeSnapshotValue(f"{path}.{raw_key} must be non-negative integer metadata.")
                 visit(nested, f"{path}.{raw_key}", normalized)
             return
         if isinstance(item, (list, tuple)):
@@ -347,9 +325,7 @@ def _preview(value: str, max_words: int = 16) -> str:
 
 def _fts_query(value: str) -> str:
     tokens = _FTS_TOKEN_RE.findall(str(value or "").lower())
-    return " AND ".join(
-        f'"{token}"*' if len(token) >= 2 else f'"{token}"' for token in tokens[:12]
-    )
+    return " AND ".join(f'"{token}"*' if len(token) >= 2 else f'"{token}"' for token in tokens[:12])
 
 
 def _speaker_key(value: str | int | None) -> str:
@@ -647,9 +623,7 @@ class TranscriptArtifactStore:
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
-        if conn is None or getattr(
-            self._thread_local, "connection_generation", -1
-        ) != self._connection_generation:
+        if conn is None or getattr(self._thread_local, "connection_generation", -1) != self._connection_generation:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self._db_path, timeout=30.0, check_same_thread=False)
             conn.row_factory = sqlite3.Row
@@ -907,11 +881,7 @@ class TranscriptArtifactStore:
                     "SELECT value FROM transcript_artifact_store_metadata WHERE key=?",
                     (CANONICAL_SEGMENTS_FTS_SCHEMA_KEY,),
                 ).fetchone()
-                version = (
-                    int(version_row[0])
-                    if version_row and str(version_row[0]).isdigit()
-                    else 0
-                )
+                version = int(version_row[0]) if version_row and str(version_row[0]).isdigit() else 0
                 if version != CANONICAL_SEGMENTS_FTS_SCHEMA_VERSION:
                     conn.execute("DROP TRIGGER IF EXISTS trg_canonical_segment_fts_delete")
                     conn.execute("DROP TABLE IF EXISTS canonical_transcript_segments_fts")
@@ -941,16 +911,8 @@ class TranscriptArtifactStore:
                             str(CANONICAL_SEGMENTS_FTS_SCHEMA_VERSION),
                         ),
                     )
-                segment_count = int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM canonical_transcript_segments"
-                    ).fetchone()[0]
-                )
-                fts_count = int(
-                    conn.execute(
-                        "SELECT COUNT(*) FROM canonical_transcript_segments_fts"
-                    ).fetchone()[0]
-                )
+                segment_count = int(conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments").fetchone()[0])
+                fts_count = int(conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments_fts").fetchone()[0])
                 missing_fts = conn.execute(
                     """
                     SELECT 1
@@ -971,11 +933,7 @@ class TranscriptArtifactStore:
                     LIMIT 1
                     """
                 ).fetchone()
-                if (
-                    segment_count != fts_count
-                    or missing_fts is not None
-                    or orphaned_fts is not None
-                ):
+                if segment_count != fts_count or missing_fts is not None or orphaned_fts is not None:
                     conn.execute("DELETE FROM canonical_transcript_segments_fts")
                     conn.execute(
                         """
@@ -1064,12 +1022,8 @@ class TranscriptArtifactStore:
             speaker_label=value.get("speaker_label", value.get("speakerLabel", "")),
             timing_origin=value.get("timing_origin", value.get("timingOrigin", "provider")),
             speaker_origin=value.get("speaker_origin", value.get("speakerOrigin", "none")),
-            alignment_quality=value.get(
-                "alignment_quality", value.get("alignmentQuality", "provider_segment")
-            ),
-            provider_native_id=value.get(
-                "provider_native_id", value.get("providerNativeId", "")
-            ),
+            alignment_quality=value.get("alignment_quality", value.get("alignmentQuality", "provider_segment")),
+            provider_native_id=value.get("provider_native_id", value.get("providerNativeId", "")),
         )
 
     @classmethod
@@ -1090,15 +1044,11 @@ class TranscriptArtifactStore:
             end_ms=end_ms,
             text=text,
             speaker_key=_speaker_key(unit.speaker_key),
-            speaker_label=_safe_scalar(
-                unit.speaker_label, field_name="speaker_label", allow_empty=True
-            ),
+            speaker_label=_safe_scalar(unit.speaker_label, field_name="speaker_label", allow_empty=True),
             timing_origin=_safe_scalar(unit.timing_origin, field_name="timing_origin"),
             speaker_origin=_safe_scalar(unit.speaker_origin, field_name="speaker_origin"),
             alignment_quality=_alignment_quality(unit.alignment_quality),
-            provider_native_id=_safe_scalar(
-                unit.provider_native_id, field_name="provider_native_id", allow_empty=True
-            ),
+            provider_native_id=_safe_scalar(unit.provider_native_id, field_name="provider_native_id", allow_empty=True),
         )
 
     @staticmethod
@@ -1150,7 +1100,6 @@ class TranscriptArtifactStore:
             created_at=str(row["created_at"]),
         )
 
-
     @classmethod
     def _track_derivation_from_row(cls, row: sqlite3.Row) -> TrackDerivationResult:
         units = tuple(cls._validated_unit(unit) for unit in _json_array(row["units_json"]))
@@ -1168,9 +1117,7 @@ class TranscriptArtifactStore:
         )
 
     @classmethod
-    def _verify_track_stage_result(
-        cls, stage: TrackStageResult, snapshot: RouteSnapshot
-    ) -> None:
+    def _verify_track_stage_result(cls, stage: TrackStageResult, snapshot: RouteSnapshot) -> None:
         payload = {
             "sourceTrack": stage.source_track,
             "transcriptText": stage.transcript_text,
@@ -1182,11 +1129,8 @@ class TranscriptArtifactStore:
             "parserId": snapshot.parser_id,
             "parserVersion": snapshot.parser_version,
         }
-        if stage.route_snapshot_id != snapshot.id or _sha256_text(
-            _canonical_json(payload)
-        ) != stage.result_sha256:
+        if stage.route_snapshot_id != snapshot.id or _sha256_text(_canonical_json(payload)) != stage.result_sha256:
             raise ArtifactConflict("Track stage-result checksum validation failed.")
-
 
     @classmethod
     def _verify_track_derivation(
@@ -1213,9 +1157,7 @@ class TranscriptArtifactStore:
             raise ArtifactConflict("Track derivation checksum validation failed.")
 
     @classmethod
-    def _verify_stage_result(
-        cls, stage: NormalizedStageResult, snapshot: RouteSnapshot
-    ) -> None:
+    def _verify_stage_result(cls, stage: NormalizedStageResult, snapshot: RouteSnapshot) -> None:
         payload = {
             "transcriptText": stage.transcript_text,
             "units": [cls._unit_json(unit) for unit in stage.units],
@@ -1227,9 +1169,7 @@ class TranscriptArtifactStore:
             "parserId": snapshot.parser_id,
             "parserVersion": snapshot.parser_version,
         }
-        if stage.route_snapshot_id != snapshot.id or _sha256_text(
-            _canonical_json(payload)
-        ) != stage.result_sha256:
+        if stage.route_snapshot_id != snapshot.id or _sha256_text(_canonical_json(payload)) != stage.result_sha256:
             raise ArtifactConflict("Normalized stage-result checksum validation failed.")
 
     @staticmethod
@@ -1265,25 +1205,18 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            existing = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if existing is not None:
                 record = self._attempt_from_row(existing)
                 if record.transcript_id != transcript_id or record.workload != workload:
                     raise ArtifactConflict("Attempt id is already bound to different work.")
-                if (
-                    expected_head_generation is not None
-                    and record.expected_head_generation != int(expected_head_generation)
+                if expected_head_generation is not None and record.expected_head_generation != int(
+                    expected_head_generation
                 ):
-                    raise ArtifactConflict(
-                        "Attempt id is already bound to a different head generation."
-                    )
+                    raise ArtifactConflict("Attempt id is already bound to a different head generation.")
                 conn.commit()
                 return record
-            if conn.execute(
-                "SELECT 1 FROM transcripts WHERE id = ?", (transcript_id,)
-            ).fetchone() is None:
+            if conn.execute("SELECT 1 FROM transcripts WHERE id = ?", (transcript_id,)).fetchone() is None:
                 raise ArtifactNotFound(f"Transcript {transcript_id!r} does not exist.")
             head = conn.execute(
                 "SELECT generation FROM canonical_transcript_heads WHERE transcript_id = ?",
@@ -1291,9 +1224,7 @@ class TranscriptArtifactStore:
             ).fetchone()
             current_generation = int(head["generation"]) if head else 0
             frozen_generation = (
-                current_generation
-                if expected_head_generation is None
-                else int(expected_head_generation)
+                current_generation if expected_head_generation is None else int(expected_head_generation)
             )
             if frozen_generation < 0:
                 raise ValueError("expected_head_generation must be non-negative.")
@@ -1323,9 +1254,7 @@ class TranscriptArtifactStore:
                     now,
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return self._attempt_from_row(row)
         except Exception:
@@ -1333,9 +1262,7 @@ class TranscriptArtifactStore:
             raise
 
     def get_attempt(self, attempt_id: str) -> AttemptRecord | None:
-        row = self._connect().execute(
-            "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-        ).fetchone()
+        row = self._connect().execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
         return self._attempt_from_row(row) if row else None
 
     def latest_attempt_for_transcript(
@@ -1345,15 +1272,19 @@ class TranscriptArtifactStore:
         """Return the newest attempt without changing or bypassing its lease."""
 
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        row = self._connect().execute(
-            """
+        row = (
+            self._connect()
+            .execute(
+                """
             SELECT * FROM transcription_attempts
             WHERE transcript_id = ?
             ORDER BY updated_at DESC, id DESC
             LIMIT 1
             """,
-            (transcript_id,),
-        ).fetchone()
+                (transcript_id,),
+            )
+            .fetchone()
+        )
         return self._attempt_from_row(row) if row else None
 
     def require_attempt(self, attempt_id: str) -> AttemptRecord:
@@ -1390,9 +1321,7 @@ class TranscriptArtifactStore:
         expires_at = (now + timedelta(seconds=float(ttl_seconds))).isoformat()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             current = self._attempt_from_row(row)
@@ -1419,9 +1348,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Attempt lease CAS lost.")
-            persisted = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return self._attempt_from_row(persisted)
         except Exception:
@@ -1450,9 +1377,7 @@ class TranscriptArtifactStore:
         expires_at = (now + timedelta(seconds=float(ttl_seconds))).isoformat()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             current = self._attempt_from_row(row)
@@ -1473,9 +1398,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Attempt lease renewal CAS lost.")
-            persisted = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return self._attempt_from_row(persisted)
         except Exception:
@@ -1494,9 +1417,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             current = self._attempt_from_row(row)
@@ -1516,9 +1437,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Attempt lease release CAS lost.")
-            persisted = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return self._attempt_from_row(persisted)
         except Exception:
@@ -1559,9 +1478,7 @@ class TranscriptArtifactStore:
         expected_state = _attempt_state(expected_state)
         new_state = _attempt_state(new_state)
         if new_state == AttemptState.PROVIDER_RESULT_READY:
-            raise InvalidAttemptTransition(
-                "Persist the normalized stage result to enter provider_result_ready."
-            )
+            raise InvalidAttemptTransition("Persist the normalized stage result to enter provider_result_ready.")
         if new_state in {AttemptState.COMPLETED, AttemptState.SUPERSEDED}:
             raise InvalidAttemptTransition("Canonical commit owns terminal winner selection.")
         if new_state not in ALLOWED_ATTEMPT_TRANSITIONS[expected_state]:
@@ -1571,27 +1488,20 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             current = self._attempt_from_row(row)
             if current.state != expected_state or current.state_version != expected_version:
                 raise ArtifactConflict("Attempt state/version CAS lost.")
             self._require_lease(row, lease_owner, now=_now())
-            if (
-                expected_state == AttemptState.SOURCE_READY
-                and new_state == AttemptState.TRANSCRIBING
-            ):
+            if expected_state == AttemptState.SOURCE_READY and new_state == AttemptState.TRANSCRIBING:
                 snapshot_row = conn.execute(
                     "SELECT * FROM transcription_route_snapshots WHERE attempt_id = ?",
                     (attempt_id,),
                 ).fetchone()
                 if snapshot_row is None:
-                    raise ArtifactConflict(
-                        "A frozen route snapshot is required before transcribing."
-                    )
+                    raise ArtifactConflict("A frozen route snapshot is required before transcribing.")
                 self._snapshot_from_row(snapshot_row)
             now = _now_iso()
             finished_at = now if new_state in TERMINAL_ATTEMPT_STATES else ""
@@ -1620,9 +1530,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Attempt state/version CAS lost.")
-            persisted = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return self._attempt_from_row(persisted)
         except Exception:
@@ -1636,9 +1544,7 @@ class TranscriptArtifactStore:
         *,
         snapshot_id: str | None = None,
     ) -> RouteSnapshot:
-        request_options = _validate_safe_persisted_json(
-            dict(draft.request_options), field_name="request_options"
-        )
+        request_options = _validate_safe_persisted_json(dict(draft.request_options), field_name="request_options")
         worker_manifest = _validate_safe_persisted_json(
             dict(draft.local_worker_manifest), field_name="local_worker_manifest"
         )
@@ -1651,9 +1557,7 @@ class TranscriptArtifactStore:
             "language": _safe_scalar(draft.language, field_name="language"),
             "responseShape": _safe_scalar(draft.response_shape, field_name="response_shape"),
             "timestampMode": _safe_scalar(draft.timestamp_mode, field_name="timestamp_mode"),
-            "diarizationMode": _safe_scalar(
-                draft.diarization_mode, field_name="diarization_mode"
-            ),
+            "diarizationMode": _safe_scalar(draft.diarization_mode, field_name="diarization_mode"),
             "parserId": _safe_scalar(draft.parser_id, field_name="parser_id"),
             "parserVersion": _safe_scalar(draft.parser_version, field_name="parser_version"),
             "requestOptions": request_options,
@@ -1665,9 +1569,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            attempt_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt_row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             attempt = self._attempt_from_row(attempt_row)
@@ -1687,9 +1589,7 @@ class TranscriptArtifactStore:
                 AttemptState.RESOLVING_SOURCE,
                 AttemptState.SOURCE_READY,
             }:
-                raise ArtifactConflict(
-                    "Route snapshot must be frozen before the attempt starts transcribing."
-                )
+                raise ArtifactConflict("Route snapshot must be frozen before the attempt starts transcribing.")
             now = _now_iso()
             conn.execute(
                 """
@@ -1721,9 +1621,7 @@ class TranscriptArtifactStore:
                     now,
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM transcription_route_snapshots WHERE id = ?", (snapshot_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_route_snapshots WHERE id = ?", (snapshot_id,)).fetchone()
             conn.commit()
             return self._snapshot_from_row(row)
         except Exception:
@@ -1731,9 +1629,11 @@ class TranscriptArtifactStore:
             raise
 
     def get_route_snapshot(self, attempt_id: str) -> RouteSnapshot | None:
-        row = self._connect().execute(
-            "SELECT * FROM transcription_route_snapshots WHERE attempt_id = ?", (attempt_id,)
-        ).fetchone()
+        row = (
+            self._connect()
+            .execute("SELECT * FROM transcription_route_snapshots WHERE attempt_id = ?", (attempt_id,))
+            .fetchone()
+        )
         return self._snapshot_from_row(row) if row else None
 
     def persist_stage_result(
@@ -1748,9 +1648,7 @@ class TranscriptArtifactStore:
         result_id: str | None = None,
     ) -> tuple[NormalizedStageResult, AttemptRecord]:
         validated_units = tuple(self._validated_unit(unit) for unit in units)
-        safe_evidence = _validate_safe_persisted_json(
-            dict(evidence or {}), field_name="stage_result.evidence"
-        )
+        safe_evidence = _validate_safe_persisted_json(dict(evidence or {}), field_name="stage_result.evidence")
         normalized_text = _normalize_text(transcript_text)
         unit_payload = [self._unit_json(unit) for unit in validated_units]
         payload = {
@@ -1762,9 +1660,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            attempt_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt_row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             attempt = self._attempt_from_row(attempt_row)
@@ -1846,9 +1742,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Attempt state/version CAS lost while saving stage result.")
-            stage_row = conn.execute(
-                "SELECT * FROM transcription_stage_results WHERE id = ?", (result_id,)
-            ).fetchone()
+            stage_row = conn.execute("SELECT * FROM transcription_stage_results WHERE id = ?", (result_id,)).fetchone()
             persisted_attempt = conn.execute(
                 "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
             ).fetchone()
@@ -1860,9 +1754,11 @@ class TranscriptArtifactStore:
             raise
 
     def get_stage_result(self, attempt_id: str) -> NormalizedStageResult | None:
-        row = self._connect().execute(
-            "SELECT * FROM transcription_stage_results WHERE attempt_id = ?", (attempt_id,)
-        ).fetchone()
+        row = (
+            self._connect()
+            .execute("SELECT * FROM transcription_stage_results WHERE attempt_id = ?", (attempt_id,))
+            .fetchone()
+        )
         return self._stage_from_row(row) if row else None
 
     def persist_track_stage_result(
@@ -1879,13 +1775,9 @@ class TranscriptArtifactStore:
     ) -> TrackStageResult:
         source_track = _safe_scalar(source_track, field_name="source_track")
         validated_units = tuple(self._validated_unit(unit) for unit in units)
-        if not validated_units or any(
-            unit.source_track != source_track for unit in validated_units
-        ):
+        if not validated_units or any(unit.source_track != source_track for unit in validated_units):
             raise ValueError("Track stage units must be non-empty and match source_track.")
-        safe_evidence = _validate_safe_persisted_json(
-            dict(evidence or {}), field_name="track_stage_result.evidence"
-        )
+        safe_evidence = _validate_safe_persisted_json(dict(evidence or {}), field_name="track_stage_result.evidence")
         normalized_text = _normalize_text(transcript_text)
         if not normalized_text:
             raise ValueError("Track stage results require transcript text.")
@@ -1893,9 +1785,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            attempt_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt_row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             attempt = self._attempt_from_row(attempt_row)
@@ -1968,18 +1858,21 @@ class TranscriptArtifactStore:
         snapshot = self.get_route_snapshot(attempt_id)
         if snapshot is None:
             return ()
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT * FROM transcription_track_stage_results
             WHERE attempt_id = ? ORDER BY source_track ASC
             """,
-            (attempt_id,),
-        ).fetchall()
+                (attempt_id,),
+            )
+            .fetchall()
+        )
         results = tuple(self._track_stage_from_row(row) for row in rows)
         for result in results:
             self._verify_track_stage_result(result, snapshot)
         return results
-
 
     def persist_track_derivation(
         self,
@@ -1994,26 +1887,18 @@ class TranscriptArtifactStore:
         lease_owner: str = "",
         result_id: str | None = None,
     ) -> TrackDerivationResult:
-        parent_stage_result_id = _safe_scalar(
-            parent_stage_result_id, field_name="parent_stage_result_id"
-        )
+        parent_stage_result_id = _safe_scalar(parent_stage_result_id, field_name="parent_stage_result_id")
         source_track = _safe_scalar(source_track, field_name="source_track")
         derivation_kind = _safe_scalar(derivation_kind, field_name="derivation_kind")
         validated_units = tuple(self._validated_unit(unit) for unit in units)
-        if not validated_units or any(
-            unit.source_track != source_track for unit in validated_units
-        ):
+        if not validated_units or any(unit.source_track != source_track for unit in validated_units):
             raise ValueError("Track derivation units must be non-empty and match source_track.")
-        safe_evidence = _validate_safe_persisted_json(
-            dict(evidence or {}), field_name="track_derivation.evidence"
-        )
+        safe_evidence = _validate_safe_persisted_json(dict(evidence or {}), field_name="track_derivation.evidence")
         result_id = _safe_scalar(result_id or uuid4().hex, field_name="result_id")
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            attempt_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt_row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             attempt = self._attempt_from_row(attempt_row)
@@ -2082,9 +1967,7 @@ class TranscriptArtifactStore:
                     _now_iso(),
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM transcription_track_derivations WHERE id = ?", (result_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcription_track_derivations WHERE id = ?", (result_id,)).fetchone()
             conn.commit()
             return self._track_derivation_from_row(row)
         except Exception:
@@ -2095,16 +1978,18 @@ class TranscriptArtifactStore:
         snapshot = self.get_route_snapshot(attempt_id)
         if snapshot is None:
             return ()
-        stage_results = {
-            item.id: item for item in self.list_track_stage_results(attempt_id)
-        }
-        rows = self._connect().execute(
-            """
+        stage_results = {item.id: item for item in self.list_track_stage_results(attempt_id)}
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT * FROM transcription_track_derivations
             WHERE attempt_id = ? ORDER BY source_track ASC, derivation_kind ASC
             """,
-            (attempt_id,),
-        ).fetchall()
+                (attempt_id,),
+            )
+            .fetchall()
+        )
         results = tuple(self._track_derivation_from_row(row) for row in rows)
         for result in results:
             parent = stage_results.get(result.parent_stage_result_id)
@@ -2121,8 +2006,10 @@ class TranscriptArtifactStore:
     ) -> TrackRecoveryBundle | None:
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
         now = (now or _now()).astimezone(timezone.utc)
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT a.id
             FROM transcription_attempts a
             WHERE a.transcript_id = ? AND a.state = ?
@@ -2133,8 +2020,10 @@ class TranscriptArtifactStore:
               )
             ORDER BY a.updated_at DESC, a.id DESC
             """,
-            (transcript_id, AttemptState.TRANSCRIBING.value, now.isoformat()),
-        ).fetchall()
+                (transcript_id, AttemptState.TRANSCRIBING.value, now.isoformat()),
+            )
+            .fetchall()
+        )
         for row in rows:
             attempt = self.require_attempt(str(row["id"]))
             snapshot = self.get_route_snapshot(attempt.id)
@@ -2150,9 +2039,7 @@ class TranscriptArtifactStore:
 
     def get_recovery_bundle(self, attempt_id: str) -> RecoveryBundle:
         conn = self._connect()
-        attempt_row = conn.execute(
-            "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-        ).fetchone()
+        attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
         if attempt_row is None:
             raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
         attempt = self._attempt_from_row(attempt_row)
@@ -2178,23 +2065,27 @@ class TranscriptArtifactStore:
     ) -> tuple[RecoveryBundle, ...]:
         now = (now or _now()).astimezone(timezone.utc)
         limit = max(0, min(int(limit), 1000))
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT id FROM transcription_attempts
             WHERE state IN (?, ?, ?, ?)
               AND (lease_owner = '' OR lease_expires_at = '' OR lease_expires_at <= ?)
             ORDER BY updated_at ASC, id ASC
             LIMIT ?
             """,
-            (
-                AttemptState.PROVIDER_RESULT_READY.value,
-                AttemptState.DIARIZING.value,
-                AttemptState.CANONICALIZING.value,
-                AttemptState.COMMITTING.value,
-                now.isoformat(),
-                limit,
-            ),
-        ).fetchall()
+                (
+                    AttemptState.PROVIDER_RESULT_READY.value,
+                    AttemptState.DIARIZING.value,
+                    AttemptState.CANONICALIZING.value,
+                    AttemptState.COMMITTING.value,
+                    now.isoformat(),
+                    limit,
+                ),
+            )
+            .fetchall()
+        )
         bundles: list[RecoveryBundle] = []
         for row in rows:
             bundle = self.get_recovery_bundle(str(row["id"]))
@@ -2212,22 +2103,26 @@ class TranscriptArtifactStore:
         """Return the newest unleased recoverable result for one transcript."""
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
         now = (now or _now()).astimezone(timezone.utc)
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT id FROM transcription_attempts
             WHERE transcript_id = ? AND state IN (?, ?, ?, ?)
               AND (lease_owner = '' OR lease_expires_at = '' OR lease_expires_at <= ?)
             ORDER BY updated_at DESC, id DESC
             """,
-            (
-                transcript_id,
-                AttemptState.PROVIDER_RESULT_READY.value,
-                AttemptState.DIARIZING.value,
-                AttemptState.CANONICALIZING.value,
-                AttemptState.COMMITTING.value,
-                now.isoformat(),
-            ),
-        ).fetchall()
+                (
+                    transcript_id,
+                    AttemptState.PROVIDER_RESULT_READY.value,
+                    AttemptState.DIARIZING.value,
+                    AttemptState.CANONICALIZING.value,
+                    AttemptState.COMMITTING.value,
+                    now.isoformat(),
+                ),
+            )
+            .fetchall()
+        )
         for row in rows:
             bundle = self.get_recovery_bundle(str(row["id"]))
             expiry = _parse_iso(bundle.attempt.lease_expires_at)
@@ -2249,30 +2144,30 @@ class TranscriptArtifactStore:
         """
 
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT id FROM transcription_attempts
             WHERE transcript_id = ? AND state IN (?, ?, ?, ?)
             ORDER BY updated_at DESC, id DESC
             LIMIT ?
             """,
-            (
-                transcript_id,
-                AttemptState.PROVIDER_RESULT_READY.value,
-                AttemptState.DIARIZING.value,
-                AttemptState.CANONICALIZING.value,
-                AttemptState.COMMITTING.value,
-                max(1, min(64, int(limit))),
-            ),
-        ).fetchall()
-        return tuple(
-            self.get_recovery_bundle(str(row["id"])) for row in rows
+                (
+                    transcript_id,
+                    AttemptState.PROVIDER_RESULT_READY.value,
+                    AttemptState.DIARIZING.value,
+                    AttemptState.CANONICALIZING.value,
+                    AttemptState.COMMITTING.value,
+                    max(1, min(64, int(limit))),
+                ),
+            )
+            .fetchall()
         )
+        return tuple(self.get_recovery_bundle(str(row["id"])) for row in rows)
 
     @staticmethod
-    def _coerce_segment(
-        value: CanonicalSegmentDraft | StageUnit | Mapping[str, Any]
-    ) -> CanonicalSegmentDraft:
+    def _coerce_segment(value: CanonicalSegmentDraft | StageUnit | Mapping[str, Any]) -> CanonicalSegmentDraft:
         if isinstance(value, CanonicalSegmentDraft):
             return value
         if isinstance(value, StageUnit):
@@ -2286,12 +2181,8 @@ class TranscriptArtifactStore:
             speaker_label=value.get("speaker_label", value.get("speakerLabel", "")),
             timing_origin=value.get("timing_origin", value.get("timingOrigin", "provider")),
             speaker_origin=value.get("speaker_origin", value.get("speakerOrigin", "none")),
-            alignment_quality=value.get(
-                "alignment_quality", value.get("alignmentQuality", "provider_segment")
-            ),
-            provider_native_id=value.get(
-                "provider_native_id", value.get("providerNativeId", "")
-            ),
+            alignment_quality=value.get("alignment_quality", value.get("alignmentQuality", "provider_segment")),
+            provider_native_id=value.get("provider_native_id", value.get("providerNativeId", "")),
         )
 
     @classmethod
@@ -2422,8 +2313,7 @@ class TranscriptArtifactStore:
     ) -> CanonicalArtifact:
         segment_rows = (
             conn.execute(
-                "SELECT * FROM canonical_transcript_segments WHERE artifact_id = ? "
-                "ORDER BY order_index",
+                "SELECT * FROM canonical_transcript_segments WHERE artifact_id = ? ORDER BY order_index",
                 (row["id"],),
             ).fetchall()
             if include_segments
@@ -2444,16 +2334,16 @@ class TranscriptArtifactStore:
         )
 
     def get_head(self, transcript_id: str) -> CanonicalHead | None:
-        row = self._connect().execute(
-            "SELECT * FROM canonical_transcript_heads WHERE transcript_id = ?", (transcript_id,)
-        ).fetchone()
+        row = (
+            self._connect()
+            .execute("SELECT * FROM canonical_transcript_heads WHERE transcript_id = ?", (transcript_id,))
+            .fetchone()
+        )
         return self._head_from_row(row)
 
     def get_artifact(self, artifact_id: str) -> CanonicalArtifact | None:
         conn = self._connect()
-        row = conn.execute(
-            "SELECT * FROM canonical_transcript_artifacts WHERE id = ?", (artifact_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM canonical_transcript_artifacts WHERE id = ?", (artifact_id,)).fetchone()
         return self._artifact_from_row(conn, row) if row else None
 
     def search_canonical_segments(
@@ -2474,8 +2364,7 @@ class TranscriptArtifactStore:
         selected_artifact_id = str(artifact_id or "").strip()
         if selected_artifact_id:
             belongs = conn.execute(
-                "SELECT 1 FROM canonical_transcript_artifacts "
-                "WHERE id = ? AND transcript_id = ?",
+                "SELECT 1 FROM canonical_transcript_artifacts WHERE id = ? AND transcript_id = ?",
                 (selected_artifact_id, transcript_id),
             ).fetchone()
             if belongs is None:
@@ -2515,9 +2404,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            attempt_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            attempt_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             if attempt_row is None:
                 raise ArtifactNotFound(f"Attempt {attempt_id!r} does not exist.")
             attempt = self._attempt_from_row(attempt_row)
@@ -2593,9 +2480,7 @@ class TranscriptArtifactStore:
                 )
                 if cursor.rowcount != 1:
                     raise ArtifactConflict("Stale commit lost its attempt CAS.")
-                persisted = conn.execute(
-                    "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-                ).fetchone()
+                persisted = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
                 conn.commit()
                 return CanonicalCommitResult(
                     artifact=None,
@@ -2621,9 +2506,7 @@ class TranscriptArtifactStore:
             for raw_input in [*automatic_inputs, *list(inputs)]:
                 kind = _safe_scalar(raw_input.input_kind, field_name="input_kind")
                 input_id = _safe_scalar(raw_input.input_id, field_name="input_id")
-                _validate_safe_persisted_json(
-                    {"inputId": input_id}, field_name=f"artifact_input.{kind}"
-                )
+                _validate_safe_persisted_json({"inputId": input_id}, field_name=f"artifact_input.{kind}")
                 digest = _require_sha256(raw_input.input_sha256, field_name="input_sha256")
                 metadata = _validate_safe_persisted_json(
                     dict(raw_input.metadata), field_name=f"artifact_input.{kind}.metadata"
@@ -2672,9 +2555,7 @@ class TranscriptArtifactStore:
                     }
                 )
             )
-            if conn.execute(
-                "SELECT 1 FROM transcripts WHERE id = ?", (attempt.transcript_id,)
-            ).fetchone() is None:
+            if conn.execute("SELECT 1 FROM transcripts WHERE id = ?", (attempt.transcript_id,)).fetchone() is None:
                 raise ArtifactNotFound("Compatibility transcript disappeared before commit.")
             conn.execute(
                 """
@@ -2829,9 +2710,7 @@ class TranscriptArtifactStore:
                 "SELECT * FROM canonical_transcript_heads WHERE transcript_id = ?",
                 (attempt.transcript_id,),
             ).fetchone()
-            completed_row = conn.execute(
-                "SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)
-            ).fetchone()
+            completed_row = conn.execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
             conn.commit()
             return CanonicalCommitResult(
                 artifact=self._artifact_from_row(conn, artifact_row),
@@ -2868,9 +2747,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            existing = conn.execute(
-                "SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)
-            ).fetchone()
+            existing = conn.execute("SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)).fetchone()
             if existing is not None:
                 asset = self._asset_from_row(existing)
                 expected = (
@@ -2917,9 +2794,7 @@ class TranscriptArtifactStore:
                     now,
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)).fetchone()
             conn.commit()
             return self._asset_from_row(row)
         except Exception:
@@ -2927,21 +2802,23 @@ class TranscriptArtifactStore:
             raise
 
     def get_source_asset(self, asset_id: str) -> SourceAsset | None:
-        row = self._connect().execute(
-            "SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)
-        ).fetchone()
+        row = self._connect().execute("SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)).fetchone()
         return self._asset_from_row(row) if row else None
 
     def list_source_assets(self, transcript_id: str) -> tuple[SourceAsset, ...]:
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        rows = self._connect().execute(
-            """
+        rows = (
+            self._connect()
+            .execute(
+                """
             SELECT * FROM transcript_source_assets
             WHERE transcript_id = ?
             ORDER BY created_at ASC, id ASC
             """,
-            (transcript_id,),
-        ).fetchall()
+                (transcript_id,),
+            )
+            .fetchall()
+        )
         return tuple(self._asset_from_row(row) for row in rows)
 
     def list_source_assets_by_state(
@@ -2962,20 +2839,22 @@ class TranscriptArtifactStore:
             purpose_clause = " AND purpose = ?"
             params.append(_safe_scalar(purpose, field_name="purpose"))
         params.append(int(limit))
-        rows = self._connect().execute(
-            f"""
+        rows = (
+            self._connect()
+            .execute(
+                f"""
             SELECT * FROM transcript_source_assets
             WHERE state = ?{purpose_clause}
             ORDER BY updated_at ASC, id ASC
             LIMIT ?
             """,
-            tuple(params),
-        ).fetchall()
+                tuple(params),
+            )
+            .fetchall()
+        )
         return tuple(self._asset_from_row(row) for row in rows)
 
-    def mark_source_asset_purge_pending(
-        self, asset_id: str, *, expected_version: int
-    ) -> SourceAsset:
+    def mark_source_asset_purge_pending(self, asset_id: str, *, expected_version: int) -> SourceAsset:
         return self._transition_asset(
             asset_id,
             expected_state=SourceAssetState.AVAILABLE,
@@ -3011,9 +2890,7 @@ class TranscriptArtifactStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                "SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)).fetchone()
             if row is None:
                 raise ArtifactNotFound(f"Source asset {asset_id!r} does not exist.")
             current = self._asset_from_row(row)
@@ -3043,9 +2920,7 @@ class TranscriptArtifactStore:
             )
             if cursor.rowcount != 1:
                 raise ArtifactConflict("Source asset state/version CAS lost.")
-            persisted = conn.execute(
-                "SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)
-            ).fetchone()
+            persisted = conn.execute("SELECT * FROM transcript_source_assets WHERE id = ?", (asset_id,)).fetchone()
             conn.commit()
             return self._asset_from_row(persisted)
         except Exception:

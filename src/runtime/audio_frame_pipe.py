@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import struct
+from dataclasses import dataclass
 from typing import Final
 
 AUDIO_FRAME_MAGIC: Final[bytes] = b"SAF1"
@@ -131,7 +131,5 @@ def decode_audio_frame(data: bytes | bytearray | memoryview) -> tuple[AudioFrame
     header = decode_audio_frame_header(view)
     expected_len = AUDIO_FRAME_HEADER_LEN + int(header.payload_len)
     if len(view) != expected_len:
-        raise AudioFrameProtocolError(
-            f"audio frame payload length mismatch: expected {expected_len}, got {len(view)}"
-        )
+        raise AudioFrameProtocolError(f"audio frame payload length mismatch: expected {expected_len}, got {len(view)}")
     return header, bytes(view[AUDIO_FRAME_HEADER_LEN:])

@@ -48,4 +48,3 @@ def evaluate_golden_trace(
         target_ok=target_ok,
         regression_ok=regression_ok,
     )
-
