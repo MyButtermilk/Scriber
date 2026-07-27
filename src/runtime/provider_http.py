@@ -18,8 +18,9 @@ import socket
 import threading
 import time
 from collections import deque
+from collections.abc import Callable, Mapping
 from types import SimpleNamespace
-from typing import Any, Callable, Mapping
+from typing import Any
 from uuid import uuid4
 
 import aiohttp

@@ -5,17 +5,19 @@ import re
 import sqlite3
 import threading
 import weakref
+from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 from src.runtime.paths import database_path
 
 
-class MeetingImportStatus(str, Enum):
+class MeetingImportStatus(StrEnum):
     CREATED = "created"
     RECEIVING = "receiving"
     RECEIVED = "received"
@@ -113,7 +115,7 @@ class MeetingImportConflict(MeetingImportStoreError):
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _json_object(raw: str | None) -> dict[str, Any]:
@@ -203,7 +205,7 @@ class MeetingImportRecord:
     finished_at: str = ""
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "MeetingImportRecord":
+    def from_row(cls, row: sqlite3.Row) -> MeetingImportRecord:
         return cls(
             id=str(row["id"]),
             status=MeetingImportStatus(str(row["status"])),
@@ -298,10 +300,8 @@ class MeetingImportStore:
                 pending = list(connections)
                 connections.clear()
         for connection in pending:
-            try:
+            with suppress(Exception):
                 connection.close()
-            except Exception:
-                pass
 
     def _connect(self) -> sqlite3.Connection:
         connection = getattr(self._thread_local, "conn", None)
@@ -643,24 +643,22 @@ class MeetingImportStore:
     @staticmethod
     def _validate_state_values(status: MeetingImportStatus, values: dict[str, Any]) -> None:
         at_or_after_receive = status in RECOVERABLE_IMPORT_STATUSES | {MeetingImportStatus.COMPLETED}
-        if at_or_after_receive:
-            if not (
-                values["original_relative_path"] and values["original_bytes"] is not None and values["original_sha256"]
-            ):
-                raise MeetingImportConflict(f"State {status.value} requires a verified original upload artifact.")
+        if at_or_after_receive and not (
+            values["original_relative_path"] and values["original_bytes"] is not None and values["original_sha256"]
+        ):
+            raise MeetingImportConflict(f"State {status.value} requires a verified original upload artifact.")
         at_or_after_prepare = status in {
             MeetingImportStatus.WAITING_FOR_WORKSPACE,
             MeetingImportStatus.COMMITTING,
             MeetingImportStatus.FINALIZING,
             MeetingImportStatus.COMPLETED,
         }
-        if at_or_after_prepare:
-            if not (
-                values["normalized_relative_path"]
-                and values["normalized_bytes"] is not None
-                and values["normalized_sha256"]
-            ):
-                raise MeetingImportConflict(f"State {status.value} requires a verified normalized audio artifact.")
+        if at_or_after_prepare and not (
+            values["normalized_relative_path"]
+            and values["normalized_bytes"] is not None
+            and values["normalized_sha256"]
+        ):
+            raise MeetingImportConflict(f"State {status.value} requires a verified normalized audio artifact.")
         if (
             status
             in {

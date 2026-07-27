@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Callable
 
 from src import database
 
@@ -26,7 +26,7 @@ class AudioAdmissionStoreError(RuntimeError):
 
 
 class AudioAdmissionConflict(AudioAdmissionStoreError):
-    def __init__(self, active: "AudioAdmissionClaim") -> None:
+    def __init__(self, active: AudioAdmissionClaim) -> None:
         super().__init__(f"Native audio is owned by {active.owner_kind}.")
         self.active = active
 
@@ -42,11 +42,11 @@ class AudioAdmissionClaim:
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _iso(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -55,8 +55,8 @@ def _parse_iso(value: str) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _safe(value: str, *, field: str) -> str:
@@ -126,7 +126,7 @@ class AudioAdmissionStore:
         ttl = float(ttl_seconds)
         if not 5.0 <= ttl <= 86_400.0:
             raise ValueError("ttl_seconds must be between 5 and 86400 seconds.")
-        now = self._now().astimezone(timezone.utc)
+        now = self._now().astimezone(UTC)
         expires = now + timedelta(seconds=ttl)
         conn = self._connect()
         try:
@@ -187,7 +187,7 @@ class AudioAdmissionStore:
         ttl = float(ttl_seconds)
         if not 5.0 <= ttl <= 86_400.0:
             raise ValueError("ttl_seconds must be between 5 and 86400 seconds.")
-        now = self._now().astimezone(timezone.utc)
+        now = self._now().astimezone(UTC)
         expires = now + timedelta(seconds=ttl)
         conn = self._connect()
         try:
@@ -230,7 +230,7 @@ class AudioAdmissionStore:
         owner_id: str,
     ) -> AudioAdmissionClaim:
         owner_id = _safe(owner_id, field="owner_id")
-        now = self._now().astimezone(timezone.utc)
+        now = self._now().astimezone(UTC)
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -285,7 +285,7 @@ class AudioAdmissionStore:
             return cursor.rowcount == 1
 
     def active(self) -> AudioAdmissionClaim | None:
-        now = self._now().astimezone(timezone.utc)
+        now = self._now().astimezone(UTC)
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")

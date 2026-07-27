@@ -5,11 +5,13 @@ import re
 import sqlite3
 import threading
 import weakref
+from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 from uuid import uuid4
 
 from loguru import logger
@@ -17,12 +19,12 @@ from loguru import logger
 from src.runtime.paths import database_path
 
 
-class JobType(str, Enum):
+class JobType(StrEnum):
     YOUTUBE = "youtube"
     FILE = "file"
 
 
-class JobStatus(str, Enum):
+class JobStatus(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -191,7 +193,7 @@ class JobRecord:
         return text if re.fullmatch(r"[A-Za-z0-9._-]{1,160}", text) else ""
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "JobRecord":
+    def from_row(cls, row: sqlite3.Row) -> JobRecord:
         payload_raw = row["payload"] or "{}"
         try:
             payload = json.loads(payload_raw)
@@ -244,10 +246,8 @@ class JobStore:
                 pending = list(connections)
                 connections.clear()
         for conn in pending:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
@@ -273,10 +273,9 @@ class JobStore:
         self._thread_local.connection_generation = self._connection_generation
 
     def init_schema(self) -> None:
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
                     CREATE TABLE IF NOT EXISTS jobs (
                         id TEXT PRIMARY KEY,
                         transcript_id TEXT NOT NULL,
@@ -292,53 +291,51 @@ class JobStore:
                         updated_at TEXT NOT NULL
                     )
                     """
-                )
-                conn.execute(
-                    """
+            )
+            conn.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at
                     ON jobs(status, created_at DESC)
                     """
-                )
-                conn.execute(
-                    """
+            )
+            conn.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_jobs_transcript_id
                     ON jobs(transcript_id)
                     """
-                )
-                columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
-                provider_state_added = "provider_request_state" not in columns
-                provider_attempt_added = "provider_request_attempt" not in columns
-                if provider_state_added:
-                    conn.execute(
-                        "ALTER TABLE jobs ADD COLUMN provider_request_state TEXT NOT NULL DEFAULT 'not_started'"
-                    )
-                if provider_attempt_added:
-                    conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_attempt INTEGER NOT NULL DEFAULT 0")
-                if provider_state_added or provider_attempt_added:
-                    # A pre-migration RUNNING row may already have crossed a
-                    # billable remote boundary.  There is no durable evidence
-                    # that it was still pre-request, so bind it to its current
-                    # attempt and force startup reconciliation instead of
-                    # replaying it automatically.
-                    conn.execute(
-                        """
+            )
+            columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
+            provider_state_added = "provider_request_state" not in columns
+            provider_attempt_added = "provider_request_attempt" not in columns
+            if provider_state_added:
+                conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_state TEXT NOT NULL DEFAULT 'not_started'")
+            if provider_attempt_added:
+                conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_attempt INTEGER NOT NULL DEFAULT 0")
+            if provider_state_added or provider_attempt_added:
+                # A pre-migration RUNNING row may already have crossed a
+                # billable remote boundary.  There is no durable evidence
+                # that it was still pre-request, so bind it to its current
+                # attempt and force startup reconciliation instead of
+                # replaying it automatically.
+                conn.execute(
+                    """
                         UPDATE jobs
                         SET provider_request_state = ?,
                             provider_request_attempt = attempts
                         WHERE status = ? AND attempts > 0
                         """,
-                        (
-                            PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                            JobStatus.RUNNING.value,
-                        ),
-                    )
-                    # A legacy queued retry with attempts > 0 is equally
-                    # ambiguous: an older worker may have queued it after a
-                    # timeout that occurred after provider acceptance.  There
-                    # is no exact attempt binding to recover, so fail it closed
-                    # instead of letting ``mark_running`` erase the fence.
-                    conn.execute(
-                        """
+                    (
+                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                        JobStatus.RUNNING.value,
+                    ),
+                )
+                # A legacy queued retry with attempts > 0 is equally
+                # ambiguous: an older worker may have queued it after a
+                # timeout that occurred after provider acceptance.  There
+                # is no exact attempt binding to recover, so fail it closed
+                # instead of letting ``mark_running`` erase the fence.
+                conn.execute(
+                    """
                         UPDATE jobs
                         SET status = ?, provider_request_state = ?,
                             provider_request_attempt = attempts,
@@ -346,34 +343,34 @@ class JobStore:
                             last_error = ?
                         WHERE status = ? AND attempts > 0
                         """,
-                        (
-                            JobStatus.FAILED.value,
-                            PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                            "Provider request outcome is unknown after upgrade; automatic replay was disabled.",
-                            JobStatus.QUEUED.value,
-                        ),
-                    )
-                conn.execute(
-                    """
+                    (
+                        JobStatus.FAILED.value,
+                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                        "Provider request outcome is unknown after upgrade; automatic replay was disabled.",
+                        JobStatus.QUEUED.value,
+                    ),
+                )
+            conn.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_jobs_status_next_retry_at
                     ON jobs(status, next_retry_at)
                     """
+            )
+            # Older builds could persist offset-aware retry timestamps. Normalize
+            # them once at startup so due-job queries stay indexable in SQLite.
+            retry_rows = conn.execute("SELECT id, next_retry_at FROM jobs WHERE next_retry_at != ''").fetchall()
+            retry_updates = []
+            for row in retry_rows:
+                raw_retry_at = str(row["next_retry_at"] or "")
+                normalized_retry_at = _normalize_retry_iso(raw_retry_at)
+                if normalized_retry_at != raw_retry_at:
+                    retry_updates.append((normalized_retry_at, row["id"]))
+            if retry_updates:
+                conn.executemany(
+                    "UPDATE jobs SET next_retry_at = ? WHERE id = ?",
+                    retry_updates,
                 )
-                # Older builds could persist offset-aware retry timestamps. Normalize
-                # them once at startup so due-job queries stay indexable in SQLite.
-                retry_rows = conn.execute("SELECT id, next_retry_at FROM jobs WHERE next_retry_at != ''").fetchall()
-                retry_updates = []
-                for row in retry_rows:
-                    raw_retry_at = str(row["next_retry_at"] or "")
-                    normalized_retry_at = _normalize_retry_iso(raw_retry_at)
-                    if normalized_retry_at != raw_retry_at:
-                        retry_updates.append((normalized_retry_at, row["id"]))
-                if retry_updates:
-                    conn.executemany(
-                        "UPDATE jobs SET next_retry_at = ? WHERE id = ?",
-                        retry_updates,
-                    )
-                conn.commit()
+            conn.commit()
 
     def enqueue(
         self,
@@ -397,42 +394,41 @@ class JobStore:
             created_at=now,
             updated_at=now,
         )
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
                     INSERT INTO jobs
                     (id, transcript_id, type, status, payload, attempts,
                      provider_request_state, provider_request_attempt,
                      next_retry_at, last_error, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        record.id,
-                        record.transcript_id,
-                        record.job_type.value,
-                        record.status.value,
-                        json.dumps(record.payload, ensure_ascii=False),
-                        record.attempts,
-                        record.provider_request_state,
-                        record.provider_request_attempt,
-                        record.next_retry_at,
-                        record.last_error,
-                        record.created_at,
-                        record.updated_at,
-                    ),
-                )
-                conn.commit()
+                (
+                    record.id,
+                    record.transcript_id,
+                    record.job_type.value,
+                    record.status.value,
+                    json.dumps(record.payload, ensure_ascii=False),
+                    record.attempts,
+                    record.provider_request_state,
+                    record.provider_request_attempt,
+                    record.next_retry_at,
+                    record.last_error,
+                    record.created_at,
+                    record.updated_at,
+                ),
+            )
+            conn.commit()
         return record
 
-    def get(self, job_id: str) -> Optional[JobRecord]:
+    def get(self, job_id: str) -> JobRecord | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         if not row:
             return None
         return JobRecord.from_row(row)
 
-    def get_by_transcript_id(self, transcript_id: str) -> Optional[JobRecord]:
+    def get_by_transcript_id(self, transcript_id: str) -> JobRecord | None:
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM jobs WHERE transcript_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
@@ -458,68 +454,67 @@ class JobStore:
 
         candidate = _safe_execution_route(route)
         now = _now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT status, payload FROM jobs WHERE id = ?",
-                    (job_id,),
-                ).fetchone()
-                if row is None or str(row["status"]) not in {
-                    JobStatus.QUEUED.value,
-                    JobStatus.RUNNING.value,
-                }:
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, payload FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or str(row["status"]) not in {
+                JobStatus.QUEUED.value,
+                JobStatus.RUNNING.value,
+            }:
+                conn.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            existing_raw = payload.get("executionRoute")
+            executed_raw = payload.get("executedRoute")
+            if isinstance(executed_raw, dict):
+                try:
+                    executed = _safe_execution_route(executed_raw)
+                except ValueError:
                     conn.rollback()
                     return False
+                if executed != candidate:
+                    conn.rollback()
+                    return False
+            if isinstance(existing_raw, dict):
                 try:
-                    payload = json.loads(row["payload"] or "{}")
-                except json.JSONDecodeError:
-                    payload = {}
-                if not isinstance(payload, dict):
-                    payload = {}
-                existing_raw = payload.get("executionRoute")
-                executed_raw = payload.get("executedRoute")
-                if isinstance(executed_raw, dict):
-                    try:
-                        executed = _safe_execution_route(executed_raw)
-                    except ValueError:
-                        conn.rollback()
-                        return False
-                    if executed != candidate:
-                        conn.rollback()
-                        return False
-                if isinstance(existing_raw, dict):
-                    try:
-                        existing = _safe_execution_route(existing_raw)
-                    except ValueError:
-                        conn.rollback()
-                        return False
-                    if existing == candidate:
-                        conn.rollback()
-                        return True
-                    if not _execution_route_can_finalize(existing, candidate):
-                        conn.rollback()
-                        return False
-                payload["executionRoute"] = candidate
-                cursor = conn.execute(
-                    """
+                    existing = _safe_execution_route(existing_raw)
+                except ValueError:
+                    conn.rollback()
+                    return False
+                if existing == candidate:
+                    conn.rollback()
+                    return True
+                if not _execution_route_can_finalize(existing, candidate):
+                    conn.rollback()
+                    return False
+            payload["executionRoute"] = candidate
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET payload = ?, updated_at = ?
                     WHERE id = ? AND status IN (?, ?)
                     """,
-                    (
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                        now,
-                        job_id,
-                        JobStatus.QUEUED.value,
-                        JobStatus.RUNNING.value,
-                    ),
-                )
-                if int(cursor.rowcount or 0) != 1:
-                    conn.rollback()
-                    return False
-                conn.commit()
-                return True
+                (
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
 
     def record_executed_route(
         self,
@@ -534,79 +529,77 @@ class JobStore:
 
         candidate = _safe_execution_route(route)
         now = _now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT status, payload FROM jobs WHERE id = ?",
-                    (job_id,),
-                ).fetchone()
-                if row is None or str(row["status"]) not in {
-                    JobStatus.QUEUED.value,
-                    JobStatus.RUNNING.value,
-                    JobStatus.COMPLETED.value,
-                }:
-                    conn.rollback()
-                    return False
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, payload FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if row is None or str(row["status"]) not in {
+                JobStatus.QUEUED.value,
+                JobStatus.RUNNING.value,
+                JobStatus.COMPLETED.value,
+            }:
+                conn.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            selected_raw = payload.get("executionRoute")
+            if not isinstance(selected_raw, dict):
+                conn.rollback()
+                return False
+            try:
+                selected = _safe_execution_route(selected_raw)
+            except ValueError:
+                conn.rollback()
+                return False
+            if selected != candidate:
+                conn.rollback()
+                return False
+            executed_raw = payload.get("executedRoute")
+            if isinstance(executed_raw, dict):
                 try:
-                    payload = json.loads(row["payload"] or "{}")
-                except json.JSONDecodeError:
-                    payload = {}
-                if not isinstance(payload, dict):
-                    payload = {}
-                selected_raw = payload.get("executionRoute")
-                if not isinstance(selected_raw, dict):
-                    conn.rollback()
-                    return False
-                try:
-                    selected = _safe_execution_route(selected_raw)
+                    executed = _safe_execution_route(executed_raw)
                 except ValueError:
                     conn.rollback()
                     return False
-                if selected != candidate:
-                    conn.rollback()
-                    return False
-                executed_raw = payload.get("executedRoute")
-                if isinstance(executed_raw, dict):
-                    try:
-                        executed = _safe_execution_route(executed_raw)
-                    except ValueError:
-                        conn.rollback()
-                        return False
-                    conn.rollback()
-                    return executed == candidate
-                payload["executedRoute"] = candidate
-                cursor = conn.execute(
-                    """
+                conn.rollback()
+                return executed == candidate
+            payload["executedRoute"] = candidate
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET payload = ?, updated_at = ?
                     WHERE id = ? AND status IN (?, ?, ?)
                     """,
-                    (
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                        now,
-                        job_id,
-                        JobStatus.QUEUED.value,
-                        JobStatus.RUNNING.value,
-                        JobStatus.COMPLETED.value,
-                    ),
-                )
-                if int(cursor.rowcount or 0) != 1:
-                    conn.rollback()
-                    return False
-                conn.commit()
-                return True
+                (
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    now,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.COMPLETED.value,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
 
     def delete_by_transcript_id(self, transcript_id: str) -> int:
         """Remove all lifecycle rows owned by a deleted transcript."""
-        with self._lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    "DELETE FROM jobs WHERE transcript_id = ?",
-                    (transcript_id,),
-                )
-                conn.commit()
-                return max(0, int(cursor.rowcount or 0))
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM jobs WHERE transcript_id = ?",
+                (transcript_id,),
+            )
+            conn.commit()
+            return max(0, int(cursor.rowcount or 0))
 
     def list_pending(self, *, limit: int = 100) -> list[JobRecord]:
         now = _now_iso()
@@ -751,11 +744,10 @@ class JobStore:
             JobStatus.RUNNING.value,
             *expected_states,
         ]
-        with self._lock:
-            with self._connect() as conn:
-                cursor = conn.execute(sql, params)
-                conn.commit()
-                return int(cursor.rowcount or 0) == 1
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
 
     def mark_provider_request_may_be_committed(self, job_id: str) -> bool:
         return self._transition_provider_request_state(
@@ -789,60 +781,59 @@ class JobStore:
         if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", normalized_attempt_id):
             raise ValueError("Provider result attempt id is invalid")
         now = _now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT status, attempts, provider_request_attempt, "
-                    "provider_request_state, payload FROM jobs WHERE id = ?",
-                    (job_id,),
-                ).fetchone()
-                if (
-                    row is None
-                    or str(row["status"]) != JobStatus.RUNNING.value
-                    or int(row["provider_request_attempt"] or 0) != int(row["attempts"] or 0)
-                    or str(row["provider_request_state"])
-                    not in {
-                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                    }
-                ):
-                    conn.rollback()
-                    return False
-                try:
-                    payload = json.loads(row["payload"] or "{}")
-                except json.JSONDecodeError:
-                    payload = {}
-                if not isinstance(payload, dict):
-                    payload = {}
-                existing = str(payload.get("providerResultAttemptId") or "").strip()
-                if existing and existing != normalized_attempt_id:
-                    conn.rollback()
-                    return False
-                payload["providerResultAttemptId"] = normalized_attempt_id
-                cursor = conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT status, attempts, provider_request_attempt, "
+                "provider_request_state, payload FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["status"]) != JobStatus.RUNNING.value
+                or int(row["provider_request_attempt"] or 0) != int(row["attempts"] or 0)
+                or str(row["provider_request_state"])
+                not in {
+                    PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                }
+            ):
+                conn.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            existing = str(payload.get("providerResultAttemptId") or "").strip()
+            if existing and existing != normalized_attempt_id:
+                conn.rollback()
+                return False
+            payload["providerResultAttemptId"] = normalized_attempt_id
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET provider_request_state = ?, payload = ?, updated_at = ?
                     WHERE id = ? AND status = ?
                       AND provider_request_attempt = attempts
                       AND provider_request_state IN (?, ?)
                     """,
-                    (
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                        json.dumps(payload, ensure_ascii=False, sort_keys=True),
-                        now,
-                        job_id,
-                        JobStatus.RUNNING.value,
-                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                    ),
-                )
-                if int(cursor.rowcount or 0) != 1:
-                    conn.rollback()
-                    return False
-                conn.commit()
-                return True
+                (
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                    json.dumps(payload, ensure_ascii=False, sort_keys=True),
+                    now,
+                    job_id,
+                    JobStatus.RUNNING.value,
+                    PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
 
     def queue_provider_result_recovery(
         self,
@@ -854,35 +845,32 @@ class JobStore:
 
         now = _now_iso()
         normalized_retry_at = _normalize_retry_iso(retry_at)
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    "SELECT payload FROM jobs WHERE id = ? AND status = ? "
-                    "AND provider_request_attempt = attempts "
-                    "AND provider_request_state IN (?, ?)",
-                    (
-                        job_id,
-                        JobStatus.RUNNING.value,
-                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                    ),
-                ).fetchone()
-                if row is None:
-                    conn.rollback()
-                    return False
-                try:
-                    payload = json.loads(row["payload"] or "{}")
-                except json.JSONDecodeError:
-                    payload = {}
-                attempt_id = (
-                    str(payload.get("providerResultAttemptId") or "").strip() if isinstance(payload, dict) else ""
-                )
-                if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", attempt_id):
-                    conn.rollback()
-                    return False
-                cursor = conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT payload FROM jobs WHERE id = ? AND status = ? "
+                "AND provider_request_attempt = attempts "
+                "AND provider_request_state IN (?, ?)",
+                (
+                    job_id,
+                    JobStatus.RUNNING.value,
+                    PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                ),
+            ).fetchone()
+            if row is None:
+                conn.rollback()
+                return False
+            try:
+                payload = json.loads(row["payload"] or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            attempt_id = str(payload.get("providerResultAttemptId") or "").strip() if isinstance(payload, dict) else ""
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,160}", attempt_id):
+                conn.rollback()
+                return False
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET status = ?, provider_request_state = ?,
                         next_retry_at = ?, last_error = '', updated_at = ?
@@ -890,22 +878,22 @@ class JobStore:
                       AND provider_request_attempt = attempts
                       AND provider_request_state IN (?, ?)
                     """,
-                    (
-                        JobStatus.QUEUED.value,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                        normalized_retry_at,
-                        now,
-                        job_id,
-                        JobStatus.RUNNING.value,
-                        PROVIDER_REQUEST_MAY_BE_COMMITTED,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                    ),
-                )
-                if int(cursor.rowcount or 0) != 1:
-                    conn.rollback()
-                    return False
-                conn.commit()
-                return True
+                (
+                    JobStatus.QUEUED.value,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                    normalized_retry_at,
+                    now,
+                    job_id,
+                    JobStatus.RUNNING.value,
+                    PROVIDER_REQUEST_MAY_BE_COMMITTED,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                ),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                return False
+            conn.commit()
+            return True
 
     def reset_running_to_queued(
         self,
@@ -920,32 +908,31 @@ class JobStore:
         )
         if eligible is not None and not eligible:
             return 0
-        with self._lock:
-            with self._connect() as conn:
-                if eligible is None:
-                    cursor = conn.execute(
-                        """
+        with self._lock, self._connect() as conn:
+            if eligible is None:
+                cursor = conn.execute(
+                    """
                         UPDATE jobs
                         SET status = ?, updated_at = ?
                         WHERE status = ?
                           AND provider_request_state = ?
                           AND provider_request_attempt = attempts
                         """,
-                        (
-                            JobStatus.QUEUED.value,
-                            now,
-                            JobStatus.RUNNING.value,
-                            PROVIDER_REQUEST_NOT_STARTED,
-                        ),
-                    )
-                    changed = int(cursor.rowcount or 0)
-                else:
-                    changed = 0
-                    for offset in range(0, len(eligible), 400):
-                        chunk = eligible[offset : offset + 400]
-                        placeholders = ",".join("?" for _ in chunk)
-                        cursor = conn.execute(
-                            f"""
+                    (
+                        JobStatus.QUEUED.value,
+                        now,
+                        JobStatus.RUNNING.value,
+                        PROVIDER_REQUEST_NOT_STARTED,
+                    ),
+                )
+                changed = int(cursor.rowcount or 0)
+            else:
+                changed = 0
+                for offset in range(0, len(eligible), 400):
+                    chunk = eligible[offset : offset + 400]
+                    placeholders = ",".join("?" for _ in chunk)
+                    cursor = conn.execute(
+                        f"""
                             UPDATE jobs
                             SET status = ?, updated_at = ?
                             WHERE id IN ({placeholders})
@@ -953,24 +940,23 @@ class JobStore:
                               AND provider_request_state = ?
                               AND provider_request_attempt = attempts
                             """,
-                            (
-                                JobStatus.QUEUED.value,
-                                now,
-                                *chunk,
-                                JobStatus.RUNNING.value,
-                                PROVIDER_REQUEST_NOT_STARTED,
-                            ),
-                        )
-                        changed += int(cursor.rowcount or 0)
-                conn.commit()
-                return changed
+                        (
+                            JobStatus.QUEUED.value,
+                            now,
+                            *chunk,
+                            JobStatus.RUNNING.value,
+                            PROVIDER_REQUEST_NOT_STARTED,
+                        ),
+                    )
+                    changed += int(cursor.rowcount or 0)
+            conn.commit()
+            return changed
 
     def mark_running(self, job_id: str) -> bool:
         now = _now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET status = ?, updated_at = ?, attempts = attempts + 1,
                         provider_request_attempt = attempts + 1,
@@ -981,18 +967,18 @@ class JobStore:
                         next_retry_at = '', last_error = ''
                     WHERE id = ? AND status = ?
                     """,
-                    (
-                        JobStatus.RUNNING.value,
-                        now,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                        PROVIDER_REQUEST_RESULT_DURABLE,
-                        PROVIDER_REQUEST_NOT_STARTED,
-                        job_id,
-                        JobStatus.QUEUED.value,
-                    ),
-                )
-                conn.commit()
-                return int(cursor.rowcount or 0) == 1
+                (
+                    JobStatus.RUNNING.value,
+                    now,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                    PROVIDER_REQUEST_RESULT_DURABLE,
+                    PROVIDER_REQUEST_NOT_STARTED,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
 
     def mark_completed(self, job_id: str) -> bool:
         return self._update_status(
@@ -1031,10 +1017,9 @@ class JobStore:
     def set_retry(self, job_id: str, *, retry_at: str, last_error: str = "") -> bool:
         normalized_retry_at = _normalize_retry_iso(retry_at)
         now = _now_iso()
-        with self._lock:
-            with self._connect() as conn:
-                cursor = conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
                     UPDATE jobs
                     SET status = ?, updated_at = ?, next_retry_at = ?, last_error = ?
                     WHERE id = ? AND status IN (?, ?)
@@ -1044,20 +1029,20 @@ class JobStore:
                         OR provider_request_state = ?
                       )
                     """,
-                    (
-                        JobStatus.QUEUED.value,
-                        now,
-                        normalized_retry_at,
-                        last_error,
-                        job_id,
-                        JobStatus.QUEUED.value,
-                        JobStatus.RUNNING.value,
-                        JobStatus.QUEUED.value,
-                        PROVIDER_REQUEST_NOT_STARTED,
-                    ),
-                )
-                conn.commit()
-                return int(cursor.rowcount or 0) == 1
+                (
+                    JobStatus.QUEUED.value,
+                    now,
+                    normalized_retry_at,
+                    last_error,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.QUEUED.value,
+                    PROVIDER_REQUEST_NOT_STARTED,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
 
     def _update_status(
         self,
@@ -1085,11 +1070,10 @@ class JobStore:
             sql += f" AND status IN ({placeholders})"
             params.extend(item.value for item in expected_statuses)
 
-        with self._lock:
-            with self._connect() as conn:
-                cursor = conn.execute(sql, params)
-                conn.commit()
-                changed = int(cursor.rowcount or 0)
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            changed = int(cursor.rowcount or 0)
         if changed == 0:
             logger.debug(f"JobStore: no rows updated for job_id={job_id}, status={status.value}")
             return False

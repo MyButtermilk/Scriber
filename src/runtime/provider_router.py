@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from src.core.error_taxonomy import classify_error_message, is_retryable
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker

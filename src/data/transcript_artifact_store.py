@@ -15,11 +15,13 @@ import sqlite3
 import threading
 import unicodedata
 import weakref
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from enum import Enum
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any
 from uuid import uuid4
 
 from src.runtime.paths import database_path
@@ -45,7 +47,7 @@ class UnsafeSnapshotValue(ValueError):
     pass
 
 
-class AttemptState(str, Enum):
+class AttemptState(StrEnum):
     QUEUED = "queued"
     RESOLVING_SOURCE = "resolving_source"
     SOURCE_READY = "source_ready"
@@ -98,13 +100,13 @@ ALLOWED_ATTEMPT_TRANSITIONS: dict[AttemptState, frozenset[AttemptState]] = {
 }
 
 
-class AlignmentQuality(str, Enum):
+class AlignmentQuality(StrEnum):
     EXACT_WORD = "exact_word"
     PROVIDER_SEGMENT = "provider_segment"
     ESTIMATED = "estimated"
 
 
-class SourceAssetState(str, Enum):
+class SourceAssetState(StrEnum):
     AVAILABLE = "available"
     PURGE_PENDING = "purge_pending"
     PURGED = "purged"
@@ -163,7 +165,7 @@ _SAFE_SENSITIVE_SUFFIXES = (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _now_iso() -> str:
@@ -176,8 +178,8 @@ def _parse_iso(value: str) -> datetime | None:
     except ValueError:
         return None
     if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _canonical_json(value: Any) -> str:
@@ -616,10 +618,8 @@ class TranscriptArtifactStore:
                 pending = list(connections)
                 connections.clear()
         for conn in pending:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
@@ -2005,7 +2005,7 @@ class TranscriptArtifactStore:
         now: datetime | None = None,
     ) -> TrackRecoveryBundle | None:
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        now = (now or _now()).astimezone(timezone.utc)
+        now = (now or _now()).astimezone(UTC)
         rows = (
             self._connect()
             .execute(
@@ -2063,7 +2063,7 @@ class TranscriptArtifactStore:
         now: datetime | None = None,
         limit: int = 100,
     ) -> tuple[RecoveryBundle, ...]:
-        now = (now or _now()).astimezone(timezone.utc)
+        now = (now or _now()).astimezone(UTC)
         limit = max(0, min(int(limit), 1000))
         rows = (
             self._connect()
@@ -2102,7 +2102,7 @@ class TranscriptArtifactStore:
     ) -> RecoveryBundle | None:
         """Return the newest unleased recoverable result for one transcript."""
         transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        now = (now or _now()).astimezone(timezone.utc)
+        now = (now or _now()).astimezone(UTC)
         rows = (
             self._connect()
             .execute(

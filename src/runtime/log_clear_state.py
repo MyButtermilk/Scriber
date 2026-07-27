@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 from src.core.rest_contracts import REST_API_VERSION
@@ -88,7 +89,7 @@ def record_clear_state(paths: Iterable[Path]) -> tuple[list[str], list[dict[str,
                 "source": source,
                 "sizeBytes": stat.st_size,
                 "tailSha256": _tail_fingerprint(path, end_offset=stat.st_size),
-                "modifiedAt": datetime.fromtimestamp(stat.st_mtime, timezone.utc)
+                "modifiedAt": datetime.fromtimestamp(stat.st_mtime, UTC)
                 .replace(microsecond=0)
                 .isoformat()
                 .replace("+00:00", "Z"),
@@ -100,7 +101,7 @@ def record_clear_state(paths: Iterable[Path]) -> tuple[list[str], list[dict[str,
 
     state = {
         "apiVersion": REST_API_VERSION,
-        "clearedAt": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "clearedAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "files": files,
     }
     target = clear_state_path()

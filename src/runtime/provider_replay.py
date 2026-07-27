@@ -12,9 +12,10 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any, BinaryIO
 from uuid import UUID, uuid4
 
 from src.core.provider_audio_formats import SPEECHMATICS_BATCH_DEFAULT_BASE_URL
@@ -247,7 +248,7 @@ class ProviderReplayRuntimeGate:
     process_generation_fingerprint: str | None = None
 
     @classmethod
-    def disabled(cls, reason: str) -> "ProviderReplayRuntimeGate":
+    def disabled(cls, reason: str) -> ProviderReplayRuntimeGate:
         return cls(enabled=False, reason=reason)
 
     @classmethod
@@ -264,7 +265,7 @@ class ProviderReplayRuntimeGate:
         parent_pid: int,
         parent_executable_name: str | None,
         parent_creation_time_100ns: int | None,
-    ) -> "ProviderReplayRuntimeGate":
+    ) -> ProviderReplayRuntimeGate:
         run_id = canonical_replay_uuid(raw_run_id)
         if run_id is None:
             return cls.disabled("run_id_missing_or_invalid")
@@ -296,7 +297,7 @@ class ProviderReplayRuntimeGate:
         )
 
     @classmethod
-    def from_environment(cls) -> "ProviderReplayRuntimeGate":
+    def from_environment(cls) -> ProviderReplayRuntimeGate:
         raw_run_id = os.getenv(PROVIDER_REPLAY_RUN_ID_ENV)
         if canonical_replay_uuid(raw_run_id) is None:
             return cls.disabled("run_id_missing_or_invalid")
@@ -637,7 +638,7 @@ async def _run_azure_replay_ffmpeg_pipe(
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         raise
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         with contextlib.suppress(ProcessLookupError):
             process.kill()
         await process.wait()
@@ -1136,7 +1137,7 @@ class _ObservedSonioxMessages:
         self._callback = on_last_final_token_received
         self._observed = False
 
-    def __aiter__(self) -> "_ObservedSonioxMessages":
+    def __aiter__(self) -> _ObservedSonioxMessages:
         return self
 
     async def __anext__(self) -> Any:
@@ -1221,7 +1222,7 @@ class LocalSonioxReplayServer:
             separators=(",", ":"),
         )
 
-    async def start(self) -> "LocalSonioxReplayServer":
+    async def start(self) -> LocalSonioxReplayServer:
         if self._server is not None or self._closed:
             raise RuntimeError("provider replay Soniox server is not startable")
         from websockets.asyncio.server import serve
@@ -1316,7 +1317,7 @@ class _ProviderReplaySample:
 class ProviderReplayExecution:
     """Private installed-runtime context passed through the real controller."""
 
-    registry: "ProviderReplayRegistry"
+    registry: ProviderReplayRegistry
     run_id: str
     sample_id: str
     provider: str

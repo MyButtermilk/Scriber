@@ -6,6 +6,7 @@ import os
 import sqlite3
 import threading
 import weakref
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from math import ceil
@@ -68,10 +69,8 @@ class LatencyMetricsStore:
                 pending = list(connections)
                 connections.clear()
         for conn in pending:
-            try:
+            with suppress(Exception):
                 conn.close()
-            except Exception:
-                pass
 
     def _connect(self) -> sqlite3.Connection:
         conn = getattr(self._thread_local, "conn", None)
@@ -97,10 +96,9 @@ class LatencyMetricsStore:
         self._thread_local.connection_generation = self._connection_generation
 
     def init_schema(self) -> None:
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
                     CREATE TABLE IF NOT EXISTS hot_path_metrics (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id TEXT NOT NULL,
@@ -109,14 +107,14 @@ class LatencyMetricsStore:
                         created_at TEXT NOT NULL
                     )
                     """
-                )
-                conn.execute(
-                    """
+            )
+            conn.execute(
+                """
                     CREATE INDEX IF NOT EXISTS idx_hot_path_metrics_created_at
                     ON hot_path_metrics(created_at DESC)
                     """
-                )
-                conn.commit()
+            )
+            conn.commit()
 
     def record(self, session_id: str, segments: dict[str, float]) -> HotPathMetric:
         payload: dict[str, float] = {}
@@ -140,22 +138,21 @@ class LatencyMetricsStore:
             segments=payload,
             created_at=_now_iso(),
         )
-        with self._lock:
-            with self._connect() as conn:
-                conn.execute(
-                    """
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
                     INSERT INTO hot_path_metrics (session_id, total_ms, segments_json, created_at)
                     VALUES (?, ?, ?, ?)
                     """,
-                    (
-                        metric.session_id,
-                        metric.total_ms,
-                        json.dumps(metric.segments, ensure_ascii=False),
-                        metric.created_at,
-                    ),
-                )
-                conn.execute(
-                    """
+                (
+                    metric.session_id,
+                    metric.total_ms,
+                    json.dumps(metric.segments, ensure_ascii=False),
+                    metric.created_at,
+                ),
+            )
+            conn.execute(
+                """
                     DELETE FROM hot_path_metrics
                     WHERE id <= COALESCE(
                         (
@@ -166,9 +163,9 @@ class LatencyMetricsStore:
                         -1
                     )
                     """,
-                    (self._retention_rows,),
-                )
-                conn.commit()
+                (self._retention_rows,),
+            )
+            conn.commit()
         return metric
 
     def latest(self, *, limit: int = 50) -> list[HotPathMetric]:

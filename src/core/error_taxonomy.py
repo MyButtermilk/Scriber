@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class ErrorCategory(str, Enum):
+class ErrorCategory(StrEnum):
     TRANSIENT_NETWORK = "transient_network"
     TRANSIENT_PROVIDER = "transient_provider"
     AUTH_INVALID = "auth_invalid"

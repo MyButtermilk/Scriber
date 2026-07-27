@@ -56,7 +56,8 @@ class CaptureTimeFfmpegEncoder:
             120.0,
             max(1.0, float(finish_timeout_seconds)),
         )
-        self._output: BinaryIO | None = tempfile.SpooledTemporaryFile(
+        # The encoder owns this spool until finish() transfers or abort() closes it.
+        self._output: BinaryIO | None = tempfile.SpooledTemporaryFile(  # noqa: SIM115
             max_size=max(1, int(output_memory_limit)),
             mode="w+b",
         )
@@ -131,7 +132,7 @@ class CaptureTimeFfmpegEncoder:
                 finish_runner(),
                 timeout=self._finish_timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._error_code = "captureTimeEncoderFinishTimeout"
             await self.abort()
             raise CaptureTimeEncoderError(self._error_code) from None

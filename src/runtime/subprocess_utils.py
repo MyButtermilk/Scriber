@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 import sys
+from contextlib import suppress
 from typing import Any
 
 
@@ -89,10 +90,8 @@ async def _terminate_and_reap(process: asyncio.subprocess.Process) -> None:
         pass
     except Exception:
         pass
-    try:
+    with suppress(Exception):
         await process.wait()
-    except Exception:
-        pass
 
 
 async def read_stream_limited(

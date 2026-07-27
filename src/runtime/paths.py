@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -182,14 +183,10 @@ def _should_auto_migrate_legacy_data() -> bool:
 
 def _default_legacy_data_candidates() -> list[Path]:
     candidates: list[Path] = []
-    try:
+    with suppress(Exception):
         _push_unique_path(candidates, repo_root())
-    except Exception:
-        pass
-    try:
+    with suppress(Exception):
         _push_unique_path(candidates, Path.cwd().resolve())
-    except Exception:
-        pass
 
     user_profile = os.getenv("USERPROFILE", "").strip()
     if user_profile:
@@ -225,10 +222,8 @@ def _copy_file_if_missing(src: Path, dst: Path) -> bool:
         os.replace(temporary, dst)
         return True
     finally:
-        try:
+        with suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _copy_tree_missing(src_dir: Path, dst_dir: Path) -> list[str]:

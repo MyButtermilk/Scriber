@@ -16,10 +16,11 @@ import shutil
 import sqlite3
 import struct
 import wave
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Iterable
+from typing import Any
 from uuid import uuid4
 
 from src import database as db
@@ -86,7 +87,7 @@ class InvalidMeetingTransition(MeetingStoreError):
 
 
 def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
 
 
 def _json(value: Any) -> str:
@@ -117,9 +118,7 @@ def _stable_meeting_speaker_id(
     speaker_label: str,
 ) -> str:
     """Return the existing content-stable, meeting-local speaker identity."""
-    return hashlib.sha256(
-        f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode("utf-8")
-    ).hexdigest()[:32]
+    return hashlib.sha256(f"{meeting_id}\0{revision}\0{source}\0{speaker_label.casefold()}".encode()).hexdigest()[:32]
 
 
 _STABLE_ACTION_ID_RE = re.compile(r"action-[0-9a-f]{20}\Z")
@@ -145,9 +144,7 @@ def _action_collision_id(
     """Resolve legacy/model ID collisions without dropping a new action."""
     citation_key = "\0".join(sorted(set(segment_ids)))
     digest = hashlib.sha256(
-        (f"meeting-action-collision-v1\0{preferred_id}\0{_action_semantic_key(text)}\0{citation_key}\0{salt}").encode(
-            "utf-8"
-        )
+        (f"meeting-action-collision-v1\0{preferred_id}\0{_action_semantic_key(text)}\0{citation_key}\0{salt}").encode()
     ).hexdigest()[:20]
     return f"action-{digest}"
 
@@ -1888,13 +1885,13 @@ class MeetingStore:
                 "fallbackSegments": fallback_snapshot,
             }
         )
-        snapshot_sha256 = hashlib.sha256(snapshot_json.encode("utf-8")).hexdigest()
+        snapshot_sha256 = hashlib.sha256(snapshot_json.encode()).hexdigest()
         source_rows = conn.execute(
             """SELECT DISTINCT source FROM meeting_audio_chunks
                WHERE meeting_id=? AND sequence=? AND state='complete' ORDER BY source""",
             (meeting_id, sequence),
         ).fetchall()
-        checkpoint_id = hashlib.sha256(f"{meeting_id}\0{sequence}".encode("utf-8")).hexdigest()[:32]
+        checkpoint_id = hashlib.sha256(f"{meeting_id}\0{sequence}".encode()).hexdigest()[:32]
         conn.execute(
             """INSERT INTO meeting_transcript_checkpoints
                (id,meeting_id,sequence,cutoff_ms,segment_count,sources_json,
@@ -2174,14 +2171,19 @@ class MeetingStore:
             final_path = root / Path(expected_relative)
             partial_path = final_path.with_name(final_path.name.removesuffix(".wav") + ".partial.wav")
             prepared_partials.add(partial_path.resolve())
+            expected_duration = int(row["ended_at_ms"]) - int(row["started_at_ms"])
+            expected_sha256 = str(row["sha256"])
 
-            def valid(path: Path) -> bool:
+            def valid(
+                path: Path,
+                expected_duration: int = expected_duration,
+                expected_sha256: str = expected_sha256,
+            ) -> bool:
                 duration = self._pcm_wav_duration_ms(path)
-                expected_duration = int(row["ended_at_ms"]) - int(row["started_at_ms"])
                 return (
                     duration is not None
                     and abs(duration - expected_duration) <= 1
-                    and self._sha256_file(path) == str(row["sha256"])
+                    and self._sha256_file(path) == expected_sha256
                 )
 
             final_exists = final_path.is_file()
@@ -2506,7 +2508,7 @@ class MeetingStore:
         return self._audio_assets_conn(db._get_connection(), meeting_id)
 
     def expired_audio_meetings(self, *, now: datetime | None = None) -> list[str]:
-        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        current = (now or datetime.now(UTC)).astimezone(UTC)
         rows = (
             db._get_connection()
             .execute(
@@ -2523,7 +2525,7 @@ class MeetingStore:
                 ended = datetime.fromisoformat(str(row["ended_at"]).replace("Z", "+00:00"))
             except ValueError:
                 continue
-            if current >= ended.astimezone(timezone.utc) + timedelta(days=int(row["audio_retention_days"])):
+            if current >= ended.astimezone(UTC) + timedelta(days=int(row["audio_retention_days"])):
                 expired.append(str(row["id"]))
         return expired
 
@@ -3927,7 +3929,7 @@ class MeetingStore:
                     if speaker_id in existing_speaker_ids:
                         continue
                     expected_microphone_id = hashlib.sha256(
-                        f"{meeting_id}\0canonical\0microphone\0you".encode("utf-8")
+                        f"{meeting_id}\0canonical\0microphone\0you".encode()
                     ).hexdigest()[:32]
                     if speaker_id != expected_microphone_id or any(item["source"] != "microphone" for item in items):
                         raise MeetingNotFound("Meeting speaker not found")
@@ -4784,7 +4786,7 @@ class MeetingStore:
                 )
                 if not speaker_id and speaker_label:
                     speaker_id = hashlib.sha256(
-                        f"{meeting_id}\0live\0{source}\0{speaker_label.casefold()}".encode("utf-8")
+                        f"{meeting_id}\0live\0{source}\0{speaker_label.casefold()}".encode()
                     ).hexdigest()[:32]
                 if speaker_id:
                     conn.execute(

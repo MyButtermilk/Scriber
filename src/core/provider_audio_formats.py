@@ -12,10 +12,10 @@ receive no inherited format capabilities.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
-from typing import Iterable
 
 CAPABILITY_REVISION = "provider-audio-formats-v1"
 CAPABILITY_VERIFIED_AT = date(2026, 7, 20)

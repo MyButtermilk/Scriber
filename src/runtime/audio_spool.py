@@ -6,6 +6,7 @@ import asyncio
 import struct
 import tempfile
 import wave
+from contextlib import suppress
 from typing import BinaryIO
 
 _COPY_CHUNK_BYTES = 1024 * 1024
@@ -15,7 +16,8 @@ WAV_PCM16_HEADER_BYTES = 44
 
 def create_pcm_spool(*, reserve_wav_header: bool = False) -> BinaryIO:
     """Create Scriber's bounded-memory PCM spool."""
-    spool = tempfile.SpooledTemporaryFile(
+    # The caller owns this long-lived spool and closes it after upload/finalization.
+    spool = tempfile.SpooledTemporaryFile(  # noqa: SIM115
         max_size=SPOOL_MEMORY_LIMIT_BYTES,
         mode="w+b",
     )
@@ -31,10 +33,8 @@ def close_pcm_spool(audio_stream: BinaryIO | None) -> None:
     """Best-effort deterministic cleanup for processor-owned PCM spools."""
     if audio_stream is None:
         return
-    try:
+    with suppress(Exception):
         audio_stream.close()
-    except Exception:
-        pass
 
 
 async def append_pcm_frame(

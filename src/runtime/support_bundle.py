@@ -5,7 +5,8 @@ import os
 import platform
 import re
 import zipfile
-from datetime import datetime, timezone
+from contextlib import suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -160,7 +161,7 @@ def _write_runtime_files(
     audio_diagnostics: dict[str, Any] | None = None,
     post_processing_diagnostics: dict[str, Any] | None = None,
 ) -> None:
-    generated_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    generated_at = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     _write_json(
         zf,
         "manifest.json",
@@ -264,7 +265,7 @@ def create_support_bundle(
 ) -> Path:
     target_dir = output_dir or support_bundles_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     unique = uuid4().hex[:8]
     bundle_path = target_dir / f"scriber-support-{stamp}-{os.getpid()}-{unique}.zip"
     temporary_path = bundle_path.with_suffix(".zip.tmp")
@@ -296,9 +297,7 @@ def create_support_bundle(
         reverse=True,
     )
     for stale_path in bundles[_MAX_SUPPORT_BUNDLES:]:
-        try:
+        with suppress(OSError):
             stale_path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
     return bundle_path

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # Issue #18 names are deliberately centralized here.  ``mark`` remains open to
 # the older diagnostic markers because persisted hot-path reports and support

@@ -121,8 +121,7 @@ def _quickjs_self_test_matches(candidate: Path) -> bool:
         result = subprocess.run(
             [str(candidate), *_QUICKJS_SELF_TEST_ARGUMENTS],
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=_QUICKJS_SELF_TEST_TIMEOUT_SECONDS,
             **hidden_subprocess_kwargs(),
