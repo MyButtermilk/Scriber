@@ -44,11 +44,7 @@ def valid_lint_metric_value(name: str) -> int:
 
 def test_required_autoresearch_files_exist():
     for relative in [
-        "GOAL.md",
-        "autoresearch.md",
-        "autoresearch.jsonl",
         "autoresearch.config.json",
-        "autoresearch.ideas.md",
         "autoresearch.ps1",
         "autoresearch.checks.ps1",
         "scripts/perf/run.ps1",

@@ -129,7 +129,9 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     assert step_names == [
         "Checkout",
         "Set up Python",
+        "Create isolated test environment",
         "Install Python test dependencies",
+        "Restore locked FFmpeg test runtime",
         "Run complete Python test suite",
         "Typecheck scoped Python modules",
         "Upload Python test results",
@@ -137,7 +139,9 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     assert len(step_names) == len(set(step_names))
     steps = {step["name"]: step for step in ordered_steps}
     setup = steps["Set up Python"]
+    create_environment = steps["Create isolated test environment"]
     install = steps["Install Python test dependencies"]["run"]
+    restore_ffmpeg = steps["Restore locked FFmpeg test runtime"]
     run = steps["Run complete Python test suite"]["run"]
     typecheck = steps["Typecheck scoped Python modules"]
     upload = steps["Upload Python test results"]
@@ -161,20 +165,36 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         "requirements-test.txt",
         "requirements-test-constraints.txt",
     ]
-    assert "python -m pip install pip==26.1.2" in install
+    assert create_environment["run"] == "python -m venv venv"
+    assert ".\\venv\\Scripts\\python.exe -m pip install pip==26.1.2" in install
     assert "-c requirements-test-constraints.txt" in install
     assert "-r requirements-base.txt" in install
     assert "-r requirements-test.txt" in install
-    assert "python -m pip check" in install
+    assert ".\\venv\\Scripts\\python.exe -m pip check" in install
+    assert restore_ffmpeg["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert (
+        "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1"
+        in restore_ffmpeg["run"]
+    )
+    assert "-Tag ffmpeg-profile-b-n7.0-v4" in restore_ffmpeg["run"]
+    assert (
+        "-AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip"
+        in restore_ffmpeg["run"]
+    )
+    assert "validate_ffmpeg_profile.py" in restore_ffmpeg["run"]
+    assert "SCRIBER_FFMPEG_PATH=" in restore_ffmpeg["run"]
+    assert "SCRIBER_FFPROBE_PATH=" in restore_ffmpeg["run"]
     assert _pwsh_logical_commands(run) == [
         "New-Item -ItemType Directory -Force build\\test-results | Out-Null",
         (
-            "python -m pytest -n 4 --dist loadfile -ra "
+            ".\\venv\\Scripts\\python.exe -m pytest -n 4 --dist loadfile -ra "
             "--junitxml build\\test-results\\python-full-suite.xml"
         ),
     ]
     assert typecheck["shell"] == "pwsh"
-    assert typecheck["run"] == "python -m mypy src\\core src\\runtime src\\data"
+    assert typecheck["run"] == (
+        ".\\venv\\Scripts\\python.exe -m mypy src\\core src\\runtime src\\data"
+    )
     assert step_names.index("Typecheck scoped Python modules") == (
         step_names.index("Run complete Python test suite") + 1
     )

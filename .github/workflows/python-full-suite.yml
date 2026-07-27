@@ -27,26 +27,54 @@ jobs:
             requirements-test.txt
             requirements-test-constraints.txt
 
+      - name: Create isolated test environment
+        shell: pwsh
+        run: python -m venv venv
+
       - name: Install Python test dependencies
         shell: pwsh
         run: |
-          python -m pip install pip==26.1.2
-          python -m pip install `
+          .\venv\Scripts\python.exe -m pip install pip==26.1.2
+          .\venv\Scripts\python.exe -m pip install `
             -c requirements-test-constraints.txt `
             -r requirements-base.txt `
             -r requirements-test.txt
-          python -m pip check
+          .\venv\Scripts\python.exe -m pip check
+
+      - name: Restore locked FFmpeg test runtime
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\scripts\ffmpeg\restore_profile_b_release_artifact.ps1 `
+            -Repo MyButtermilk/Scriber `
+            -Tag ffmpeg-profile-b-n7.0-v4 `
+            -AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
+          $mediaTools = (Resolve-Path `
+            "build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin").Path
+          & .\venv\Scripts\python.exe scripts\ffmpeg\validate_ffmpeg_profile.py `
+            --media-tools-dir $mediaTools `
+            --profile B `
+            --require-lgpl `
+            --output build\ffmpeg-profile-b-msys2\ffmpeg-profile-b-manifest.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Locked FFmpeg test runtime validation failed."
+          }
+          "SCRIBER_FFMPEG_PATH=$(Join-Path $mediaTools 'ffmpeg.exe')" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SCRIBER_FFPROBE_PATH=$(Join-Path $mediaTools 'ffprobe.exe')" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Run complete Python test suite
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build\test-results | Out-Null
-          python -m pytest -n 4 --dist loadfile -ra `
+          .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
             --junitxml build\test-results\python-full-suite.xml
 
       - name: Typecheck scoped Python modules
         shell: pwsh
-        run: python -m mypy src\core src\runtime src\data
+        run: .\venv\Scripts\python.exe -m mypy src\core src\runtime src\data
 
       - name: Upload Python test results
         if: always()

@@ -2332,6 +2332,8 @@ def test_rust_audio_device_selection_payload_maps_portaudio_index_to_native_hash
         {"name": "Built-in Mic, Windows WASAPI", "max_input_channels": 1, "hostapi": 1},
         {"name": "Dock Mic, Windows WASAPI", "max_input_channels": 2, "hostapi": 1},
     ]
+    monkeypatch.setattr(microphone.Config, "MIC_DEVICE", "1", raising=False)
+    monkeypatch.setattr(microphone.Config, "FAVORITE_MIC", "", raising=False)
     fake_sd = types.SimpleNamespace(
         default=types.SimpleNamespace(device=(0, None), hostapi=1),
         query_hostapis=lambda: [{"name": "MME"}, {"name": "Windows WASAPI"}],

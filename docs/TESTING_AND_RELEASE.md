@@ -29,11 +29,16 @@ Install the CI test tools from `requirements-test.txt` and resolve the complete
 Windows CPython 3.13 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
-in that complete Windows environment after pytest. Ruff remains an independent,
-lightweight Ubuntu gate that installs only `ruff==0.15.22` and intentionally
-stays out of `requirements-test.txt`. Both static gates are deliberately
-limited to `src/core`, `src/runtime`, and `src/data`. CI also pins the pip
-resolver version and validates the complete test environment with `pip check`.
+in that complete Windows environment after pytest. The reusable Windows job
+creates its own `venv`, restores and validates the locked Profile B FFmpeg
+release artifact, and replaces every inherited provider credential with an
+inert test sentinel before application modules load. The full suite therefore
+does not depend on a developer `.env`, local media tools, or real API keys.
+Ruff remains an independent, lightweight Ubuntu gate that installs only
+`ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Both
+static gates are deliberately limited to `src/core`, `src/runtime`, and
+`src/data`. CI also pins the pip resolver version and validates the complete
+test environment with `pip check`.
 
 Frontend:
 

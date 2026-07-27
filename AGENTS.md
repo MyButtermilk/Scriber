@@ -1612,9 +1612,13 @@ scripts\project-python.cmd -m mypy src\core src\runtime src\data
 
 CI keeps Ruff as a lightweight Ubuntu job pinned to `ruff==0.15.22`. The full
 Windows Python suite installs `mypy==2.3.0` from the locked test closure and
-runs the same scoped type check after pytest. Keep both gates limited to
-`src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
-expands the baseline.
+runs the same scoped type check after pytest. That reusable job must create its
+own `venv`, restore and validate the locked Profile B FFmpeg artifact, and run
+with inert provider credential sentinels installed by `tests/conftest.py`;
+never make the suite depend on a developer `.env`, real API keys, or untracked
+AutoResearch session files. Keep both static gates limited to `src/core`,
+`src/runtime`, and `src/data` until a separately reviewed branch expands the
+baseline.
 
 ```powershell
 cd Frontend

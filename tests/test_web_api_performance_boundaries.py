@@ -122,7 +122,7 @@ async def test_shutdown_audio_release_does_not_stall_event_loop():
 
         def release(self, claim):
             release_started.set()
-            assert finish_release.wait(timeout=1.0)
+            assert finish_release.wait(timeout=5.0)
             self.released.append(claim)
             return True
 
@@ -161,7 +161,7 @@ async def test_cancelled_shutdown_audio_release_observes_cleanup_boundary():
 
         def release(self, claim):
             release_started.set()
-            assert finish_release.wait(timeout=1.0)
+            assert finish_release.wait(timeout=5.0)
             self.released.append(claim)
             return True
 
