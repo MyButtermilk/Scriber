@@ -166,6 +166,10 @@ async def test_tauri_hotkey_start_spam_during_initializing_creates_single_record
     monkeypatch.setattr(Config, "INJECT_METHOD", "paste")
 
     ctl = ScriberWebController(loop)
+    # This test models one burst of duplicate native hotkey edges. Keep the
+    # synthetic burst window independent of xdist/runner scheduling latency;
+    # separate tests cover the production grace-period expiry behavior.
+    ctl._live_toggle_start_grace_seconds = 5.0
     _StressFakePipeline.instances.clear()
     _StressFakePipeline.created = 0
 

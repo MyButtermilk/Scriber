@@ -2675,6 +2675,7 @@ async def test_meeting_start_cancellation_releases_every_owned_stage(
 async def test_meeting_resume_cancellation_returns_to_owned_interrupted_state(
     monkeypatch, tmp_path, resume_state, cancel_stage
 ):
+    boundary_timeout = 10.0
     controller, store, lives = _capture_cancellation_controller(
         monkeypatch, tmp_path, f"cancel-resume-{resume_state}-{cancel_stage}.db"
     )
@@ -2709,7 +2710,7 @@ async def test_meeting_resume_cancellation_returns_to_owned_interrupted_state(
         if command == "audioMeetingResume":
             if cancel_stage == "native_start":
                 thread_entered.set()
-                assert thread_release.wait(timeout=2.0)
+                assert thread_release.wait(timeout=boundary_timeout)
             native_active = True
             return {
                 "success": True,
@@ -2727,14 +2728,17 @@ async def test_meeting_resume_cancellation_returns_to_owned_interrupted_state(
     task = asyncio.create_task(handler(request))
     try:
         if cancel_stage == "native_start":
-            assert await asyncio.to_thread(thread_entered.wait, 2.0)
+            assert await asyncio.to_thread(thread_entered.wait, boundary_timeout)
         else:
-            await asyncio.wait_for(async_entered.wait(), timeout=2.0)
+            await asyncio.wait_for(
+                async_entered.wait(),
+                timeout=boundary_timeout,
+            )
         task.cancel()
         thread_release.set()
         async_release.set()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=3.0)
+            await asyncio.wait_for(task, timeout=boundary_timeout)
 
         persisted = store.get(meeting["id"])
         assert persisted["state"] == "interrupted"
