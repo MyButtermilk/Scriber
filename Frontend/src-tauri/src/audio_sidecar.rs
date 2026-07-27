@@ -6432,7 +6432,7 @@ mod tests {
             .unwrap_err()
             .contains("valid microphone PCM fixture"));
         assert_eq!(
-            provider_replay_fixture_live_block_count(&request, Some(&vec![0_u8; 40])).unwrap(),
+            provider_replay_fixture_live_block_count(&request, Some(&[0_u8; 40])).unwrap(),
             Some(2)
         );
 

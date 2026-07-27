@@ -444,6 +444,7 @@ fn native_overlay_visibility() -> Option<bool> {
     Some(false)
 }
 
+#[cfg(not(test))]
 fn mark_overlay_cursor_events_ignored(ignored: bool) {
     update_state(|state| {
         state.cursor_events_ignored = ignored;
