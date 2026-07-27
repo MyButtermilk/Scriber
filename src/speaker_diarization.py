@@ -20,12 +20,14 @@ import tarfile
 import tempfile
 import wave
 from collections.abc import Awaitable, Callable, Iterable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from aiohttp import ClientSession
+from loguru import logger
 
 from src.provider_transcript import group_provider_words, normalize_provider_words
 from src.runtime.ffmpeg_commands import wav_pcm_transcode_args
@@ -505,8 +507,7 @@ class SherpaOnnxDiarizer:
                 process = subprocess.run(
                     [str(descriptor.executable), argument],
                     stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
+                    capture_output=True,
                     timeout=10,
                     check=False,
                     **hidden_subprocess_kwargs(),
@@ -892,14 +893,12 @@ class SherpaOnnxDiarizer:
                     max_stderr_bytes=MAX_WORKER_DIAGNOSTIC_BYTES + 1,
                 )
             except BaseException:
-                try:
+                with suppress(ProcessLookupError, OSError):
                     process.kill()
-                except (ProcessLookupError, OSError):
-                    pass
                 try:
                     await process.wait()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Diarization worker cleanup wait failed: {}", type(exc).__name__)
                 raise
 
         try:

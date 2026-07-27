@@ -624,15 +624,15 @@ class OutlookCalendarService:
                     token = await self.acquire_access_token()
                     try:
                         return await self._sync_with_token(session, token, force_reseed=force_reseed)
-                    except _GraphUnauthorized:
+                    except _GraphUnauthorized as exc:
                         if retried_unauthorized:
-                            raise self._reauthorization_required()
+                            raise self._reauthorization_required() from exc
                         retried_unauthorized = True
                         self._access_token = ""
                         self._access_token_expires_at = 0.0
-                    except _GraphDeltaExpired:
+                    except _GraphDeltaExpired as exc:
                         if retried_expired_delta:
-                            raise ValueError("Microsoft Graph delta cursor could not be renewed.")
+                            raise ValueError("Microsoft Graph delta cursor could not be renewed.") from exc
                         retried_expired_delta = True
                         force_reseed = True
 

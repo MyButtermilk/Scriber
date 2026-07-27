@@ -281,20 +281,23 @@ async def test_download_youtube_audio_requires_yt_dlp(tmp_path: Path):
             raise ImportError("yt_dlp not available")
         return real_import(name, *args, **kwargs)
 
-    with patch("builtins.__import__", side_effect=fake_import), patch("src.youtube_download._require_ffmpeg"):
-        with patch("src.youtube_download.find_media_tool", return_value=None):
-            with patch(
-                "src.youtube_download.asyncio.create_subprocess_exec",
-                new=AsyncMock(
-                    return_value=_DummyProc(
-                        stdout="",
-                        stderr="yt-dlp not installed",
-                        returncode=1,
-                    )
-                ),
-            ):
-                with pytest.raises(YouTubeDownloadError, match="yt-dlp not installed"):
-                    await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with (
+        patch("builtins.__import__", side_effect=fake_import),
+        patch("src.youtube_download._require_ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=None),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(
+                return_value=_DummyProc(
+                    stdout="",
+                    stderr="yt-dlp not installed",
+                    returncode=1,
+                )
+            ),
+        ),
+        pytest.raises(YouTubeDownloadError, match="yt-dlp not installed"),
+    ):
+        await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
 
 @pytest.mark.asyncio
@@ -324,18 +327,26 @@ async def test_download_youtube_audio_parses_output_path(tmp_path: Path):
     ensured = tmp_path / "abc_audio.mp3"
     ensured.write_bytes(b"audio")
 
-    with patch("builtins.__import__", side_effect=fake_import):
-        with patch("src.youtube_download.require_media_tool", return_value="ffmpeg"):
-            with patch("src.youtube_download.find_media_tool", return_value=None):
-                with patch(
-                    "src.youtube_download.asyncio.create_subprocess_exec",
-                    new=AsyncMock(return_value=_DummyProc(stdout=str(out_file), stderr="", returncode=0)),
-                ) as exec_mock:
-                    with patch(
-                        "src.youtube_download._ensure_audio_only_file",
-                        new=AsyncMock(return_value=ensured),
-                    ) as ensure_mock:
-                        got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with (
+        patch("builtins.__import__", side_effect=fake_import),
+        patch("src.youtube_download.require_media_tool", return_value="ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=None),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(
+                return_value=_DummyProc(
+                    stdout=str(out_file),
+                    stderr="",
+                    returncode=0,
+                )
+            ),
+        ) as exec_mock,
+        patch(
+            "src.youtube_download._ensure_audio_only_file",
+            new=AsyncMock(return_value=ensured),
+        ) as ensure_mock,
+    ):
+        got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
     assert got == ensured
     ensure_mock.assert_awaited_once_with(out_file.resolve())
@@ -368,18 +379,20 @@ async def test_download_youtube_audio_subprocess_falls_back_on_unavailable_forma
         _DummyProc(stdout=str(out_file), stderr="", returncode=0),
     ]
 
-    with patch("builtins.__import__", side_effect=fake_import):
-        with patch("src.youtube_download.require_media_tool", return_value="ffmpeg"):
-            with patch("src.youtube_download.find_media_tool", return_value=None):
-                with patch(
-                    "src.youtube_download.asyncio.create_subprocess_exec",
-                    new=AsyncMock(side_effect=procs),
-                ) as exec_mock:
-                    with patch(
-                        "src.youtube_download._ensure_audio_only_file",
-                        new=AsyncMock(return_value=out_file.resolve()),
-                    ):
-                        got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with (
+        patch("builtins.__import__", side_effect=fake_import),
+        patch("src.youtube_download.require_media_tool", return_value="ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=None),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(side_effect=procs),
+        ) as exec_mock,
+        patch(
+            "src.youtube_download._ensure_audio_only_file",
+            new=AsyncMock(return_value=out_file.resolve()),
+        ),
+    ):
+        got = await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
     assert got == out_file.resolve()
     assert exec_mock.await_count == 2
@@ -522,29 +535,31 @@ async def test_download_youtube_audio_attests_quickjs_without_blocking_event_loo
         )
 
     heartbeat_task = asyncio.create_task(event_loop_heartbeat())
-    with patch("builtins.__import__", side_effect=import_with_optional_fallback):
-        with patch("src.youtube_download._require_ffmpeg"):
-            with patch(
-                "src.youtube_download.asyncio.create_subprocess_exec",
-                new=AsyncMock(
-                    return_value=_DummyProc(
-                        stdout=str(out_file),
-                        stderr="",
-                        returncode=0,
-                    )
-                ),
-            ) as subprocess_exec:
-                with patch(
-                    "src.youtube_download._ensure_audio_only_file",
-                    new=AsyncMock(side_effect=lambda path: path),
-                ):
-                    result = await asyncio.wait_for(
-                        download_youtube_audio(
-                            "https://www.youtube.com/watch?v=video-id",
-                            output_dir=tmp_path / "downloads",
-                        ),
-                        timeout=3.0,
-                    )
+    with (
+        patch("builtins.__import__", side_effect=import_with_optional_fallback),
+        patch("src.youtube_download._require_ffmpeg"),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(
+                return_value=_DummyProc(
+                    stdout=str(out_file),
+                    stderr="",
+                    returncode=0,
+                )
+            ),
+        ) as subprocess_exec,
+        patch(
+            "src.youtube_download._ensure_audio_only_file",
+            new=AsyncMock(side_effect=lambda path: path),
+        ),
+    ):
+        result = await asyncio.wait_for(
+            download_youtube_audio(
+                "https://www.youtube.com/watch?v=video-id",
+                output_dir=tmp_path / "downloads",
+            ),
+            timeout=3.0,
+        )
 
     await asyncio.wait_for(heartbeat_task, timeout=3.0)
     assert heartbeat_observed.is_set()
@@ -579,9 +594,11 @@ async def test_download_youtube_audio_library_failure_cleans_attempt_directory(m
 
     monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=FakeYoutubeDL))
     monkeypatch.setattr("src.youtube_download._apply_youtube_only_runtime_policy", lambda: None)
-    with patch("src.youtube_download._require_ffmpeg"):
-        with pytest.raises(RuntimeError, match="synthetic yt-dlp failure"):
-            await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with (
+        patch("src.youtube_download._require_ffmpeg"),
+        pytest.raises(RuntimeError, match="synthetic yt-dlp failure"),
+    ):
+        await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
     assert not list(tmp_path.glob(".yt-dlp-*"))
 
@@ -747,14 +764,17 @@ async def test_download_youtube_audio_subprocess_kills_yt_dlp_on_cancel(tmp_path
             raise ImportError("yt_dlp not available")
         return real_import(name, *args, **kwargs)
 
-    with patch("builtins.__import__", side_effect=fake_import), patch("src.youtube_download._require_ffmpeg"):
-        with patch("src.youtube_download.find_media_tool", return_value=None):
-            with patch(
-                "src.youtube_download.asyncio.create_subprocess_exec",
-                new=AsyncMock(return_value=proc),
-            ):
-                with pytest.raises(asyncio.CancelledError):
-                    await download_youtube_audio("https://example.com", output_dir=tmp_path)
+    with (
+        patch("builtins.__import__", side_effect=fake_import),
+        patch("src.youtube_download._require_ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=None),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=proc),
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await download_youtube_audio("https://example.com", output_dir=tmp_path)
 
     assert proc.killed is True
     assert proc.waited is True

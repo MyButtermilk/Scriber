@@ -90,8 +90,7 @@ async def _encode_fixture_mp3_or_skip(pcm: bytes) -> bytes:
                 bitrate="64k",
             ),
             input=pcm,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=30,
         )

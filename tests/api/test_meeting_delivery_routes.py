@@ -160,9 +160,11 @@ async def test_pinned_transport_accepts_real_empty_204_response():
             use_dns_cache=False,
             force_close=True,
         )
-        async with ClientSession(connector=connector, trust_env=False) as session:
-            async with session.post(target.url, allow_redirects=False) as response:
-                assert response.status == 204
+        async with (
+            ClientSession(connector=connector, trust_env=False) as session,
+            session.post(target.url, allow_redirects=False) as response,
+        ):
+            assert response.status == 204
     finally:
         await runner.cleanup()
 

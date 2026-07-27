@@ -108,8 +108,8 @@ def _close_all_connections():
         for conn in _all_connections:
             try:
                 conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Database connection cleanup failed: {}", type(exc).__name__)
         _all_connections.clear()
         _connection_generation += 1
     # Allow the current thread to lazily open a fresh connection after an
@@ -269,7 +269,7 @@ def save_transcript(record: Any) -> None:
             conn.execute(
                 """
                 INSERT INTO transcripts
-                (id, title, date, duration, status, type, language, step, 
+                (id, title, date, duration, status, type, language, step,
                  source_url, channel, thumbnail_url, content, preview, created_at, updated_at,
                  summary, summary_format, summary_status, summary_error, summary_updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)

@@ -159,10 +159,7 @@ def _default_input_index(sounddevice_module: Any | None = None) -> int | None:
         return None
     try:
         dev = sounddevice.default.device
-        if isinstance(dev, (tuple, list)) and dev:
-            idx = int(dev[0])
-        else:
-            idx = int(dev)
+        idx = int(dev[0]) if isinstance(dev, (tuple, list)) and dev else int(dev)
         if idx >= 0:
             return idx
     except Exception:

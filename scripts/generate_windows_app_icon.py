@@ -226,7 +226,7 @@ def main() -> None:
         WINDOW_PNG: window_png,
         WINDOW_RGBA: window_rgba,
     }
-    for size, (png, rgba) in tray_frames.items():
+    for size, (_png, rgba) in tray_frames.items():
         artifacts[ICON_DIR / f"tray-normal-{size}.rgba"] = rgba
     if args.check:
         stale = [str(path.relative_to(REPO_ROOT)) for path, data in artifacts.items() if not _check_file(path, data)]

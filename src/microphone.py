@@ -5,6 +5,7 @@ import os
 import queue as _queue
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from uuid import UUID
 
@@ -115,10 +116,7 @@ def _select_best_mono_channel(
             chosen_channel = previous_channel
 
     mono = indata[:, chosen_channel]
-    if mono.dtype != np.int16:
-        mono = np.clip(mono, -32768, 32767).astype(np.int16)
-    else:
-        mono = np.ascontiguousarray(mono)
+    mono = np.clip(mono, -32768, 32767).astype(np.int16) if mono.dtype != np.int16 else np.ascontiguousarray(mono)
 
     return mono.reshape(-1, 1), chosen_channel
 
@@ -378,7 +376,7 @@ class RustCaptureWavArtifact:
             handle = operation.result()
         except BaseException:
             if cancellation is not None:
-                raise cancellation
+                raise cancellation from None
             raise
 
         if cancellation is not None:
@@ -441,8 +439,8 @@ def _release_invalid_capture_artifact_payload(payload: dict, *, shell_call) -> N
             {"leaseId": lease_id},
             timeout_seconds=2.0,
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Invalid capture-artifact lease release failed: {}", type(exc).__name__)
 
 
 def _read_exact(reader, byte_count: int) -> bytes:
@@ -723,12 +721,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
         if self._capture_wav_artifact is not None:
             self._capture_wav_artifact.release()
             self._capture_wav_artifact = None
-        if self._pending_stop_stream_id:
-            if self._request_sidecar_stop(
-                self._pending_stop_stream_id,
-                timeout_seconds=2.0,
-            ):
-                self._pending_stop_stream_id = ""
+        if self._pending_stop_stream_id and self._request_sidecar_stop(
+            self._pending_stop_stream_id,
+            timeout_seconds=2.0,
+        ):
+            self._pending_stop_stream_id = ""
         selection_started = time.monotonic()
         provider_replay_capture = self._provider_replay_capture_fixture is not None
         if not provider_replay_capture and self.requested_prewarm_id and isinstance(self.capture_route, dict):
@@ -877,9 +874,8 @@ class RustPrototypeFrameSource(AudioFrameSource):
                 self.fallback_reason = "rustFramePipeMissing"
                 raise RuntimeError("Rust audio capture did not return a frame pipe")
         except Exception:
-            if self.stream_id:
-                if self._request_sidecar_stop(self.stream_id, timeout_seconds=0.75):
-                    self._clear_capture_identity()
+            if self.stream_id and self._request_sidecar_stop(self.stream_id, timeout_seconds=0.75):
+                self._clear_capture_identity()
             raise
         return self
 
@@ -1198,10 +1194,10 @@ class RustPrototypeFrameSource(AudioFrameSource):
         if callable(callback):
             try:
                 callback()
-            except Exception:
+            except Exception as exc:
                 # This is a benchmark-only timing hint. The attestation remains
                 # authoritative and fails closed if capture runs too long.
-                pass
+                logger.debug("Provider-replay fixture callback failed: {}", type(exc).__name__)
 
     def provider_replay_capture_attestation(self) -> dict | None:
         """Return benchmark-only proof for PCM read from the Rust frame pipe.
@@ -2056,7 +2052,7 @@ class MicrophoneInput(BaseInputTransport):
             queue_depth = self._queue.qsize()
             self._max_queue_depth = max(self._max_queue_depth, queue_depth)
             self._signal_queue_wakeup()
-        except _queue.Full:
+        except _queue.Full as exc:
             self._dropped_chunks += 1
             self._capture_integrity_error = "microphoneAudioQueueOverflow"
             self._consumer_error = "RuntimeError: microphoneAudioQueueOverflow"
@@ -2068,7 +2064,7 @@ class MicrophoneInput(BaseInputTransport):
                 self._queue.qsize(),
                 self._queue.maxsize,
             )
-            raise RuntimeError(self._capture_integrity_error)
+            raise RuntimeError(self._capture_integrity_error) from exc
 
         # Visualizer/input-warning calculation is capped to UI frame rate. The
         # raw audio still flows downstream on every callback.
@@ -2323,13 +2319,13 @@ class MicrophoneInput(BaseInputTransport):
                         )
                     try:
                         self._frame_source.stop(close=False)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Microphone frame-source restart cleanup failed: {}", type(exc).__name__)
                 elif active and callback_stale:
                     try:
                         stream.stop()
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Microphone stream restart cleanup failed: {}", type(exc).__name__)
                 if source_owns_stream:
                     self._frame_source.start()
                     self._sync_frame_source_state()
@@ -2392,10 +2388,8 @@ class MicrophoneInput(BaseInputTransport):
         wakeup = self._queue_wakeup
         if loop is None or wakeup is None or loop.is_closed():
             return
-        try:
+        with suppress(RuntimeError):
             loop.call_soon_threadsafe(wakeup.set)
-        except RuntimeError:
-            pass
 
     def _consumer_task_state(self) -> str:
         task = self._consumer_task

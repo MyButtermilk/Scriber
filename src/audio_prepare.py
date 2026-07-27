@@ -240,8 +240,7 @@ def probe_audio_input_file(
         result = subprocess.run(
             ffprobe_audio_format_args(tool, source),
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=_PROBE_TIMEOUT_SECONDS,
             **hidden_subprocess_kwargs(),

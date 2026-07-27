@@ -36,8 +36,7 @@ def _probe(executable: Path, argument: str) -> dict[str, Any]:
     process = subprocess.run(
         [str(executable), argument],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=10,
         check=False,
     )
@@ -64,7 +63,7 @@ def build_manifest(executable: Path) -> dict[str, Any]:
     executable = executable.expanduser().resolve()
     if executable.name.casefold() != WORKER_FILE.casefold() or not executable.is_file():
         raise ValueError(f"Expected an existing {WORKER_FILE} executable.")
-    version = _probe(executable, "--version")
+    _probe(executable, "--version")
     self_test = _probe(executable, "--self-test")
     if (
         self_test.get("schemaVersion") != PROTOCOL_SCHEMA_VERSION

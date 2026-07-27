@@ -149,8 +149,7 @@ def _git_capture(repo_root: Path, *arguments: str) -> str:
         ["git", *arguments],
         cwd=str(repo_root),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if result.returncode != 0:
@@ -1327,9 +1326,8 @@ def validate_packet(packet: dict[str, Any], *, run_id: str) -> None:
     timeout_seconds = action.get("timeoutSeconds")
     if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int) or not 30 <= timeout_seconds <= 14_400:
         raise StateError("pending packet timeoutSeconds must be between 30 and 14400")
-    if action.get("kind") in {"baseline-replica", "final-replica"}:
-        if action.get("replica") not in (1, 2):
-            raise StateError(f"{action.get('kind')} action requires replica 1 or 2")
+    if action.get("kind") in {"baseline-replica", "final-replica"} and action.get("replica") not in (1, 2):
+        raise StateError(f"{action.get('kind')} action requires replica 1 or 2")
     if action.get("kind") == "baseline-replica":
         replica = int(action["replica"])
         if replica != 1:

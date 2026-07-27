@@ -83,8 +83,7 @@ def run_capture(args: list[str], cwd: Path, timeout: int = 120) -> subprocess.Co
         args,
         cwd=str(cwd),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=timeout,
         check=False,
     )

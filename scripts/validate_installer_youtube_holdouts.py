@@ -341,8 +341,7 @@ def _run_probe(
         command,
         env=environment,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=timeout_seconds,
     )
@@ -421,8 +420,7 @@ def main(argv: list[str] | None = None) -> int:
         deno_version = subprocess.run(
             [str(deno_executable), "--version"],
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=30,
         )

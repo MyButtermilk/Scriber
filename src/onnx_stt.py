@@ -326,6 +326,18 @@ def _notify_download_progress(
         logger.debug(f"ONNX download progress callback failed: {exc}")
 
 
+def _notify_transcription_progress(
+    on_progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if not on_progress:
+        return
+    try:
+        on_progress(message)
+    except Exception as exc:
+        logger.debug("ONNX transcription progress callback failed: {}", type(exc).__name__)
+
+
 def _normalize_quantization(quantization: str | None) -> tuple[str | None, str]:
     """Return (onnx_quantization, label) where fp32 maps to None for onnx-asr."""
     if not quantization:
@@ -346,8 +358,8 @@ def _candidate_cache_dirs() -> list[Path | None]:
     candidates: list[Path] = []
     try:
         candidates.append(get_model_cache_dir())
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("ONNX model-cache directory lookup failed: {}", type(exc).__name__)
     env_cache = os.getenv("HF_HUB_CACHE", "")
     if env_cache:
         candidates.append(Path(env_cache).expanduser())
@@ -603,9 +615,8 @@ def _list_repo_files(repo_id: str, allow_patterns: list[str]) -> list[dict[str, 
     files: list[dict[str, Any]] = []
     for sibling in info.siblings or []:
         filename = sibling.rfilename
-        if allow_patterns:
-            if not any(fnmatch(filename, pattern) for pattern in allow_patterns):
-                continue
+        if allow_patterns and not any(fnmatch(filename, pattern) for pattern in allow_patterns):
+            continue
         size = getattr(sibling, "size", None)
         if size is None and getattr(sibling, "lfs", None):
             size = getattr(sibling.lfs, "size", None)
@@ -1066,7 +1077,6 @@ def _load_model_impl(
     get_model_cache_dir()
 
     onnx_asr = _get_onnx_asr()
-    model_info = ONNX_MODELS.get(model_name, {})
     model_arg = _resolve_repo_id(model_name, q_label) if q_label == "fp16" else model_name
     model_path = None
     if _uses_archive(model_name, q_label):
@@ -1198,9 +1208,8 @@ async def _prepare_onnx_audio_path(audio_path: str | Path) -> tuple[Path, Path |
         return source_path, None
 
     ffmpeg = require_media_tool("ffmpeg")
-    handle = tempfile.NamedTemporaryFile(prefix="scriber-onnx-", suffix=".wav", delete=False)
-    prepared_path = Path(handle.name)
-    handle.close()
+    with tempfile.NamedTemporaryFile(prefix="scriber-onnx-", suffix=".wav", delete=False) as handle:
+        prepared_path = Path(handle.name)
     try:
         proc = await asyncio.create_subprocess_exec(
             *wav_pcm_transcode_args(ffmpeg, source_path, prepared_path),
@@ -1248,20 +1257,12 @@ async def transcribe_audio(
     Returns:
         Transcribed text
     """
-    if on_progress:
-        try:
-            on_progress("Preparing audio...")
-        except Exception:
-            pass
+    _notify_transcription_progress(on_progress, "Preparing audio...")
 
     prepared_path, cleanup_path = await _prepare_onnx_audio_path(audio_path)
     cleanup_owned_by_worker = False
 
-    if on_progress:
-        try:
-            on_progress("Loading model...")
-        except Exception:
-            pass
+    _notify_transcription_progress(on_progress, "Loading model...")
 
     loop = asyncio.get_running_loop()
     try:
@@ -1276,11 +1277,7 @@ async def transcribe_audio(
         )
         model_info = ONNX_MODELS.get(model_name, {})
 
-        if on_progress:
-            try:
-                on_progress("Transcribing...")
-            except Exception:
-                pass
+        _notify_transcription_progress(on_progress, "Transcribing...")
 
         def _transcribe():
             try:
@@ -1298,11 +1295,7 @@ async def transcribe_audio(
         cleanup_owned_by_worker = True
         text = await asyncio.shield(recognition_future)
 
-        if on_progress:
-            try:
-                on_progress("Complete")
-            except Exception:
-                pass
+        _notify_transcription_progress(on_progress, "Complete")
 
         logger.info(f"Transcription complete: {len(text)} characters")
         return text
@@ -1436,8 +1429,8 @@ def delete_model(model_name: str, quantization: str | None = None) -> bool:
                 fallback_dirs.append(Path(cache_dir))
             try:
                 fallback_dirs.append(Path(constants.HF_HUB_CACHE))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Hugging Face fallback cache lookup failed: {}", type(exc).__name__)
 
             for repo_id in repo_ids:
                 repo_folder_name = f"models--{repo_id.replace('/', '--')}"

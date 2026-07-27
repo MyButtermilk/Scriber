@@ -24,7 +24,8 @@ FRONTEND_ROOT = REPO_ROOT / "Frontend"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.process_utils import process_creation_flags, terminate_process
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.process_utils import process_creation_flags, terminate_process  # noqa: E402
 
 
 def find_free_port() -> int:

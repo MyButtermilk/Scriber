@@ -21,6 +21,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -484,10 +485,8 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             if process.poll() is None:
                 process.kill()
     elif process.poll() is None:
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     try:
         process.wait(timeout=PROCESS_EXIT_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired as exc:
@@ -502,10 +501,8 @@ def _close_process_scope(process: subprocess.Popen[bytes], windows_job: tuple[in
             _terminate_process_tree(process)
         return closed and process.poll() is not None
     if os.name != "nt":
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     if process.poll() is None:
         _terminate_process_tree(process)
     return process.poll() is not None
@@ -802,9 +799,12 @@ def _assert_redacted(value: Any) -> None:
             folded = str(key).casefold()
             if folded in forbidden_keys:
                 raise SmokeError("evidence-redaction-failed")
-            if folded.endswith("failurecode") and child is not None:
-                if not isinstance(child, str) or child not in PUBLIC_FAILURE_CODES:
-                    raise SmokeError("evidence-redaction-failed")
+            if (
+                folded.endswith("failurecode")
+                and child is not None
+                and (not isinstance(child, str) or child not in PUBLIC_FAILURE_CODES)
+            ):
+                raise SmokeError("evidence-redaction-failed")
             _assert_redacted(child)
     elif isinstance(value, list):
         for child in value:

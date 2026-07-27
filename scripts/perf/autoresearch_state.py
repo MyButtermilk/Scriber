@@ -51,8 +51,7 @@ def git_status(repo_root: Path) -> list[str]:
         ["git", "status", "--short"],
         cwd=str(repo_root),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if result.returncode != 0:
@@ -323,8 +322,7 @@ def cmd_next(repo_root: Path, suite: str) -> int:
         ],
         cwd=str(repo_root),
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     payload = {

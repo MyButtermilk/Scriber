@@ -16,8 +16,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.measure_recording_hot_path_baseline import powershell_text_target_command
-from scripts.process_utils import terminate_process
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.measure_recording_hot_path_baseline import powershell_text_target_command  # noqa: E402
+from scripts.process_utils import terminate_process  # noqa: E402
 
 
 def repo_root() -> Path:

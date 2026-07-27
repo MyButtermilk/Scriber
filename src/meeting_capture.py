@@ -355,7 +355,8 @@ class MeetingAudioRecorder:
                             raise FileExistsError(f"Meeting audio destination already exists: {final_path.name}")
                         writer_handle = path.open("xb")
                         try:
-                            writer = wave.open(writer_handle, "wb")
+                            # The writer spans frames and is closed at the chunk boundary.
+                            writer = wave.open(writer_handle, "wb")  # noqa: SIM115
                             writer.setnchannels(header.channels)
                             writer.setsampwidth(2)
                             writer.setframerate(self.sample_rate)
@@ -368,9 +369,9 @@ class MeetingAudioRecorder:
                     if self.on_pcm is not None:
                         try:
                             self.on_pcm(source, payload, header)
-                        except Exception:
+                        except Exception as exc:
                             # Live preview is best-effort; the durable writer above is authoritative.
-                            pass
+                            logger.debug("Meeting live-preview callback failed: {}", type(exc).__name__)
                     chunk_frames += header.frame_count
                     with self._lock:
                         stats = self._stats[source]

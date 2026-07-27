@@ -16,7 +16,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS
+# Application imports intentionally follow the sys.path bootstrap above.
+from src.runtime.provider_dependencies import STANDARD_PROVIDER_RUNTIME_IMPORTS  # noqa: E402
 
 CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),

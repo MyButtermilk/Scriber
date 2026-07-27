@@ -14,7 +14,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from backend_runtime.contract import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from backend_runtime.contract import (  # noqa: E402
     APPLICATION_DIRECTORY_NAME,
     APPLICATION_ENTRY_POINT,
     APPLICATION_LAYER_SCHEMA_VERSION,
@@ -22,7 +23,7 @@ from backend_runtime.contract import (
     RUNTIME_CONTRACT_NAME,
     RUNTIME_CONTRACT_REVISION,
 )
-from backend_runtime.launcher import validate_application_layer
+from backend_runtime.launcher import validate_application_layer  # noqa: E402
 
 _VERSION_PATTERN = re.compile(r'^__version__\s*=\s*["\']([^"\']+)["\']\s*$', re.MULTILINE)
 

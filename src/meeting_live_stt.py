@@ -10,10 +10,12 @@ import asyncio
 import json
 from collections import Counter
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
+from loguru import logger
 from websockets.asyncio.client import connect as websocket_connect
 
 from src.runtime.pcm_audio import pcm16le_meets_rms_threshold
@@ -61,11 +63,11 @@ def create_meeting_smart_turn_analyzer() -> Any:
 
     try:
         install_smart_turn_mel_acceleration()
-    except Exception:
+    except Exception as exc:
         # Keep provider-independent endpoint detection available through the
         # numerically equivalent NumPy fallback. Frozen release gates require
         # the accelerated path, so this is only a runtime resilience boundary.
-        pass
+        logger.debug("Smart Turn mel acceleration setup failed: {}", type(exc).__name__)
     analyzer = LocalSmartTurnAnalyzerV3(cpu_count=1)
     analyzer.set_sample_rate(16_000)
     return analyzer
@@ -248,8 +250,10 @@ class SonioxMeetingStream:
     def _consume_task_result(task: asyncio.Task) -> None:
         try:
             task.exception()
-        except BaseException:
-            pass
+        except asyncio.CancelledError:
+            return
+        except BaseException as exc:
+            logger.debug("Meeting live-STT task-result consumption failed: {}", type(exc).__name__)
 
     async def _cleanup_until(
         self,
@@ -307,10 +311,10 @@ class SonioxMeetingStream:
             if report_timeout > 0:
                 try:
                     await asyncio.wait_for(self._report_backpressure(), timeout=report_timeout)
-                except Exception:
+                except Exception as exc:
                     # Preview degradation reporting is best-effort. A callback
                     # failure must never bypass supervised task/WebSocket cleanup.
-                    pass
+                    logger.debug("Meeting live-STT backpressure reporting failed: {}", type(exc).__name__)
 
         graceful = False
         task_error: BaseException | None = None
@@ -408,10 +412,8 @@ class SonioxMeetingStream:
                         self._speaker_epoch += 1
                         websocket = await self._open_websocket()
                     except Exception:
-                        try:
+                        with suppress(TimeoutError):
                             await asyncio.wait_for(self._stop_event.wait(), timeout=delay)
-                        except TimeoutError:
-                            pass
                         delay = min(delay * 2.0, self._reconnect_max_delay_s)
                 if websocket is None:
                     return

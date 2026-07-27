@@ -84,8 +84,11 @@ class SidecarClient:
             if self.proc and self.proc.poll() is None:
                 try:
                     self.call("shutdown", {}, timeout=2.0)
-                except Exception:
-                    pass
+                except Exception as cleanup_error:
+                    print(
+                        f"Rust audio sidecar shutdown request failed ({type(cleanup_error).__name__}).",
+                        file=sys.stderr,
+                    )
                 self.proc.terminate()
                 try:
                     self.proc.wait(timeout=2.0)

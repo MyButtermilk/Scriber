@@ -66,8 +66,8 @@ def _report_progress(on_progress: Callable[[str], None] | None, message: str) ->
         return
     try:
         on_progress(message)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Cloud STT progress callback failed: {}", type(exc).__name__)
 
 
 def _terms_from_vocab(custom_vocab: str) -> list[str]:
@@ -423,7 +423,8 @@ def _gemini_audio_source_size(audio_source: bytes | BinaryIO) -> int:
 
 
 def _spool_gemini_audio_source(audio_source: BinaryIO) -> tuple[BinaryIO, int]:
-    spooled_source = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)
+    # Ownership is transferred to the caller on success and closed locally on failure.
+    spooled_source = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024)  # noqa: SIM115
     try:
         while chunk := audio_source.read(1024 * 1024):
             spooled_source.write(chunk)
@@ -910,8 +911,8 @@ class _BufferedAsyncProcessor(FrameProcessor):
         if artifact is not None:
             try:
                 artifact.release()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Capture WAV artifact finalizer failed: {}", type(exc).__name__)
 
     def adopt_capture_wav_artifact(self, artifact: Any) -> bool:
         """Accept the single Tauri lease before the terminal provider upload."""

@@ -95,8 +95,8 @@ class FfmpegAudioFileInput(BaseInputTransport):
                 return
             try:
                 await asyncio.wait_for(proc.wait(), timeout=3)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("ffmpeg audio-input process drain failed: {}", type(exc).__name__)
 
     async def _wait_for_audio_queue_capacity(self) -> None:
         """Bound decoded PCM queued ahead of slower provider/model work."""
@@ -176,9 +176,9 @@ class FfmpegAudioFileInput(BaseInputTransport):
             # Wait for all pushed audio frames to be processed by the base audio task.
             try:
                 await asyncio.wait_for(self._audio_in_queue.join(), timeout=60 * 60)
-            except Exception:
+            except Exception as exc:
                 # If join fails, still allow the caller to end the pipeline.
-                pass
+                logger.debug("Audio-input queue drain failed: {}", type(exc).__name__)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -188,8 +188,8 @@ class FfmpegAudioFileInput(BaseInputTransport):
             self._done.set()
             try:
                 await self._stop_ffmpeg()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Audio-input ffmpeg cleanup failed: {}", type(exc).__name__)
             if stderr_task is not None and not stderr_task.done():
                 stderr_task.cancel()
             if stderr_task is not None:

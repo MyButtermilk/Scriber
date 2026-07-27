@@ -13,9 +13,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.validate_meeting_release_matrix import validate_matrix as validate_meeting_matrix
-from scripts.validate_microphone_hardware_matrix import validate_matrix as validate_microphone_matrix
-from scripts.validate_tauri_updater_metadata import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.validate_meeting_release_matrix import validate_matrix as validate_meeting_matrix  # noqa: E402
+from scripts.validate_microphone_hardware_matrix import validate_matrix as validate_microphone_matrix  # noqa: E402
+from scripts.validate_tauri_updater_metadata import (  # noqa: E402
     DEFAULT_METADATA,
     sha256_file,
     validate_local_artifacts,
@@ -746,9 +747,8 @@ def validate_rust_audio_prewarm_sidecar_report(
     if not isinstance(start, dict):
         failures.append("Rust audio prewarm sidecar smoke start must be an object")
         start = {}
-    if mode == "synthetic":
-        if start.get("syntheticPrewarm") is not True:
-            failures.append("Rust audio prewarm sidecar smoke synthetic start.syntheticPrewarm must be true")
+    if mode == "synthetic" and start.get("syntheticPrewarm") is not True:
+        failures.append("Rust audio prewarm sidecar smoke synthetic start.syntheticPrewarm must be true")
     if mode == "wasapi":
         if start.get("wasapiPrewarm") is not True:
             failures.append("Rust audio prewarm sidecar smoke WASAPI start.wasapiPrewarm must be true")

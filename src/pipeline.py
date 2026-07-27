@@ -7,6 +7,7 @@ import math
 import os
 import re
 import tempfile
+import threading
 import time
 import wave
 from collections.abc import Callable, Mapping
@@ -206,12 +207,6 @@ try:
     from pipecat.audio.vad.vad_analyzer import VADParams
 except Exception:
     VADParams = None
-
-
-# ============================================================================
-# One-shot analyzer warmup cache for faster first-pipeline start
-# ============================================================================
-import threading
 
 
 class _AnalyzerCache:
@@ -837,8 +832,8 @@ class SonioxAsyncProcessor(FrameProcessor):
         if self.on_progress:
             try:
                 self.on_progress(msg)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Soniox progress callback failed: {}", type(exc).__name__)
 
     async def _transcribe_async(
         self,
@@ -1034,8 +1029,8 @@ class SonioxAsyncProcessor(FrameProcessor):
             if encoded_stream is not None:
                 try:
                     encoded_stream.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Soniox encoded-stream cleanup failed: {}", type(exc).__name__)
             for cleanup_path in cleanup_paths:
                 try:
                     os.unlink(cleanup_path)
@@ -1063,9 +1058,8 @@ class SonioxAsyncProcessor(FrameProcessor):
         ch = self._channels or 1
         ffmpeg = find_media_tool("ffmpeg") if prefer_webm else None
         if ffmpeg:
-            output = tempfile.NamedTemporaryFile(suffix=".webm", delete=False)
-            output_path = output.name
-            output.close()
+            with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as output:
+                output_path = output.name
             proc = None
             feed_task: asyncio.Task | None = None
             try:
@@ -1119,25 +1113,22 @@ class SonioxAsyncProcessor(FrameProcessor):
                 await feed_task
                 if proc.returncode != 0:
                     raise RuntimeError(f"FFmpeg encoding failed: {stderr.decode('utf-8', errors='replace')}")
-                encoded = open(output_path, "rb")
+                # The caller owns this stream and closes it after the provider request.
+                encoded = open(output_path, "rb")  # noqa: SIM115
                 return encoded, "audio/webm", "audio.webm", (output_path,)
             except asyncio.CancelledError:
                 if feed_task is not None and not feed_task.done():
                     feed_task.cancel()
                     await asyncio.gather(feed_task, return_exceptions=True)
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(output_path)
-                except OSError:
-                    pass
                 raise
             except Exception as exc:
                 if feed_task is not None and not feed_task.done():
                     feed_task.cancel()
                     await asyncio.gather(feed_task, return_exceptions=True)
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(output_path)
-                except OSError:
-                    pass
                 logger.warning(f"WebM stream encode failed ({exc}); falling back to WAV")
 
         wav_stream = await asyncio.to_thread(pcm_stream_to_wav, audio_stream, sr, ch)
@@ -1165,16 +1156,16 @@ class SonioxAsyncProcessor(FrameProcessor):
         if ffmpeg:
             # Use temporary files for WebM - required for proper duration metadata
             # WebM/Matroska containers need seekable output to write duration to header
-            tmp_input = None
+            tmp_input_path = None
             tmp_output_path = None
             try:
                 # Write PCM to temp input file
-                tmp_input = tempfile.NamedTemporaryFile(suffix=".pcm", delete=False)
-                tmp_input.write(audio_bytes)
-                tmp_input.close()
+                with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as tmp_input:
+                    tmp_input.write(audio_bytes)
+                    tmp_input_path = tmp_input.name
 
                 # Create temp output file path
-                tmp_output_path = tmp_input.name.replace(".pcm", ".webm")
+                tmp_output_path = tmp_input_path.replace(".pcm", ".webm")
 
                 # Two-pass encoding: input file → output file (allows FFmpeg to write duration)
                 cmd = [
@@ -1187,7 +1178,7 @@ class SonioxAsyncProcessor(FrameProcessor):
                     "-ac",
                     str(ch),  # Input channels
                     "-i",
-                    tmp_input.name,  # Read from temp file
+                    tmp_input_path,  # Read from temp file
                     "-c:a",
                     "libopus",  # Encode to Opus
                     "-ar",
@@ -1232,8 +1223,8 @@ class SonioxAsyncProcessor(FrameProcessor):
             finally:
                 # Clean up temp files
                 try:
-                    if tmp_input and os.path.exists(tmp_input.name):
-                        os.unlink(tmp_input.name)
+                    if tmp_input_path and os.path.exists(tmp_input_path):
+                        os.unlink(tmp_input_path)
                     if tmp_output_path and os.path.exists(tmp_output_path):
                         os.unlink(tmp_output_path)
                 except Exception:
@@ -1286,16 +1277,18 @@ class SonioxAsyncProcessor(FrameProcessor):
 # app startup time by ~500-800ms. Each service is only imported when used.
 # ============================================================================
 
-from src.audio_devices import (
+from src.audio_devices import (  # noqa: E402 - preserve established runtime import ordering
     normalize_device_name,
     resolve_input_microphone_device,
 )
-from src.audio_file_input import FfmpegAudioFileInput
-from src.config import Config
-from src.core.provider_capabilities import injects_immediately_in_live_mode
-from src.device_monitor import get_device_guard_lock
-from src.injector import InjectionTargetGuard, TextInjector
-from src.microphone import MicrophoneInput
+from src.audio_file_input import FfmpegAudioFileInput  # noqa: E402 - preserve established runtime import ordering
+from src.config import Config  # noqa: E402 - preserve established runtime import ordering
+from src.core.provider_capabilities import (  # noqa: E402 - preserve established runtime import ordering
+    injects_immediately_in_live_mode,
+)
+from src.device_monitor import get_device_guard_lock  # noqa: E402 - preserve established runtime import ordering
+from src.injector import InjectionTargetGuard, TextInjector  # noqa: E402 - preserve established runtime import ordering
+from src.microphone import MicrophoneInput  # noqa: E402 - preserve established runtime import ordering
 
 LANGUAGE_MAP = {
     "auto": None,
@@ -1385,9 +1378,12 @@ def _create_assemblyai_realtime_service(
     if language_code and "language_code" not in settings_kwargs:
         service_candidates["language"] = _pipecat_language(language)
     service_kwargs = _filter_supported_kwargs(service_cls, service_candidates)
-    if language_code and "language_code" not in settings_kwargs:
-        if service_kwargs.get("language") != _pipecat_language(language):
-            raise RuntimeError("AssemblyAI Pipecat service cannot bind the frozen language.")
+    if (
+        language_code
+        and "language_code" not in settings_kwargs
+        and service_kwargs.get("language") != _pipecat_language(language)
+    ):
+        raise RuntimeError("AssemblyAI Pipecat service cannot bind the frozen language.")
     return service_cls(**service_kwargs)
 
 

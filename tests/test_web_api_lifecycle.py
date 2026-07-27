@@ -3929,9 +3929,9 @@ async def test_cold_runtime_failure_releases_claim_and_stops_unretained_prewarm(
         patch.object(ctl, "_get_overlay", return_value=None),
         patch("src.web_api.show_initializing_overlay"),
         patch("src.web_api.hide_recording_overlay"),
+        pytest.raises(RuntimeError, match="synthetic pipeline import failure"),
     ):
-        with pytest.raises(RuntimeError, match="synthetic pipeline import failure"):
-            await ctl.start_listening()
+        await ctl.start_listening()
 
     assert manager.resume_calls == 1
     assert manager.stop_calls == 1

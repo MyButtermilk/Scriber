@@ -12,7 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.validate_tauri_updater_metadata import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.validate_tauri_updater_metadata import (  # noqa: E402
     sha256_file,
     validate_local_artifacts,
     validate_metadata,

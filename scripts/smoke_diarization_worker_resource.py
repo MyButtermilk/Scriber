@@ -141,8 +141,7 @@ def _run_control(executable: Path, argument: str) -> dict[str, Any]:
     process = subprocess.run(
         [str(executable), argument],
         stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=10,
         check=False,
     )

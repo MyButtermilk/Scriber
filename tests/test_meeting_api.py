@@ -7,6 +7,7 @@ import re
 import socket
 import threading
 import wave
+from datetime import UTC, datetime
 from email import policy
 from email.parser import BytesParser
 from pathlib import Path
@@ -1056,7 +1057,13 @@ async def test_meeting_audio_devices_falls_back_to_three_redacted_pycaw_captures
             "flow": "capture",
             "isDefault": index == 1,
         }
-        for index, (raw_id, label) in enumerate(zip(raw_ids, ("Jabra Engage 75", "Insta360 Link", "Realtek Array")))
+        for index, (raw_id, label) in enumerate(
+            zip(
+                raw_ids,
+                ("Jabra Engage 75", "Insta360 Link", "Realtek Array"),
+                strict=True,
+            )
+        )
     ]
 
     monkeypatch.setattr(web_api, "shell_ipc_available", lambda: True)
@@ -2146,7 +2153,7 @@ async def test_final_only_resume_stays_final_only_when_global_setting_changes(mo
                 "captureId": "capture-before-resume",
                 "deviceSelection": {},
                 "pauseStartedAtMs": 0,
-                "pauseStartedAtUtc": web_api.datetime.now(web_api.timezone.utc).isoformat(),
+                "pauseStartedAtUtc": datetime.now(UTC).isoformat(),
             },
         )
     else:
@@ -2200,7 +2207,7 @@ async def test_meeting_resume_keeps_durable_capture_when_live_preview_fails(monk
                 "captureId": "capture-before-resume",
                 "deviceSelection": {},
                 "pauseStartedAtMs": 0,
-                "pauseStartedAtUtc": web_api.datetime.now(web_api.timezone.utc).isoformat(),
+                "pauseStartedAtUtc": datetime.now(UTC).isoformat(),
             },
         )
     else:

@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,17 +17,18 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.installer_research.comparator import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.installer_research.comparator import (  # noqa: E402
     MANDATORY_EXTERNAL_GATES,
     MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS,
     MINIMUM_COMBINED_IMPROVEMENT_PERCENT_DENOMINATOR,
     validate_install_measurements,
 )
-from scripts.installer_research.inventory import build_root_identity_sha256
-from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context
-from scripts.perf.installer_size.doctor import current_installer_evaluator_hash, run_doctor
-from scripts.perf.installer_size.evaluator import load_result, validate_result
-from scripts.perf.installer_size.state import (
+from scripts.installer_research.inventory import build_root_identity_sha256  # noqa: E402
+from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context  # noqa: E402
+from scripts.perf.installer_size.doctor import current_installer_evaluator_hash, run_doctor  # noqa: E402
+from scripts.perf.installer_size.evaluator import load_result, validate_result  # noqa: E402
+from scripts.perf.installer_size.state import (  # noqa: E402
     StateError,
     abandon_pending_packet,
     accepted_baseline_replica_packet_id,
@@ -400,7 +402,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
     if process.poll() is not None:
         return
     if os.name == "nt":
-        try:
+        with suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(
                 ["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
                 stdout=subprocess.DEVNULL,
@@ -408,17 +410,13 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
                 check=False,
                 timeout=30,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            pass
     else:
         try:
             os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
         except (ProcessLookupError, subprocess.TimeoutExpired):
-            try:
+            with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
     if process.poll() is None:
         process.kill()
 
@@ -2576,8 +2574,7 @@ def _accept_baseline(context) -> subprocess.CompletedProcess[str] | None:
             command,
             cwd=str(context.repo_root),
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=300,
         )

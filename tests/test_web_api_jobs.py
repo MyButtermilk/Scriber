@@ -305,7 +305,7 @@ async def test_start_youtube_transcription_persists_caption_override(tmp_path):
 
     with (
         patch.object(ctl, "_run_youtube_transcription", new=AsyncMock(side_effect=_fake_run)),
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
         patch("src.web_api._validate_provider_ready", return_value=None),
     ):
         rec = await ctl.start_youtube_transcription(

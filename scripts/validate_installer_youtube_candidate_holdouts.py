@@ -36,6 +36,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.parser import BytesParser
@@ -665,7 +666,7 @@ def _metadata_identity(
 ) -> DistributionIdentity:
     normalized = distribution.casefold().replace("-", "_")
     candidates: list[tuple[str, Path]] = []
-    for folded, item in _inventory_entries(inventory, installed=installed).items():
+    for _folded, item in _inventory_entries(inventory, installed=installed).items():
         relative = str(item["path"])
         if _is_distribution_metadata(relative, distribution):
             candidates.append((relative, root / PurePosixPath(relative)))
@@ -962,7 +963,7 @@ def _load_quickjs_provenance_lock(
             role = raw_file.get("role")
             _safe_archive_path(raw_file.get("assetPath"), label="QuickJS asset member")
             installed_name = _safe_leaf_name(raw_file.get("installedFileName"), label="installed QuickJS runtime file")
-            file_length = _positive_length(raw_file.get("length"), label="QuickJS runtime file length")
+            _positive_length(raw_file.get("length"), label="QuickJS runtime file length")
             file_sha256 = str(raw_file.get("sha256") or "")
             if (
                 role not in {"executable", "dependency"}
@@ -1327,10 +1328,8 @@ def _baseline_runtime_provenance(*, environment_root: Path, expected_version: st
     for raw in message.get_all("Project-URL", []):
         if "," in raw:
             _label, value = raw.split(",", 1)
-            try:
+            with suppress(HoldoutError):
                 origins.append(_safe_origin(value.strip()))
-            except HoldoutError:
-                pass
     if not origins:
         raise HoldoutError("baseline Deno origin metadata is invalid")
     return sorted(origins)[0], license_value
@@ -1414,8 +1413,7 @@ def _private_acl(path: Path) -> str:
         return "mode-0700"
     whoami = subprocess.run(
         ["whoami"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         check=False,
         timeout=10,
@@ -1433,8 +1431,7 @@ def _private_acl(path: Path) -> str:
             "*S-1-5-18:(OI)(CI)F",
             "/Q",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=15,
     )
@@ -1564,10 +1561,8 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
         if completed.returncode != 0 and process.poll() is None:
             process.kill()
     else:
-        try:
+        with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
     try:
         process.wait(timeout=10)
     except subprocess.TimeoutExpired as exc:
@@ -2428,7 +2423,7 @@ def _build_stack(
     environment_root: Path,
 ) -> StackIdentity:
     root = _plain_directory(root, label=f"{label} payload root")
-    internal_root = _plain_directory(root / PurePosixPath(INTERNAL_RELATIVE), label=f"{label} installed module root")
+    _plain_directory(root / PurePosixPath(INTERNAL_RELATIVE), label=f"{label} installed module root")
     relative, kind, executable, executable_item = _find_runtime(
         root=root, inventory=inventory, installed=installed, label=label
     )

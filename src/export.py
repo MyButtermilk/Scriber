@@ -529,10 +529,7 @@ def _draw_pdf_line(
     justify: bool,
 ) -> None:
     line_width = _pdf_line_width(line, style.size)
-    if style.alignment == "center":
-        cursor_x = x + max(0.0, (available_width - line_width) / 2)
-    else:
-        cursor_x = x
+    cursor_x = x + max(0.0, (available_width - line_width) / 2) if style.alignment == "center" else x
     spaces = sum(text.count(" ") for text, _font in line)
     extra_space = max(0.0, available_width - line_width) / spaces if justify and spaces else 0.0
     gray = _pdf_number(style.gray)

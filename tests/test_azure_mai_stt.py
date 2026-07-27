@@ -210,8 +210,12 @@ def test_pipeline_wires_local_azure_transport_without_cloud_credential(monkeypat
     async def raw_transport(**_kwargs):
         return 200, '{"combinedPhrases":[{"text":"done"}]}'
 
-    marker = lambda: None
-    audio_marker = lambda _name: None
+    def marker():
+        return None
+
+    def audio_marker(_name):
+        return None
+
     monkeypatch.setattr(
         Config,
         "AZURE_MAI_SPEECH_KEY",

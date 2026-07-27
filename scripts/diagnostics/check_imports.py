@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import importlib
 import sys
 from pathlib import Path
 
@@ -5,79 +8,25 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-try:
-    from pipecat.services.soniox.stt import SonioxSTTService
+IMPORT_PROBES = (
+    ("pipecat.services.soniox.stt", "SonioxSTTService"),
+    ("pipecat.services.assemblyai.stt", "AssemblyAISTTService"),
+    ("pipecat.services.google.stt", "GoogleSTTService"),
+    ("pipecat.services.elevenlabs.stt", "ElevenLabsSTTService"),
+    ("pipecat.services.deepgram.stt", "DeepgramSTTService"),
+    ("pipecat.services.openai.stt", "OpenAISTTService"),
+    ("src.azure_mai_stt", "AzureMaiTranscribeSTTService"),
+    ("pipecat.services.gladia.stt", "GladiaSTTService"),
+    ("pipecat.services.groq.stt", "GroqSTTService"),
+    ("pipecat.services.speechmatics.stt", "SpeechmaticsSTTService"),
+    ("pipecat.services.aws.stt", "AWSTranscribeSTTService"),
+)
 
-    print("SonioxSTTService found")
-except ImportError as e:
-    print(f"SonioxSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.assemblyai.stt import AssemblyAISTTService
-
-    print("AssemblyAISTTService found")
-except ImportError as e:
-    print(f"AssemblyAISTTService NOT found: {e}")
-
-try:
-    from pipecat.services.google.stt import GoogleSTTService
-
-    print("GoogleSTTService found")
-except ImportError as e:
-    print(f"GoogleSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.elevenlabs.stt import ElevenLabsSTTService
-
-    print("ElevenLabsSTTService found")
-except ImportError as e:
-    print(f"ElevenLabsSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.deepgram.stt import DeepgramSTTService
-
-    print("DeepgramSTTService found")
-except ImportError as e:
-    print(f"DeepgramSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.openai.stt import OpenAISTTService
-
-    print("OpenAISTTService found")
-except ImportError as e:
-    print(f"OpenAISTTService NOT found: {e}")
-
-try:
-    from src.azure_mai_stt import AzureMaiTranscribeSTTService
-
-    print("AzureMaiTranscribeSTTService found")
-except ImportError as e:
-    print(f"AzureMaiTranscribeSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.gladia.stt import GladiaSTTService
-
-    print("GladiaSTTService found")
-except ImportError as e:
-    print(f"GladiaSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.groq.stt import GroqSTTService
-
-    print("GroqSTTService found")
-except ImportError as e:
-    print(f"GroqSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.speechmatics.stt import SpeechmaticsSTTService
-
-    print("SpeechmaticsSTTService found")
-except ImportError as e:
-    print(f"SpeechmaticsSTTService NOT found: {e}")
-
-try:
-    from pipecat.services.aws.stt import AWSTranscribeSTTService
-
-    print("AWSTranscribeSTTService found")
-except ImportError as e:
-    print(f"AWSTranscribeSTTService NOT found: {e}")
+for module_name, symbol_name in IMPORT_PROBES:
+    try:
+        module = importlib.import_module(module_name)
+        getattr(module, symbol_name)
+    except (AttributeError, ImportError) as error:
+        print(f"{symbol_name} NOT found: {error}")
+    else:
+        print(f"{symbol_name} found")

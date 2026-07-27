@@ -569,19 +569,19 @@ _SETTINGS_SECRET_MAX_BYTES = 16 * 1024
 def _validate_settings_text_lengths(payload: dict[str, Any]) -> None:
     """Reject oversized persisted settings before any runtime value is mutated."""
     prompt_fields = {"customVocab", "summarizationPrompt", "postProcessingPrompt"}
-    for field, value in payload.items():
-        if field == "apiKeys" or not isinstance(value, str):
+    for setting_name, value in payload.items():
+        if setting_name == "apiKeys" or not isinstance(value, str):
             continue
-        limit = _SETTINGS_PROMPT_MAX_BYTES if field in prompt_fields else _SETTINGS_TEXT_MAX_BYTES
+        limit = _SETTINGS_PROMPT_MAX_BYTES if setting_name in prompt_fields else _SETTINGS_TEXT_MAX_BYTES
         if len(value.encode("utf-8")) > limit:
-            raise ValueError(f"{field} exceeds the {limit}-byte settings limit")
+            raise ValueError(f"{setting_name} exceeds the {limit}-byte settings limit")
 
     api_keys = payload.get("apiKeys")
     if not isinstance(api_keys, dict):
         return
-    for field, value in api_keys.items():
+    for setting_name, value in api_keys.items():
         if isinstance(value, str) and len(value.encode("utf-8")) > _SETTINGS_SECRET_MAX_BYTES:
-            raise ValueError(f"apiKeys.{field} exceeds the {_SETTINGS_SECRET_MAX_BYTES}-byte settings limit")
+            raise ValueError(f"apiKeys.{setting_name} exceeds the {_SETTINGS_SECRET_MAX_BYTES}-byte settings limit")
 
 
 def _attachment_content_disposition(filename: str) -> str:
@@ -1813,7 +1813,7 @@ async def _to_thread_cancellation_barrier(function: Callable[..., Any], *args: A
     except BaseException:
         if pending_cancel is not None:
             logger.exception("Durable thread mutation failed while its caller was canceling")
-            raise pending_cancel
+            raise pending_cancel from None
         raise
     if pending_cancel is not None:
         raise pending_cancel
@@ -1847,7 +1847,7 @@ async def _await_with_delayed_cancellation(
         result = worker.result()
     except BaseException:
         if pending_cancel is not None:
-            raise pending_cancel
+            raise pending_cancel from None
         raise
     return result, pending_cancel
 
@@ -4892,10 +4892,14 @@ class ScriberWebController:
 
         if favorite and favorite != "default":
             favorite_restored, restored_device_id, restored_device_label = devices_contain_name(devices, favorite)
-            if favorite_restored and not self._is_listening and restored_device_id:
-                if restored_device_id != Config.MIC_DEVICE:
-                    Config.set_mic_device(restored_device_id)
-                    logger.info(f"[DeviceMonitor] Favorite mic restored: {restored_device_label}")
+            if (
+                favorite_restored
+                and not self._is_listening
+                and restored_device_id
+                and restored_device_id != Config.MIC_DEVICE
+            ):
+                Config.set_mic_device(restored_device_id)
+                logger.info(f"[DeviceMonitor] Favorite mic restored: {restored_device_label}")
 
         payload: dict[str, Any] = {
             "type": "microphones_updated",
@@ -5031,9 +5035,10 @@ class ScriberWebController:
                 if isinstance(source, dict):
                     source["timelineOffsetMs"] = gap_end_ms
             live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-            recorder_callback = lambda source, pcm, _header: self.on_meeting_pcm(
-                meeting_id, live_preview_ref["transcriber"], source, pcm
-            )
+
+            def recorder_callback(source, pcm, _header):
+                return self.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
+
             if recorder is None:
                 recorder = MeetingAudioRecorder(
                     meeting_id,
@@ -6789,8 +6794,14 @@ class ScriberWebController:
 
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
+
         # get_overlay will create if needed, or update callback if already exists
-        on_stop = lambda: self._loop.call_soon_threadsafe(lambda: asyncio.create_task(self.stop_listening()))
+        def schedule_stop() -> None:
+            asyncio.create_task(self.stop_listening())
+
+        def on_stop() -> None:
+            self._loop.call_soon_threadsafe(schedule_stop)
+
         self._overlay = get_overlay(on_stop=on_stop)
         return self._overlay
 
@@ -10056,7 +10067,7 @@ class ScriberWebController:
                 provider_result_received=True,
                 provider_result_attempt_id=attempt.id,
             )
-            raise retry_error
+            raise retry_error from exc
         finally:
             await self._stop_transcript_artifact_lease_guard(
                 lease_guard_stop,
@@ -11072,10 +11083,8 @@ class ScriberWebController:
             # Cancel previous pipeline task if still running.
             if pipeline_task and not pipeline_task.done():
                 pipeline_task.cancel()
-                try:
+                with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
-                except (TimeoutError, asyncio.CancelledError):
-                    pass
         except Exception as e:
             logger.error(f"Emergency stop error: {e}")
         finally:
@@ -11522,10 +11531,8 @@ class ScriberWebController:
 
             if pipeline_task:
                 pipeline_task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await pipeline_task
-                except asyncio.CancelledError:
-                    pass
 
             if post_processing_requested and current and not silent_early_exit:
                 await self._post_process_and_inject_live_transcript(
@@ -13742,8 +13749,8 @@ class ScriberWebController:
         if "meetingAudioRetentionDays" in payload:
             try:
                 Config.set_meeting_audio_retention_days(int(payload["meetingAudioRetentionDays"]))
-            except (TypeError, ValueError):
-                raise ValueError("Meeting audio retention must be a whole number of days.")
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Meeting audio retention must be a whole number of days.") from exc
 
         diarization_fallback = _payload_bool(payload, "speakerDiarizationFallbackEnabled")
         if diarization_fallback is not None:
@@ -14059,7 +14066,7 @@ class ScriberWebController:
 
                 if matches:
                     matches.sort(key=lambda item: (item[0], item[1]))
-                    for _, idx, name in matches:
+                    for _, idx, _name in matches:
                         if is_input_device_compatible(
                             sd,
                             device_index=idx,
@@ -14527,9 +14534,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
                     # Currently server -> client only. Keep the connection alive.
-                    if msg.data == "ping":
-                        if not await ctl.send_client_text(ws, "pong"):
-                            break
+                    if msg.data == "ping" and not await ctl.send_client_text(ws, "pong"):
+                        break
                 elif msg.type == WSMsgType.ERROR:
                     break
         finally:
@@ -16184,8 +16190,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         {"captureId": capture_id, "reason": "deviceTestCleanup"},
                         timeout_seconds=4.0,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
             if probe is not None:
                 await asyncio.to_thread(probe.stop)
             async with admission_lock:
@@ -17113,8 +17119,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     error_code=type(exc).__name__,
                     error_message=redact_text(str(exc))[:240],
                 )
-            except Exception:
-                pass
+            except Exception as mark_exc:
+                logger.debug("Meeting import failure-state persistence failed: {}", type(mark_exc).__name__)
             if part_path is not None:
                 part_path.unlink(missing_ok=True)
             if job_root is not None:
@@ -17627,9 +17633,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     source["timelineOffsetMs"] = max(int(source.get("timelineOffsetMs", 0) or 0), gap_end_ms)
 
             live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-            recorder_callback = lambda source, pcm, _header: ctl.on_meeting_pcm(
-                meeting_id, live_preview_ref["transcriber"], source, pcm
-            )
+
+            def recorder_callback(source, pcm, _header):
+                return ctl.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
+
             recorder = ctl._meeting_recorders.get(meeting_id)
             if recorder is None:
                 recorder = MeetingAudioRecorder(
@@ -20246,8 +20253,8 @@ async def run_server(host: str, port: int) -> None:
         for sig_value, previous_handler in previous_signal_handlers.items():
             try:
                 signal.signal(sig_value, previous_handler)
-            except Exception:  # pragma: no cover - platform dependent
-                pass
+            except Exception as exc:  # pragma: no cover - platform dependent
+                logger.debug("Signal-handler restoration failed: {}", type(exc).__name__)
         if force_exit_timer is not None:
             force_exit_timer.cancel()
         loop.set_exception_handler(previous_loop_exception_handler)

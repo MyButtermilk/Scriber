@@ -408,15 +408,22 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
 
                 callbacks: list[dict[str, Any]] = []
 
-                def callback(audio, frames, time_info, status) -> None:
+                def callback(
+                    audio,
+                    frames,
+                    time_info,
+                    status,
+                    _callbacks: list[dict[str, Any]] = callbacks,
+                    _cycle_index: int = cycle_index,
+                ) -> None:
                     callback_info = {
                         "frames": int(frames or 0),
                         "shape": list(getattr(audio, "shape", ())),
                         "engine": (time_info.get("engine") if isinstance(time_info, dict) else None),
                         "status": str(status) if status else None,
                     }
-                    callbacks.append(callback_info)
-                    all_callbacks.append({**callback_info, "cycle": cycle_index})
+                    _callbacks.append(callback_info)
+                    all_callbacks.append({**callback_info, "cycle": _cycle_index})
 
                 source = RustPrototypeFrameSource(
                     sample_rate=args.sample_rate,
@@ -480,13 +487,19 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
             if source is not None and source.stream_id:
                 try:
                     source.stop(close=True)
-                except Exception:
-                    pass
+                except Exception as cleanup_error:
+                    print(
+                        f"Rust audio source cleanup failed ({type(cleanup_error).__name__}).",
+                        file=sys.stderr,
+                    )
             if manager is not None:
                 try:
                     manager.stop(reason="smoke_cleanup")
-                except Exception:
-                    pass
+                except Exception as cleanup_error:
+                    print(
+                        f"Rust audio prewarm cleanup failed ({type(cleanup_error).__name__}).",
+                        file=sys.stderr,
+                    )
 
     final_source = payload.get("sourceFinal") if isinstance(payload.get("sourceFinal"), dict) else {}
     cycle_summaries = [cycle.get("summary") for cycle in cycles if isinstance(cycle.get("summary"), dict)]

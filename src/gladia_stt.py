@@ -22,8 +22,8 @@ def _report_progress(on_progress: Callable[[str], None] | None, message: str) ->
         return
     try:
         on_progress(message)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Gladia progress callback failed: {}", type(exc).__name__)
 
 
 def gladia_language_code(language: Language | str | None) -> str:

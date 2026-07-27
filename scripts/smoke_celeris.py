@@ -9,7 +9,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.celeris import celeris_chat_completion
+# Application imports intentionally follow the sys.path bootstrap above.
+from src.celeris import celeris_chat_completion  # noqa: E402
 
 
 async def main() -> None:

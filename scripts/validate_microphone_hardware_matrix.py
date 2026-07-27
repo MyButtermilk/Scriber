@@ -12,7 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.smoke_microphone_hardware_matrix import DEFAULT_SCENARIOS, SCENARIO_EXPECTATION_HINTS
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.smoke_microphone_hardware_matrix import DEFAULT_SCENARIOS, SCENARIO_EXPECTATION_HINTS  # noqa: E402
 
 REDACTED_TEXT_MARKERS = {"[REDACTED]", "[redacted]", "<redacted>", "***REDACTED***"}
 REDACTED_ENDPOINT_MARKERS = {"[REDACTED_ENDPOINT]", "[redacted-endpoint]", "<redacted-endpoint>"}

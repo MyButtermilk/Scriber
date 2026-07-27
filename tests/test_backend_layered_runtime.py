@@ -161,9 +161,13 @@ def test_src_external_imports_are_explicit_runtime_or_optional_exclusions() -> N
                 for alias in node.names:
                     if (source_relative, alias.name) not in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS:
                         roots.add(alias.name.split(".", 1)[0])
-            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-                if (source_relative, node.module) not in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS:
-                    roots.add(node.module.split(".", 1)[0])
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.level == 0
+                and node.module
+                and (source_relative, node.module) not in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS
+            ):
+                roots.add(node.module.split(".", 1)[0])
 
     external = roots - set(sys.stdlib_module_names) - {"src", "scripts"}
     declared = set(APPLICATION_EXTERNAL_IMPORT_ROOTS)

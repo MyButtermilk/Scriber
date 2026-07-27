@@ -12,11 +12,12 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.installer_research.comparator import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.installer_research.comparator import (  # noqa: E402
     MANDATORY_EXTERNAL_GATES,
     MINIMUM_TIMING_PAIR_COUNT,
 )
-from scripts.perf.autoresearch_profiles import canonical_run_id
+from scripts.perf.autoresearch_profiles import canonical_run_id  # noqa: E402
 
 RESULT_CONTRACT = "InstallerResearchResultV1"
 SCHEMA_VERSION = 1

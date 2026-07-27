@@ -223,7 +223,8 @@ async def _pcm_stream_to_mp3(
             await proc.wait()
         raise RuntimeError("ffmpeg MAI PCM encode pipes were not created.")
 
-    mp3_file = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")
+    # Ownership is transferred to the caller on success and closed locally on failure.
+    mp3_file = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")  # noqa: SIM115
 
     async def feed_pcm() -> None:
         audio_source.seek(0)
@@ -279,9 +280,8 @@ async def prepared_azure_mai_audio_file(source_path: Path):
         yield source_path
         return
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
-    tmp_path = Path(tmp.name)
-    tmp.close()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
+        tmp_path = Path(tmp.name)
     try:
         await _transcode_to_mp3(source_path, tmp_path)
         yield tmp_path
@@ -294,8 +294,8 @@ def _report_progress(on_progress: Callable[[str], None] | None, message: str) ->
         return
     try:
         on_progress(message)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Azure MAI progress callback failed: {}", type(exc).__name__)
 
 
 async def _azure_mai_http_raw_transport(

@@ -87,8 +87,7 @@ def read_windows_file_version(path: Path) -> str:
 def _run_git(repo_root: Path, *args: str) -> bytes:
     result = subprocess.run(
         ["git", "-C", str(repo_root), *args],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if result.returncode != 0:

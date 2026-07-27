@@ -725,8 +725,8 @@ async def download_youtube_audio(
 
                     try:
                         on_progress(progress)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("YouTube progress callback failed: {}", type(exc).__name__)
 
                 elif d.get("status") == "finished":
                     progress.percent = 100.0
@@ -735,8 +735,8 @@ async def download_youtube_audio(
                         final_path = Path(d["filename"])
                     try:
                         on_progress(progress)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("YouTube progress callback failed: {}", type(exc).__name__)
 
         ydl_opts = {
             # Prefer audio-only formats; fallback selectors are handled in _run_download.
@@ -824,8 +824,8 @@ async def download_youtube_audio(
             cancel_event.set()
             try:
                 await asyncio.wait_for(asyncio.shield(download_future), timeout=2.0)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("YouTube download cancellation drain failed: {}", type(exc).__name__)
             raise
 
         try:
@@ -847,10 +847,7 @@ async def download_youtube_audio(
 
     # Fallback to subprocess if library import fails
     exe = find_media_tool("yt-dlp")
-    if not exe:
-        exe_cmd = [sys.executable, "-m", "yt_dlp"]
-    else:
-        exe_cmd = [exe]
+    exe_cmd = [sys.executable, "-m", "yt_dlp"] if not exe else [exe]
 
     # Retry logic for 403 errors and format selector fallbacks
     max_retries = 3

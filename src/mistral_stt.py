@@ -328,8 +328,8 @@ class MistralAsyncProcessor(FrameProcessor):
             return
         try:
             self._on_progress(msg)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Mistral progress callback failed: {}", type(exc).__name__)
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
         language = self._language if self._language != "auto" else None

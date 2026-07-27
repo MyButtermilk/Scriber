@@ -16,15 +16,18 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.installer_research.comparator import accept_baseline
-from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context
-from scripts.perf.installer_size import doctor, evaluator, runner, state
+from scripts.installer_research.comparator import accept_baseline  # noqa: E402
+from scripts.perf.autoresearch_profiles import (  # noqa: E402
+    ProfileError,
+    resolve_profile_context,
+)
+from scripts.perf.installer_size import doctor, evaluator, runner, state  # noqa: E402
 
 RUN_ID = "123e4567-e89b-42d3-a456-426614174000"
 FIXED_NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=UTC)
 UX_FILE_HASHES = {
-    "scripts/perf/doctor.py": "281f9c90b925ee564f899d4080dde23f378fd0ba63af45b59869b5a9fd291e9b",
-    "scripts/perf/evaluator/local_wux.py": "30f202ebd06654f48bc2138036502331132c6ba99355032924c837010cc6a215",
+    "scripts/perf/doctor.py": "86610903171941f41cb65c48e0b6f037242d78b21b183bbfad5e3e882e572e16",
+    "scripts/perf/evaluator/local_wux.py": "5dbc540b4cebe146fa30549ebe05cbf232c1896da9f1db310481f24e28da8d09",
     "scripts/perf/run.ps1": "c58213a3222e4b9c39d9fce5f700656dd3ca0b8503b2e80b1ea43ac57f2224fa",
 }
 
@@ -281,8 +284,7 @@ def git(repo_root: Path, *arguments: str) -> str:
         ["git", *arguments],
         cwd=repo_root,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -299,8 +301,7 @@ def test_installer_size_cli_entrypoints_bootstrap_the_repo_package(entrypoint: s
         ],
         cwd=REPO_ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )

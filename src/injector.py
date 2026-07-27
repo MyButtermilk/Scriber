@@ -863,11 +863,17 @@ def _paste_text(
         # partially delivered. Retrying through another backend could paste
         # twice or into a newly focused window, so an uncertain dispatch is
         # terminal and deliberately suppresses every outer auto fallback.
-        dispatch = None
+        def dispatch_keyboard() -> None:
+            keyboard.press_and_release("ctrl+v")
+
+        def dispatch_pyautogui() -> None:
+            pyautogui.hotkey("ctrl", "v", interval=0.05)
+
+        dispatch: Callable[[], None] | None = None
         if keyboard and hasattr(keyboard, "press_and_release"):
-            dispatch = lambda: keyboard.press_and_release("ctrl+v")
+            dispatch = dispatch_keyboard
         elif pyautogui and hasattr(pyautogui, "hotkey"):
-            dispatch = lambda: pyautogui.hotkey("ctrl", "v", interval=0.05)
+            dispatch = dispatch_pyautogui
         if dispatch is None:
             return False
 

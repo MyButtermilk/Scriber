@@ -125,14 +125,16 @@ async def test_custom_direct_provider_model_fails_closed_before_preparation(tmp_
         language="en",
     )
 
-    with patch("src.web_api.prepare_provider_audio_file") as prepare:
-        with pytest.raises(ValueError, match="no verified batch audio capability"):
-            await controller._transcribe_file_to_canonical_artifact(
-                rec,
-                source,
-                provider="soniox",
-                frozen_route=route,
-            )
+    with (
+        patch("src.web_api.prepare_provider_audio_file") as prepare,
+        pytest.raises(ValueError, match="no verified batch audio capability"),
+    ):
+        await controller._transcribe_file_to_canonical_artifact(
+            rec,
+            source,
+            provider="soniox",
+            frozen_route=route,
+        )
     prepare.assert_not_called()
 
 
@@ -160,14 +162,16 @@ async def test_custom_speechmatics_endpoint_fails_before_probe_or_http(
     )
 
     assert not route.provider_audio_capability_id
-    with patch("src.web_api.prepare_provider_audio_file") as prepare:
-        with pytest.raises(ValueError, match="no verified batch audio capability"):
-            await controller._transcribe_file_to_canonical_artifact(
-                rec,
-                source,
-                provider="speechmatics_async",
-                frozen_route=route,
-            )
+    with (
+        patch("src.web_api.prepare_provider_audio_file") as prepare,
+        pytest.raises(ValueError, match="no verified batch audio capability"),
+    ):
+        await controller._transcribe_file_to_canonical_artifact(
+            rec,
+            source,
+            provider="speechmatics_async",
+            frozen_route=route,
+        )
     prepare.assert_not_called()
 
 

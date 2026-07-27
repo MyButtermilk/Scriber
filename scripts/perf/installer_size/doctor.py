@@ -10,6 +10,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -19,16 +20,17 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.installer_research.comparator import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.installer_research.comparator import (  # noqa: E402
     MINIMUM_COMBINED_IMPROVEMENT_NANOSECONDS,
     MINIMUM_TIMING_PAIR_COUNT,
     accept_baseline,
 )
-from scripts.installer_research.inventory import InventoryError
-from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context
-from scripts.perf.doctor import list_scriber_processes
-from scripts.perf.installer_size.evaluator import validate_result
-from scripts.perf.installer_size.state import (
+from scripts.installer_research.inventory import InventoryError  # noqa: E402
+from scripts.perf.autoresearch_profiles import ProfileError, resolve_profile_context  # noqa: E402
+from scripts.perf.doctor import list_scriber_processes  # noqa: E402
+from scripts.perf.installer_size.evaluator import validate_result  # noqa: E402
+from scripts.perf.installer_size.state import (  # noqa: E402
     StateError,
     file_sha256,
     git_snapshot,
@@ -143,8 +145,7 @@ def _active_environment_verification(context) -> list[dict[str, Any]]:
             ],
             cwd=str(context.repo_root),
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=600,
         )
@@ -339,8 +340,7 @@ def _capture_tool_version(
             cwd=str(repo_root),
             env=environment,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=60,
         )
@@ -476,10 +476,8 @@ def _active_toolchain_verification(context, payload: dict[str, Any]) -> list[dic
 
     node_archive = payload.get("nodeArchive")
     node_version = ""
-    try:
+    with suppress(OSError):
         node_version = node_version_file.read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
     expected_archive_name = f"node-v{node_version}-win-x64.zip"
     archive_name = node_archive.get("fileName") if isinstance(node_archive, dict) else None
     archive = toolchain_root / "downloads" / str(archive_name or "invalid")
@@ -1317,10 +1315,8 @@ def run_doctor(
     findings, evidence = _common_checks(context)
     paths = paths_for(context)
     progress: dict[str, Any] = {}
-    try:
+    with suppress(StateError):
         progress = load_progress(context)
-    except StateError:
-        pass
     if phase == "prepare":
         if progress.get("researchStartedAtUtc"):
             findings.append(

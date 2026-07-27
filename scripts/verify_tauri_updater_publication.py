@@ -14,8 +14,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.prepare_tauri_updater_config import DEFAULT_ENDPOINT
-from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_file, validate_metadata
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.prepare_tauri_updater_config import DEFAULT_ENDPOINT  # noqa: E402
+from scripts.validate_tauri_updater_metadata import DEFAULT_METADATA, sha256_file, validate_metadata  # noqa: E402
 
 
 def fetch_published_metadata(url: str, *, timeout_sec: float) -> tuple[int, bytes, str]:

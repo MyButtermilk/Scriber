@@ -243,8 +243,7 @@ def _run(
         return subprocess.run(
             list(arguments),
             input=input_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             env=None if environment is None else dict(environment),
             timeout=timeout,

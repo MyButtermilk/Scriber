@@ -76,8 +76,7 @@ def test_invalid_run_id_is_a_parse_and_safe_failure_smoke() -> None:
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )
@@ -178,8 +177,7 @@ def test_captured_command_uses_native_exit_code_under_windows_powershell_51(
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )
@@ -286,8 +284,7 @@ def test_registry_cleanup_tolerates_only_a_disappearing_exact_entry(
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )
@@ -335,8 +332,7 @@ def test_registry_lookup_skips_entries_without_install_location_in_strict_mode(
         ],
         cwd=ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )
@@ -595,8 +591,7 @@ exit 0
         cwd=ROOT,
         input=harness,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         timeout=30,
         check=False,
     )

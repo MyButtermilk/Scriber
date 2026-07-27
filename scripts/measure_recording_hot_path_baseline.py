@@ -20,7 +20,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.process_utils import terminate_process
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.process_utils import terminate_process  # noqa: E402
 
 SEGMENTS_BY_REQUIREMENT = {
     "hotkey_to_recording_state": "hotkey_received_to_mic_ready_ms",
@@ -153,9 +154,8 @@ def try_focus_text_target_window(title: str) -> bool:
     )
     attached_threads: list[int] = []
     for thread_id in {target_thread, foreground_thread}:
-        if thread_id and thread_id != current_thread:
-            if user32.AttachThreadInput(current_thread, thread_id, True):
-                attached_threads.append(thread_id)
+        if thread_id and thread_id != current_thread and user32.AttachThreadInput(current_thread, thread_id, True):
+            attached_threads.append(thread_id)
     try:
         user32.ShowWindow(ctypes.c_void_p(hwnd), sw_restore)
         user32.BringWindowToTop(ctypes.c_void_p(hwnd))
@@ -702,8 +702,11 @@ def run_one_iteration(client: BackendClient, args: argparse.Namespace, index: in
         if started:
             try:
                 client.post("/api/live-mic/stop")
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                print(
+                    f"Live-mic cleanup failed ({type(cleanup_error).__name__}).",
+                    file=sys.stderr,
+                )
     finally:
         if speech_proc is not None:
             try:

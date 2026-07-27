@@ -127,8 +127,7 @@ def synthesize_speech_wav(target: Path, text: str) -> dict[str, Any]:
     )
     completed = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         timeout=60,
     )

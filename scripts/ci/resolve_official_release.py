@@ -98,11 +98,10 @@ def main() -> int:
 
     # A tag-like automatic invocation is never allowed to degrade into a
     # non-official build. It must satisfy every official-release invariant.
-    if args.event_name == "push" and args.ref.startswith("refs/tags/v"):
-        if not decision["officialRelease"]:
-            failed = ", ".join(name for name, passed in decision["checks"].items() if not passed)
-            print(f"Official release authorization failed: {failed}", file=sys.stderr)
-            return 1
+    if args.event_name == "push" and args.ref.startswith("refs/tags/v") and not decision["officialRelease"]:
+        failed = ", ".join(name for name, passed in decision["checks"].items() if not passed)
+        print(f"Official release authorization failed: {failed}", file=sys.stderr)
+        return 1
     return 0
 
 

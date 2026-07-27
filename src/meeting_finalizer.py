@@ -9,6 +9,7 @@ import re
 import shutil
 import wave
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
@@ -88,7 +89,7 @@ async def _await_thread_result(
         result = worker.result()
     except BaseException:
         if pending_cancel is not None:
-            raise pending_cancel
+            raise pending_cancel from None
         raise
     return result, pending_cancel
 
@@ -741,9 +742,13 @@ class MeetingFinalizer:
                         )
                     parts: list[str] = []
 
-                    def on_transcription(text: str, is_final: bool) -> None:
+                    def on_transcription(
+                        text: str,
+                        is_final: bool,
+                        transcript_parts: list[str] = parts,
+                    ) -> None:
                         if is_final and text.strip():
-                            parts.append(text.strip())
+                            transcript_parts.append(text.strip())
 
                     pipeline = self.pipeline_factory(
                         service_name=meeting["finalProvider"],
@@ -2014,14 +2019,12 @@ class MeetingFinalizer:
                 process.wait(),
             )
         except BaseException:
-            try:
+            with suppress(ProcessLookupError, AttributeError):
                 process.kill()
-            except (ProcessLookupError, AttributeError):
-                pass
             try:
                 await process.wait()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Meeting PCM decoder cleanup wait failed: {}", type(exc).__name__)
             for task in (pcm_task, stderr_task):
                 if not task.done():
                     task.cancel()

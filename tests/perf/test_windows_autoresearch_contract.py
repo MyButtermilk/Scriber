@@ -14,8 +14,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.perf.benchmark_lint import REQUIRED_METRICS, lint
-from scripts.perf.evaluator.local_wux import (
+from scripts.perf.benchmark_lint import REQUIRED_METRICS, lint  # noqa: E402
+from scripts.perf.evaluator.local_wux import (  # noqa: E402
     PROVIDER_REPLAY_DURATION_SECONDS,
     PROVIDER_REPLAY_WEIGHTS,
     SCENARIO_METRICS,
@@ -26,7 +26,7 @@ from scripts.perf.evaluator.local_wux import (
 PERF_ROOT = REPO_ROOT / "scripts" / "perf"
 if str(PERF_ROOT) not in sys.path:
     sys.path.insert(0, str(PERF_ROOT))
-from scripts.perf import doctor, runtime_attestation
+from scripts.perf import doctor, runtime_attestation  # noqa: E402
 
 
 def valid_lint_metric_value(name: str) -> int:
@@ -335,8 +335,7 @@ def test_profile_script_writes_profile_json(monkeypatch):
             ],
             cwd=REPO_ROOT,
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=60,
         )
@@ -444,8 +443,7 @@ def _git(repo_root: Path, *args: str) -> None:
     result = subprocess.run(
         ["git", "-C", str(repo_root), *args],
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     assert result.returncode == 0, result.stderr
@@ -619,8 +617,7 @@ def test_trace_collector_keeps_missing_endpoint_metrics_unknown(tmp_path):
         ],
         cwd=REPO_ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=30,
     )
@@ -761,8 +758,7 @@ def test_trace_collector_outputs_finite_local_wux_for_complete_trace(tmp_path):
         ],
         cwd=REPO_ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=30,
     )
@@ -787,8 +783,7 @@ def test_endpoint_probe_validate_only_keeps_baseline_unknown(tmp_path):
         ],
         cwd=REPO_ROOT,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=30,
     )

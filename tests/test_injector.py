@@ -19,7 +19,7 @@ class TestInjector(unittest.TestCase):
 
         # Mock injection to avoid OS-level side effects
         with (
-            patch.object(injector, "_inject_text") as mock_inject,
+            patch.object(injector, "_inject_text"),
             patch.object(injector, "push_frame", new=AsyncMock()),
         ):
             # We need to run the async method
@@ -36,7 +36,7 @@ class TestInjector(unittest.TestCase):
         frame = TranscriptionFrame(text="Hello world", user_id="user", timestamp="now")
 
         with (
-            patch("src.injector.logger") as mock_logger,
+            patch("src.injector.logger"),
             patch.object(injector, "_inject_text"),
             patch.object(injector, "push_frame", new=AsyncMock()),
         ):

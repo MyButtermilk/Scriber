@@ -11,8 +11,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.installer_research.comparator import accept_baseline, evaluate_candidate
-from scripts.installer_research.inventory import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.installer_research.comparator import accept_baseline, evaluate_candidate  # noqa: E402
+from scripts.installer_research.inventory import (  # noqa: E402
     InventoryError,
     build_inventory,
     write_json_atomic,

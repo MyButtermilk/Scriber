@@ -13,7 +13,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.new_meeting_release_evidence import build_template
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.new_meeting_release_evidence import build_template  # noqa: E402
 
 AUDIO_SUFFIXES = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".pcm", ".wav", ".webm"}
 DATABASE_OR_BIOMETRIC_SUFFIXES = {".bin", ".blob", ".db", ".db-shm", ".db-wal", ".npy", ".npz", ".sqlite", ".sqlite3"}

@@ -225,6 +225,7 @@ def test_collect_native_capture_endpoint_inventory_suppresses_pycaw_property_noi
         warnings.warn(
             "COMError attempting to get property 26 from device",
             UserWarning,
+            stacklevel=2,
         )
         return [_Device()]
 

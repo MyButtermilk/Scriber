@@ -823,7 +823,7 @@ async def summarize_text(
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
             if not summary:
-                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.")
+                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.") from exc
         else:
             raise timeout_error from exc
     except Exception as exc:
@@ -838,7 +838,7 @@ async def summarize_text(
         if fallback is not None:
             summary = normalize_summary_document_html(fallback)
             if not summary:
-                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.")
+                raise RuntimeError("OpenRouter fallback returned no displayable structured HTML summary.") from exc
         # Gemini can occasionally return transient 429/503 ("high demand").
         # The legacy OpenAI fallback remains opt-in for existing power users,
         # but OpenRouter is the default automatic fallback when configured.
@@ -945,8 +945,8 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
 
     try:
         import openai
-    except ImportError:
-        raise RuntimeError("openai library not installed. Run: pip install openai")
+    except ImportError as exc:
+        raise RuntimeError("openai library not installed. Run: pip install openai") from exc
 
     timeout_seconds = _summary_timeout_seconds()
     try:
@@ -1154,12 +1154,7 @@ def _openrouter_choice_diagnostics(choice: dict[str, Any]) -> dict[str, Any]:
         message = {}
     content = message.get("content")
     error = choice.get("error") if isinstance(choice, dict) else None
-    if isinstance(error, dict):
-        choice_error = {
-            "code": provider_public_code(error.get("code")) or None,
-        }
-    else:
-        choice_error = None
+    choice_error = {"code": provider_public_code(error.get("code")) or None} if isinstance(error, dict) else None
 
     reasoning = message.get("reasoning")
     reasoning_details = message.get("reasoning_details")
@@ -1542,26 +1537,26 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
     }
 
     try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(
-                "https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload
-            ) as resp:
-                raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
-                if resp.status >= 400:
-                    raise provider_transport_error(
-                        "cerebras",
-                        "summarization",
-                        status=resp.status,
-                        response_body=raw,
-                    )
-                try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError:
-                    raise provider_transport_error(
-                        "cerebras",
-                        "summarization_response",
-                        code="invalid_json",
-                    ) from None
+        async with (
+            aiohttp.ClientSession(timeout=timeout) as session,
+            session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp,
+        ):
+            raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
+            if resp.status >= 400:
+                raise provider_transport_error(
+                    "cerebras",
+                    "summarization",
+                    status=resp.status,
+                    response_body=raw,
+                )
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                raise provider_transport_error(
+                    "cerebras",
+                    "summarization_response",
+                    code="invalid_json",
+                ) from None
 
         content = _extract_openrouter_response_text(data).strip()
         if not content:

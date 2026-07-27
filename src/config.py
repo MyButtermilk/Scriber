@@ -2,6 +2,7 @@ import json
 import math
 import os
 import threading
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -108,10 +109,8 @@ def _atomic_write_text(path: str | Path, content: str) -> None:
             os.fsync(file_obj.fileno())
         os.replace(temporary, target)
     finally:
-        try:
+        with suppress(OSError):
             temporary.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _load_json_settings_with_status() -> tuple[dict, bool]:

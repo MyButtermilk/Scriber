@@ -23,7 +23,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.measure_history_scroll_baseline import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.measure_history_scroll_baseline import (  # noqa: E402
     CdpClient,
     connect_to_browser,
     find_free_port,
@@ -33,7 +34,7 @@ from scripts.measure_history_scroll_baseline import (
     transcript_item,
     wait_http,
 )
-from scripts.measure_history_scroll_baseline import (
+from scripts.measure_history_scroll_baseline import (  # noqa: E402
     terminate_process as terminate_process_parent,
 )
 
@@ -1222,14 +1223,17 @@ class FrontendSmokeBackend:
         ):
             return web.json_response({"message": "Explicit synthetic routes required"}, status=400)
         self.meeting_requests.append("device-test")
-        source = lambda rms, peak: {
-            "frames": 150,
-            "audioFrames": 24_000,
-            "rms": rms,
-            "peak": peak,
-            "active": True,
-            "errorCode": "",
-        }
+
+        def source(rms: float, peak: float) -> dict[str, Any]:
+            return {
+                "frames": 150,
+                "audioFrames": 24_000,
+                "rms": rms,
+                "peak": peak,
+                "active": True,
+                "errorCode": "",
+            }
+
         return web.json_response(
             {
                 "apiVersion": "1",
@@ -1715,10 +1719,8 @@ class FrontendSmokeBackend:
             )
         kind = transcript_id.split("-", maxsplit=1)[0] if "-" in transcript_id else "mic"
         index = 1
-        try:
+        with suppress(IndexError, ValueError):
             index = int(transcript_id.rsplit("-", maxsplit=1)[1])
-        except Exception:
-            pass
         item = transcript_item(kind, index)
         item.update(
             {
@@ -2578,7 +2580,7 @@ async def exercise_meeting_end_to_end(
 })()
 """,
     )
-    import_cancelled = await click_visible_button(
+    await click_visible_button(
         cdp,
         label="Cancel",
         selector='[role="dialog"] button',
@@ -2604,7 +2606,7 @@ async def exercise_meeting_end_to_end(
         timeout_sec=timeout_sec,
         expression="(() => ({ ok: document.body.innerText.includes('Durable interview.webm') }))()",
     )
-    upload_clicked = await click_visible_button(
+    await click_visible_button(
         cdp,
         label="Import recording",
         selector='[role="dialog"] button',
@@ -2617,7 +2619,7 @@ async def exercise_meeting_end_to_end(
         timeout_sec=timeout_sec,
         expression="(() => ({ ok: document.body.innerText.includes('Upload safely stored'), text: document.querySelector('[role=dialog]')?.innerText.slice(0, 900) || '' }))()",
     )
-    cancel_upload = await click_visible_button(
+    await click_visible_button(
         cdp,
         label="Cancel import",
         selector='[role="dialog"] button',
@@ -2860,7 +2862,7 @@ async def exercise_meeting_end_to_end(
         )
 
     await click_button("Action items")
-    action_changed = await click_visible_target(
+    await click_visible_target(
         cdp,
         label="meeting-complete-action-item",
         selector='button[aria-label="Complete action item"]',
@@ -2909,7 +2911,7 @@ async def exercise_meeting_end_to_end(
 })()
 """,
     )
-    seek_clicked = await click_visible_target(
+    await click_visible_target(
         cdp,
         label="meeting-timestamped-transcript-result",
         selector='button[aria-label="Play transcript segment from 0:05 to 0:08"]',
@@ -2983,7 +2985,7 @@ async def exercise_meeting_end_to_end(
 """,
     )
     await cdp.evaluate("document.querySelector('audio')?.pause()", timeout=5)
-    edit_opened = await click_visible_button(
+    await click_visible_button(
         cdp,
         label="Edit",
         timeout_sec=timeout_sec,
@@ -3368,7 +3370,7 @@ async def exercise_meeting_end_to_end(
     await wait_button("Preview payload")
     await click_button("Preview payload")
     await wait_text("meeting-webhook-preview", "512 B")
-    confirmation = await click_visible_target(
+    await click_visible_target(
         cdp,
         label="meeting-webhook-confirmation",
         selector="label",
@@ -3380,7 +3382,7 @@ async def exercise_meeting_end_to_end(
     await click_button("Send webhook")
     await wait_text("meeting-webhook-delivered", "delivered")
 
-    delete_opened = await click_visible_target(
+    await click_visible_target(
         cdp,
         label="meeting-delete-control",
         selector='button[aria-label^="Delete "]',
@@ -3390,24 +3392,9 @@ async def exercise_meeting_end_to_end(
     await click_button("Delete meeting")
     await wait_text("meeting-delete-complete", "Your first meeting will appear here")
 
-    expected_requests = [
-        "dismiss-detection",
-        "device-test",
-        "start",
-        "resume",
-        "pause",
-        "resume",
-        "stop",
-        "analyze",
-        "action-item",
-        "segment-edit",
-        "segment-undo",
-        "speaker",
-        "note",
-        "chat",
-        "webhook",
-        "delete",
-    ]
+    # fmt: off
+    expected_requests = ["dismiss-detection", "device-test", "start", "resume", "pause", "resume", "stop", "analyze", "action-item", "segment-edit", "segment-undo", "speaker", "note", "chat", "webhook", "delete"]
+    # fmt: on
     start_payload_ok = (
         backend.meeting_start_payload.get("microphoneNativeEndpointIdHash") == "a" * 32
         and backend.meeting_start_payload.get("renderNativeEndpointIdHash") == "b" * 32

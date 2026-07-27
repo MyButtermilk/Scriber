@@ -144,15 +144,16 @@ def test_llm_results_are_bounded_unique_unconfirmed_and_reject_low_confidence():
     speaker_key = next(iter(speaker_keys))
     person_key = next(iter(person_keys))
     low = parse_llm_suggestions(
-        '{"assignments":[{"speakerKey":"%s","participantKey":"%s","confidence":0.4}]}' % (speaker_key, person_key),
+        f'{{"assignments":[{{"speakerKey":"{speaker_key}","participantKey":"{person_key}","confidence":0.4}}]}}',
         speaker_keys,
         person_keys,
     )
     assert low == {}
 
     accepted = parse_llm_suggestions(
-        '{"assignments":[{"speakerKey":"%s","participantKey":"%s",'
-        '"confidence":0.82,"reason":"Customer context"}]}' % (speaker_key, person_key),
+        f'{{"assignments":[{{"speakerKey":"{speaker_key}",'
+        f'"participantKey":"{person_key}","confidence":0.82,'
+        '"reason":"Customer context"}]}',
         speaker_keys,
         person_keys,
     )

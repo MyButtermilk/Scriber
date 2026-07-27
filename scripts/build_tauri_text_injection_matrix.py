@@ -11,7 +11,8 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from scripts.validate_hybrid_release_readiness import (
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.validate_hybrid_release_readiness import (  # noqa: E402
     OPTIONAL_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS,
     REQUIRED_TAURI_TEXT_INJECTION_MATRIX_SCENARIOS,
     validate_tauri_text_injection_matrix_report,

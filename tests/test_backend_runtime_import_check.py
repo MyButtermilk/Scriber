@@ -688,7 +688,10 @@ def test_frozen_sentence_check_rejects_any_third_punkt_tab_language(tmp_path):
         tmp_path,
         languages=("english", "german", "spanish"),
     )
-    original_download = lambda *_args, **_kwargs: True
+
+    def original_download(*_args, **_kwargs):
+        return True
+
     fake_nltk = SimpleNamespace(
         data=SimpleNamespace(path=["user-cache"]),
         download=original_download,

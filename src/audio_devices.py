@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import sys
 import warnings
@@ -32,6 +33,7 @@ _EXCLUDE_PATTERNS = (
 )
 _OUTPUT_HINTS = ("output", "speaker", "lautsprecher", "headphone")
 _GENERIC_INPUT_RE = re.compile(r"^\s*input\s*\(\s*\)\s*$", re.IGNORECASE)
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -772,15 +774,15 @@ def resolve_input_microphone_device(
         if logger is not None and hasattr(logger, "info"):
             try:
                 logger.info(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.debug("Microphone resolver info logging failed: %s", type(exc).__name__)
 
     def log_warning(message: str) -> None:
         if logger is not None and hasattr(logger, "warning"):
             try:
                 logger.warning(message)
-            except Exception:
-                pass
+            except Exception as exc:
+                _LOGGER.debug("Microphone resolver warning logging failed: %s", type(exc).__name__)
 
     def find_device_by_name(name: str) -> str | None:
         if not name or name == "default":

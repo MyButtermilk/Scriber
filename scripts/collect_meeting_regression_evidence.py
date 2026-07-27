@@ -17,7 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.new_meeting_release_evidence import build_template
+# Repository imports intentionally follow the sys.path bootstrap above.
+from scripts.new_meeting_release_evidence import build_template  # noqa: E402
 
 RUST_RESULT_RE = re.compile(
     r"test result:\s+ok\.\s+(?P<passed>\d+) passed;\s+(?P<failed>\d+) failed;",

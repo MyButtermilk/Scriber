@@ -571,8 +571,7 @@ def _run(
     try:
         return subprocess.run(
             list(arguments),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             check=False,
             timeout=timeout,
             env=None if environment is None else dict(environment),

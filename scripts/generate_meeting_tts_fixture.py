@@ -78,8 +78,7 @@ def _run_checked(
         env=env,
         input=stdin_text,
         text=stdin_text is not None,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     if completed.returncode != 0:
