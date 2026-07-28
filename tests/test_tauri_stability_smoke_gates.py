@@ -1491,12 +1491,16 @@ def test_native_recording_overlay_is_tauri_owned() -> None:
 
 
 def test_transcript_detail_keeps_native_window_titlebar() -> None:
+    app = read_script("Frontend/client/src/App.tsx")
+    app_layout = read_script("Frontend/client/src/components/layout/AppLayout.tsx")
     transcript_detail = read_script("Frontend/client/src/pages/TranscriptDetail.tsx")
 
-    assert 'import { DesktopTitleBar } from "@/components/DesktopTitleBar";' in transcript_detail
-    assert "<DesktopTitleBar />" in transcript_detail
-    assert "h-screen bg-background flex flex-col overflow-hidden" in transcript_detail
-    assert "min-h-0 flex-1 overflow-y-auto" in transcript_detail
+    assert 'import { AppLayout } from "@/components/layout/AppLayout";' in app
+    assert "<AppLayout path={location}>" in app
+    assert '<Route path="/transcript/:id" component={TranscriptDetail} />' in app
+    assert 'import { DesktopTitleBar } from "@/components/DesktopTitleBar";' in app_layout
+    assert "<DesktopTitleBar />" in app_layout
+    assert "DesktopTitleBar" not in transcript_detail
 
 
 def test_installer_uninstall_smoke_is_a_strict_build_gate() -> None:

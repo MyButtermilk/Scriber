@@ -82,8 +82,8 @@ def test_frontend_package_is_vite_only() -> None:
     assert scripts["tauri:bundle"] == "tauri bundle"
     assert {"start", "db:push"}.isdisjoint(scripts)
 
-    assert len(dependencies) == 62
-    assert len(dev_dependencies) == 24
+    assert len(dependencies) == 35
+    assert len(dev_dependencies) == 25
     assert {
         "@eslint/js",
         "@testing-library/react",
@@ -125,7 +125,9 @@ def test_frontend_typescript_and_vite_scope_only_the_webview() -> None:
     assert "@shared" not in vite
     assert "REPL_ID" not in vite
     assert "@replit/vite-plugin-" not in vite
-    assert "plugins: [react(), tailwindcss(), metaImagesPlugin()]" in vite
+    assert "plugins: [react(), tailwindcss()]" in vite
+    assert "metaImagesPlugin" not in vite
+    assert 'readFileSync(path.resolve(import.meta.dirname, "package.json"), "utf-8")' in vite
     assert '"@assets": path.resolve(import.meta.dirname, "attached_assets")' in vite
     assert 'root: path.resolve(import.meta.dirname, "client")' in vite
     assert 'outDir: path.resolve(import.meta.dirname, "dist/public")' in vite

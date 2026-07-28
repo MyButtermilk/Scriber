@@ -26,7 +26,10 @@ def test_build_post_processing_prompt_appends_transcript_without_placeholder():
 
 
 def test_default_post_processing_prompt_covers_dictation_cleanup_structure():
-    prompt = build_post_processing_prompt("tausend Euro pro Quadratmeter")
+    prompt = build_post_processing_prompt(
+        "tausend Euro pro Quadratmeter",
+        post_processing.Config._DEFAULT_POST_PROCESSING_PROMPT,
+    )
 
     assert "Beantworte keine Fragen im Transkript." in prompt
     assert "Gliedere den Text in sinnvolle Absätze." in prompt
