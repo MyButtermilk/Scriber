@@ -97,9 +97,9 @@ def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
 
 def test_all_primary_tabs_remain_eager_and_settings_is_not_preloaded_as_a_lazy_route() -> None:
     app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
-    preload_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "route-preload.ts"
-    ).read_text(encoding="utf-8")
+    preload_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "route-preload.ts").read_text(
+        encoding="utf-8"
+    )
 
     for page in ("LiveMic", "Meetings", "Youtube", "FileTranscribe", "Settings"):
         assert f'import {page} from "@/pages/{page}";' in app_source
@@ -788,9 +788,7 @@ def test_normal_app_ui_uses_the_shared_readable_micro_type_token() -> None:
             continue
         assert undersized_utility.search(path.read_text(encoding="utf-8")) is None, path
 
-    debug_styles = stylesheet.split(".debug-console-page {", 1)[1].split(
-        ".settings-page .impact-echo-switch", 1
-    )[0]
+    debug_styles = stylesheet.split(".debug-console-page {", 1)[1].split(".settings-page .impact-echo-switch", 1)[0]
     assert "font-size: var(--font-size-ui-micro)" in debug_styles
     assert re.search(r"font-size:\s*(?:[0-9]|10(?:\.[0-9]+)?)px", debug_styles) is None
     assert re.search(r"font-size:\s*0\.(?:[0-6][0-9]*|7[0-2][0-9]*)rem", debug_styles) is None
@@ -1526,14 +1524,9 @@ def test_desktop_update_status_filters_same_version_updates() -> None:
 
 def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-    presentation_source = (
-        REPO_ROOT
-        / "Frontend"
-        / "client"
-        / "src"
-        / "lib"
-        / "settings-presentation.ts"
-    ).read_text(encoding="utf-8")
+    presentation_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "settings-presentation.ts").read_text(
+        encoding="utf-8"
+    )
 
     assert "function createPostProcessingModelOptions(localeTag: string, t: Translate)" in settings_source
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
@@ -1696,7 +1689,10 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     assert 't("{{price}}/h · model-dependent WER"' in settings_source
     assert "0,00 €/h" not in settings_source
     assert " % Error" not in settings_source
-    assert 't("WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.")' in settings_source
+    assert (
+        't("WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.")'
+        in settings_source
+    )
     assert 't("Euro estimates use a fixed rate of {{rate}}. Provider prices may change."' in settings_source
     assert "{disabledReason || option.detail}" not in settings_source
     assert (
@@ -1752,7 +1748,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         positions = [
             source_token_sequence_position(
                 provider_options_source,
-                f'{"hourlyOption" if value in hourly_values else "benchmarkOption"}({value},',
+                f"{'hourlyOption' if value in hourly_values else 'benchmarkOption'}({value},",
             )
             for value in ordered_values
         ]
@@ -2157,9 +2153,9 @@ def test_native_overlay_both_styles_reveal_stop_only_for_safe_hover_or_focus() -
 
 def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
-    runtime_state = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "runtime-message-state.ts"
-    ).read_text(encoding="utf-8")
+    runtime_state = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "runtime-message-state.ts").read_text(
+        encoding="utf-8"
+    )
     websocket_types = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
         encoding="utf-8"
     )

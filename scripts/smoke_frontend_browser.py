@@ -7376,11 +7376,19 @@ async def exercise_desktop_page_shell_layouts(
     )
     intro_measurements = [item for item in measured if item.get("expectsPageIntro") is True]
     max_intro_left_delta = max(
-        (float(item["introLeftDelta"]) for item in intro_measurements if isinstance(item.get("introLeftDelta"), (int, float))),
+        (
+            float(item["introLeftDelta"])
+            for item in intro_measurements
+            if isinstance(item.get("introLeftDelta"), (int, float))
+        ),
         default=999_999.0,
     )
     max_intro_width_delta = max(
-        (float(item["introWidthDelta"]) for item in intro_measurements if isinstance(item.get("introWidthDelta"), (int, float))),
+        (
+            float(item["introWidthDelta"])
+            for item in intro_measurements
+            if isinstance(item.get("introWidthDelta"), (int, float))
+        ),
         default=999_999.0,
     )
     page_intros_aligned = len(intro_measurements) == 5 and all(
