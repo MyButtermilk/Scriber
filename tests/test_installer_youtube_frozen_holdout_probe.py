@@ -389,6 +389,11 @@ def test_launcher_routes_only_exact_frozen_probe_flag(monkeypatch: pytest.Monkey
     )
     monkeypatch.setattr(
         launcher,
+        "_activate_application_layer",
+        lambda root, manifest: calls.append(("application", root)),
+    )
+    monkeypatch.setattr(
+        launcher,
         "run_frozen_probe",
         lambda root: calls.append(("probe", root)) or 17,
     )
@@ -397,6 +402,7 @@ def test_launcher_routes_only_exact_frozen_probe_flag(monkeypatch: pytest.Monkey
     assert calls == [
         ("validate", runtime_root),
         ("policy", runtime_root),
+        ("application", runtime_root),
         ("probe", runtime_root),
     ]
 

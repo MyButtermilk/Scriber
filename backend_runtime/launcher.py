@@ -290,14 +290,13 @@ def _validate_python_runtime(root: Path, runtime_manifest: dict[str, Any]) -> No
         raise LayerValidationError(str(exc)) from exc
 
 
-def launch_application(runtime_root: Path | None = None) -> int:
+def _activate_application_layer(
+    root: Path,
+    runtime_manifest: dict[str, Any],
+) -> dict[str, Any]:
     # The application layer is an exact, checksummed file set.  Never let a
     # physical source import add unlisted ``__pycache__`` files beside it.
     sys.dont_write_bytecode = True
-    root = (runtime_root or _runtime_root()).resolve()
-    runtime_manifest = validate_runtime_layer(root)
-    if getattr(sys, "frozen", False) or (root / PYTHON_RUNTIME_POLICY_MANIFEST_NAME).is_file():
-        _validate_python_runtime(root, runtime_manifest)
     app_manifest = validate_application_layer(root, runtime_manifest)
     app_root = root / APPLICATION_DIRECTORY_NAME
     app_root_text = os.fspath(app_root)
@@ -307,6 +306,15 @@ def launch_application(runtime_root: Path | None = None) -> int:
     version_module = importlib.import_module("src.version")
     if getattr(version_module, "__version__", None) != app_manifest["applicationVersion"]:
         raise LayerValidationError("Application code version does not match its manifest.")
+    return app_manifest
+
+
+def launch_application(runtime_root: Path | None = None) -> int:
+    root = (runtime_root or _runtime_root()).resolve()
+    runtime_manifest = validate_runtime_layer(root)
+    if getattr(sys, "frozen", False) or (root / PYTHON_RUNTIME_POLICY_MANIFEST_NAME).is_file():
+        _validate_python_runtime(root, runtime_manifest)
+    _activate_application_layer(root, runtime_manifest)
     worker = importlib.import_module("src.backend_worker")
     main = getattr(worker, "main", None)
     if not callable(main):
@@ -324,6 +332,7 @@ def main() -> int:
             root = _runtime_root().resolve()
             runtime_manifest = validate_runtime_layer(root)
             _validate_python_runtime(root, runtime_manifest)
+            _activate_application_layer(root, runtime_manifest)
             return run_frozen_probe(root)
         return launch_application()
     except LayerValidationError as exc:
