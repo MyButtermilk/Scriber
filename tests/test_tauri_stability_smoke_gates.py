@@ -1199,6 +1199,23 @@ def test_release_cache_gc_keeps_exactly_one_current_generation() -> None:
     assert "env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && github.ref == 'refs/heads/main'" in workflow
 
 
+def test_release_cache_gc_retains_one_main_quality_gate_npm_store() -> None:
+    gc = read_script("scripts/ci/prune_obsolete_release_caches.ps1")
+
+    obsolete = gc.split("$obsoletePatterns = @(", 1)[1].split("# Rolling products", 1)[0]
+    rolling = gc.split("$rollingFamilies = @(", 1)[1].split("foreach ($family in $rollingFamilies)", 1)[0]
+    non_main = gc.split("# Ref-scoped caches", 1)[1].split("$uniqueDeletions", 1)[0]
+
+    assert "'^node-cache-'" not in obsolete
+    assert "'^node-cache-(?!Windows-x64-npm-)'" in obsolete
+    assert "Name = 'setup-node-npm'" in rolling
+    assert "Pattern = '^node-cache-Windows-x64-npm-'" in rolling
+    assert "Retain = $RetainPerRollingFamily" in rolling
+    assert "'refs/heads/main'" in non_main
+    assert "node-cache-" in non_main
+    assert "inaccessible-completed-ref-cache" in non_main
+
+
 def test_python_release_environment_is_exact_and_reproducible() -> None:
     workflow = read_script(".github/workflows/release-windows.yml")
     requirements = read_script("requirements-build.txt")

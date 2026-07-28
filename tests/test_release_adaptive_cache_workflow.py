@@ -244,9 +244,12 @@ def test_official_release_restores_exact_python_environment_for_installer_smoke(
         and "steps.python-wheelhouse-artifact.outputs.restored" in dependency_install
     )
     assert '$officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"' in cache_report
-    assert '$pythonVenvEffective = if ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
-    assert '$pythonWheelhouseEffective = if ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
-    assert "$pythonPipStoreNotNeeded = if ($officialRelease)" in cache_report
+    assert "$pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh" in cache_report
+    assert '$pythonVenvEffective = if ($pythonEnvironmentRequired -and $pythonVenvValidated -eq "true")' in cache_report
+    assert "$pythonWheelhouseEffective = if ($pythonCacheRefresh)" in cache_report
+    assert 'elseif ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
+    assert "$pythonPipStoreNotNeeded = if ($pythonCacheRefresh)" in cache_report
+    assert "} elseif ($officialRelease) {" in cache_report
 
     smoke = by_name["Smoke downloaded installer candidate"]["run"]
     step_names = [step["name"] for step in steps]
@@ -254,6 +257,93 @@ def test_official_release_restores_exact_python_environment_for_installer_smoke(
     assert '$smokePython = (Resolve-Path -LiteralPath ".\\.venv\\Scripts\\python.exe"' in smoke
     assert '& $smokePython -c "import aiohttp"' in smoke
     assert "-PythonExecutable $smokePython" in smoke
+
+
+def test_explicit_main_refresh_repairs_python_caches_despite_exact_backend_hit() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    steps = workflow["jobs"]["build-windows"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+    refresh = "env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true'"
+
+    for name in (
+        "Restore Python dependency cache",
+        "Restore Python venv release artifact",
+        "Validate restored Python environment",
+        "Restore Python wheelhouse cache",
+        "Restore Python wheelhouse release artifact",
+        "Restore pip package store",
+        "Install Python dependencies",
+    ):
+        assert refresh in by_name[name]["if"]
+
+    for name in (
+        "Restore Python wheelhouse cache",
+        "Restore Python wheelhouse release artifact",
+        "Restore pip package store",
+    ):
+        condition = by_name[name]["if"]
+        assert condition.count(refresh) >= 2
+        assert "steps.python-venv-validation.outputs.usable != 'true'" in condition
+
+    dependency_install = by_name["Install Python dependencies"]["run"]
+    cache_report = by_name["Report release cache hits"]["run"]
+    assert '$refreshPythonCaches = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"' in dependency_install
+    assert "$wheelhouseRequired = (-not $venvUsable) -or $refreshPythonCaches" in dependency_install
+    assert "$wheelhouseRestored = (" in dependency_install
+    assert "python -m venv --clear .venv" in dependency_install
+    assert '$expectedPythonVersion = "${{ steps.setup-python.outputs.python-version }}"' in dependency_install
+    assert "--dry-run --ignore-installed" in dependency_install
+    assert "--no-index --find-links $resolvedWheelhouse" in dependency_install
+    assert "\"venv-ready=$(if ($venvReady) { 'true' } else { 'false' })\"" in dependency_install
+    assert "\"wheelhouse-ready=$(if ($wheelhouseReady) { 'true' } else { 'false' })\"" in dependency_install
+    assert '$pythonCacheRefresh = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"' in cache_report
+    assert "$pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh" in cache_report
+    assert "$pythonWheelhouseEffective = if ($pythonCacheRefresh)" in cache_report
+
+    venv_publication = by_name["Publish Python venv release artifact"]
+    wheelhouse_publication = by_name["Publish Python wheelhouse release artifact"]
+    assert venv_publication["id"] == "python-venv-publication"
+    assert wheelhouse_publication["id"] == "python-wheelhouse-publication"
+    assert "steps.python-dependencies.outputs.venv-ready == 'true'" in venv_publication["if"]
+    assert "steps.python-dependencies.outputs.wheelhouse-ready == 'true'" in wheelhouse_publication["if"]
+    assert "steps.backend-sidecar-validation.outputs.usable" not in venv_publication["if"]
+    assert "steps.backend-sidecar-validation.outputs.usable" not in wheelhouse_publication["if"]
+    assert (
+        "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-"
+        "${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip"
+    ) in venv_publication["run"]
+    assert (
+        "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-"
+        "${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip"
+    ) in wheelhouse_publication["run"]
+
+    publication_gate = by_name["Require refreshed Python cache artifact publication"]
+    assert publication_gate["if"] == "env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'"
+    assert "steps.python-venv-publication.outputs.published" in publication_gate["run"]
+    assert "steps.python-wheelhouse-publication.outputs.published" in publication_gate["run"]
+    assert "throw" in publication_gate["run"]
+
+    venv_save = by_name["Save Python dependency cache"]["if"]
+    wheelhouse_save = by_name["Save Python wheelhouse cache"]["if"]
+    pip_store_save = by_name["Save pip package store"]["if"]
+    assert "steps.backend-sidecar-validation.outputs.usable" not in venv_save
+    assert "steps.backend-sidecar-validation.outputs.usable" not in wheelhouse_save
+    assert "steps.backend-sidecar-validation.outputs.usable" not in pip_store_save
+    assert "steps.python-dependencies.outputs.venv-ready == 'true'" in venv_save
+    assert "steps.python-dependencies.outputs.wheelhouse-ready == 'true'" in wheelhouse_save
+    assert "steps.python-dependencies.outputs.wheelhouse-built" not in wheelhouse_save
+    assert "steps.python-wheelhouse-cache.outputs.cache-hit != 'true'" in wheelhouse_save
+
+    step_names = [step["name"] for step in steps]
+    assert step_names.index("Publish Python venv release artifact") < step_names.index(
+        "Require refreshed Python cache artifact publication"
+    )
+    assert step_names.index("Publish Python wheelhouse release artifact") < step_names.index(
+        "Require refreshed Python cache artifact publication"
+    )
+    assert step_names.index("Require refreshed Python cache artifact publication") < step_names.index(
+        "Save Python dependency cache"
+    )
 
 
 def test_cold_backend_restores_and_prunes_shared_rust_dependency_cache() -> None:

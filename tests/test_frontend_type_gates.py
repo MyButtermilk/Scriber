@@ -1185,11 +1185,11 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert (
         "const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);" in overlay_source
     )
-    assert "resizeBarBuffer" in overlay_source
+    assert "new Float32Array(resolvedBarCount)" in overlay_source
     assert "barCount={visualizerBarCount}" in overlay_source
     assert "MicrophoneEnergyField" in overlay_source
     assert "ENERGY_PILL_BACKGROUND" in overlay_source
-    assert 'overlayVisualizerStyle === "bars" ? (' in overlay_source
+    assert 'overlayVisualizerStyle === "bars"' in overlay_source
     assert 'case "settings_updated":' in overlay_source
     assert "void refreshVisualizerSettings();" in overlay_source
     assert "width={PILL_WIDTH}" in overlay_source
@@ -1954,7 +1954,38 @@ def test_native_overlay_energy_wave_is_full_bleed_thin_and_allocation_bounded() 
     assert "new Array" not in math_source
 
 
-def test_native_overlay_energy_wave_reveals_stop_only_for_safe_hover_or_focus() -> None:
+def test_native_overlay_bars_are_sixty_hz_hidpi_and_allocation_bounded() -> None:
+    overlay_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert "const BAR_FRAME_INTERVAL_MS = 1000 / 60;" in overlay_source
+    assert "const BAR_MAX_DEVICE_PIXEL_RATIO = 3;" in overlay_source
+    assert "const BAR_IDLE_LEVEL = 0.06;" in overlay_source
+    assert 'canvas.getContext("2d", { alpha: true })' in overlay_source
+    assert 'data-render-profile="typed-array-60hz-hidpi-bars"' in overlay_source
+    assert 'const barsActive = mode === "recording" && overlayVisualizerStyle === "bars";' in overlay_source
+    assert "width={PILL_WIDTH}" in overlay_source
+    assert "height={PILL_HEIGHT}" in overlay_source
+    assert "const padLeft = 0;" in overlay_source
+    assert "const padRight = 0;" in overlay_source
+    assert 'position: "absolute"' in overlay_source
+    assert 'pointerEvents: "none"' in overlay_source
+    assert "const levels = new Float32Array(resolvedBarCount);" in overlay_source
+    assert "const display = new Float32Array(resolvedBarCount);" in overlay_source
+    assert "const fall = new Float32Array(resolvedBarCount);" in overlay_source
+    assert "const MIDNIGHT_PALETTE = Array.from(" in overlay_source
+    draw_start = overlay_source.index("    const draw = (now: number) => {")
+    draw_end = overlay_source.index("\n    };\n\n    rafId = requestAnimationFrame(draw);", draw_start)
+    draw_loop = overlay_source[draw_start:draw_end]
+    assert "getBoundingClientRect" not in draw_loop
+    assert "getContext" not in draw_loop
+    assert "new Float32Array" not in draw_loop
+    assert "interpolateColor" not in draw_loop
+    assert "nextFrameAt += BAR_FRAME_INTERVAL_MS" in overlay_source
+
+
+def test_native_overlay_both_styles_reveal_stop_only_for_safe_hover_or_focus() -> None:
     overlay_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx"
     ).read_text(encoding="utf-8")
@@ -1963,16 +1994,16 @@ def test_native_overlay_energy_wave_reveals_stop_only_for_safe_hover_or_focus() 
     assert 'className="native-recording-pill relative flex items-center"' in overlay_source
     assert "native-recording-stop relative" in overlay_source
     assert "@media (hover: hover) and (pointer: fine)" in styles
-    energy_wave_selector = '.native-recording-pill[data-visualizer-style="energy_wave"] .native-recording-stop'
-    assert energy_wave_selector in styles
-    assert f"{energy_wave_selector} {{" in styles
-    assert '.native-recording-pill[data-visualizer-style="energy_wave"]:hover .native-recording-stop' in styles
-    assert '.native-recording-pill[data-visualizer-style="energy_wave"]:focus-within .native-recording-stop' in styles
+    stop_selector = ".native-recording-pill .native-recording-stop"
+    assert stop_selector in styles
+    assert f"{stop_selector} {{" in styles
+    assert ".native-recording-pill:hover .native-recording-stop" in styles
+    assert ".native-recording-pill:focus-within .native-recording-stop" in styles
     fine_pointer_start = styles.index("@media (hover: hover) and (pointer: fine)")
     reduced_motion_start = styles.index("@media (prefers-reduced-motion: reduce)", fine_pointer_start)
     fine_pointer_rules = styles[fine_pointer_start:reduced_motion_start]
     assert (
-        f"""{energy_wave_selector} {{
+        f"""{stop_selector} {{
     opacity: 0;
     pointer-events: none;
   }}"""

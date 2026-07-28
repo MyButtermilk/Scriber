@@ -283,6 +283,14 @@ Live mic:
   stop control is revealed with a CSS-only opacity transition on pill hover or
   keyboard focus, without changing Canvas geometry or creating React animation
   state.
+- The classic black bar variant shares the same pill wrapper and static
+  capsule shadow. Its Canvas path also runs at most 60 FPS, caps DPR at 3,
+  reuses typed buffers, and reads colors from a module-level palette so the
+  draw loop performs no geometry reads, context lookup, or color-string
+  interpolation. It fills the same full-pill layer as the energy wave, so the
+  bars begin at the far-left edge and the hover-only stop can overlay them
+  without reserving an empty slot. On fine-pointer devices both selectable
+  variants keep the stop control hidden until pill hover or keyboard focus.
 - Overlay and live mic visualizers keep per-frame audio updates out of React
   state; no animation frame is represented by a React render.
 
@@ -545,11 +553,15 @@ Packaging/build:
   by sibling tags and prevent one cache miss from rebuilding the same unchanged
   product on every later release. Manual cache publication is restricted to
   `main` with `refresh_release_cache_artifacts=true`; feature-branch diagnostics
-  cannot replace shared cache releases. Successful maintenance prunes every
-  allowlisted Actions-cache family to exactly one current generation and
-  removes superseded internal cache-release tags. Current cache publishers also
-  delete sibling assets after a successful replacement upload, so each durable
-  cache release contains at most one current asset.
+  cannot replace shared cache releases. That explicit refresh also forces the
+  exact CPython `.venv` and wheelhouse path even when the backend product
+  already exists, validates both dependency snapshots, publishes both durable
+  artifacts, and seeds missing main Actions caches. Successful maintenance
+  prunes every allowlisted Actions-cache family to exactly one current
+  generation, including the active setup-node npm package store used by the
+  Quality Gates, and removes superseded internal cache-release tags. Current
+  cache publishers also delete sibling assets after a successful replacement
+  upload, so each durable cache release contains at most one current asset.
 - `requirements-build.txt` pins the complete PyInstaller build-tool set so a
   resolver update cannot silently change the frozen backend under an unchanged
   cache contract.

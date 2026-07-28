@@ -1212,6 +1212,13 @@ It:
   cache hit, the workflow checks npm install metadata only; `npm run check`
   remains the real frontend correctness gate inside
   `scripts\build_windows.ps1`,
+- retains exactly one `node-cache-Windows-x64-npm-*` package-store generation
+  on `main` for the two setup-node-backed Quality Gates instead of classifying
+  that active cache family as obsolete. Completed tag and feature-ref copies
+  remain eligible for removal because GitHub cannot use them to warm sibling
+  releases. This preserves package downloads only: each Quality Gate still
+  runs its exact `npm ci` and its full typecheck, lint, test, build, Clippy, or
+  Rust-test contract,
 - restores the exact complete-sidecar cache first, then the stable frozen
   runtime cache, before Python `.venv` and wheelhouse restore. An exact complete
   sidecar hit needs neither the runtime cache nor the dependency environment. A
@@ -1223,6 +1230,14 @@ It:
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
+- makes an explicit
+  `main`-branch `refresh_release_cache_artifacts=true` run enter the Python
+  restore/validation path even when the exact backend is already reusable. The
+  refresh requires the exact CPython-versioned virtualenv and wheelhouse,
+  verifies the wheelhouse with an offline resolution of both release
+  requirement sets, republishes both durable snapshots, and fails if either
+  publisher does not report success. A restored wheelhouse also seeds the exact
+  main Actions cache instead of being discarded after the maintenance run,
 - restores and validates that exact Python environment for every official
   release even when an exact backend product or frozen runtime was reused. The
   downloaded-installer media smoke imports the tracked source harness and
@@ -1382,7 +1397,11 @@ for later sibling tags; unchanged exact assets are not uploaded again on that
 tag path. A manual `main` run with
 `refresh_release_cache_artifacts=true` deliberately republishes all four
 bounded products so missing or empty durable cache releases are repaired. The
-final GC keeps exactly one Actions-cache generation per allowlisted family,
+same explicit run also materializes, validates, publishes, and saves the exact
+CPython `.venv` and wheelhouse independently of backend reuse; routine tags and
+non-refresh diagnostics remain restore-only. Python publication is a required
+maintenance postcondition rather than a best-effort side effect. The final GC
+keeps exactly one Actions-cache generation per allowlisted family,
 removes superseded internal cache-release tags, and retains only the globally
 newest asset inside each current cache release. Start that maintenance run only
 after the intended change is on `main`:

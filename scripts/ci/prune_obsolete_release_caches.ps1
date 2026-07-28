@@ -110,7 +110,7 @@ $obsoletePatterns = @(
     '^scriber-rust-release-v2-Windows-',
     '^scriber-tauri-app-binary-v1-Windows-',
     '^setup-python-',
-    '^node-cache-'
+    '^node-cache-(?!Windows-x64-npm-)'
 )
 
 # Rolling products retain exactly the newest current entry by default. This is
@@ -130,6 +130,10 @@ $rollingFamilies = @(
     [pscustomobject]@{ Name = 'ffmpeg'; Pattern = '^scriber-ffmpeg-profile-b-msys2-n7\.0-v4-Windows$'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'tauri-bundler'; Pattern = '^scriber-tauri-bundler-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'npm-store'; Pattern = '^scriber-npm-package-store-v1-Windows-'; Retain = $RetainPerRollingFamily },
+    # actions/setup-node emits this package-store family for both Windows
+    # Quality Gates. Keep one main generation; the non-main pass below still
+    # removes completed tag/feature copies that cannot warm sibling refs.
+    [pscustomobject]@{ Name = 'setup-node-npm'; Pattern = '^node-cache-Windows-x64-npm-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'pip-store'; Pattern = '^scriber-python-pip-store-v1-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'msys2'; Pattern = '^msys2-pkgs-'; Retain = $RetainPerRollingFamily }
 )

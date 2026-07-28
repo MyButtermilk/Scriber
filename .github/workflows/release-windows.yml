@@ -987,6 +987,7 @@ jobs:
         id: python-venv-cache
         if: >-
           needs.release-plan.outputs.official-release == 'true' ||
+          env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
            steps.backend-runtime-validation.outputs.usable != 'true')
@@ -999,6 +1000,7 @@ jobs:
         id: python-venv-artifact
         if: >-
           (needs.release-plan.outputs.official-release == 'true' ||
+           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
             steps.backend-runtime-validation.outputs.usable != 'true')) &&
@@ -1017,6 +1019,7 @@ jobs:
         id: python-venv-validation
         if: >-
           needs.release-plan.outputs.official-release == 'true' ||
+          env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
            steps.backend-runtime-validation.outputs.usable != 'true')
@@ -1055,10 +1058,12 @@ jobs:
         id: python-wheelhouse-cache
         if: >-
           (needs.release-plan.outputs.official-release == 'true' ||
+           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
             steps.backend-runtime-validation.outputs.usable != 'true')) &&
-          steps.python-venv-validation.outputs.usable != 'true'
+          (env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
+           steps.python-venv-validation.outputs.usable != 'true')
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
@@ -1085,10 +1090,12 @@ jobs:
         id: python-wheelhouse-artifact
         if: >-
           (needs.release-plan.outputs.official-release == 'true' ||
+           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
             steps.backend-runtime-validation.outputs.usable != 'true')) &&
-          steps.python-venv-validation.outputs.usable != 'true' &&
+          (env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
+           steps.python-venv-validation.outputs.usable != 'true') &&
           steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
@@ -1149,10 +1156,12 @@ jobs:
         id: python-pip-store-cache
         if: >-
           (needs.release-plan.outputs.official-release == 'true' ||
+           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
             steps.backend-runtime-validation.outputs.usable != 'true')) &&
-          steps.python-venv-validation.outputs.usable != 'true' &&
+          (env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
+           steps.python-venv-validation.outputs.usable != 'true') &&
           steps.python-wheelhouse-cache.outputs.cache-hit != 'true' &&
           steps.python-wheelhouse-artifact.outputs.restored != 'true'
         uses: actions/cache/restore@v6
@@ -1245,6 +1254,8 @@ jobs:
           $backendRuntimeValidated = Normalize-CacheOutput "${{ steps.backend-runtime-validation.outputs.usable }}"
           $backendRuntimeReady = $coldProductsUsed -or $backendSidecarPrebuilt -or $backendRuntimeValidated -eq "true"
           $officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"
+          $pythonCacheRefresh = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"
+          $pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh
           $rustBuildCacheHit = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-hit }}"
           $rustBuildCacheMatchedKey = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-matched-key }}"
           $rustBuildArtifactRestored = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.restored }}"
@@ -1279,9 +1290,14 @@ jobs:
           $backendSidecarEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarValidated -eq "true") { Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored } else { "invalid-or-miss" }
           $backendRuntimeEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeValidated -eq "true") { Get-EffectiveCacheSource $backendRuntimeCacheHit $backendRuntimeArtifactRestored } else { "miss" }
           $tauriAppEffective = if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $tauriAppBinaryCacheHit "empty" }
-          $pythonVenvEffective = if ($officialRelease -and $pythonVenvValidated -eq "true") { "validated-restored-environment" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
-          $pythonWheelhouseEffective = if ($officialRelease -and $pythonVenvValidated -eq "true") { "not-needed-validated-venv" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
-          $pythonPipStoreNotNeeded = if ($officialRelease) {
+          $pythonVenvEffective = if ($pythonEnvironmentRequired -and $pythonVenvValidated -eq "true") { "validated-restored-environment" } elseif ($pythonEnvironmentRequired) { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
+          $pythonWheelhouseEffective = if ($pythonCacheRefresh) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($officialRelease -and $pythonVenvValidated -eq "true") { "not-needed-validated-venv" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
+          $pythonPipStoreNotNeeded = if ($pythonCacheRefresh) {
+            (
+              $pythonWheelhouseCacheHit -eq "true" -or
+              $pythonWheelhouseArtifactRestored -eq "true"
+            )
+          } elseif ($officialRelease) {
             (
               $pythonVenvValidated -eq "true" -or
               $pythonWheelhouseCacheHit -eq "true" -or
@@ -1440,6 +1456,7 @@ jobs:
         id: python-dependencies
         if: >-
           needs.release-plan.outputs.official-release == 'true' ||
+          env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
            steps.backend-runtime-validation.outputs.usable != 'true')
@@ -1449,8 +1466,12 @@ jobs:
           $wheelhouse = "build\python-wheelhouse"
           $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('build/cache-keys/python-dependencies.txt') }}"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
+          $expectedPythonVersion = "${{ steps.setup-python.outputs.python-version }}"
+          $refreshPythonCaches = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"
           $venvRebuilt = $false
           $wheelhouseBuilt = $false
+          $venvReady = $false
+          $wheelhouseReady = $false
           if (-not (Test-Path -LiteralPath $venvPython -PathType Leaf)) {
             python -m venv .venv
             if ($LASTEXITCODE -ne 0) {
@@ -1459,17 +1480,38 @@ jobs:
           }
 
           $venvUsable = "${{ steps.python-venv-validation.outputs.usable }}" -eq "true"
+          if ($refreshPythonCaches) {
+            $restoredPythonVersionOutput = & $venvPython -c "import platform; print(platform.python_version())"
+            $restoredPythonVersionExitCode = $LASTEXITCODE
+            $restoredPythonVersion = ($restoredPythonVersionOutput | Out-String).Trim()
+            if ($restoredPythonVersionExitCode -ne 0 -or $restoredPythonVersion -ne $expectedPythonVersion) {
+              Write-Warning "Restored Python venv version '$restoredPythonVersion' does not match '$expectedPythonVersion'; rebuilding it."
+              python -m venv --clear .venv
+              if ($LASTEXITCODE -ne 0) {
+                throw "Recreating the Python release environment failed with exit code $LASTEXITCODE."
+              }
+              $venvUsable = $false
+            }
+          }
+          $wheelhouseRequired = (-not $venvUsable) -or $refreshPythonCaches
+          $wheelhouseRestored = (
+            "${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -eq "true" -or
+            "${{ steps.python-wheelhouse-artifact.outputs.restored }}" -eq "true"
+          )
 
           if ($venvUsable) {
             Write-Host "Using restored Python venv; requirements key is current."
           } else {
             $venvRebuilt = $true
-            New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
             & $venvPython -m pip install --constraint requirements-release-constraints.txt pip
             if ($LASTEXITCODE -ne 0) {
               throw "Upgrading pip in the release environment failed with exit code $LASTEXITCODE."
             }
-            if (("${{ steps.python-wheelhouse-cache.outputs.cache-hit }}" -ne "true") -and ("${{ steps.python-wheelhouse-artifact.outputs.restored }}" -ne "true")) {
+          }
+
+          if ($wheelhouseRequired) {
+            New-Item -ItemType Directory -Force -Path $wheelhouse | Out-Null
+            if (-not $wheelhouseRestored) {
               & $venvPython -m pip wheel --constraint requirements-release-constraints.txt --wheel-dir $wheelhouse --prefer-binary -r requirements-base.txt -r requirements-build.txt
               if ($LASTEXITCODE -ne 0) {
                 throw "Building the Python release wheelhouse failed with exit code $LASTEXITCODE."
@@ -1479,6 +1521,9 @@ jobs:
               Write-Host "Using cached/restored Python wheelhouse."
             }
             $resolvedWheelhouse = (Resolve-Path $wheelhouse).Path
+          }
+
+          if (-not $venvUsable) {
             & $venvPython -m pip install --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-base.txt
             if ($LASTEXITCODE -ne 0) {
               throw "Installing base release dependencies failed with exit code $LASTEXITCODE."
@@ -1493,16 +1538,43 @@ jobs:
             }
             $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
           }
+
+          if ($refreshPythonCaches) {
+            $actualPythonVersionOutput = & $venvPython -c "import platform; print(platform.python_version())"
+            $actualPythonVersionExitCode = $LASTEXITCODE
+            $actualPythonVersion = ($actualPythonVersionOutput | Out-String).Trim()
+            if ($actualPythonVersionExitCode -ne 0 -or $actualPythonVersion -ne $expectedPythonVersion) {
+              throw "Python cache refresh produced version '$actualPythonVersion'; expected '$expectedPythonVersion'."
+            }
+            & $venvPython -m pip check
+            if ($LASTEXITCODE -ne 0) {
+              throw "Python cache refresh venv failed pip check with exit code $LASTEXITCODE."
+            }
+            & $venvPython -c "import aiohttp"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Python cache refresh venv cannot import aiohttp."
+            }
+            & $venvPython -m pip install --dry-run --ignore-installed --constraint requirements-release-constraints.txt --no-index --find-links $resolvedWheelhouse -r requirements-base.txt -r requirements-build.txt
+            if ($LASTEXITCODE -ne 0) {
+              throw "Python cache refresh wheelhouse failed offline resolution with exit code $LASTEXITCODE."
+            }
+            $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
+            $venvReady = $true
+            $wheelhouseReady = $true
+          }
           (Resolve-Path ".\.venv\Scripts").Path | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           & $venvPython --version
           & $venvPython -m pip --version
           if ($env:GITHUB_OUTPUT) {
             "venv-rebuilt=$(if ($venvRebuilt) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             "wheelhouse-built=$(if ($wheelhouseBuilt) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "venv-ready=$(if ($venvReady) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "wheelhouse-ready=$(if ($wheelhouseReady) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
 
       - name: Publish Python venv release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && (steps.python-dependencies.outputs.venv-rebuilt == 'true' || (steps.python-venv-cache.outputs.cache-hit != 'true' && steps.python-venv-artifact.outputs.restored != 'true'))
+        id: python-venv-publication
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.python-dependencies.outputs.venv-ready == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1515,7 +1587,8 @@ jobs:
             -Title "Scriber Python Virtualenv Cache v1"
 
       - name: Publish Python wheelhouse release artifact
-        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true'
+        id: python-wheelhouse-publication
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' && steps.python-dependencies.outputs.wheelhouse-ready == 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1527,15 +1600,31 @@ jobs:
             -SourcePath build\python-wheelhouse `
             -Title "Scriber Python Wheelhouse Cache v2"
 
+      - name: Require refreshed Python cache artifact publication
+        if: env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true'
+        shell: pwsh
+        run: |
+          $failures = @()
+          if ("${{ steps.python-venv-publication.outputs.published }}" -ne "true") {
+            $failures += "Python venv"
+          }
+          if ("${{ steps.python-wheelhouse-publication.outputs.published }}" -ne "true") {
+            $failures += "Python wheelhouse"
+          }
+          if ($failures.Count -gt 0) {
+            throw "Explicit release-cache refresh did not publish: $($failures -join ', ')."
+          }
+          Write-Host "Explicit release-cache refresh published the exact Python venv and wheelhouse."
+
       - name: Save Python dependency cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.python-venv-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.venv-ready == 'true' && steps.python-venv-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: .venv
           key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Save Python wheelhouse cache
-        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.wheelhouse-ready == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/python-wheelhouse
@@ -1544,7 +1633,6 @@ jobs:
       - name: Save pip package store
         if: >-
           env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' &&
-          steps.backend-sidecar-validation.outputs.usable != 'true' &&
           steps.python-dependencies.outputs.wheelhouse-built == 'true' &&
           steps.python-pip-store-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6

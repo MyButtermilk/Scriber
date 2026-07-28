@@ -100,7 +100,10 @@ Frontend and shell:
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/components/NativeRecordingOverlay.tsx` owns recording
-  overlay state, settings, and the static full-pill CSS gradient;
+  overlay state, settings, the static full-pill CSS gradient, and the classic
+  full-pill bar renderer. Both selectable styles begin at the far-left pill
+  edge, draw at most 60 FPS on their normal paths, cap DPR at 3, and keep their
+  per-frame buffers out of React state;
   `MicrophoneEnergyField.tsx` owns the allocation-bounded transparent Canvas
   renderer. Its normal path is capped at 60 FPS and DPR 3, samples 96 points per
   strand, and keeps the core stroke one physical pixel wide. The energy wave
@@ -110,9 +113,10 @@ Frontend and shell:
   promote the low-latency `desynchronized` path into an opaque rectangular
   layer. Keep the drop shadow on a static, isolated, pill-shaped sibling behind
   the clipped surface so its spread and fade cannot become box-shaped. The stop
-  control stays in the DOM but is visually hidden only for fine-pointer hover
-  devices, then revealed by pill hover or keyboard focus; the default remains
-  visible for touch-only devices. Do not add an `any-pointer: coarse` override:
+  control stays in the DOM for both styles but is visually hidden only for
+  fine-pointer hover devices, then revealed by pill hover or keyboard focus;
+  the default remains visible for touch-only devices. Do not add an
+  `any-pointer: coarse` override:
   hybrid Windows devices can report both coarse and fine pointers. Keep this
   interaction CSS-only, keep per-frame RMS out of React state, and preserve the
   listener-before-`native_overlay_renderer_ready` handshake described above.
@@ -1555,7 +1559,10 @@ Already implemented and should not be regressed:
 - Frontend dependency reuse in GitHub release builds is two-layered: restore
   `Frontend\node_modules` first, then restore the explicitly keyed npm package
   store only when that stronger cache misses. `actions/setup-node` must not
-  eagerly restore the same package store on a hot `node_modules` path.
+  eagerly restore the same package store on a hot `node_modules` path. Cache
+  maintenance retains exactly one active
+  `node-cache-Windows-x64-npm-*` generation on `main` for the two Quality
+  Gates; do not classify that live setup-node family as obsolete.
 - Python dependency reuse in GitHub release builds is layered: prebuilt backend
   sidecar first, `.venv`/wheelhouse next, and an explicitly keyed pip package
   store only as a final fallback when every stronger product misses.
@@ -1630,17 +1637,21 @@ Already implemented and should not be regressed:
   diarization finished-product artifact after a successful rebuild. Manual
   cache publication is allowed only from `main` with
   `refresh_release_cache_artifacts=true`; feature-branch diagnostics are
-  read-only with respect to shared caches. That maintenance path retains
-  exactly one Actions-cache generation per allowlisted family, removes
-  superseded internal cache-release tags, and current cache publishers keep
-  only their replacement asset. After best-effort GC, the maintenance workflow
-  must perform a fresh, non-best-effort inventory pass that requires the exact
-  computed Rust dependency key to be the sole main-branch Rust generation and
-  rejects any remaining allowlisted GC candidate. Publish and verify
-  the app release first, then upload those four independent cache products in
-  parallel with one private `GITHUB_OUTPUT` file per child. Cache publication
-  is best-effort and must not delay or invalidate an already verified updater
-  release. Heavy
+  read-only with respect to shared caches. An explicit refresh must enter the
+  exact CPython-versioned `.venv` and wheelhouse restore/validation path even
+  when the complete backend is already reusable, verify both products, publish
+  both durable artifacts, seed missing main Actions caches, and fail unless
+  both publishers confirm success. That maintenance path retains exactly one
+  Actions-cache generation per allowlisted family, removes superseded internal
+  cache-release tags, and current cache publishers keep only their replacement
+  asset. After best-effort GC, the maintenance workflow must perform a fresh,
+  non-best-effort inventory pass that requires the exact computed Rust
+  dependency key to be the sole main-branch Rust generation and rejects any
+  remaining allowlisted GC candidate. Publish and verify the app release first,
+  then upload the four independent finished-component cache products in
+  parallel with one private `GITHUB_OUTPUT` file per child. Those
+  finished-component uploads remain best-effort and must not delay or
+  invalidate an already verified updater release. Heavy
   Actions caches remain restore-only on tags, so a routine release has one
   complete tag-triggered build rather than a duplicate main warm-up plus tag
   build.

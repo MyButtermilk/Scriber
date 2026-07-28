@@ -57,6 +57,11 @@ const ENERGY_PILL_BACKGROUND = [
   "linear-gradient(90deg, #07131f 0%, #0a1c2d 28%, #0d263b 62%, #071522 100%)",
 ].join(", ");
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
+const BAR_FRAME_INTERVAL_MS = 1000 / 60;
+const BAR_FRAME_DEADLINE_TOLERANCE_MS = 1.5;
+const BAR_MAX_DEVICE_PIXEL_RATIO = 3;
+const BAR_COLOR_STEPS = 128;
+const BAR_IDLE_LEVEL = 0.06;
 const NATIVE_RMS_FALLBACK_AFTER_MS = 250;
 
 function normalizeMode(value: unknown): OverlayMode {
@@ -119,66 +124,80 @@ function interpolateColor(colors: string[], factor: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function resizeBarBuffer(values: number[], count: number, fill: number): number[] {
-  if (values.length === count) {
-    return values;
-  }
-  const next = values.slice(0, count);
-  while (next.length < count) {
-    next.push(fill);
-  }
-  return next;
-}
+const MIDNIGHT_PALETTE = Array.from(
+  { length: BAR_COLOR_STEPS },
+  (_, index) => interpolateColor(
+    MIDNIGHT_COLORS,
+    index / (BAR_COLOR_STEPS - 1),
+  ),
+);
 
 function OverlayBarWaveform({
   active,
   rmsRef,
   barCount,
+  width,
+  height,
 }: {
   active: boolean;
   rmsRef: { current: number };
   barCount: number;
+  width: number;
+  height: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const resolvedBarCount = normalizeVisualizerBarCount(barCount);
-  const levelsRef = useRef<number[]>(Array(resolvedBarCount).fill(0));
-  const displayRef = useRef<number[]>(Array(resolvedBarCount).fill(0.12));
-  const fallRef = useRef<number[]>(Array(resolvedBarCount).fill(0));
-
-  useEffect(() => {
-    levelsRef.current = resizeBarBuffer(levelsRef.current, resolvedBarCount, 0);
-    displayRef.current = resizeBarBuffer(displayRef.current, resolvedBarCount, 0.12);
-    fallRef.current = resizeBarBuffer(fallRef.current, resolvedBarCount, 0);
-  }, [resolvedBarCount]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !active) return;
+    const ctx = canvas.getContext("2d", { alpha: true });
+    if (!ctx) return;
 
+    const levels = new Float32Array(resolvedBarCount);
+    const display = new Float32Array(resolvedBarCount);
+    const fall = new Float32Array(resolvedBarCount);
+    display.fill(BAR_IDLE_LEVEL);
     let rafId = 0;
     let lastFrameAt = performance.now();
-    let lastDrawAt = 0;
+    let nextFrameAt = lastFrameAt;
+    let devicePixelRatio = 1;
     const gravity = 0.8;
     const riseSpeed = 0.6;
 
-    const draw = (now: number) => {
-      if (now - lastDrawAt < 33) {
-        rafId = requestAnimationFrame(draw);
-        return;
+    const syncCanvasSize = () => {
+      devicePixelRatio = Math.min(
+        window.devicePixelRatio || 1,
+        BAR_MAX_DEVICE_PIXEL_RATIO,
+      );
+      const pixelWidth = Math.max(
+        1,
+        Math.round(width * devicePixelRatio),
+      );
+      const pixelHeight = Math.max(
+        1,
+        Math.round(height * devicePixelRatio),
+      );
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
       }
-      lastDrawAt = now;
-      const rect = canvas.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      const width = Math.max(1, Math.round(rect.width * dpr));
-      const height = Math.max(1, Math.round(rect.height * dpr));
-      if (canvas.width !== width || canvas.height !== height) {
-        canvas.width = width;
-        canvas.height = height;
-      }
+      ctx.setTransform(
+        devicePixelRatio,
+        0,
+        0,
+        devicePixelRatio,
+        0,
+        0,
+      );
+    };
 
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        rafId = requestAnimationFrame(draw);
+    syncCanvasSize();
+    window.addEventListener("resize", syncCanvasSize);
+
+    const draw = (now: number) => {
+      rafId = requestAnimationFrame(draw);
+      if (now + BAR_FRAME_DEADLINE_TOLERANCE_MS < nextFrameAt) {
         return;
       }
 
@@ -189,69 +208,91 @@ function OverlayBarWaveform({
         const freqFactor = 1.0 - dist * dist * 0.6;
         const phase = i * 0.52 + now * 0.01;
         const wave = inputLevel > 0 ? 0.84 + 0.16 * Math.sin(phase) : 0;
-        levelsRef.current[i] = inputLevel * freqFactor * wave;
+        levels[i] = inputLevel * freqFactor * wave;
       }
 
-      const dt = Math.min(0.034, Math.max(0.001, (now - lastFrameAt) / 1000));
+      const dt = Math.min(0.05, Math.max(0.001, (now - lastFrameAt) / 1000));
       lastFrameAt = now;
-      const levels = levelsRef.current;
-      const display = displayRef.current;
-      const fall = fallRef.current;
-      const padLeft = 8 * dpr;
-      const padRight = 10 * dpr;
+      const padLeft = 0;
+      const padRight = 0;
       const usableWidth = Math.max(1, width - padLeft - padRight);
       const gap = Math.max(
-        0.5 * dpr,
-        Math.min(1.8 * dpr, usableWidth / Math.max(1, resolvedBarCount * 7)),
+        0.5,
+        Math.min(1.8, usableWidth / Math.max(1, resolvedBarCount * 7)),
       );
       const barWidth = Math.max(
-        0.7 * dpr,
+        0.7,
         (usableWidth - gap * (resolvedBarCount - 1)) / resolvedBarCount,
       );
       const centerY = height / 2;
-      const maxHeight = 24 * dpr;
+      const maxHeight = Math.min(24, height - PILL_PADDING * 2);
 
-      ctx.clearRect(0, 0, width, height);
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.setTransform(
+        devicePixelRatio,
+        0,
+        0,
+        devicePixelRatio,
+        0,
+        0,
+      );
       for (let i = 0; i < resolvedBarCount; i++) {
         const target = levels[i] || 0;
-        const current = display[i] || 0.12;
+        const current = display[i] || BAR_IDLE_LEVEL;
         if (target > current) {
           display[i] = current + (target - current) * riseSpeed;
           fall[i] = 0;
-        } else if (current > 0.12) {
+        } else if (current > BAR_IDLE_LEVEL) {
           fall[i] = (fall[i] || 0) + gravity * dt;
-          display[i] = Math.max(0.12, current - fall[i]);
+          display[i] = Math.max(BAR_IDLE_LEVEL, current - fall[i]);
         }
         const centerFactor = 1.0 - Math.abs(i - resolvedBarCount / 2) / (resolvedBarCount / 2);
         const adjustedLevel = display[i] * (0.5 + 0.5 * centerFactor);
-        const barHeight = Math.max(2 * dpr, adjustedLevel * maxHeight);
+        const barHeight = Math.max(
+          1 / devicePixelRatio,
+          adjustedLevel * maxHeight,
+        );
         const x = padLeft + i * (barWidth + gap);
         const y = centerY - barHeight / 2;
-        const radius = Math.min(barWidth / 2, 2 * dpr);
-        ctx.fillStyle = interpolateColor(MIDNIGHT_COLORS, 1.0 - Math.min(1.0, adjustedLevel));
+        const radius = Math.min(barWidth / 2, 2);
+        const paletteIndex = Math.round(
+          (1 - Math.min(1, adjustedLevel)) * (BAR_COLOR_STEPS - 1),
+        );
+        ctx.fillStyle = MIDNIGHT_PALETTE[paletteIndex];
         ctx.beginPath();
         ctx.roundRect(x, y, barWidth, barHeight, radius);
         ctx.fill();
       }
 
-      rafId = requestAnimationFrame(draw);
+      do {
+        nextFrameAt += BAR_FRAME_INTERVAL_MS;
+      } while (nextFrameAt <= now + BAR_FRAME_DEADLINE_TOLERANCE_MS);
     };
 
     rafId = requestAnimationFrame(draw);
-    return () => cancelAnimationFrame(rafId);
-  }, [active, resolvedBarCount, rmsRef]);
+    return () => {
+      cancelAnimationFrame(rafId);
+      window.removeEventListener("resize", syncCanvasSize);
+    };
+  }, [active, height, resolvedBarCount, rmsRef, width]);
 
   return (
     <canvas
       data-testid="native-recording-waveform"
       ref={canvasRef}
-      width={WAVEFORM_CANVAS_WIDTH}
-      height={WAVEFORM_CANVAS_HEIGHT}
+      data-render-profile="typed-array-60hz-hidpi-bars"
+      width={width}
+      height={height}
       aria-hidden="true"
       style={{
-        width: WAVEFORM_CANVAS_WIDTH,
-        height: WAVEFORM_CANVAS_HEIGHT,
+        position: "absolute",
+        inset: 0,
+        width,
+        height,
         display: "block",
+        borderRadius: height / 2,
+        pointerEvents: "none",
       }}
     />
   );
@@ -291,6 +332,7 @@ export default function NativeRecordingOverlay() {
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
   const visible = mode !== "hidden";
   const energyWaveActive = mode === "recording" && overlayVisualizerStyle === "energy_wave";
+  const barsActive = mode === "recording" && overlayVisualizerStyle === "bars";
 
   const refreshVisualizerSettings = useCallback(async () => {
     visualizerSettingsRequestRef.current?.abort();
@@ -539,6 +581,15 @@ export default function NativeRecordingOverlay() {
                 plotHeight={WAVEFORM_CANVAS_HEIGHT}
               />
             )}
+            {barsActive && (
+              <OverlayBarWaveform
+                active
+                rmsRef={rmsRef}
+                barCount={visualizerBarCount}
+                width={PILL_WIDTH}
+                height={PILL_HEIGHT}
+              />
+            )}
             <div
               className="relative z-10 overflow-hidden"
               style={{
@@ -565,22 +616,14 @@ export default function NativeRecordingOverlay() {
                 >
                   <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
                 </button>
-                {overlayVisualizerStyle === "bars" ? (
-                  <OverlayBarWaveform
-                    active={mode === "recording"}
-                    rmsRef={rmsRef}
-                    barCount={visualizerBarCount}
-                  />
-                ) : (
-                  <div
-                    data-testid="native-recording-energy-wave-space"
-                    aria-hidden="true"
-                    style={{
-                      width: WAVEFORM_CANVAS_WIDTH,
-                      height: WAVEFORM_CANVAS_HEIGHT,
-                    }}
-                  />
-                )}
+                <div
+                  data-testid="native-recording-visualizer-space"
+                  aria-hidden="true"
+                  style={{
+                    width: WAVEFORM_CANVAS_WIDTH,
+                    height: WAVEFORM_CANVAS_HEIGHT,
+                  }}
+                />
               </div>
               <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
                 <StatusContent mode="transcribing" />
