@@ -300,6 +300,10 @@ foreach ($path in @(
     "Frontend/src-tauri/build.rs",
     "Frontend/src-tauri/tauri.conf.json",
     "scripts/build_windows.ps1",
+    "scripts/ci/prepare_cold_tauri_product.ps1",
+    "scripts/ci/prepare_tauri_app.ps1",
+    "scripts/ci/sync_tauri_app_binary_cache.ps1",
+    "scripts/ci/write_release_cache_keys.ps1",
     "scripts/prepare_tauri_updater_config.py",
     "THIRD_PARTY_NOTICES.md"
 )) {

@@ -1646,9 +1646,12 @@ Already implemented and should not be regressed:
   build.
 - The Rust Actions cache is keyed by normalized Cargo dependency metadata plus
   resolved toolchain/target/profile, not by ordinary app source. The exact
-  Tauri app binary is a separate small cache keyed by full Rust/frontend
-  sources, concrete version, commit, toolchain, target/profile, and updater
-  runtime fingerprint. A validated hit may run bundle-only packaging; NSIS,
+  Tauri bundle-binary set is a separate small cache keyed by full Rust/frontend
+  sources, concrete version, commit, toolchain, target/profile, updater runtime
+  fingerprint, and the transfer scripts. It must attest and transfer both
+  `scriber-desktop.exe` and `minisign-verify.exe`; Tauri enumerates both package
+  binaries during `tauri bundle`, even though only the desktop executable is
+  launched as the app. A validated hit may run bundle-only packaging; NSIS,
   updater signatures, checksums, and publication evidence are always fresh.
 - Before backend sidecar cache save/publication,
   `scripts/ci/select_backend_sidecar_cache_entry.ps1` must validate and retain

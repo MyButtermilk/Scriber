@@ -615,7 +615,10 @@ Packaging/build:
   can only build, attest, and upload short-lived intermediate artifacts.
   `prepare-tauri-cold` owns Node setup, frontend dependency restore, Rust
   dependency restore, frontend type checking, and the exact Tauri no-bundle
-  application compile. At the same time,
+  application compile. Its short-lived product contains the main desktop
+  executable and every package binary that `tauri bundle` requires, currently
+  the release-only `minisign-verify.exe`; the manifest binds each file's name,
+  application version, length, and SHA-256. At the same time,
   `prepare-backend-cold` owns Python setup, frozen-runtime/venv/wheelhouse
   restore, FFmpeg and Rust audio/diarization component restore/build, and
   PyInstaller backend composition. It restores and prunes the same
@@ -626,9 +629,12 @@ Packaging/build:
   in the final Windows job even though the compile and PyInstaller phases later
   overlapped.
 - The final Windows job downloads the two cold products with one merged artifact
-  pattern, validates their commit/key/file attestations, and then performs only
+  pattern, validates their commit/key/file attestations including the complete
+  Tauri bundle-binary set, and then performs only
   fresh final assembly, NSIS/updater signing, publication, and release
-  verification. The backend upload includes hidden files because the exact
+  verification. The same attested `minisign-verify.exe` then checks the
+  round-tripped updater artifact; the final job does not rebuild that verifier.
+  The backend upload includes hidden files because the exact
   attested runtime inventory contains package-template `.gitignore` files and
   the application-layer `src/assets/.gitkeep`; omitting any of them invalidates
   the complete product at import. It remains hard-gated on every exact-revision
@@ -668,8 +674,9 @@ Packaging/build:
   `Frontend\src-tauri\target\release\backend` plus
   `build\tauri-sidecar-cache`; `ffmpeg-profile-b` restores or builds
   `build\ffmpeg-profile-b-msys2`; and the app compile produces an exact,
-  attested `scriber-desktop.exe` cache (normally about 14 MiB). The final
-  package phase restores that binary plus independently validated resources and
+  attested bundle-binary cache containing `scriber-desktop.exe` plus
+  `minisign-verify.exe` (normally about 14 MiB total). The final
+  package phase restores that set plus independently validated resources and
   runs `tauri bundle`, NSIS, updater signing, and publication checks. Do not
   transfer the multi-GB Rust target tree between runners by default.
 - Keep the multi-runner transfer graph limited to the planner-confirmed cold
@@ -688,8 +695,9 @@ Packaging/build:
   artifacts such as `scriber_desktop_lib.dll` and a large static `.lib` without
   helping the NSIS updater build.
 - The exact Tauri app-binary key includes real shell inputs such as
-  `tauri.conf.json`, capabilities, icons, full frontend/Rust sources, and the
-  concrete version. The much larger Cargo dependency key excludes those app
+  `tauri.conf.json`, capabilities, icons, full frontend/Rust sources, the
+  concrete version, and the scripts that define export/import of the complete
+  bundle-binary set. The much larger Cargo dependency key excludes those app
   inputs so a UI or shell edit does not create another multi-GB dependency
   cache.
 - The release workflow can set Cargo fingerprint diagnostics through the

@@ -97,6 +97,11 @@ try {
     if ($null -ne $typeCheckFailure) { throw $typeCheckFailure }
     if ($compileExitCode -ne 0) { throw "Cold Tauri application binary build failed with exit code $compileExitCode." }
 
+    $bundleCompanionPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\minisign-verify.exe"
+    if (-not (Test-Path -LiteralPath $bundleCompanionPath -PathType Leaf)) {
+        throw "Cold Tauri build did not produce the required bundle companion: $bundleCompanionPath"
+    }
+
     & powershell -NoProfile -File scripts\ci\sync_tauri_app_binary_cache.ps1 `
         -Mode Export `
         -CacheKey $CacheKey `

@@ -819,6 +819,42 @@ def test_release_workflow_uses_incremental_dependency_caches() -> None:
     assert "scripts\\ci\\select_backend_sidecar_cache_entry.ps1" in workflow
     assert "Restore exact Tauri app binary" in workflow
     assert "scripts\\ci\\sync_tauri_app_binary_cache.ps1" in workflow
+    assert "scriber-tauri-app-binary-v2-" in workflow
+
+
+def test_cold_tauri_product_attests_every_bundle_binary_needed_before_nsis() -> None:
+    prepare = read_script("scripts/ci/prepare_cold_tauri_product.ps1")
+    sync = read_script("scripts/ci/sync_tauri_app_binary_cache.ps1")
+    build = read_script("scripts/build_windows.ps1")
+    cache_keys = read_script("scripts/ci/write_release_cache_keys.ps1")
+
+    assert '"Frontend\\src-tauri\\target\\release\\minisign-verify.exe"' in prepare
+    assert "Cold Tauri build did not produce the required bundle companion" in prepare
+    assert '[string]$BundleCompanionPath = "Frontend\\src-tauri\\target\\release\\minisign-verify.exe"' in sync
+    assert 'apiVersion = "2"' in sync
+    assert 'name = "minisign-verify.exe"' in sync
+    assert "binaryVersion = $bundleCompanionVersion" in sync
+    assert "Test-ExpectedVersion -Actual $actualBundleCompanionVersion -Expected $Version" in sync
+    assert "[int64]$bundleCompanion.length -eq [int64]$bundleCompanionItem.Length" in sync
+    assert "[string]$bundleCompanion.sha256 -eq $bundleCompanionSha256" in sync
+    assert (
+        "Copy-Item -LiteralPath $cachedBundleCompanionPath "
+        "-Destination $resolvedBundleCompanionPath -Force"
+    ) in sync
+    assert '@("scriber-desktop.exe", "minisign-verify.exe")' in build
+    assert '@("scriber-desktop.exe", "scriber-audio-sidecar.exe", "minisign-verify.exe")' in build
+    assert '"scripts/ci/prepare_cold_tauri_product.ps1"' in cache_keys
+    assert '"scripts/ci/prepare_tauri_app.ps1"' in cache_keys
+    assert '"scripts/ci/sync_tauri_app_binary_cache.ps1"' in cache_keys
+    assert '"scripts/ci/write_release_cache_keys.ps1"' in cache_keys
+    assert '"build\\cold-transfer\\tauri-app-binary-cache\\minisign-verify.exe"' in read_script(
+        ".github/workflows/release-windows.yml"
+    )
+    signature_verification = read_script(".github/workflows/release-windows.yml").split(
+        "- name: Cryptographically verify downloaded updater signatures", 1
+    )[1].split("- name: Smoke downloaded installer candidate", 1)[0]
+    assert "cargo build" not in signature_verification
+    assert "The attested Tauri bundle input is missing the release-only Minisign verifier." in signature_verification
 
 
 def test_release_workflow_parallelizes_only_disjoint_finished_cache_fallbacks() -> None:

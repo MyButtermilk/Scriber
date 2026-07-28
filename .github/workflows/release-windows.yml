@@ -874,7 +874,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Import exact Tauri app binary
         id: tauri-app-binary-import
@@ -1327,7 +1327,14 @@ jobs:
             Get-PathEvidence "Rust build" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db", "Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
             Get-PathEvidence "Rust build Cargo cache" @(".cargo\registry\index", ".cargo\registry\cache", ".cargo\git\db")
             Get-PathEvidence "Rust build target cache" @("Frontend\src-tauri\target\release\.fingerprint", "Frontend\src-tauri\target\release\deps", "Frontend\src-tauri\target\release\incremental")
-            Get-PathEvidence "Tauri app binary" @("build\tauri-app-binary-cache\scriber-desktop.exe", "build\cold-transfer\tauri-app-binary-cache\scriber-desktop.exe", "Frontend\src-tauri\target\release\scriber-desktop.exe")
+            Get-PathEvidence "Tauri app binary" @(
+              "build\tauri-app-binary-cache\scriber-desktop.exe",
+              "build\tauri-app-binary-cache\minisign-verify.exe",
+              "build\cold-transfer\tauri-app-binary-cache\scriber-desktop.exe",
+              "build\cold-transfer\tauri-app-binary-cache\minisign-verify.exe",
+              "Frontend\src-tauri\target\release\scriber-desktop.exe",
+              "Frontend\src-tauri\target\release\minisign-verify.exe"
+            )
             Get-PathEvidence "Rust audio sidecar" @("build\rust-audio-sidecar-cache")
             Get-PathEvidence "Rust diarization sidecar" @("build\rust-diarization-sidecar-cache")
             Get-PathEvidence "Sherpa ONNX static archive" @("build\sherpa-onnx-archive-cache")
@@ -1833,7 +1840,7 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: build/tauri-app-binary-cache
-          key: scriber-tauri-app-binary-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
+          key: scriber-tauri-app-binary-v2-${{ runner.os }}-${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}
 
       - name: Report Windows installer timing
         if: always()
@@ -2156,15 +2163,10 @@ jobs:
         env:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
         run: |
-          cargo build `
-            --locked `
-            --release `
-            --manifest-path Frontend\src-tauri\Cargo.toml `
-            --bin minisign-verify
-          if ($LASTEXITCODE -ne 0) {
-            throw "Building the release-only Minisign verifier failed."
-          }
           $verifier = "Frontend\src-tauri\target\release\minisign-verify.exe"
+          if (-not (Test-Path -LiteralPath $verifier -PathType Leaf)) {
+            throw "The attested Tauri bundle input is missing the release-only Minisign verifier."
+          }
           $downloadRoot = "build\release-api-roundtrip"
           $metadata = Get-Content -LiteralPath (Join-Path $downloadRoot "latest.json") -Raw | ConvertFrom-Json
           $verification = @()

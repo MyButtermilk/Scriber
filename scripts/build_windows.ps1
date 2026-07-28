@@ -920,6 +920,14 @@ if ($EnableTauriUpdater -and $ConfigureTauriUpdaterRuntime) {
 if ($UsePrebuiltTauriApp -and $FastLocalStagedApp) {
     throw "-UsePrebuiltTauriApp cannot be combined with -FastLocalStagedApp."
 }
+if ($UsePrebuiltTauriApp) {
+    foreach ($requiredPrebuiltName in @("scriber-desktop.exe", "minisign-verify.exe")) {
+        $requiredPrebuiltPath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\$requiredPrebuiltName"
+        if (-not (Test-Path -LiteralPath $requiredPrebuiltPath -PathType Leaf)) {
+            throw "Prebuilt Tauri bundle input was not found: $requiredPrebuiltPath"
+        }
+    }
+}
 if ($ParallelizeIndependentBuilds -and $FastLocalStagedApp) {
     throw "-ParallelizeIndependentBuilds cannot be combined with -FastLocalStagedApp."
 }
@@ -1217,9 +1225,11 @@ try {
                 $quotedConfigPath = $tauriBuildConfigPath.Replace('"', '\"')
                 $quotedBundleArg = $bundleArg.Replace('"', '\"')
                 if ($bundleExistingTauriApp) {
-                    $prebuiltExe = Join-Path $RepoRoot "Frontend\src-tauri\target\release\scriber-desktop.exe"
-                    if (-not (Test-Path -LiteralPath $prebuiltExe -PathType Leaf)) {
-                        throw "Prebuilt Tauri app executable was not found: $prebuiltExe"
+                    foreach ($requiredBundleName in @("scriber-desktop.exe", "scriber-audio-sidecar.exe", "minisign-verify.exe")) {
+                        $requiredBundlePath = Join-Path $RepoRoot "Frontend\src-tauri\target\release\$requiredBundleName"
+                        if (-not (Test-Path -LiteralPath $requiredBundlePath -PathType Leaf)) {
+                            throw "Required Tauri bundle executable was not found: $requiredBundlePath"
+                        }
                     }
                     $tauriCommand = 'npm run tauri:bundle -- --bundles "{0}" --config "{1}" --ci 2>&1' -f $quotedBundleArg, $quotedConfigPath
                 } else {

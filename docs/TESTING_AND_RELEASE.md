@@ -1252,9 +1252,12 @@ It:
   incremental state instead of downloading and expanding another 1.6 GB,
 - stores Cargo dependency state under a toolchain/Cargo-metadata key that does
   not change for ordinary app source or UI edits. A separate exact Tauri app
-  binary cache is keyed by the complete app inputs, concrete version, commit,
-  toolchain, target/profile, and updater-runtime fingerprint. A validated hit
-  uses `tauri bundle`. On a miss, the compile-only overlay allows `tauri build
+  bundle-binary cache contains `scriber-desktop.exe` and the required
+  `minisign-verify.exe`; both are version-, length-, and SHA-256-attested. It is
+  keyed by the complete app inputs, concrete version, commit, toolchain,
+  target/profile, updater-runtime fingerprint, and its export/import scripts. A
+  validated hit uses `tauri bundle`. An incomplete or older manifest fails
+  closed before packaging. On a miss, the compile-only overlay allows `tauri build
   --no-bundle` to overlap the sidecar producer; the same full-config `tauri
   bundle` path runs only after both complete,
 - prunes `build\tauri-sidecar-cache` to the one metadata-attested internal key
