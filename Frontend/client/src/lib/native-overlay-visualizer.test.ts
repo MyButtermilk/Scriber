@@ -62,15 +62,7 @@ test("outer strands converge at the focal sample", () => {
   const sampleCount = 201;
   const values = new Float32Array(sampleCount * 2);
   fillEnergyWaveYCoordinates(values, 0, 30, sampleCount, 1, 0.5, 0);
-  fillEnergyWaveYCoordinates(
-    values,
-    sampleCount,
-    30,
-    sampleCount,
-    1,
-    0.5,
-    ENERGY_WAVE_STRAND_COUNT - 1,
-  );
+  fillEnergyWaveYCoordinates(values, sampleCount, 30, sampleCount, 1, 0.5, ENERGY_WAVE_STRAND_COUNT - 1);
 
   const focusIndex = Math.round(ENERGY_WAVE_FOCUS * (sampleCount - 1));
   assert.ok(Math.abs(values[0] - 15) < 0.000001);
@@ -80,10 +72,7 @@ test("outer strands converge at the focal sample", () => {
 });
 
 test("rejects undersized caller buffers", () => {
-  assert.throws(
-    () => fillEnergyWaveYCoordinates(new Float32Array(4), 0, 29, 5, 0.5, 0, 0),
-    RangeError,
-  );
+  assert.throws(() => fillEnergyWaveYCoordinates(new Float32Array(4), 0, 29, 5, 0.5, 0, 0), RangeError);
 });
 
 test("reveals outer wave modes as microphone energy rises", () => {

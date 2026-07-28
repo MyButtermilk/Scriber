@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  summaryDocumentLanguage,
-  summaryTableOfContentsTitle,
-} from "./summary-document-language";
+import { summaryDocumentLanguage, summaryTableOfContentsTitle } from "./summary-document-language";
 
 test("table of contents follows an English summary instead of the German UI", () => {
   const summary = "The global order is changing, and this report explains the risks for companies.";

@@ -1,0 +1,6 @@
+dist
+node_modules
+output
+src-tauri
+client/public
+package-lock.json

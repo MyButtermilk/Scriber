@@ -3,6 +3,8 @@ import { QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { queryClient } from "./lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { AppLayout } from "@/components/layout/AppLayout";
+import { AppErrorBoundary } from "@/components/AppErrorBoundary";
+import { RouteDocumentTitle } from "@/components/RouteDocumentTitle";
 import { ThemeProvider } from "@/components/theme-provider";
 import { BackendStatusProvider, useBackendStatus } from "@/hooks/use-backend-status";
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
@@ -14,13 +16,12 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEve
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
 import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
 import { preloadPrimaryTabData } from "@/lib/tab-data-preload";
-import {
-  flushFrontendPerformanceReport,
-  setFrontendPerformanceReportingEnabled,
-} from "@/lib/frontend-performance";
+import { flushFrontendPerformanceReport, setFrontendPerformanceReportingEnabled } from "@/lib/frontend-performance";
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
+import { isBusyForUpdatePrompt, trayRecordingStateFromMessage } from "@/lib/runtime-message-state";
 import {
   checkDesktopUpdateIfDue,
   getCachedDesktopUpdateStatus,
@@ -31,7 +32,7 @@ import {
   type DesktopUpdateStatus,
 } from "@/lib/desktop-updates";
 
-// Primary tabs are eager so first navigation never blanks while a local chunk loads.
+// All five primary product tabs stay eager so every navigation path is immediate.
 import LiveMic from "@/pages/LiveMic";
 import Youtube from "@/pages/Youtube";
 import FileTranscribe from "@/pages/FileTranscribe";
@@ -47,7 +48,12 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 function PageLoader() {
   const { t } = useI18n();
   return (
-    <div className="flex min-h-[300px] items-start justify-center px-6 py-8" aria-label={t("Loading section")}>
+    <div
+      className="flex min-h-[300px] items-start justify-center px-6 py-8"
+      role="status"
+      aria-label={t("Loading section")}
+    >
+      <span className="sr-only">{t("Loading section")}</span>
       <div className="w-full max-w-5xl space-y-4">
         <div className="h-8 w-44 animate-pulse rounded-lg bg-slate-200/80 dark:bg-slate-800/80" />
         <div className="grid gap-3 sm:grid-cols-3">
@@ -62,35 +68,34 @@ function PageLoader() {
 }
 
 function TabRoutes() {
-  const [location] = useLocation();
+  const [location, setLocation] = useLocation();
   return (
     <AppLayout path={location}>
-      <Suspense fallback={<PageLoader />}>
-        <Switch>
-          <Route path="/" component={LiveMic} />
-          <Route path="/meetings/:id" component={Meetings} />
-          <Route path="/meetings" component={Meetings} />
-          <Route path="/youtube" component={Youtube} />
-          <Route path="/file" component={FileTranscribe} />
-          <Route path="/debug" component={DebugConsole} />
-          <Route path="/settings" component={Settings} />
-          <Route component={NotFound} />
-        </Switch>
-      </Suspense>
+      <AppErrorBoundary variant="route" resetKey={location} onNavigateHome={() => setLocation("/")}>
+        <Suspense fallback={<PageLoader />}>
+          <Switch>
+            <Route path="/" component={LiveMic} />
+            <Route path="/meetings/:id" component={Meetings} />
+            <Route path="/meetings" component={Meetings} />
+            <Route path="/youtube" component={Youtube} />
+            <Route path="/file" component={FileTranscribe} />
+            <Route path="/debug" component={DebugConsole} />
+            <Route path="/settings" component={Settings} />
+            <Route path="/transcript/:id" component={TranscriptDetail} />
+            <Route component={NotFound} />
+          </Switch>
+        </Suspense>
+      </AppErrorBoundary>
     </AppLayout>
   );
 }
 
 function Router() {
   return (
-    <Switch>
-      <Route path="/transcript/:id">
-        <Suspense fallback={<PageLoader />}>
-          <TranscriptDetail />
-        </Suspense>
-      </Route>
-      <Route component={TabRoutes} />
-    </Switch>
+    <>
+      <RouteDocumentTitle />
+      <TabRoutes />
+    </>
   );
 }
 
@@ -98,27 +103,31 @@ function RecordingErrorToastBridge() {
   const { toast } = useToast();
   const { t } = useI18n();
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    if (msg.type === "error") {
-      showRecordingErrorToast(toast, msg);
-      return;
-    }
-    if (msg.type === "session_finished" && String(msg.session?.status || "").toLowerCase() === "failed") {
-      const content = String(msg.session?.content || "");
-      const match = content.match(/\[Error\]\s*([^\n]+)/i);
-      const message = match?.[1]?.trim() || t("Live mic transcription failed. Check the selected provider and try again.");
-      const recordingError = recordingErrorToastMessageFromPayload({
-        type: "error",
-        apiVersion: msg.apiVersion,
-        message,
-        title: t("Recording Error"),
-        sessionId: msg.sessionId || (msg.session?.id != null ? String(msg.session.id) : undefined),
-      });
-      if (recordingError) {
-        showRecordingErrorToast(toast, recordingError);
+  const handleWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      if (msg.type === "error") {
+        showRecordingErrorToast(toast, msg);
+        return;
       }
-    }
-  }, [t, toast]);
+      if (msg.type === "session_finished" && String(msg.session?.status || "").toLowerCase() === "failed") {
+        const content = String(msg.session?.content || "");
+        const match = content.match(/\[Error\]\s*([^\n]+)/i);
+        const message =
+          match?.[1]?.trim() || t("Live mic transcription failed. Check the selected provider and try again.");
+        const recordingError = recordingErrorToastMessageFromPayload({
+          type: "error",
+          apiVersion: msg.apiVersion,
+          message,
+          title: t("Recording Error"),
+          sessionId: msg.sessionId || (msg.session?.id != null ? String(msg.session.id) : undefined),
+        });
+        if (recordingError) {
+          showRecordingErrorToast(toast, recordingError);
+        }
+      }
+    },
+    [t, toast],
+  );
 
   useSharedWebSocket(handleWsMessage);
   return null;
@@ -150,8 +159,7 @@ function TranscriptHistoryInvalidationBridge() {
     }
     if (invalidateAllDetails) {
       queryClient.invalidateQueries({
-        predicate: (query) => query.queryKey[0] === "/api/transcripts"
-          && typeof query.queryKey[1] === "string",
+        predicate: (query) => query.queryKey[0] === "/api/transcripts" && typeof query.queryKey[1] === "string",
       });
     }
 
@@ -169,32 +177,38 @@ function TranscriptHistoryInvalidationBridge() {
     });
   }, [queryClient]);
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    if (!msg || msg.type !== "history_updated") {
-      return;
-    }
+  const handleWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      if (!msg || msg.type !== "history_updated") {
+        return;
+      }
 
-    if (msg.transcriptId) {
-      pendingTranscriptIdsRef.current.add(msg.transcriptId);
-    } else {
-      invalidateAllDetailsRef.current = true;
-    }
-    if (msg.transcriptType) {
-      pendingTranscriptTypesRef.current.add(msg.transcriptType);
-    } else {
-      invalidateAllHistoryRef.current = true;
-    }
-    if (invalidationTimerRef.current === null) {
-      invalidationTimerRef.current = window.setTimeout(flushInvalidations, 250);
-    }
-  }, [flushInvalidations]);
+      if (msg.transcriptId) {
+        pendingTranscriptIdsRef.current.add(msg.transcriptId);
+      } else {
+        invalidateAllDetailsRef.current = true;
+      }
+      if (msg.transcriptType) {
+        pendingTranscriptTypesRef.current.add(msg.transcriptType);
+      } else {
+        invalidateAllHistoryRef.current = true;
+      }
+      if (invalidationTimerRef.current === null) {
+        invalidationTimerRef.current = window.setTimeout(flushInvalidations, 250);
+      }
+    },
+    [flushInvalidations],
+  );
 
-  useEffect(() => () => {
-    if (invalidationTimerRef.current !== null) {
-      window.clearTimeout(invalidationTimerRef.current);
-      invalidationTimerRef.current = null;
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (invalidationTimerRef.current !== null) {
+        window.clearTimeout(invalidationTimerRef.current);
+        invalidationTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   const { isConnected } = useSharedWebSocket(handleWsMessage);
 
@@ -221,23 +235,27 @@ function MeetingDetectionBridge() {
   const { t } = useI18n();
   const seenRef = useRef<Set<string>>(new Set());
 
-  const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
-    if (message.type !== "meeting_detected" || seenRef.current.has(message.detectionId)) return;
-    seenRef.current.add(message.detectionId);
-    if (message.source === "hotkey") {
-      setLocation(message.meetingId ? `/meetings/${message.meetingId}` : "/meetings");
-    }
-    toast({
-      title: message.meetingId ? t("Meeting controls opened") : t("Meeting recording requires confirmation"),
-      description: message.label,
-      duration: 5000,
-      action: message.source === "hotkey" ? undefined : (
-        <ToastAction altText={t("Review meeting recording")} onClick={() => setLocation("/meetings")}>
-          {t("Review")}
-        </ToastAction>
-      ),
-    });
-  }, [setLocation, t, toast]);
+  const handleWsMessage = useCallback(
+    (message: ScriberWebSocketMessage) => {
+      if (message.type !== "meeting_detected" || seenRef.current.has(message.detectionId)) return;
+      seenRef.current.add(message.detectionId);
+      if (message.source === "hotkey") {
+        setLocation(message.meetingId ? `/meetings/${message.meetingId}` : "/meetings");
+      }
+      toast({
+        title: message.meetingId ? t("Meeting controls opened") : t("Meeting recording requires confirmation"),
+        description: message.label,
+        duration: 5000,
+        action:
+          message.source === "hotkey" ? undefined : (
+            <ToastAction altText={t("Review meeting recording")} onClick={() => setLocation("/meetings")}>
+              {t("Review")}
+            </ToastAction>
+          ),
+      });
+    },
+    [setLocation, t, toast],
+  );
 
   useSharedWebSocket(handleWsMessage);
   return null;
@@ -245,73 +263,6 @@ function MeetingDetectionBridge() {
 
 const DESKTOP_UPDATE_STARTUP_DELAY_MS = 12_000;
 const DESKTOP_UPDATE_BACKGROUND_POLL_MS = 6 * 60 * 60 * 1000;
-const SETTINGS_SECTION_REQUEST_KEY = "scriber:open-settings-section";
-
-function isBusyForUpdatePrompt(msg: ScriberWebSocketMessage): boolean | null {
-  if (msg.type === "meeting_state") {
-    return ["starting", "recording", "paused", "stopping", "finalizing", "analyzing"].includes(
-      String(msg.meeting.state || "").toLowerCase(),
-    );
-  }
-  if (msg.type === "transcribing" || msg.type === "session_started") {
-    return true;
-  }
-  if (msg.type === "session_finished") {
-    return false;
-  }
-  if (msg.type === "state" || msg.type === "status") {
-    const recordingState = String(msg.recordingState || "").toLowerCase();
-    return Boolean(
-      msg.listening ||
-      (msg.type === "state" && msg.voiceEnrollmentActive) ||
-      msg.transcribing ||
-      (recordingState && !["idle", "completed", "failed", "stopped"].includes(recordingState)),
-    );
-  }
-  return null;
-}
-
-function trayRecordingStateFromMessage(
-  msg: ScriberWebSocketMessage,
-): { active: boolean; mode: string } | null {
-  if (msg.type === "meeting_state") {
-    const meetingState = String(msg.meeting.state || "").toLowerCase();
-    if (["starting", "recording", "paused"].includes(meetingState)) {
-      return { active: true, mode: `meeting-${meetingState}` };
-    }
-    if (["stopping", "finalizing", "analyzing"].includes(meetingState)) {
-      return { active: false, mode: `meeting-${meetingState}` };
-    }
-    return { active: false, mode: "idle" };
-  }
-  if (msg.type === "session_started") {
-    return { active: true, mode: "initializing" };
-  }
-  if (msg.type === "transcribing") {
-    return { active: false, mode: "transcribing" };
-  }
-  if (msg.type === "session_finished" || msg.type === "error") {
-    return { active: false, mode: "idle" };
-  }
-  if (msg.type !== "state" && msg.type !== "status") {
-    return null;
-  }
-
-  const recordingState = String(msg.recordingState || "").toLowerCase();
-  if (recordingState === "initializing") {
-    return { active: true, mode: "initializing" };
-  }
-  if (recordingState === "recording" || msg.listening) {
-    return { active: true, mode: "recording" };
-  }
-  if (recordingState === "finalizing" || msg.transcribing) {
-    return { active: false, mode: "transcribing" };
-  }
-  if (["idle", "completed", "failed", "stopped"].includes(recordingState)) {
-    return { active: false, mode: "idle" };
-  }
-  return null;
-}
 
 function TrayRecordingStateBridge() {
   const lastStateRef = useRef("");
@@ -330,13 +281,16 @@ function TrayRecordingStateBridge() {
     });
   }, []);
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    const next = trayRecordingStateFromMessage(msg);
-    if (!next) {
-      return;
-    }
-    publish(next.active, next.mode);
-  }, [publish]);
+  const handleWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      const next = trayRecordingStateFromMessage(msg);
+      if (!next) {
+        return;
+      }
+      publish(next.active, next.mode);
+    },
+    [publish],
+  );
 
   useSharedWebSocket(handleWsMessage);
 
@@ -356,25 +310,28 @@ function TauriNavigationBridge() {
   const [, setLocation] = useLocation();
   const lastNavigationIdRef = useRef(0);
 
-  const applyNavigation = useCallback((request: TauriNavigationRequest | null | undefined) => {
-    const path = String(request?.path || "").trim();
-    if (!path.startsWith("/")) {
-      return;
-    }
-    const navigationId = Number(request?.navigationId || 0);
-    if (Number.isSafeInteger(navigationId) && navigationId > 0) {
-      if (navigationId <= lastNavigationIdRef.current) {
+  const applyNavigation = useCallback(
+    (request: TauriNavigationRequest | null | undefined) => {
+      const path = String(request?.path || "").trim();
+      if (!path.startsWith("/")) {
         return;
       }
-      lastNavigationIdRef.current = navigationId;
-    }
-    setLocation(path);
-    if (Number.isSafeInteger(navigationId) && navigationId > 0) {
-      void import("@tauri-apps/api/core")
-        .then(({ invoke }) => invoke<boolean>("acknowledge_navigation", { navigationId }))
-        .catch((error) => console.debug("Tauri navigation acknowledgement failed.", error));
-    }
-  }, [setLocation]);
+      const navigationId = Number(request?.navigationId || 0);
+      if (Number.isSafeInteger(navigationId) && navigationId > 0) {
+        if (navigationId <= lastNavigationIdRef.current) {
+          return;
+        }
+        lastNavigationIdRef.current = navigationId;
+      }
+      setLocation(path);
+      if (Number.isSafeInteger(navigationId) && navigationId > 0) {
+        void import("@tauri-apps/api/core")
+          .then(({ invoke }) => invoke<boolean>("acknowledge_navigation", { navigationId }))
+          .catch((error) => console.debug("Tauri navigation acknowledgement failed.", error));
+      }
+    },
+    [setLocation],
+  );
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -399,8 +356,7 @@ function TauriNavigationBridge() {
       if (!disposed) {
         applyNavigation(pending);
       }
-    })()
-      .catch((error) => console.debug("Tauri navigation listener failed.", error));
+    })().catch((error) => console.debug("Tauri navigation listener failed.", error));
     return () => {
       disposed = true;
       unlisten?.();
@@ -420,7 +376,7 @@ function DesktopUpdateAutoCheckBridge() {
 
   const openUpdateSettings = useCallback(() => {
     if (typeof window !== "undefined") {
-      window.sessionStorage.setItem(SETTINGS_SECTION_REQUEST_KEY, "updates");
+      window.sessionStorage.setItem(SETTINGS_SECTION_REQUEST_STORAGE_KEY, "updates");
     }
     setLocation("/settings");
     window.setTimeout(() => {
@@ -429,72 +385,83 @@ function DesktopUpdateAutoCheckBridge() {
     dismiss();
   }, [dismiss, setLocation]);
 
-  const handleUpdateToastClick = useCallback((event: ReactMouseEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("button,a,[role='button']")) {
-      return;
-    }
-    openUpdateSettings();
-  }, [openUpdateSettings]);
+  const handleUpdateToastClick = useCallback(
+    (event: ReactMouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("button,a,[role='button']")) {
+        return;
+      }
+      openUpdateSettings();
+    },
+    [openUpdateSettings],
+  );
 
-  const installUpdateFromToast = useCallback(async (event?: ReactMouseEvent) => {
-    event?.stopPropagation();
-    if (installingFromToastRef.current) {
-      return;
-    }
-    installingFromToastRef.current = true;
-    toast({
-      variant: "update",
-      title: t("Installing update"),
-      description: t("Scriber is downloading the update and will restart when it is ready."),
-      duration: 30000,
-    });
-    try {
-      await installDesktopUpdate();
-    } catch (error) {
-      installingFromToastRef.current = false;
+  const installUpdateFromToast = useCallback(
+    async (event?: ReactMouseEvent) => {
+      event?.stopPropagation();
+      if (installingFromToastRef.current) {
+        return;
+      }
+      installingFromToastRef.current = true;
       toast({
-        variant: "destructive",
-        title: t("Update failed"),
-        description: error instanceof Error ? error.message : String(error || t("Update installation failed.")),
-        duration: 7000,
+        variant: "update",
+        title: t("Installing update"),
+        description: t("Scriber is downloading the update and will restart when it is ready."),
+        duration: 30000,
       });
-    }
-  }, [t, toast]);
+      try {
+        await installDesktopUpdate();
+      } catch (error) {
+        installingFromToastRef.current = false;
+        toast({
+          variant: "destructive",
+          title: t("Update failed"),
+          description: error instanceof Error ? error.message : String(error || t("Update installation failed.")),
+          duration: 7000,
+        });
+      }
+    },
+    [t, toast],
+  );
 
-  const maybeNotify = useCallback((status: DesktopUpdateStatus) => {
-    if (busyRef.current || !shouldNotifyDesktopUpdate(status) || !status.version) {
-      return;
-    }
-    if (notifiedVersionRef.current === status.version) {
-      return;
-    }
-    notifiedVersionRef.current = status.version;
-    toast({
-      variant: "update",
-      title: (
-        <span className="flex items-center gap-2">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white shadow-[0_10px_22px_rgba(37,99,235,0.22)]">
-            <Download className="h-4 w-4" aria-hidden="true" />
+  const maybeNotify = useCallback(
+    (status: DesktopUpdateStatus) => {
+      if (busyRef.current || !shouldNotifyDesktopUpdate(status) || !status.version) {
+        return;
+      }
+      if (notifiedVersionRef.current === status.version) {
+        return;
+      }
+      notifiedVersionRef.current = status.version;
+      toast({
+        variant: "update",
+        title: (
+          <span className="flex items-center gap-2">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-white shadow-[0_10px_22px_rgba(37,99,235,0.22)]">
+              <Download className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span>{t("Update ready")}</span>
           </span>
-          <span>{t("Update ready")}</span>
-        </span>
-      ),
-      description: (
-        <span>
-          {t("Scriber {{version}} is available. Click this notice to open update settings.", { version: status.version })}
-        </span>
-      ),
-      duration: 12000,
-      className: "select-none",
-      onClick: handleUpdateToastClick,
-      action: (
-        <ToastAction altText={t("Install update now")} onClick={(event) => void installUpdateFromToast(event)}>
-          {t("Install now")}
-        </ToastAction>
-      ),
-    });
-  }, [handleUpdateToastClick, installUpdateFromToast, t, toast]);
+        ),
+        description: (
+          <span>
+            {t("Scriber {{version}} is available. Click this notice to open update settings.", {
+              version: status.version,
+            })}
+          </span>
+        ),
+        duration: 12000,
+        className: "select-none",
+        onClick: handleUpdateToastClick,
+        action: (
+          <ToastAction altText={t("Install update now")} onClick={(event) => void installUpdateFromToast(event)}>
+            {t("Install now")}
+          </ToastAction>
+        ),
+      });
+    },
+    [handleUpdateToastClick, installUpdateFromToast, t, toast],
+  );
 
   const checkIfDue = useCallback(() => {
     if (!isTauriRuntime()) {
@@ -505,17 +472,20 @@ function DesktopUpdateAutoCheckBridge() {
       .catch((error) => console.debug("Desktop update background check failed.", error));
   }, [maybeNotify]);
 
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    const busy = isBusyForUpdatePrompt(msg);
-    if (busy === null) {
-      return;
-    }
-    const wasBusy = busyRef.current;
-    busyRef.current = busy;
-    if (wasBusy && !busy) {
-      maybeNotify(getCachedDesktopUpdateStatus());
-    }
-  }, [maybeNotify]);
+  const handleWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      const busy = isBusyForUpdatePrompt(msg);
+      if (busy === null) {
+        return;
+      }
+      const wasBusy = busyRef.current;
+      busyRef.current = busy;
+      if (wasBusy && !busy) {
+        maybeNotify(getCachedDesktopUpdateStatus());
+      }
+    },
+    [maybeNotify],
+  );
 
   useSharedWebSocket(handleWsMessage);
 
@@ -574,10 +544,7 @@ function FrontendPerformanceFlushBridge() {
     if (message.type !== "frontend_performance_flush") {
       return;
     }
-    void flushFrontendPerformanceReport(
-      message.heartbeatSequence,
-      message.sourceInstanceId,
-    );
+    void flushFrontendPerformanceReport(message.heartbeatSequence, message.sourceInstanceId);
   }, []);
 
   useSharedWebSocket(handleWsMessage);
@@ -589,11 +556,7 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
-    void withPromiseTimeout(
-      loadBackendBaseUrlFromTauri(),
-      5_000,
-      "Initial Tauri backend lookup",
-    )
+    void withPromiseTimeout(loadBackendBaseUrlFromTauri(), 5_000, "Initial Tauri backend lookup")
       .catch((error) => {
         console.debug("Initial Tauri backend lookup failed; continuing with health fallback.", error);
       })
@@ -630,4 +593,3 @@ function App() {
 }
 
 export default App;
-

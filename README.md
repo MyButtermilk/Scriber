@@ -108,6 +108,8 @@ speaker echo from the microphone track; the raw source is still retained for
 recovery. After stop, Scriber creates a timestamped canonical transcript,
 summary, decisions, action items, cited chat answers, and reusable exports.
 
+![Scriber bot-free meeting workspace](docs/screenshots/meetings.png)
+
 - Independent raw mic, AEC-clean mic, and system tracks on one timeline
 - Crash-safe chunks, pause/resume gaps, startup recovery, and configurable audio retention
 - Provider-native timestamps and speaker turns where supported
@@ -139,6 +141,8 @@ summary, decisions, action items, cited chat answers, and reusable exports.
 ## ✨ The transcript is the beginning, not the result
 
 Every source lands in the same local transcript library. From there, Scriber helps turn raw speech into something you can actually use.
+
+![Scriber transcript summary and table of contents](docs/screenshots/transcript_detail.png)
 
 - Search across live recordings, Meetings, YouTube videos, and imported files
 - Automatic or manual summaries

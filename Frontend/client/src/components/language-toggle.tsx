@@ -10,9 +10,7 @@ interface LanguageToggleProps {
 
 export function LanguageToggle({ compact = false, className }: LanguageToggleProps) {
   const { locale, setLocale, toggleLocale, t } = useI18n();
-  const switchLabel = locale === "de"
-    ? t("Switch interface to English")
-    : t("Switch interface to German");
+  const switchLabel = locale === "de" ? t("Switch interface to English") : t("Switch interface to German");
 
   if (!compact) {
     return (
@@ -30,9 +28,8 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
         {(["de", "en"] as const).map((option) => {
           const selected = locale === option;
           const optionLabel = option === "de" ? "Deutsch" : "English";
-          const switchOptionLabel = option === "de"
-            ? t("Switch interface to German")
-            : t("Switch interface to English");
+          const switchOptionLabel =
+            option === "de" ? t("Switch interface to German") : t("Switch interface to English");
           const ariaLabel = selected ? optionLabel : switchOptionLabel;
 
           return (

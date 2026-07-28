@@ -69,16 +69,18 @@ export function TranscriptSummaryRetryButton({
       variant="outline"
       size="sm"
       className={cn(
-        "min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300",
+        "min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-ui-micro font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300",
         className,
       )}
       onClick={retrySummary}
       disabled={isRetrying}
       aria-busy={isRetrying}
       aria-live="polite"
-      aria-label={isRetrying
-        ? t("Retrying summary for {{title}}", { title: transcriptTitle })
-        : t("Retry summary for {{title}}", { title: transcriptTitle })}
+      aria-label={
+        isRetrying
+          ? t("Retrying summary for {{title}}", { title: transcriptTitle })
+          : t("Retry summary for {{title}}", { title: transcriptTitle })
+      }
       title={isRetrying ? t("Creating a new summary") : t("Summary failed. Try again")}
     >
       {isRetrying ? (

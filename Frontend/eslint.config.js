@@ -6,20 +6,11 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: [
-      "dist/**",
-      "node_modules/**",
-      "output/**",
-      "src-tauri/**",
-      "client/public/**",
-    ],
+    ignores: ["dist/**", "node_modules/**", "output/**", "src-tauri/**", "client/public/**"],
   },
   {
     files: ["**/*.{js,ts,tsx}"],
-    extends: [
-      js.configs.recommended,
-      ...tseslint.configs.recommended,
-    ],
+    extends: [js.configs.recommended, ...tseslint.configs.recommended],
     languageOptions: {
       ecmaVersion: "latest",
       globals: {
@@ -54,15 +45,8 @@ export default tseslint.config(
     },
   },
   {
-    files: [
-      "client/src/App.tsx",
-      "client/src/pages/**/*.tsx",
-      "client/src/components/**/*.tsx",
-    ],
-    ignores: [
-      "client/src/components/ui/**",
-      "client/src/components/theme-provider.tsx",
-    ],
+    files: ["client/src/App.tsx", "client/src/pages/**/*.tsx", "client/src/components/**/*.tsx"],
+    ignores: ["client/src/components/ui/**", "client/src/components/theme-provider.tsx"],
     rules: {
       "react-refresh/only-export-components": [
         "error",

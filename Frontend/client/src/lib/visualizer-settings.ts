@@ -12,18 +12,12 @@ export type VisualizerSettings = {
   overlayStyle: OverlayVisualizerStyle;
 };
 
-export function normalizeVisualizerBarCount(
-  value: unknown,
-  fallback = DEFAULT_VISUALIZER_BAR_COUNT,
-): number {
+export function normalizeVisualizerBarCount(value: unknown, fallback = DEFAULT_VISUALIZER_BAR_COUNT): number {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return fallback;
   }
-  return Math.max(
-    MIN_VISUALIZER_BAR_COUNT,
-    Math.min(MAX_VISUALIZER_BAR_COUNT, Math.round(numeric)),
-  );
+  return Math.max(MIN_VISUALIZER_BAR_COUNT, Math.min(MAX_VISUALIZER_BAR_COUNT, Math.round(numeric)));
 }
 
 export function normalizeOverlayVisualizerStyle(value: unknown): OverlayVisualizerStyle {
@@ -31,11 +25,7 @@ export function normalizeOverlayVisualizerStyle(value: unknown): OverlayVisualiz
 }
 
 export async function loadVisualizerSettings(signal?: AbortSignal): Promise<VisualizerSettings> {
-  const res = await fetchWithTimeout(
-    apiUrl("/api/settings"),
-    { credentials: "include", signal },
-    10_000,
-  );
+  const res = await fetchWithTimeout(apiUrl("/api/settings"), { credentials: "include", signal }, 10_000);
   if (!res.ok) {
     throw new Error(res.statusText || "Failed to load visualizer settings");
   }

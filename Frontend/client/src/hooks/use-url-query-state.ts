@@ -13,11 +13,7 @@ function defaultSerialize<T>(value: T): string {
   return String(value);
 }
 
-export function useUrlQueryState<T>(
-  key: string,
-  defaultValue: T,
-  options: UseUrlQueryStateOptions<T> = {},
-) {
+export function useUrlQueryState<T>(key: string, defaultValue: T, options: UseUrlQueryStateOptions<T> = {}) {
   const parseRef = useRef<ParseFn<T> | undefined>(options.parse);
   const serializeRef = useRef<SerializeFn<T>>(options.serialize ?? defaultSerialize);
   parseRef.current = options.parse;

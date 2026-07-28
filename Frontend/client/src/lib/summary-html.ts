@@ -139,15 +139,21 @@ function childText(node: Node): string {
 
 function listItemText(element: Element, index: number, ordered: boolean): string {
   const prefix = ordered ? `${index + 1}. ` : "- ";
-  const content = childText(element).trim().replace(/\n{3,}/g, "\n\n");
+  const content = childText(element)
+    .trim()
+    .replace(/\n{3,}/g, "\n\n");
   return content ? `${prefix}${content}\n` : "";
 }
 
 function tableText(element: Element): string {
-  return Array.from(element.querySelectorAll(":scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr"))
-    .map((row) => Array.from(row.querySelectorAll(":scope > th, :scope > td"))
-      .map((cell) => childText(cell).trim())
-      .join("\t"))
+  return Array.from(
+    element.querySelectorAll(":scope > thead > tr, :scope > tbody > tr, :scope > tfoot > tr, :scope > tr"),
+  )
+    .map((row) =>
+      Array.from(row.querySelectorAll(":scope > th, :scope > td"))
+        .map((cell) => childText(cell).trim())
+        .join("\t"),
+    )
     .filter(Boolean)
     .join("\n");
 }

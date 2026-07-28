@@ -7,183 +7,164 @@ import type { TranslationValues } from "@/i18n";
 
 const STARTUP_GRACE_MS = 9000;
 const STARTUP_RECOVERABLE_ERRORS = new Set([
-    "Backend is starting",
-    "Managed backend process started",
-    "Managed backend is starting",
-    "Backend is not running",
-    "Connection timed out",
-    "Connection failed",
+  "Backend is starting",
+  "Managed backend process started",
+  "Managed backend is starting",
+  "Backend is not running",
+  "Connection timed out",
+  "Connection failed",
 ]);
 
 type Translate = (source: string, values?: TranslationValues) => string;
 
 function localizedBackendStatus(message: string, t: Translate): string {
-    const serverStatus = message.match(/^Server returned\s+(\d+)$/);
-    if (serverStatus) {
-        return t("Server returned {{status}}", { status: serverStatus[1] });
-    }
-    const timeout = message.match(/^(.+) timed out$/);
-    if (timeout) {
-        return t("{{label}} timed out", { label: t(timeout[1]) });
-    }
-    if (message.startsWith("Managed backend process started")) {
-        return t("Managed backend process started");
-    }
-    if (message.startsWith("Managed backend restarted")) {
-        return t("Managed backend restarted");
-    }
-    const startFailure = message.match(/^Failed to start backend:\s*(.+)$/);
-    if (startFailure) {
-        return t("Failed to start backend: {{error}}", { error: startFailure[1] });
-    }
-    const exited = message.match(/^Managed backend exited with\s+(.+)$/);
-    if (exited) {
-        return t("Managed backend exited with {{status}}", { status: exited[1] });
-    }
-    const inspectionFailure = message.match(/^Failed to inspect backend process:\s*(.+)$/);
-    if (inspectionFailure) {
-        return t("Failed to inspect backend process: {{error}}", { error: inspectionFailure[1] });
-    }
-    return t(message);
+  const serverStatus = message.match(/^Server returned\s+(\d+)$/);
+  if (serverStatus) {
+    return t("Server returned {{status}}", { status: serverStatus[1] });
+  }
+  const timeout = message.match(/^(.+) timed out$/);
+  if (timeout) {
+    return t("{{label}} timed out", { label: t(timeout[1]) });
+  }
+  if (message.startsWith("Managed backend process started")) {
+    return t("Managed backend process started");
+  }
+  if (message.startsWith("Managed backend restarted")) {
+    return t("Managed backend restarted");
+  }
+  const startFailure = message.match(/^Failed to start backend:\s*(.+)$/);
+  if (startFailure) {
+    return t("Failed to start backend: {{error}}", { error: startFailure[1] });
+  }
+  const exited = message.match(/^Managed backend exited with\s+(.+)$/);
+  if (exited) {
+    return t("Managed backend exited with {{status}}", { status: exited[1] });
+  }
+  const inspectionFailure = message.match(/^Failed to inspect backend process:\s*(.+)$/);
+  if (inspectionFailure) {
+    return t("Failed to inspect backend process: {{error}}", { error: inspectionFailure[1] });
+  }
+  return t(message);
 }
 
 export function BackendOfflineBanner() {
-    const { t } = useI18n();
-    const {
-        isOnline,
-        isChecking,
-        hasConnected,
-        backendStarting,
-        backendMessage,
-        error,
-        checkNow,
-    } = useBackendStatus();
-    const [startupGraceElapsed, setStartupGraceElapsed] = useState(false);
+  const { t } = useI18n();
+  const { isOnline, isChecking, hasConnected, backendStarting, backendMessage, error, checkNow } = useBackendStatus();
+  const [startupGraceElapsed, setStartupGraceElapsed] = useState(false);
 
-    useEffect(() => {
-        if (hasConnected) {
-            setStartupGraceElapsed(true);
-            return;
-        }
-
-        setStartupGraceElapsed(false);
-        const timeoutId = window.setTimeout(() => {
-            setStartupGraceElapsed(true);
-        }, STARTUP_GRACE_MS);
-
-        return () => window.clearTimeout(timeoutId);
-    }, [hasConnected]);
-
-    if (isOnline) {
-        return null;
+  useEffect(() => {
+    if (hasConnected) {
+      setStartupGraceElapsed(true);
+      return;
     }
 
-    const isStartupRecoverable = !error || STARTUP_RECOVERABLE_ERRORS.has(error);
-    const showStartup = !hasConnected && (backendStarting || (!startupGraceElapsed && isStartupRecoverable));
-    const startupDetail = backendStarting
-        ? localizedBackendStatus(backendMessage || "Managed backend is starting", t)
-        : t("Connecting to the local API");
+    setStartupGraceElapsed(false);
+    const timeoutId = window.setTimeout(() => {
+      setStartupGraceElapsed(true);
+    }, STARTUP_GRACE_MS);
 
-    if (showStartup) {
-        return (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/98 px-5 backdrop-blur-md">
-                <div className="w-full max-w-[31rem] rounded-[1.75rem] border border-border/60 bg-card/90 p-7 text-card-foreground shadow-[0_24px_80px_-42px_rgba(15,23,42,0.55)] ring-1 ring-white/10 sm:p-8">
-                    <div className="flex flex-col items-center text-center">
-                        <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
-                            <div className="absolute inset-0 rounded-full bg-primary/10 scriber-startup-pulse" />
-                            <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-card shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
-                                <img
-                                    src="/favicon.svg"
-                                    alt=""
-                                    aria-hidden="true"
-                                    className="h-9 w-9 object-contain"
-                                    draggable={false}
-                                />
-                            </div>
-                        </div>
+    return () => window.clearTimeout(timeoutId);
+  }, [hasConnected]);
 
-                        <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                            {t("Local service")}
-                        </p>
-                        <h2 className="mb-3 text-2xl font-semibold tracking-tight text-foreground">
-                            {t("Starting Scriber")}
-                        </h2>
-                        <p className="max-w-sm text-sm leading-6 text-muted-foreground">
-                            {t("The desktop backend is coming online. This usually takes a few seconds after launch.")}
-                        </p>
+  if (isOnline) {
+    return null;
+  }
 
-                        <div className="mt-7 w-full max-w-sm">
-                            <div className="h-2 overflow-hidden rounded-full bg-muted shadow-[inset_0_1px_3px_rgba(15,23,42,0.18)]">
-                                <div className="h-full w-2/5 rounded-full bg-primary/80 scriber-startup-progress" />
-                            </div>
-                            <div className="mt-4 flex items-center justify-center gap-2 text-xs font-medium text-muted-foreground">
-                                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-                                {startupDetail}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        );
-    }
+  const isStartupRecoverable = !error || STARTUP_RECOVERABLE_ERRORS.has(error);
+  const showStartup = !hasConnected && (backendStarting || (!startupGraceElapsed && isStartupRecoverable));
+  const startupDetail = backendStarting
+    ? localizedBackendStatus(backendMessage || "Managed backend is starting", t)
+    : t("Connecting to the local API");
 
+  if (showStartup) {
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 px-5 backdrop-blur-sm">
-            <div className="w-full max-w-md rounded-[1.5rem] border border-destructive/25 bg-card p-8 shadow-[0_24px_80px_-42px_rgba(15,23,42,0.6)]">
-                <div className="flex flex-col items-center text-center">
-                    <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
-                        <AlertCircle className="h-8 w-8 text-destructive" aria-hidden="true" />
-                    </div>
-
-                    <h2 className="mb-3 text-xl font-semibold tracking-tight text-foreground">
-                        {t("Backend Not Available")}
-                    </h2>
-
-                    <p className="mb-6 leading-6 text-muted-foreground">
-                        {error === "Backend is not running" ? (
-                            <>
-                                {t("Scriber tried to start the local backend, but it is not ready yet. Restart the backend from the tray icon or try again.")}
-                            </>
-                        ) : error === "Connection timed out" ? (
-                            <>
-                                {t("The backend is taking too long to respond. It may be starting up or experiencing issues.")}
-                            </>
-                        ) : (
-                            <>
-                                {t("Unable to connect to the backend service. Please ensure the application is running properly.")}
-                            </>
-                        )}
-                        {error && !["Backend is not running", "Connection timed out"].includes(error) && (
-                            <span className="mt-3 block text-sm">{localizedBackendStatus(error, t)}</span>
-                        )}
-                    </p>
-
-                    <div className="flex flex-col gap-3 sm:flex-row">
-                        <Button
-                            variant="outline"
-                            onClick={checkNow}
-                            disabled={isChecking}
-                            className="min-w-[140px]"
-                        >
-                            {isChecking ? (
-                                <>
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                                    {t("Checking...")}
-                                </>
-                            ) : (
-                                <>
-                                    <RefreshCw className="mr-2 h-4 w-4" />
-                                    {t("Retry Connection")}
-                                </>
-                            )}
-                        </Button>
-                    </div>
-
-                    <p className="mt-6 text-xs text-muted-foreground/70">
-                        {t("The app will automatically reconnect when the backend becomes available.")}
-                    </p>
-                </div>
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/98 px-5 backdrop-blur-md">
+        <div className="w-full max-w-[31rem] rounded-[1.75rem] border border-border/60 bg-card/90 p-7 text-card-foreground shadow-[0_24px_80px_-42px_rgba(15,23,42,0.55)] ring-1 ring-white/10 sm:p-8">
+          <div className="flex flex-col items-center text-center">
+            <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
+              <div className="absolute inset-0 rounded-full bg-primary/10 scriber-startup-pulse" />
+              <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-card shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
+                <img
+                  src="/favicon.svg"
+                  alt=""
+                  aria-hidden="true"
+                  className="h-9 w-9 object-contain"
+                  draggable={false}
+                />
+              </div>
             </div>
+
+            <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              {t("Local service")}
+            </p>
+            <h2 className="mb-3 text-2xl font-semibold tracking-tight text-foreground">{t("Starting Scriber")}</h2>
+            <p className="max-w-sm text-sm leading-6 text-muted-foreground">
+              {t("The desktop backend is coming online. This usually takes a few seconds after launch.")}
+            </p>
+
+            <div className="mt-7 w-full max-w-sm">
+              <div className="h-2 overflow-hidden rounded-full bg-muted shadow-[inset_0_1px_3px_rgba(15,23,42,0.18)]">
+                <div className="h-full w-2/5 rounded-full bg-primary/80 scriber-startup-progress" />
+              </div>
+              <div className="mt-4 flex items-center justify-center gap-2 text-xs font-medium text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                {startupDetail}
+              </div>
+            </div>
+          </div>
         </div>
+      </div>
     );
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/95 px-5 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-[1.5rem] border border-destructive/25 bg-card p-8 shadow-[0_24px_80px_-42px_rgba(15,23,42,0.6)]">
+        <div className="flex flex-col items-center text-center">
+          <div className="mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-destructive/10">
+            <AlertCircle className="h-8 w-8 text-destructive" aria-hidden="true" />
+          </div>
+
+          <h2 className="mb-3 text-xl font-semibold tracking-tight text-foreground">{t("Backend Not Available")}</h2>
+
+          <p className="mb-6 leading-6 text-muted-foreground">
+            {error === "Backend is not running" ? (
+              <>
+                {t(
+                  "Scriber tried to start the local backend, but it is not ready yet. Restart the backend from the tray icon or try again.",
+                )}
+              </>
+            ) : error === "Connection timed out" ? (
+              <>{t("The backend is taking too long to respond. It may be starting up or experiencing issues.")}</>
+            ) : (
+              <>{t("Unable to connect to the backend service. Please ensure the application is running properly.")}</>
+            )}
+            {error && !["Backend is not running", "Connection timed out"].includes(error) && (
+              <span className="mt-3 block text-sm">{localizedBackendStatus(error, t)}</span>
+            )}
+          </p>
+
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <Button variant="outline" onClick={checkNow} disabled={isChecking} className="min-w-[140px]">
+              {isChecking ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  {t("Checking...")}
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="mr-2 h-4 w-4" />
+                  {t("Retry Connection")}
+                </>
+              )}
+            </Button>
+          </div>
+
+          <p className="mt-6 text-xs text-muted-foreground/70">
+            {t("The app will automatically reconnect when the backend becomes available.")}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
 }

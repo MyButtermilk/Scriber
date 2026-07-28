@@ -21,17 +21,23 @@ export function useDeviceChangeRefresh(enabled: boolean): void {
         window.clearTimeout(refreshTimer);
       }
       refreshTimer = window.setTimeout(() => {
-        void fetchWithTimeout(apiUrl("/api/microphones/refresh"), {
-          method: "POST",
-          credentials: "include",
-        }, 8_000).then(async (res): Promise<MicrophonesRefreshResponse | null> => {
-          if (!res.ok) {
-            return null;
-          }
-          return (await res.json()) as MicrophonesRefreshResponse;
-        }).catch(() => {
-          // Best-effort hint; backend DeviceMonitor polling/native callbacks remain authoritative.
-        });
+        void fetchWithTimeout(
+          apiUrl("/api/microphones/refresh"),
+          {
+            method: "POST",
+            credentials: "include",
+          },
+          8_000,
+        )
+          .then(async (res): Promise<MicrophonesRefreshResponse | null> => {
+            if (!res.ok) {
+              return null;
+            }
+            return (await res.json()) as MicrophonesRefreshResponse;
+          })
+          .catch(() => {
+            // Best-effort hint; backend DeviceMonitor polling/native callbacks remain authoritative.
+          });
       }, 500);
     };
 

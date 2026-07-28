@@ -11,25 +11,12 @@ import {
   CommandShortcut,
   CommandSeparator,
 } from "@/components/ui/command";
-import {
-  Mic,
-  Square,
-  Settings,
-  Youtube,
-  FolderOpen,
-  Home,
-  Terminal,
-  CalendarClock,
-} from "lucide-react";
+import { Mic, Square, Settings, Youtube, FolderOpen, Home, Terminal, CalendarClock } from "lucide-react";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
-import {
-  presentLiveMicControlFailure,
-  requestLiveMicStart,
-  requestLiveMicStop,
-} from "@/lib/live-mic-control";
+import { presentLiveMicControlFailure, requestLiveMicStart, requestLiveMicStop } from "@/lib/live-mic-control";
 import type { SettingsResponse } from "@/lib/api-types";
 import { useBackendStatus } from "@/hooks/use-backend-status";
 import { useI18n } from "@/i18n";
@@ -78,10 +65,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const { data: settings } = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
     queryFn: async ({ signal }) => {
-      const res = await fetchWithTimeout(apiUrl("/api/settings"), {
-        credentials: "include",
-        signal,
-      }, 10_000);
+      const res = await fetchWithTimeout(
+        apiUrl("/api/settings"),
+        {
+          credentials: "include",
+          signal,
+        },
+        10_000,
+      );
       if (!res.ok) throw new Error(t("Failed to load settings"));
       return (await res.json()) as SettingsResponse;
     },
@@ -95,10 +86,14 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const { data: transcriptsData } = useQuery<{ items: Transcript[] }>({
     queryKey: ["/api/transcripts", { limit: 50 }],
     queryFn: async ({ signal }) => {
-      const res = await fetchWithTimeout(apiUrl("/api/transcripts?limit=50"), {
-        credentials: "include",
-        signal,
-      }, 10_000);
+      const res = await fetchWithTimeout(
+        apiUrl("/api/transcripts?limit=50"),
+        {
+          credentials: "include",
+          signal,
+        },
+        10_000,
+      );
       if (!res.ok) throw new Error(t("Failed to load transcripts"));
       return res.json();
     },
@@ -235,9 +230,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
                   >
                     <Icon className="mr-2 h-4 w-4" />
                     <span className="flex-1 truncate">{displayTitle}</span>
-                    <span className="ml-2 text-xs text-muted-foreground">
-                      {formatDate(transcript.createdAt)}
-                    </span>
+                    <span className="ml-2 text-xs text-muted-foreground">{formatDate(transcript.createdAt)}</span>
                   </CommandItem>
                 );
               })}

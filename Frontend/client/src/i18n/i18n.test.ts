@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test, { before } from "node:test";
 import * as ts from "typescript";
 import {
   LANGUAGE_STORAGE_KEY,
   getLocaleTag,
+  initializeLocaleCatalog,
   localeFromLanguages,
   localizeLegacyDateLabel,
   translate,
@@ -16,6 +17,8 @@ import { germanTranslations } from "@/i18n/translations/de";
 import { meetingsTranslations } from "@/i18n/translations/de/meetings";
 import { settingsTranslations } from "@/i18n/translations/de/settings";
 import { transcriptionTranslations } from "@/i18n/translations/de/transcription";
+
+before(() => initializeLocaleCatalog());
 
 function placeholders(value: string): string[] {
   return Array.from(value.matchAll(/\{\{([a-zA-Z0-9_]+)\}\}/g), (match) => match[1]).sort();
@@ -45,22 +48,14 @@ function staticStringKeys(expression: ts.Expression): string[] {
     return staticStringKeys(expression.expression);
   }
   if (ts.isConditionalExpression(expression)) {
-    return [
-      ...staticStringKeys(expression.whenTrue),
-      ...staticStringKeys(expression.whenFalse),
-    ];
+    return [...staticStringKeys(expression.whenTrue), ...staticStringKeys(expression.whenFalse)];
   }
   if (
-    ts.isBinaryExpression(expression)
-    && (
-      expression.operatorToken.kind === ts.SyntaxKind.BarBarToken
-      || expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
-    )
+    ts.isBinaryExpression(expression) &&
+    (expression.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+      expression.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken)
   ) {
-    return [
-      ...staticStringKeys(expression.left),
-      ...staticStringKeys(expression.right),
-    ];
+    return [...staticStringKeys(expression.left), ...staticStringKeys(expression.right)];
   }
   if (ts.isAsExpression(expression) || ts.isTypeAssertionExpression(expression)) {
     return staticStringKeys(expression.expression);
@@ -79,10 +74,10 @@ function literalTranslationKeys(source: string, fileName: string): string[] {
   );
   const visit = (node: ts.Node) => {
     if (
-      ts.isCallExpression(node)
-      && ts.isIdentifier(node.expression)
-      && node.expression.text === "t"
-      && node.arguments.length > 0
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "t" &&
+      node.arguments.length > 0
     ) {
       keys.push(...staticStringKeys(node.arguments[0]));
     }
@@ -99,14 +94,8 @@ test("translates known text and preserves the English source", () => {
 });
 
 test("interpolates values after selecting the locale", () => {
-  assert.equal(
-    translate("de", "Transcript #{{id}}", { id: 42 }),
-    "Transkript #42",
-  );
-  assert.equal(
-    translate("en", "Transcript #{{id}}", { id: 42 }),
-    "Transcript #42",
-  );
+  assert.equal(translate("de", "Transcript #{{id}}", { id: 42 }), "Transkript #42");
+  assert.equal(translate("en", "Transcript #{{id}}", { id: 42 }), "Transcript #42");
 });
 
 test("catalog lookup ignores inherited object properties", () => {
@@ -164,11 +153,7 @@ test("dynamic interface labels have complete German translations", () => {
 test("German translations are non-empty and preserve placeholders", () => {
   for (const [source, translated] of Object.entries(germanTranslations)) {
     assert.notEqual(translated.trim(), "", `Empty German translation for ${source}`);
-    assert.deepEqual(
-      placeholders(translated),
-      placeholders(source),
-      `Placeholder mismatch for ${source}`,
-    );
+    assert.deepEqual(placeholders(translated), placeholders(source), `Placeholder mismatch for ${source}`);
   }
 });
 
@@ -208,18 +193,13 @@ test("all literal t calls have a German catalog entry", () => {
 });
 
 test("boot locale and runtime locale use the same storage key", () => {
-  const bootScript = readFileSync(
-    path.resolve(import.meta.dirname, "../../public/boot-locale.js"),
-    "utf8",
-  );
-  const indexHtml = readFileSync(
-    path.resolve(import.meta.dirname, "../../index.html"),
-    "utf8",
-  );
+  const bootScript = readFileSync(path.resolve(import.meta.dirname, "../../public/boot-locale.js"), "utf8");
+  const indexHtml = readFileSync(path.resolve(import.meta.dirname, "../../index.html"), "utf8");
   assert.match(bootScript, new RegExp(`var key = ["']${LANGUAGE_STORAGE_KEY}["']`));
-  assert.ok(indexHtml.indexOf("boot-shell") < indexHtml.indexOf("/boot-locale.js"));
+  assert.ok(indexHtml.indexOf("/boot-locale.js") < indexHtml.indexOf("<body>"));
   assert.ok(indexHtml.indexOf("/boot-locale.js") < indexHtml.indexOf("/src/main.tsx"));
-  assert.doesNotMatch(bootScript, /DOMContentLoaded/);
+  assert.match(bootScript, /document\.documentElement\.lang = locale/);
+  assert.match(bootScript, /DOMContentLoaded/);
   assert.equal(getLocaleTag("de"), "de-DE");
   assert.equal(getLocaleTag("en"), "en-US");
 });

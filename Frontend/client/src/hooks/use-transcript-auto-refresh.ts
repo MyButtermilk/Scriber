@@ -10,18 +10,15 @@ interface UseTranscriptAutoRefreshOptions {
   queryKey?: readonly unknown[];
 }
 
-export function useTranscriptAutoRefresh({
-  type,
-  transcriptId,
-  queryKey,
-}: UseTranscriptAutoRefreshOptions = {}) {
+export function useTranscriptAutoRefresh({ type, transcriptId, queryKey }: UseTranscriptAutoRefreshOptions = {}) {
   const queryClient = useQueryClient();
   const queryScope = queryKey?.[1];
   const queryType =
     typeof queryScope === "object" && queryScope !== null && "type" in queryScope
       ? String((queryScope as { type?: unknown }).type || "")
       : "";
-  const effectiveType = type || (queryType === "mic" || queryType === "file" || queryType === "youtube" ? queryType : undefined);
+  const effectiveType =
+    type || (queryType === "mic" || queryType === "file" || queryType === "youtube" ? queryType : undefined);
   const refreshNow = useCallback(() => {
     if (transcriptId) {
       const detailKey = ["/api/transcripts", transcriptId] as const;

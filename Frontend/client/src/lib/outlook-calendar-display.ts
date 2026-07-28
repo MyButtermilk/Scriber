@@ -1,15 +1,13 @@
 function sameLocalDate(left: Date, right: Date): boolean {
-  return left.getFullYear() === right.getFullYear()
-    && left.getMonth() === right.getMonth()
-    && left.getDate() === right.getDate();
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  );
 }
 
 /** Formats one successful calendar sync without exposing transport details. */
-export function formatOutlookSyncMoment(
-  value: string,
-  now = new Date(),
-  locale?: string,
-): string | null {
+export function formatOutlookSyncMoment(value: string, now = new Date(), locale?: string): string | null {
   const syncedAt = new Date(value);
   if (!value || Number.isNaN(syncedAt.getTime())) return null;
 

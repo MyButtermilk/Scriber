@@ -46,24 +46,10 @@ test("elapsed Meeting time freezes at the durable audio frontier while paused", 
   const gaps = [{ startedAtMs: 60_000, endedAtMs: 90_000 }];
 
   assert.equal(calculateMeetingElapsedMs(startedAt, now, gaps), 1_770_000);
+  assert.equal(calculateMeetingElapsedMs(startedAt, now, gaps, 420_000, "2026-07-12T10:07:30.000Z"), 420_000);
+  assert.equal(calculateMeetingElapsedMs(startedAt, now, gaps, undefined, "2026-07-12T10:07:30.000Z"), 420_000);
   assert.equal(
-    calculateMeetingElapsedMs(startedAt, now, gaps, 420_000, "2026-07-12T10:07:30.000Z"),
-    420_000,
-  );
-  assert.equal(
-    calculateMeetingElapsedMs(startedAt, now, gaps, undefined, "2026-07-12T10:07:30.000Z"),
-    420_000,
-  );
-  assert.equal(
-    calculateMeetingElapsedMs(
-      startedAt,
-      now,
-      gaps,
-      undefined,
-      undefined,
-      1_800_000,
-      "2026-07-12T10:29:00.000Z",
-    ),
+    calculateMeetingElapsedMs(startedAt, now, gaps, undefined, undefined, 1_800_000, "2026-07-12T10:29:00.000Z"),
     1_860_000,
   );
 });
@@ -106,11 +92,7 @@ function asset(
 }
 
 const assets = [
-  asset("multitrack_flac", [
-    track("microphone", 1_000),
-    track("mic_clean", 1_200),
-    track("system", 200),
-  ]),
+  asset("multitrack_flac", [track("microphone", 1_000), track("mic_clean", 1_200), track("system", 200)]),
   asset("playback_mix", [track("mixed", 500)]),
   asset("playback_microphone", [track("mic_clean", 0)]),
   asset("playback_system", [track("system", 0)]),
@@ -139,20 +121,11 @@ test("full-mix segment clicks seek in asset-local time with a negative clamp", (
 });
 
 test("speaker samples expand short utterances to at least five seconds", () => {
-  assert.deepEqual(
-    meetingSpeakerSampleWindow(10_000, 11_000, 0, 60_000),
-    { startMs: 8_000, endMs: 13_000 },
-  );
-  assert.deepEqual(
-    meetingSpeakerSampleWindow(1_000, 10_000, 0, 60_000),
-    { startMs: 1_500, endMs: 9_500 },
-  );
+  assert.deepEqual(meetingSpeakerSampleWindow(10_000, 11_000, 0, 60_000), { startMs: 8_000, endMs: 13_000 });
+  assert.deepEqual(meetingSpeakerSampleWindow(1_000, 10_000, 0, 60_000), { startMs: 1_500, endMs: 9_500 });
 });
 
 test("speaker samples stay inside the mix and reject recordings below five seconds", () => {
-  assert.deepEqual(
-    meetingSpeakerSampleWindow(59_000, 60_000, 500, 60_000),
-    { startMs: 55_500, endMs: 60_500 },
-  );
+  assert.deepEqual(meetingSpeakerSampleWindow(59_000, 60_000, 500, 60_000), { startMs: 55_500, endMs: 60_500 });
   assert.equal(meetingSpeakerSampleWindow(0, 1_000, 0, 4_999), null);
 });

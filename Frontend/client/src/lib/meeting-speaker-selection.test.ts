@@ -19,12 +19,7 @@ test("voice suggestions map to the exact Outlook Select id through aliases", () 
   };
 
   assert.equal(
-    initialMeetingParticipantId(
-      [outlookAttendee],
-      "",
-      null,
-      independentlySerializedVoiceSuggestion,
-    ),
+    initialMeetingParticipantId([outlookAttendee], "", null, independentlySerializedVoiceSuggestion),
     "outlook-participant-7",
   );
   assert.equal(meetingContactsMatch(outlookAttendee, independentlySerializedVoiceSuggestion), true);
@@ -39,12 +34,11 @@ test("an explicit unconfirmed user choice survives a query refresh", () => {
 
 test("unknown suggestions never create an invalid Select value", () => {
   assert.equal(
-    initialMeetingParticipantId(
-      [outlookAttendee],
-      "",
-      null,
-      { name: "Grace", address: "grace@example.com", participantId: "other" },
-    ),
+    initialMeetingParticipantId([outlookAttendee], "", null, {
+      name: "Grace",
+      address: "grace@example.com",
+      participantId: "other",
+    }),
     "",
   );
 });

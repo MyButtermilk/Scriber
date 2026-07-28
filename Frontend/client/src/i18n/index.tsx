@@ -1,18 +1,14 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
-import { germanTranslations } from "@/i18n/translations/de";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppLocale, TranslationValues } from "@/i18n/types";
 
 export type { AppLocale, TranslationValues } from "@/i18n/types";
 
 export const LANGUAGE_STORAGE_KEY = "scriber-ui-locale";
+
+type TranslationCatalog = Readonly<Record<string, string>>;
+
+let germanTranslations: TranslationCatalog = {};
+let germanTranslationsPromise: Promise<TranslationCatalog> | null = null;
 
 const LOCALE_TAGS: Record<AppLocale, string> = {
   de: "de-DE",
@@ -75,13 +71,27 @@ function preferredLocale(): AppLocale {
   if (stored) {
     return stored;
   }
-  const browserLanguages = navigator.languages?.length
-    ? navigator.languages
-    : [navigator.language];
+  const browserLanguages = navigator.languages?.length ? navigator.languages : [navigator.language];
   return localeFromLanguages(browserLanguages);
 }
 
 let currentLocale: AppLocale = preferredLocale();
+
+async function loadLocaleCatalog(locale: AppLocale): Promise<void> {
+  if (locale !== "de" || Object.keys(germanTranslations).length > 0) {
+    return;
+  }
+  germanTranslationsPromise ??= import("@/i18n/translations/de").then((module) => module.germanTranslations);
+  germanTranslations = await germanTranslationsPromise;
+}
+
+// The app bootstrap awaits this for the initial locale. English starts
+// immediately; German keeps the static boot shell visible until its local
+// dictionary chunk is ready, avoiding both an English flash and a permanent
+// dictionary cost on the English startup path.
+export function initializeLocaleCatalog(): Promise<void> {
+  return loadLocaleCatalog(currentLocale);
+}
 
 function interpolate(template: string, values?: TranslationValues): string {
   if (!values) {
@@ -93,14 +103,11 @@ function interpolate(template: string, values?: TranslationValues): string {
   });
 }
 
-export function translate(
-  locale: AppLocale,
-  source: string,
-  values?: TranslationValues,
-): string {
-  const template = locale === "de" && Object.prototype.hasOwnProperty.call(germanTranslations, source)
-    ? germanTranslations[source]
-    : source;
+export function translate(locale: AppLocale, source: string, values?: TranslationValues): string {
+  const template =
+    locale === "de" && Object.prototype.hasOwnProperty.call(germanTranslations, source)
+      ? germanTranslations[source]
+      : source;
   return interpolate(template, values);
 }
 
@@ -116,11 +123,7 @@ export function localizeLegacyDateLabel(locale: AppLocale, value: string): strin
     const month = Number(isoDateMatch[2]);
     const day = Number(isoDateMatch[3]);
     const date = new Date(year, month - 1, day);
-    if (
-      date.getFullYear() === year
-      && date.getMonth() === month - 1
-      && date.getDate() === day
-    ) {
+    if (date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day) {
       return new Intl.DateTimeFormat(LOCALE_TAGS[locale], { dateStyle: "medium" }).format(date);
     }
   }
@@ -160,9 +163,20 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<AppLocale>(() => preferredLocale());
 
   const setLocale = useCallback((nextLocale: AppLocale) => {
-    currentLocale = nextLocale;
-    setLocaleState(nextLocale);
-    writeStoredLocale(nextLocale);
+    const activateLocale = () => {
+      currentLocale = nextLocale;
+      setLocaleState(nextLocale);
+      writeStoredLocale(nextLocale);
+    };
+    if (nextLocale === "de" && Object.keys(germanTranslations).length === 0) {
+      void loadLocaleCatalog(nextLocale)
+        .then(activateLocale)
+        .catch((error) => {
+          console.debug("Interface translation catalog could not be loaded.", error);
+        });
+      return;
+    }
+    activateLocale();
   }, []);
 
   const toggleLocale = useCallback(() => {
@@ -178,33 +192,32 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
       if (event.key === LANGUAGE_STORAGE_KEY && isAppLocale(event.newValue)) {
-        currentLocale = event.newValue;
-        setLocaleState(event.newValue);
+        const nextLocale = event.newValue;
+        void loadLocaleCatalog(nextLocale)
+          .then(() => {
+            currentLocale = nextLocale;
+            setLocaleState(nextLocale);
+          })
+          .catch((error) => {
+            console.debug("Interface translation catalog could not be loaded.", error);
+          });
       }
     };
     window.addEventListener("storage", handleStorage);
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
-  const t = useCallback(
-    (source: string, values?: TranslationValues) => translate(locale, source, values),
-    [locale],
-  );
+  const t = useCallback((source: string, values?: TranslationValues) => translate(locale, source, values), [locale]);
 
   const formatDate = useCallback(
     (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => {
       const date = value instanceof Date ? value : new Date(value);
-      return Number.isNaN(date.getTime())
-        ? ""
-        : new Intl.DateTimeFormat(LOCALE_TAGS[locale], options).format(date);
+      return Number.isNaN(date.getTime()) ? "" : new Intl.DateTimeFormat(LOCALE_TAGS[locale], options).format(date);
     },
     [locale],
   );
 
-  const formatLegacyDate = useCallback(
-    (value: string) => localizeLegacyDateLabel(locale, value),
-    [locale],
-  );
+  const formatLegacyDate = useCallback((value: string) => localizeLegacyDateLabel(locale, value), [locale]);
 
   const formatNumber = useCallback(
     (value: number, options?: Intl.NumberFormatOptions) =>
@@ -212,16 +225,19 @@ export function LocaleProvider({ children }: { children: ReactNode }) {
     [locale],
   );
 
-  const contextValue = useMemo<I18nContextValue>(() => ({
-    locale,
-    localeTag: LOCALE_TAGS[locale],
-    setLocale,
-    toggleLocale,
-    t,
-    formatDate,
-    formatLegacyDate,
-    formatNumber,
-  }), [formatDate, formatLegacyDate, formatNumber, locale, setLocale, t, toggleLocale]);
+  const contextValue = useMemo<I18nContextValue>(
+    () => ({
+      locale,
+      localeTag: LOCALE_TAGS[locale],
+      setLocale,
+      toggleLocale,
+      t,
+      formatDate,
+      formatLegacyDate,
+      formatNumber,
+    }),
+    [formatDate, formatLegacyDate, formatNumber, locale, setLocale, t, toggleLocale],
+  );
 
   return <I18nContext.Provider value={contextValue}>{children}</I18nContext.Provider>;
 }

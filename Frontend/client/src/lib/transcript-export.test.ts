@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  transcriptExportApiPath,
-  transcriptExportDownloadErrorMessage,
-} from "./transcript-export-utils";
+import { transcriptExportApiPath, transcriptExportDownloadErrorMessage } from "./transcript-export-utils";
 
 test("transcript export paths are restricted to one transcript and supported formats", () => {
   assert.equal(

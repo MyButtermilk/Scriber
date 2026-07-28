@@ -89,9 +89,7 @@ export default function MicrophoneEnergyField({
     const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) return;
 
-    const coordinates = new Float32Array(
-      ENERGY_WAVE_STRAND_COUNT * ENERGY_WAVE_SAMPLE_COUNT,
-    );
+    const coordinates = new Float32Array(ENERGY_WAVE_STRAND_COUNT * ENERGY_WAVE_SAMPLE_COUNT);
     const visibilities = new Float32Array(ENERGY_WAVE_STRAND_COUNT);
     let rafId = 0;
     let lastFrameAt = performance.now();
@@ -103,10 +101,7 @@ export default function MicrophoneEnergyField({
     let focusGradient: CanvasGradient;
 
     const syncCanvasSize = () => {
-      devicePixelRatio = Math.min(
-        window.devicePixelRatio || 1,
-        MAX_DEVICE_PIXEL_RATIO,
-      );
+      devicePixelRatio = Math.min(window.devicePixelRatio || 1, MAX_DEVICE_PIXEL_RATIO);
       const pixelWidth = Math.max(1, Math.round(width * devicePixelRatio));
       const pixelHeight = Math.max(1, Math.round(height * devicePixelRatio));
       if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
@@ -129,14 +124,7 @@ export default function MicrophoneEnergyField({
 
       const focusX = plotX + plotWidth * ENERGY_WAVE_FOCUS;
       const focusY = plotY + plotHeight / 2;
-      focusGradient = ctx.createRadialGradient(
-        focusX,
-        focusY,
-        0,
-        focusX,
-        focusY,
-        5.2,
-      );
+      focusGradient = ctx.createRadialGradient(focusX, focusY, 0, focusX, focusY, 5.2);
       focusGradient.addColorStop(0, "rgba(255, 246, 225, 0.92)");
       focusGradient.addColorStop(0.28, "rgba(246, 207, 140, 0.32)");
       focusGradient.addColorStop(1, "rgba(225, 179, 105, 0)");
@@ -175,10 +163,7 @@ export default function MicrophoneEnergyField({
           phase,
           strandIndex,
         );
-        visibilities[strandIndex] = energyWaveStrandVisibility(
-          strandIndex,
-          envelope,
-        );
+        visibilities[strandIndex] = energyWaveStrandVisibility(strandIndex, envelope);
       }
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -192,9 +177,7 @@ export default function MicrophoneEnergyField({
       ctx.lineWidth = WAVE_HALO_WIDTH;
       for (let strandIndex = 0; strandIndex < ENERGY_WAVE_STRAND_COUNT; strandIndex += 1) {
         const visibility = visibilities[strandIndex];
-        ctx.globalAlpha = visibility
-          * WAVE_HALO_ALPHA
-          * (0.44 + envelope * 0.56);
+        ctx.globalAlpha = visibility * WAVE_HALO_ALPHA * (0.44 + envelope * 0.56);
         traceSmoothWave(
           ctx,
           coordinates,
@@ -212,10 +195,7 @@ export default function MicrophoneEnergyField({
       for (let strandIndex = 0; strandIndex < ENERGY_WAVE_STRAND_COUNT; strandIndex += 1) {
         const visibility = visibilities[strandIndex];
         const isCore = strandIndex === Math.floor(ENERGY_WAVE_STRAND_COUNT / 2);
-        ctx.globalAlpha = visibility
-          * WAVE_CORE_ALPHA
-          * (0.5 + envelope * 0.5)
-          * (isCore ? 1 : 0.94);
+        ctx.globalAlpha = visibility * WAVE_CORE_ALPHA * (0.5 + envelope * 0.5) * (isCore ? 1 : 0.94);
         traceSmoothWave(
           ctx,
           coordinates,
@@ -239,8 +219,7 @@ export default function MicrophoneEnergyField({
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = "source-over";
 
-      const reducedMotionSettled = reducedMotion
-        && Math.abs(envelope - target) < SETTLED_ENVELOPE_EPSILON;
+      const reducedMotionSettled = reducedMotion && Math.abs(envelope - target) < SETTLED_ENVELOPE_EPSILON;
       const intervalMs = reducedMotionSettled
         ? REDUCED_MOTION_SETTLED_FRAME_INTERVAL_MS
         : reducedMotion

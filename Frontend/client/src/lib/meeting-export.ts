@@ -35,10 +35,7 @@ export interface CancelledMeetingExport {
   status: "cancelled";
 }
 
-export type MeetingExportResult =
-  | SavedDesktopMeetingExport
-  | SavedBrowserMeetingExport
-  | CancelledMeetingExport;
+export type MeetingExportResult = SavedDesktopMeetingExport | SavedBrowserMeetingExport | CancelledMeetingExport;
 
 interface NativeSavedMeetingExport {
   token: string;
@@ -62,10 +59,7 @@ function downloadInBrowser(blob: Blob, filename: string): void {
   }
 }
 
-export async function saveMeetingExport(
-  path: string,
-  fallbackName: string,
-): Promise<MeetingExportResult> {
+export async function saveMeetingExport(path: string, fallbackName: string): Promise<MeetingExportResult> {
   const desktop = isTauriRuntime();
   const safePath = meetingExportApiPath(path);
   const audioMeetingId = meetingAudioExportMeetingId(safePath);
@@ -87,11 +81,7 @@ export async function saveMeetingExport(
   }
   let response: Response;
   try {
-    response = await fetchWithTimeout(
-      apiUrl(safePath),
-      { credentials: "include" },
-      EXPORT_TIMEOUT_MS,
-    );
+    response = await fetchWithTimeout(apiUrl(safePath), { credentials: "include" }, EXPORT_TIMEOUT_MS);
   } catch {
     throw new Error(meetingExportDownloadErrorMessage());
   }
@@ -101,18 +91,15 @@ export async function saveMeetingExport(
 
   const advertisedSize = Number(response.headers.get("Content-Length"));
   if (
-    desktop
-    && Number.isFinite(advertisedSize)
-    && advertisedSize >= 0
-    && !meetingExportFitsNativeLimit(advertisedSize)
+    desktop &&
+    Number.isFinite(advertisedSize) &&
+    advertisedSize >= 0 &&
+    !meetingExportFitsNativeLimit(advertisedSize)
   ) {
     throw new Error(meetingExportNativeLimitErrorMessage());
   }
 
-  const filename = meetingExportFilename(
-    response.headers.get("Content-Disposition"),
-    fallbackName,
-  );
+  const filename = meetingExportFilename(response.headers.get("Content-Disposition"), fallbackName);
   let blob: Blob;
   try {
     blob = await response.blob();
@@ -145,10 +132,7 @@ export async function saveMeetingExport(
       bytes,
     });
   } catch (error) {
-    throw meetingExportNativeCommandError(
-      error,
-      "Scriber could not save the meeting export. Please try again.",
-    );
+    throw meetingExportNativeCommandError(error, "Scriber could not save the meeting export. Please try again.");
   }
   if (!saved) return { status: "cancelled" };
   return { status: "saved", desktop: true, ...saved };

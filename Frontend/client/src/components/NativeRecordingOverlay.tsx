@@ -3,12 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2, Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
-import {
-  isTauriRuntime,
-  loadBackendBaseUrlFromTauri,
-  setTrayRecordingState,
-  wsUrl,
-} from "@/lib/backend";
+import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState, wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
 import MicrophoneEnergyField from "@/components/MicrophoneEnergyField";
 import type { OverlayVisualizerStyle } from "@/lib/api-types";
@@ -20,10 +15,7 @@ import {
   normalizeOverlayVisualizerStyle,
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
-import {
-  isScriberWebSocketMessage,
-  type ScriberWebSocketMessage,
-} from "@/contexts/WebSocketContext";
+import { isScriberWebSocketMessage, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useI18n } from "@/i18n";
 
 type OverlayMode = "hidden" | "initializing" | "recording" | "transcribing";
@@ -49,8 +41,7 @@ const PILL_RADIUS = PILL_HEIGHT / 2;
 const ENERGY_WAVE_PLOT_X = 0;
 const ENERGY_WAVE_PLOT_Y = (PILL_HEIGHT - WAVEFORM_CANVAS_HEIGHT) / 2;
 const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;
-const OVERLAY_DROP_SHADOW =
-  "0 7px 15px -6px rgba(7, 19, 31, 0.42), 0 15px 28px -15px rgba(7, 19, 31, 0.30)";
+const OVERLAY_DROP_SHADOW = "0 7px 15px -6px rgba(7, 19, 31, 0.42), 0 15px 28px -15px rgba(7, 19, 31, 0.30)";
 const OVERLAY_INSET_SHADOW = "inset 0 0 0 1px rgba(255, 255, 255, 0.10)";
 const ENERGY_PILL_BACKGROUND = [
   "radial-gradient(ellipse 72% 175% at 66% 50%, rgba(40, 91, 132, 0.62) 0%, rgba(22, 57, 86, 0.30) 52%, rgba(7, 19, 31, 0) 100%)",
@@ -65,7 +56,9 @@ const BAR_IDLE_LEVEL = 0.06;
 const NATIVE_RMS_FALLBACK_AFTER_MS = 250;
 
 function normalizeMode(value: unknown): OverlayMode {
-  const mode = String(value || "").trim().toLowerCase();
+  const mode = String(value || "")
+    .trim()
+    .toLowerCase();
   if (mode === "initializing" || mode === "recording" || mode === "transcribing") {
     return mode;
   }
@@ -124,12 +117,8 @@ function interpolateColor(colors: string[], factor: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-const MIDNIGHT_PALETTE = Array.from(
-  { length: BAR_COLOR_STEPS },
-  (_, index) => interpolateColor(
-    MIDNIGHT_COLORS,
-    index / (BAR_COLOR_STEPS - 1),
-  ),
+const MIDNIGHT_PALETTE = Array.from({ length: BAR_COLOR_STEPS }, (_, index) =>
+  interpolateColor(MIDNIGHT_COLORS, index / (BAR_COLOR_STEPS - 1)),
 );
 
 function OverlayBarWaveform({
@@ -166,30 +155,14 @@ function OverlayBarWaveform({
     const riseSpeed = 0.6;
 
     const syncCanvasSize = () => {
-      devicePixelRatio = Math.min(
-        window.devicePixelRatio || 1,
-        BAR_MAX_DEVICE_PIXEL_RATIO,
-      );
-      const pixelWidth = Math.max(
-        1,
-        Math.round(width * devicePixelRatio),
-      );
-      const pixelHeight = Math.max(
-        1,
-        Math.round(height * devicePixelRatio),
-      );
+      devicePixelRatio = Math.min(window.devicePixelRatio || 1, BAR_MAX_DEVICE_PIXEL_RATIO);
+      const pixelWidth = Math.max(1, Math.round(width * devicePixelRatio));
+      const pixelHeight = Math.max(1, Math.round(height * devicePixelRatio));
       if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
         canvas.width = pixelWidth;
         canvas.height = pixelHeight;
       }
-      ctx.setTransform(
-        devicePixelRatio,
-        0,
-        0,
-        devicePixelRatio,
-        0,
-        0,
-      );
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
     };
 
     syncCanvasSize();
@@ -216,27 +189,14 @@ function OverlayBarWaveform({
       const padLeft = 0;
       const padRight = 0;
       const usableWidth = Math.max(1, width - padLeft - padRight);
-      const gap = Math.max(
-        0.5,
-        Math.min(1.8, usableWidth / Math.max(1, resolvedBarCount * 7)),
-      );
-      const barWidth = Math.max(
-        0.7,
-        (usableWidth - gap * (resolvedBarCount - 1)) / resolvedBarCount,
-      );
+      const gap = Math.max(0.5, Math.min(1.8, usableWidth / Math.max(1, resolvedBarCount * 7)));
+      const barWidth = Math.max(0.7, (usableWidth - gap * (resolvedBarCount - 1)) / resolvedBarCount);
       const centerY = height / 2;
       const maxHeight = Math.min(24, height - PILL_PADDING * 2);
 
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.setTransform(
-        devicePixelRatio,
-        0,
-        0,
-        devicePixelRatio,
-        0,
-        0,
-      );
+      ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
       for (let i = 0; i < resolvedBarCount; i++) {
         const target = levels[i] || 0;
         const current = display[i] || BAR_IDLE_LEVEL;
@@ -249,16 +209,11 @@ function OverlayBarWaveform({
         }
         const centerFactor = 1.0 - Math.abs(i - resolvedBarCount / 2) / (resolvedBarCount / 2);
         const adjustedLevel = display[i] * (0.5 + 0.5 * centerFactor);
-        const barHeight = Math.max(
-          1 / devicePixelRatio,
-          adjustedLevel * maxHeight,
-        );
+        const barHeight = Math.max(1 / devicePixelRatio, adjustedLevel * maxHeight);
         const x = padLeft + i * (barWidth + gap);
         const y = centerY - barHeight / 2;
         const radius = Math.min(barWidth / 2, 2);
-        const paletteIndex = Math.round(
-          (1 - Math.min(1, adjustedLevel)) * (BAR_COLOR_STEPS - 1),
-        );
+        const paletteIndex = Math.round((1 - Math.min(1, adjustedLevel)) * (BAR_COLOR_STEPS - 1));
         ctx.fillStyle = MIDNIGHT_PALETTE[paletteIndex];
         ctx.beginPath();
         ctx.roundRect(x, y, barWidth, barHeight, radius);
@@ -311,10 +266,7 @@ function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
 }
 
 function overlayLayerClass(active: boolean): string {
-  return [
-    "absolute inset-0 flex items-center",
-    active ? "opacity-100" : "pointer-events-none opacity-0",
-  ].join(" ");
+  return ["absolute inset-0 flex items-center", active ? "opacity-100" : "pointer-events-none opacity-0"].join(" ");
 }
 
 export default function NativeRecordingOverlay() {
@@ -322,8 +274,8 @@ export default function NativeRecordingOverlay() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
-  const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(
-    () => devOverlayStyleFromLocation(),
+  const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(() =>
+    devOverlayStyleFromLocation(),
   );
   const rmsRef = useRef(devOverlayRmsFromLocation());
   const activeSessionIdRef = useRef<string | null>(null);
@@ -343,9 +295,7 @@ export default function NativeRecordingOverlay() {
       if (controller.signal.aborted) return;
       setVisualizerBarCount(settings.barCount);
       const devOverride = isTauriRuntime() ? null : devOverlayStyleOverrideFromLocation();
-      setOverlayVisualizerStyle(
-        devOverride ?? normalizeOverlayVisualizerStyle(settings.overlayStyle),
-      );
+      setOverlayVisualizerStyle(devOverride ?? normalizeOverlayVisualizerStyle(settings.overlayStyle));
     } catch (error) {
       if ((error as { name?: string })?.name === "AbortError") return;
       // Keep the last known-good renderer choice through transient reconnects.
@@ -362,56 +312,59 @@ export default function NativeRecordingOverlay() {
     return () => visualizerSettingsRequestRef.current?.abort();
   }, [backendReady, isDevOverlayPreview, refreshVisualizerSettings]);
 
-  const applyWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
-    const activeSessionId = activeSessionIdRef.current;
-    if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
-      return;
-    }
+  const applyWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
+      const activeSessionId = activeSessionIdRef.current;
+      if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
+        return;
+      }
 
-    switch (msg.type) {
-      case "audio_level":
-        rmsRef.current = Math.min(1, Math.max(0, Number(msg.rms) || 0));
-        lastWsRmsAtRef.current = performance.now();
-        break;
-      case "state":
-      case "status":
-        if (msgSessionId && !activeSessionId) {
-          activeSessionIdRef.current = msgSessionId;
-        }
-        if (msg.recordingState === "finalizing" || msg.transcribing) {
-          setMode("transcribing");
-        } else if (msg.recordingState === "recording" || msg.listening) {
-          setMode("recording");
-        } else if (msg.recordingState === "initializing") {
+      switch (msg.type) {
+        case "audio_level":
+          rmsRef.current = Math.min(1, Math.max(0, Number(msg.rms) || 0));
+          lastWsRmsAtRef.current = performance.now();
+          break;
+        case "state":
+        case "status":
+          if (msgSessionId && !activeSessionId) {
+            activeSessionIdRef.current = msgSessionId;
+          }
+          if (msg.recordingState === "finalizing" || msg.transcribing) {
+            setMode("transcribing");
+          } else if (msg.recordingState === "recording" || msg.listening) {
+            setMode("recording");
+          } else if (msg.recordingState === "initializing") {
+            setMode("initializing");
+          }
+          break;
+        case "session_started":
+          if (msgSessionId) {
+            activeSessionIdRef.current = msgSessionId;
+          }
+          rmsRef.current = 0;
           setMode("initializing");
-        }
-        break;
-      case "session_started":
-        if (msgSessionId) {
-          activeSessionIdRef.current = msgSessionId;
-        }
-        rmsRef.current = 0;
-        setMode("initializing");
-        break;
-      case "transcribing":
-        setMode("transcribing");
-        break;
-      case "session_finished":
-      case "error":
-        activeSessionIdRef.current = null;
-        // In the desktop runtime, only the native overlay event may hide the
-        // renderer. A terminal WebSocket message does not prove that the
-        // always-on-top native window has completed its physical hide.
-        if (!isTauriRuntime()) {
-          setMode("hidden");
-        }
-        break;
-      case "settings_updated":
-        void refreshVisualizerSettings();
-        break;
-    }
-  }, [refreshVisualizerSettings]);
+          break;
+        case "transcribing":
+          setMode("transcribing");
+          break;
+        case "session_finished":
+        case "error":
+          activeSessionIdRef.current = null;
+          // In the desktop runtime, only the native overlay event may hide the
+          // renderer. A terminal WebSocket message does not prove that the
+          // always-on-top native window has completed its physical hide.
+          if (!isTauriRuntime()) {
+            setMode("hidden");
+          }
+          break;
+        case "settings_updated":
+          void refreshVisualizerSettings();
+          break;
+      }
+    },
+    [refreshVisualizerSettings],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.scriberOverlayWindow = "true";
@@ -441,13 +394,12 @@ export default function NativeRecordingOverlay() {
     let receivedNativeEvent = false;
     void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
       receivedNativeEvent = true;
-      const wsRmsIsStale = performance.now() - lastWsRmsAtRef.current
-        >= NATIVE_RMS_FALLBACK_AFTER_MS;
+      const wsRmsIsStale = performance.now() - lastWsRmsAtRef.current >= NATIVE_RMS_FALLBACK_AFTER_MS;
       if (wsRmsIsStale && Number.isFinite(event.payload.rms)) {
         rmsRef.current = Math.min(1, Math.max(0, Number(event.payload.rms)));
       }
       const nextMode = modeFromNativeOverlayState(event.payload);
-      setMode((currentMode) => currentMode === nextMode ? currentMode : nextMode);
+      setMode((currentMode) => (currentMode === nextMode ? currentMode : nextMode));
     })
       .then(async (cleanup) => {
         if (disposed) {

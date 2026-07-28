@@ -3,14 +3,7 @@ import { withPromiseTimeout } from "@/lib/fetch-with-timeout";
 
 declare const __SCRIBER_APP_VERSION__: string | undefined;
 
-export type DesktopUpdatePhase =
-  | "idle"
-  | "checking"
-  | "current"
-  | "available"
-  | "installing"
-  | "unavailable"
-  | "error";
+export type DesktopUpdatePhase = "idle" | "checking" | "current" | "available" | "installing" | "unavailable" | "error";
 
 export interface DesktopUpdateStatus {
   phase: DesktopUpdatePhase;
@@ -291,11 +284,7 @@ async function performDesktopUpdateInstall(
 
   const { check } = await import("@tauri-apps/plugin-updater");
   const { relaunch } = await import("@tauri-apps/plugin-process");
-  const update = await withPromiseTimeout(
-    check(),
-    UPDATE_CHECK_TIMEOUT_MS,
-    "Desktop update check",
-  );
+  const update = await withPromiseTimeout(check(), UPDATE_CHECK_TIMEOUT_MS, "Desktop update check");
   if (!update) {
     const status = cacheAndBuildStatus({
       phase: "current",
@@ -405,11 +394,7 @@ async function performDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {
 
   try {
     const { check } = await import("@tauri-apps/plugin-updater");
-    const update = await withPromiseTimeout(
-      check(),
-      UPDATE_CHECK_TIMEOUT_MS,
-      "Desktop update check",
-    );
+    const update = await withPromiseTimeout(check(), UPDATE_CHECK_TIMEOUT_MS, "Desktop update check");
     if (!update) {
       return cacheAndBuildStatus({
         phase: "current",
@@ -458,13 +443,7 @@ async function getCurrentVersion(): Promise<string> {
   }
   try {
     const { getVersion } = await import("@tauri-apps/api/app");
-    return (
-      await withPromiseTimeout(
-        getVersion(),
-        APP_VERSION_TIMEOUT_MS,
-        "App version lookup",
-      )
-    ) || buildVersion();
+    return (await withPromiseTimeout(getVersion(), APP_VERSION_TIMEOUT_MS, "App version lookup")) || buildVersion();
   } catch {
     return buildVersion();
   }
@@ -492,12 +471,8 @@ function cacheAndBuildStatus(input: {
     date: inputAvailable ? input.date : undefined,
     notes: inputAvailable ? input.notes : undefined,
     lastCheckedAt: new Date().toISOString(),
-    message: inputAvailable || input.phase !== "available"
-      ? input.message
-      : "Scriber is up to date.",
-    messageValues: inputAvailable || input.phase !== "available"
-      ? input.messageValues
-      : undefined,
+    message: inputAvailable || input.phase !== "available" ? input.message : "Scriber is up to date.",
+    messageValues: inputAvailable || input.phase !== "available" ? input.messageValues : undefined,
     dismissedVersion: sameVersion ? previous?.dismissedVersion : undefined,
     deferredVersion: sameVersion ? previous?.deferredVersion : undefined,
     deferredUntil: sameVersion ? previous?.deferredUntil : undefined,
@@ -541,9 +516,7 @@ function statusFromCache(cache: DesktopUpdateCache | null, settings: DesktopUpda
     dismissed,
     deferred,
     deferredUntil: cache.deferredUntil,
-    message: staleAvailable
-      ? "Scriber is up to date."
-      : cache.message || NOT_CHECKED_STATUS.message,
+    message: staleAvailable ? "Scriber is up to date." : cache.message || NOT_CHECKED_STATUS.message,
     messageValues: staleAvailable ? undefined : cache.messageValues,
   };
 }
@@ -577,10 +550,7 @@ function isVersionNewerThanCurrent(candidateVersion: string | undefined, current
 }
 
 function parseVersion(value: string | undefined): number[] | null {
-  const normalized = (value || "")
-    .trim()
-    .replace(/^v/i, "")
-    .split(/[+-]/, 1)[0];
+  const normalized = (value || "").trim().replace(/^v/i, "").split(/[+-]/, 1)[0];
   if (!normalized) {
     return null;
   }

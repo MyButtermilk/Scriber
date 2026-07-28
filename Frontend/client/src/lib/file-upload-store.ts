@@ -260,11 +260,9 @@ function uploadSingleFile(
         return;
       }
 
-      reject(new Error(
-        parsed.message
-          ? translateNow(parsed.message)
-          : xhr.statusText || translateNow("Upload failed"),
-      ));
+      reject(
+        new Error(parsed.message ? translateNow(parsed.message) : xhr.statusText || translateNow("Upload failed")),
+      );
     };
 
     xhr.send(formData);

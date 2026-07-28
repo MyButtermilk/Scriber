@@ -1,20 +1,12 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useSyncExternalStore,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import type { MeetingNote } from "@/lib/api-types";
 import { backendBaseUrl, backendSessionToken } from "@/lib/backend";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 
 export const MEETING_NOTE_MAX_UTF8_BYTES = 48 * 1024;
 export const MEETING_NOTE_KEEPALIVE_PAYLOAD_MAX_BYTES = 56 * 1024;
-export const MEETING_NOTE_WRITER_STORAGE_KEY =
-  "scriber-meeting-note-writer-v1";
-export const MEETING_NOTE_GENERATION_STORAGE_KEY =
-  "scriber-meeting-note-generation-v1";
+export const MEETING_NOTE_WRITER_STORAGE_KEY = "scriber-meeting-note-writer-v1";
+export const MEETING_NOTE_GENERATION_STORAGE_KEY = "scriber-meeting-note-generation-v1";
 
 const MAX_WRITE_GENERATION = Number.MAX_SAFE_INTEGER;
 const WRITER_ID_PATTERN = /^[A-Za-z0-9_-]{16,96}$/;
@@ -66,8 +58,7 @@ export interface UseMeetingNotesAutosaveOptions {
   writerId?: string;
 }
 
-export interface UseMeetingNotesAutosaveResult
-  extends MeetingNotesAutosaveSnapshot {
+export interface UseMeetingNotesAutosaveResult extends MeetingNotesAutosaveSnapshot {
   retry: () => void;
   setBody: (body: string) => void;
 }
@@ -124,20 +115,12 @@ function parsedStoredGeneration(): number {
 export function recordMeetingNoteGenerationFloor(generation: number): void {
   if (!Number.isSafeInteger(generation) || generation <= 0) return;
   inMemoryGeneration = Math.max(inMemoryGeneration, generation);
-  storeValue(
-    MEETING_NOTE_GENERATION_STORAGE_KEY,
-    String(inMemoryGeneration),
-  );
+  storeValue(MEETING_NOTE_GENERATION_STORAGE_KEY, String(inMemoryGeneration));
 }
 
 export function nextPersistentMeetingNoteGeneration(floor = 0): number {
   const timestampFloor = Math.floor(Date.now() * 1_000);
-  const generation = Math.max(
-    timestampFloor,
-    floor + 1,
-    inMemoryGeneration + 1,
-    parsedStoredGeneration() + 1,
-  );
+  const generation = Math.max(timestampFloor, floor + 1, inMemoryGeneration + 1, parsedStoredGeneration() + 1);
   if (!Number.isSafeInteger(generation) || generation > MAX_WRITE_GENERATION) {
     throw new Error("Meeting note write generation is exhausted.");
   }
@@ -145,18 +128,15 @@ export function nextPersistentMeetingNoteGeneration(floor = 0): number {
   return generation;
 }
 
-function workspaceNotePayload(
-  body: string,
-  writeOrder: MeetingNoteWriteOrder,
-): string {
+function workspaceNotePayload(body: string, writeOrder: MeetingNoteWriteOrder): string {
   const normalizedBody = normalizeBody(body);
   if (utf8ByteLength(normalizedBody) > MEETING_NOTE_MAX_UTF8_BYTES) {
     throw new Error("Meeting note exceeds the 48 KiB UTF-8 size limit.");
   }
   if (
-    !WRITER_ID_PATTERN.test(writeOrder.writerId)
-    || !Number.isSafeInteger(writeOrder.generation)
-    || writeOrder.generation <= 0
+    !WRITER_ID_PATTERN.test(writeOrder.writerId) ||
+    !Number.isSafeInteger(writeOrder.generation) ||
+    writeOrder.generation <= 0
   ) {
     throw new Error("Meeting note write order is invalid.");
   }
@@ -168,10 +148,7 @@ function workspaceNotePayload(
   });
 }
 
-export function canKeepaliveWorkspaceMeetingNote(
-  body: string,
-  writerId: string,
-): boolean {
+export function canKeepaliveWorkspaceMeetingNote(body: string, writerId: string): boolean {
   try {
     const payload = workspaceNotePayload(body, {
       writerId,
@@ -210,10 +187,7 @@ async function sendWorkspaceMeetingNote(
     headers["X-Scriber-Token"] = backendSessionToken;
   }
   const payload = workspaceNotePayload(body, writeOrder);
-  const keepalive = (
-    preferKeepalive
-    && utf8ByteLength(payload) <= MEETING_NOTE_KEEPALIVE_PAYLOAD_MAX_BYTES
-  );
+  const keepalive = preferKeepalive && utf8ByteLength(payload) <= MEETING_NOTE_KEEPALIVE_PAYLOAD_MAX_BYTES;
 
   try {
     const response = await fetch(endpoint, {
@@ -230,10 +204,7 @@ async function sendWorkspaceMeetingNote(
     }
     return response.json() as Promise<MeetingNote>;
   } catch (error) {
-    throw new Error(
-      friendlyError(error, "The note could not be saved."),
-      { cause: error },
-    );
+    throw new Error(friendlyError(error, "The note could not be saved."), { cause: error });
   }
 }
 
@@ -262,10 +233,7 @@ const meetingSaveLaneTails = new Map<string, Promise<void>>();
  * writes start synchronously and may bypass this lane; the durable generation
  * compare-and-set in MeetingStore provides the authoritative cross-lane order.
  */
-function runInMeetingSaveLane<T>(
-  meetingId: string,
-  task: () => Promise<T>,
-): Promise<T> {
+function runInMeetingSaveLane<T>(meetingId: string, task: () => Promise<T>): Promise<T> {
   const previous = meetingSaveLaneTails.get(meetingId) ?? Promise.resolve();
   const operation = previous.catch(() => undefined).then(task);
   const tail = operation.then(
@@ -332,11 +300,11 @@ class MeetingNotesSaveQueue {
   hydrate(initialBody: string): void {
     const normalizedInitialBody = normalizeBody(initialBody);
     if (
-      this.error
-      || this.inFlightWrite !== null
-      || this.queuedBody !== null
-      || normalizeBody(this.draftBody) !== this.savedBody
-      || normalizedInitialBody === this.savedBody
+      this.error ||
+      this.inFlightWrite !== null ||
+      this.queuedBody !== null ||
+      normalizeBody(this.draftBody) !== this.savedBody ||
+      normalizedInitialBody === this.savedBody
     ) {
       return;
     }
@@ -353,11 +321,11 @@ class MeetingNotesSaveQueue {
 
   isPrunable(): boolean {
     return (
-      this.error === null
-      && this.inFlightWrite === null
-      && this.queuedBody === null
-      && this.teardownWrite === null
-      && normalizeBody(this.draftBody) === this.savedBody
+      this.error === null &&
+      this.inFlightWrite === null &&
+      this.queuedBody === null &&
+      this.teardownWrite === null &&
+      normalizeBody(this.draftBody) === this.savedBody
     );
   }
 
@@ -365,20 +333,13 @@ class MeetingNotesSaveQueue {
     const targetBody = normalizeBody(this.draftBody);
     this.error = null;
 
-    if (
-      this.inFlightWrite === null
-      && this.teardownWrite === null
-      && targetBody === this.savedBody
-    ) {
+    if (this.inFlightWrite === null && this.teardownWrite === null && targetBody === this.savedBody) {
       this.queuedBody = null;
       this.emit();
       return;
     }
 
-    if (
-      targetBody === this.inFlightWrite?.body
-      || targetBody === this.teardownWrite?.body
-    ) {
+    if (targetBody === this.inFlightWrite?.body || targetBody === this.teardownWrite?.body) {
       this.queuedBody = null;
     } else {
       this.queuedBody = targetBody;
@@ -388,22 +349,14 @@ class MeetingNotesSaveQueue {
   };
 
   flush = (): void => {
-    if (
-      this.error
-      || this.queuedBody !== null
-      || normalizeBody(this.draftBody) !== this.savedBody
-    ) {
+    if (this.error || this.queuedBody !== null || normalizeBody(this.draftBody) !== this.savedBody) {
       this.requestSave();
     }
   };
 
   flushForTeardown = (): void => {
     const body = normalizeBody(this.draftBody);
-    if (
-      body === this.savedBody
-      || body === this.inFlightWrite?.body
-      || body === this.teardownWrite?.body
-    ) {
+    if (body === this.savedBody || body === this.inFlightWrite?.body || body === this.teardownWrite?.body) {
       return;
     }
 
@@ -418,30 +371,32 @@ class MeetingNotesSaveQueue {
     try {
       // Start fetch directly in the pagehide callback. The durable generation
       // CAS makes this safe even while an older ordinary request is in flight.
-      operation = this.callbacks.saveNoteOnTeardown(
-        this.meetingId,
-        body,
-        { writerId: this.callbacks.writerId, generation },
-      );
+      operation = this.callbacks.saveNoteOnTeardown(this.meetingId, body, {
+        writerId: this.callbacks.writerId,
+        generation,
+      });
     } catch (error) {
       operation = Promise.reject(error);
     }
 
-    void operation.then(
-      (note) => {
-        this.applySuccess(note, pending);
-      },
-      (error) => {
-        this.applyError(error, pending);
-      },
-    ).finally(() => {
-      if (this.teardownWrite?.generation === generation) {
-        this.teardownWrite = null;
-      }
-      this.queueLatestDraftIfNeeded();
-      this.emit();
-      void this.drain();
-    }).catch(() => undefined);
+    void operation
+      .then(
+        (note) => {
+          this.applySuccess(note, pending);
+        },
+        (error) => {
+          this.applyError(error, pending);
+        },
+      )
+      .finally(() => {
+        if (this.teardownWrite?.generation === generation) {
+          this.teardownWrite = null;
+        }
+        this.queueLatestDraftIfNeeded();
+        this.emit();
+        void this.drain();
+      })
+      .catch(() => undefined);
   };
 
   private nextGeneration(): number {
@@ -451,16 +406,9 @@ class MeetingNotesSaveQueue {
     return generation;
   }
 
-  private responseGeneration(
-    note: MeetingNote,
-    requestedGeneration: number,
-  ): number {
+  private responseGeneration(note: MeetingNote, requestedGeneration: number): number {
     const generation = note.writeGeneration;
-    if (
-      typeof generation === "number"
-      && Number.isSafeInteger(generation)
-      && generation > 0
-    ) {
+    if (typeof generation === "number" && Number.isSafeInteger(generation) && generation > 0) {
       return generation;
     }
     return requestedGeneration;
@@ -472,10 +420,7 @@ class MeetingNotesSaveQueue {
     if (generation < this.lastAppliedWrite) return;
 
     const authoritativeBody = normalizeBody(note.body);
-    const duplicate = (
-      generation === this.lastAppliedWrite
-      && authoritativeBody === this.savedBody
-    );
+    const duplicate = generation === this.lastAppliedWrite && authoritativeBody === this.savedBody;
     this.lastAppliedWrite = generation;
     this.savedBody = authoritativeBody;
     if (generation >= this.lastErrorWrite) {
@@ -488,10 +433,7 @@ class MeetingNotesSaveQueue {
   }
 
   private applyError(error: unknown, pending: PendingWrite): void {
-    if (
-      pending.generation < this.lastAppliedWrite
-      || pending.generation < this.lastErrorWrite
-    ) {
+    if (pending.generation < this.lastAppliedWrite || pending.generation < this.lastErrorWrite) {
       return;
     }
     const saveError = error instanceof Error ? error : new Error(String(error));
@@ -503,26 +445,20 @@ class MeetingNotesSaveQueue {
   private queueLatestDraftIfNeeded(): void {
     const latestBody = normalizeBody(this.draftBody);
     if (
-      latestBody !== this.savedBody
-      && latestBody !== this.inFlightWrite?.body
-      && latestBody !== this.teardownWrite?.body
+      latestBody !== this.savedBody &&
+      latestBody !== this.inFlightWrite?.body &&
+      latestBody !== this.teardownWrite?.body
     ) {
       this.queuedBody = latestBody;
     }
   }
 
   private buildSnapshot(): MeetingNotesAutosaveSnapshot {
-    const isDirty = (
-      normalizeBody(this.draftBody) !== this.savedBody
-      || this.queuedBody !== null
-    );
+    const isDirty = normalizeBody(this.draftBody) !== this.savedBody || this.queuedBody !== null;
     let status: MeetingNotesAutosaveStatus = "saved";
     if (this.error) {
       status = "error";
-    } else if (
-      this.inFlightWrite !== null
-      || this.teardownWrite !== null
-    ) {
+    } else if (this.inFlightWrite !== null || this.teardownWrite !== null) {
       status = "saving";
     } else if (isDirty) {
       status = "dirty";
@@ -532,10 +468,7 @@ class MeetingNotesSaveQueue {
       error: this.error,
       isDirty,
       status,
-      teardownSafe: canKeepaliveWorkspaceMeetingNote(
-        this.draftBody,
-        this.callbacks.writerId,
-      ),
+      teardownSafe: canKeepaliveWorkspaceMeetingNote(this.draftBody, this.callbacks.writerId),
     };
   }
 
@@ -548,11 +481,7 @@ class MeetingNotesSaveQueue {
   }
 
   private async drain(): Promise<void> {
-    if (
-      this.inFlightWrite !== null
-      || this.teardownWrite !== null
-      || this.error
-    ) {
+    if (this.inFlightWrite !== null || this.teardownWrite !== null || this.error) {
       return;
     }
 
@@ -572,16 +501,11 @@ class MeetingNotesSaveQueue {
       this.inFlightWrite = pending;
       this.emit();
       try {
-        const note = await runInMeetingSaveLane(
-          this.meetingId,
-          () => this.callbacks.saveNote(
-            this.meetingId,
-            body,
-            {
-              writerId: this.callbacks.writerId,
-              generation: pending.generation,
-            },
-          ),
+        const note = await runInMeetingSaveLane(this.meetingId, () =>
+          this.callbacks.saveNote(this.meetingId, body, {
+            writerId: this.callbacks.writerId,
+            generation: pending.generation,
+          }),
         );
         this.applySuccess(note, pending);
       } catch (error) {
@@ -612,27 +536,19 @@ export function useMeetingNotesAutosave({
 }: UseMeetingNotesAutosaveOptions): UseMeetingNotesAutosaveResult {
   const stableWriterId = useRef(writerId || persistentMeetingNoteWriterId());
   const callbackRef = useRef<MeetingNotesQueueCallbacks>({
-    nextWriteGeneration: (
-      floor,
-    ) => nextWriteGeneration?.(floor) ?? nextPersistentMeetingNoteGeneration(floor),
+    nextWriteGeneration: (floor) => nextWriteGeneration?.(floor) ?? nextPersistentMeetingNoteGeneration(floor),
     onError,
     onSaved,
-    recordGenerationFloor: nextWriteGeneration
-      ? () => undefined
-      : recordMeetingNoteGenerationFloor,
+    recordGenerationFloor: nextWriteGeneration ? () => undefined : recordMeetingNoteGenerationFloor,
     saveNote,
     saveNoteOnTeardown,
     writerId: stableWriterId.current,
   });
   callbackRef.current = {
-    nextWriteGeneration: (
-      floor,
-    ) => nextWriteGeneration?.(floor) ?? nextPersistentMeetingNoteGeneration(floor),
+    nextWriteGeneration: (floor) => nextWriteGeneration?.(floor) ?? nextPersistentMeetingNoteGeneration(floor),
     onError,
     onSaved,
-    recordGenerationFloor: nextWriteGeneration
-      ? () => undefined
-      : recordMeetingNoteGenerationFloor,
+    recordGenerationFloor: nextWriteGeneration ? () => undefined : recordMeetingNoteGenerationFloor,
     saveNote,
     saveNoteOnTeardown,
     writerId: stableWriterId.current,
@@ -647,27 +563,19 @@ export function useMeetingNotesAutosave({
       meetingId,
       initialBody,
       {
-        nextWriteGeneration: (floor) => (
-          callbackRef.current.nextWriteGeneration(floor)
-        ),
+        nextWriteGeneration: (floor) => callbackRef.current.nextWriteGeneration(floor),
         onError: (error, id) => callbackRef.current.onError(error, id),
         onSaved: (note, id) => callbackRef.current.onSaved(note, id),
-        recordGenerationFloor: (generation) => (
-          callbackRef.current.recordGenerationFloor(generation)
-        ),
-        saveNote: (id, body, order) => (
-          callbackRef.current.saveNote(id, body, order)
-        ),
-        saveNoteOnTeardown: (id, body, order) => (
-          callbackRef.current.saveNoteOnTeardown(id, body, order)
-        ),
+        recordGenerationFloor: (generation) => callbackRef.current.recordGenerationFloor(generation),
+        saveNote: (id, body, order) => callbackRef.current.saveNote(id, body, order),
+        saveNoteOnTeardown: (id, body, order) => callbackRef.current.saveNoteOnTeardown(id, body, order),
         writerId: stableWriterId.current,
       },
       (candidate) => {
         if (
-          activeQueue.current !== candidate
-          && candidate.isPrunable()
-          && queues.current.get(candidate.meetingId) === candidate
+          activeQueue.current !== candidate &&
+          candidate.isPrunable() &&
+          queues.current.get(candidate.meetingId) === candidate
         ) {
           queues.current.delete(candidate.meetingId);
         }
@@ -678,28 +586,16 @@ export function useMeetingNotesAutosave({
   }, [initialBody, meetingId]);
 
   queue.setCallbacks({
-    nextWriteGeneration: (floor) => (
-      callbackRef.current.nextWriteGeneration(floor)
-    ),
+    nextWriteGeneration: (floor) => callbackRef.current.nextWriteGeneration(floor),
     onError: (error, id) => callbackRef.current.onError(error, id),
     onSaved: (note, id) => callbackRef.current.onSaved(note, id),
-    recordGenerationFloor: (generation) => (
-      callbackRef.current.recordGenerationFloor(generation)
-    ),
-    saveNote: (id, body, order) => (
-      callbackRef.current.saveNote(id, body, order)
-    ),
-    saveNoteOnTeardown: (id, body, order) => (
-      callbackRef.current.saveNoteOnTeardown(id, body, order)
-    ),
+    recordGenerationFloor: (generation) => callbackRef.current.recordGenerationFloor(generation),
+    saveNote: (id, body, order) => callbackRef.current.saveNote(id, body, order),
+    saveNoteOnTeardown: (id, body, order) => callbackRef.current.saveNoteOnTeardown(id, body, order),
     writerId: stableWriterId.current,
   });
 
-  const snapshot = useSyncExternalStore(
-    queue.subscribe,
-    queue.getSnapshot,
-    queue.getSnapshot,
-  );
+  const snapshot = useSyncExternalStore(queue.subscribe, queue.getSnapshot, queue.getSnapshot);
 
   useEffect(() => {
     queue.hydrate(initialBody);
@@ -729,9 +625,12 @@ export function useMeetingNotesAutosave({
     return () => window.clearTimeout(handle);
   }, [debounceMs, queue, snapshot.body, snapshot.isDirty]);
 
-  const setBody = useCallback((body: string) => {
-    queue.setDraft(body);
-  }, [queue]);
+  const setBody = useCallback(
+    (body: string) => {
+      queue.setDraft(body);
+    },
+    [queue],
+  );
   const retry = useCallback(() => {
     queue.requestSave();
   }, [queue]);

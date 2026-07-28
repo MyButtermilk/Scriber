@@ -5,7 +5,7 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
-type HistoryViewMode = "list" | "grid";
+import type { TranscriptHistoryViewMode } from "@/hooks/use-transcript-history-panel-state";
 
 interface TranscriptionHistoryToolbarProps {
   title: string;
@@ -17,8 +17,8 @@ interface TranscriptionHistoryToolbarProps {
   searchPlaceholder: string;
   searchAriaLabel: string;
   clearSearchLabel: string;
-  viewMode: HistoryViewMode;
-  onViewModeChange: (value: HistoryViewMode) => void;
+  viewMode: TranscriptHistoryViewMode;
+  onViewModeChange: (value: TranscriptHistoryViewMode) => void;
   className?: string;
 }
 
@@ -47,19 +47,15 @@ export function TranscriptionHistoryToolbar({
     >
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em] text-foreground">
-            {title}
-          </h2>
+          <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em] text-foreground">{title}</h2>
           <span
-            className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground"
+            className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground"
             aria-label={`${formattedTotal} ${itemLabel}`}
           >
             {formattedTotal}
           </span>
         </div>
-        <p className="mt-1 max-w-[58ch] text-pretty text-[12px] leading-4 text-muted-foreground">
-          {description}
-        </p>
+        <p className="mt-1 max-w-[58ch] text-pretty text-[12px] leading-4 text-muted-foreground">{description}</p>
       </div>
 
       <div className="transcription-history-controls flex w-full min-w-0 items-center gap-2 lg:w-auto">

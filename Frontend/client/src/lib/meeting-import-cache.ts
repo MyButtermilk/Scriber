@@ -1,10 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 
-import type {
-  MeetingImportJob,
-  MeetingImportState,
-  MeetingImportsResponse,
-} from "@/lib/api-types";
+import type { MeetingImportJob, MeetingImportState, MeetingImportsResponse } from "@/lib/api-types";
 
 export const MEETING_IMPORTS_QUERY_KEY = ["/api/meeting-imports"] as const;
 
@@ -23,11 +19,7 @@ const IMPORT_PHASE_RANK: Record<MeetingImportState, number> = {
   failed: 9,
 };
 
-const TERMINAL_IMPORT_STATES = new Set<MeetingImportState>([
-  "completed",
-  "canceled",
-  "failed",
-]);
+const TERMINAL_IMPORT_STATES = new Set<MeetingImportState>(["completed", "canceled", "failed"]);
 
 const CANCELABLE_IMPORT_STATES = new Set<MeetingImportState>([
   "created",
@@ -56,29 +48,21 @@ export interface MeetingImportProgressView {
 }
 
 function importState(value: string): MeetingImportState | null {
-  return Object.prototype.hasOwnProperty.call(IMPORT_PHASE_RANK, value)
-    ? value as MeetingImportState
-    : null;
+  return Object.prototype.hasOwnProperty.call(IMPORT_PHASE_RANK, value) ? (value as MeetingImportState) : null;
 }
 
 function boundedProgress(value: number): number {
   return Math.round(Math.max(0, Math.min(100, Number.isFinite(value) ? value : 0)));
 }
 
-function isStaleImportState(
-  current: MeetingImportState,
-  incoming: MeetingImportState | null,
-): boolean {
+function isStaleImportState(current: MeetingImportState, incoming: MeetingImportState | null): boolean {
   // Once the backend has published a terminal result, a delayed cancellation
   // response or another terminal event must not rewrite that outcome.
   if (TERMINAL_IMPORT_STATES.has(current)) return incoming !== current;
   return incoming != null && IMPORT_PHASE_RANK[incoming] < IMPORT_PHASE_RANK[current];
 }
 
-function mergeMeetingImportJob(
-  current: MeetingImportJob,
-  incoming: MeetingImportJob,
-): MeetingImportJob {
+function mergeMeetingImportJob(current: MeetingImportJob, incoming: MeetingImportJob): MeetingImportJob {
   if (isStaleImportState(current.state, incoming.state)) return current;
   if (current.state !== incoming.state) return incoming;
   return {
@@ -118,10 +102,7 @@ export function mergeMeetingImportProgress(
   };
 }
 
-export function upsertMeetingImportJob(
-  queryClient: QueryClient,
-  job: MeetingImportJob,
-): void {
+export function upsertMeetingImportJob(queryClient: QueryClient, job: MeetingImportJob): void {
   queryClient.setQueryData<MeetingImportsResponse>(MEETING_IMPORTS_QUERY_KEY, (current) => {
     if (!current) {
       return {
@@ -132,11 +113,10 @@ export function upsertMeetingImportJob(
       };
     }
     const index = current.items.findIndex((item) => item.id === job.id);
-    const items = index >= 0
-      ? current.items.map((item, itemIndex) => (
-        itemIndex === index ? mergeMeetingImportJob(item, job) : item
-      ))
-      : [job, ...current.items].slice(0, current.limit);
+    const items =
+      index >= 0
+        ? current.items.map((item, itemIndex) => (itemIndex === index ? mergeMeetingImportJob(item, job) : item))
+        : [job, ...current.items].slice(0, current.limit);
     return {
       ...current,
       items,
@@ -146,10 +126,7 @@ export function upsertMeetingImportJob(
 }
 
 /** Patch inbox data in-place; progress events must never trigger an HTTP fetch. */
-export function applyMeetingImportProgressEvent(
-  queryClient: QueryClient,
-  event: MeetingImportProgressEventData,
-): void {
+export function applyMeetingImportProgressEvent(queryClient: QueryClient, event: MeetingImportProgressEventData): void {
   queryClient.setQueryData<MeetingImportsResponse>(MEETING_IMPORTS_QUERY_KEY, (current) => {
     if (!current) return current;
     const index = current.items.findIndex((item) => item.id === event.importId);
@@ -160,8 +137,7 @@ export function applyMeetingImportProgressEvent(
     const state = eventState ?? item.state;
     const eventRank = eventState ? IMPORT_PHASE_RANK[eventState] : null;
     const currentRank = IMPORT_PHASE_RANK[item.state];
-    const stalePhase = isStaleImportState(item.state, eventState)
-      || (eventRank != null && eventRank < currentRank);
+    const stalePhase = isStaleImportState(item.state, eventState) || (eventRank != null && eventRank < currentRank);
     const samePhase = state === item.state;
     const progress = stalePhase
       ? item.progress
@@ -175,9 +151,7 @@ export function applyMeetingImportProgressEvent(
       progress,
       status: stalePhase ? item.status : event.status,
       receivedBytes: Math.max(item.receivedBytes, Math.max(0, event.receivedBytes)),
-      expectedBytes: typeof event.expectedBytes === "number"
-        ? Math.max(0, event.expectedBytes)
-        : item.expectedBytes,
+      expectedBytes: typeof event.expectedBytes === "number" ? Math.max(0, event.expectedBytes) : item.expectedBytes,
       meetingId: event.meetingId ?? item.meetingId,
       cancelRequested: nextState === "cancel_requested" || item.cancelRequested,
       canCancel: CANCELABLE_IMPORT_STATES.has(nextState),
@@ -185,7 +159,7 @@ export function applyMeetingImportProgressEvent(
     };
     return {
       ...current,
-      items: current.items.map((value, itemIndex) => itemIndex === index ? next : value),
+      items: current.items.map((value, itemIndex) => (itemIndex === index ? next : value)),
     };
   });
 }

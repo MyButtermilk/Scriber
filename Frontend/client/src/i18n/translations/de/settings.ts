@@ -3,16 +3,16 @@ import type { TranslationCatalog } from "@/i18n/types";
 export const settingsTranslations = {
   // Languages and shared settings states.
   "Auto-detect": "Automatisch erkennen",
-  "German": "Deutsch",
-  "Spanish": "Spanisch",
-  "French": "Französisch",
-  "Italian": "Italienisch",
-  "Never": "Nie",
-  "Unknown": "Unbekannt",
+  German: "Deutsch",
+  Spanish: "Spanisch",
+  French: "Französisch",
+  Italian: "Italienisch",
+  Never: "Nie",
+  Unknown: "Unbekannt",
   "Not set": "Nicht festgelegt",
-  "Default": "Standard",
-  "auto": "auto",
-  "en": "en",
+  Default: "Standard",
+  auto: "auto",
+  en: "en",
   "Loading devices...": "Geräte werden geladen ...",
   "Select a device...": "Gerät auswählen ...",
   "Device {{number}}": "Gerät {{number}}",
@@ -24,10 +24,23 @@ export const settingsTranslations = {
   "{{price}}€/M blended, ~{{tokensPerSecond}} Token/s": "{{price}} €/M gemischt, ~{{tokensPerSecond}} Token/s",
   "{{price}}€/M blended, ~{{tokens}} Token/s": "{{price}} €/M gemischt, ~{{tokens}} Token/s",
   "{{price}}€/M with AA Score {{score}}": "{{price}} €/M mit AA-Score {{score}}",
+  "{{price}}/M blended · ~{{tokens}} tokens/s": "{{price}}/M gemischt · ~{{tokens}} Token/s",
+  "{{price}}/M · AA score {{score}}": "{{price}}/M · AA-Score {{score}}",
   "{{price}}€/h with {{errorRate}}% Error": "{{price}} €/h bei {{errorRate}} % Fehlerquote",
   "{{price}}€/h with {{error}}% Error": "{{price}} €/h bei {{error}} % Fehlerquote",
   "{{price}}€/h with model-dependent Error": "{{price}} €/h · variable Fehlerquote",
+  "{{price}}/h · WER {{error}}%": "{{price}}/Std. · WER {{error}} %",
+  "{{price}}/h · model-dependent WER": "{{price}}/Std. · modellabhängige WER",
   "0,00€/h with model-dependent Error": "0,00 €/h · variable Fehlerquote",
+  "Benchmark notes": "Hinweise zu Benchmarks",
+  "WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.":
+    "Die WER (Wortfehlerrate) gibt an, welcher Anteil der Wörter im Benchmark falsch transkribiert wurde; niedriger ist besser.",
+  "AA score compares model answer quality in an independent benchmark; higher is better.":
+    "Der AA-Score vergleicht die Antwortqualität von Modellen in einem unabhängigen Benchmark; höher ist besser.",
+  "Blended token price averages the listed input and output rates.":
+    "Der gemischte Tokenpreis ist der Mittelwert der angegebenen Ein- und Ausgabepreise.",
+  "Euro estimates use a fixed rate of {{rate}}. Provider prices may change.":
+    "Euro-Beträge sind Schätzungen mit dem festen Kurs {{rate}}. Anbieterpreise können sich ändern.",
   "Provider rate varies": "Anbieterpreis variiert",
   "$0.00 / meeting hour": "0,00 $ / Meetingstunde",
   "{{price}} / meeting hour": "{{price}} / Meetingstunde",
@@ -68,51 +81,68 @@ export const settingsTranslations = {
   "Celeris API key": "Celeris-API-Schlüssel",
   "OpenRouter API key": "OpenRouter-API-Schlüssel",
   "Data processing region": "Region der Datenverarbeitung",
-  "This selection applies to Soniox realtime and uploaded-audio transcription.": "Diese Auswahl gilt für Soniox-Echtzeittranskription und die Transkription hochgeladener Audiodateien.",
+  "This selection applies to Soniox realtime and uploaded-audio transcription.":
+    "Diese Auswahl gilt für Soniox-Echtzeittranskription und die Transkription hochgeladener Audiodateien.",
   "Soniox data processing region": "Soniox-Region für die Datenverarbeitung",
   "US - Region (default)": "USA – Region (Standard)",
-  "Use the standard Soniox US project and API endpoint.": "Verwendet das standardmäßige US-Projekt und den US-API-Endpunkt von Soniox.",
+  "Use the standard Soniox US project and API endpoint.":
+    "Verwendet das standardmäßige US-Projekt und den US-API-Endpunkt von Soniox.",
   "EUR - Region (recommended for better latency)": "EU – Region (für geringere Latenz empfohlen)",
-  "Process and store audio and transcripts in the European Union.": "Audio und Transkripte werden in der Europäischen Union verarbeitet und gespeichert.",
+  "Process and store audio and transcripts in the European Union.":
+    "Audio und Transkripte werden in der Europäischen Union verarbeitet und gespeichert.",
   "EU access must be enabled by Soniox first": "Der EU-Zugriff muss zuerst von Soniox freigeschaltet werden",
-  "Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.": "Sende Soniox deine Organisations-ID per E-Mail, damit regionale Bereitstellungen freigeschaltet werden können. Öffne anschließend die Soniox-API-Konsole, erstelle ein neues Projekt mit der Region Europäische Union und füge oben den API-Schlüssel dieses separaten EU-Projekts ein. Ausgewählte Region und API-Schlüssel müssen übereinstimmen.",
+  "Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.":
+    "Sende Soniox deine Organisations-ID per E-Mail, damit regionale Bereitstellungen freigeschaltet werden können. Öffne anschließend die Soniox-API-Konsole, erstelle ein neues Projekt mit der Region Europäische Union und füge oben den API-Schlüssel dieses separaten EU-Projekts ein. Ausgewählte Region und API-Schlüssel müssen übereinstimmen.",
   "Open Soniox API Console": "Soniox-API-Konsole öffnen",
   "Email Soniox support": "Soniox-Support per E-Mail kontaktieren",
   "Read the official setup guide": "Offizielle Einrichtungsanleitung lesen",
-  "Credential": "Anmeldedaten",
-  "Add or update the credential for this provider.": "Füge die Anmeldedaten für diesen Anbieter hinzu oder aktualisiere sie.",
+  Credential: "Anmeldedaten",
+  "Add or update the credential for this provider.":
+    "Füge die Anmeldedaten für diesen Anbieter hinzu oder aktualisiere sie.",
   "Enter {{provider}} credential": "{{provider}}-Anmeldedaten eingeben",
   "Hide credential": "Anmeldedaten ausblenden",
   "Show credential": "Anmeldedaten anzeigen",
   "Open provider page": "Anbieterseite öffnen",
-  "Open": "Öffnen",
+  Open: "Öffnen",
 
   // Meeting transcription provider explanations.
-  "Keeps live and final transcription with the same service. Separates remote voices from system audio and keeps exact timing for meetings up to 5 hours.": "Verwendet denselben Dienst für Live- und finale Transkription. Trennt entfernte Stimmen vom Systemaudio und erhält bei Meetings bis zu 5 Stunden exakte Zeitangaben.",
-  "Strong speaker naming and timing for meetings up to 5 hours.": "Zuverlässige Sprecherbenennung und Zeitangaben für Meetings bis zu 5 Stunden.",
-  "Includes speaker names and timing for recordings up to 3 hours.": "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 3 Stunden.",
-  "Includes word timing and speaker names. The current Scriber setup is not recommended for 5-hour meetings.": "Enthält Wortzeitangaben und Sprechernamen. Die aktuelle Scriber-Konfiguration wird für 5-stündige Meetings nicht empfohlen.",
-  "Includes speaker names and timing for recordings up to 2 hours 15 minutes.": "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 2 Stunden und 15 Minuten.",
+  "Keeps live and final transcription with the same service. Separates remote voices from system audio and keeps exact timing for meetings up to 5 hours.":
+    "Verwendet denselben Dienst für Live- und finale Transkription. Trennt entfernte Stimmen vom Systemaudio und erhält bei Meetings bis zu 5 Stunden exakte Zeitangaben.",
+  "Strong speaker naming and timing for meetings up to 5 hours.":
+    "Zuverlässige Sprecherbenennung und Zeitangaben für Meetings bis zu 5 Stunden.",
+  "Includes speaker names and timing for recordings up to 3 hours.":
+    "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 3 Stunden.",
+  "Includes word timing and speaker names. The current Scriber setup is not recommended for 5-hour meetings.":
+    "Enthält Wortzeitangaben und Sprechernamen. Die aktuelle Scriber-Konfiguration wird für 5-stündige Meetings nicht empfohlen.",
+  "Includes speaker names and timing for recordings up to 2 hours 15 minutes.":
+    "Enthält Sprechernamen und Zeitangaben für Aufnahmen bis zu 2 Stunden und 15 Minuten.",
   "Can include speaker names when they are available.": "Kann Sprechernamen übernehmen, wenn sie verfügbar sind.",
   "Includes speaker names in the completed transcript.": "Enthält Sprechernamen im fertigen Transkript.",
-  "Creates the final transcript quickly. Scriber can add speaker names on this device.": "Erstellt das finale Transkript schnell. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
-  "Creates the final transcript, then Scriber can add speaker names on this device.": "Erstellt das finale Transkript; anschließend kann Scriber auf diesem Gerät Sprechernamen ergänzen.",
-  "Supports long meetings. Scriber can add speaker names on this device.": "Unterstützt lange Meetings. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
-  "Creates one multilingual final transcript for meetings up to 3 hours without Modulate enrichment signals. Scriber can add speaker names on this device.": "Erstellt ein mehrsprachiges finales Transkript für Meetings bis zu 3 Stunden, ohne Anreicherungssignale von Modulate anzufordern. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
-  "Works without uploading audio. Scriber can also add speaker names on this device.": "Funktioniert ohne Audio-Upload. Scriber kann auf diesem Gerät außerdem Sprechernamen ergänzen.",
+  "Creates the final transcript quickly. Scriber can add speaker names on this device.":
+    "Erstellt das finale Transkript schnell. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
+  "Creates the final transcript, then Scriber can add speaker names on this device.":
+    "Erstellt das finale Transkript; anschließend kann Scriber auf diesem Gerät Sprechernamen ergänzen.",
+  "Supports long meetings. Scriber can add speaker names on this device.":
+    "Unterstützt lange Meetings. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
+  "Creates one multilingual final transcript for meetings up to 3 hours without Modulate enrichment signals. Scriber can add speaker names on this device.":
+    "Erstellt ein mehrsprachiges finales Transkript für Meetings bis zu 3 Stunden, ohne Anreicherungssignale von Modulate anzufordern. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
+  "Works without uploading audio. Scriber can also add speaker names on this device.":
+    "Funktioniert ohne Audio-Upload. Scriber kann auf diesem Gerät außerdem Sprechernamen ergänzen.",
   "Configured local model": "Konfiguriertes lokales Modell",
 
   // Load, save, and action feedback.
   "Saved speakers unavailable ({{status}})": "Gespeicherte Sprecher nicht verfügbar ({{status}})",
   "Microphones unavailable ({{status}})": "Mikrofone nicht verfügbar ({{status}})",
-  "Meeting transcription options unavailable ({{status}})": "Optionen für die Meeting-Transkription nicht verfügbar ({{status}})",
+  "Meeting transcription options unavailable ({{status}})":
+    "Optionen für die Meeting-Transkription nicht verfügbar ({{status}})",
   "Speaker model unavailable ({{status}})": "Sprechermodell nicht verfügbar ({{status}})",
   "Outlook status unavailable ({{status}})": "Outlook-Status nicht verfügbar ({{status}})",
   "Saved speaker deleted": "Gespeicherter Sprecher gelöscht",
   "Speaker name saved": "Sprechername gespeichert",
   "Saved speaker could not be updated": "Gespeicherter Sprecher konnte nicht aktualisiert werden",
   "Voice recognition ready": "Stimmerkennung ist bereit",
-  "Scriber can now recognize familiar speakers in new meetings.": "Scriber kann vertraute Sprecher jetzt in neuen Meetings erkennen.",
+  "Scriber can now recognize familiar speakers in new meetings.":
+    "Scriber kann vertraute Sprecher jetzt in neuen Meetings erkennen.",
   "Voice recognition download failed": "Download der Stimmerkennung fehlgeschlagen",
   "{{name}} is ready": "{{name}} ist bereit",
   "is ready": "ist bereit",
@@ -127,11 +157,12 @@ export const settingsTranslations = {
   "Could not load settings": "Einstellungen konnten nicht geladen werden",
   "The requested settings action failed.": "Die angeforderte Einstellungsaktion ist fehlgeschlagen.",
   "Save failed": "Speichern fehlgeschlagen",
-  "Saved": "Gespeichert",
+  Saved: "Gespeichert",
   "{{provider}} settings updated.": "{{provider}}-Einstellungen aktualisiert.",
   "Favorite set": "Favorit festgelegt",
   "Favorite cleared": "Favorit entfernt",
-  "This microphone will be used automatically when available.": "Dieses Mikrofon wird automatisch verwendet, sobald es verfügbar ist.",
+  "This microphone will be used automatically when available.":
+    "Dieses Mikrofon wird automatisch verwendet, sobald es verfügbar ist.",
   "No preferred microphone set.": "Kein bevorzugtes Mikrofon festgelegt.",
   "Local model selection updated.": "Auswahl des lokalen Modells aktualisiert.",
   "Quantization updated.": "Quantisierung aktualisiert.",
@@ -139,25 +170,30 @@ export const settingsTranslations = {
   "Download finished": "Download abgeschlossen",
   "Model downloaded successfully.": "Modell erfolgreich heruntergeladen.",
   "Download failed": "Download fehlgeschlagen",
-  "Downloading model files ({{quantization}}). This can take a while...": "Modelldateien werden heruntergeladen ({{quantization}}). Dies kann eine Weile dauern ...",
+  "Downloading model files ({{quantization}}). This can take a while...":
+    "Modelldateien werden heruntergeladen ({{quantization}}). Dies kann eine Weile dauern ...",
   "Downloading files {{current}}/{{total}}...": "Dateien werden heruntergeladen: {{current}}/{{total}} ...",
   "Preparing local model package...": "Lokales Modellpaket wird vorbereitet ...",
   "Downloading {{file}} ({{downloaded}}/{{total}})": "{{file}} wird heruntergeladen ({{downloaded}}/{{total}})",
   "Download failed: {{error}}": "Download fehlgeschlagen: {{error}}",
-  "Deleted": "Gelöscht",
+  Deleted: "Gelöscht",
   "Model removed from cache.": "Modell aus dem Cache entfernt.",
   "Delete failed": "Löschen fehlgeschlagen",
   "Summarization model updated.": "Zusammenfassungsmodell aktualisiert.",
   "Live post-processing model updated.": "Modell für die Live-Nachbearbeitung aktualisiert.",
   "Auto-summarize enabled.": "Automatische Zusammenfassung aktiviert.",
   "Auto-summarize disabled.": "Automatische Zusammenfassung deaktiviert.",
-  "YouTube captions will be used before audio transcription.": "YouTube-Untertitel werden vor der Audiotranskription verwendet.",
+  "YouTube captions will be used before audio transcription.":
+    "YouTube-Untertitel werden vor der Audiotranskription verwendet.",
   "YouTube videos will always be transcribed from audio.": "YouTube-Videos werden immer aus dem Audio transkribiert.",
-  "Voice Library will recognize recurring speakers in new meetings after its local model is installed.": "Die Stimmenbibliothek erkennt wiederkehrende Sprecher in neuen Meetings, sobald ihr lokales Modell installiert ist.",
-  "Scriber will not learn new voices. Existing saved speakers remain until you delete them.": "Scriber lernt keine neuen Stimmen. Bereits gespeicherte Sprecher bleiben erhalten, bis du sie löschst.",
+  "Voice Library will recognize recurring speakers in new meetings after its local model is installed.":
+    "Die Stimmenbibliothek erkennt wiederkehrende Sprecher in neuen Meetings, sobald ihr lokales Modell installiert ist.",
+  "Scriber will not learn new voices. Existing saved speakers remain until you delete them.":
+    "Scriber lernt keine neuen Stimmen. Bereits gespeicherte Sprecher bleiben erhalten, bis du sie löschst.",
   "Delete failed ({{status}})": "Löschen fehlgeschlagen ({{status}})",
   "Voice data deleted": "Stimmdaten gelöscht",
-  "All saved speakers and the local download were removed.": "Alle gespeicherten Sprecher und der lokale Download wurden entfernt.",
+  "All saved speakers and the local download were removed.":
+    "Alle gespeicherten Sprecher und der lokale Download wurden entfernt.",
   "Live post-processing enabled.": "Live-Nachbearbeitung aktiviert.",
   "Live post-processing disabled.": "Live-Nachbearbeitung deaktiviert.",
   "Saved, hotkey refresh failed": "Gespeichert, Hotkey-Aktualisierung fehlgeschlagen",
@@ -194,20 +230,23 @@ export const settingsTranslations = {
   "Silero voice detection disabled.": "Silero-Spracherkennung deaktiviert.",
   "Silero voice detection could not be saved.": "Die Silero-Spracherkennung konnte nicht gespeichert werden.",
   "Mikrofon getrennt": "Mikrofon getrennt",
-  "Das ausgewahlte Mikrofon ist nicht mehr verfugbar. Es wurde auf Default zuruckgestellt.": "Das ausgewählte Mikrofon ist nicht mehr verfügbar. Es wurde auf das Standardgerät zurückgesetzt.",
+  "Das ausgewahlte Mikrofon ist nicht mehr verfugbar. Es wurde auf Default zuruckgestellt.":
+    "Das ausgewählte Mikrofon ist nicht mehr verfügbar. Es wurde auf das Standardgerät zurückgesetzt.",
   "Microphone disconnected": "Mikrofon getrennt",
-  "The selected microphone is no longer available. Scriber switched back to the Windows default.": "Das ausgewählte Mikrofon ist nicht mehr verfügbar. Scriber hat auf das Windows-Standardmikrofon zurückgeschaltet.",
+  "The selected microphone is no longer available. Scriber switched back to the Windows default.":
+    "Das ausgewählte Mikrofon ist nicht mehr verfügbar. Scriber hat auf das Windows-Standardmikrofon zurückgeschaltet.",
   "Favorite mic restored": "Favorisiertes Mikrofon wiederhergestellt",
-  "Favorite microphone '{{microphone}}' is available again.": "Das favorisierte Mikrofon „{{microphone}}“ ist wieder verfügbar.",
+  "Favorite microphone '{{microphone}}' is available again.":
+    "Das favorisierte Mikrofon „{{microphone}}“ ist wieder verfügbar.",
   "Favorite microphone '{{name}}' is available again.": "Das favorisierte Mikrofon „{{name}}“ ist wieder verfügbar.",
 
   // Local model and desktop-update statuses.
-  "Downloaded": "Heruntergeladen",
-  "Downloading": "Wird heruntergeladen",
-  "Error": "Fehler",
+  Downloaded: "Heruntergeladen",
+  Downloading: "Wird heruntergeladen",
+  Error: "Fehler",
   "Not downloaded": "Nicht heruntergeladen",
-  "Skipped": "Übersprungen",
-  "Later": "Später",
+  Skipped: "Übersprungen",
+  Later: "Später",
   "Not checked": "Nicht geprüft",
   "Not configured": "Nicht konfiguriert",
   "Automatic checks disabled": "Automatische Prüfungen deaktiviert",
@@ -217,8 +256,9 @@ export const settingsTranslations = {
   "Cloud streaming": "Cloud-Streaming",
   "True realtime STT streams.": "Streamt STT in Echtzeit.",
   "Cloud async / segmented / batch": "Cloud – asynchron / segmentiert / Stapelverarbeitung",
-  "Uploads completed speech segments or finalizes captured audio after recording stops.": "Lädt abgeschlossene Sprachsegmente hoch oder finalisiert das aufgenommene Audio nach dem Ende der Aufnahme.",
-  "Local": "Lokal",
+  "Uploads completed speech segments or finalizes captured audio after recording stops.":
+    "Lädt abgeschlossene Sprachsegmente hoch oder finalisiert das aufgenommene Audio nach dem Ende der Aufnahme.",
+  Local: "Lokal",
   "Local ONNX": "Lokal (ONNX)",
   "Local ONNX STT": "Lokale ONNX-STT",
   "Runs on this device.": "Wird auf diesem Gerät ausgeführt.",
@@ -226,39 +266,45 @@ export const settingsTranslations = {
 
   // Transcription settings.
   "Custom vocabulary": "Benutzerdefiniertes Vokabular",
-  "Names, brands, and domain terms passed to supported STT providers.": "Namen, Marken und Fachbegriffe, die an unterstützte STT-Anbieter übergeben werden.",
+  "Names, brands, and domain terms passed to supported STT providers.":
+    "Namen, Marken und Fachbegriffe, die an unterstützte STT-Anbieter übergeben werden.",
   "Enter terms, one per line...": "Begriffe eingeben, einen pro Zeile ...",
   "Live post-processing": "Live-Nachbearbeitung",
-  "A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged.": "Ein eigener Live-Mikrofon-Hotkey bereinigt Diktate vor dem Einfügen. Dateien und YouTube bleiben unverändert.",
+  "A separate live-mic shortcut cleans dictation before paste. Files and YouTube stay unchanged.":
+    "Ein eigener Live-Mikrofon-Hotkey bereinigt Diktate vor dem Einfügen. Dateien und YouTube bleiben unverändert.",
   "Post-processing hotkey": "Hotkey für die Nachbearbeitung",
   "Starts Live Mic with cleanup enabled.": "Startet das Live-Mikrofon mit aktivierter Bereinigung.",
   "Press the key combination for cleaned live dictation.": "Drücke die Tastenkombination für bereinigte Live-Diktate.",
   "Post-processing hotkey capture area": "Eingabebereich für den Nachbearbeitungs-Hotkey",
   "Post-processing model": "Modell für die Nachbearbeitung",
-  "Use a low-cost, low-latency model for simple dictation cleanup.": "Verwende für die einfache Diktatbereinigung ein kostengünstiges Modell mit niedriger Latenz.",
+  "Use a low-cost, low-latency model for simple dictation cleanup.":
+    "Verwende für die einfache Diktatbereinigung ein kostengünstiges Modell mit niedriger Latenz.",
   "Select cleanup model": "Bereinigungsmodell auswählen",
   "Live cleanup prompt": "Prompt für die Live-Bereinigung",
-  "Use {{placeholder}} where the raw transcript should be inserted.": "Verwende {{placeholder}} an der Stelle, an der das Rohtranskript eingefügt werden soll.",
-  "Use": "Verwende",
+  "Use {{placeholder}} where the raw transcript should be inserted.":
+    "Verwende {{placeholder}} an der Stelle, an der das Rohtranskript eingefügt werden soll.",
+  Use: "Verwende",
   "where the raw transcript should be inserted.": "an der Stelle, an der das Rohtranskript eingefügt werden soll.",
   "Reset prompt": "Prompt zurücksetzen",
   "Summarization prompt": "Prompt für Zusammenfassungen",
-  "Controls content and emphasis. Scriber always applies a safe HTML structure for display.": "Steuert Inhalt und Schwerpunkte. Scriber verwendet für die Anzeige immer eine sichere HTML-Struktur.",
-  "Summarize the key points, decisions, and action items. Keep it concise and structured.": "Fasse die wichtigsten Punkte, Entscheidungen und Aufgaben knapp und strukturiert zusammen.",
+  "Controls content and emphasis. Scriber always applies a safe HTML structure for display.":
+    "Steuert Inhalt und Schwerpunkte. Scriber verwendet für die Anzeige immer eine sichere HTML-Struktur.",
+  "Summarize the key points, decisions, and action items. Keep it concise and structured.":
+    "Fasse die wichtigsten Punkte, Entscheidungen und Aufgaben knapp und strukturiert zusammen.",
   "ONNX model": "ONNX-Modell",
   "ONNX Runtime": "ONNX Runtime",
   "Whisper / Parakeet local ONNX Runtime": "Whisper / Parakeet mit lokaler ONNX Runtime",
   "Loading local models...": "Lokale Modelle werden geladen ...",
   "onnx-asr is not installed.": "onnx-asr ist nicht installiert.",
-  "Model": "Modell",
+  Model: "Modell",
   "Select local model": "Lokales Modell auswählen",
-  "Quantization": "Quantisierung",
+  Quantization: "Quantisierung",
   "Select quantization": "Quantisierung auswählen",
-  "int8": "int8",
-  "fp16": "fp16",
-  "fp32": "fp32",
+  int8: "int8",
+  fp16: "fp16",
+  fp32: "fp32",
   "Downloading...": "Wird heruntergeladen ...",
-  "Download": "Herunterladen",
+  Download: "Herunterladen",
   "Speech-to-text provider": "Spracherkennungsanbieter",
   "Choose the primary transcription provider.": "Wähle den primären Transkriptionsanbieter.",
   "Current provider": "Aktueller Anbieter",
@@ -269,21 +315,25 @@ export const settingsTranslations = {
   "{{group}} transcription providers": "Transkriptionsanbieter: {{group}}",
 
   // Page shell and primary transcription controls.
-  "Workspace controls · 06": "Arbeitsbereich-Steuerung · 06",
-  "Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.": "Konfiguriere Aufnahme, Transkriptionsanbieter, KI-Verarbeitung, Anmeldedaten, Updates und Spracheinstellungen.",
+  "Workspace controls": "Arbeitsbereich-Steuerung",
+  "Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.":
+    "Konfiguriere Aufnahme, Transkriptionsanbieter, KI-Verarbeitung, Anmeldedaten, Updates und Spracheinstellungen.",
   "Settings sections": "Einstellungsbereiche",
-  "Transcription": "Transkription",
+  Transcription: "Transkription",
   "Speech-to-text": "Spracherkennung",
   "API keys": "API-Schlüssel",
-  "Summarization": "Zusammenfassung",
-  "Updates": "Updates",
-  "Control how audio is captured and how the recording hotkey behaves.": "Lege fest, wie Audio aufgenommen wird und wie sich der Aufnahme-Hotkey verhält.",
-  "Startup": "Startverhalten",
-  "Control whether Scriber is ready after Windows login.": "Lege fest, ob Scriber nach der Windows-Anmeldung bereitsteht.",
+  Summarization: "Zusammenfassung",
+  Updates: "Updates",
+  "Control how audio is captured and how the recording hotkey behaves.":
+    "Lege fest, wie Audio aufgenommen wird und wie sich der Aufnahme-Hotkey verhält.",
+  Startup: "Startverhalten",
+  "Control whether Scriber is ready after Windows login.":
+    "Lege fest, ob Scriber nach der Windows-Anmeldung bereitsteht.",
   "Start with Windows": "Mit Windows starten",
   "Launch Scriber when you log in.": "Scriber bei der Anmeldung starten.",
   "Microphone input": "Mikrofoneingang",
-  "Choose the active device and keep capture warm when low latency matters.": "Wähle das aktive Gerät und halte die Aufnahme für minimale Latenz bereit.",
+  "Choose the active device and keep capture warm when low latency matters.":
+    "Wähle das aktive Gerät und halte die Aufnahme für minimale Latenz bereit.",
   "Input device": "Eingabegerät",
   "Default microphone": "Standardmikrofon",
   "Select the active microphone.": "Wähle das aktive Mikrofon.",
@@ -293,159 +343,198 @@ export const settingsTranslations = {
   "Set {{microphone}} as favorite": "{{microphone}} als Favorit festlegen",
   "Remove from favorites": "Aus Favoriten entfernen",
   "Set as favorite": "Als Favorit festlegen",
-  "Favorite microphone is used automatically when connected.": "Das favorisierte Mikrofon wird automatisch verwendet, sobald es verbunden ist.",
+  "Favorite microphone is used automatically when connected.":
+    "Das favorisierte Mikrofon wird automatisch verwendet, sobald es verbunden ist.",
   "Mic always on": "Mikrofon immer aktiv",
   "Keep capture pre-warmed for minimum latency.": "Hält die Aufnahme für minimale Latenz vorgewärmt.",
   "Recording control": "Aufnahmesteuerung",
-  "Configure the main hotkey, trigger mode, and recording overlay.": "Konfiguriere den Haupt-Hotkey, den Auslösemodus und die Aufnahmeeinblendung.",
+  "Configure the main hotkey, trigger mode, and recording overlay.":
+    "Konfiguriere den Haupt-Hotkey, den Auslösemodus und die Aufnahmeeinblendung.",
   "Recording mode": "Aufnahmemodus",
   "Choose how the hotkey behaves.": "Lege fest, wie sich der Hotkey verhält.",
-  "Toggle": "Umschalten",
+  Toggle: "Umschalten",
   "Push-to-talk": "Gedrückt halten",
   "Silero voice detection": "Silero-Spracherkennung",
-  "Native realtime streams do not need local Silero segmentation. The provider stream or recording stop controls finalization.": "Native Echtzeitstreams benötigen keine lokale Silero-Segmentierung. Der Anbieterstream oder das Aufnahmeende steuert die Finalisierung.",
-  "Optional. Detect pauses for segmented and async transcription. When off, Silero is not loaded and the recording is transcribed as one continuous segment.": "Optional. Erkennt Pausen für segmentierte und asynchrone Transkriptionen. Wenn deaktiviert, wird Silero nicht geladen und die Aufnahme als ein zusammenhängender Abschnitt transkribiert.",
+  "Native realtime streams do not need local Silero segmentation. The provider stream or recording stop controls finalization.":
+    "Native Echtzeitstreams benötigen keine lokale Silero-Segmentierung. Der Anbieterstream oder das Aufnahmeende steuert die Finalisierung.",
+  "Optional. Detect pauses for segmented and async transcription. When off, Silero is not loaded and the recording is transcribed as one continuous segment.":
+    "Optional. Erkennt Pausen für segmentierte und asynchrone Transkriptionen. Wenn deaktiviert, wird Silero nicht geladen und die Aufnahme als ein zusammenhängender Abschnitt transkribiert.",
   "Global hotkey": "Globaler Hotkey",
   "Shortcut to start or stop recording.": "Tastenkürzel zum Starten oder Beenden der Aufnahme.",
   "Record hotkey": "Aufnahme-Hotkey festlegen",
-  "Press the key combination you want to use as a shortcut.": "Drücke die Tastenkombination, die du als Hotkey verwenden möchtest.",
+  "Press the key combination you want to use as a shortcut.":
+    "Drücke die Tastenkombination, die du als Hotkey verwenden möchtest.",
   "Hotkey capture area": "Eingabebereich für den Hotkey",
   "Overlay visualization": "Darstellung der Aufnahmeeinblendung",
-  "Choose how microphone activity appears in the recording overlay.": "Lege fest, wie Mikrofonaktivität in der Aufnahmeeinblendung dargestellt wird.",
+  "Choose how microphone activity appears in the recording overlay.":
+    "Lege fest, wie Mikrofonaktivität in der Aufnahmeeinblendung dargestellt wird.",
   "Overlay visualization style": "Darstellungsstil der Aufnahmeeinblendung",
-  "Bars": "Balken",
+  Bars: "Balken",
   "Energy wave": "Energiewelle",
   "Visualizer bars": "Visualizer-Balken",
   "Current count: {{count}}": "Aktuelle Anzahl: {{count}}",
   "Controls Live Mic and the classic bar overlay.": "Steuert Live-Mikrofon und die klassische Balken-Einblendung.",
   "Transcript context": "Transkriptkontext",
-  "Give providers and summaries the domain terms and summary behavior they need.": "Stelle Anbietern und Zusammenfassungen die benötigten Fachbegriffe und Vorgaben bereit.",
+  "Give providers and summaries the domain terms and summary behavior they need.":
+    "Stelle Anbietern und Zusammenfassungen die benötigten Fachbegriffe und Vorgaben bereit.",
 
   // Meeting preferences.
-  "Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings.": "Lege fest, wie neue Meetings transkribiert, zusammengefasst, geschützt und mit Outlook verbunden werden. Änderungen gelten für neue Meetings.",
-  "Choose whether to see live text or wait for the accurate transcript after the meeting.": "Lege fest, ob du Live-Text sehen oder auf das genaue Transkript nach dem Meeting warten möchtest.",
+  "Choose how new meetings are transcribed, summarized, protected, and connected to Outlook. Changes apply to new meetings.":
+    "Lege fest, wie neue Meetings transkribiert, zusammengefasst, geschützt und mit Outlook verbunden werden. Änderungen gelten für neue Meetings.",
+  "Choose whether to see live text or wait for the accurate transcript after the meeting.":
+    "Lege fest, ob du Live-Text sehen oder auf das genaue Transkript nach dem Meeting warten möchtest.",
   "Meeting transcription timing": "Zeitpunkt der Meeting-Transkription",
   "Transcript after meeting": "Transkript nach dem Meeting",
   "Lowest cost": "Niedrigste Kosten",
-  "Records safely without cloud live text. The accurate transcript appears after you stop.": "Nimmt sicher ohne Cloud-Live-Text auf. Das genaue Transkript erscheint nach dem Beenden.",
+  "Records safely without cloud live text. The accurate transcript appears after you stop.":
+    "Nimmt sicher ohne Cloud-Live-Text auf. Das genaue Transkript erscheint nach dem Beenden.",
   "Live text + accurate transcript": "Live-Text + genaues Transkript",
   "Live captions": "Live-Untertitel",
-  "Shows words while people speak, then transcribes both saved tracks again for the final version.": "Zeigt Wörter während des Gesprächs an und transkribiert anschließend beide gespeicherten Spuren erneut für die finale Version.",
-  "Estimate for a typical meeting hour with separate microphone and system-audio tracks. Provider prices can change.": "Schätzung für eine typische Meetingstunde mit getrennten Mikrofon- und Systemaudiospuren. Anbieterpreise können sich ändern.",
-  "Estimate for one hour with separate microphone and system-audio tracks. Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes.": "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Die tatsächliche Abrechnung kann je nach Sprachanteil, Token-Ausgabe, Tarif, Steuern, Wiederholungsversuchen und Anbieteränderungen abweichen.",
-  "Estimate for one hour with separate microphone and system-audio tracks. Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes. Deepgram uses the conservative multilingual Nova-3 rate; a fixed monolingual language can cost less.": "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Die tatsächliche Abrechnung kann je nach Sprachanteil, Token-Ausgabe, Tarif, Steuern, Wiederholungsversuchen und Anbieteränderungen abweichen. Für Deepgram wird vorsichtshalber der mehrsprachige Nova-3-Tarif angesetzt; eine feste einsprachige Auswahl kann günstiger sein.",
+  "Shows words while people speak, then transcribes both saved tracks again for the final version.":
+    "Zeigt Wörter während des Gesprächs an und transkribiert anschließend beide gespeicherten Spuren erneut für die finale Version.",
+  "Estimate for a typical meeting hour with separate microphone and system-audio tracks. Provider prices can change.":
+    "Schätzung für eine typische Meetingstunde mit getrennten Mikrofon- und Systemaudiospuren. Anbieterpreise können sich ändern.",
+  "Estimate for one hour with separate microphone and system-audio tracks. Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes.":
+    "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Die tatsächliche Abrechnung kann je nach Sprachanteil, Token-Ausgabe, Tarif, Steuern, Wiederholungsversuchen und Anbieteränderungen abweichen.",
+  "Estimate for one hour with separate microphone and system-audio tracks. Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes. Deepgram uses the conservative multilingual Nova-3 rate; a fixed monolingual language can cost less.":
+    "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Die tatsächliche Abrechnung kann je nach Sprachanteil, Token-Ausgabe, Tarif, Steuern, Wiederholungsversuchen und Anbieteränderungen abweichen. Für Deepgram wird vorsichtshalber der mehrsprachige Nova-3-Tarif angesetzt; eine feste einsprachige Auswahl kann günstiger sein.",
   "Live text": "Live-Text",
-  "Shows words from your microphone and speakers as people talk.": "Zeigt während des Gesprächs Wörter aus Mikrofon und Lautsprechern an.",
-  "Off": "Aus",
+  "Shows words from your microphone and speakers as people talk.":
+    "Zeigt während des Gesprächs Wörter aus Mikrofon und Lautsprechern an.",
+  Off: "Aus",
   "No live provider cost": "Keine Kosten für einen Live-Anbieter",
   "Soniox Realtime": "Soniox Realtime",
   "Final transcript": "Finales Transkript",
-  "Choose the service that creates the accurate transcript and speaker names after the meeting.": "Wähle den Dienst, der nach dem Meeting das genaue Transkript und die Sprechernamen erstellt.",
+  "Choose the service that creates the accurate transcript and speaker names after the meeting.":
+    "Wähle den Dienst, der nach dem Meeting das genaue Transkript und die Sprechernamen erstellt.",
   "Final meeting transcription model": "Modell für die finale Meeting-Transkription",
   "Recommended: {{provider}}": "Empfohlen: {{provider}}",
   "Recommended: ": "Empfohlen: ",
-  "Recommended": "Empfohlen",
+  Recommended: "Empfohlen",
   "Ready for 5 hours": "Für 5 Stunden geeignet",
   "Not for 5-hour meetings": "Nicht für 5-stündige Meetings geeignet",
   "Includes speaker names and exact timing.": "Enthält Sprechernamen und exakte Zeitangaben.",
   "Scriber can add speaker names on this device.": "Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
   "Works with meetings up to 5 hours.": "Funktioniert mit Meetings bis zu 5 Stunden.",
   "Choose a 5-hour option for very long meetings.": "Wähle für sehr lange Meetings eine Option für 5 Stunden.",
-  "Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as You.": "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als „Du“.",
-  "Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as": "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als",
-  "You": "Du",
+  "Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as You.":
+    "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als „Du“.",
+  "Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as":
+    "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als",
+  You: "Du",
   "During meeting": "Während des Meetings",
   "After meeting": "Nach dem Meeting",
   "Estimated total": "Geschätzte Gesamtkosten",
   "Prices checked {{date}}": "Preise geprüft am {{date}}",
   "Prices checked": "Preise geprüft",
   "Add speaker names locally": "Sprechernamen lokal hinzufügen",
-  "When the chosen service cannot identify speakers, Scriber can do it on this device for File, YouTube, and Meetings.": "Wenn der ausgewählte Dienst Sprecher nicht erkennen kann, kann Scriber dies auf diesem Gerät für Datei-, YouTube- und Meeting-Transkriptionen übernehmen.",
+  "When the chosen service cannot identify speakers, Scriber can do it on this device for File, YouTube, and Meetings.":
+    "Wenn der ausgewählte Dienst Sprecher nicht erkennen kann, kann Scriber dies auf diesem Gerät für Datei-, YouTube- und Meeting-Transkriptionen übernehmen.",
   "Add speaker names on this device when needed": "Sprechernamen bei Bedarf auf diesem Gerät hinzufügen",
   "Local speaker separation": "Lokale Sprechertrennung",
-  "Installed": "Installiert",
+  Installed: "Installiert",
   "Unavailable in this build": "In diesem Build nicht verfügbar",
   "Optional download": "Optionaler Download",
-  "Separates speakers on this device for recordings up to 60 minutes. For longer recordings, choose a service that already includes speaker names.": "Trennt Sprecher auf diesem Gerät bei Aufnahmen bis zu 60 Minuten. Wähle für längere Aufnahmen einen Dienst, der Sprechernamen bereits unterstützt.",
+  "Separates speakers on this device for recordings up to 60 minutes. For longer recordings, choose a service that already includes speaker names.":
+    "Trennt Sprecher auf diesem Gerät bei Aufnahmen bis zu 60 Minuten. Wähle für längere Aufnahmen einen Dienst, der Sprechernamen bereits unterstützt.",
   "Install speaker tool": "Sprecherwerkzeug installieren",
   "v{{version}} · {{size}} MB installed locally": "v{{version}} · {{size}} MB lokal installiert",
-  "v": "v",
+  v: "v",
   "MB installed locally": "MB lokal installiert",
-  "This version of Scriber does not include local speaker separation. Update Scriber or choose a service that includes speaker names.": "Diese Scriber-Version enthält keine lokale Sprechertrennung. Aktualisiere Scriber oder wähle einen Dienst, der Sprechernamen unterstützt.",
+  "This version of Scriber does not include local speaker separation. Update Scriber or choose a service that includes speaker names.":
+    "Diese Scriber-Version enthält keine lokale Sprechertrennung. Aktualisiere Scriber oder wähle einen Dienst, der Sprechernamen unterstützt.",
   "Keep live sentences together": "Live-Sätze zusammenhalten",
-  "Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.": "Smart Turn V3 verbessert, an welcher Stelle die Live-Vorschau einen Gedanken beendet. Das finale Transkript und dessen Preis bleiben unverändert.",
-  "Keep meeting live sentences together across short pauses": "Live-Sätze in Meetings über kurze Pausen hinweg zusammenhalten",
+  "Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.":
+    "Smart Turn V3 verbessert, an welcher Stelle die Live-Vorschau einen Gedanken beendet. Das finale Transkript und dessen Preis bleiben unverändert.",
+  "Keep meeting live sentences together across short pauses":
+    "Live-Sätze in Meetings über kurze Pausen hinweg zusammenhalten",
   "Why Scriber does not upload one-minute pieces": "Warum Scriber keine einminütigen Abschnitte hochlädt",
-  "Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.": "Kleine Cloud-Anfragen verringern nicht die berechnete Audiodauer und können Sprecherbezeichnungen zurücksetzen oder Wörter an Abschnittsgrenzen abschneiden. Scriber sichert das Audio stattdessen alle 30 Sekunden lokal und übergibt dem finalen Dienst anschließend den längsten unterstützten Kontext.",
+  "Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.":
+    "Kleine Cloud-Anfragen verringern nicht die berechnete Audiodauer und können Sprecherbezeichnungen zurücksetzen oder Wörter an Abschnittsgrenzen abschneiden. Scriber sichert das Audio stattdessen alle 30 Sekunden lokal und übergibt dem finalen Dienst anschließend den längsten unterstützten Kontext.",
   "Reduce speaker echo": "Lautsprecherecho reduzieren",
-  "Helps prevent voices from your speakers being recorded again through your microphone.": "Verhindert, dass Stimmen aus deinen Lautsprechern erneut über dein Mikrofon aufgenommen werden.",
+  "Helps prevent voices from your speakers being recorded again through your microphone.":
+    "Verhindert, dass Stimmen aus deinen Lautsprechern erneut über dein Mikrofon aufgenommen werden.",
   "Reduce speaker echo in meetings": "Lautsprecherecho in Meetings reduzieren",
   "Summaries and storage": "Zusammenfassungen und Speicherung",
-  "Choose how Scriber creates the meeting brief and how long it keeps local audio.": "Lege fest, wie Scriber die Meeting-Zusammenfassung erstellt und wie lange lokales Audio aufbewahrt wird.",
+  "Choose how Scriber creates the meeting brief and how long it keeps local audio.":
+    "Lege fest, wie Scriber die Meeting-Zusammenfassung erstellt und wie lange lokales Audio aufbewahrt wird.",
   "Meeting shortcut": "Meeting-Hotkey",
   "Open the meeting workspace from anywhere in Windows.": "Öffnet den Meeting-Arbeitsbereich von überall in Windows.",
-  "Press the key combination that should open the meeting workspace.": "Drücke die Tastenkombination, die den Meeting-Arbeitsbereich öffnen soll.",
+  "Press the key combination that should open the meeting workspace.":
+    "Drücke die Tastenkombination, die den Meeting-Arbeitsbereich öffnen soll.",
   "Meeting shortcut capture area": "Eingabebereich für den Meeting-Hotkey",
   "Summary model": "Zusammenfassungsmodell",
-  "Creates the summary, decisions, action items, and answers after the transcript is ready.": "Erstellt Zusammenfassung, Entscheidungen, Aufgaben und Antworten, sobald das Transkript bereit ist.",
+  "Creates the summary, decisions, action items, and answers after the transcript is ready.":
+    "Erstellt Zusammenfassung, Entscheidungen, Aufgaben und Antworten, sobald das Transkript bereit ist.",
   "Meeting summary model": "Modell für Meeting-Zusammenfassungen",
   "Create meeting brief automatically": "Meeting-Zusammenfassung automatisch erstellen",
-  "Creates the summary, decisions, and action items when transcription is finished.": "Erstellt Zusammenfassung, Entscheidungen und Aufgaben nach Abschluss der Transkription.",
+  "Creates the summary, decisions, and action items when transcription is finished.":
+    "Erstellt Zusammenfassung, Entscheidungen und Aufgaben nach Abschluss der Transkription.",
   "Automatically analyze completed meetings": "Abgeschlossene Meetings automatisch analysieren",
   "Keep meeting audio": "Meeting-Audio aufbewahren",
-  "Choose how long audio stays on this device. The transcript and notes remain until you delete them.": "Lege fest, wie lange Audio auf diesem Gerät bleibt. Transkript und Notizen bleiben erhalten, bis du sie löschst.",
+  "Choose how long audio stays on this device. The transcript and notes remain until you delete them.":
+    "Lege fest, wie lange Audio auf diesem Gerät bleibt. Transkript und Notizen bleiben erhalten, bis du sie löschst.",
   "Default meeting audio retention": "Standardmäßige Aufbewahrung von Meeting-Audio",
   "Until deleted": "Bis zum Löschen",
   "7 days": "7 Tage",
   "30 days": "30 Tage",
   "90 days": "90 Tage",
   "Protected every 30 seconds.": "Alle 30 Sekunden gesichert.",
-  "Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.": "Scriber speichert während des Meetings den Audio- und Transkriptfortschritt, sodass bei einem Absturz nicht das gesamte Meeting verloren gehen sollte.",
+  "Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.":
+    "Scriber speichert während des Meetings den Audio- und Transkriptfortschritt, sodass bei einem Absturz nicht das gesamte Meeting verloren gehen sollte.",
 
   // Voice Library.
   "Voice Library": "Stimmenbibliothek",
-  "Optionally remember familiar voices and add their names in future meetings. Voice data stays on this device and is never included in exports or support files.": "Speichert auf Wunsch vertraute Stimmen und ergänzt ihre Namen in künftigen Meetings. Stimmdaten bleiben auf diesem Gerät und werden nie in Exporte oder Supportdateien aufgenommen.",
+  "Optionally remember familiar voices and add their names in future meetings. Voice data stays on this device and is never included in exports or support files.":
+    "Speichert auf Wunsch vertraute Stimmen und ergänzt ihre Namen in künftigen Meetings. Stimmdaten bleiben auf diesem Gerät und werden nie in Exporte oder Supportdateien aufgenommen.",
   "Recognize familiar speakers": "Vertraute Sprecher erkennen",
-  "Turn this on only when everyone has agreed. Saved voice data stays on this device.": "Aktiviere dies nur mit Zustimmung aller Beteiligten. Gespeicherte Stimmdaten bleiben auf diesem Gerät.",
+  "Turn this on only when everyone has agreed. Saved voice data stays on this device.":
+    "Aktiviere dies nur mit Zustimmung aller Beteiligten. Gespeicherte Stimmdaten bleiben auf diesem Gerät.",
   "Delete voice data": "Stimmdaten löschen",
   "Recognize familiar speakers in future meetings": "Vertraute Sprecher in künftigen Meetings erkennen",
   "Voice recognition download": "Download der Stimmerkennung",
-  "A one-time local download. Scriber checks it before use and applies it automatically to new meetings.": "Ein einmaliger lokaler Download. Scriber prüft ihn vor der Verwendung und wendet ihn automatisch auf neue Meetings an.",
-  "Ready": "Bereit",
+  "A one-time local download. Scriber checks it before use and applies it automatically to new meetings.":
+    "Ein einmaliger lokaler Download. Scriber prüft ihn vor der Verwendung und wendet ihn automatisch auf neue Meetings an.",
+  Ready: "Bereit",
   "Installed, off": "Installiert, deaktiviert",
   "Turn on first": "Zuerst aktivieren",
   "Voice recognition is ready": "Stimmerkennung ist bereit",
   "Voice recognition is off": "Stimmerkennung ist deaktiviert",
-  "Add a short named sample now, or let Scriber learn familiar voices from meetings. Saved voice data never leaves this device.": "Füge jetzt eine kurze benannte Probe hinzu oder lasse Scriber vertraute Stimmen aus Meetings lernen. Gespeicherte Stimmdaten verlassen dieses Gerät nie.",
-  "Download voice recognition above before adding a named voice sample.": "Lade oben zuerst die Stimmerkennung herunter, bevor du eine benannte Stimmprobe hinzufügst.",
-  "Turn on familiar speaker recognition before adding a named voice sample.": "Aktiviere zuerst die Erkennung vertrauter Sprecher, bevor du eine benannte Stimmprobe hinzufügst.",
+  "Add a short named sample now, or let Scriber learn familiar voices from meetings. Saved voice data never leaves this device.":
+    "Füge jetzt eine kurze benannte Probe hinzu oder lasse Scriber vertraute Stimmen aus Meetings lernen. Gespeicherte Stimmdaten verlassen dieses Gerät nie.",
+  "Download voice recognition above before adding a named voice sample.":
+    "Lade oben zuerst die Stimmerkennung herunter, bevor du eine benannte Stimmprobe hinzufügst.",
+  "Turn on familiar speaker recognition before adding a named voice sample.":
+    "Aktiviere zuerst die Erkennung vertrauter Sprecher, bevor du eine benannte Stimmprobe hinzufügst.",
   "{{count}} saved speaker": "{{count}} gespeicherter Sprecher",
   "{{count}} saved speakers": "{{count}} gespeicherte Sprecher",
-  "saved": "gespeichert",
-  "speaker": "Sprecher",
-  "speakers": "Sprecher",
+  saved: "gespeichert",
+  speaker: "Sprecher",
+  speakers: "Sprecher",
   "Add voice": "Stimme hinzufügen",
   "Loading saved speakers": "Gespeicherte Sprecher werden geladen",
   "Saved speakers could not be loaded.": "Gespeicherte Sprecher konnten nicht geladen werden.",
   "Try again": "Erneut versuchen",
-  "No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.": "Noch keine Sprecher gespeichert. Füge eine benannte Stimmprobe hinzu oder lasse Scriber vertraute Stimmen aus künftigen Meetings lernen.",
+  "No saved speakers yet. Add a named voice sample, or let Scriber learn familiar voices from future meetings.":
+    "Noch keine Sprecher gespeichert. Füge eine benannte Stimmprobe hinzu oder lasse Scriber vertraute Stimmen aus künftigen Meetings lernen.",
   "Name saved speaker {{name}}": "Gespeicherten Sprecher {{name}} benennen",
   "Rename saved speaker": "Gespeicherten Sprecher umbenennen",
   "Named voice sample saved. {{count}} sample total.": "Benannte Stimmprobe gespeichert. Insgesamt {{count}} Probe.",
   "Named voice sample saved. {{count}} samples total.": "Benannte Stimmprobe gespeichert. Insgesamt {{count}} Proben.",
-  "sample": "Probe",
-  "samples": "Proben",
+  sample: "Probe",
+  samples: "Proben",
   "{{count}} meeting match. Name saved.": "{{count}} Meeting-Treffer. Name gespeichert.",
   "{{count}} meeting matches. Name saved.": "{{count}} Meeting-Treffer. Name gespeichert.",
   "{{count}} meeting match. Choose a name.": "{{count}} Meeting-Treffer. Namen auswählen.",
   "{{count}} meeting matches. Choose a name.": "{{count}} Meeting-Treffer. Namen auswählen.",
-  "match": "Treffer",
-  "matches": "Treffer",
+  match: "Treffer",
+  matches: "Treffer",
   "Name saved.": "Name gespeichert.",
   "Choose a name.": "Namen auswählen.",
   "Delete saved speaker {{name}}": "Gespeicherten Sprecher {{name}} löschen",
   "Merge duplicate speakers": "Doppelte Sprecher zusammenführen",
-  "Keep the correct speaker and merge the duplicate into it.": "Behalte den richtigen Sprecher und führe das Duplikat mit ihm zusammen.",
+  "Keep the correct speaker and merge the duplicate into it.":
+    "Behalte den richtigen Sprecher und führe das Duplikat mit ihm zusammen.",
   "Saved speaker to keep": "Zu behaltender Sprecher",
   "Keep speaker…": "Behalten …",
   "Duplicate saved speaker": "Doppelter gespeicherter Sprecher",
@@ -453,12 +542,17 @@ export const settingsTranslations = {
   "Merge speakers": "Sprecher zusammenführen",
 
   // Outlook calendar.
-  "The last Microsoft sign-in was canceled. Connect again when you are ready.": "Die letzte Microsoft-Anmeldung wurde abgebrochen. Stelle die Verbindung erneut her, wenn du bereit bist.",
-  "Microsoft needs you to connect Outlook again before the calendar can refresh.": "Microsoft verlangt eine erneute Verbindung mit Outlook, bevor der Kalender aktualisiert werden kann.",
-  "Outlook could not be reached. Check your connection, then choose Sync now.": "Outlook konnte nicht erreicht werden. Prüfe deine Verbindung und wähle anschließend „Jetzt synchronisieren“.",
-  "The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.": "Die letzte Kalenderaktualisierung wurde nicht abgeschlossen. Deine zuvor gespeicherten Meetings bleiben unverändert; wähle zum erneuten Versuch „Jetzt synchronisieren“.",
+  "The last Microsoft sign-in was canceled. Connect again when you are ready.":
+    "Die letzte Microsoft-Anmeldung wurde abgebrochen. Stelle die Verbindung erneut her, wenn du bereit bist.",
+  "Microsoft needs you to connect Outlook again before the calendar can refresh.":
+    "Microsoft verlangt eine erneute Verbindung mit Outlook, bevor der Kalender aktualisiert werden kann.",
+  "Outlook could not be reached. Check your connection, then choose Sync now.":
+    "Outlook konnte nicht erreicht werden. Prüfe deine Verbindung und wähle anschließend „Jetzt synchronisieren“.",
+  "The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.":
+    "Die letzte Kalenderaktualisierung wurde nicht abgeschlossen. Deine zuvor gespeicherten Meetings bleiben unverändert; wähle zum erneuten Versuch „Jetzt synchronisieren“.",
   "Outlook calendar": "Outlook-Kalender",
-  "Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you.": "Verbinde Outlook einmalig. Scriber schlägt anschließend Meetingtitel und Teilnehmer vor und adressiert Zusammenfassungs-E-Mails für dich.",
+  "Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you.":
+    "Verbinde Outlook einmalig. Scriber schlägt anschließend Meetingtitel und Teilnehmer vor und adressiert Zusammenfassungs-E-Mails für dich.",
   "Checking Outlook": "Outlook wird geprüft",
   "Outlook status could not be checked": "Outlook-Status konnte nicht geprüft werden",
   "Finish signing in with Microsoft": "Microsoft-Anmeldung abschließen",
@@ -466,37 +560,51 @@ export const settingsTranslations = {
   "Outlook needs to reconnect": "Outlook muss erneut verbunden werden",
   "Outlook is ready to connect": "Outlook kann verbunden werden",
   "Outlook is not available in this release": "Outlook ist in dieser Version nicht verfügbar",
-  "Checking": "Wird geprüft",
-  "Unavailable": "Nicht verfügbar",
-  "Waiting": "Wartet",
-  "Connected": "Verbunden",
+  Checking: "Wird geprüft",
+  Unavailable: "Nicht verfügbar",
+  Waiting: "Wartet",
+  Connected: "Verbunden",
   "Not connected": "Nicht verbunden",
-  "Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting.": "Scriber konnte die geschützte Outlook-Anmeldung gerade nicht prüfen. Zuvor synchronisierte Kalendereinträge bleiben auf diesem Gerät; wähle vor einer erneuten Verbindung „Erneut prüfen“.",
-  "Complete the Microsoft sign-in in your browser. This page updates automatically when you return.": "Schließe die Microsoft-Anmeldung im Browser ab. Diese Seite wird nach deiner Rückkehr automatisch aktualisiert.",
-  "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password.": "Titel und Teilnehmer bevorstehender Meetings erscheinen jetzt automatisch. Scriber kann deinen Kalender nicht bearbeiten und dein Microsoft-Passwort nicht sehen.",
-  "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access.": "Klicke unten auf „Outlook verbinden“. Microsoft wird im Browser geöffnet und bittet um schreibgeschützten Kalenderzugriff.",
-  "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support.": "Diese Version wurde ohne Microsoft-Anmeldung veröffentlicht. Eine Neuinstallation derselben Version behebt das nicht. Suche nach einer neueren Version, die Outlook-Kalenderunterstützung aufführt.",
+  "Scriber could not check the protected Outlook sign-in right now. Previously synchronized calendar entries stay on this device; choose Check again before reconnecting.":
+    "Scriber konnte die geschützte Outlook-Anmeldung gerade nicht prüfen. Zuvor synchronisierte Kalendereinträge bleiben auf diesem Gerät; wähle vor einer erneuten Verbindung „Erneut prüfen“.",
+  "Complete the Microsoft sign-in in your browser. This page updates automatically when you return.":
+    "Schließe die Microsoft-Anmeldung im Browser ab. Diese Seite wird nach deiner Rückkehr automatisch aktualisiert.",
+  "Upcoming meeting titles and participants now appear automatically. Scriber cannot edit your calendar or see your Microsoft password.":
+    "Titel und Teilnehmer bevorstehender Meetings erscheinen jetzt automatisch. Scriber kann deinen Kalender nicht bearbeiten und dein Microsoft-Passwort nicht sehen.",
+  "Click Connect Outlook below. Microsoft opens in your browser and asks for read-only calendar access.":
+    "Klicke unten auf „Outlook verbinden“. Microsoft wird im Browser geöffnet und bittet um schreibgeschützten Kalenderzugriff.",
+  "This release was published without Microsoft sign-in. Reinstalling the same version will not fix it. Check for a newer release that lists Outlook calendar support.":
+    "Diese Version wurde ohne Microsoft-Anmeldung veröffentlicht. Eine Neuinstallation derselben Version behebt das nicht. Suche nach einer neueren Version, die Outlook-Kalenderunterstützung aufführt.",
   "Connected as": "Verbunden als",
   "Last sync ·": "Letzte Synchronisierung ·",
   "Restart Scriber.": "Scriber neu starten.",
-  "Return to this page and check the Outlook status again.": "Zu dieser Seite zurückkehren und den Outlook-Status erneut prüfen.",
-  "If the message remains, check for a newer Scriber release.": "Wenn die Meldung weiterhin angezeigt wird, nach einer neueren Scriber-Version suchen.",
+  "Return to this page and check the Outlook status again.":
+    "Zu dieser Seite zurückkehren und den Outlook-Status erneut prüfen.",
+  "If the message remains, check for a newer Scriber release.":
+    "Wenn die Meldung weiterhin angezeigt wird, nach einer neueren Scriber-Version suchen.",
   "Return to the Microsoft sign-in in your browser.": "Zur Microsoft-Anmeldung im Browser zurückkehren.",
-  "Finish signing in and allow read-only calendar access.": "Anmeldung abschließen und schreibgeschützten Kalenderzugriff erlauben.",
-  "Come back to Scriber; this status updates automatically.": "Zu Scriber zurückkehren; dieser Status wird automatisch aktualisiert.",
+  "Finish signing in and allow read-only calendar access.":
+    "Anmeldung abschließen und schreibgeschützten Kalenderzugriff erlauben.",
+  "Come back to Scriber; this status updates automatically.":
+    "Zu Scriber zurückkehren; dieser Status wird automatisch aktualisiert.",
   "Choose Connect Outlook below.": "Unten „Outlook verbinden“ auswählen.",
-  "Sign in with Microsoft and allow read-only calendar access.": "Bei Microsoft anmelden und schreibgeschützten Kalenderzugriff erlauben.",
-  "Return to Scriber; upcoming meetings sync automatically.": "Zu Scriber zurückkehren; bevorstehende Meetings werden automatisch synchronisiert.",
+  "Sign in with Microsoft and allow read-only calendar access.":
+    "Bei Microsoft anmelden und schreibgeschützten Kalenderzugriff erlauben.",
+  "Return to Scriber; upcoming meetings sync automatically.":
+    "Zu Scriber zurückkehren; bevorstehende Meetings werden automatisch synchronisiert.",
   "Check whether a newer Scriber version is available.": "Prüfen, ob eine neuere Scriber-Version verfügbar ist.",
-  "Read its release notes and install a version that lists Outlook calendar support.": "Die Versionshinweise lesen und eine Version installieren, die Outlook-Kalenderunterstützung aufführt.",
-  "Restart Scriber, then return here and choose Connect Outlook.": "Scriber neu starten, anschließend hierher zurückkehren und „Outlook verbinden“ auswählen.",
+  "Read its release notes and install a version that lists Outlook calendar support.":
+    "Die Versionshinweise lesen und eine Version installieren, die Outlook-Kalenderunterstützung aufführt.",
+  "Restart Scriber, then return here and choose Connect Outlook.":
+    "Scriber neu starten, anschließend hierher zurückkehren und „Outlook verbinden“ auswählen.",
   "Help for self-built copies": "Hilfe für selbst erstellte Builds",
   "Before starting Scriber, set": "Vor dem Start von Scriber festlegen:",
-  "SCRIBER_OUTLOOK_CLIENT_ID": "SCRIBER_OUTLOOK_CLIENT_ID",
-  "to the application ID from your Microsoft Entra public-client registration.": "auf die Anwendungs-ID aus deiner Microsoft-Entra-Registrierung für öffentliche Clients.",
+  SCRIBER_OUTLOOK_CLIENT_ID: "SCRIBER_OUTLOOK_CLIENT_ID",
+  "to the application ID from your Microsoft Entra public-client registration.":
+    "auf die Anwendungs-ID aus deiner Microsoft-Entra-Registrierung für öffentliche Clients.",
   "Next event, {{count}} participants": "Nächster Termin, {{count}} Teilnehmer",
   "Next event,": "Nächster Termin,",
-  "participants": "Teilnehmer",
+  participants: "Teilnehmer",
   "Check again": "Erneut prüfen",
   "Reopen Microsoft sign-in": "Microsoft-Anmeldung erneut öffnen",
   "Sync now": "Jetzt synchronisieren",
@@ -505,31 +613,43 @@ export const settingsTranslations = {
   "Connect Outlook": "Outlook verbinden",
 
   // API keys and summarization.
-  "Manage provider credentials without expanding the whole page.": "Verwalte Anmeldedaten der Anbieter, ohne die gesamte Seite aufzuklappen.",
+  "Manage provider credentials without expanding the whole page.":
+    "Verwalte Anmeldedaten der Anbieter, ohne die gesamte Seite aufzuklappen.",
   "Credential required before model selection.": "Vor der Modellauswahl sind Anmeldedaten erforderlich.",
-  "below, or choose a model that already has credentials.": "unten oder wähle ein Modell aus, für das bereits Anmeldedaten hinterlegt sind.",
+  "below, or choose a model that already has credentials.":
+    "unten oder wähle ein Modell aus, für das bereits Anmeldedaten hinterlegt sind.",
   "No cloud STT credentials are saved yet.": "Noch keine Cloud-STT-Anmeldedaten gespeichert.",
   "Used for OpenAI STT and summarization.": "Wird für OpenAI-STT und Zusammenfassungen verwendet.",
-  "One key unlocks Gemini STT, summaries, and cleanup.": "Ein Schlüssel aktiviert Gemini-STT, Zusammenfassungen und Bereinigung.",
-  "Used for direct Cerebras summary and cleanup models.": "Wird für direkte Cerebras-Modelle zur Zusammenfassung und Bereinigung verwendet.",
-  "Short structured summaries with an 8K context window": "Kurze strukturierte Zusammenfassungen mit einem 8K-Kontextfenster",
-  "Used for Celeris summaries in Meetings, YouTube, and File.": "Wird für Celeris-Zusammenfassungen in Meetings, YouTube und Datei verwendet.",
+  "One key unlocks Gemini STT, summaries, and cleanup.":
+    "Ein Schlüssel aktiviert Gemini-STT, Zusammenfassungen und Bereinigung.",
+  "Used for direct Cerebras summary and cleanup models.":
+    "Wird für direkte Cerebras-Modelle zur Zusammenfassung und Bereinigung verwendet.",
+  "Short structured summaries with an 8K context window":
+    "Kurze strukturierte Zusammenfassungen mit einem 8K-Kontextfenster",
+  "Used for Celeris summaries in Meetings, YouTube, and File.":
+    "Wird für Celeris-Zusammenfassungen in Meetings, YouTube und Datei verwendet.",
   "Used for search and metadata in the YouTube tab.": "Wird für Suche und Metadaten im YouTube-Tab verwendet.",
-  "Use one Soniox API key and choose where Soniox processes your audio.": "Verwende einen Soniox-API-Schlüssel und wähle aus, wo Soniox dein Audio verarbeitet.",
-  "One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off.": "Ein Schlüssel aktiviert mehrsprachige Echtzeit- und Stapeltranskription. Scriber fordert nur den finalen Transkripttext an und lässt Anreicherungssignale deaktiviert.",
+  "Use one Soniox API key and choose where Soniox processes your audio.":
+    "Verwende einen Soniox-API-Schlüssel und wähle aus, wo Soniox dein Audio verarbeitet.",
+  "One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off.":
+    "Ein Schlüssel aktiviert mehrsprachige Echtzeit- und Stapeltranskription. Scriber fordert nur den finalen Transkripttext an und lässt Anreicherungssignale deaktiviert.",
   "Enter Modulate.AI API key": "Modulate.AI-API-Schlüssel eingeben",
   "C:\\\\path\\\\to\\\\service-account.json": "C:\\\\path\\\\to\\\\service-account.json",
-  "northeurope": "northeurope",
+  northeurope: "northeurope",
   "mai-transcribe-1.5": "mai-transcribe-1.5",
-  "Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project.": "Google Cloud STT verwendet Cloud-Anmeldedaten, nicht den Gemini-API-Schlüssel. Gib den JSON-Pfad des Dienstkontos für das Projekt mit speech.googleapis.com ein.",
-  "The key must belong to a region that supports the configured model.": "Der Schlüssel muss zu einer Region gehören, die das konfigurierte Modell unterstützt.",
-  "Region": "Region",
-  "Choose the model and automatic summary behavior.": "Wähle das Modell und das Verhalten für automatische Zusammenfassungen.",
+  "Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project.":
+    "Google Cloud STT verwendet Cloud-Anmeldedaten, nicht den Gemini-API-Schlüssel. Gib den JSON-Pfad des Dienstkontos für das Projekt mit speech.googleapis.com ein.",
+  "The key must belong to a region that supports the configured model.":
+    "Der Schlüssel muss zu einer Region gehören, die das konfigurierte Modell unterstützt.",
+  Region: "Region",
+  "Choose the model and automatic summary behavior.":
+    "Wähle das Modell und das Verhalten für automatische Zusammenfassungen.",
   "Summary models": "Zusammenfassungsmodelle",
   "Auto-summarize": "Automatisch zusammenfassen",
   "Summarize new transcripts automatically.": "Neue Transkripte automatisch zusammenfassen.",
   "YouTube captions first": "YouTube-Untertitel zuerst",
-  "Prefer available captions, then fall back to audio.": "Bevorzuge verfügbare Untertitel und verwende andernfalls das Audio.",
+  "Prefer available captions, then fall back to audio.":
+    "Bevorzuge verfügbare Untertitel und verwende andernfalls das Audio.",
   "Use YouTube captions before audio transcription": "YouTube-Untertitel vor der Audiotranskription verwenden",
 
   // Desktop updates and transcription language.
@@ -543,7 +663,8 @@ export const settingsTranslations = {
   "Remind tomorrow": "Morgen erinnern",
   "Skip version": "Version überspringen",
   "Release notes": "Versionshinweise",
-  "Auto-detect or choose a preferred transcription language.": "Transkriptionssprache automatisch erkennen oder eine bevorzugte Sprache auswählen.",
+  "Auto-detect or choose a preferred transcription language.":
+    "Transkriptionssprache automatisch erkennen oder eine bevorzugte Sprache auswählen.",
   "Auto-detect language": "Sprache automatisch erkennen",
   "Let the provider infer spoken language.": "Der Anbieter erkennt die gesprochene Sprache.",
   "Preferred language": "Bevorzugte Sprache",
@@ -553,45 +674,57 @@ export const settingsTranslations = {
 
   // Voice enrollment and destructive confirmations.
   "Teach Scriber a voice": "Scriber eine Stimme beibringen",
-  "Record one short sample so Scriber can show this person's name in future meeting transcripts.": "Nimm eine kurze Probe auf, damit Scriber den Namen dieser Person künftig in Meeting-Transkripten anzeigen kann.",
-  "Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.": "Scriber kann diese Stimme künftig in Meetings zuordnen. Du kannst sie jederzeit in der Liste umbenennen oder löschen.",
-  "The recording was not saved or uploaded. Only the local voice profile remains on this device.": "Die Aufnahme wurde weder gespeichert noch hochgeladen. Nur das lokale Stimmprofil bleibt auf diesem Gerät.",
-  "Done": "Fertig",
+  "Record one short sample so Scriber can show this person's name in future meeting transcripts.":
+    "Nimm eine kurze Probe auf, damit Scriber den Namen dieser Person künftig in Meeting-Transkripten anzeigen kann.",
+  "Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.":
+    "Scriber kann diese Stimme künftig in Meetings zuordnen. Du kannst sie jederzeit in der Liste umbenennen oder löschen.",
+  "The recording was not saved or uploaded. Only the local voice profile remains on this device.":
+    "Die Aufnahme wurde weder gespeichert noch hochgeladen. Nur das lokale Stimmprofil bleibt auf diesem Gerät.",
+  Done: "Fertig",
   "Person's name": "Name der Person",
   "For example, Alex": "Zum Beispiel Alex",
-  "This name appears beside matching transcript segments.": "Dieser Name erscheint neben passenden Transkriptabschnitten.",
-  "Microphone": "Mikrofon",
+  "This name appears beside matching transcript segments.":
+    "Dieser Name erscheint neben passenden Transkriptabschnitten.",
+  Microphone: "Mikrofon",
   "Windows default microphone": "Windows-Standardmikrofon",
   "(currently default)": "(derzeit Standard)",
   " (currently default)": " (derzeit Standard)",
   "Looking for microphones": "Mikrofone werden gesucht",
-  "Microphone choices could not be loaded. Windows default can still be used.": "Die Mikrofonauswahl konnte nicht geladen werden. Das Windows-Standardmikrofon kann weiterhin verwendet werden.",
+  "Microphone choices could not be loaded. Windows default can still be used.":
+    "Die Mikrofonauswahl konnte nicht geladen werden. Das Windows-Standardmikrofon kann weiterhin verwendet werden.",
   "{{count}} microphone choice found.": "{{count}} Mikrofon gefunden.",
   "{{count}} microphone choices found.": "{{count}} Mikrofone gefunden.",
-  "choice": "Auswahl",
-  "choices": "Auswahlmöglichkeiten",
+  choice: "Auswahl",
+  choices: "Auswahlmöglichkeiten",
   "Windows default will be used.": "Das Windows-Standardmikrofon wird verwendet.",
   "Starting the microphone": "Mikrofon wird gestartet",
   "Creating the voice profile": "Stimmprofil wird erstellt",
   "Listening to {{name}}": "{{name}} wird aufgenommen",
-  "Scriber is finishing the sample on this device. Keep the app open.": "Scriber stellt die Probe auf diesem Gerät fertig. Lasse die App geöffnet.",
-  "Speak naturally in a quiet room until the recording finishes. Keep Scriber open.": "Sprich in einem ruhigen Raum natürlich, bis die Aufnahme beendet ist. Lasse Scriber geöffnet.",
+  "Scriber is finishing the sample on this device. Keep the app open.":
+    "Scriber stellt die Probe auf diesem Gerät fertig. Lasse die App geöffnet.",
+  "Speak naturally in a quiet room until the recording finishes. Keep Scriber open.":
+    "Sprich in einem ruhigen Raum natürlich, bis die Aufnahme beendet ist. Lasse Scriber geöffnet.",
   "Voice sample progress": "Fortschritt der Stimmprobe",
   "The voice sample was not saved.": "Die Stimmprobe wurde nicht gespeichert.",
   "Check the microphone and try again.": "Prüfe das Mikrofon und versuche es erneut.",
-  "Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.": "Scriber hört etwa 8 Sekunden lang zu. Die Aufnahme wird weder gespeichert noch hochgeladen. Das lokale Stimmprofil bleibt erhalten, bis du es löschst.",
+  "Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.":
+    "Scriber hört etwa 8 Sekunden lang zu. Die Aufnahme wird weder gespeichert noch hochgeladen. Das lokale Stimmprofil bleibt erhalten, bis du es löschst.",
   "Saving voice": "Stimme wird gespeichert",
   "Recording voice": "Stimme wird aufgenommen",
   "Try sample again": "Probe erneut versuchen",
   "Record 8-second sample": "8-sekündige Probe aufnehmen",
   "Delete this saved speaker?": "Diesen gespeicherten Sprecher löschen?",
   "This speaker": "Dieser Sprecher",
-  "{{name}} will no longer be recognized automatically in future meetings. Existing transcripts stay intact.": "{{name}} wird in künftigen Meetings nicht mehr automatisch erkannt. Bestehende Transkripte bleiben unverändert.",
-  "will no longer be recognized automatically in future meetings. Existing transcripts stay intact.": "wird in künftigen Meetings nicht mehr automatisch erkannt. Bestehende Transkripte bleiben unverändert.",
+  "{{name}} will no longer be recognized automatically in future meetings. Existing transcripts stay intact.":
+    "{{name}} wird in künftigen Meetings nicht mehr automatisch erkannt. Bestehende Transkripte bleiben unverändert.",
+  "will no longer be recognized automatically in future meetings. Existing transcripts stay intact.":
+    "wird in künftigen Meetings nicht mehr automatisch erkannt. Bestehende Transkripte bleiben unverändert.",
   "Delete speaker": "Sprecher löschen",
   "Disconnect Outlook?": "Outlook trennen?",
-  "Scriber will remove the protected Microsoft sign-in and its locally synchronized calendar entries. Existing meetings, transcripts, and exports stay available. You can connect this or another Microsoft account again later.": "Scriber entfernt die geschützte Microsoft-Anmeldung und die lokal synchronisierten Kalendereinträge. Bestehende Meetings, Transkripte und Exporte bleiben verfügbar. Du kannst dieses oder ein anderes Microsoft-Konto später erneut verbinden.",
+  "Scriber will remove the protected Microsoft sign-in and its locally synchronized calendar entries. Existing meetings, transcripts, and exports stay available. You can connect this or another Microsoft account again later.":
+    "Scriber entfernt die geschützte Microsoft-Anmeldung und die lokal synchronisierten Kalendereinträge. Bestehende Meetings, Transkripte und Exporte bleiben verfügbar. Du kannst dieses oder ein anderes Microsoft-Konto später erneut verbinden.",
   "Keep connected": "Verbunden lassen",
   "Delete all saved voice data?": "Alle gespeicherten Stimmdaten löschen?",
-  "This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.": "Dadurch werden alle gespeicherten Sprecher und der lokale Download für die Stimmerkennung entfernt und die künftige Erkennung deaktiviert. Bestehende Meetings und Transkripte bleiben verfügbar.",
+  "This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.":
+    "Dadurch werden alle gespeicherten Sprecher und der lokale Download für die Stimmerkennung entfernt und die künftige Erkennung deaktiviert. Bestehende Meetings und Transkripte bleiben verfügbar.",
 } satisfies TranslationCatalog;

@@ -3,7 +3,18 @@ import test from "node:test";
 
 import { QueryClient, QueryObserver, type InfiniteData } from "@tanstack/react-query";
 
-import { REST_API_VERSION, type MeetingActionItem, type MeetingCapabilities, type MeetingDetail, type MeetingNote, type MeetingProcessingProgress, type MeetingSpeakerAssignmentsResponse, type MeetingState, type MeetingSummary, type MeetingsResponse } from "./api-types";
+import {
+  REST_API_VERSION,
+  type MeetingActionItem,
+  type MeetingCapabilities,
+  type MeetingDetail,
+  type MeetingNote,
+  type MeetingProcessingProgress,
+  type MeetingSpeakerAssignmentsResponse,
+  type MeetingState,
+  type MeetingSummary,
+  type MeetingsResponse,
+} from "./api-types";
 import {
   ACTIVE_MEETING_QUERY_PATH,
   applyMeetingActionItem,
@@ -85,10 +96,7 @@ function actionItem(meetingId: string, text: string): MeetingActionItem {
 test("meeting websocket updates preserve paginated history and reflow a new first item", () => {
   const client = new QueryClient();
   const initial: InfiniteData<MeetingsResponse, number> = {
-    pages: [
-      page([meeting("a"), meeting("b")], 0, 4),
-      page([meeting("c"), meeting("d")], 2, 4),
-    ],
+    pages: [page([meeting("a"), meeting("b")], 0, 4), page([meeting("c"), meeting("d")], 2, 4)],
     pageParams: [0, 2],
   };
   client.setQueryData(MEETING_HISTORY_QUERY_KEY, initial);
@@ -100,12 +108,16 @@ test("meeting websocket updates preserve paginated history and reflow a new firs
 
   applyMeetingSummaryEvent(client, meeting("new", "recording"));
   cached = client.getQueryData<InfiniteData<MeetingsResponse, number>>(MEETING_HISTORY_QUERY_KEY);
-  assert.deepEqual(cached?.pages.flatMap((value) => value.items.map((item) => item.id)), [
-    "new", "a", "b", "c",
-  ]);
+  assert.deepEqual(
+    cached?.pages.flatMap((value) => value.items.map((item) => item.id)),
+    ["new", "a", "b", "c"],
+  );
   assert.equal(cached?.pages[0].total, 5);
   assert.equal(cached?.pages[0].activeMeeting?.id, "new");
-  assert.deepEqual(cached?.pages.map((value) => value.offset), [0, 2]);
+  assert.deepEqual(
+    cached?.pages.map((value) => value.offset),
+    [0, 2],
+  );
 });
 
 test("flat active-meeting cache and paginated history never share a data shape", () => {
@@ -116,7 +128,10 @@ test("flat active-meeting cache and paginated history never share a data shape",
   applyMeetingSummaryEvent(client, meeting("new", "recording"));
 
   const cachedFlat = client.getQueryData<MeetingsResponse>(MEETING_LIST_QUERY_KEY);
-  assert.deepEqual(cachedFlat?.items.map((item) => item.id), ["new", "existing"]);
+  assert.deepEqual(
+    cachedFlat?.items.map((item) => item.id),
+    ["new", "existing"],
+  );
   assert.equal(cachedFlat?.activeMeeting?.id, "new");
   assert.equal(client.getQueryData(MEETING_HISTORY_QUERY_KEY), undefined);
 });
@@ -177,23 +192,16 @@ test("older meeting summaries cannot regress any cache surface", () => {
 
   applyMeetingSummaryEvent(client, older);
 
+  assert.equal(client.getQueryData<MeetingsResponse>(MEETING_LIST_QUERY_KEY)?.items[0].state, "paused");
   assert.equal(
-    client.getQueryData<MeetingsResponse>(MEETING_LIST_QUERY_KEY)?.items[0].state,
-    "paused",
-  );
-  assert.equal(
-    client.getQueryData<InfiniteData<MeetingsResponse, number>>(MEETING_HISTORY_QUERY_KEY)
-      ?.pages[0].items[0].state,
+    client.getQueryData<InfiniteData<MeetingsResponse, number>>(MEETING_HISTORY_QUERY_KEY)?.pages[0].items[0].state,
     "paused",
   );
   assert.equal(
     client.getQueryData<MeetingCapabilities>(["/api/meetings/capabilities"])?.activeMeeting?.state,
     "paused",
   );
-  assert.equal(
-    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.state,
-    "paused",
-  );
+  assert.equal(client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.state, "paused");
 });
 
 test("Meeting processing progress survives route cache reuse without regressing", () => {
@@ -226,10 +234,7 @@ test("Meeting processing progress survives route cache reuse without regressing"
     status: "Delayed older callback",
     updatedAt: "2026-07-17T10:00:01.000Z",
   });
-  assert.deepEqual(
-    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress,
-    observed,
-  );
+  assert.deepEqual(client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress, observed);
 
   const analysis = mergeMeetingProcessingProgress(observed, {
     phase: "analysis",
@@ -238,16 +243,10 @@ test("Meeting processing progress survives route cache reuse without regressing"
     updatedAt: "2026-07-17T10:00:02.000Z",
   });
   assert.equal(analysis.phase, "analysis");
-  assert.equal(
-    mergeMeetingProcessingProgress(analysis, observed),
-    analysis,
-  );
+  assert.equal(mergeMeetingProcessingProgress(analysis, observed), analysis);
 
   applyMeetingSummaryEvent(client, meeting("a", "finalization_failed"));
-  assert.equal(
-    client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress,
-    null,
-  );
+  assert.equal(client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.processingProgress, null);
 });
 
 test("action-item responses update only their target Meeting cache", () => {
@@ -301,19 +300,23 @@ test("note events patch only the detail and preserve ephemeral speaker suggestio
     requiresConfirmation: true,
     llmSuggestionAvailable: false,
     llmRequested: true,
-    items: [{
-      speakerId: "speaker-1",
-      speakerLabel: "Speaker 1",
-      currentDisplayName: "Speaker 1",
-      profileMatch: null,
-      confirmedAttendee: null,
-      suggestions: [{
-        attendee: { participantId: "participant-1", name: "Alex", address: "alex@example.com" },
-        source: "llm" as const,
-        confidence: 0.8,
-        reason: "Transcript context",
-      }],
-    }],
+    items: [
+      {
+        speakerId: "speaker-1",
+        speakerLabel: "Speaker 1",
+        currentDisplayName: "Speaker 1",
+        profileMatch: null,
+        confirmedAttendee: null,
+        suggestions: [
+          {
+            attendee: { participantId: "participant-1", name: "Alex", address: "alex@example.com" },
+            source: "llm" as const,
+            confidence: 0.8,
+            reason: "Transcript context",
+          },
+        ],
+      },
+    ],
   } satisfies MeetingSpeakerAssignmentsResponse;
   client.setQueryData(["/api/meetings", "a", "speaker-assignments"], assignments);
 
@@ -340,12 +343,14 @@ test("manual speaker rename clears only the target's stale participant identity"
     profileMatch: { profileId: "profile-1", displayName: "Alex", confidence: 0.9 },
     confirmedAttendee: attendee,
     participantLinkSource: "voice_profile",
-    suggestions: [{
-      attendee,
-      source: "llm" as const,
-      confidence: 0.8,
-      reason: "Old identity context",
-    }],
+    suggestions: [
+      {
+        attendee,
+        source: "llm" as const,
+        confidence: 0.8,
+        reason: "Old identity context",
+      },
+    ],
   };
   const untouched = {
     speakerId: "speaker-2",
@@ -367,9 +372,7 @@ test("manual speaker rename clears only the target's stale participant identity"
 
   applyMeetingSpeakerName(client, "a", "speaker-1", "Alexander");
 
-  const updated = client.getQueryData<MeetingSpeakerAssignmentsResponse>(
-    ["/api/meetings", "a", "speaker-assignments"],
-  );
+  const updated = client.getQueryData<MeetingSpeakerAssignmentsResponse>(["/api/meetings", "a", "speaker-assignments"]);
   assert.equal(updated?.items[0].currentDisplayName, "Alexander");
   assert.equal(updated?.items[0].confirmedAttendee, null);
   assert.equal(updated?.items[0].participantLinkSource, "");

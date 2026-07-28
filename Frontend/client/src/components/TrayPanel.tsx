@@ -35,11 +35,7 @@ import {
   type TrayStatus,
 } from "@/lib/backend";
 import type { TranscriptHistoryItem, TranscriptType } from "@/lib/api-types";
-import {
-  checkDesktopUpdate,
-  installDesktopUpdate,
-  type DesktopUpdateProgress,
-} from "@/lib/desktop-updates";
+import { checkDesktopUpdate, installDesktopUpdate, type DesktopUpdateProgress } from "@/lib/desktop-updates";
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -183,7 +179,8 @@ function TrayRow({
         variant === "default" && "text-slate-950 hover:bg-slate-950/[0.055]",
         variant === "primary" && "bg-blue-50 text-blue-700 hover:bg-blue-100",
         variant === "danger" && "bg-red-50 text-red-700 hover:bg-red-100",
-        variant === "update" && "bg-blue-600 text-white shadow-[0_10px_26px_-18px_rgba(37,99,235,0.85)] hover:bg-blue-500",
+        variant === "update" &&
+          "bg-blue-600 text-white shadow-[0_10px_26px_-18px_rgba(37,99,235,0.85)] hover:bg-blue-500",
         disabled && variant !== "update" && "cursor-default opacity-55",
         disabled && variant === "update" && "cursor-default",
       )}
@@ -267,7 +264,12 @@ function RecentTranscriptRow({
         <span className="block truncate text-[13px] font-semibold leading-[17px] tracking-normal">
           {compactTranscriptTitle(item, t)}
         </span>
-        <span className={cn("mt-px block truncate text-[11px] leading-[13px]", copied ? "text-emerald-600" : "text-slate-500")}>
+        <span
+          className={cn(
+            "mt-px block truncate text-[11px] leading-[13px]",
+            copied ? "text-emerald-600" : "text-slate-500",
+          )}
+        >
           {copied ? t("Copied to clipboard") : compactTranscriptDetail(item, t, formatDate, formatLegacyDate)}
         </span>
       </span>
@@ -314,26 +316,32 @@ export default function TrayPanel() {
   const [copiedTranscriptId, setCopiedTranscriptId] = useState("");
   const shortcutLoadRequestRef = useRef(0);
 
-  const applyShortcuts = useCallback((hotkey?: string, meetingHotkey?: string) => {
-    setRecordingShortcut(formatShortcut(hotkey, t));
-    setMeetingShortcut(formatShortcut(meetingHotkey, t));
-  }, [t]);
+  const applyShortcuts = useCallback(
+    (hotkey?: string, meetingHotkey?: string) => {
+      setRecordingShortcut(formatShortcut(hotkey, t));
+      setMeetingShortcut(formatShortcut(meetingHotkey, t));
+    },
+    [t],
+  );
 
-  const loadRegisteredShortcuts = useCallback(async (refreshRegistration: boolean) => {
-    if (!isTauriRuntime() || !backendReady) return;
-    const requestId = ++shortcutLoadRequestRef.current;
-    try {
-      let value = refreshRegistration ? await refreshGlobalHotkey() : await getGlobalHotkeyStatus();
-      if (!value?.hotkey && !refreshRegistration) {
-        value = await refreshGlobalHotkey();
+  const loadRegisteredShortcuts = useCallback(
+    async (refreshRegistration: boolean) => {
+      if (!isTauriRuntime() || !backendReady) return;
+      const requestId = ++shortcutLoadRequestRef.current;
+      try {
+        let value = refreshRegistration ? await refreshGlobalHotkey() : await getGlobalHotkeyStatus();
+        if (!value?.hotkey && !refreshRegistration) {
+          value = await refreshGlobalHotkey();
+        }
+        if (requestId === shortcutLoadRequestRef.current) {
+          applyShortcuts(value?.hotkey, value?.meetingHotkey);
+        }
+      } catch (error) {
+        console.debug("Tray hotkey lookup failed.", error);
       }
-      if (requestId === shortcutLoadRequestRef.current) {
-        applyShortcuts(value?.hotkey, value?.meetingHotkey);
-      }
-    } catch (error) {
-      console.debug("Tray hotkey lookup failed.", error);
-    }
-  }, [applyShortcuts, backendReady]);
+    },
+    [applyShortcuts, backendReady],
+  );
 
   useEffect(() => {
     document.documentElement.dataset.scriberTrayWindow = "true";
@@ -422,27 +430,34 @@ export default function TrayPanel() {
     };
   }, []);
 
-  const runAction = useCallback(async (action: TrayActionId) => {
-    setError("");
-    try {
-      await trayAction(action);
-      if (action === "toggle_live") {
-        window.setTimeout(() => void hideTrayPanel(), 120);
+  const runAction = useCallback(
+    async (action: TrayActionId) => {
+      setError("");
+      try {
+        await trayAction(action);
+        if (action === "toggle_live") {
+          window.setTimeout(() => void hideTrayPanel(), 120);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err || t("Tray action failed.")));
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err || t("Tray action failed.")));
-    }
-  }, [t]);
+    },
+    [t],
+  );
 
   const loadRecentTranscripts = useCallback(async () => {
     if (!backendReady) return;
     setRecentLoading(true);
     setRecentError("");
     try {
-      const response = await fetchWithTimeout(apiUrl("/api/transcripts?limit=20&offset=0"), {
-        credentials: "include",
-        cache: "no-store",
-      }, 10_000);
+      const response = await fetchWithTimeout(
+        apiUrl("/api/transcripts?limit=20&offset=0"),
+        {
+          credentials: "include",
+          cache: "no-store",
+        },
+        10_000,
+      );
       if (!response.ok) {
         throw new Error(t("Could not load recent transcripts ({{status}}).", { status: response.status }));
       }
@@ -471,19 +486,22 @@ export default function TrayPanel() {
     }
   }, [loadRecentTranscripts, recentLoaded, recentLoading]);
 
-  const copyRecentTranscript = useCallback(async (item: TranscriptHistoryItem) => {
-    const transcriptId = String(item.id || "").trim();
-    if (!transcriptId) return;
-    setRecentError("");
-    setCopiedTranscriptId("");
-    try {
-      await trayAction(`copy_transcript:${transcriptId}`);
-      setCopiedTranscriptId(transcriptId);
-      window.setTimeout(() => void hideTrayPanel(), 650);
-    } catch (err) {
-      setRecentError(err instanceof Error ? err.message : String(err || t("Could not copy transcript.")));
-    }
-  }, [t]);
+  const copyRecentTranscript = useCallback(
+    async (item: TranscriptHistoryItem) => {
+      const transcriptId = String(item.id || "").trim();
+      if (!transcriptId) return;
+      setRecentError("");
+      setCopiedTranscriptId("");
+      try {
+        await trayAction(`copy_transcript:${transcriptId}`);
+        setCopiedTranscriptId(transcriptId);
+        window.setTimeout(() => void hideTrayPanel(), 650);
+      } catch (err) {
+        setRecentError(err instanceof Error ? err.message : String(err || t("Could not copy transcript.")));
+      }
+    },
+    [t],
+  );
 
   const installUpdate = useCallback(async () => {
     if (installing || status.updateInstalling || !status.updateAvailable) {
@@ -603,9 +621,7 @@ export default function TrayPanel() {
                 )}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-[14px] font-semibold leading-[18px]">
-                  {updateInstallTitle}
-                </span>
+                <span className="block truncate text-[14px] font-semibold leading-[18px]">{updateInstallTitle}</span>
                 <span className="mt-px block truncate text-[11px] font-medium leading-[13px] text-white/78">
                   {updateInstallDetail}
                 </span>
@@ -633,16 +649,8 @@ export default function TrayPanel() {
                 shortcut={meetingShortcut}
                 onClick={() => void runAction("open_meetings")}
               />
-              <TrayRow
-                icon={Video}
-                label={t("YouTube Transcription")}
-                onClick={() => void runAction("open_youtube")}
-              />
-              <TrayRow
-                icon={FileAudio}
-                label={t("Transcribe File")}
-                onClick={() => void runAction("open_file")}
-              />
+              <TrayRow icon={Video} label={t("YouTube Transcription")} onClick={() => void runAction("open_youtube")} />
+              <TrayRow icon={FileAudio} label={t("Transcribe File")} onClick={() => void runAction("open_file")} />
 
               <div className="my-0.5 h-px bg-slate-200/80" />
 
@@ -654,19 +662,11 @@ export default function TrayPanel() {
                 disabled={!backendReady}
                 onClick={openRecentView}
               />
-              <TrayRow
-                icon={MonitorUp}
-                label={t("Open Main Window")}
-                onClick={() => void runAction("show_window")}
-              />
+              <TrayRow icon={MonitorUp} label={t("Open Main Window")} onClick={() => void runAction("show_window")} />
 
               <div className="my-0.5 h-px bg-slate-200/80" />
 
-              <TrayRow
-                icon={Settings}
-                label={t("Settings")}
-                onClick={() => void runAction("open_settings")}
-              />
+              <TrayRow icon={Settings} label={t("Settings")} onClick={() => void runAction("open_settings")} />
               <TrayRow
                 icon={checkingUpdates ? Loader2 : RefreshCw}
                 label={status.updateAvailable ? t("Check Again") : t("Check for Updates")}
@@ -749,11 +749,7 @@ export default function TrayPanel() {
         {view === "main" ? (
           <div className="border-t border-slate-200/80 pt-2.5">
             <div className="flex flex-col gap-1.5">
-              <TrayRow
-                icon={RotateCw}
-                label={t("Restart Application")}
-                onClick={() => void runAction("restart_app")}
-              />
+              <TrayRow icon={RotateCw} label={t("Restart Application")} onClick={() => void runAction("restart_app")} />
               <TrayRow icon={LogOut} label={t("Quit Application")} onClick={() => void runAction("quit")} />
             </div>
           </div>

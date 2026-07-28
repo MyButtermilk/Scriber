@@ -39,10 +39,7 @@ function isFiniteNumber(value: RuntimeLogContextValue | undefined): value is num
   return typeof value === "number" && Number.isFinite(value);
 }
 
-function formatDuration(
-  value: number,
-  formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string,
-) {
+function formatDuration(value: number, formatNumber: (value: number, options?: Intl.NumberFormatOptions) => string) {
   if (value >= 10_000) {
     return `${formatNumber(value / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s`;
   }
@@ -93,9 +90,7 @@ function configurationMetrics(context?: RuntimeLogContext | null): DisplayMetric
   ];
   return fields.flatMap(([key, label]) => {
     const value = meta[key];
-    return typeof value === "string" && value.trim()
-      ? [{ key, label, value }]
-      : [];
+    return typeof value === "string" && value.trim() ? [{ key, label, value }] : [];
   });
 }
 
@@ -117,37 +112,17 @@ function technicalContextRows(
   return rows;
 }
 
-function CopyTechnicalButton({
-  copied,
-  label,
-  onClick,
-}: {
-  copied: boolean;
-  label: string;
-  onClick: () => void;
-}) {
+function CopyTechnicalButton({ copied, label, onClick }: { copied: boolean; label: string; onClick: () => void }) {
   const { t } = useI18n();
   return (
-    <button
-      type="button"
-      className="debug-log-copy-detail"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-    >
+    <button type="button" className="debug-log-copy-detail" onClick={onClick} aria-label={label} title={label}>
       {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
       <span>{copied ? t("Copied") : t("Copy")}</span>
     </button>
   );
 }
 
-export function RuntimeLogMessage({
-  message,
-  context,
-  copyKey,
-  copiedKey,
-  onCopy,
-}: RuntimeLogMessageProps) {
+export function RuntimeLogMessage({ message, context, copyKey, copiedKey, onCopy }: RuntimeLogMessageProps) {
   const { formatNumber, t } = useI18n();
   const isLongMessage = message.length > LONG_MESSAGE_PREVIEW_CHARS || message.split("\n").length > 6;
   const timingMetrics = hotPathMetrics(context, formatNumber);
@@ -163,9 +138,7 @@ export function RuntimeLogMessage({
 
   return (
     <div className="debug-log-message">
-      <div className="debug-log-message-summary">
-        {compactMessagePreview(message)}
-      </div>
+      <div className="debug-log-message-summary">{compactMessagePreview(message)}</div>
 
       {summaryMetrics.length > 0 && (
         <dl className="debug-log-key-metrics" aria-label={t("Key diagnostic values")}>
@@ -183,9 +156,11 @@ export function RuntimeLogMessage({
           <summary>
             <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
             <span>{t("Technical details")}</span>
-            <small>{contextFieldCount === 1
-              ? t("{{count}} field", { count: formatNumber(contextFieldCount) })
-              : t("{{count}} fields", { count: formatNumber(contextFieldCount) })}</small>
+            <small>
+              {contextFieldCount === 1
+                ? t("{{count}} field", { count: formatNumber(contextFieldCount) })
+                : t("{{count}} fields", { count: formatNumber(contextFieldCount) })}
+            </small>
           </summary>
           <div className="debug-log-details-body">
             {contextRows.length > 0 && (
@@ -256,9 +231,11 @@ export function RuntimeLogMessage({
           <summary>
             <ChevronRight className="debug-log-details-chevron" aria-hidden="true" />
             <span>{t("Full message")}</span>
-            <small>{message.length === 1
-              ? t("{{count}} character", { count: formatNumber(message.length) })
-              : t("{{count}} characters", { count: formatNumber(message.length) })}</small>
+            <small>
+              {message.length === 1
+                ? t("{{count}} character", { count: formatNumber(message.length) })
+                : t("{{count}} characters", { count: formatNumber(message.length) })}
+            </small>
           </summary>
           <div className="debug-log-raw-body">
             <div className="debug-log-raw-header">

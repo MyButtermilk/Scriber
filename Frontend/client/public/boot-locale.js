@@ -24,8 +24,15 @@
     }
   }
   document.documentElement.lang = locale;
-  var bootShell = document.querySelector(".boot-shell");
-  if (bootShell) {
-    bootShell.setAttribute("aria-label", locale === "de" ? "Scriber wird gestartet" : "Scriber is starting");
+  function labelBootShell() {
+    var bootShell = document.querySelector(".boot-shell");
+    if (bootShell) {
+      bootShell.setAttribute("aria-label", locale === "de" ? "Scriber wird gestartet" : "Scriber is starting");
+    }
+  }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", labelBootShell, { once: true });
+  } else {
+    labelBootShell();
   }
 })();

@@ -100,6 +100,9 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert desktop_layout["maxPaddingSpread"] <= 2
     assert desktop_layout["maxGutterImbalance"] <= 2
     assert desktop_layout["maxCenterDelta"] <= 2
+    assert desktop_layout["maxIntroLeftDelta"] <= 2
+    assert desktop_layout["maxIntroWidthDelta"] <= 2
+    assert desktop_layout["pageIntrosAligned"] is True
     assert desktop_layout["meetingAtMostLive"] is True
     assert desktop_layout["maxWidthReached"] is True
     assert all(item["maxWidthReached"] for item in desktop_layout["results"])
@@ -190,6 +193,9 @@ def test_frontend_browser_smoke_compares_primary_tab_shells_at_large_desktop_siz
     assert "maxPaddingSpread" in script
     assert "maxGutterImbalance" in script
     assert "maxCenterDelta" in script
+    assert "maxIntroLeftDelta" in script
+    assert "maxIntroWidthDelta" in script
+    assert "pageIntrosAligned" in script
     assert "meetingAtMostLive" in script
     assert "maxWidthReached" in script
     assert "desktopPageShellLayoutsCheck" in script
@@ -317,7 +323,7 @@ def test_frontend_browser_smoke_exercises_file_actions() -> None:
     assert "Synthetic File Processing" in script
     assert "processing queue" in script
     assert "View transcript Synthetic File Processing" in script
-    assert "Synthetic processes files in the app up to 2GB" in script
+    assert "Soniox processes files in the app up to 2GB" in script
     assert "Search files" in script
     assert "Copy transcript Synthetic File 00002" in script
     assert "Delete transcript Synthetic File 00002" in script

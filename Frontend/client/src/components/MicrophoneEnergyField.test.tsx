@@ -38,22 +38,26 @@ describe("MicrophoneEnergyField", () => {
   it("renders from the pill's far-left edge and reuses HiDPI drawing resources", () => {
     const animationFrames: FrameRequestCallback[] = [];
     const { context } = createCanvasContext();
-    const getContext = vi
-      .spyOn(HTMLCanvasElement.prototype, "getContext")
-      .mockReturnValue(context);
+    const getContext = vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context);
     let now = 0;
 
     vi.spyOn(performance, "now").mockImplementation(() => now);
     vi.stubGlobal("devicePixelRatio", 3);
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    })));
-    vi.stubGlobal("requestAnimationFrame", vi.fn((callback: FrameRequestCallback) => {
-      animationFrames.push(callback);
-      return animationFrames.length;
-    }));
+    vi.stubGlobal(
+      "matchMedia",
+      vi.fn(() => ({
+        matches: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })),
+    );
+    vi.stubGlobal(
+      "requestAnimationFrame",
+      vi.fn((callback: FrameRequestCallback) => {
+        animationFrames.push(callback);
+        return animationFrames.length;
+      }),
+    );
     vi.stubGlobal("cancelAnimationFrame", vi.fn());
 
     const { getByTestId } = render(

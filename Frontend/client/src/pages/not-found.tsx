@@ -15,9 +15,7 @@ export default function NotFound() {
             <h1 className="text-2xl font-bold text-gray-900">{t("Page not found")}</h1>
           </div>
 
-          <p className="mt-4 text-sm text-gray-600">
-            {t("The page you requested does not exist or may have moved.")}
-          </p>
+          <p className="mt-4 text-sm text-gray-600">{t("The page you requested does not exist or may have moved.")}</p>
           <Button asChild className="mt-5">
             <Link href="/">{t("Back to Live Mic")}</Link>
           </Button>

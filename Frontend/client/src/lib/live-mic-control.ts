@@ -1,8 +1,4 @@
-import {
-  apiUrl,
-  isBenchmarkActivationEnabled,
-  isTauriRuntime,
-} from "@/lib/backend";
+import { apiUrl, isBenchmarkActivationEnabled, isTauriRuntime } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
 import { friendlyError, friendlyRequestMessage } from "@/lib/request-errors";
@@ -107,10 +103,9 @@ async function requestLiveMicControl(
       timeoutMs,
     );
   } catch (error) {
-    throw new LiveMicControlError(
-      friendlyError(error, "Cannot connect to the Scriber backend. Please try again."),
-      { kind: "network" },
-    );
+    throw new LiveMicControlError(friendlyError(error, "Cannot connect to the Scriber backend. Please try again."), {
+      kind: "network",
+    });
   }
 
   if (!response.ok) {
@@ -120,9 +115,7 @@ async function requestLiveMicControl(
 }
 
 /** Start a normal Live Mic session. This function never retries a failed start. */
-export function requestLiveMicStart(
-  benchmarkActivationMarker?: BenchmarkActivationMarker | null,
-): Promise<Response> {
+export function requestLiveMicStart(benchmarkActivationMarker?: BenchmarkActivationMarker | null): Promise<Response> {
   return requestLiveMicControl(
     LIVE_MIC_START_PATH,
     15_000,
@@ -131,26 +124,21 @@ export function requestLiveMicStart(
 }
 
 /** Capture the benchmark-only native boundary at the primary button handler. */
-export async function captureBenchmarkButtonActivationMarker(): Promise<
-  BenchmarkActivationMarker | null
-> {
+export async function captureBenchmarkButtonActivationMarker(): Promise<BenchmarkActivationMarker | null> {
   if (!isTauriRuntime() || !isBenchmarkActivationEnabled()) {
     return null;
   }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    const marker = await invoke<BenchmarkActivationMarker | null>(
-      "capture_benchmark_button_marker",
-    );
+    const marker = await invoke<BenchmarkActivationMarker | null>("capture_benchmark_button_marker");
     if (!marker) {
       throw new Error("native benchmark activation is not armed");
     }
     return marker;
   } catch (error) {
-    throw new LiveMicControlError(
-      friendlyError(error, "Benchmark button activation could not be captured."),
-      { kind: "backend" },
-    );
+    throw new LiveMicControlError(friendlyError(error, "Benchmark button activation could not be captured."), {
+      kind: "backend",
+    });
   }
 }
 

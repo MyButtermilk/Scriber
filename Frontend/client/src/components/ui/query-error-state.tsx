@@ -22,9 +22,7 @@ export function QueryErrorState({
     <Alert variant="destructive" className={cn("relative", className)}>
       <AlertCircle className="h-4 w-4" />
       <AlertTitle>{t(title)}</AlertTitle>
-      <AlertDescription className="pr-20">
-        {t(description)}
-      </AlertDescription>
+      <AlertDescription className="pr-20">{t(description)}</AlertDescription>
       {onRetry && (
         <Button
           type="button"

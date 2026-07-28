@@ -19,16 +19,34 @@ export interface LiveMicRuntimeErrorResponse {
 export type TranscriptType = "mic" | "file" | "youtube" | "meeting";
 
 export type MeetingState =
-  | "starting" | "recording" | "paused" | "stopping" | "finalizing" | "analyzing"
-  | "ready" | "capture_failed" | "finalization_failed" | "analysis_failed"
-  | "interrupted" | "discarded";
+  | "starting"
+  | "recording"
+  | "paused"
+  | "stopping"
+  | "finalizing"
+  | "analyzing"
+  | "ready"
+  | "capture_failed"
+  | "finalization_failed"
+  | "analysis_failed"
+  | "interrupted"
+  | "discarded";
 
 export type MeetingTranscriptionMode = "live_final" | "final_only";
 
 export type MeetingImportState =
-  | "created" | "receiving" | "received" | "probing" | "preparing"
-  | "waiting_for_workspace" | "committing" | "finalizing" | "completed"
-  | "cancel_requested" | "canceled" | "failed";
+  | "created"
+  | "receiving"
+  | "received"
+  | "probing"
+  | "preparing"
+  | "waiting_for_workspace"
+  | "committing"
+  | "finalizing"
+  | "completed"
+  | "cancel_requested"
+  | "canceled"
+  | "failed";
 
 export interface MeetingImportJob {
   apiVersion: typeof REST_API_VERSION;
@@ -387,18 +405,21 @@ export interface MeetingProfilesResponse {
   apiVersion: typeof REST_API_VERSION;
   defaultProfileId: string;
   profiles: MeetingProviderProfile[];
-  providerCapabilities: Record<string, {
-    live: boolean;
-    timestamps: boolean;
-    liveDiarization: boolean;
-    batchDiarization: boolean;
-    local: boolean;
-    maxDurationSeconds: number | null;
-    structuredTokens: boolean;
-    localDiarizationFallback?: boolean;
-    fiveHourSupported: boolean;
-    fiveHourReason: string;
-  }>;
+  providerCapabilities: Record<
+    string,
+    {
+      live: boolean;
+      timestamps: boolean;
+      liveDiarization: boolean;
+      batchDiarization: boolean;
+      local: boolean;
+      maxDurationSeconds: number | null;
+      structuredTokens: boolean;
+      localDiarizationFallback?: boolean;
+      fiveHourSupported: boolean;
+      fiveHourReason: string;
+    }
+  >;
   finalProviderOptions: Array<{
     id: string;
     label: string;
@@ -436,14 +457,17 @@ export interface MeetingDeviceTestResponse {
   durationMs: number;
   aecActive: boolean;
   testTonePlayed: boolean;
-  sources: Record<string, {
-    frames: number;
-    audioFrames: number;
-    rms: number;
-    peak: number;
-    active: boolean;
-    errorCode: string;
-  }>;
+  sources: Record<
+    string,
+    {
+      frames: number;
+      audioFrames: number;
+      rms: number;
+      peak: number;
+      active: boolean;
+      errorCode: string;
+    }
+  >;
   audioPersisted: false;
   audioSentToProvider: false;
 }
@@ -798,12 +822,7 @@ export interface RuntimeLogEntry {
 }
 
 export type RuntimeLogContextValue =
-  | string
-  | number
-  | boolean
-  | null
-  | RuntimeLogContextValue[]
-  | { [key: string]: RuntimeLogContextValue };
+  string | number | boolean | null | RuntimeLogContextValue[] | { [key: string]: RuntimeLogContextValue };
 
 export interface RuntimeLogContext {
   event?: string;

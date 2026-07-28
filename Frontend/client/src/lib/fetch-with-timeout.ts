@@ -34,11 +34,7 @@ export async function fetchWithTimeout(
   }
 }
 
-export function withPromiseTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  label = "Operation",
-): Promise<T> {
+export function withPromiseTimeout<T>(promise: Promise<T>, timeoutMs: number, label = "Operation"): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timeoutId = globalThis.setTimeout(
       () => {

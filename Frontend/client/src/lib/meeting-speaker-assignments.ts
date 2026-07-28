@@ -13,18 +13,15 @@ export interface MeetingSpeakerMergeOption {
 }
 
 /** One selectable row per durable profile represented in this meeting. */
-export function meetingSpeakerMergeOptions(
-  items: readonly MeetingSpeakerAssignment[],
-): MeetingSpeakerMergeOption[] {
+export function meetingSpeakerMergeOptions(items: readonly MeetingSpeakerAssignment[]): MeetingSpeakerMergeOption[] {
   const seen = new Set<string>();
   const options: MeetingSpeakerMergeOption[] = [];
   for (const item of items) {
     const profileId = item.profileId?.trim() ?? "";
     if (!profileId || seen.has(profileId)) continue;
     seen.add(profileId);
-    const canonicalProfileName = item.profileDisplayName?.trim()
-      || item.profileMatch?.displayName.trim()
-      || "Unnamed voice profile";
+    const canonicalProfileName =
+      item.profileDisplayName?.trim() || item.profileMatch?.displayName.trim() || "Unnamed voice profile";
     options.push({
       profileId,
       speakerId: item.speakerId,
@@ -65,14 +62,16 @@ export function applySpeakerAssignmentConfirmation(
   if (!current.items.some((item) => item.speakerId === speakerId)) return current;
   return {
     ...current,
-    items: current.items.map((item) => item.speakerId === speakerId
-      ? {
-          ...item,
-          currentDisplayName: response.assignment.displayName,
-          confirmedAttendee: response.assignment.confirmedAttendee,
-          confirmedCustomName: response.assignment.customDisplayName ?? null,
-          participantLinkSource: response.assignment.source || undefined,
-        }
-      : item),
+    items: current.items.map((item) =>
+      item.speakerId === speakerId
+        ? {
+            ...item,
+            currentDisplayName: response.assignment.displayName,
+            confirmedAttendee: response.assignment.confirmedAttendee,
+            confirmedCustomName: response.assignment.customDisplayName ?? null,
+            participantLinkSource: response.assignment.source || undefined,
+          }
+        : item,
+    ),
   };
 }

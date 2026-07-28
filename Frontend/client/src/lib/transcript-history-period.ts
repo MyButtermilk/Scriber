@@ -15,10 +15,7 @@ function localCalendarDayNumber(value: Date): number {
   return Date.UTC(value.getFullYear(), value.getMonth(), value.getDate()) / DAY_MS;
 }
 
-export function transcriptHistoryPeriod(
-  createdAt?: string,
-  now: Date = new Date(),
-): TranscriptHistoryPeriod {
+export function transcriptHistoryPeriod(createdAt?: string, now: Date = new Date()): TranscriptHistoryPeriod {
   const created = createdAt ? new Date(createdAt) : new Date(Number.NaN);
   if (Number.isNaN(created.getTime())) {
     return { key: "older", label: translateNow("Older") };

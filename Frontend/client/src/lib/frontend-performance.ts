@@ -1,9 +1,5 @@
 import { apiUrl } from "@/lib/backend";
-import {
-  REST_API_VERSION,
-  type FrontendLongTaskEntry,
-  type FrontendPerformanceReportRequest,
-} from "@/lib/api-types";
+import { REST_API_VERSION, type FrontendLongTaskEntry, type FrontendPerformanceReportRequest } from "@/lib/api-types";
 
 const LONG_TASK_THRESHOLD_MS = 200;
 const MAX_PENDING_ENTRIES = 64;
@@ -106,7 +102,7 @@ async function performFrontendPerformanceFlush(): Promise<void> {
       retainFailedBatch(entries);
       consecutiveFailures += 1;
       if (consecutiveFailures < MAX_RETRY_ATTEMPTS) {
-        scheduleFlush(RETRY_DELAY_MS * (2 ** (consecutiveFailures - 1)));
+        scheduleFlush(RETRY_DELAY_MS * 2 ** (consecutiveFailures - 1));
       }
     } else {
       consecutiveFailures = 0;
@@ -118,26 +114,20 @@ async function performFrontendPerformanceFlush(): Promise<void> {
     retainFailedBatch(entries);
     consecutiveFailures += 1;
     if (consecutiveFailures < MAX_RETRY_ATTEMPTS) {
-      scheduleFlush(RETRY_DELAY_MS * (2 ** (consecutiveFailures - 1)));
+      scheduleFlush(RETRY_DELAY_MS * 2 ** (consecutiveFailures - 1));
     }
   } finally {
-    if (
-      (pendingEntries.length > 0 || pendingHeartbeatSequence > 0)
-      && consecutiveFailures === 0
-    ) {
+    if ((pendingEntries.length > 0 || pendingHeartbeatSequence > 0) && consecutiveFailures === 0) {
       scheduleFlush();
     }
   }
 }
 
-export function flushFrontendPerformanceReport(
-  heartbeatSequence = 0,
-  expectedSourceInstanceId = "",
-): Promise<void> {
+export function flushFrontendPerformanceReport(heartbeatSequence = 0, expectedSourceInstanceId = ""): Promise<void> {
   if (
-    !reportingEnabled
-    || !sourceInstanceId
-    || (expectedSourceInstanceId && expectedSourceInstanceId !== sourceInstanceId)
+    !reportingEnabled ||
+    !sourceInstanceId ||
+    (expectedSourceInstanceId && expectedSourceInstanceId !== sourceInstanceId)
   ) {
     return Promise.resolve();
   }
@@ -148,10 +138,7 @@ export function flushFrontendPerformanceReport(
   // A synchronous observer/browser failure must not poison the serialization
   // chain forever: the next explicit heartbeat still gets one bounded chance
   // to drain and report its records.
-  flushChain = flushChain.then(
-    performFrontendPerformanceFlush,
-    performFrontendPerformanceFlush,
-  );
+  flushChain = flushChain.then(performFrontendPerformanceFlush, performFrontendPerformanceFlush);
   return flushChain;
 }
 
@@ -174,9 +161,10 @@ export function startFrontendLongTaskObserver(): () => void {
   sourceInstanceId = newSourceInstanceId();
   windowStartedAtMs = performance.now();
   try {
-    observerSupported = typeof PerformanceObserver !== "undefined"
-      && Array.isArray(PerformanceObserver.supportedEntryTypes)
-      && PerformanceObserver.supportedEntryTypes.includes("longtask");
+    observerSupported =
+      typeof PerformanceObserver !== "undefined" &&
+      Array.isArray(PerformanceObserver.supportedEntryTypes) &&
+      PerformanceObserver.supportedEntryTypes.includes("longtask");
   } catch {
     observerSupported = false;
   }

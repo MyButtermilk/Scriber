@@ -21,16 +21,18 @@ test("confirming one speaker preserves the remaining paid AI suggestions", () =>
       currentDisplayName: `Speaker ${index + 1}`,
       profileMatch: null,
       confirmedAttendee: null,
-      suggestions: [{
-        attendee: {
-          participantId: `participant-${index + 1}`,
-          name: `Participant ${index + 1}`,
-          address: `participant-${index + 1}@example.com`,
+      suggestions: [
+        {
+          attendee: {
+            participantId: `participant-${index + 1}`,
+            name: `Participant ${index + 1}`,
+            address: `participant-${index + 1}@example.com`,
+          },
+          source: "llm" as const,
+          confidence: 0.74,
+          reason: "Transcript context",
         },
-        source: "llm" as const,
-        confidence: 0.74,
-        reason: "Transcript context",
-      }],
+      ],
     })),
   };
 
@@ -59,15 +61,17 @@ test("a meeting-only name is resolved without creating an Outlook attendee", () 
     calendarEvent: null,
     requiresConfirmation: true,
     llmSuggestionAvailable: false,
-    items: [{
-      speakerId: "speaker-room",
-      speakerLabel: "Speaker 1",
-      currentDisplayName: "Speaker 1",
-      profileMatch: null,
-      confirmedAttendee: null,
-      confirmedCustomName: null,
-      suggestions: [],
-    }],
+    items: [
+      {
+        speakerId: "speaker-room",
+        speakerLabel: "Speaker 1",
+        currentDisplayName: "Speaker 1",
+        profileMatch: null,
+        confirmedAttendee: null,
+        confirmedCustomName: null,
+        suggestions: [],
+      },
+    ],
   };
 
   const updated = applySpeakerAssignmentConfirmation(current, {
@@ -136,8 +140,20 @@ test("merge options contain each durable profile represented in the meeting once
   ]);
 
   assert.deepEqual(options, [
-    { profileId: "profile-ada", speakerId: "speaker-1", displayName: "Ada Voice Library", speakerLabel: "Speaker 1", isNamed: true },
-    { profileId: "profile-grace", speakerId: "speaker-4", displayName: "Grace Voice Library", speakerLabel: "Speaker 4", isNamed: false },
+    {
+      profileId: "profile-ada",
+      speakerId: "speaker-1",
+      displayName: "Ada Voice Library",
+      speakerLabel: "Speaker 1",
+      isNamed: true,
+    },
+    {
+      profileId: "profile-grace",
+      speakerId: "speaker-4",
+      displayName: "Grace Voice Library",
+      speakerLabel: "Speaker 4",
+      isNamed: false,
+    },
   ]);
 });
 

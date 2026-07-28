@@ -42,18 +42,24 @@ test("import progress is monotone within a phase and rejects a late older phase"
     { importId: "import-1", phase: "receiving", stage: "Uploading", percentage: 20 },
     { importId: "import-1", phase: "receiving", stage: "Uploading", percentage: 60 },
   );
-  const lateForty = mergeMeetingImportProgress(
-    atSixty,
-    { importId: "import-1", phase: "receiving", stage: "Uploading", percentage: 40 },
-  );
-  const safelyStored = mergeMeetingImportProgress(
-    lateForty,
-    { importId: "import-1", phase: "received", stage: "Stored", percentage: 86 },
-  );
-  const lateUpload = mergeMeetingImportProgress(
-    safelyStored,
-    { importId: "import-1", phase: "receiving", stage: "Uploading", percentage: 84 },
-  );
+  const lateForty = mergeMeetingImportProgress(atSixty, {
+    importId: "import-1",
+    phase: "receiving",
+    stage: "Uploading",
+    percentage: 40,
+  });
+  const safelyStored = mergeMeetingImportProgress(lateForty, {
+    importId: "import-1",
+    phase: "received",
+    stage: "Stored",
+    percentage: 86,
+  });
+  const lateUpload = mergeMeetingImportProgress(safelyStored, {
+    importId: "import-1",
+    phase: "receiving",
+    stage: "Uploading",
+    percentage: 84,
+  });
 
   assert.equal(lateForty.percentage, 60);
   assert.equal(safelyStored.percentage, 86);
@@ -117,10 +123,7 @@ test("terminal import outcomes are sticky while cancel-requested may still compl
     stage: "Cancel requested",
     percentage: 86,
   };
-  assert.equal(
-    mergeMeetingImportProgress(cancelRequested, completed).phase,
-    "completed",
-  );
+  assert.equal(mergeMeetingImportProgress(cancelRequested, completed).phase, "completed");
 });
 
 test("websocket progress patches the inbox without triggering query fetches", () => {
@@ -182,12 +185,15 @@ test("late cache upserts and websocket events cannot rewrite a terminal import",
     receivedBytes: 100,
   });
   upsertMeetingImportJob(client, completed);
-  upsertMeetingImportJob(client, job({
-    state: "cancel_requested",
-    progress: 0.86,
-    status: "Cancel requested",
-    receivedBytes: 100,
-  }));
+  upsertMeetingImportJob(
+    client,
+    job({
+      state: "cancel_requested",
+      progress: 0.86,
+      status: "Cancel requested",
+      receivedBytes: 100,
+    }),
+  );
   applyMeetingImportProgressEvent(client, {
     importId: completed.id,
     phase: "failed",

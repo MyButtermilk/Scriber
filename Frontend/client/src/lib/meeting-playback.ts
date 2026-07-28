@@ -47,29 +47,15 @@ export function meetingSpeakerSampleWindow(
   if (availableDurationMs < MEETING_SPEAKER_SAMPLE_MIN_MS) return null;
 
   const audioEndMs = audioStartMs + availableDurationMs;
-  const boundedSegmentStartMs = Math.min(
-    audioEndMs,
-    Math.max(audioStartMs, safeNonNegative(segmentStartMs)),
-  );
-  const boundedSegmentEndMs = Math.min(
-    audioEndMs,
-    Math.max(boundedSegmentStartMs, safeNonNegative(segmentEndMs)),
-  );
+  const boundedSegmentStartMs = Math.min(audioEndMs, Math.max(audioStartMs, safeNonNegative(segmentStartMs)));
+  const boundedSegmentEndMs = Math.min(audioEndMs, Math.max(boundedSegmentStartMs, safeNonNegative(segmentEndMs)));
   const sampleDurationMs = Math.min(
     MEETING_SPEAKER_SAMPLE_MAX_MS,
-    Math.max(
-      MEETING_SPEAKER_SAMPLE_MIN_MS,
-      boundedSegmentEndMs - boundedSegmentStartMs,
-    ),
+    Math.max(MEETING_SPEAKER_SAMPLE_MIN_MS, boundedSegmentEndMs - boundedSegmentStartMs),
     availableDurationMs,
   );
-  const centeredStartMs = (
-    (boundedSegmentStartMs + boundedSegmentEndMs) / 2
-  ) - (sampleDurationMs / 2);
-  const startMs = Math.min(
-    Math.max(audioStartMs, centeredStartMs),
-    audioEndMs - sampleDurationMs,
-  );
+  const centeredStartMs = (boundedSegmentStartMs + boundedSegmentEndMs) / 2 - sampleDurationMs / 2;
+  const startMs = Math.min(Math.max(audioStartMs, centeredStartMs), audioEndMs - sampleDurationMs);
   return { startMs, endMs: startMs + sampleDurationMs };
 }
 
@@ -91,30 +77,21 @@ export function calculateMeetingElapsedMs(
   if (typeof pausedAtTimelineMs === "number" && Number.isFinite(pausedAtTimelineMs)) {
     return safeNonNegative(pausedAtTimelineMs);
   }
-  const recordingStartedAtMs = typeof recordingTimelineStartedAtUtc === "string"
-    ? new Date(recordingTimelineStartedAtUtc).getTime()
-    : Number.NaN;
+  const recordingStartedAtMs =
+    typeof recordingTimelineStartedAtUtc === "string" ? new Date(recordingTimelineStartedAtUtc).getTime() : Number.NaN;
   if (
-    typeof recordingTimelineOffsetMs === "number"
-    && Number.isFinite(recordingTimelineOffsetMs)
-    && Number.isFinite(recordingStartedAtMs)
+    typeof recordingTimelineOffsetMs === "number" &&
+    Number.isFinite(recordingTimelineOffsetMs) &&
+    Number.isFinite(recordingStartedAtMs)
   ) {
-    return safeNonNegative(recordingTimelineOffsetMs)
-      + safeNonNegative(nowMs - recordingStartedAtMs);
+    return safeNonNegative(recordingTimelineOffsetMs) + safeNonNegative(nowMs - recordingStartedAtMs);
   }
   if (!startedAt) return 0;
   const startedAtMs = new Date(startedAt).getTime();
   if (!Number.isFinite(startedAtMs)) return 0;
-  const pausedAtUtcMs = typeof pausedAtUtc === "string"
-    ? new Date(pausedAtUtc).getTime()
-    : Number.NaN;
-  const effectiveNowMs = Number.isFinite(pausedAtUtcMs)
-    ? Math.min(nowMs, pausedAtUtcMs)
-    : nowMs;
-  const gapDurationMs = audioGaps.reduce(
-    (sum, gap) => sum + Math.max(0, gap.endedAtMs - gap.startedAtMs),
-    0,
-  );
+  const pausedAtUtcMs = typeof pausedAtUtc === "string" ? new Date(pausedAtUtc).getTime() : Number.NaN;
+  const effectiveNowMs = Number.isFinite(pausedAtUtcMs) ? Math.min(nowMs, pausedAtUtcMs) : nowMs;
+  const gapDurationMs = audioGaps.reduce((sum, gap) => sum + Math.max(0, gap.endedAtMs - gap.startedAtMs), 0);
   return safeNonNegative(effectiveNowMs - startedAtMs - gapDurationMs);
 }
 
@@ -164,20 +141,18 @@ export function meetingPlaybackOriginMs(
   const assets = audioAssets ?? [];
   if (source === "mix") {
     const manifest = assets.find((asset) => asset.kind === "playback_mix")?.trackManifest;
-    return timelineOrigin(
-      manifest?.find((track) => track.source === "mixed") ?? manifest?.[0],
-    );
+    return timelineOrigin(manifest?.find((track) => track.source === "mixed") ?? manifest?.[0]);
   }
 
-  const manifest = assets.find((asset) => asset.kind === (
-    source === "microphone" ? "playback_microphone" : "playback_system"
-  ))?.trackManifest;
+  const manifest = assets.find(
+    (asset) => asset.kind === (source === "microphone" ? "playback_microphone" : "playback_system"),
+  )?.trackManifest;
   if (source === "microphone") {
     // Per-track Opus derivatives are padded onto Meeting clock zero, just like
     // the mix. The source name still records whether AEC-clean or raw mic won.
     return timelineOrigin(
-      manifest?.find((track) => track.source === "mic_clean")
-      ?? manifest?.find((track) => track.source === "microphone"),
+      manifest?.find((track) => track.source === "mic_clean") ??
+        manifest?.find((track) => track.source === "microphone"),
     );
   }
   return timelineOrigin(manifest?.find((track) => track.source === "system"));

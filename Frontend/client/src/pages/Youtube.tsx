@@ -1,4 +1,15 @@
-import { Search, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, CheckCircle2, ThumbsUp, Eye, RotateCcw, X } from "lucide-react";
+import {
+  Search,
+  Clock,
+  PlayCircle,
+  Youtube as YoutubeIcon,
+  Loader2,
+  CheckCircle2,
+  ThumbsUp,
+  Eye,
+  RotateCcw,
+  X,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -11,7 +22,6 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import { EmptyState } from "@/components/ui/empty-state";
-import { SkeletonList } from "@/components/ui/skeleton-card";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useUrlQueryState } from "@/hooks/use-url-query-state";
@@ -19,6 +29,7 @@ import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
+import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
 import { friendlyError, responseErrorMessage } from "@/lib/request-errors";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
@@ -35,9 +46,9 @@ import type {
   YouTubeSearchResponse,
 } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
+import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
 
 type SortOption = "date" | "likes" | "views";
-const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 
 function youtubeThumbnailSrc(thumbnailUrl?: string): string {
   const value = (thumbnailUrl || "").trim();
@@ -168,9 +179,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
   onHover,
 }: YoutubeVideoCardProps) {
   const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
-  const deletingClasses = isDeleting
-    ? "pointer-events-none opacity-[0.55] scale-[0.985]"
-    : "opacity-100 scale-100";
+  const deletingClasses = isDeleting ? "pointer-events-none opacity-[0.55] scale-[0.985]" : "opacity-100 scale-100";
   const historyStatus = youtubeHistoryStatus(item);
   const dateLabel = item.createdAt
     ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
@@ -193,7 +202,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                 className="transcription-thumbnail h-full w-full object-cover opacity-90"
                 iconClassName="w-8 h-8"
               />
-              <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
+              <div className="absolute bottom-1 right-1 bg-black/80 text-white text-ui-micro px-1 rounded">
                 {item.duration}
               </div>
             </div>
@@ -213,7 +222,10 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   </button>
                 </h3>
                 {historyStatus === "processing" ? (
-                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1 shrink-0">
+                  <Badge
+                    variant="outline"
+                    className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1 shrink-0"
+                  >
                     <Loader2 className="w-3 h-3 animate-spin" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
@@ -224,12 +236,19 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="min-h-7 shrink-0 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
+                    className="min-h-7 shrink-0 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-ui-micro font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
                     onClick={(event) => onTranscriptionRetry(event, item)}
                     disabled={isRetryingTranscription}
                     aria-busy={isRetryingTranscription}
-                    aria-label={t(isRetryingTranscription ? "Retrying transcription for {{title}}" : "Retry transcription for {{title}}", { title: item.title })}
-                    title={isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")}
+                    aria-label={t(
+                      isRetryingTranscription
+                        ? "Retrying transcription for {{title}}"
+                        : "Retry transcription for {{title}}",
+                      { title: item.title },
+                    )}
+                    title={
+                      isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")
+                    }
                   >
                     {isRetryingTranscription ? (
                       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -246,7 +265,12 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     className="shrink-0"
                   />
                 ) : historyStatus === "stopped" ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px] shrink-0">{t("Stopped")}</Badge>
+                  <Badge
+                    variant="outline"
+                    className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro shrink-0"
+                  >
+                    {t("Stopped")}
+                  </Badge>
                 ) : (
                   <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
                     <CheckCircle2 className="w-3 h-3" />
@@ -254,7 +278,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   </div>
                 )}
               </div>
-              <p className="mt-1 truncate text-[12px] text-muted-foreground">{item.channel || item.channelTitle || t("Unknown channel")} • {dateLabel}</p>
+              <p className="mt-1 truncate text-[12px] text-muted-foreground">
+                {item.channel || item.channelTitle || t("Unknown channel")} • {dateLabel}
+              </p>
             </div>
 
             <div className="flex items-center justify-end gap-1 sm:self-center">
@@ -291,7 +317,10 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               </div>
               <div className="absolute top-2 right-2">
                 {historyStatus === "processing" ? (
-                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50/90 text-[10px] flex items-center gap-1">
+                  <Badge
+                    variant="outline"
+                    className="text-blue-600 border-blue-200 bg-blue-50/90 text-ui-micro flex items-center gap-1"
+                  >
                     <Loader2 className="w-3 h-3 animate-spin" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
@@ -302,12 +331,19 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     type="button"
                     variant="outline"
                     size="sm"
-                    className="min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-[10px] font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
+                    className="min-h-7 gap-1.5 rounded-full border-red-200 bg-red-50/95 px-2.5 text-ui-micro font-semibold text-red-700 dark:border-red-800 dark:bg-red-950/75 dark:text-red-300"
                     onClick={(event) => onTranscriptionRetry(event, item)}
                     disabled={isRetryingTranscription}
                     aria-busy={isRetryingTranscription}
-                    aria-label={t(isRetryingTranscription ? "Retrying transcription for {{title}}" : "Retry transcription for {{title}}", { title: item.title })}
-                    title={isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")}
+                    aria-label={t(
+                      isRetryingTranscription
+                        ? "Retrying transcription for {{title}}"
+                        : "Retry transcription for {{title}}",
+                      { title: item.title },
+                    )}
+                    title={
+                      isRetryingTranscription ? t("Restarting transcription") : t("Transcription failed. Try again")
+                    }
                   >
                     {isRetryingTranscription ? (
                       <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -323,9 +359,11 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onComplete={onSummaryRetryComplete}
                   />
                 ) : historyStatus === "stopped" ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-[10px]">{t("Stopped")}</Badge>
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-ui-micro">
+                    {t("Stopped")}
+                  </Badge>
                 ) : (
-                  <div className="flex items-center gap-1 rounded-full bg-green-50/90 px-2 py-1 text-[10px] font-medium text-green-600 dark:bg-green-950/70 dark:text-green-300">
+                  <div className="flex items-center gap-1 rounded-full bg-green-50/90 px-2 py-1 text-ui-micro font-medium text-green-600 dark:bg-green-950/70 dark:text-green-300">
                     <CheckCircle2 className="w-3 h-3" />
                     {t("Ready")}
                   </div>
@@ -345,7 +383,9 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   {item.title}
                 </button>
               </h3>
-              <p className="text-xs text-muted-foreground mt-1 truncate">{item.channel || item.channelTitle || t("Unknown")}</p>
+              <p className="text-xs text-muted-foreground mt-1 truncate">
+                {item.channel || item.channelTitle || t("Unknown")}
+              </p>
               <div className="flex items-center justify-between mt-2">
                 <span className="text-xs text-muted-foreground">{dateLabel}</span>
                 <div className="flex items-center gap-1">
@@ -353,8 +393,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onClick={(e) => onCopy(e, item.id)}
                     disabled={isCopying}
                     copied={isCopying}
-                title={t("Copy transcript")}
-                ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
+                    title={t("Copy transcript")}
+                    ariaLabel={t("Copy transcript {{title}}", { title: item.title })}
                     size="sm"
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
@@ -362,8 +402,8 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     onClick={(e) => onDelete(e, item.id)}
                     disabled={isDeleting}
                     loading={isDeleting}
-                title={t("Delete transcript")}
-                ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
+                    title={t("Delete transcript")}
+                    ariaLabel={t("Delete transcript {{title}}", { title: item.title })}
                     size="sm"
                     className="opacity-100 md:opacity-0 md:group-hover:opacity-100 md:group-focus-within:opacity-100 transition-opacity"
                   />
@@ -371,8 +411,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
               </div>
             </div>
           </div>
-        )
-        }
+        )}
       </Card>
     </div>
   );
@@ -411,44 +450,22 @@ export default function Youtube() {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
   });
   const queryClient = useQueryClient();
-  const getInitialViewMode = () => {
-    if (typeof window === "undefined") return "list" as const;
-    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-    if (stored === "list" || stored === "grid") return stored;
-    return "list" as const;
-  };
-  const initialViewMode = getInitialViewMode();
-  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", initialViewMode, {
-    parse: (raw) => (raw === "list" || raw === "grid" ? raw : initialViewMode),
-  });
+  const {
+    debouncedSearch: debouncedHistorySearch,
+    searchValue: historySearch,
+    setSearchValue: setHistorySearch,
+    setViewMode,
+    viewMode,
+  } = useTranscriptHistoryPanelState({ defaultViewMode: "list" });
 
-  // History search state
-  const [historySearch, setHistorySearch] = useUrlQueryState("q", "", {
-    parse: (raw) => raw ?? "",
-    serialize: (value) => {
-      const trimmed = value.trim();
-      return trimmed ? trimmed : null;
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
     },
-    syncDelayMs: 250,
-  });
-  const [debouncedHistorySearch, setDebouncedHistorySearch] = useState("");
-
-  // Debounce history search
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedHistorySearch(historySearch), 300);
-    return () => clearTimeout(timer);
-  }, [historySearch]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
-  }, [viewMode]);
-
-  useEffect(() => () => {
-    if (copyResetTimerRef.current !== null) {
-      window.clearTimeout(copyResetTimerRef.current);
-    }
-  }, []);
+    [],
+  );
 
   const transcriptsQueryKey = useMemo(
     () => transcriptHistoryQueryKey("youtube", debouncedHistorySearch),
@@ -472,7 +489,10 @@ export default function Youtube() {
     });
   }, [searchResults, sortBy]);
 
-  const transcriptsQuery = useTranscriptHistoryQuery<TranscriptHistoryItem>({ type: "youtube", q: debouncedHistorySearch });
+  const transcriptsQuery = useTranscriptHistoryQuery<TranscriptHistoryItem>({
+    type: "youtube",
+    q: debouncedHistorySearch,
+  });
   const recentVideos = transcriptsQuery.items;
 
   useTranscriptAutoRefresh({
@@ -481,7 +501,9 @@ export default function Youtube() {
 
   // Helper to detect if input is a YouTube URL
   const isYouTubeUrl = (input: string): boolean => {
-    return /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtube\.com\/live\/)/i.test(input);
+    return /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/|youtube\.com\/live\/)/i.test(
+      input,
+    );
   };
 
   const runSearch = async () => {
@@ -542,19 +564,23 @@ export default function Youtube() {
     setStartingVideoId(requestKey);
 
     try {
-      const res = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          url: item.url,
-          title: item.title,
-          channelTitle: item.channelTitle,
-          thumbnailUrl: item.thumbnailUrl,
-          duration: item.duration,
-          videoId: item.videoId,
-        }),
-      }, 15_000);
+      const res = await fetchWithTimeout(
+        apiUrl("/api/youtube/transcribe"),
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            url: item.url,
+            title: item.title,
+            channelTitle: item.channelTitle,
+            thumbnailUrl: item.thumbnailUrl,
+            duration: item.duration,
+            videoId: item.videoId,
+          }),
+        },
+        15_000,
+      );
       if (!res.ok) {
         throw new Error(await responseErrorMessage(res));
       }
@@ -582,8 +608,7 @@ export default function Youtube() {
 
         queryClient.invalidateQueries({
           predicate: (query) =>
-            query.queryKey[0] === "/api/transcripts" &&
-            (query.queryKey[1] as { type?: string })?.type === "youtube",
+            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
         });
         // Stay out of the user's way if they intentionally switched tabs while
         // the async YouTube start request was still running.
@@ -608,170 +633,197 @@ export default function Youtube() {
     }
   };
 
-  const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); // Prevent card click navigation
-    if (deletingRef.current) return;
+  const deleteTranscript = useCallback(
+    async (e: React.MouseEvent, id: string) => {
+      e.stopPropagation(); // Prevent card click navigation
+      if (deletingRef.current) return;
 
-    deletingRef.current = id;
-    setDeletingId(id);
-    try {
-      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
-        method: "DELETE",
-        credentials: "include",
-      }, 15_000);
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.message || res.statusText);
+      deletingRef.current = id;
+      setDeletingId(id);
+      try {
+        const res = await fetchWithTimeout(
+          apiUrl(`/api/transcripts/${id}`),
+          {
+            method: "DELETE",
+            credentials: "include",
+          },
+          15_000,
+        );
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.message || res.statusText);
+        }
+        toast({
+          title: t("Deleted"),
+          description: t("Transcript removed successfully."),
+          duration: 2000,
+        });
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
+        });
+      } catch (e: any) {
+        toast({
+          title: t("Delete failed"),
+          description: t(String(e?.message || e)),
+          duration: 4000,
+        });
+      } finally {
+        deletingRef.current = null;
+        setDeletingId(null);
       }
-      toast({
-        title: t("Deleted"),
-        description: t("Transcript removed successfully."),
-        duration: 2000,
-      });
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "/api/transcripts" &&
-          (query.queryKey[1] as { type?: string })?.type === "youtube",
-      });
-    } catch (e: any) {
-      toast({
-        title: t("Delete failed"),
-        description: t(String(e?.message || e)),
-        duration: 4000,
-      });
-    } finally {
-      deletingRef.current = null;
-      setDeletingId(null);
-    }
-  }, [queryClient, t, toast]);
+    },
+    [queryClient, t, toast],
+  );
 
-  const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (copyingRef.current) return;
+  const copyTranscript = useCallback(
+    async (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      if (copyingRef.current) return;
 
-    copyingRef.current = id;
-    setCopyingId(id);
-    try {
-      // Fetch the full transcript content
-      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
-        credentials: "include",
-      }, 15_000);
-      if (!res.ok) {
-        throw new Error(res.statusText);
-      }
-      const data = (await res.json()) as TranscriptDetailResponse;
-      const content = data?.content || "";
-      if (!content) {
-        throw new Error(t("No transcript content available"));
-      }
-      await navigator.clipboard.writeText(content);
-      toast({
-        title: t("Copied"),
-        description: t("Transcript copied to clipboard."),
-        duration: 2000,
-      });
-      // Show check mark briefly
-      copyResetTimerRef.current = window.setTimeout(() => {
+      copyingRef.current = id;
+      setCopyingId(id);
+      try {
+        // Fetch the full transcript content
+        const res = await fetchWithTimeout(
+          apiUrl(`/api/transcripts/${id}`),
+          {
+            credentials: "include",
+          },
+          15_000,
+        );
+        if (!res.ok) {
+          throw new Error(res.statusText);
+        }
+        const data = (await res.json()) as TranscriptDetailResponse;
+        const content = data?.content || "";
+        if (!content) {
+          throw new Error(t("No transcript content available"));
+        }
+        await navigator.clipboard.writeText(content);
+        toast({
+          title: t("Copied"),
+          description: t("Transcript copied to clipboard."),
+          duration: 2000,
+        });
+        // Show check mark briefly
+        copyResetTimerRef.current = window.setTimeout(() => {
+          copyingRef.current = null;
+          copyResetTimerRef.current = null;
+          setCopyingId(null);
+        }, 1500);
+      } catch (e: any) {
+        toast({
+          title: t("Copy failed"),
+          description: t(String(e?.message || e)),
+          duration: 4000,
+        });
         copyingRef.current = null;
-        copyResetTimerRef.current = null;
         setCopyingId(null);
-      }, 1500);
-    } catch (e: any) {
-      toast({
-        title: t("Copy failed"),
-        description: t(String(e?.message || e)),
-        duration: 4000,
-      });
-      copyingRef.current = null;
-      setCopyingId(null);
-    }
-  }, [t, toast]);
-
-  const navigateToTranscript = useCallback((id: string) => {
-    setLocation(`/transcript/${id}`);
-  }, [setLocation]);
-
-  const refreshAfterSummaryRetry = useCallback((id: string) => {
-    queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
-    queryClient.invalidateQueries({
-      predicate: (query) =>
-        query.queryKey[0] === "/api/transcripts" &&
-        (query.queryKey[1] as { type?: string })?.type === "youtube",
-    });
-  }, [queryClient]);
-
-  const retryYoutubeTranscription = useCallback(async (event: React.MouseEvent, item: TranscriptHistoryItem) => {
-    event.stopPropagation();
-    if (retryingTranscriptRef.current) return;
-
-    const sourceUrl = String(item.sourceUrl || "").trim();
-    if (!sourceUrl) {
-      toast({
-        title: t("Retry unavailable"),
-        description: t("No source URL is available for this video."),
-        variant: "destructive",
-        duration: 5000,
-      });
-      return;
-    }
-
-    retryingTranscriptRef.current = item.id;
-    setRetryingTranscriptId(item.id);
-    try {
-      const response = await fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          url: sourceUrl,
-          title: item.title,
-          channelTitle: item.channel || item.channelTitle,
-          thumbnailUrl: item.thumbnailUrl,
-          duration: item.duration,
-        }),
-      }, 15_000);
-      if (!response.ok) {
-        throw new Error(await responseErrorMessage(response));
       }
+    },
+    [t, toast],
+  );
 
-      const retry = (await response.json()) as TranscriptHistoryItem;
-      if (!retry?.id) {
-        throw new Error(t("Retry started, but no transcript ID was returned."));
-      }
+  const navigateToTranscript = useCallback(
+    (id: string) => {
+      setLocation(`/transcript/${id}`);
+    },
+    [setLocation],
+  );
 
-      toast({
-        title: t("Retry started"),
-        description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),
-        duration: 3000,
-      });
+  const refreshAfterSummaryRetry = useCallback(
+    (id: string) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
       queryClient.invalidateQueries({
         predicate: (query) =>
-          query.queryKey[0] === "/api/transcripts" &&
-          (query.queryKey[1] as { type?: string })?.type === "youtube",
+          query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
       });
-    } catch (error) {
-      toast({
-        title: t("Retry failed"),
-        description: t(friendlyError(error, t("Scriber could not restart this transcription."))),
-        variant: "destructive",
-        duration: 5000,
-      });
-    } finally {
-      retryingTranscriptRef.current = null;
-      setRetryingTranscriptId(null);
-    }
-  }, [queryClient, t, toast]);
+    },
+    [queryClient],
+  );
+
+  const retryYoutubeTranscription = useCallback(
+    async (event: React.MouseEvent, item: TranscriptHistoryItem) => {
+      event.stopPropagation();
+      if (retryingTranscriptRef.current) return;
+
+      const sourceUrl = String(item.sourceUrl || "").trim();
+      if (!sourceUrl) {
+        toast({
+          title: t("Retry unavailable"),
+          description: t("No source URL is available for this video."),
+          variant: "destructive",
+          duration: 5000,
+        });
+        return;
+      }
+
+      retryingTranscriptRef.current = item.id;
+      setRetryingTranscriptId(item.id);
+      try {
+        const response = await fetchWithTimeout(
+          apiUrl("/api/youtube/transcribe"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              url: sourceUrl,
+              title: item.title,
+              channelTitle: item.channel || item.channelTitle,
+              thumbnailUrl: item.thumbnailUrl,
+              duration: item.duration,
+            }),
+          },
+          15_000,
+        );
+        if (!response.ok) {
+          throw new Error(await responseErrorMessage(response));
+        }
+
+        const retry = (await response.json()) as TranscriptHistoryItem;
+        if (!retry?.id) {
+          throw new Error(t("Retry started, but no transcript ID was returned."));
+        }
+
+        toast({
+          title: t("Retry started"),
+          description: t("A new transcription attempt for “{{title}}” has been queued.", { title: item.title }),
+          duration: 3000,
+        });
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
+        });
+      } catch (error) {
+        toast({
+          title: t("Retry failed"),
+          description: t(friendlyError(error, t("Scriber could not restart this transcription."))),
+          variant: "destructive",
+          duration: 5000,
+        });
+      } finally {
+        retryingTranscriptRef.current = null;
+        setRetryingTranscriptId(null);
+      }
+    },
+    [queryClient, t, toast],
+  );
 
   // Preload TranscriptDetail page and data on hover for instant navigation
-  const preloadTranscript = useCallback((id: string) => {
-    import("@/pages/TranscriptDetail");
-    queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
-  }, [queryClient]);
+  const preloadTranscript = useCallback(
+    (id: string) => {
+      import("@/pages/TranscriptDetail");
+      queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
+    },
+    [queryClient],
+  );
 
   return (
     <div className="app-page-shell transcription-page youtube-page px-4 py-5 md:px-6 md:py-6" data-page-shell="youtube">
       <PageIntro
-        eyebrow={t("Media capture · 03")}
+        eyebrow={t("Media capture")}
         title={t("YouTube transcription")}
         description={t("Paste a link or search YouTube, then turn the video into a searchable transcript.")}
         accentClassName="bg-red-500/70"
@@ -793,7 +845,9 @@ export default function Youtube() {
               <YoutubeIcon className="h-5 w-5 stroke-[1.65px]" aria-hidden="true" />
             </div>
             <div className="relative min-w-0 flex-1">
-              <label htmlFor="youtube-source-search" className="sr-only">{t("YouTube URL or search terms")}</label>
+              <label htmlFor="youtube-source-search" className="sr-only">
+                {t("YouTube URL or search terms")}
+              </label>
               <Input
                 id="youtube-source-search"
                 className="h-12 border-0 bg-transparent pr-10 text-[15px] shadow-none focus-visible:ring-0"
@@ -829,7 +883,7 @@ export default function Youtube() {
               <span className="hidden sm:inline">{isSearching ? t("Searching") : t("Find video")}</span>
             </Button>
           </form>
-          <div className="youtube-search-foot flex items-center justify-between gap-3 px-1 pt-3 text-[10.5px] text-muted-foreground">
+          <div className="youtube-search-foot flex items-center justify-between gap-3 px-1 pt-3 text-ui-micro text-muted-foreground">
             <span>{t("Paste one link, or search by title and channel")}</span>
             <span className="hidden font-mono tabular-nums sm:inline">{t("Enter")} ↵</span>
           </div>
@@ -844,7 +898,7 @@ export default function Youtube() {
               <div className="flex flex-wrap items-center gap-2.5">
                 <h2 className="font-heading text-[20px] font-semibold tracking-[-0.02em]">{t("Search results")}</h2>
                 {!isSearching && searchResults.length > 0 ? (
-                  <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground">
+                  <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground">
                     {formatNumber(searchResults.length)}
                   </span>
                 ) : null}
@@ -965,7 +1019,7 @@ export default function Youtube() {
                           <PlayCircle className="w-8 h-8 text-white opacity-80" />
                         </div>
                         {!!item.duration && (
-                          <div className="absolute bottom-1 right-1 bg-black/80 text-white text-[10px] px-1 rounded">
+                          <div className="absolute bottom-1 right-1 bg-black/80 text-white text-ui-micro px-1 rounded">
                             {item.duration}
                           </div>
                         )}
@@ -976,7 +1030,7 @@ export default function Youtube() {
                           <h3 className="line-clamp-2 pr-2 font-heading text-[15px] font-medium leading-[1.35] text-foreground">
                             {item.title || t("Untitled")}
                           </h3>
-                          <Badge variant="outline" className="text-[10px]">
+                          <Badge variant="outline" className="text-ui-micro">
                             {isStarting ? t("Starting…") : t("Transcribe")}
                           </Badge>
                         </div>
@@ -1026,49 +1080,48 @@ export default function Youtube() {
           onViewModeChange={setViewMode}
         />
 
-        <div className="w-full py-2">
-          {transcriptsQuery.isLoading ? (
-            <SkeletonList count={3} variant={viewMode} />
-          ) : transcriptsQuery.isError ? (
-            <QueryErrorState
-              title={t("Could not load recent videos")}
-              description={t("Please retry loading your YouTube transcript history.")}
-              onRetry={() => transcriptsQuery.refetch()}
-            />
-          ) : recentVideos.length === 0 ? (
-            debouncedHistorySearch ? (
-              <p className="text-center text-muted-foreground py-8">{t("No videos match “{{query}}”", { query: debouncedHistorySearch })}</p>
-            ) : (
-              <EmptyState type="youtube" />
-            )
-          ) : (
-            <VirtualTranscriptHistory
-              items={recentVideos}
-              viewMode={viewMode}
-              getItemKey={(item) => item.id}
-              hasMore={transcriptsQuery.hasNextPage}
-              isLoadingMore={transcriptsQuery.isFetchingNextPage}
-              onLoadMore={() => transcriptsQuery.fetchNextPage()}
-              renderItem={(item) => (
-                <YoutubeVideoCard
-                  item={item}
-                  viewMode={viewMode}
-                  isDeleting={deletingId === item.id}
-                  isCopying={copyingId === item.id}
-                  isRetryingTranscription={retryingTranscriptId === item.id}
-                  onDelete={deleteTranscript}
-                  onCopy={copyTranscript}
-                  onTranscriptionRetry={retryYoutubeTranscription}
-                  onSummaryRetryComplete={refreshAfterSummaryRetry}
-                  onNavigate={navigateToTranscript}
-                  onHover={preloadTranscript}
-                />
-              )}
-            />
-          )}
-        </div>
+        <TranscriptHistoryPanel
+          className="w-full py-2"
+          viewMode={viewMode}
+          isLoading={transcriptsQuery.isLoading}
+          isError={transcriptsQuery.isError}
+          isEmpty={recentVideos.length === 0}
+          searchTerm={debouncedHistorySearch}
+          errorTitle={t("Could not load recent videos")}
+          errorDescription={t("Please retry loading your YouTube transcript history.")}
+          onRetry={() => void transcriptsQuery.refetch()}
+          noMatchesState={
+            <p className="py-8 text-center text-muted-foreground">
+              {t("No videos match “{{query}}”", { query: debouncedHistorySearch })}
+            </p>
+          }
+          emptyState={<EmptyState type="youtube" />}
+        >
+          <VirtualTranscriptHistory
+            items={recentVideos}
+            viewMode={viewMode}
+            getItemKey={(item) => item.id}
+            hasMore={transcriptsQuery.hasNextPage}
+            isLoadingMore={transcriptsQuery.isFetchingNextPage}
+            onLoadMore={() => transcriptsQuery.fetchNextPage()}
+            renderItem={(item) => (
+              <YoutubeVideoCard
+                item={item}
+                viewMode={viewMode}
+                isDeleting={deletingId === item.id}
+                isCopying={copyingId === item.id}
+                isRetryingTranscription={retryingTranscriptId === item.id}
+                onDelete={deleteTranscript}
+                onCopy={copyTranscript}
+                onTranscriptionRetry={retryYoutubeTranscription}
+                onSummaryRetryComplete={refreshAfterSummaryRetry}
+                onNavigate={navigateToTranscript}
+                onHover={preloadTranscript}
+              />
+            )}
+          />
+        </TranscriptHistoryPanel>
       </div>
     </div>
   );
 }
-

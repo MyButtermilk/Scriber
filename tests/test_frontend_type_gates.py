@@ -1,11 +1,51 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+_SOURCE_TOKEN_PATTERN = re.compile(
+    r"""
+    "(?:\\.|[^"\\])*"
+    |'(?:\\.|[^'\\])*'
+    |`(?:\\.|[^`\\])*`
+    |[A-Za-z_$][A-Za-z0-9_$]*
+    |\d+(?:\.\d+)?
+    |===|!==|==|!=|=>|\?\?|\?\.|&&|\|\||<=|>=|\+\+|--|\+=|-=|\*=|/=|\*\*
+    |[^\s]
+    """,
+    re.VERBOSE,
+)
+
+
+def source_token_sequence_position(source: str, expected: str) -> int:
+    """Find an exact token sequence while ignoring formatting-only changes."""
+    expected_tokens = _SOURCE_TOKEN_PATTERN.findall(expected)
+    assert expected_tokens, "Expected source snippet must contain at least one token."
+
+    pattern_parts: list[str] = []
+    for index, token in enumerate(expected_tokens):
+        if index:
+            previous = expected_tokens[index - 1]
+            pattern_parts.append(r"(?:\s*,)?\s*" if token in {")", "]", "}"} and previous != "," else r"\s*")
+        escaped = re.escape(token)
+        if re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", token):
+            escaped = rf"(?<![A-Za-z0-9_$]){escaped}(?![A-Za-z0-9_$])"
+        elif re.fullmatch(r"\d+(?:\.\d+)?", token):
+            escaped = rf"(?<![A-Za-z0-9_$.]){escaped}(?![A-Za-z0-9_$.])"
+        pattern_parts.append(escaped)
+
+    match = re.search("".join(pattern_parts), source, flags=re.DOTALL)
+    assert match, f"Expected token sequence not found: {expected}"
+    return match.start()
+
+
+def assert_source_contains_tokens(source: str, expected: str) -> None:
+    source_token_sequence_position(source, expected)
 
 
 def test_legacy_websocket_hook_uses_typed_contract() -> None:
@@ -53,6 +93,21 @@ def test_app_initial_tauri_lookup_has_deadline_and_fallback() -> None:
     assert '"Tauri backend access"' in backend_source
     assert '"Tauri backend URL fallback"' in backend_source
     assert "backendAccessRetryAfterMs" in backend_source
+
+
+def test_all_primary_tabs_remain_eager_and_settings_is_not_preloaded_as_a_lazy_route() -> None:
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    preload_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "route-preload.ts"
+    ).read_text(encoding="utf-8")
+
+    for page in ("LiveMic", "Meetings", "Youtube", "FileTranscribe", "Settings"):
+        assert f'import {page} from "@/pages/{page}";' in app_source
+        assert f'lazy(() => import("@/pages/{page}"))' not in app_source
+
+    assert '"/settings"' not in preload_source
+    assert '"/debug"' in preload_source
+    assert '"/transcript"' in preload_source
 
 
 def test_main_webview_reports_only_bounded_long_task_timings() -> None:
@@ -401,7 +456,7 @@ def test_settings_microphones_use_shared_api_types() -> None:
     assert "devices: MicrophoneDevice[]" in websocket_source
     assert "const closeCurrentSocket = useCallback" in websocket_source
     assert "if (wsRef.current !== ws)" in websocket_source
-    assert "clearReconnectTimeout();\n        if (!enabled)" in websocket_source
+    assert_source_contains_tokens(websocket_source, "clearReconnectTimeout(); if (!enabled)")
     assert "import type { MicrophonesRefreshResponse }" in device_refresh_source
     assert "Promise<MicrophonesRefreshResponse | null>" in device_refresh_source
     assert "as { deviceId: string" not in source
@@ -428,7 +483,7 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
         'googleCloud: { href: "https://console.cloud.google.com/apis/credentials"',
     ]
     for link in expected_links:
-        assert link in source
+        assert_source_contains_tokens(source, link)
 
     assert "const API_KEY_HELP_LINKS = {" in source
     assert "type ApiKeyHelpKey = keyof typeof API_KEY_HELP_LINKS;" in source
@@ -464,8 +519,14 @@ def test_mobile_header_icon_buttons_keep_touch_targets() -> None:
         encoding="utf-8"
     )
 
-    assert 'className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}' in source
-    assert 'className="min-h-[44px] min-w-[44px]"\n              onClick={handleOpenCommandPalette}' in source
+    assert_source_contains_tokens(
+        source,
+        'className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}',
+    )
+    assert_source_contains_tokens(
+        source,
+        'className="min-h-[44px] min-w-[44px]" onClick={handleOpenCommandPalette}',
+    )
 
 
 def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
@@ -481,12 +542,14 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
 
     for route in [
         '{ href: "/", icon: Mic, label: t("Live Mic") }',
+        '{ href: "/meetings", icon: CalendarClock, label: t("Meetings") }',
         '{ href: "/youtube", icon: Youtube, label: t("YouTube") }',
         '{ href: "/file", icon: FolderOpen, label: t("File") }',
-        '{ href: "/debug", icon: Terminal, label: t("Console") }',
         '{ href: "/settings", icon: Settings, label: t("Settings") }',
     ]:
         assert route in layout_source
+    assert 'href="/debug"' in layout_source
+    assert "renderConsoleUtility" in layout_source
     assert (
         'const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));'
         in layout_source
@@ -497,8 +560,8 @@ def test_navigation_and_command_palette_use_bounded_internal_routes() -> None:
     assert "onClick={onNavigate}" in layout_source
     assert "{renderNav(() => setMobileNavOpen(false))}" in layout_source
 
-    assert 'fetchWithTimeout(apiUrl("/api/settings"), {' in palette_source
-    assert 'fetchWithTimeout(apiUrl("/api/transcripts?limit=50"), {' in palette_source
+    assert_source_contains_tokens(palette_source, 'fetchWithTimeout(apiUrl("/api/settings"), {')
+    assert_source_contains_tokens(palette_source, 'fetchWithTimeout(apiUrl("/api/transcripts?limit=50"), {')
     assert 'queryKey: ["/api/transcripts", { limit: 50 }],' in palette_source
     assert 'credentials: "include",' in palette_source
     assert "enabled: open" in palette_source
@@ -671,10 +734,14 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
 
     assert 'className="mt-3 max-w-[65ch] text-pretty text-[13px]' in component_source
     assert "sticky = true" in component_source
-    assert 'sticky ? "sticky top-0 z-20" : "relative z-0"' in component_source
+    assert 'data-page-intro="true"' in component_source
+    assert "rounded-[20px]" in component_source
+    assert 'sticky ? "sticky top-3 z-20" : "relative z-0"' in component_source
+    assert "-mx-4 -mt-5" not in component_source
     assert "bottomContent" in component_source
+    assert "text-ui-micro" in component_source
     assert 'title={t("Settings")}' in page_sources["Settings.tsx"]
-    assert 'eyebrow={t("Workspace controls · 06")}' in page_sources["Settings.tsx"]
+    assert 'eyebrow={t("Workspace controls")}' in page_sources["Settings.tsx"]
     assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
         'aria-label={t("Settings sections")}'
     )
@@ -685,19 +752,48 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         assert "sticky={false}" in page_sources[page]
 
 
-def test_primary_section_numbers_follow_navigation_order() -> None:
+def test_primary_section_eyebrows_are_descriptive_without_navigation_numbers() -> None:
     page_markers = {
-        "LiveMic.tsx": 'eyebrow={t("Voice capture · 01")}',
-        "Meetings.tsx": 'eyebrow={t("Meeting workspace · 02")}',
-        "Youtube.tsx": 'eyebrow={t("Media capture · 03")}',
-        "FileTranscribe.tsx": 'eyebrow={t("Media import · 04")}',
-        "DebugConsole.tsx": 't("System observability · 05")',
-        "Settings.tsx": 'eyebrow={t("Workspace controls · 06")}',
+        "LiveMic.tsx": 'eyebrow={t("Voice capture")}',
+        "Meetings.tsx": 'eyebrow={t("Meeting workspace")}',
+        "Youtube.tsx": 'eyebrow={t("Media capture")}',
+        "FileTranscribe.tsx": 'eyebrow={t("Media import")}',
+        "DebugConsole.tsx": 't("System observability")',
+        "Settings.tsx": 'eyebrow={t("Workspace controls")}',
     }
 
     for page, marker in page_markers.items():
         source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
         assert marker in source
+        assert re.search(r"[·•]\s*0[1-9]", source) is None
+
+
+def test_normal_app_ui_uses_the_shared_readable_micro_type_token() -> None:
+    source_root = REPO_ROOT / "Frontend" / "client" / "src"
+    stylesheet = (source_root / "index.css").read_text(encoding="utf-8")
+    excluded_components = {
+        "AppLayout.tsx",
+        "MicrophoneEnergyField.tsx",
+        "NativeRecordingOverlay.tsx",
+        "RecordingPopup.tsx",
+        "TranscriptDetail.tsx",
+        "TrayPanel.tsx",
+    }
+    undersized_utility = re.compile(r"text-\[(?:[0-9](?:\.[0-9]+)?|10(?:\.[0-9]+)?)px\]")
+
+    assert "--text-ui-micro: var(--font-size-ui-micro);" in stylesheet
+    assert "--font-size-ui-micro: 11px;" in stylesheet
+    for path in source_root.rglob("*.tsx"):
+        if path.name in excluded_components:
+            continue
+        assert undersized_utility.search(path.read_text(encoding="utf-8")) is None, path
+
+    debug_styles = stylesheet.split(".debug-console-page {", 1)[1].split(
+        ".settings-page .impact-echo-switch", 1
+    )[0]
+    assert "font-size: var(--font-size-ui-micro)" in debug_styles
+    assert re.search(r"font-size:\s*(?:[0-9]|10(?:\.[0-9]+)?)px", debug_styles) is None
+    assert re.search(r"font-size:\s*0\.(?:[0-6][0-9]*|7[0-2][0-9]*)rem", debug_styles) is None
 
 
 def test_settings_section_navigation_accounts_for_sticky_header() -> None:
@@ -711,6 +807,9 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
     assert 'document.querySelector<HTMLElement>(".settings-page .transcription-intro")' in settings_source
     assert "target.style.scrollMarginTop = `${stickyOffset}px`" in settings_source
     assert "event.preventDefault()" in settings_source
+    assert "new IntersectionObserver(" in settings_source
+    assert 'aria-current={active ? "location" : undefined}' in settings_source
+    assert "chooseActiveSettingsSection(visibleSections, current)" in settings_source
 
 
 def test_debug_console_intro_matches_primary_page_typography() -> None:
@@ -1068,7 +1167,7 @@ def test_virtual_history_releases_load_guard_for_void_and_failed_loaders() -> No
     assert "else {\n        loadInFlightRef.current = false;" in source
     assert "TRANSCRIPT_HISTORY_PAGE_SIZE = 100" in query_source
     assert "const { items, total } = useMemo(" in query_source
-    assert "}), [query.data]);" in query_source
+    assert_source_contains_tokens(query_source, "}), [query.data]);")
     assert "[gridColumns, items.length, rows.length, viewMode, virtualizer]" in source
 
 
@@ -1108,8 +1207,8 @@ def test_live_mic_interim_and_final_transcript_render_distinctly() -> None:
     assert "setInterimText" in source
     assert "text-foreground/90" in source
     assert "text-muted-foreground italic" in source
-    assert "{finalText ? ' ' : ''}{interimText}" in source
-    assert "(finalText || interimText)" in source
+    assert_source_contains_tokens(source, '{finalText ? " " : ""}{interimText}')
+    assert_source_contains_tokens(source, "finalText || interimText ? (")
 
 
 def test_live_mic_history_uses_title_when_legacy_preview_is_missing() -> None:
@@ -1223,9 +1322,9 @@ def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> No
     assert '{ credentials: "include", signal }' in visualizer_helper_source
 
     assert 'fetchWithTimeout(url, { credentials: "include" }, 30_000)' in youtube_source
-    assert 'fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {' in youtube_source
+    assert_source_contains_tokens(youtube_source, 'fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {')
     assert 'credentials: "include",' in youtube_source
-    assert 'fetchWithTimeout(apiUrl("/api/youtube/transcribe"), {' in detail_source
+    assert re.search(r'fetchWithTimeout\(\s*apiUrl\("/api/youtube/transcribe"\),\s*\{', detail_source)
     assert 'credentials: "include",' in detail_source
 
 
@@ -1327,6 +1426,7 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     transcript_detail_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(
         encoding="utf-8"
     )
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert tauri_config["app"]["windows"][0]["decorations"] is False
@@ -1348,7 +1448,9 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     assert "toggleMaximize" in titlebar_source
     assert "close" in titlebar_source
     assert "Scriber" not in titlebar_source
-    assert "<DesktopTitleBar />" in transcript_detail_source
+    assert "<DesktopTitleBar />" not in transcript_detail_source
+    assert '<Route path="/transcript/:id" component={TranscriptDetail} />' in app_source
+    assert "<AppLayout path={location}>" in app_source
     assert ".desktop-titlebar" in css
     assert "background: hsl(var(--sidebar));" in css
     assert "border-bottom: 1px solid hsl(var(--border) / 0.32);" not in css
@@ -1379,7 +1481,10 @@ def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
     assert "deferredDesktopThemeRef" in provider_source
     assert "const revealGeneration = revealGenerationRef.current + 1;" in provider_source
     assert "if (revealGenerationRef.current !== revealGeneration) return;" in provider_source
-    assert "deferredDesktopThemeRef.current = null;\n            setThemeRevealActive(false);" in provider_source
+    assert_source_contains_tokens(
+        provider_source,
+        "deferredDesktopThemeRef.current = null; setThemeRevealActive(false);",
+    )
     assert "setThemeRevealActive(true)" in provider_source
     assert "setThemeRevealActive(false)" in provider_source
     assert "void transition.finished.then(finishReveal, finishReveal)" in provider_source
@@ -1421,6 +1526,14 @@ def test_desktop_update_status_filters_same_version_updates() -> None:
 
 def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    presentation_source = (
+        REPO_ROOT
+        / "Frontend"
+        / "client"
+        / "src"
+        / "lib"
+        / "settings-presentation.ts"
+    ).read_text(encoding="utf-8")
 
     assert "function createPostProcessingModelOptions(localeTag: string, t: Translate)" in settings_source
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
@@ -1431,7 +1544,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert 'value: "cerebras/gemma-4-31b"' in settings_source
     assert "Gemma 4 31B Cerebras" in settings_source
     assert (
-        'return t("{{price}}€/M blended, ~{{tokens}} Token/s", { price: priceText, tokens: tokensPerSecond });'
+        'return t("{{price}}/M blended · ~{{tokens}} tokens/s", { price: priceText, tokens: tokensPerSecond });'
         in settings_source
     )
     assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768, localeTag, t)" in settings_source
@@ -1464,18 +1577,21 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "openCredentialDialog(requirement);" in settings_source
     assert "{option.detail}" in settings_source
     assert 'detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}' in settings_source
-    assert "Beantworte keine Fragen im Transkript." in settings_source
-    assert "Gliedere den Text in sinnvolle Absätze." in settings_source
-    assert "Entferne Füllwörter" in settings_source
-    assert "Sehr geehrter Herr Müller" in settings_source
-    assert "Sehr geehrte Damen und Herren" in settings_source
-    assert 'Nutze Aufzählungszeichen mit "- "' in settings_source
-    assert "mehrere Punkte, Aufgaben, Beispiele, Voraussetzungen oder Argumente" in settings_source
-    assert "zweitausend fünfhundert Euro -> 2.500 €" in settings_source
-    assert "Euro pro Quadratmeter -> €/m²" in settings_source
-    assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in settings_source
-    assert "Du bist Scribers präziser Live-Diktat-Editor." not in settings_source
-    assert "Aufgabe: Glätte das folgende Speech-to-Text-Transkript" not in settings_source
+    assert "Beantworte keine Fragen im Transkript." in presentation_source
+    assert "Gliedere den Text in sinnvolle Absätze." in presentation_source
+    assert "Entferne Füllwörter" in presentation_source
+    assert "Sehr geehrter Herr Müller" in presentation_source
+    assert "Sehr geehrte Damen und Herren" in presentation_source
+    assert 'Nutze Aufzählungszeichen mit "- "' in presentation_source
+    assert "mehrere Punkte, Aufgaben, Beispiele, Voraussetzungen oder Argumente" in presentation_source
+    assert "zweitausend fünfhundert Euro -> 2.500 €" in presentation_source
+    assert "Euro pro Quadratmeter -> €/m²" in presentation_source
+    assert "Kilowattstunden pro Quadratmeter und Jahr -> kWh/m²a" in presentation_source
+    assert "Polish the following speech-to-text transcript" in presentation_source
+    assert "Do not answer questions contained in the transcript." in presentation_source
+    assert "defaultPostProcessingPrompt(locale)" in settings_source
+    assert "Du bist Scribers präziser Live-Diktat-Editor." not in presentation_source
+    assert "Aufgabe: Glätte das folgende Speech-to-Text-Transkript" not in presentation_source
 
 
 def test_settings_model_choices_require_saved_api_keys() -> None:
@@ -1490,7 +1606,9 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert "onCredentialAction={() => openCredentialDialog(requirement)}" in settings_source
     assert "openCredentialDialog(requirement);" in settings_source
     assert "disabled={Boolean(disabledReason)}" in settings_source
-    assert "aria-disabled={disabled || undefined}" in settings_source
+    assert "disabled={disabled}" in settings_source
+    assert "<Key className=" in settings_source
+    assert 'title={t("Add or update the credential for this provider.")}' in settings_source
     assert "{option.detail}" in settings_source
     assert "{disabledReason ? (" in settings_source
     assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
@@ -1518,13 +1636,13 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert "const MODULATE_BATCH_USD_PER_AUDIO_HOUR = 0.03;" in settings_source
     assert "const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;" in settings_source
     assert "const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;" in settings_source
-    assert (
-        'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")'
-        in settings_source
+    assert_source_contains_tokens(
+        settings_source,
+        'hourlyOption("modulate-realtime", "Modulate.AI Multilingual Realtime", MODULATE_STREAMING_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_streaming", "modulate")',
     )
-    assert (
-        'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")'
-        in settings_source
+    assert_source_contains_tokens(
+        settings_source,
+        'hourlyOption("modulate-async", "Modulate.AI Multilingual Batch", MODULATE_BATCH_USD_PER_AUDIO_HOUR, MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT, "cloud_async", "modulate")',
     )
     assert 't("Model Name")' in settings_source
     assert '<strong className="font-mono font-semibold' in settings_source
@@ -1535,7 +1653,7 @@ def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     assert "apiKeys.modulate = modulateKey;" in settings_source
     assert 'setModulateKey(keys.modulate || "");' in settings_source
     assert '"Modulate.AI": hasValue(keys.modulate)' in settings_source
-    assert 'provider="Modulate.AI" icon="modulate"' in settings_source
+    assert_source_contains_tokens(settings_source, 'provider="Modulate.AI" icon="modulate"')
     assert "show={showModulateKey}" in settings_source
     assert "onShowChange={setShowModulateKey}" in settings_source
     assert 'helpKey="modulate"' in settings_source
@@ -1552,7 +1670,10 @@ def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
 
     assert "Save vocabulary" not in settings_source
     assert 'const savedCustomVocabularyRef = useRef("");' in settings_source
-    assert "const saveCustomVocabulary = useCallback((nextValue: string): Promise<void>" in settings_source
+    assert_source_contains_tokens(
+        settings_source,
+        "const saveCustomVocabulary = useCallback((nextValue: string): Promise<void>",
+    )
     assert "pendingCustomVocabularyRef" in settings_source
     assert "customVocabularySaveInFlightRef" in settings_source
     assert "while (pendingCustomVocabularyRef.current !== null)" in settings_source
@@ -1564,16 +1685,18 @@ def test_settings_custom_vocabulary_autosaves_without_manual_button() -> None:
 def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> None:
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
 
-    assert 'return t("{{price}}€/h with {{error}}% Error", { price: euroText, error: errorText });' in settings_source
+    assert 'return t("{{price}}/h · WER {{error}}%", { price: euroText, error: errorText });' in settings_source
     hourly_benchmark_source = settings_source[
         settings_source.index("function sttHourlyBenchmarkDetail") : settings_source.index(
             "function sttBenchmarkDetail"
         )
     ]
-    assert hourly_benchmark_source.count("maximumFractionDigits: 2,") == 2
-    assert 't("{{price}}€/h with model-dependent Error"' in settings_source
+    assert "formatEstimatedEuroFromUsd(usdPerHour, localeTag)" in hourly_benchmark_source
+    assert 't("{{price}}/h · model-dependent WER"' in settings_source
     assert "0,00 €/h" not in settings_source
     assert " % Error" not in settings_source
+    assert 't("WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.")' in settings_source
+    assert 't("Euro estimates use a fixed rate of {{rate}}. Provider prices may change."' in settings_source
     assert "{disabledReason || option.detail}" not in settings_source
     assert (
         'title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}' in settings_source
@@ -1586,11 +1709,14 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
     ]
     assert "cloud_segmented" not in provider_options_source
     assert "Cloud live / segmented" not in settings_source
-    assert (
-        'benchmarkOption("mistral-realtime", "Mistral Segmented", 6.00, 5.2, "cloud_async", "mistral")'
-        in provider_options_source
+    assert_source_contains_tokens(
+        provider_options_source,
+        'benchmarkOption("mistral-realtime", "Mistral Segmented", 6.0, 5.2, "cloud_async", "mistral")',
     )
-    assert 'benchmarkOption("groq", "Groq Segmented", 4.00, 3.7, "cloud_async", "groq")' in provider_options_source
+    assert_source_contains_tokens(
+        provider_options_source,
+        'benchmarkOption("groq", "Groq Segmented", 4.0, 3.7, "cloud_async", "groq")',
+    )
 
     streaming_order = [
         '"elevenlabs"',
@@ -1620,8 +1746,15 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"mistral-realtime"',
     ]
 
+    hourly_values = {'"modulate-realtime"', '"modulate-async"'}
     for ordered_values in (streaming_order, async_order):
-        positions = [provider_options_source.index(f"({value},") for value in ordered_values]
+        positions = [
+            source_token_sequence_position(
+                provider_options_source,
+                f'{"hourlyOption" if value in hourly_values else "benchmarkOption"}({value},',
+            )
+            for value in ordered_values
+        ]
         assert positions == sorted(positions)
 
 
@@ -1789,7 +1922,7 @@ def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() 
     base_shell = rule_body(".transcript-detail-shell {")
     base_toc = rule_body(".summary-toc {")
     intro = rule_body('.summary-document[data-summary-format="html"] > section:first-of-type > p:first-of-type {')
-    wide_layout_start = styles.index("@media (min-width: 1280px)")
+    wide_layout_start = styles.index("@media (min-width: 1440px)")
     wide_shell = rule_body(".transcript-detail-shell.has-summary-toc {", wide_layout_start)
     wide_meta = rule_body(
         ".transcript-detail-shell.has-summary-toc > :not(.transcript-summary-layout) {",
@@ -1805,15 +1938,15 @@ def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() 
     )
 
     assert "width: 100%;" in base_shell
-    assert "max-width: 960px;" in base_shell
+    assert "max-width: 1040px;" in base_shell
     assert "margin-inline: auto;" in base_shell
     assert "display: none;" in base_toc
     assert "max-width: 62ch;" in intro
-    assert "max-width: 1240px;" in wide_shell
+    assert "max-width: 1320px;" in wide_shell
     assert "width: calc(100% - 280px);" in wide_meta
-    assert "max-width: 960px;" in wide_meta
+    assert "max-width: 1040px;" in wide_meta
     assert "margin-left: 280px;" in wide_meta
-    assert "grid-template-columns: 240px minmax(0, 960px);" in wide_grid
+    assert "grid-template-columns: 240px minmax(0, 1040px);" in wide_grid
     assert "column-gap: 40px;" in wide_grid
     assert "minmax(0, 230px)" not in wide_grid
     assert "display: block;" in wide_toc
@@ -1842,6 +1975,9 @@ def test_responsive_ui_polish_contracts_are_preserved() -> None:
 
     assert '"transcript-detail-shell has-summary-toc space-y-6"' in transcript_detail
     assert '"transcript-detail-shell space-y-6"' in transcript_detail
+    assert 'data-transcript-detail-header="true"' in transcript_detail
+    assert "transcript-detail-header-shell" in transcript_detail
+    assert "transcript-detail-header-sticky" in transcript_detail
     assert 'transcript.type === "youtube"' in transcript_detail
     assert 'data-testid="youtube-source-link"' in transcript_detail
     assert 't("Open on YouTube")' in transcript_detail
@@ -2020,15 +2156,20 @@ def test_native_overlay_both_styles_reveal_stop_only_for_safe_hover_or_focus() -
 
 def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    runtime_state = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "runtime-message-state.ts"
+    ).read_text(encoding="utf-8")
     websocket_types = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
         encoding="utf-8"
     )
     api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
-    assert 'if (msg.type === "meeting_state")' in source
-    assert '["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]' in source
-    assert "mode: `meeting-${meetingState}`" in source
-    assert '(msg.type === "state" && msg.voiceEnrollmentActive)' in source
+    assert "isBusyForUpdatePrompt" in source
+    assert "trayRecordingStateFromMessage" in source
+    assert 'if (message.type === "meeting_state")' in runtime_state
+    assert '["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]' in runtime_state
+    assert "mode: `meeting-${meetingState}`" in runtime_state
+    assert '(message.type === "state" && message.voiceEnrollmentActive)' in runtime_state
     assert "voiceEnrollmentActive: boolean;" in websocket_types
     assert "export interface BackendStateResponse" in api_types
     assert "voiceEnrollmentActive: boolean;" in api_types
@@ -2111,7 +2252,7 @@ def test_meeting_audio_device_picker_refreshes_and_explains_inventory_fallbacks(
     assert "const audioDeviceInitialLoading = audioDevicesQuery.isPending;" in source
     assert "disabled={microphoneSelectDisabled}" in source
     assert "disabled={renderSelectDisabled}" in source
-    assert 'role="status" aria-live="polite"' in source
+    assert_source_contains_tokens(source, 'role="status" aria-live="polite"')
     assert "Looking for microphones and speakers…" in source
     assert "The device list could not be loaded." in source
     assert "Individual device selection is unavailable." in source
@@ -2196,18 +2337,18 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 'label={t("Meeting shortcut")}' in meeting_settings
     assert 'label={t("Keep meeting audio")}' in meeting_settings
     assert 'title={t("Voice Library")}' in meeting_settings
-    assert (
-        't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")'
-        in meeting_settings
+    assert_source_contains_tokens(
+        meeting_settings,
+        't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")',
     )
     assert 'label={t("Recognize familiar speakers")}' in meeting_settings
     assert 'aria-label={t("Recognize familiar speakers in future meetings")}' in meeting_settings
     assert 't("Add voice")' in meeting_settings
     assert '"/api/meetings/speaker-profiles/enroll"' in settings
     assert 't("Teach Scriber a voice")' in settings
-    assert (
-        't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")'
-        in settings
+    assert_source_contains_tokens(
+        settings,
+        't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")',
     )
     assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
     assert "sonioxRealtimeModel" in meeting_settings
@@ -2231,9 +2372,9 @@ def test_soniox_region_is_selected_only_in_api_key_dialog() -> None:
     assert 'label: t("US - Region (default)")' in settings
     assert 'label: t("EUR - Region (recommended for better latency)")' in settings
     assert 't("EU access must be enabled by Soniox first")' in settings
-    assert (
-        't("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project\'s API key above. The selected region and API key must match.")'
-        in settings
+    assert_source_contains_tokens(
+        settings,
+        't("Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project\'s API key above. The selected region and API key must match.")',
     )
     assert 't("Open Soniox API Console")' in settings
     assert "mailto:support@soniox.com" in settings
@@ -2257,9 +2398,9 @@ def test_meeting_transcription_modes_are_configured_only_in_settings() -> None:
     assert "meetingTranscriptionMode" in meeting_settings
     assert 't("Estimated total")' in meeting_settings
     assert 't("Why Scriber does not upload one-minute pieces")' in meeting_settings
-    assert (
-        't("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")'
-        in meeting_settings
+    assert_source_contains_tokens(
+        meeting_settings,
+        't("Smart Turn V3 improves where the live preview ends a thought. It does not change the final transcript or its price.")',
     )
 
 
@@ -2397,21 +2538,21 @@ def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events()
     assert "OUTLOOK_SYNC_REQUEST_TIMEOUT_MS = 70_000" in query_client
     assert "options.timeoutMs ?? DEFAULT_API_REQUEST_TIMEOUT_MS" in query_client
     assert 'action === "sync" ? { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS } : undefined' in mutation
-    assert "{ timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS }" in meetings
+    assert_source_contains_tokens(meetings, "{ timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS }")
 
 
 def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
     meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
 
-    assert (
-        't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")'
-        in meetings
+    assert_source_contains_tokens(
+        meetings,
+        't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")',
     )
     assert 't("Safety saves")' in meetings
     assert 't("Final transcript")' in meetings
-    assert (
-        't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")'
-        in meetings
+    assert_source_contains_tokens(
+        meetings,
+        't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")',
     )
     assert 't("Creating your meeting brief…")' in meetings
     assert 't("Added on this device · up to 60 min")' in meetings
@@ -2431,7 +2572,7 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
 
     assert "transcription-page meetings-page" in meetings
     assert "<PageIntro" in meetings
-    assert 'eyebrow={t("Meeting workspace · 02")}' in meetings
+    assert 'eyebrow={t("Meeting workspace")}' in meetings
     assert "app-page-shell" in meetings
     assert 'data-page-shell="meetings"' in meetings
     assert "max-w-[1440px]" not in meetings
@@ -2592,7 +2733,6 @@ def test_frontend_motion_uses_transitions_dev_refine_and_polish_contract() -> No
     dialog = (client_src / "components" / "ui" / "dialog.tsx").read_text(encoding="utf-8")
     sheet = (client_src / "components" / "ui" / "sheet.tsx").read_text(encoding="utf-8")
     select = (client_src / "components" / "ui" / "select.tsx").read_text(encoding="utf-8")
-    tooltip = (client_src / "components" / "ui" / "tooltip.tsx").read_text(encoding="utf-8")
     command = (client_src / "components" / "ui" / "command.tsx").read_text(encoding="utf-8")
 
     assert "data-[state=open]:duration-[var(--duration-fast)]" in dialog
@@ -2603,9 +2743,6 @@ def test_frontend_motion_uses_transitions_dev_refine_and_polish_contract() -> No
     assert "data-[state=closed]:duration-[var(--duration-medium)]" in sheet
     assert "data-[state=open]:zoom-in-[0.97]" in select
     assert "data-[state=closed]:zoom-out-[0.99]" in select
-    assert "delayDuration = 80" in tooltip
-    assert "zoom-in-[0.98]" in tooltip
-    assert "data-[state=closed]:duration-[50ms]" in tooltip
     assert "data-[state=open]:duration-0" in command
     assert "<DialogTitle" in command
     assert "<DialogDescription" in command
@@ -2624,8 +2761,7 @@ def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> Non
     live_mic = (client_src / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
     overlay = (client_src / "components" / "NativeRecordingOverlay.tsx").read_text(encoding="utf-8")
     energy_field = (client_src / "components" / "MicrophoneEnergyField.tsx").read_text(encoding="utf-8")
-    skeleton = (client_src / "components" / "ui" / "skeleton.tsx").read_text(encoding="utf-8")
-    spinner = (client_src / "components" / "ui" / "spinner.tsx").read_text(encoding="utf-8")
+    styles = (client_src / "index.css").read_text(encoding="utf-8")
     youtube = (client_src / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
     file_page = (client_src / "pages" / "FileTranscribe.tsx").read_text(encoding="utf-8")
 
@@ -2635,8 +2771,8 @@ def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> Non
     assert 'window.matchMedia("(prefers-reduced-motion: reduce)")' in energy_field
     assert "REDUCED_MOTION_PHASE" in energy_field
     assert "REDUCED_MOTION_FRAME_INTERVAL_MS" in energy_field
-    assert "motion-reduce:animate-none" in skeleton
-    assert "motion-reduce:animate-none" in spinner
+    assert ".neu-skeleton," in styles
+    assert "animation: none;" in styles
     assert "transcription-thumbnail" in youtube
     assert "duration-700" not in youtube
     assert 'className="file-upload-mark' in file_page

@@ -52,11 +52,13 @@ function measureTocPath(
     const element = itemElements.get(item.id);
     if (!element) return [];
     const rect = element.getBoundingClientRect();
-    return [{
-      id: item.id,
-      x: TOC_PATH_X_BY_LEVEL[item.level],
-      y: rect.top - listRect.top + rect.height / 2,
-    }];
+    return [
+      {
+        id: item.id,
+        x: TOC_PATH_X_BY_LEVEL[item.level],
+        y: rect.top - listRect.top + rect.height / 2,
+      },
+    ];
   });
   if (points.length === 0) return EMPTY_TOC_PATH;
 
@@ -104,11 +106,7 @@ export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumen
   }
 
   return (
-    <div
-      className="summary-document"
-      data-summary-format="html"
-      dangerouslySetInnerHTML={{ __html: prepared.html }}
-    />
+    <div className="summary-document" data-summary-format="html" dangerouslySetInnerHTML={{ __html: prepared.html }} />
   );
 }
 
@@ -148,41 +146,46 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
     setActiveId((passed.at(-1) || headings[0])?.id || "");
   }, [outline, scrollContainerRef]);
 
-  const releaseNavigationTarget = useCallback((expectedId: string) => {
-    if (navigationTargetRef.current !== expectedId) return;
-    navigationTargetRef.current = "";
-    navigationReleaseTimerRef.current = null;
+  const releaseNavigationTarget = useCallback(
+    (expectedId: string) => {
+      if (navigationTargetRef.current !== expectedId) return;
+      navigationTargetRef.current = "";
+      navigationReleaseTimerRef.current = null;
 
-    const root = scrollContainerRef.current;
-    const heading = document.getElementById(expectedId);
-    if (!root || !heading) {
-      resolveActiveHeading();
-      return;
-    }
-    const rootRect = root.getBoundingClientRect();
-    const headingRect = heading.getBoundingClientRect();
-    const targetIsVisible = headingRect.bottom >= rootRect.top + 24
-      && headingRect.top <= rootRect.bottom - 24;
-    if (!targetIsVisible) resolveActiveHeading();
-  }, [resolveActiveHeading, scrollContainerRef]);
+      const root = scrollContainerRef.current;
+      const heading = document.getElementById(expectedId);
+      if (!root || !heading) {
+        resolveActiveHeading();
+        return;
+      }
+      const rootRect = root.getBoundingClientRect();
+      const headingRect = heading.getBoundingClientRect();
+      const targetIsVisible = headingRect.bottom >= rootRect.top + 24 && headingRect.top <= rootRect.bottom - 24;
+      if (!targetIsVisible) resolveActiveHeading();
+    },
+    [resolveActiveHeading, scrollContainerRef],
+  );
 
-  const scheduleNavigationRelease = useCallback((delayMs: number) => {
-    const expectedId = navigationTargetRef.current;
-    if (!expectedId) return;
-    if (navigationReleaseTimerRef.current !== null) {
-      window.clearTimeout(navigationReleaseTimerRef.current);
-    }
-    navigationReleaseTimerRef.current = window.setTimeout(
-      () => releaseNavigationTarget(expectedId),
-      delayMs,
-    );
-  }, [releaseNavigationTarget]);
+  const scheduleNavigationRelease = useCallback(
+    (delayMs: number) => {
+      const expectedId = navigationTargetRef.current;
+      if (!expectedId) return;
+      if (navigationReleaseTimerRef.current !== null) {
+        window.clearTimeout(navigationReleaseTimerRef.current);
+      }
+      navigationReleaseTimerRef.current = window.setTimeout(() => releaseNavigationTarget(expectedId), delayMs);
+    },
+    [releaseNavigationTarget],
+  );
 
-  const holdNavigationTarget = useCallback((id: string) => {
-    navigationTargetRef.current = id;
-    setActiveId(id);
-    scheduleNavigationRelease(4_000);
-  }, [scheduleNavigationRelease]);
+  const holdNavigationTarget = useCallback(
+    (id: string) => {
+      navigationTargetRef.current = id;
+      setActiveId(id);
+      scheduleNavigationRelease(4_000);
+    },
+    [scheduleNavigationRelease],
+  );
 
   useEffect(() => {
     setActiveId(outline[0]?.id || "");
@@ -212,9 +215,7 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
     };
 
     connectObserver();
-    const resizeObserver = typeof ResizeObserver === "undefined"
-      ? null
-      : new ResizeObserver(connectObserver);
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(connectObserver);
     resizeObserver?.observe(root);
     return () => {
       resizeObserver?.disconnect();
@@ -247,11 +248,14 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
     };
   }, [outlineKey, outline, resolveActiveHeading, scheduleNavigationRelease, scrollContainerRef]);
 
-  useEffect(() => () => {
-    if (navigationReleaseTimerRef.current !== null) {
-      window.clearTimeout(navigationReleaseTimerRef.current);
-    }
-  }, []);
+  useEffect(
+    () => () => {
+      if (navigationReleaseTimerRef.current !== null) {
+        window.clearTimeout(navigationReleaseTimerRef.current);
+      }
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const list = listRef.current;
@@ -265,11 +269,13 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
         const nextGeometry = measureTocPath(outline, list, itemRefs.current);
-        setPathGeometry((current) => current.d === nextGeometry.d
-          && current.height === nextGeometry.height
-          && current.totalLength === nextGeometry.totalLength
-          ? current
-          : nextGeometry);
+        setPathGeometry((current) =>
+          current.d === nextGeometry.d &&
+          current.height === nextGeometry.height &&
+          current.totalLength === nextGeometry.totalLength
+            ? current
+            : nextGeometry,
+        );
       });
     };
 
@@ -319,21 +325,23 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
     return () => window.cancelAnimationFrame(frame);
   }, [holdNavigationTarget, outlineKey, outline]);
 
-  const handleNavigate = useCallback((event: MouseEvent<HTMLAnchorElement>, id: string) => {
-    event.preventDefault();
-    const heading = document.getElementById(id);
-    if (!heading) return;
-    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    holdNavigationTarget(id);
-    heading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
-    window.history.replaceState(window.history.state, "", `#${id}`);
-  }, [holdNavigationTarget]);
+  const handleNavigate = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>, id: string) => {
+      event.preventDefault();
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      holdNavigationTarget(id);
+      heading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      window.history.replaceState(window.history.state, "", `#${id}`);
+    },
+    [holdNavigationTarget],
+  );
 
   if (outline.length < 2) return null;
 
-  const activePathLength = pathGeometry.activeLengths[activeId]
-    ?? pathGeometry.activeLengths[outline[0]?.id || ""]
-    ?? 0;
+  const activePathLength =
+    pathGeometry.activeLengths[activeId] ?? pathGeometry.activeLengths[outline[0]?.id || ""] ?? 0;
 
   return (
     <nav ref={navRef} className="summary-toc" aria-label={title}>

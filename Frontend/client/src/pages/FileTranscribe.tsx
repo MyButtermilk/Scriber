@@ -11,15 +11,14 @@ import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useToast } from "@/hooks/use-toast";
 import { EmptyState } from "@/components/ui/empty-state";
-import { SkeletonList } from "@/components/ui/skeleton-card";
-import { QueryErrorState } from "@/components/ui/query-error-state";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
-import { useUrlQueryState } from "@/hooks/use-url-query-state";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
 import { CopyActionButton } from "@/components/ui/copy-action-button";
 import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
+import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
+import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
@@ -37,8 +36,8 @@ import type {
   TranscriptHistoryItem,
 } from "@/lib/api-types";
 import { formatNumberNow, translateNow, useI18n } from "@/i18n";
+import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
 
-const VIEW_MODE_STORAGE_KEY = "scriber:view-mode";
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024;
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"]);
 
@@ -52,10 +51,7 @@ function getFileExtension(fileName: string): string {
   return dotIndex >= 0 ? fileName.slice(dotIndex).toLowerCase() : "";
 }
 
-function inferServerProcessingText(
-  file: File,
-  compressionThresholdBytes: number,
-): FileUploadLocalizedText {
+function inferServerProcessingText(file: File, compressionThresholdBytes: number): FileUploadLocalizedText {
   const ext = getFileExtension(file.name);
   if (VIDEO_EXTENSIONS.has(ext)) {
     return { key: "Extracting audio from {{file}}…", values: { file: file.name } };
@@ -134,9 +130,7 @@ const FileCard = memo(function FileCard({
   onHover,
 }: FileCardProps) {
   const { formatDate, formatLegacyDate, formatNumber, t } = useI18n();
-  const deletingClasses = isDeleting
-    ? "pointer-events-none opacity-[0.55] scale-[0.985]"
-    : "opacity-100 scale-100";
+  const deletingClasses = isDeleting ? "pointer-events-none opacity-[0.55] scale-[0.985]" : "opacity-100 scale-100";
   const historyStatus = fileHistoryStatus(item);
   const dateLabel = item.createdAt
     ? formatDate(item.createdAt, { dateStyle: "medium", timeStyle: "short" })
@@ -153,15 +147,28 @@ const FileCard = memo(function FileCard({
           // List view
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex min-w-0 flex-1 items-center gap-4">
-              <div className={`file-history-icon flex h-10 w-10 items-center justify-center rounded-[12px] ${historyStatus === 'failed' || historyStatus === 'summary_failed'
-                ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : historyStatus === 'processing'
-                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
-                  : historyStatus === 'stopped'
-                  ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
-                  : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
-                }`}>
-                {historyStatus === 'failed' ? <XCircle className="w-5 h-5" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-5 h-5" /> : historyStatus === 'processing' ? <Loader2 className="w-5 h-5 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-5 h-5" /> : <FileAudio className="w-5 h-5" />}
+              <div
+                className={`file-history-icon flex h-10 w-10 items-center justify-center rounded-[12px] ${
+                  historyStatus === "failed" || historyStatus === "summary_failed"
+                    ? "bg-red-50 dark:bg-red-900/20 text-red-600"
+                    : historyStatus === "processing"
+                      ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
+                      : historyStatus === "stopped"
+                        ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
+                        : "bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600"
+                }`}
+              >
+                {historyStatus === "failed" ? (
+                  <XCircle className="w-5 h-5" />
+                ) : historyStatus === "summary_failed" ? (
+                  <AlertCircle className="w-5 h-5" />
+                ) : historyStatus === "processing" ? (
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                ) : historyStatus === "stopped" ? (
+                  <Square className="w-5 h-5" />
+                ) : (
+                  <FileAudio className="w-5 h-5" />
+                )}
               </div>
               <div className="min-w-0 flex-1">
                 <h3>
@@ -186,23 +193,30 @@ const FileCard = memo(function FileCard({
               </div>
             </div>
             <div className="flex flex-wrap items-center justify-end gap-2">
-              {historyStatus === 'processing' ? (
-                <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
+              {historyStatus === "processing" ? (
+                <Badge
+                  variant="outline"
+                  className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
+                >
                   <Loader2 className="w-3 h-3 animate-spin" />
                   {item.summaryStatus === "pending"
                     ? t("Summarizing…")
                     : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                 </Badge>
-              ) : historyStatus === 'failed' ? (
-                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">{t("Failed")}</Badge>
+              ) : historyStatus === "failed" ? (
+                <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-ui-micro">
+                  {t("Failed")}
+                </Badge>
               ) : historyStatus === "summary_failed" ? (
                 <TranscriptSummaryRetryButton
                   transcriptId={item.id}
                   transcriptTitle={item.title}
                   onComplete={onSummaryRetryComplete}
                 />
-              ) : historyStatus === 'stopped' ? (
-                <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">{t("Stopped")}</Badge>
+              ) : historyStatus === "stopped" ? (
+                <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro">
+                  {t("Stopped")}
+                </Badge>
               ) : (
                 <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
                   <CheckCircle2 className="w-3 h-3" />
@@ -231,34 +245,54 @@ const FileCard = memo(function FileCard({
           // Grid view
           <div className="flex flex-col h-full">
             <div className="flex items-start justify-between mb-3">
-              <div className={`file-history-icon flex h-12 w-12 items-center justify-center rounded-[13px] ${historyStatus === 'failed' || historyStatus === 'summary_failed'
-                ? 'bg-red-50 dark:bg-red-900/20 text-red-600'
-                : historyStatus === 'processing'
-                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600'
-                  : historyStatus === 'stopped'
-                  ? 'bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600'
-                  : 'bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600'
-                }`}>
-                {historyStatus === 'failed' ? <XCircle className="w-6 h-6" /> : historyStatus === 'summary_failed' ? <AlertCircle className="w-6 h-6" /> : historyStatus === 'processing' ? <Loader2 className="w-6 h-6 animate-spin" /> : historyStatus === 'stopped' ? <Square className="w-6 h-6" /> : <FileAudio className="w-6 h-6" />}
+              <div
+                className={`file-history-icon flex h-12 w-12 items-center justify-center rounded-[13px] ${
+                  historyStatus === "failed" || historyStatus === "summary_failed"
+                    ? "bg-red-50 dark:bg-red-900/20 text-red-600"
+                    : historyStatus === "processing"
+                      ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
+                      : historyStatus === "stopped"
+                        ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
+                        : "bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600"
+                }`}
+              >
+                {historyStatus === "failed" ? (
+                  <XCircle className="w-6 h-6" />
+                ) : historyStatus === "summary_failed" ? (
+                  <AlertCircle className="w-6 h-6" />
+                ) : historyStatus === "processing" ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : historyStatus === "stopped" ? (
+                  <Square className="w-6 h-6" />
+                ) : (
+                  <FileAudio className="w-6 h-6" />
+                )}
               </div>
               <div className="flex items-center gap-1">
-                {historyStatus === 'processing' ? (
-                  <Badge variant="outline" className="text-blue-600 border-blue-200 bg-blue-50 text-[10px] flex items-center gap-1">
+                {historyStatus === "processing" ? (
+                  <Badge
+                    variant="outline"
+                    className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
+                  >
                     <Loader2 className="w-3 h-3 animate-spin" />
                     {item.summaryStatus === "pending" ? t("Summarizing…") : null}
                   </Badge>
-                ) : historyStatus === 'failed' ? (
-                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-[10px]">{t("Failed")}</Badge>
+                ) : historyStatus === "failed" ? (
+                  <Badge variant="outline" className="text-red-600 border-red-200 bg-red-50 text-ui-micro">
+                    {t("Failed")}
+                  </Badge>
                 ) : historyStatus === "summary_failed" ? (
                   <TranscriptSummaryRetryButton
                     transcriptId={item.id}
                     transcriptTitle={item.title}
                     onComplete={onSummaryRetryComplete}
                   />
-                ) : historyStatus === 'stopped' ? (
-                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-[10px]">{t("Stopped")}</Badge>
+                ) : historyStatus === "stopped" ? (
+                  <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro">
+                    {t("Stopped")}
+                  </Badge>
                 ) : (
-                  <div className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-medium text-green-600 dark:bg-green-950/40 dark:text-green-300">
+                  <div className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-ui-micro font-medium text-green-600 dark:bg-green-950/40 dark:text-green-300">
                     <CheckCircle2 className="w-3 h-3" />
                     {t("Ready")}
                   </div>
@@ -319,11 +353,7 @@ export default function FileTranscribe() {
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
-  const uploadSnapshot = useSyncExternalStore(
-    subscribeFileUpload,
-    getFileUploadSnapshot,
-    getFileUploadSnapshot,
-  );
+  const uploadSnapshot = useSyncExternalStore(subscribeFileUpload, getFileUploadSnapshot, getFileUploadSnapshot);
   const isUploading = uploadSnapshot.status === "uploading" || uploadSnapshot.status === "server_processing";
   const uploadProgress = uploadSnapshot.progress;
   const uploadingFileName = uploadSnapshot.fileName;
@@ -333,59 +363,30 @@ export default function FileTranscribe() {
   const uploadTotalFiles = uploadSnapshot.totalFiles;
   const uploadFinishedFiles = uploadSnapshot.completedFiles + uploadSnapshot.failedFiles;
   const queryClient = useQueryClient();
-  const getInitialViewMode = () => {
-    if (typeof window === "undefined") return "list" as const;
-    const stored = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
-    if (stored === "list" || stored === "grid") return stored;
-    return "list" as const;
-  };
-  const initialViewMode = getInitialViewMode();
-  const [viewMode, setViewMode] = useUrlQueryState<"list" | "grid">("view", initialViewMode, {
-    parse: (raw) => (raw === "list" || raw === "grid" ? raw : initialViewMode),
-  });
+  const {
+    debouncedSearch,
+    searchValue: searchQuery,
+    setSearchValue: setSearchQuery,
+    setViewMode,
+    viewMode,
+  } = useTranscriptHistoryPanelState({ defaultViewMode: "list" });
+  const transcriptsQueryKey = useMemo(() => transcriptHistoryQueryKey("file", debouncedSearch), [debouncedSearch]);
 
-  // Search state
-  const [searchQuery, setSearchQuery] = useUrlQueryState("q", "", {
-    parse: (raw) => raw ?? "",
-    serialize: (value) => {
-      const trimmed = value.trim();
-      return trimmed ? trimmed : null;
+  useEffect(
+    () => () => {
+      if (copyResetTimerRef.current !== null) {
+        window.clearTimeout(copyResetTimerRef.current);
+      }
     },
-    syncDelayMs: 250,
-  });
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const transcriptsQueryKey = useMemo(
-    () => transcriptHistoryQueryKey("file", debouncedSearch),
-    [debouncedSearch],
+    [],
   );
-
-  // Debounce search
-  useEffect(() => {
-    const timer = setTimeout(() => setDebouncedSearch(searchQuery), 300);
-    return () => clearTimeout(timer);
-  }, [searchQuery]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
-  }, [viewMode]);
-
-  useEffect(() => () => {
-    if (copyResetTimerRef.current !== null) {
-      window.clearTimeout(copyResetTimerRef.current);
-    }
-  }, []);
 
   const transcriptsQuery = useTranscriptHistoryQuery<TranscriptHistoryItem>({ type: "file", q: debouncedSearch });
   const recentFromBackend = transcriptsQuery.items;
   const settingsQuery = useQuery<SettingsResponse>({
     queryKey: ["/api/settings"],
     queryFn: async ({ signal }) => {
-      const res = await fetchWithTimeout(
-        apiUrl("/api/settings"),
-        { credentials: "include", signal },
-        10_000,
-      );
+      const res = await fetchWithTimeout(apiUrl("/api/settings"), { credentials: "include", signal }, 10_000);
       if (!res.ok) throw new Error(t("Failed to load settings"));
       return (await res.json()) as SettingsResponse;
     },
@@ -407,7 +408,10 @@ export default function FileTranscribe() {
 
     const audioHint = fileUploadLimits.usesDirectProviderLimit
       ? t("{{provider}} accepts audio up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel })
-      : t("{{provider}} processes files in the app up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel });
+      : t("{{provider}} processes files in the app up to {{limit}}", {
+          provider: providerLabel,
+          limit: audioLimitLabel,
+        });
 
     return t("{{audioHint}} · video up to {{videoLimit}} · files over {{threshold}} are optimized automatically", {
       audioHint,
@@ -416,11 +420,12 @@ export default function FileTranscribe() {
     });
   }, [fileUploadLimits, t]);
   const maxUploadBytes = useMemo(
-    () => Math.max(
-      Number(fileUploadLimits?.rawAudioIngestMaxBytes) || 0,
-      Number(fileUploadLimits?.videoMaxBytes) || 0,
-      2 * 1024 * 1024 * 1024,
-    ),
+    () =>
+      Math.max(
+        Number(fileUploadLimits?.rawAudioIngestMaxBytes) || 0,
+        Number(fileUploadLimits?.videoMaxBytes) || 0,
+        2 * 1024 * 1024 * 1024,
+      ),
     [fileUploadLimits],
   );
 
@@ -428,175 +433,201 @@ export default function FileTranscribe() {
     queryKey: transcriptsQueryKey,
   });
 
-  const uploadFiles = useCallback(async (files: File[]) => {
-    const selectedFiles = files.filter(Boolean);
-    if (selectedFiles.length === 0) return;
-    try {
-      const result = await startFileUploadBatch(selectedFiles, {
-        getServerProcessingText: (file) => inferServerProcessingText(file, compressionThresholdBytes),
-      });
-
-      if (result.failures.length > 0) {
-        const firstFailure = result.failures[0];
-        toast({
-          title: result.responses.length > 0 ? translateNow("Some uploads failed") : translateNow("Upload failed"),
-          description:
-            result.responses.length > 0
-              ? translateNow("{{started}} started, {{failed}} failed. {{file}}: {{error}}", {
-                  started: formatNumberNow(result.responses.length),
-                  failed: formatNumberNow(result.failures.length),
-                  file: firstFailure.fileName,
-                  error: translateNow(firstFailure.error),
-                })
-              : translateNow("{{file}}: {{error}}", {
-                  file: firstFailure.fileName,
-                  error: translateNow(firstFailure.error),
-                }),
-          variant: "destructive",
-          duration: 7000,
+  const uploadFiles = useCallback(
+    async (files: File[]) => {
+      const selectedFiles = files.filter(Boolean);
+      if (selectedFiles.length === 0) return;
+      try {
+        const result = await startFileUploadBatch(selectedFiles, {
+          getServerProcessingText: (file) => inferServerProcessingText(file, compressionThresholdBytes),
         });
-      } else {
+
+        if (result.failures.length > 0) {
+          const firstFailure = result.failures[0];
+          toast({
+            title: result.responses.length > 0 ? translateNow("Some uploads failed") : translateNow("Upload failed"),
+            description:
+              result.responses.length > 0
+                ? translateNow("{{started}} started, {{failed}} failed. {{file}}: {{error}}", {
+                    started: formatNumberNow(result.responses.length),
+                    failed: formatNumberNow(result.failures.length),
+                    file: firstFailure.fileName,
+                    error: translateNow(firstFailure.error),
+                  })
+                : translateNow("{{file}}: {{error}}", {
+                    file: firstFailure.fileName,
+                    error: translateNow(firstFailure.error),
+                  }),
+            variant: "destructive",
+            duration: 7000,
+          });
+        } else {
+          toast({
+            title: selectedFiles.length === 1 ? translateNow("File uploaded") : translateNow("Files uploaded"),
+            description:
+              selectedFiles.length === 1
+                ? translateNow("Transcription started…")
+                : translateNow("{{count}} transcriptions started…", {
+                    count: formatNumberNow(result.responses.length),
+                  }),
+            duration: 3000,
+          });
+        }
+
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "file",
+        });
+
+        // Stay out of the user's way if they intentionally switched tabs while
+        // the long upload/extraction request was still running.
+        const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
+        if (selectedFiles.length === 1 && result.responses[0]?.id && currentPath === "/file") {
+          setLocation(`/transcript/${result.responses[0].id}`);
+        }
+      } catch (e: any) {
         toast({
-          title: selectedFiles.length === 1 ? translateNow("File uploaded") : translateNow("Files uploaded"),
-          description:
-            selectedFiles.length === 1
-              ? translateNow("Transcription started…")
-              : translateNow("{{count}} transcriptions started…", {
-                  count: formatNumberNow(result.responses.length),
-                }),
-          duration: 3000,
+          title: translateNow("Upload failed"),
+          description: translateNow(String(e?.message || e)),
+          duration: 5000,
         });
       }
+    },
+    [compressionThresholdBytes, location, queryClient, setLocation, toast],
+  );
 
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "/api/transcripts" &&
-          (query.queryKey[1] as { type?: string })?.type === "file",
-      });
+  const deleteTranscript = useCallback(
+    async (e: React.MouseEvent, id: string) => {
+      e.stopPropagation(); // Prevent card click navigation
+      if (deletingRef.current) return;
 
-      // Stay out of the user's way if they intentionally switched tabs while
-      // the long upload/extraction request was still running.
-      const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
-      if (selectedFiles.length === 1 && result.responses[0]?.id && currentPath === "/file") {
-        setLocation(`/transcript/${result.responses[0].id}`);
+      deletingRef.current = id;
+      setDeletingId(id);
+      try {
+        const res = await fetchWithTimeout(
+          apiUrl(`/api/transcripts/${id}`),
+          {
+            method: "DELETE",
+            credentials: "include",
+          },
+          15_000,
+        );
+        if (!res.ok) {
+          const errData = (await res.json().catch(() => ({}))) as ApiMessageResponse;
+          throw new Error(errData.message || res.statusText);
+        }
+        const deleted = (await res.json().catch(() => ({ success: true }))) as TranscriptDeleteResponse;
+        if (deleted.success === false) {
+          throw new Error(deleted.message || t("Delete failed"));
+        }
+        toast({
+          title: t("Deleted"),
+          description: t("Transcript removed successfully."),
+          duration: 2000,
+        });
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "file",
+        });
+      } catch (e: any) {
+        toast({
+          title: t("Delete failed"),
+          description: t(String(e?.message || e)),
+          duration: 4000,
+        });
+      } finally {
+        deletingRef.current = null;
+        setDeletingId(null);
       }
-    } catch (e: any) {
-      toast({
-        title: translateNow("Upload failed"),
-        description: translateNow(String(e?.message || e)),
-        duration: 5000,
-      });
-    }
-  }, [compressionThresholdBytes, location, queryClient, setLocation, toast]);
+    },
+    [queryClient, t, toast],
+  );
 
-  const deleteTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); // Prevent card click navigation
-    if (deletingRef.current) return;
+  const copyTranscript = useCallback(
+    async (e: React.MouseEvent, id: string) => {
+      e.stopPropagation();
+      if (copyingRef.current) return;
 
-    deletingRef.current = id;
-    setDeletingId(id);
-    try {
-      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
-        method: "DELETE",
-        credentials: "include",
-      }, 15_000);
-      if (!res.ok) {
-        const errData = (await res.json().catch(() => ({}))) as ApiMessageResponse;
-        throw new Error(errData.message || res.statusText);
-      }
-      const deleted = (await res.json().catch(() => ({ success: true }))) as TranscriptDeleteResponse;
-      if (deleted.success === false) {
-        throw new Error(deleted.message || t("Delete failed"));
-      }
-      toast({
-        title: t("Deleted"),
-        description: t("Transcript removed successfully."),
-        duration: 2000,
-      });
-      queryClient.invalidateQueries({
-        predicate: (query) =>
-          query.queryKey[0] === "/api/transcripts" &&
-          (query.queryKey[1] as { type?: string })?.type === "file",
-      });
-    } catch (e: any) {
-      toast({
-        title: t("Delete failed"),
-        description: t(String(e?.message || e)),
-        duration: 4000,
-      });
-    } finally {
-      deletingRef.current = null;
-      setDeletingId(null);
-    }
-  }, [queryClient, t, toast]);
-
-  const copyTranscript = useCallback(async (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    if (copyingRef.current) return;
-
-    copyingRef.current = id;
-    setCopyingId(id);
-    try {
-      // Fetch the full transcript content
-      const res = await fetchWithTimeout(apiUrl(`/api/transcripts/${id}`), {
-        credentials: "include",
-      }, 15_000);
-      if (!res.ok) {
-        throw new Error(res.statusText);
-      }
-      const data = (await res.json()) as TranscriptDetailResponse;
-      const content = data?.content || "";
-      if (!content) {
-        throw new Error(t("No transcript content available"));
-      }
-      await navigator.clipboard.writeText(content);
-      toast({
-        title: t("Copied"),
-        description: t("Transcript copied to clipboard."),
-        duration: 2000,
-      });
-      // Show check mark briefly
-      copyResetTimerRef.current = window.setTimeout(() => {
+      copyingRef.current = id;
+      setCopyingId(id);
+      try {
+        // Fetch the full transcript content
+        const res = await fetchWithTimeout(
+          apiUrl(`/api/transcripts/${id}`),
+          {
+            credentials: "include",
+          },
+          15_000,
+        );
+        if (!res.ok) {
+          throw new Error(res.statusText);
+        }
+        const data = (await res.json()) as TranscriptDetailResponse;
+        const content = data?.content || "";
+        if (!content) {
+          throw new Error(t("No transcript content available"));
+        }
+        await navigator.clipboard.writeText(content);
+        toast({
+          title: t("Copied"),
+          description: t("Transcript copied to clipboard."),
+          duration: 2000,
+        });
+        // Show check mark briefly
+        copyResetTimerRef.current = window.setTimeout(() => {
+          copyingRef.current = null;
+          copyResetTimerRef.current = null;
+          setCopyingId(null);
+        }, 1500);
+      } catch (e: any) {
+        toast({
+          title: t("Copy failed"),
+          description: t(String(e?.message || e)),
+          duration: 4000,
+        });
         copyingRef.current = null;
-        copyResetTimerRef.current = null;
         setCopyingId(null);
-      }, 1500);
-    } catch (e: any) {
-      toast({
-        title: t("Copy failed"),
-        description: t(String(e?.message || e)),
-        duration: 4000,
+      }
+    },
+    [t, toast],
+  );
+
+  const navigateToTranscript = useCallback(
+    (id: string) => {
+      setLocation(`/transcript/${id}`);
+    },
+    [setLocation],
+  );
+
+  const refreshAfterSummaryRetry = useCallback(
+    (id: string) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
+      queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "file",
       });
-      copyingRef.current = null;
-      setCopyingId(null);
-    }
-  }, [t, toast]);
-
-  const navigateToTranscript = useCallback((id: string) => {
-    setLocation(`/transcript/${id}`);
-  }, [setLocation]);
-
-  const refreshAfterSummaryRetry = useCallback((id: string) => {
-    queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id], exact: true });
-    queryClient.invalidateQueries({
-      predicate: (query) =>
-        query.queryKey[0] === "/api/transcripts" &&
-        (query.queryKey[1] as { type?: string })?.type === "file",
-    });
-  }, [queryClient]);
+    },
+    [queryClient],
+  );
 
   // Preload TranscriptDetail page and data on hover for instant navigation
-  const preloadTranscript = useCallback((id: string) => {
-    import("@/pages/TranscriptDetail");
-    queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
-  }, [queryClient]);
+  const preloadTranscript = useCallback(
+    (id: string) => {
+      import("@/pages/TranscriptDetail");
+      queryClient.prefetchQuery({ queryKey: ["/api/transcripts", id] });
+    },
+    [queryClient],
+  );
 
-  const onDrop = useCallback((acceptedFiles: File[]) => {
-    if (acceptedFiles.length > 0 && !isFileUploadActive()) {
-      setDropError(null);
-      uploadFiles(acceptedFiles);
-    }
-  }, [uploadFiles]);
+  const onDrop = useCallback(
+    (acceptedFiles: File[]) => {
+      if (acceptedFiles.length > 0 && !isFileUploadActive()) {
+        setDropError(null);
+        uploadFiles(acceptedFiles);
+      }
+    },
+    [uploadFiles],
+  );
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
@@ -609,9 +640,10 @@ export default function FileTranscribe() {
     disabled: isUploading,
     onDropRejected: (rejections) => {
       const first = rejections[0];
-      const reason = first?.errors?.[0]?.code === "file-too-large"
-        ? "This file is larger than the current 2 GB import limit."
-        : "Choose a supported audio or video file.";
+      const reason =
+        first?.errors?.[0]?.code === "file-too-large"
+          ? "This file is larger than the current 2 GB import limit."
+          : "Choose a supported audio or video file.";
       setDropError({ reason, fileName: first?.file?.name });
     },
   });
@@ -623,7 +655,7 @@ export default function FileTranscribe() {
   return (
     <div className="app-page-shell transcription-page file-page px-4 py-5 md:px-6 md:py-6" data-page-shell="file">
       <PageIntro
-        eyebrow={t("Media import · 04")}
+        eyebrow={t("Media import")}
         title={t("File transcription")}
         description={t("Drop in audio or video; Scriber prepares, transcribes, and organizes it.")}
         sticky={false}
@@ -638,99 +670,109 @@ export default function FileTranscribe() {
           "aria-busy": isUploading,
         })}
         className={`file-upload-shell mb-7 cursor-pointer group
-          ${isDragActive ? 'is-drag-active' : ''}
-          ${isUploading ? 'is-uploading' : ''}
+          ${isDragActive ? "is-drag-active" : ""}
+          ${isUploading ? "is-uploading" : ""}
         `}
       >
         <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-6 text-center md:p-8">
-        <input {...getInputProps()} />
-        <div className="file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full">
-          {isUploading ? (
-            <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          ) : (
-            <UploadCloud className={`h-8 w-8 stroke-[1.45px] ${isDragActive ? 'text-primary' : 'text-muted-foreground'}`} />
-          )}
-        </div>
-        <div className="space-y-1">
-          {isUploading ? (
-            <>
-              <p className="text-pretty font-heading text-[17px] font-semibold">
-                {uploadTotalFiles > 1
-                  ? `${t("File {{current}} of {{total}}: ", {
-                      current: formatNumber(uploadSnapshot.currentIndex + 1),
-                      total: formatNumber(uploadTotalFiles),
-                    })}${t(uploadStatusText || "Uploading {{file}}…", {
-                      file: uploadingFileName,
-                      ...uploadStatusValues,
-                    })}`
-                  : t(uploadStatusText || "Uploading {{file}}…", {
-                      file: uploadingFileName,
-                      ...uploadStatusValues,
-                    })}
-              </p>
-              <Progress value={uploadProgress} className="mx-auto mt-3 h-2 w-[min(18rem,70vw)]" />
-              {uploadTotalFiles > 1 && (
-                <p className="text-xs text-muted-foreground mt-1">
-                  {t("{{finished}} of {{total}} files prepared", {
-                    finished: formatNumber(uploadFinishedFiles),
-                    total: formatNumber(uploadTotalFiles),
-                  })}
+          <input {...getInputProps()} />
+          <div className="file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full">
+            {isUploading ? (
+              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+            ) : (
+              <UploadCloud
+                className={`h-8 w-8 stroke-[1.45px] ${isDragActive ? "text-primary" : "text-muted-foreground"}`}
+              />
+            )}
+          </div>
+          <div className="space-y-1">
+            {isUploading ? (
+              <>
+                <p className="text-pretty font-heading text-[17px] font-semibold">
+                  {uploadTotalFiles > 1
+                    ? `${t("File {{current}} of {{total}}: ", {
+                        current: formatNumber(uploadSnapshot.currentIndex + 1),
+                        total: formatNumber(uploadTotalFiles),
+                      })}${t(uploadStatusText || "Uploading {{file}}…", {
+                        file: uploadingFileName,
+                        ...uploadStatusValues,
+                      })}`
+                    : t(uploadStatusText || "Uploading {{file}}…", {
+                        file: uploadingFileName,
+                        ...uploadStatusValues,
+                      })}
                 </p>
-              )}
-            </>
-          ) : (
-            <>
-              <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">{t("Choose audio or video")}</p>
-              <p id="file-upload-formats" className="text-[12px] leading-5 text-muted-foreground">
-                {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
-              </p>
-              <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-[12px] font-semibold text-primary">
-                <UploadCloud className="h-4 w-4" aria-hidden="true" />
-                {t("Browse files")}
-              </span>
-              <p className="text-[11px] text-muted-foreground">{t("or drop them anywhere in this panel")}</p>
-            </>
-          )}
-        </div>
-        {dropError && !isUploading ? (
-          <div className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive" role="alert">
-            {dropError.fileName
-              ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
-              : t(dropError.reason)}
-          </div>
-        ) : null}
-        {isUploading && uploadQueueItems.length > 1 && (
-          <div className="w-full max-w-md space-y-2 text-left">
-            {uploadQueueItems.map((item) => (
-              <div key={item.id} className="flex items-center gap-3 text-xs">
-                <span
-                  className={`h-2 w-2 rounded-full shrink-0 ${
-                    item.status === "failed"
-                      ? "bg-red-500"
-                      : item.status === "completed"
-                      ? "bg-green-500"
-                      : item.status === "queued"
-                      ? "bg-muted-foreground/40"
-                      : "bg-primary"
-                  }`}
-                />
-                <span className="min-w-0 flex-1 truncate text-foreground">{item.fileName}</span>
-                <span className="text-muted-foreground tabular-nums">
-                  {item.status === "queued"
-                    ? t("Queued")
-                    : item.status === "failed"
-                      ? t("Failed")
-                      : formatNumber(item.progress / 100, { style: "percent", maximumFractionDigits: 0 })}
+                <Progress value={uploadProgress} className="mx-auto mt-3 h-2 w-[min(18rem,70vw)]" />
+                {uploadTotalFiles > 1 && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    {t("{{finished}} of {{total}} files prepared", {
+                      finished: formatNumber(uploadFinishedFiles),
+                      total: formatNumber(uploadTotalFiles),
+                    })}
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">
+                  {t("Choose audio or video")}
+                </p>
+                <p id="file-upload-formats" className="text-[12px] leading-5 text-muted-foreground">
+                  {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
+                </p>
+                <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-[12px] font-semibold text-primary">
+                  <UploadCloud className="h-4 w-4" aria-hidden="true" />
+                  {t("Browse files")}
                 </span>
-              </div>
-            ))}
+                <p className="text-[11px] text-muted-foreground">{t("or drop them anywhere in this panel")}</p>
+              </>
+            )}
           </div>
-        )}
-        {!isUploading && (
-          <p id="file-upload-limits" className="file-upload-formats mt-1 max-w-3xl text-pretty text-[10.5px] leading-5 text-muted-foreground">
-            {uploadHint}
-          </p>
-        )}
+          {dropError && !isUploading ? (
+            <div
+              className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive"
+              role="alert"
+            >
+              {dropError.fileName
+                ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
+                : t(dropError.reason)}
+            </div>
+          ) : null}
+          {isUploading && uploadQueueItems.length > 1 && (
+            <div className="w-full max-w-md space-y-2 text-left">
+              {uploadQueueItems.map((item) => (
+                <div key={item.id} className="flex items-center gap-3 text-xs">
+                  <span
+                    className={`h-2 w-2 rounded-full shrink-0 ${
+                      item.status === "failed"
+                        ? "bg-red-500"
+                        : item.status === "completed"
+                          ? "bg-green-500"
+                          : item.status === "queued"
+                            ? "bg-muted-foreground/40"
+                            : "bg-primary"
+                    }`}
+                  />
+                  <span className="min-w-0 flex-1 truncate text-foreground">{item.fileName}</span>
+                  <span className="text-muted-foreground tabular-nums">
+                    {item.status === "queued"
+                      ? t("Queued")
+                      : item.status === "failed"
+                        ? t("Failed")
+                        : formatNumber(item.progress / 100, { style: "percent", maximumFractionDigits: 0 })}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          {!isUploading && (
+            <p
+              id="file-upload-limits"
+              className="file-upload-formats mt-1 max-w-3xl text-pretty text-ui-micro leading-5 text-muted-foreground"
+            >
+              {uploadHint}
+            </p>
+          )}
         </div>
       </div>
 
@@ -740,12 +782,16 @@ export default function FileTranscribe() {
           <div className="flex flex-wrap items-end justify-between gap-2 px-1">
             <div>
               <div className="flex items-center gap-2.5">
-                <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">{t("Processing queue")}</h2>
-                <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-[10.5px] font-semibold tabular-nums text-muted-foreground">
+                <h2 id="file-processing-heading" className="font-heading text-[17px] font-semibold tracking-[-0.015em]">
+                  {t("Processing queue")}
+                </h2>
+                <span className="transcription-history-count inline-flex h-6 min-w-6 items-center justify-center rounded-[8px] px-2 font-mono text-ui-micro font-semibold tabular-nums text-muted-foreground">
                   {formatNumber(processingItems.length)}
                 </span>
               </div>
-              <p className="mt-1 text-[12px] text-muted-foreground">{t("You can leave this page while Scriber continues.")}</p>
+              <p className="mt-1 text-[12px] text-muted-foreground">
+                {t("You can leave this page while Scriber continues.")}
+              </p>
             </div>
           </div>
           {processingItems.map((item) => (
@@ -757,24 +803,38 @@ export default function FileTranscribe() {
                 <div className="flex-1 min-w-0">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="min-w-0 flex-1 truncate font-heading text-[14px] font-medium">{item.title}</span>
-                    <Badge variant="outline" className="flex shrink-0 items-center gap-1 border-primary/20 bg-primary/[0.06] text-[10px] text-primary">
+                    <Badge
+                      variant="outline"
+                      className="flex shrink-0 items-center gap-1 border-primary/20 bg-primary/[0.06] text-ui-micro text-primary"
+                    >
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                       {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                     </Badge>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{item.channel ? t(item.channel) : t("Preparing your transcript")}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {item.channel ? t(item.channel) : t("Preparing your transcript")}
+                  </p>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-9 justify-center gap-2 self-stretch text-muted-foreground hover:text-foreground sm:self-auto"
-                  type="button"
-                  aria-label={t("View transcript {{title}}", { title: item.title })}
-                  onClick={() => setLocation(`/transcript/${item.id}`)}
-                >
-                  {t("View")}
-                  <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-                </Button>
+                <div className="flex items-center gap-1.5 self-stretch sm:self-auto">
+                  <TranscriptStopButton
+                    transcriptId={item.id}
+                    compact
+                    onStop={() => {
+                      void queryClient.invalidateQueries({ queryKey: transcriptsQueryKey });
+                    }}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-9 justify-center gap-2 text-muted-foreground hover:text-foreground"
+                    type="button"
+                    aria-label={t("View transcript {{title}}", { title: item.title })}
+                    onClick={() => setLocation(`/transcript/${item.id}`)}
+                  >
+                    {t("View")}
+                    <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
+                </div>
               </div>
             </Card>
           ))}
@@ -796,21 +856,22 @@ export default function FileTranscribe() {
           viewMode={viewMode}
           onViewModeChange={setViewMode}
         />
-        {transcriptsQuery.isLoading ? (
-          <SkeletonList count={3} variant={viewMode} />
-        ) : transcriptsQuery.isError ? (
-          <QueryErrorState
-            title={t("Could not load file transcripts")}
-            description={t("Please retry loading your file history.")}
-            onRetry={() => transcriptsQuery.refetch()}
-          />
-        ) : completedItems.length === 0 && !transcriptsQuery.hasNextPage && !transcriptsQuery.isFetchingNextPage ? (
-          debouncedSearch ? (
-            <p className="text-center text-muted-foreground py-8">{t("No files match “{{query}}”", { query: debouncedSearch })}</p>
-          ) : (
-            <EmptyState type="file" />
-          )
-        ) : (
+        <TranscriptHistoryPanel
+          viewMode={viewMode}
+          isLoading={transcriptsQuery.isLoading}
+          isError={transcriptsQuery.isError}
+          isEmpty={completedItems.length === 0 && !transcriptsQuery.hasNextPage && !transcriptsQuery.isFetchingNextPage}
+          searchTerm={debouncedSearch}
+          errorTitle={t("Could not load file transcripts")}
+          errorDescription={t("Please retry loading your file history.")}
+          onRetry={() => void transcriptsQuery.refetch()}
+          noMatchesState={
+            <p className="py-8 text-center text-muted-foreground">
+              {t("No files match “{{query}}”", { query: debouncedSearch })}
+            </p>
+          }
+          emptyState={<EmptyState type="file" />}
+        >
           <VirtualTranscriptHistory
             items={completedItems}
             viewMode={viewMode}
@@ -832,9 +893,8 @@ export default function FileTranscribe() {
               />
             )}
           />
-        )}
+        </TranscriptHistoryPanel>
       </div>
     </div>
   );
 }
-

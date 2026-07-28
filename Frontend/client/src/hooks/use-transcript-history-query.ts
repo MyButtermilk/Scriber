@@ -39,11 +39,7 @@ export async function fetchTranscriptHistoryPage<TItem>({
   params.set("offset", String(offset));
   params.set("limit", String(pageSize));
 
-  const res = await fetchWithTimeout(
-    apiUrl(`/api/transcripts?${params}`),
-    { credentials: "include", signal },
-    10_000,
-  );
+  const res = await fetchWithTimeout(apiUrl(`/api/transcripts?${params}`), { credentials: "include", signal }, 10_000);
   if (!res.ok) {
     throw new Error(await responseErrorMessage(res));
   }
@@ -81,10 +77,13 @@ export function useTranscriptHistoryQuery<TItem>({
     placeholderData: (previous) => previous,
   });
 
-  const { items, total } = useMemo(() => ({
-    items: query.data?.pages.flatMap((page) => page.items) ?? [],
-    total: query.data?.pages[0]?.total ?? 0,
-  }), [query.data]);
+  const { items, total } = useMemo(
+    () => ({
+      items: query.data?.pages.flatMap((page) => page.items) ?? [],
+      total: query.data?.pages[0]?.total ?? 0,
+    }),
+    [query.data],
+  );
 
   return {
     ...query,

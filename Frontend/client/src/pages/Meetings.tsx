@@ -47,10 +47,7 @@ import {
   saveMeetingExport,
   type MeetingExportResult,
 } from "@/lib/meeting-export";
-import {
-  meetingEmailDraftPath,
-  type MeetingEmailDraftAttachment,
-} from "@/lib/meeting-export-utils";
+import { meetingEmailDraftPath, type MeetingEmailDraftAttachment } from "@/lib/meeting-export-utils";
 import {
   calculateMeetingElapsedMs,
   captureMeetingPlaybackRequest,
@@ -66,6 +63,7 @@ import { localizeMeetingErrorMessage } from "@/lib/meeting-error-message";
 import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n, type TranslationValues } from "@/i18n";
+import { SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
 import {
   applyMeetingActionItem,
   applyMeetingCheckpointEvent,
@@ -103,11 +101,15 @@ import {
   SpeakerAttendeeAssignments,
   type MeetingSpeakerAssignmentFocusRequest,
 } from "@/components/meeting/SpeakerAttendeeAssignments";
+import { saveWorkspaceMeetingNote, useMeetingNotesAutosave } from "@/components/meeting/useMeetingNotesAutosave";
 import {
-  saveWorkspaceMeetingNote,
-  useMeetingNotesAutosave,
-} from "@/components/meeting/useMeetingNotesAutosave";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -153,7 +155,12 @@ import type {
 
 const OPEN_STATES = new Set<MeetingState>(["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]);
 const TERMINAL_MEETING_STATES = new Set<MeetingState>([
-  "ready", "capture_failed", "finalization_failed", "analysis_failed", "interrupted", "discarded",
+  "ready",
+  "capture_failed",
+  "finalization_failed",
+  "analysis_failed",
+  "interrupted",
+  "discarded",
 ]);
 type MeetingWorkspaceView = "overview" | "transcript" | "decisions" | "actions" | "questions" | "notes" | "chat";
 type MeetingReprocessMode = "speaker_identity" | "full_transcript";
@@ -161,9 +168,13 @@ type Translate = (source: string, values?: TranslationValues) => string;
 type FormatDate = (value: Date | number | string, options?: Intl.DateTimeFormatOptions) => string;
 type FormatNumber = (value: number, options?: Intl.NumberFormatOptions) => string;
 const MEETING_WORKSPACE_VIEWS: ReadonlyArray<readonly [MeetingWorkspaceView, string]> = [
-  ["overview", "Overview"], ["transcript", "Transcript"], ["decisions", "Decisions"],
-  ["actions", "Action items"], ["questions", "Open questions"],
-  ["notes", "Notes"], ["chat", "Ask meeting"],
+  ["overview", "Overview"],
+  ["transcript", "Transcript"],
+  ["decisions", "Decisions"],
+  ["actions", "Action items"],
+  ["questions", "Open questions"],
+  ["notes", "Notes"],
+  ["chat", "Ask meeting"],
 ];
 
 function processingComponentLabel(component: MeetingProcessingComponent | undefined, t: Translate): string {
@@ -172,7 +183,11 @@ function processingComponentLabel(component: MeetingProcessingComponent | undefi
   return [component.engine, component.model].filter(Boolean).join(" · ") || t("Used");
 }
 
-function processingComponentModeLabel(component: MeetingProcessingComponent | undefined, t: Translate, formatNumber: FormatNumber): string {
+function processingComponentModeLabel(
+  component: MeetingProcessingComponent | undefined,
+  t: Translate,
+  formatNumber: FormatNumber,
+): string {
   if (!component) return "";
   const labels: Record<string, string> = {
     local_fallback: "Local fallback after transcription",
@@ -185,8 +200,10 @@ function processingComponentModeLabel(component: MeetingProcessingComponent | un
     no_live_session_evidence: "No completed live-session evidence was recorded",
   };
   const label = t(labels[component.mode] || component.mode.replaceAll("_", " "));
-  if (component.analysisCount) return `${label} · ${t(component.analysisCount === 1 ? "{{count}} analysis" : "{{count}} analyses", { count: formatNumber(component.analysisCount) })}`;
-  if (component.failureCount) return `${label} · ${t(component.failureCount === 1 ? "{{count}} failure" : "{{count}} failures", { count: formatNumber(component.failureCount) })}`;
+  if (component.analysisCount)
+    return `${label} · ${t(component.analysisCount === 1 ? "{{count}} analysis" : "{{count}} analyses", { count: formatNumber(component.analysisCount) })}`;
+  if (component.failureCount)
+    return `${label} · ${t(component.failureCount === 1 ? "{{count}} failure" : "{{count}} failures", { count: formatNumber(component.failureCount) })}`;
   return component.mode === "not_used" ? "" : label;
 }
 
@@ -252,7 +269,8 @@ function formatImportDuration(seconds: number | null, t: Translate): string {
 
 function formatImportBytes(bytes: number, formatNumber: FormatNumber): string {
   if (bytes < 1024 * 1024) return `${formatNumber(Math.max(1, Math.round(bytes / 1024)))} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
+  if (bytes < 1024 * 1024 * 1024)
+    return `${formatNumber(bytes / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`;
   return `${formatNumber(bytes / (1024 * 1024 * 1024), { minimumFractionDigits: 2, maximumFractionDigits: 2 })} GB`;
 }
 
@@ -299,24 +317,32 @@ function MeetingImportInbox({
     <section className="my-1 border-y border-border/55 py-2" aria-labelledby="meeting-import-inbox-title">
       <div className="flex items-center justify-between gap-2 px-2 py-1">
         <div className="min-w-0">
-          <p id="meeting-import-inbox-title" className="text-xs font-semibold">{t("Imports")}</p>
+          <p id="meeting-import-inbox-title" className="text-xs font-semibold">
+            {t("Imports")}
+          </p>
           <p className="text-[11px] text-muted-foreground">{t("Continues after you restart Scriber")}</p>
         </div>
         {!loading && !error && items.length > 0 && (
-          <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+          <span className="rounded-full bg-muted px-2 py-0.5 font-mono text-ui-micro tabular-nums text-muted-foreground">
             {formatNumber(items.length)}
           </span>
         )}
       </div>
       {loading ? (
-        <div className="mt-1 grid gap-1 px-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:grid-cols-1" aria-label={t("Loading meeting imports")}>
-          {[0, 1].map((item) => <div key={item} className="h-[76px] animate-pulse rounded-xl bg-muted/60" />)}
+        <div
+          className="mt-1 grid gap-1 px-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:grid-cols-1"
+          aria-label={t("Loading meeting imports")}
+        >
+          {[0, 1].map((item) => (
+            <div key={item} className="h-[76px] animate-pulse rounded-xl bg-muted/60" />
+          ))}
         </div>
       ) : error ? (
         <div className="mt-1 flex items-center justify-between gap-2 px-2 py-2 text-xs text-destructive" role="alert">
           <span>{t("Imports could not be loaded.")}</span>
           <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={onRefresh}>
-            <RefreshCw className="mr-1.5 h-3 w-3" />{t("Retry")}
+            <RefreshCw className="mr-1.5 h-3 w-3" />
+            {t("Retry")}
           </Button>
         </div>
       ) : items.length === 0 ? (
@@ -328,40 +354,90 @@ function MeetingImportInbox({
             const canceling = cancelingId === job.id;
             const retrying = Boolean(job.meetingId && retryingMeetingId === job.meetingId);
             return (
-              <article key={job.id} className="min-w-0 border-t border-border/45 px-2 py-2.5 first:border-t-0 min-[1100px]:first:border-t-0">
+              <article
+                key={job.id}
+                className="min-w-0 border-t border-border/45 px-2 py-2.5 first:border-t-0 min-[1100px]:first:border-t-0"
+              >
                 <div className="flex min-w-0 items-start gap-2">
-                  <span className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/65 ${importStateTone(job.state)}`} aria-hidden="true">
-                    {active ? <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" /> : job.state === "failed" ? <AlertTriangle className="h-3.5 w-3.5" /> : <FileUp className="h-3.5 w-3.5" />}
+                  <span
+                    className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-muted/65 ${importStateTone(job.state)}`}
+                    aria-hidden="true"
+                  >
+                    {active ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                    ) : job.state === "failed" ? (
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                    ) : (
+                      <FileUp className="h-3.5 w-3.5" />
+                    )}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-xs font-semibold text-foreground" title={job.title}>{job.title}</p>
-                    <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-[10px]">
+                    <p className="truncate text-xs font-semibold text-foreground" title={job.title}>
+                      {job.title}
+                    </p>
+                    <div className="mt-0.5 flex min-w-0 items-center justify-between gap-2 text-ui-micro">
                       <span className={`truncate font-medium ${importStateTone(job.state)}`}>{t(job.status)}</span>
                       <span className="shrink-0 text-muted-foreground">{formatMoment(job.updatedAt, formatDate)}</span>
                     </div>
                   </div>
                 </div>
                 {active && (
-                  <div className="mt-2 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(job.progress * 100)} aria-label={t("{{title}} import progress", { title: job.title })}>
-                    <div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${Math.max(0.02, Math.min(1, job.progress))})` }} />
+                  <div
+                    className="mt-2 h-1 overflow-hidden rounded-full bg-muted"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={Math.round(job.progress * 100)}
+                    aria-label={t("{{title}} import progress", { title: job.title })}
+                  >
+                    <div
+                      className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none"
+                      style={{ transform: `scaleX(${Math.max(0.02, Math.min(1, job.progress))})` }}
+                    />
                   </div>
                 )}
-                {job.errorMessage && <p className="mt-1.5 line-clamp-2 text-[10px] leading-4 text-muted-foreground">{t(job.errorMessage)}</p>}
+                {job.errorMessage && (
+                  <p className="mt-1.5 line-clamp-2 text-ui-micro leading-4 text-muted-foreground">
+                    {t(job.errorMessage)}
+                  </p>
+                )}
                 {(job.meetingId || job.canCancel) && (
                   <div className="mt-2 flex flex-wrap items-center gap-1">
                     {job.meetingId && (
-                      <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px] active:scale-[0.97]" onClick={() => onOpen(job.meetingId!)}>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                        onClick={() => onOpen(job.meetingId!)}
+                      >
                         {t("Open meeting")}
                       </Button>
                     )}
                     {job.canRetry && job.meetingId && (
-                      <Button type="button" size="sm" variant="outline" className="h-7 px-2 text-[11px] active:scale-[0.97]" disabled={retrying} onClick={() => onRetry(job.meetingId!)}>
-                        {retrying && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}{t("Retry")}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                        disabled={retrying}
+                        onClick={() => onRetry(job.meetingId!)}
+                      >
+                        {retrying && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {t("Retry")}
                       </Button>
                     )}
                     {job.canCancel && (
-                      <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px] text-muted-foreground hover:text-destructive active:scale-[0.97]" disabled={canceling} onClick={() => onCancel(job.id)}>
-                        {canceling && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}{t("Cancel")}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 px-2 text-[11px] text-muted-foreground hover:text-destructive active:scale-[0.97]"
+                        disabled={canceling}
+                        onClick={() => onCancel(job.id)}
+                      >
+                        {canceling && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {t("Cancel")}
                       </Button>
                     )}
                   </div>
@@ -379,11 +455,15 @@ function highlightTranscriptMatch(text: string, query: string) {
   const normalized = query.trim();
   if (!normalized) return text;
   const expression = new RegExp(`(${normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "ig");
-  return text.split(expression).map((part, index) => (
-    part.toLocaleLowerCase() === normalized.toLocaleLowerCase()
-      ? <mark key={`${part}-${index}`} className="rounded-sm bg-amber-200/80 px-0.5 text-inherit dark:bg-amber-400/30">{part}</mark>
-      : part
-  ));
+  return text.split(expression).map((part, index) =>
+    part.toLocaleLowerCase() === normalized.toLocaleLowerCase() ? (
+      <mark key={`${part}-${index}`} className="rounded-sm bg-amber-200/80 px-0.5 text-inherit dark:bg-amber-400/30">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
 }
 
 type DisplayMeetingSegment = MeetingSegment & { label: string };
@@ -464,122 +544,187 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
           if (!isLive || search.trim()) return;
           const element = event.currentTarget;
           const atLatest = element.scrollHeight - element.clientHeight - element.scrollTop <= 40;
-          setFollowLatest((current) => current === atLatest ? current : atLatest);
+          setFollowLatest((current) => (current === atLatest ? current : atLatest));
         }}
       >
         <div className="relative w-full" style={{ height: virtualizer.getTotalSize() }}>
-        {virtualizer.getVirtualItems().map((virtualRow) => {
-          const segment = segments[virtualRow.index];
-          if (!segment) return null;
-          return (
-            <div
-              key={segment.id}
-              data-index={virtualRow.index}
-              ref={virtualizer.measureElement}
-              className="absolute left-0 top-0 w-full pb-1"
-              style={{ transform: `translateY(${virtualRow.start}px)` }}
-            >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const segment = segments[virtualRow.index];
+            if (!segment) return null;
+            return (
               <div
-                className="group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl px-3 py-3 outline-none hover:bg-muted/50 focus-within:bg-muted/35 sm:grid-cols-[128px_minmax(0,1fr)]"
-                tabIndex={canEdit ? 0 : -1}
-                onKeyDown={(event) => {
-                  if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
-                    event.preventDefault();
-                    beginEdit(segment);
-                  }
-                }}
+                key={segment.id}
+                data-index={virtualRow.index}
+                ref={virtualizer.measureElement}
+                className="absolute left-0 top-0 w-full pb-1"
+                style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
-                <button
-                  type="button"
-                  onClick={() => onPlay(segment.startMs)}
-                  disabled={!hasPlayableAudio}
-                  className="self-start rounded-lg text-left text-[10px] tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
-                  title={hasPlayableAudio ? t("Play {{start}} to {{end}}", { start: formatOffset(segment.startMs), end: formatOffset(segment.endMs) }) : t("Saved audio is unavailable")}
-                  aria-label={t("Play transcript segment from {{start}} to {{end}}", { start: formatOffset(segment.startMs), end: formatOffset(segment.endMs) })}
+                <div
+                  className="group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl px-3 py-3 outline-none hover:bg-muted/50 focus-within:bg-muted/35 sm:grid-cols-[128px_minmax(0,1fr)]"
+                  tabIndex={canEdit ? 0 : -1}
+                  onKeyDown={(event) => {
+                    if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
+                      event.preventDefault();
+                      beginEdit(segment);
+                    }
+                  }}
                 >
-                  <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
-                    <span className="font-sans text-muted-foreground">{t("Start")}</span>
-                    <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
-                    <span className="font-sans text-muted-foreground">{t("End")}</span>
-                    <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
-                    <span className="font-sans text-muted-foreground">{t("Duration")}</span>
-                    <span className="text-right text-muted-foreground">{formatNumber(segment.durationMs / 1000, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} s</span>
-                  </span>
-                  {segment.alignmentQuality === "estimated" && (
-                    <span className="mt-1 block font-sans text-[9px] font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300" title={t("Exact word timing was not available, so this time was estimated.")}>
-                      {t("Estimated timing")}
+                  <button
+                    type="button"
+                    onClick={() => onPlay(segment.startMs)}
+                    disabled={!hasPlayableAudio}
+                    className="self-start rounded-lg text-left text-ui-micro tabular-nums outline-none enabled:active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-default"
+                    title={
+                      hasPlayableAudio
+                        ? t("Play {{start}} to {{end}}", {
+                            start: formatOffset(segment.startMs),
+                            end: formatOffset(segment.endMs),
+                          })
+                        : t("Saved audio is unavailable")
+                    }
+                    aria-label={t("Play transcript segment from {{start}} to {{end}}", {
+                      start: formatOffset(segment.startMs),
+                      end: formatOffset(segment.endMs),
+                    })}
+                  >
+                    <span className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 font-mono">
+                      <span className="font-sans text-muted-foreground">{t("Start")}</span>
+                      <span className="text-right font-medium text-primary">{formatOffset(segment.startMs)}</span>
+                      <span className="font-sans text-muted-foreground">{t("End")}</span>
+                      <span className="text-right font-medium text-primary">{formatOffset(segment.endMs)}</span>
+                      <span className="font-sans text-muted-foreground">{t("Duration")}</span>
+                      <span className="text-right text-muted-foreground">
+                        {formatNumber(segment.durationMs / 1000, {
+                          minimumFractionDigits: 1,
+                          maximumFractionDigits: 1,
+                        })}{" "}
+                        s
+                      </span>
                     </span>
-                  )}
-                </button>
-                <div className="min-w-0">
-                  <div className="flex min-w-0 items-center gap-2">
-                    {canAssignSpeakers && segment.speakerId ? (
-                      <button
-                        type="button"
-                        onClick={() => onAssignSpeaker(segment.speakerId!)}
-                        data-testid={`meeting-transcript-speaker-${segment.id}`}
-                        data-speaker-id={segment.speakerId}
-                        className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
-                        title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
-                        aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+                    {segment.alignmentQuality === "estimated" && (
+                      <span
+                        className="mt-1 block font-sans text-ui-micro font-medium uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                        title={t("Exact word timing was not available, so this time was estimated.")}
                       >
-                        <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
-                        <Pencil className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none" aria-hidden="true" />
-                      </button>
-                    ) : (
-                      <span className="truncate text-xs font-semibold text-muted-foreground">{highlightTranscriptMatch(segment.label, search)}</span>
+                        {t("Estimated timing")}
+                      </span>
                     )}
-                    {segment.editVersion > 0 && <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-[9px]">{t("Edited")}</Badge>}
-                  </div>
-                  {editingId === segment.id ? (
-                    <div className="mt-2 space-y-2">
-                      <Textarea
-                        value={draft}
-                        onChange={(event) => setDraft(event.target.value)}
-                        rows={3}
-                        autoFocus
-                        aria-label={t("Edit transcript for {{speaker}} at {{time}}", { speaker: segment.label, time: formatOffset(segment.startMs) })}
-                        className="text-sm leading-6"
-                        onKeyDown={(event) => {
-                          if (event.key === "Escape") cancelEdit();
-                          if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
-                            onSave(segment, draft.trim());
-                            cancelEdit();
-                          }
-                        }}
-                      />
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button type="button" size="sm" className="h-8 active:scale-[0.97]" disabled={!draft.trim() || savingSegmentId === segment.id} onClick={() => { onSave(segment, draft.trim()); cancelEdit(); }}>
-                          {savingSegmentId === segment.id && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}{t("Save correction")}
-                        </Button>
-                        <Button type="button" size="sm" variant="ghost" className="h-8 active:scale-[0.97]" onClick={cancelEdit}>
-                          <X className="mr-1.5 h-3.5 w-3.5" />{t("Cancel")}
-                        </Button>
-                        <span className="text-[10px] text-muted-foreground">{t("Ctrl+Enter saves · Esc cancels")}</span>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
-                      {canEdit && (
-                        <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-                          <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px] active:scale-[0.97]" onClick={() => beginEdit(segment)}>
-                            <Pencil className="mr-1.5 h-3 w-3" />{t("Edit")}
-                          </Button>
-                          {segment.editVersion > 0 && (
-                            <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px] active:scale-[0.97]" disabled={savingSegmentId === segment.id} onClick={() => onUndo(segment)}>
-                              <Undo2 className="mr-1.5 h-3 w-3" />{t("Undo latest")}
-                            </Button>
-                          )}
-                        </div>
+                  </button>
+                  <div className="min-w-0">
+                    <div className="flex min-w-0 items-center gap-2">
+                      {canAssignSpeakers && segment.speakerId ? (
+                        <button
+                          type="button"
+                          onClick={() => onAssignSpeaker(segment.speakerId!)}
+                          data-testid={`meeting-transcript-speaker-${segment.id}`}
+                          data-speaker-id={segment.speakerId}
+                          className="group/speaker inline-flex min-w-0 items-center gap-1 rounded-md px-1 py-0.5 text-xs font-semibold text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-2 focus-visible:ring-primary"
+                          title={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+                          aria-label={t("Assign a speaker name to {{speaker}}", { speaker: segment.label })}
+                        >
+                          <span className="truncate">{highlightTranscriptMatch(segment.label, search)}</span>
+                          <Pencil
+                            className="h-3 w-3 shrink-0 opacity-50 transition-opacity group-hover/speaker:opacity-80 group-focus-visible/speaker:opacity-80 motion-reduce:transition-none"
+                            aria-hidden="true"
+                          />
+                        </button>
+                      ) : (
+                        <span className="truncate text-xs font-semibold text-muted-foreground">
+                          {highlightTranscriptMatch(segment.label, search)}
+                        </span>
                       )}
-                    </>
-                  )}
+                      {segment.editVersion > 0 && (
+                        <Badge variant="outline" className="h-5 shrink-0 px-1.5 text-ui-micro">
+                          {t("Edited")}
+                        </Badge>
+                      )}
+                    </div>
+                    {editingId === segment.id ? (
+                      <div className="mt-2 space-y-2">
+                        <Textarea
+                          value={draft}
+                          onChange={(event) => setDraft(event.target.value)}
+                          rows={3}
+                          autoFocus
+                          aria-label={t("Edit transcript for {{speaker}} at {{time}}", {
+                            speaker: segment.label,
+                            time: formatOffset(segment.startMs),
+                          })}
+                          className="text-sm leading-6"
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") cancelEdit();
+                            if ((event.ctrlKey || event.metaKey) && event.key === "Enter" && draft.trim()) {
+                              onSave(segment, draft.trim());
+                              cancelEdit();
+                            }
+                          }}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8 active:scale-[0.97]"
+                            disabled={!draft.trim() || savingSegmentId === segment.id}
+                            onClick={() => {
+                              onSave(segment, draft.trim());
+                              cancelEdit();
+                            }}
+                          >
+                            {savingSegmentId === segment.id && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                            {t("Save correction")}
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            className="h-8 active:scale-[0.97]"
+                            onClick={cancelEdit}
+                          >
+                            <X className="mr-1.5 h-3.5 w-3.5" />
+                            {t("Cancel")}
+                          </Button>
+                          <span className="text-ui-micro text-muted-foreground">
+                            {t("Ctrl+Enter saves · Esc cancels")}
+                          </span>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <p className="mt-1 text-sm leading-6">{highlightTranscriptMatch(segment.text, search)}</p>
+                        {canEdit && (
+                          <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                              onClick={() => beginEdit(segment)}
+                            >
+                              <Pencil className="mr-1.5 h-3 w-3" />
+                              {t("Edit")}
+                            </Button>
+                            {segment.editVersion > 0 && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 px-2 text-[11px] active:scale-[0.97]"
+                                disabled={savingSegmentId === segment.id}
+                                onClick={() => onUndo(segment)}
+                              >
+                                <Undo2 className="mr-1.5 h-3 w-3" />
+                                {t("Undo latest")}
+                              </Button>
+                            )}
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
         </div>
       </div>
       {isLive && !search.trim() && !followLatest && (
@@ -592,7 +737,8 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
             scrollToLatest();
           }}
         >
-          <ChevronDown className="mr-1.5 h-3.5 w-3.5" />{t("Latest text")}
+          <ChevronDown className="mr-1.5 h-3.5 w-3.5" />
+          {t("Latest text")}
         </Button>
       )}
     </div>
@@ -602,17 +748,42 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
 function EvidenceList({ items, onCitation }: { items: unknown; onCitation?: (id: string) => void }) {
   const { t } = useI18n();
   if (!Array.isArray(items) || items.length === 0) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">{t("Nothing clear enough was found in the transcript.")}</p>;
+    return (
+      <p className="py-12 text-center text-sm text-muted-foreground">
+        {t("Nothing clear enough was found in the transcript.")}
+      </p>
+    );
   }
-  return <div className="divide-y divide-border/60">{items.map((raw, index) => {
-    const item = raw && typeof raw === "object" ? raw as Record<string, unknown> : { text: String(raw) };
-    const citations = Array.isArray(item.segmentIds) ? item.segmentIds.map(String) : [];
-    return <div key={`${String(item.text)}-${index}`} className="py-4">
-      <p className="text-sm leading-6">{String(item.text || item.summary || item.title || "")}</p>
-      {Boolean(item.owner || item.dueDate) && <p className="mt-1 text-xs text-muted-foreground">{item.owner ? t("Owner: {{owner}}", { owner: String(item.owner) }) : t("Unassigned")}{item.dueDate ? ` · ${t("Due {{date}}", { date: String(item.dueDate) })}` : ""}</p>}
-      {citations.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{citations.map((citation) => <button type="button" key={citation} onClick={() => onCitation?.(citation)}><Badge variant="outline" className="font-mono text-[10px] hover:border-primary">{citation.slice(0, 8)}</Badge></button>)}</div>}
-    </div>;
-  })}</div>;
+  return (
+    <div className="divide-y divide-border/60">
+      {items.map((raw, index) => {
+        const item = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : { text: String(raw) };
+        const citations = Array.isArray(item.segmentIds) ? item.segmentIds.map(String) : [];
+        return (
+          <div key={`${String(item.text)}-${index}`} className="py-4">
+            <p className="text-sm leading-6">{String(item.text || item.summary || item.title || "")}</p>
+            {Boolean(item.owner || item.dueDate) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                {item.owner ? t("Owner: {{owner}}", { owner: String(item.owner) }) : t("Unassigned")}
+                {item.dueDate ? ` · ${t("Due {{date}}", { date: String(item.dueDate) })}` : ""}
+              </p>
+            )}
+            {citations.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {citations.map((citation) => (
+                  <button type="button" key={citation} onClick={() => onCitation?.(citation)}>
+                    <Badge variant="outline" className="font-mono text-ui-micro hover:border-primary">
+                      {citation.slice(0, 8)}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function ActionItems({
@@ -622,38 +793,79 @@ function ActionItems({
   onCitation,
 }: {
   items: MeetingActionItem[];
-  onChange: (item: MeetingActionItem, changes: Partial<Pick<MeetingActionItem, "text" | "owner" | "dueDate" | "status">>) => void;
+  onChange: (
+    item: MeetingActionItem,
+    changes: Partial<Pick<MeetingActionItem, "text" | "owner" | "dueDate" | "status">>,
+  ) => void;
   saving: boolean;
   onCitation?: (id: string) => void;
 }) {
   const { t } = useI18n();
   if (items.length === 0) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">{t("No clear action items were found in the transcript.")}</p>;
+    return (
+      <p className="py-12 text-center text-sm text-muted-foreground">
+        {t("No clear action items were found in the transcript.")}
+      </p>
+    );
   }
-  return <div className="divide-y divide-border/60" aria-busy={saving}>{items.map((item) => (
-    <div key={`${item.id}:${item.updatedAt}`} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
-      <button
-        type="button"
-        disabled={saving}
-        onClick={() => onChange(item, { status: item.status === "done" ? "open" : "done" })}
-        className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
-        aria-label={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
-      >{item.status === "done" && <Check className="h-3.5 w-3.5" />}</button>
-      <div className="min-w-0 space-y-2">
-        <Input
-          disabled={saving}
-          defaultValue={item.text}
-          className={`h-auto border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:ring-0 ${item.status === "done" ? "text-muted-foreground line-through" : ""}`}
-          onBlur={(event) => event.target.value.trim() !== item.text && onChange(item, { text: event.target.value })}
-        />
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Input disabled={saving} defaultValue={item.owner ?? ""} placeholder={t("Owner")} className="h-8 text-xs" onBlur={(event) => event.target.value !== (item.owner ?? "") && onChange(item, { owner: event.target.value || null })} />
-          <Input disabled={saving} type="date" defaultValue={item.dueDate ?? ""} className="h-8 text-xs" onBlur={(event) => event.target.value !== (item.dueDate ?? "") && onChange(item, { dueDate: event.target.value || null })} />
+  return (
+    <div className="divide-y divide-border/60" aria-busy={saving}>
+      {items.map((item) => (
+        <div key={`${item.id}:${item.updatedAt}`} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
+          <button
+            type="button"
+            disabled={saving}
+            onClick={() => onChange(item, { status: item.status === "done" ? "open" : "done" })}
+            className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
+            aria-label={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
+          >
+            {item.status === "done" && <Check className="h-3.5 w-3.5" />}
+          </button>
+          <div className="min-w-0 space-y-2">
+            <Input
+              disabled={saving}
+              defaultValue={item.text}
+              className={`h-auto border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:ring-0 ${item.status === "done" ? "text-muted-foreground line-through" : ""}`}
+              onBlur={(event) =>
+                event.target.value.trim() !== item.text && onChange(item, { text: event.target.value })
+              }
+            />
+            <div className="grid gap-2 sm:grid-cols-2">
+              <Input
+                disabled={saving}
+                defaultValue={item.owner ?? ""}
+                placeholder={t("Owner")}
+                className="h-8 text-xs"
+                onBlur={(event) =>
+                  event.target.value !== (item.owner ?? "") && onChange(item, { owner: event.target.value || null })
+                }
+              />
+              <Input
+                disabled={saving}
+                type="date"
+                defaultValue={item.dueDate ?? ""}
+                className="h-8 text-xs"
+                onBlur={(event) =>
+                  event.target.value !== (item.dueDate ?? "") && onChange(item, { dueDate: event.target.value || null })
+                }
+              />
+            </div>
+            {item.segmentIds.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {item.segmentIds.map((citation) => (
+                  <button type="button" key={citation} onClick={() => onCitation?.(citation)}>
+                    <Badge variant="outline" className="font-mono text-ui-micro hover:border-primary">
+                      {citation.slice(0, 8)}
+                    </Badge>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-        {item.segmentIds.length > 0 && <div className="flex flex-wrap gap-1.5">{item.segmentIds.map((citation) => <button type="button" key={citation} onClick={() => onCitation?.(citation)}><Badge variant="outline" className="font-mono text-[10px] hover:border-primary">{citation.slice(0, 8)}</Badge></button>)}</div>}
-      </div>
+      ))}
     </div>
-  ))}</div>;
+  );
 }
 
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -697,21 +909,25 @@ const MeetingElapsedTime = memo(function MeetingElapsedTime({
     paused ? undefined : recordingTimelineOffsetMs,
     paused ? undefined : recordingTimelineStartedAtUtc,
   );
-  const providerRemainingMs = finalProviderMaxDurationSeconds == null
-    ? null
-    : finalProviderMaxDurationSeconds * 1_000 - elapsedMs;
+  const providerRemainingMs =
+    finalProviderMaxDurationSeconds == null ? null : finalProviderMaxDurationSeconds * 1_000 - elapsedMs;
   const showProviderLimit = providerRemainingMs != null && providerRemainingMs <= 30 * 60 * 1_000;
   return (
-    <div className="order-first text-left sm:order-none sm:text-center" aria-label={t("Meeting elapsed time {{time}}", { time: formatOffset(elapsedMs) })}>
+    <div
+      className="order-first text-left sm:order-none sm:text-center"
+      aria-label={t("Meeting elapsed time {{time}}", { time: formatOffset(elapsedMs) })}
+    >
       <p className="font-mono text-2xl font-semibold tabular-nums tracking-tight">{formatOffset(elapsedMs)}</p>
-      <p className="mt-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-primary">
+      <p className="mt-0.5 text-ui-micro font-semibold uppercase tracking-[0.14em] text-primary">
         {paused ? t("Recording paused") : t("Recording")}
       </p>
-      {showProviderLimit && <p className="mt-1 text-[10px] font-semibold text-amber-700 dark:text-amber-300" role="status">
-        {providerRemainingMs > 0
-          ? t("Final transcript time remaining: {{time}}", { time: formatOffset(providerRemainingMs) })
-          : t("This transcription option has reached its time limit")}
-      </p>}
+      {showProviderLimit && (
+        <p className="mt-1 text-ui-micro font-semibold text-amber-700 dark:text-amber-300" role="status">
+          {providerRemainingMs > 0
+            ? t("Final transcript time remaining: {{time}}", { time: formatOffset(providerRemainingMs) })
+            : t("This transcription option has reached its time limit")}
+        </p>
+      )}
     </div>
   );
 });
@@ -778,16 +994,22 @@ const MeetingLevelMeter = memo(function MeetingLevelMeter({
   }, [levels, paused, source]);
   return (
     <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border/55 bg-background/35 px-3 py-2">
-      {source === "microphone"
-        ? <Mic2 className="h-4 w-4 shrink-0 text-primary" />
-        : <Headphones className="h-4 w-4 shrink-0 text-primary" />}
+      {source === "microphone" ? (
+        <Mic2 className="h-4 w-4 shrink-0 text-primary" />
+      ) : (
+        <Headphones className="h-4 w-4 shrink-0 text-primary" />
+      )}
       <div className="min-w-0 flex-1">
         <div className="mb-1 flex items-center justify-between text-[11px]">
           <span className="font-medium">{source === "microphone" ? t("Microphone") : t("System audio")}</span>
           <span className="text-emerald-600 dark:text-emerald-300">{paused ? t("Paused") : t("Healthy")}</span>
         </div>
         <div className="h-1 overflow-hidden rounded-full bg-muted" aria-hidden="true">
-          <div ref={barRef} className="h-full origin-left rounded-full bg-primary motion-reduce:transition-none" style={{ transform: "scaleX(0.02)" }} />
+          <div
+            ref={barRef}
+            className="h-full origin-left rounded-full bg-primary motion-reduce:transition-none"
+            style={{ transform: "scaleX(0.02)" }}
+          />
         </div>
       </div>
     </div>
@@ -892,7 +1114,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const savedVoicePreviewRef = useRef<HTMLAudioElement | null>(null);
   const savedVoicePreviewProfileIdRef = useRef("");
   const [playbackError, setPlaybackError] = useState("");
-  const [speakerAssignmentRequest, setSpeakerAssignmentRequest] = useState<MeetingSpeakerAssignmentFocusRequest | null>(null);
+  const [speakerAssignmentRequest, setSpeakerAssignmentRequest] = useState<MeetingSpeakerAssignmentFocusRequest | null>(
+    null,
+  );
   const [meetingPendingDelete, setMeetingPendingDelete] = useState<MeetingSummary | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -925,7 +1149,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     payload: { event?: string; meeting?: { title?: string }; segments?: unknown[]; notes?: unknown[] };
   } | null>(null);
   const [meetingProgress, setMeetingProgress] = useState<MeetingProcessingProgress | null>(null);
-  const [liveStatuses, setLiveStatuses] = useState<Record<"microphone" | "system", { status: "reconnecting" | "recovered" | "degraded"; reconnectCount: number } | null>>({ microphone: null, system: null });
+  const [liveStatuses, setLiveStatuses] = useState<
+    Record<
+      "microphone" | "system",
+      { status: "reconnecting" | "recovered" | "degraded"; reconnectCount: number } | null
+    >
+  >({ microphone: null, system: null });
   const meetingWsHasConnectedRef = useRef(false);
   const meetingWsWasConnectedRef = useRef(false);
 
@@ -940,9 +1169,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     initialPageParam: 0,
     getNextPageParam: (lastPage) => {
       const nextOffset = lastPage.offset + lastPage.items.length;
-      return nextOffset < lastPage.total && nextOffset > lastPage.offset
-        ? nextOffset
-        : undefined;
+      return nextOffset < lastPage.total && nextOffset > lastPage.offset ? nextOffset : undefined;
     },
     staleTime: 10_000,
   });
@@ -972,12 +1199,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   useEffect(() => {
     const inventory = audioDevicesQuery.data;
     if (!inventory?.available) return;
-    setMicrophoneEndpointHash((current) => (
-      current && !inventory.capture.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current
-    ));
-    setRenderEndpointHash((current) => (
-      current && !inventory.render.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current
-    ));
+    setMicrophoneEndpointHash((current) =>
+      current && !inventory.capture.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current,
+    );
+    setRenderEndpointHash((current) =>
+      current && !inventory.render.some((endpoint) => endpoint.endpointIdHash === current) ? "" : current,
+    );
   }, [audioDevicesQuery.data]);
   const detectionQuery = useQuery<MeetingDetectionResponse>({
     queryKey: ["/api/meetings/detection"],
@@ -991,23 +1218,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     queryFn: ({ signal }) => fetchJson("/api/calendar/outlook/status", signal),
     staleTime: 15_000,
     enabled: newMeetingSetupEnabled,
-    refetchInterval: (query) => (
-      query.state.data?.authorizationPending
-        || (
-          query.state.data?.connected
-          && !query.state.data.lastSyncAt
-          && !query.state.data.lastError
-        )
+    refetchInterval: (query) =>
+      query.state.data?.authorizationPending ||
+      (query.state.data?.connected && !query.state.data.lastSyncAt && !query.state.data.lastError)
         ? 2_000
-        : 30_000
-    ),
+        : 30_000,
   });
   const outlookCalendarNow = new Date();
   const outlookCalendarDate = localCalendarDate(outlookCalendarNow);
   const outlookTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const outlookCalendarWindow = localCalendarDayWindow(outlookCalendarNow);
   const outlookEventsQuery = useQuery<OutlookCalendarEventsResponse>({
-    queryKey: ["/api/calendar/outlook/events", outlookCalendarDate, outlookTimeZone, outlookQuery.data?.lastSyncAt ?? ""],
+    queryKey: [
+      "/api/calendar/outlook/events",
+      outlookCalendarDate,
+      outlookTimeZone,
+      outlookQuery.data?.lastSyncAt ?? "",
+    ],
     queryFn: ({ signal }) => {
       const query = new URLSearchParams({
         date: outlookCalendarDate,
@@ -1017,17 +1244,19 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       });
       return fetchJson(`/api/calendar/outlook/events?${query.toString()}`, signal);
     },
-    enabled: Boolean(newMeetingSetupEnabled && outlookQuery.data?.connected && !outlookQuery.data.authorizationPending && outlookQuery.data.lastSyncAt),
+    enabled: Boolean(
+      newMeetingSetupEnabled &&
+      outlookQuery.data?.connected &&
+      !outlookQuery.data.authorizationPending &&
+      outlookQuery.data.lastSyncAt,
+    ),
     staleTime: 15_000,
   });
   const outlookSyncMutation = useMutation({
     mutationFn: async () => {
-      const response = await apiRequest(
-        "POST",
-        "/api/calendar/outlook/sync",
-        undefined,
-        { timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS },
-      );
+      const response = await apiRequest("POST", "/api/calendar/outlook/sync", undefined, {
+        timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS,
+      });
       return response.json() as Promise<OutlookCalendarSyncResponse>;
     },
     onSuccess: (status) => {
@@ -1058,9 +1287,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   useEffect(() => {
     if (!newMeetingSetupEnabled) return;
     if (
-      outlookQuery.data
-      && outlookQuery.data.credentialStatusAvailable !== false
-      && (!outlookQuery.data.connected || outlookQuery.data.authorizationPending)
+      outlookQuery.data &&
+      outlookQuery.data.credentialStatusAvailable !== false &&
+      (!outlookQuery.data.connected || outlookQuery.data.authorizationPending)
     ) {
       if (outlookQuery.data.reauthRequired) {
         // A revoked credential makes the old calendar link unsafe for a new
@@ -1079,12 +1308,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     if (!events) return;
     if (!calendarSelectionInitializedRef.current) {
       calendarSelectionInitializedRef.current = true;
-      const suggested = events.find((event) => event.id === outlookQuery.data?.nextEvent?.id)
-        ?? (events.length === 1 ? events[0] : null);
+      const suggested =
+        events.find((event) => event.id === outlookQuery.data?.nextEvent?.id) ??
+        (events.length === 1 ? events[0] : null);
       if (suggested) {
         setSelectedCalendarEventId(suggested.id);
         setCalendarSelectionNeedsReview(false);
-        setTitle((current) => current.trim() ? current : suggested.subject);
+        setTitle((current) => (current.trim() ? current : suggested.subject));
         selectedCalendarSubjectRef.current = suggested.subject;
       }
       return;
@@ -1099,26 +1329,29 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     if (selected) {
       const previousSubject = selectedCalendarSubjectRef.current;
       if (selected.subject !== previousSubject) {
-        setTitle((currentTitle) => (
-          !currentTitle.trim() || currentTitle === previousSubject
-            ? selected.subject
-            : currentTitle
-        ));
+        setTitle((currentTitle) =>
+          !currentTitle.trim() || currentTitle === previousSubject ? selected.subject : currentTitle,
+        );
         selectedCalendarSubjectRef.current = selected.subject;
       }
     }
-  }, [newMeetingSetupEnabled, outlookEventsQuery.data?.items, outlookQuery.data, outlookQuery.data?.nextEvent?.id, selectedCalendarEventId]);
+  }, [
+    newMeetingSetupEnabled,
+    outlookEventsQuery.data?.items,
+    outlookQuery.data,
+    outlookQuery.data?.nextEvent?.id,
+    selectedCalendarEventId,
+  ]);
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
     enabled: Boolean(selectedId),
     staleTime: 30_000,
-    refetchInterval: (query) => meetingDetailRefetchInterval(
-      query.state.data?.state,
-      meetingWsConnected,
-    ),
+    refetchInterval: (query) => meetingDetailRefetchInterval(query.state.data?.state, meetingWsConnected),
   });
-  const deliveriesQuery = useQuery<{ items: Array<{ id: string; target: string; status: string; attemptCount: number }> }>({
+  const deliveriesQuery = useQuery<{
+    items: Array<{ id: string; target: string; status: string; attemptCount: number }>;
+  }>({
     queryKey: ["/api/meetings", selectedId, "deliveries"],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}/deliveries`, signal),
     enabled: Boolean(selectedId),
@@ -1132,10 +1365,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
     const persistedProgress = detail.processingProgress;
     if (!persistedProgress) return;
-    setMeetingProgress((current) => mergeMeetingProcessingProgress(
-      current,
-      persistedProgress,
-    ));
+    setMeetingProgress((current) => mergeMeetingProcessingProgress(current, persistedProgress));
   }, [detail]);
   const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
     queryKey: ["/api/meetings/speaker-profiles"],
@@ -1143,9 +1373,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     enabled: Boolean(detail?.speakers.some((speaker) => speaker.profileId)),
     staleTime: 30_000,
   });
-  const speakerProfilesById = useMemo(() => new Map(
-    (speakerProfilesQuery.data?.items ?? []).map((profile) => [profile.id, profile]),
-  ), [speakerProfilesQuery.data?.items]);
+  const speakerProfilesById = useMemo(
+    () => new Map((speakerProfilesQuery.data?.items ?? []).map((profile) => [profile.id, profile])),
+    [speakerProfilesQuery.data?.items],
+  );
   const emailPreviewQuery = useQuery<{
     recipients: Array<{ name: string; address: string }>;
     subject: string;
@@ -1181,13 +1412,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setRetryFinalProvider("");
   }, [selectedId]);
 
-  useEffect(() => () => {
-    const preview = savedVoicePreviewRef.current;
-    if (!preview) return;
-    preview.pause();
-    preview.removeAttribute("src");
-    savedVoicePreviewRef.current = null;
-  }, []);
+  useEffect(
+    () => () => {
+      const preview = savedVoicePreviewRef.current;
+      if (!preview) return;
+      preview.pause();
+      preview.removeAttribute("src");
+      savedVoicePreviewRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (detail?.id && detail.state === "finalization_failed") {
@@ -1195,119 +1429,151 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     }
   }, [detail?.finalProvider, detail?.id, detail?.state]);
 
-  const refreshMeetingData = useCallback((meetingId?: string) => {
-    void refreshMeetingCollections(queryClient);
-    void refreshMeetingCapabilities(queryClient);
-    if (meetingId) void refreshMeetingDetail(queryClient, meetingId);
-  }, [queryClient]);
+  const refreshMeetingData = useCallback(
+    (meetingId?: string) => {
+      void refreshMeetingCollections(queryClient);
+      void refreshMeetingCapabilities(queryClient);
+      if (meetingId) void refreshMeetingDetail(queryClient, meetingId);
+    },
+    [queryClient],
+  );
 
   const invalidateMeetingImports = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: MEETING_IMPORTS_QUERY_KEY, exact: true });
   }, [queryClient]);
 
-  const handleWsMessage = useCallback((message: ScriberWebSocketMessage) => {
-    if (message.type === "microphones_updated") {
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true });
-    }
-    if (message.type === "meeting_state") {
-      applyMeetingSummaryEvent(queryClient, message.meeting);
-      if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
-        void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id], exact: true });
-        void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
-        void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id, "speaker-assignments"], exact: true });
-        void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id, "email-preview"], exact: true });
+  const handleWsMessage = useCallback(
+    (message: ScriberWebSocketMessage) => {
+      if (message.type === "microphones_updated") {
+        void queryClient.invalidateQueries({ queryKey: ["/api/meetings/audio-devices"], exact: true });
       }
-      if (message.meeting.id === selectedId && !["stopping", "finalizing", "analyzing"].includes(message.meeting.state)) {
-        setMeetingProgress(null);
-      }
-      if (message.meeting.id === selectedId && TERMINAL_MEETING_STATES.has(message.meeting.state)) {
-        audioLevelsRef.current = { microphone: 0, system: 0 };
-      }
-    }
-    if ((message.type === "meeting_finalize_progress" || message.type === "meeting_analysis_progress") && message.meetingId === selectedId) {
-      const incoming: MeetingProcessingProgress = {
-        phase: message.type === "meeting_analysis_progress" ? "analysis" : "finalize",
-        progress: Math.max(0, Math.min(1, message.progress)),
-        status: message.status,
-        updatedAt: new Date().toISOString(),
-      };
-      applyMeetingProgressEvent(queryClient, message.meetingId, incoming);
-      setMeetingProgress((current) => mergeMeetingProcessingProgress(current, incoming));
-      if (message.type === "meeting_analysis_progress" && message.progress >= 1) {
-        if (message.status === "Speaker matches refreshed") {
-          toast({ title: t("Speaker matches refreshed"), description: t("The latest saved voices are now reflected in this meeting.") });
-        } else if (message.status === "Speaker matches could not be refreshed") {
-          toast({
-            variant: "destructive",
-            title: t("Speaker matches were not refreshed"),
-            description: t("The meeting and its existing speaker names were left unchanged. You can try again."),
+      if (message.type === "meeting_state") {
+        applyMeetingSummaryEvent(queryClient, message.meeting);
+        if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
+          void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id], exact: true });
+          void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
+          void queryClient.invalidateQueries({
+            queryKey: ["/api/meetings", message.meeting.id, "speaker-assignments"],
+            exact: true,
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["/api/meetings", message.meeting.id, "email-preview"],
+            exact: true,
           });
         }
+        if (
+          message.meeting.id === selectedId &&
+          !["stopping", "finalizing", "analyzing"].includes(message.meeting.state)
+        ) {
+          setMeetingProgress(null);
+        }
+        if (message.meeting.id === selectedId && TERMINAL_MEETING_STATES.has(message.meeting.state)) {
+          audioLevelsRef.current = { microphone: 0, system: 0 };
+        }
       }
-    }
-    if (message.type === "meeting_segment") {
-      applyMeetingSegmentEvent(queryClient, message.meetingId, message.segment);
-    }
-    if (message.type === "meeting_checkpoint") {
-      applyMeetingCheckpointEvent(queryClient, message.meetingId, message.checkpoint);
-    }
-    if (message.type === "meeting_transcript_edited") {
-      applyMeetingTranscriptEditedEvent(
-        queryClient,
-        message.meetingId,
-        message.segment,
-        message.transcriptEditVersion,
-      );
-    }
-    if (message.type === "meeting_audio_level" && message.meetingId === selectedId) {
-      if (message.source === "microphone" || message.source === "system") {
-        audioLevelsRef.current[message.source] = message.rms;
-      }
-    }
-    if (message.type === "meeting_live_status" && message.meetingId === selectedId && (message.source === "microphone" || message.source === "system")) {
-      setLiveStatuses((current) => ({
-        ...current,
-        [message.source]: { status: message.status, reconnectCount: message.reconnectCount },
-      }));
-    }
-    if (message.type === "meeting_note") {
-      applyMeetingNoteEvent(queryClient, message.meetingId, message.note);
-    }
-    if (message.type === "meeting_import_progress") {
-      applyMeetingImportProgressEvent(queryClient, message);
-      if (message.importId === meetingImportId) {
-        setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-          importId: message.importId,
-          phase: message.phase,
-          stage: message.status,
-          percentage: Math.round(Math.max(0, Math.min(1, message.progress)) * 100),
-        }));
-        if (message.meetingId) {
-          meetingImportIdRef.current = "";
-          setMeetingImportId("");
-          setMeetingImportCandidate(null);
-          refreshMeetingData(message.meetingId);
-          setLocation(`/meetings/${message.meetingId}`);
-          toast({ title: t("Meeting created"), description: t("Scriber is preparing the transcript and speaker names.") });
-        } else if (message.phase === "failed" || message.phase === "canceled") {
-          meetingImportIdRef.current = "";
-          setMeetingImportId("");
-          if (message.phase === "canceled") {
-            meetingImportExplicitCancelRef.current = false;
-            setMeetingImportCandidate(null);
+      if (
+        (message.type === "meeting_finalize_progress" || message.type === "meeting_analysis_progress") &&
+        message.meetingId === selectedId
+      ) {
+        const incoming: MeetingProcessingProgress = {
+          phase: message.type === "meeting_analysis_progress" ? "analysis" : "finalize",
+          progress: Math.max(0, Math.min(1, message.progress)),
+          status: message.status,
+          updatedAt: new Date().toISOString(),
+        };
+        applyMeetingProgressEvent(queryClient, message.meetingId, incoming);
+        setMeetingProgress((current) => mergeMeetingProcessingProgress(current, incoming));
+        if (message.type === "meeting_analysis_progress" && message.progress >= 1) {
+          if (message.status === "Speaker matches refreshed") {
+            toast({
+              title: t("Speaker matches refreshed"),
+              description: t("The latest saved voices are now reflected in this meeting."),
+            });
+          } else if (message.status === "Speaker matches could not be refreshed") {
+            toast({
+              variant: "destructive",
+              title: t("Speaker matches were not refreshed"),
+              description: t("The meeting and its existing speaker names were left unchanged. You can try again."),
+            });
           }
         }
       }
-    }
-  }, [meetingImportId, queryClient, refreshMeetingData, selectedId, setLocation, t, toast]);
+      if (message.type === "meeting_segment") {
+        applyMeetingSegmentEvent(queryClient, message.meetingId, message.segment);
+      }
+      if (message.type === "meeting_checkpoint") {
+        applyMeetingCheckpointEvent(queryClient, message.meetingId, message.checkpoint);
+      }
+      if (message.type === "meeting_transcript_edited") {
+        applyMeetingTranscriptEditedEvent(
+          queryClient,
+          message.meetingId,
+          message.segment,
+          message.transcriptEditVersion,
+        );
+      }
+      if (message.type === "meeting_audio_level" && message.meetingId === selectedId) {
+        if (message.source === "microphone" || message.source === "system") {
+          audioLevelsRef.current[message.source] = message.rms;
+        }
+      }
+      if (
+        message.type === "meeting_live_status" &&
+        message.meetingId === selectedId &&
+        (message.source === "microphone" || message.source === "system")
+      ) {
+        setLiveStatuses((current) => ({
+          ...current,
+          [message.source]: { status: message.status, reconnectCount: message.reconnectCount },
+        }));
+      }
+      if (message.type === "meeting_note") {
+        applyMeetingNoteEvent(queryClient, message.meetingId, message.note);
+      }
+      if (message.type === "meeting_import_progress") {
+        applyMeetingImportProgressEvent(queryClient, message);
+        if (message.importId === meetingImportId) {
+          setMeetingImportProgress((current) =>
+            mergeMeetingImportProgress(current, {
+              importId: message.importId,
+              phase: message.phase,
+              stage: message.status,
+              percentage: Math.round(Math.max(0, Math.min(1, message.progress)) * 100),
+            }),
+          );
+          if (message.meetingId) {
+            meetingImportIdRef.current = "";
+            setMeetingImportId("");
+            setMeetingImportCandidate(null);
+            refreshMeetingData(message.meetingId);
+            setLocation(`/meetings/${message.meetingId}`);
+            toast({
+              title: t("Meeting created"),
+              description: t("Scriber is preparing the transcript and speaker names."),
+            });
+          } else if (message.phase === "failed" || message.phase === "canceled") {
+            meetingImportIdRef.current = "";
+            setMeetingImportId("");
+            if (message.phase === "canceled") {
+              meetingImportExplicitCancelRef.current = false;
+              setMeetingImportCandidate(null);
+            }
+          }
+        }
+      }
+    },
+    [meetingImportId, queryClient, refreshMeetingData, selectedId, setLocation, t, toast],
+  );
   useSharedWebSocket(handleWsMessage);
 
   useEffect(() => {
-    if (isMeetingWebSocketReconnect(
-      meetingWsHasConnectedRef.current,
-      meetingWsWasConnectedRef.current,
-      meetingWsConnected,
-    )) {
+    if (
+      isMeetingWebSocketReconnect(
+        meetingWsHasConnectedRef.current,
+        meetingWsWasConnectedRef.current,
+        meetingWsConnected,
+      )
+    ) {
       // ActiveMeetingPill owns the one exact active-Meeting refresh on a real
       // reconnect. Refresh only this page's non-overlapping cache shapes here.
       void queryClient.invalidateQueries({ queryKey: MEETING_HISTORY_QUERY_KEY, exact: true });
@@ -1322,12 +1588,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   useEffect(() => {
     const job = meetingImportsQuery.data?.items.find((item) => item.id === meetingImportId);
     if (!job) return;
-    setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-      importId: job.id,
-      phase: job.state,
-      stage: job.status || job.state,
-      percentage: Math.round(Math.max(0, Math.min(1, job.progress)) * 100),
-    }));
+    setMeetingImportProgress((current) =>
+      mergeMeetingImportProgress(current, {
+        importId: job.id,
+        phase: job.state,
+        stage: job.status || job.state,
+        percentage: Math.round(Math.max(0, Math.min(1, job.progress)) * 100),
+      }),
+    );
     if (job.meetingId) {
       meetingImportIdRef.current = "";
       setMeetingImportId("");
@@ -1345,8 +1613,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
   const startMutation = useMutation({
     mutationFn: async () => {
-      const profile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
-        ?? profilesQuery.data?.profiles[0];
+      const profile =
+        profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId) ??
+        profilesQuery.data?.profiles[0];
       const response = await apiRequest("POST", "/api/meetings", {
         title,
         language: profile?.language ?? "auto",
@@ -1374,12 +1643,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       applyMeetingSummaryEvent(queryClient, meeting);
       setLocation(`/meetings/${meeting.id}`);
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Meeting could not start"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Meeting could not start"), description: t(error.message) }),
   });
   const deviceTestMutation = useMutation({
     mutationFn: async () => {
-      const profile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
-        ?? profilesQuery.data?.profiles[0];
+      const profile =
+        profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId) ??
+        profilesQuery.data?.profiles[0];
       const response = await apiRequest("POST", "/api/meetings/device-test", {
         microphoneNativeEndpointIdHash: microphoneEndpointHash,
         renderNativeEndpointIdHash: renderEndpointHash,
@@ -1389,7 +1660,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       });
       return response.json() as Promise<MeetingDeviceTestResponse>;
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Audio routes could not be tested"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Audio routes could not be tested"), description: t(error.message) }),
   });
   const detectionDismissMutation = useMutation({
     mutationFn: async (detectionId: string) => {
@@ -1397,7 +1669,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       return response.json();
     },
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["/api/meetings/detection"] }),
-    onError: (error) => toast({ variant: "destructive", title: t("Suggestion could not be dismissed"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Suggestion could not be dismissed"), description: t(error.message) }),
   });
   const webhookPreviewMutation = useMutation({
     mutationFn: async ({ id, url }: { id: string; url: string }) => {
@@ -1416,7 +1689,19 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
   });
   const webhookDeliveryMutation = useMutation({
-    mutationFn: async ({ id, url, secret, previewHash, confirmed }: { id: string; url: string; secret: string; previewHash: string; confirmed: boolean }) => {
+    mutationFn: async ({
+      id,
+      url,
+      secret,
+      previewHash,
+      confirmed,
+    }: {
+      id: string;
+      url: string;
+      secret: string;
+      previewHash: string;
+      confirmed: boolean;
+    }) => {
       const response = await apiRequest("POST", `/api/meetings/${id}/deliveries`, {
         url,
         secret,
@@ -1443,20 +1728,25 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const meetingImportMutation = useMutation({
     mutationFn: async ({ file, title, profile }: { file: File; title: string; profile: MeetingProviderProfile }) => {
       meetingImportExplicitCancelRef.current = false;
-      const createResponse = await fetchWithTimeout(apiUrl("/api/meeting-imports"), {
-        method: "POST",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          filename: file.name,
-          byteSize: file.size,
-          title: title.trim() || file.name.replace(/\.[^.]+$/, ""),
-          language: profile.language || "auto",
-          profileId: profile.id,
-        }),
-      }, 30_000);
-      const created = await createResponse.json() as MeetingImportJob & { message?: string };
-      if (!createResponse.ok) throw new Error(created.message || `Meeting import could not be created (${createResponse.status})`);
+      const createResponse = await fetchWithTimeout(
+        apiUrl("/api/meeting-imports"),
+        {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            filename: file.name,
+            byteSize: file.size,
+            title: title.trim() || file.name.replace(/\.[^.]+$/, ""),
+            language: profile.language || "auto",
+            profileId: profile.id,
+          }),
+        },
+        30_000,
+      );
+      const created = (await createResponse.json()) as MeetingImportJob & { message?: string };
+      if (!createResponse.ok)
+        throw new Error(created.message || `Meeting import could not be created (${createResponse.status})`);
       setMeetingImportId(created.id);
       meetingImportIdRef.current = created.id;
       upsertMeetingImportJob(queryClient, created);
@@ -1475,19 +1765,24 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         request.upload.onprogress = (event) => {
           if (!event.lengthComputable) return;
           const uploadProgress = Math.max(2, Math.min(85, Math.round((event.loaded / event.total) * 85)));
-          setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-            importId: created.id,
-            phase: "receiving",
-            stage: "Uploading recording",
-            percentage: uploadProgress,
-          }));
+          setMeetingImportProgress((current) =>
+            mergeMeetingImportProgress(current, {
+              importId: created.id,
+              phase: "receiving",
+              stage: "Uploading recording",
+              percentage: uploadProgress,
+            }),
+          );
         };
-        request.upload.onload = () => setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-          importId: created.id,
-          phase: "receiving",
-          stage: "Safely committing upload",
-          percentage: 85,
-        }));
+        request.upload.onload = () =>
+          setMeetingImportProgress((current) =>
+            mergeMeetingImportProgress(current, {
+              importId: created.id,
+              phase: "receiving",
+              stage: "Safely committing upload",
+              percentage: 85,
+            }),
+          );
         request.onerror = () => reject(new Error("The meeting recording upload was interrupted."));
         request.ontimeout = () => reject(new Error("The meeting recording import timed out."));
         request.onabort = () => reject(new DOMException("Meeting import cancelled", "AbortError"));
@@ -1503,12 +1798,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             reject(new Error(payload.message || `Meeting import failed (${request.status})`));
             return;
           }
-          setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-            importId: created.id,
-            phase: "received",
-            stage: "Upload safely stored",
-            percentage: 86,
-          }));
+          setMeetingImportProgress((current) =>
+            mergeMeetingImportProgress(current, {
+              importId: created.id,
+              phase: "received",
+              stage: "Upload safely stored",
+              percentage: 86,
+            }),
+          );
           resolve(payload);
         };
         request.send(file);
@@ -1523,17 +1820,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
     onError: (error) => {
       const importId = meetingImportIdRef.current;
-      if (
-        meetingImportExplicitCancelRef.current
-        || (error instanceof DOMException && error.name === "AbortError")
-      ) {
+      if (meetingImportExplicitCancelRef.current || (error instanceof DOMException && error.name === "AbortError")) {
         invalidateMeetingImports();
-        setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-          importId: importId || current.importId,
-          phase: "cancel_requested",
-          stage: "Cancel requested",
-          percentage: 0,
-        }));
+        setMeetingImportProgress((current) =>
+          mergeMeetingImportProgress(current, {
+            importId: importId || current.importId,
+            phase: "cancel_requested",
+            stage: "Cancel requested",
+            percentage: 0,
+          }),
+        );
         return;
       }
       meetingImportIdRef.current = "";
@@ -1544,7 +1840,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         variant: "destructive",
         title: t("Meeting import needs attention"),
         description: importId
-          ? t("The upload may still have finished. Check Imports in a moment; Scriber will continue from the saved copy when possible.")
+          ? t(
+              "The upload may still have finished. Check Imports in a moment; Scriber will continue from the saved copy when possible.",
+            )
           : t(error.message),
       });
     },
@@ -1562,10 +1860,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     },
     onSuccess: (job) => {
       upsertMeetingImportJob(queryClient, job);
-      if (
-        meetingImportIdRef.current === job.id
-        || (job.state === "canceled" && !meetingImportIdRef.current)
-      ) {
+      if (meetingImportIdRef.current === job.id || (job.state === "canceled" && !meetingImportIdRef.current)) {
         meetingImportIdRef.current = "";
         meetingImportExplicitCancelRef.current = false;
         setMeetingImportId("");
@@ -1576,7 +1871,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onError: (error) => {
       meetingImportExplicitCancelRef.current = false;
       invalidateMeetingImports();
-      toast({ variant: "destructive", title: t("Meeting import could not be canceled"), description: t(error.message) });
+      toast({
+        variant: "destructive",
+        title: t("Meeting import could not be canceled"),
+        description: t(error.message),
+      });
     },
   });
 
@@ -1594,7 +1893,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         });
       }
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Meeting control failed"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Meeting control failed"), description: t(error.message) }),
   });
 
   const deleteMeetingMutation = useMutation({
@@ -1608,15 +1908,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       void refreshMeetingCollections(queryClient);
       void refreshMeetingCapabilities(queryClient);
       if (selectedId === id) setLocation("/meetings");
-      toast({ title: t("Meeting deleted"), description: t("Transcript, generated outputs, and locally retained audio were removed.") });
+      toast({
+        title: t("Meeting deleted"),
+        description: t("Transcript, generated outputs, and locally retained audio were removed."),
+      });
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Meeting could not be deleted"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Meeting could not be deleted"), description: t(error.message) }),
   });
 
   const exportMutation = useMutation({
-    mutationFn: async ({ path, fallbackName }: { path: string; fallbackName: string }) => (
-      saveMeetingExport(path, fallbackName)
-    ),
+    mutationFn: async ({ path, fallbackName }: { path: string; fallbackName: string }) =>
+      saveMeetingExport(path, fallbackName),
     onSuccess: (result) => {
       if (result.status === "cancelled") return;
       setLastExport(result);
@@ -1631,19 +1934,22 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onError: (error) => toast({ variant: "destructive", title: t("Export failed"), description: t(error.message) }),
   });
 
-  const runSavedExportAction = useCallback(async (action: "open" | "reveal") => {
-    if (!lastExport?.desktop) return;
-    try {
-      if (action === "open") await openMeetingExport(lastExport.token);
-      else await revealMeetingExport(lastExport.token);
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: action === "open" ? t("File could not be opened") : t("Folder could not be opened"),
-        description: t(error instanceof Error ? error.message : String(error)),
-      });
-    }
-  }, [lastExport, t, toast]);
+  const runSavedExportAction = useCallback(
+    async (action: "open" | "reveal") => {
+      if (!lastExport?.desktop) return;
+      try {
+        if (action === "open") await openMeetingExport(lastExport.token);
+        else await revealMeetingExport(lastExport.token);
+      } catch (error) {
+        toast({
+          variant: "destructive",
+          title: action === "open" ? t("File could not be opened") : t("Folder could not be opened"),
+          description: t(error instanceof Error ? error.message : String(error)),
+        });
+      }
+    },
+    [lastExport, t, toast],
+  );
 
   const composeEmailBody = useCallback(async () => {
     const preview = emailPreviewQuery.data;
@@ -1683,7 +1989,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (item, variables) => {
       applyMeetingActionItem(queryClient, variables.id, item);
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Action item was not saved"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Action item was not saved"), description: t(error.message) }),
   });
   const analysisMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -1697,7 +2004,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         exact: true,
       });
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Analysis could not start"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Analysis could not start"), description: t(error.message) }),
   });
   const segmentEditMutation = useMutation({
     mutationFn: async ({
@@ -1709,17 +2017,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       action: "edit" | "undo";
       text?: string;
     }) => {
-      const path = action === "undo"
-        ? `/api/meetings/${segment.meetingId}/segments/${segment.id}/undo`
-        : `/api/meetings/${segment.meetingId}/segments/${segment.id}`;
-      const response = await apiRequest(
-        action === "undo" ? "POST" : "PATCH",
-        path,
-        {
-          expectedEditVersion: detail?.transcriptEditVersion ?? 0,
-          ...(action === "edit" ? { text: text ?? "" } : {}),
-        },
-      );
+      const path =
+        action === "undo"
+          ? `/api/meetings/${segment.meetingId}/segments/${segment.id}/undo`
+          : `/api/meetings/${segment.meetingId}/segments/${segment.id}`;
+      const response = await apiRequest(action === "undo" ? "POST" : "PATCH", path, {
+        expectedEditVersion: detail?.transcriptEditVersion ?? 0,
+        ...(action === "edit" ? { text: text ?? "" } : {}),
+      });
       return response.json() as Promise<{
         meetingId: string;
         segment: MeetingSegment;
@@ -1728,12 +2033,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }>;
     },
     onSuccess: (result) => {
-      applyMeetingTranscriptEditedEvent(
-        queryClient,
-        result.meetingId,
-        result.segment,
-        result.transcriptEditVersion,
-      );
+      applyMeetingTranscriptEditedEvent(queryClient, result.meetingId, result.segment, result.transcriptEditVersion);
       toast({
         title: t("Transcript corrected"),
         description: result.outputsStale
@@ -1741,14 +2041,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           : t("Search, playback links, and new exports now use the correction."),
       });
     },
-    onError: (error) => toast({
-      variant: "destructive",
-      title: t("Transcript correction was not saved"),
-      description: t(error.message),
-    }),
+    onError: (error) =>
+      toast({
+        variant: "destructive",
+        title: t("Transcript correction was not saved"),
+        description: t(error.message),
+      }),
   });
   const recoveryMutation = useMutation({
-    mutationFn: async ({ id, action, finalProvider }: { id: string; action: "retry" | "discard"; finalProvider?: string }) => {
+    mutationFn: async ({
+      id,
+      action,
+      finalProvider,
+    }: {
+      id: string;
+      action: "retry" | "discard";
+      finalProvider?: string;
+    }) => {
       const response = await apiRequest(
         "POST",
         `/api/meetings/${id}/${action}`,
@@ -1761,7 +2070,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       invalidateMeetingImports();
       if (variables.action === "discard") setLocation("/meetings");
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Meeting could not be recovered"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Meeting could not be recovered"), description: t(error.message) }),
   });
   const reprocessMutation = useMutation({
     mutationFn: async ({ id, mode }: { id: string; mode: MeetingReprocessMode }) => {
@@ -1775,16 +2085,30 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (payload) => {
       applyMeetingSummaryEvent(queryClient, payload.meeting);
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id], exact: true });
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id, "speaker-assignments"], exact: true });
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings", payload.meeting.id, "email-preview"], exact: true });
+      void queryClient.invalidateQueries({
+        queryKey: ["/api/meetings", payload.meeting.id, "speaker-assignments"],
+        exact: true,
+      });
+      void queryClient.invalidateQueries({
+        queryKey: ["/api/meetings", payload.meeting.id, "email-preview"],
+        exact: true,
+      });
       setReprocessDialogOpen(false);
       setWorkspaceView("transcript");
       toast({
-        title: payload.mode === "speaker_identity" ? t("Speaker matches are being refreshed") : t("A new full transcript is being created"),
+        title:
+          payload.mode === "speaker_identity"
+            ? t("Speaker matches are being refreshed")
+            : t("A new full transcript is being created"),
         description: t("The original recording remains unchanged."),
       });
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Meeting could not be processed again"), description: t(error.message) }),
+    onError: (error) =>
+      toast({
+        variant: "destructive",
+        title: t("Meeting could not be processed again"),
+        description: t(error.message),
+      }),
   });
   const speakerMutation = useMutation({
     mutationFn: async ({ id, speakerId, displayName }: { id: string; speakerId: string; displayName: string }) => {
@@ -1794,7 +2118,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (_payload, variables) => {
       applyMeetingSpeakerName(queryClient, variables.id, variables.speakerId, variables.displayName);
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Speaker name was not saved"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Speaker name was not saved"), description: t(error.message) }),
   });
   const speakerProfileNameMutation = useMutation({
     mutationFn: async ({ profileId, displayName }: { profileId: string; displayName: string }) => {
@@ -1810,36 +2135,53 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     onSuccess: (profile) => {
       // Settings reads this exact query key. Update it synchronously so a user
       // who navigates there immediately sees the name they just saved here.
-      queryClient.setQueryData<SpeakerProfilesResponse>(
-        ["/api/meetings/speaker-profiles"],
-        (current) => current ? {
-          ...current,
-          items: current.items.map((item) => item.id === profile.id
-            ? { ...item, displayName: profile.displayName, isNamed: true, updatedAt: profile.updatedAt }
-            : item),
-        } : current,
+      queryClient.setQueryData<SpeakerProfilesResponse>(["/api/meetings/speaker-profiles"], (current) =>
+        current
+          ? {
+              ...current,
+              items: current.items.map((item) =>
+                item.id === profile.id
+                  ? { ...item, displayName: profile.displayName, isNamed: true, updatedAt: profile.updatedAt }
+                  : item,
+              ),
+            }
+          : current,
       );
       if (detail?.id) {
         queryClient.setQueryData<MeetingSpeakerAssignmentsResponse>(
           ["/api/meetings", detail.id, "speaker-assignments"],
-          (current) => current ? {
-            ...current,
-            items: current.items.map((item) => item.profileMatch?.profileId === profile.id
-              ? { ...item, profileMatch: { ...item.profileMatch, displayName: profile.displayName } }
-              : item),
-          } : current,
+          (current) =>
+            current
+              ? {
+                  ...current,
+                  items: current.items.map((item) =>
+                    item.profileMatch?.profileId === profile.id
+                      ? { ...item, profileMatch: { ...item.profileMatch, displayName: profile.displayName } }
+                      : item,
+                  ),
+                }
+              : current,
         );
       }
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"], exact: true });
       if (detail?.id) void refreshMeetingDetail(queryClient, detail.id);
-      toast({ title: t("Saved voice name updated"), description: t("{{name}} will be used for future voice matches.", { name: profile.displayName }) });
+      toast({
+        title: t("Saved voice name updated"),
+        description: t("{{name}} will be used for future voice matches.", { name: profile.displayName }),
+      });
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Saved voice name was not updated"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Saved voice name was not updated"), description: t(error.message) }),
   });
   const splitSpeakerMutation = useMutation({
     mutationFn: async ({ id, speakerId }: { id: string; speakerId: string }) => {
       const response = await apiRequest("POST", `/api/meetings/${id}/speakers/${speakerId}/split-profile`);
-      return response.json() as Promise<{ meetingId: string; speakerId: string; oldProfileId: string; newProfileId: string }>;
+      return response.json() as Promise<{
+        meetingId: string;
+        speakerId: string;
+        oldProfileId: string;
+        newProfileId: string;
+      }>;
     },
     onSuccess: (_payload, variables) => {
       applyMeetingSpeakerProfileSplit(queryClient, variables.id, variables.speakerId);
@@ -1847,7 +2189,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       toast({ title: t("Speaker will be recognized separately") });
     },
-    onError: (error) => toast({ variant: "destructive", title: t("Speaker could not be separated"), description: t(error.message) }),
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Speaker could not be separated"), description: t(error.message) }),
   });
   const chatMutation = useMutation({
     mutationFn: async ({ id, question }: { id: string; question: string }) => {
@@ -1868,31 +2211,36 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
   const meetings = useMemo(() => {
     const seen = new Set<string>();
-    return (meetingsQuery.data?.pages ?? []).flatMap((page) => page.items).filter((meeting) => {
-      if (seen.has(meeting.id)) return false;
-      seen.add(meeting.id);
-      return true;
-    });
+    return (meetingsQuery.data?.pages ?? [])
+      .flatMap((page) => page.items)
+      .filter((meeting) => {
+        if (seen.has(meeting.id)) return false;
+        seen.add(meeting.id);
+        return true;
+      });
   }, [meetingsQuery.data?.pages]);
   const meetingsTotal = meetingsQuery.data?.pages[0]?.total ?? meetings.length;
   const activeMeeting = meetingsQuery.data?.pages.find((page) => page.activeMeeting)?.activeMeeting ?? null;
-  const selectedProfile = profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId)
-    ?? profilesQuery.data?.profiles[0];
+  const selectedProfile =
+    profilesQuery.data?.profiles.find((item) => item.id === profilesQuery.data?.defaultProfileId) ??
+    profilesQuery.data?.profiles[0];
   const selectedProfileCostPerHour = selectedProfile?.costEstimate?.totalPerMeetingHour;
   const audioDeviceInventory = audioDevicesQuery.data;
   const audioDeviceInitialLoading = audioDevicesQuery.isPending;
-  const audioDeviceInventoryUnavailable = audioDevicesQuery.isError
-    || Boolean(audioDeviceInventory && !audioDeviceInventory.available);
+  const audioDeviceInventoryUnavailable =
+    audioDevicesQuery.isError || Boolean(audioDeviceInventory && !audioDeviceInventory.available);
   const captureEndpoints = audioDeviceInventory?.capture ?? [];
   const renderEndpoints = audioDeviceInventory?.render ?? [];
-  const microphoneCountLabel = t(captureEndpoints.length === 1 ? "{{count}} microphone" : "{{count}} microphones", { count: formatNumber(captureEndpoints.length) });
-  const speakerCountLabel = t(renderEndpoints.length === 1 ? "{{count}} speaker choice" : "{{count}} speaker choices", { count: formatNumber(renderEndpoints.length) });
-  const microphoneSelectDisabled = audioDeviceInitialLoading
-    || audioDeviceInventoryUnavailable
-    || captureEndpoints.length === 0;
-  const renderSelectDisabled = audioDeviceInitialLoading
-    || audioDeviceInventoryUnavailable
-    || renderEndpoints.length === 0;
+  const microphoneCountLabel = t(captureEndpoints.length === 1 ? "{{count}} microphone" : "{{count}} microphones", {
+    count: formatNumber(captureEndpoints.length),
+  });
+  const speakerCountLabel = t(renderEndpoints.length === 1 ? "{{count}} speaker choice" : "{{count}} speaker choices", {
+    count: formatNumber(renderEndpoints.length),
+  });
+  const microphoneSelectDisabled =
+    audioDeviceInitialLoading || audioDeviceInventoryUnavailable || captureEndpoints.length === 0;
+  const renderSelectDisabled =
+    audioDeviceInitialLoading || audioDeviceInventoryUnavailable || renderEndpoints.length === 0;
   const audioDeviceStatus = audioDeviceInitialLoading
     ? t("Looking for microphones and speakers…")
     : audioDevicesQuery.isError
@@ -1902,46 +2250,56 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         : captureEndpoints.length === 0 && renderEndpoints.length === 0
           ? t("No individual audio devices were returned. Scriber will use the Windows defaults.")
           : captureEndpoints.length === 0
-            ? t("No individual microphones were returned. Windows default will be used · {{speakers}} available.", { speakers: speakerCountLabel })
+            ? t("No individual microphones were returned. Windows default will be used · {{speakers}} available.", {
+                speakers: speakerCountLabel,
+              })
             : renderEndpoints.length === 0
-              ? t("{{microphones}} available · Windows default speakers will be used.", { microphones: microphoneCountLabel })
-              : t("{{microphones}} and {{speakers}} available.", { microphones: microphoneCountLabel, speakers: speakerCountLabel });
+              ? t("{{microphones}} available · Windows default speakers will be used.", {
+                  microphones: microphoneCountLabel,
+                })
+              : t("{{microphones}} and {{speakers}} available.", {
+                  microphones: microphoneCountLabel,
+                  speakers: speakerCountLabel,
+                });
   const longSession = capabilitiesQuery.data?.longSession;
   const finalProviderCapability = selectedProfile
     ? profilesQuery.data?.providerCapabilities[selectedProfile.finalProvider]
     : undefined;
   const longSessionReady = Boolean(
-    capabilitiesQuery.data?.nativeMeetingCapture
-      && longSession?.storageReady
-      && finalProviderCapability?.fiveHourSupported,
+    capabilitiesQuery.data?.nativeMeetingCapture &&
+    longSession?.storageReady &&
+    finalProviderCapability?.fiveHourSupported,
   );
-  const finalProviderDurationLabel = finalProviderCapability?.maxDurationSeconds != null
-    ? t("Up to {{duration}}", { duration: formatImportDuration(finalProviderCapability.maxDurationSeconds, t) })
-    : finalProviderCapability?.fiveHourSupported
-      ? t("Ready for 5 hours")
-      : t("Not for 5-hour meetings");
+  const finalProviderDurationLabel =
+    finalProviderCapability?.maxDurationSeconds != null
+      ? t("Up to {{duration}}", { duration: formatImportDuration(finalProviderCapability.maxDurationSeconds, t) })
+      : finalProviderCapability?.fiveHourSupported
+        ? t("Ready for 5 hours")
+        : t("Not for 5-hour meetings");
   const meetingImportProfile = selectedProfile;
   const meetingImportFinalCostPerAudioHour = meetingImportProfile?.costEstimate?.singleTrackFinalPerAudioHour;
   const meetingImportFinalProviderCapability = meetingImportProfile
     ? profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]
     : undefined;
   const meetingImportExceedsProviderDuration = Boolean(
-    meetingImportCandidate?.durationSeconds != null
-      && meetingImportFinalProviderCapability?.maxDurationSeconds != null
-      && meetingImportCandidate.durationSeconds > meetingImportFinalProviderCapability.maxDurationSeconds,
+    meetingImportCandidate?.durationSeconds != null &&
+    meetingImportFinalProviderCapability?.maxDurationSeconds != null &&
+    meetingImportCandidate.durationSeconds > meetingImportFinalProviderCapability.maxDurationSeconds,
   );
   const detailLivePreview = detail?.captureMetadata.livePreview;
-  const detailLiveModel = (
-    detailLivePreview
-    && typeof detailLivePreview === "object"
-    && "model" in detailLivePreview
-  ) ? String((detailLivePreview as Record<string, unknown>).model || "") : "";
+  const detailLiveModel =
+    detailLivePreview && typeof detailLivePreview === "object" && "model" in detailLivePreview
+      ? String((detailLivePreview as Record<string, unknown>).model || "")
+      : "";
   const detailFinalProviderCapability = detail
     ? profilesQuery.data?.providerCapabilities[detail.finalProvider]
     : undefined;
   const startBlocked = Boolean(
-    !capabilitiesQuery.data?.nativeMeetingCapture || capabilitiesQuery.data?.liveMicBusy || activeMeeting
-      || !selectedProfile?.available || calendarSelectionNeedsReview,
+    !capabilitiesQuery.data?.nativeMeetingCapture ||
+    capabilitiesQuery.data?.liveMicBusy ||
+    activeMeeting ||
+    !selectedProfile?.available ||
+    calendarSelectionNeedsReview,
   );
   const meetingStartStatus = startMutation.isPending
     ? t("Starting audio capture…")
@@ -1956,43 +2314,58 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             : !selectedProfile?.available
               ? t("Choose an available transcription option in Settings.")
               : longSessionReady
-                ? t("Ready to record · safety saves every {{seconds}} seconds", { seconds: formatNumber(longSession?.checkpointIntervalSeconds ?? 30) })
+                ? t("Ready to record · safety saves every {{seconds}} seconds", {
+                    seconds: formatNumber(longSession?.checkpointIntervalSeconds ?? 30),
+                  })
                 : t("Ready for a shorter meeting · review the details before a long recording.");
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
   const liveSegments = useMemo(() => detail?.segments ?? [], [detail?.segments]);
-  const groupedSegments = useMemo(() => liveSegments.map((segment) => {
-    const rawLabel = segment.speakerLabel
-      || (segment.source === "microphone" ? "You" : "Meeting audio");
-    return {
-      ...segment,
-      label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
-    };
-  }), [liveSegments, t]);
+  const groupedSegments = useMemo(
+    () =>
+      liveSegments.map((segment) => {
+        const rawLabel = segment.speakerLabel || (segment.source === "microphone" ? "You" : "Meeting audio");
+        return {
+          ...segment,
+          label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
+        };
+      }),
+    [liveSegments, t],
+  );
   const visibleTranscriptSegments = useMemo(() => {
     const query = transcriptSearch.trim().toLocaleLowerCase(localeTag);
     if (!query) return groupedSegments;
-    return groupedSegments.filter((segment) => (
-      segment.text.toLocaleLowerCase(localeTag).includes(query)
-      || segment.label.toLocaleLowerCase(localeTag).includes(query)
-    ));
+    return groupedSegments.filter(
+      (segment) =>
+        segment.text.toLocaleLowerCase(localeTag).includes(query) ||
+        segment.label.toLocaleLowerCase(localeTag).includes(query),
+    );
   }, [groupedSegments, localeTag, transcriptSearch]);
   const analysisOutput = detail?.outputs.find((output) => output.kind === "analysis" && output.status === "completed");
-  const currentAnalysisOutput = detail?.outputs.find((output) => (
-    output.kind === "analysis"
-    && output.status === "completed"
-    && output.transcriptEditVersion === (detail.transcriptEditVersion ?? 0)
-  ));
+  const currentAnalysisOutput = detail?.outputs.find(
+    (output) =>
+      output.kind === "analysis" &&
+      output.status === "completed" &&
+      output.transcriptEditVersion === (detail.transcriptEditVersion ?? 0),
+  );
   const technicalAnalysisModel = currentAnalysisOutput
-    ? t("{{provider}} · output v{{version}}", { provider: currentAnalysisOutput.provider || t("Model not recorded"), version: formatNumber(currentAnalysisOutput.version) })
+    ? t("{{provider}} · output v{{version}}", {
+        provider: currentAnalysisOutput.provider || t("Model not recorded"),
+        version: formatNumber(currentAnalysisOutput.version),
+      })
     : analysisOutput
-      ? t("{{provider}} · previous output v{{version}}", { provider: analysisOutput.provider || t("Model not recorded"), version: formatNumber(analysisOutput.version) })
+      ? t("{{provider}} · previous output v{{version}}", {
+          provider: analysisOutput.provider || t("Model not recorded"),
+          version: formatNumber(analysisOutput.version),
+        })
       : t("Not generated");
   const analysis = analysisOutput?.payload;
   const hasCanonicalTranscript = Boolean(detail?.segments.some((segment) => segment.revision === "canonical"));
-  const outputsStale = Boolean(detail?.outputs.some(
-    (output) => output.status === "completed"
-      && (output.transcriptEditVersion ?? 0) < (detail.transcriptEditVersion ?? 0),
-  ));
+  const outputsStale = Boolean(
+    detail?.outputs.some(
+      (output) =>
+        output.status === "completed" && (output.transcriptEditVersion ?? 0) < (detail.transcriptEditVersion ?? 0),
+    ),
+  );
   const generateAnalysis = () => {
     if (!detail) return;
     if (!hasCanonicalTranscript) {
@@ -2012,104 +2385,108 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     (endMs, segment) => Math.max(endMs, segment.endMs),
     playbackMixOriginMs,
   );
-  const playbackMixEndMs = playbackMix?.durationMs == null
-    ? fallbackPlaybackMixEndMs
-    : playbackMixOriginMs + playbackMix.durationMs;
-  const canPlaySpeakerSamples = hasPlayableAudio
-    && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
-  const playableSpeakerIds = useMemo(() => new Set(
-    canPlaySpeakerSamples
-      ? liveSegments.filter((segment) => segment.speakerId && segment.endMs > segment.startMs).map((segment) => segment.speakerId!)
-      : [],
-  ), [canPlaySpeakerSamples, liveSegments]);
+  const playbackMixEndMs =
+    playbackMix?.durationMs == null ? fallbackPlaybackMixEndMs : playbackMixOriginMs + playbackMix.durationMs;
+  const canPlaySpeakerSamples =
+    hasPlayableAudio && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
+  const playableSpeakerIds = useMemo(
+    () =>
+      new Set(
+        canPlaySpeakerSamples
+          ? liveSegments
+              .filter((segment) => segment.speakerId && segment.endMs > segment.startMs)
+              .map((segment) => segment.speakerId!)
+          : [],
+      ),
+    [canPlaySpeakerSamples, liveSegments],
+  );
   const aecMetrics = detail?.captureMetadata.aecMetrics;
   const latestCheckpoint = detail?.transcriptCheckpoints?.at(-1);
   const expectedCheckpointTrackCount = useMemo(() => {
     const sources = detail?.captureMetadata.sources;
     if (Array.isArray(sources)) {
-      const known = new Set(sources.filter((source) => (
-        source === "microphone" || source === "mic_clean" || source === "system"
-      )));
+      const known = new Set(
+        sources.filter((source) => source === "microphone" || source === "mic_clean" || source === "system"),
+      );
       if (known.size > 0) return known.size;
     }
     return detail?.aecEnabled ? 3 : 2;
   }, [detail?.aecEnabled, detail?.captureMetadata.sources]);
-  const playLoadedAudio = useCallback(async (request: MeetingPlaybackRequest) => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    try {
-      audio.currentTime = meetingTimeToAssetTimeSeconds(
-        request.meetingTimeMs,
-        detail?.audioAssets,
-        "mix",
-      );
-      if (request.shouldPlay) {
-        await audio.play();
-      } else {
-        audio.pause();
+  const playLoadedAudio = useCallback(
+    async (request: MeetingPlaybackRequest) => {
+      const audio = audioRef.current;
+      if (!audio) return;
+      try {
+        audio.currentTime = meetingTimeToAssetTimeSeconds(request.meetingTimeMs, detail?.audioAssets, "mix");
+        if (request.shouldPlay) {
+          await audio.play();
+        } else {
+          audio.pause();
+        }
+        setPlaybackError("");
+      } catch (error) {
+        setPlaybackError(error instanceof Error ? error.message : "Audio playback could not start.");
       }
-      setPlaybackError("");
-    } catch (error) {
-      setPlaybackError(error instanceof Error ? error.message : "Audio playback could not start.");
-    }
-  }, [detail?.audioAssets]);
+    },
+    [detail?.audioAssets],
+  );
   const captureCurrentPlayback = useCallback((): MeetingPlaybackRequest => {
     const audio = audioRef.current;
     if (!audio) return { meetingTimeMs: 0, shouldPlay: false };
-    return captureMeetingPlaybackRequest(
-      audio.currentTime,
-      audio.paused,
-      audio.ended,
-      detail?.audioAssets,
-      "mix",
-    );
+    return captureMeetingPlaybackRequest(audio.currentTime, audio.paused, audio.ended, detail?.audioAssets, "mix");
   }, [detail?.audioAssets]);
-  const playSegment = useCallback((startMs: number) => {
-    if (!detail) return;
-    speakerSnippetEndMsRef.current = null;
-    savedVoicePreviewRef.current?.pause();
-    savedVoicePreviewProfileIdRef.current = "";
-    if (!hasPlayableAudio) {
-      setPlaybackError("Saved audio is not available for this meeting.");
-      return;
-    }
-    const request: MeetingPlaybackRequest = {
-      meetingTimeMs: Math.max(0, startMs),
-      shouldPlay: true,
-    };
-    setPlaybackError("");
-    if ((audioRef.current?.readyState ?? 0) >= 1) {
-      pendingPlaybackRef.current = null;
-      void playLoadedAudio(request);
-    } else {
-      pendingPlaybackRef.current = request;
-      audioRef.current?.load();
-    }
-  }, [detail, hasPlayableAudio, playLoadedAudio]);
-  const playSpeakerSnippet = useCallback((speakerId: string) => {
-    const segment = [...liveSegments]
-      .filter((item) => item.speakerId === speakerId && item.endMs > item.startMs)
-      .sort((left, right) => {
-        if (left.revision !== right.revision) return left.revision === "canonical" ? -1 : 1;
-        return right.durationMs - left.durationMs;
-      })[0];
-    if (!segment) {
-      setPlaybackError("No saved voice sample is available for this speaker.");
-      return;
-    }
-    const sampleWindow = meetingSpeakerSampleWindow(
-      segment.startMs,
-      segment.endMs,
-      playbackMixOriginMs,
-      playbackMixEndMs - playbackMixOriginMs,
-    );
-    if (!sampleWindow) {
-      setPlaybackError("No saved voice sample of at least 5 seconds is available for this speaker.");
-      return;
-    }
-    playSegment(sampleWindow.startMs);
-    speakerSnippetEndMsRef.current = sampleWindow.endMs;
-  }, [liveSegments, playbackMixEndMs, playbackMixOriginMs, playSegment]);
+  const playSegment = useCallback(
+    (startMs: number) => {
+      if (!detail) return;
+      speakerSnippetEndMsRef.current = null;
+      savedVoicePreviewRef.current?.pause();
+      savedVoicePreviewProfileIdRef.current = "";
+      if (!hasPlayableAudio) {
+        setPlaybackError("Saved audio is not available for this meeting.");
+        return;
+      }
+      const request: MeetingPlaybackRequest = {
+        meetingTimeMs: Math.max(0, startMs),
+        shouldPlay: true,
+      };
+      setPlaybackError("");
+      if ((audioRef.current?.readyState ?? 0) >= 1) {
+        pendingPlaybackRef.current = null;
+        void playLoadedAudio(request);
+      } else {
+        pendingPlaybackRef.current = request;
+        audioRef.current?.load();
+      }
+    },
+    [detail, hasPlayableAudio, playLoadedAudio],
+  );
+  const playSpeakerSnippet = useCallback(
+    (speakerId: string) => {
+      const segment = [...liveSegments]
+        .filter((item) => item.speakerId === speakerId && item.endMs > item.startMs)
+        .sort((left, right) => {
+          if (left.revision !== right.revision) return left.revision === "canonical" ? -1 : 1;
+          return right.durationMs - left.durationMs;
+        })[0];
+      if (!segment) {
+        setPlaybackError("No saved voice sample is available for this speaker.");
+        return;
+      }
+      const sampleWindow = meetingSpeakerSampleWindow(
+        segment.startMs,
+        segment.endMs,
+        playbackMixOriginMs,
+        playbackMixEndMs - playbackMixOriginMs,
+      );
+      if (!sampleWindow) {
+        setPlaybackError("No saved voice sample of at least 5 seconds is available for this speaker.");
+        return;
+      }
+      playSegment(sampleWindow.startMs);
+      speakerSnippetEndMsRef.current = sampleWindow.endMs;
+    },
+    [liveSegments, playbackMixEndMs, playbackMixOriginMs, playSegment],
+  );
   const focusSpeakerAssignment = useCallback((speakerId: string) => {
     speakerAssignmentRequestIdRef.current += 1;
     setSpeakerAssignmentRequest({
@@ -2117,42 +2494,45 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       requestId: speakerAssignmentRequestIdRef.current,
     });
   }, []);
-  const playSavedVoicePreview = useCallback(async (profileId: string, previewUrl: string) => {
-    if (!previewUrl) return;
-    speakerSnippetEndMsRef.current = null;
-    audioRef.current?.pause();
-    let preview = savedVoicePreviewRef.current;
-    if (preview && savedVoicePreviewProfileIdRef.current === profileId && !preview.paused) {
-      preview.pause();
-      savedVoicePreviewProfileIdRef.current = "";
-      return;
-    }
-    if (!preview) {
-      preview = new Audio();
-      preview.preload = "metadata";
-      savedVoicePreviewRef.current = preview;
-    } else {
-      preview.pause();
-    }
-    savedVoicePreviewProfileIdRef.current = profileId;
-    preview.src = apiUrl(previewUrl);
-    preview.currentTime = 0;
-    preview.onended = () => {
-      if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
-    };
-    preview.onerror = () => {
-      if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
-      setPlaybackError("The saved voice sample could not be played.");
-      void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"], exact: true });
-    };
-    try {
-      await preview.play();
-      setPlaybackError("");
-    } catch (error) {
-      savedVoicePreviewProfileIdRef.current = "";
-      setPlaybackError(error instanceof Error ? error.message : "The saved voice sample could not be played.");
-    }
-  }, [queryClient]);
+  const playSavedVoicePreview = useCallback(
+    async (profileId: string, previewUrl: string) => {
+      if (!previewUrl) return;
+      speakerSnippetEndMsRef.current = null;
+      audioRef.current?.pause();
+      let preview = savedVoicePreviewRef.current;
+      if (preview && savedVoicePreviewProfileIdRef.current === profileId && !preview.paused) {
+        preview.pause();
+        savedVoicePreviewProfileIdRef.current = "";
+        return;
+      }
+      if (!preview) {
+        preview = new Audio();
+        preview.preload = "metadata";
+        savedVoicePreviewRef.current = preview;
+      } else {
+        preview.pause();
+      }
+      savedVoicePreviewProfileIdRef.current = profileId;
+      preview.src = apiUrl(previewUrl);
+      preview.currentTime = 0;
+      preview.onended = () => {
+        if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
+      };
+      preview.onerror = () => {
+        if (savedVoicePreviewProfileIdRef.current === profileId) savedVoicePreviewProfileIdRef.current = "";
+        setPlaybackError("The saved voice sample could not be played.");
+        void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"], exact: true });
+      };
+      try {
+        await preview.play();
+        setPlaybackError("");
+      } catch (error) {
+        savedVoicePreviewProfileIdRef.current = "";
+        setPlaybackError(error instanceof Error ? error.message : "The saved voice sample could not be played.");
+      }
+    },
+    [queryClient],
+  );
   useEffect(() => {
     const audio = audioRef.current;
     if (!pendingPlaybackRef.current || !audio) return;
@@ -2171,13 +2551,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     speakerSnippetEndMsRef.current = null;
     audioRef.current?.pause();
   }, [captureCurrentPlayback]);
-  const seekCitation = useCallback((segmentId: string) => {
-    const segment = liveSegments.find((item) => item.id === segmentId);
-    if (segment) playSegment(segment.startMs);
-  }, [liveSegments, playSegment]);
+  const seekCitation = useCallback(
+    (segmentId: string) => {
+      const segment = liveSegments.find((item) => item.id === segmentId);
+      if (segment) playSegment(segment.startMs);
+    },
+    [liveSegments, playSegment],
+  );
   const openMeetingSettings = useCallback(() => {
     try {
-      window.sessionStorage.setItem("scriber:open-settings-section", "meetings");
+      window.sessionStorage.setItem(SETTINGS_SECTION_REQUEST_STORAGE_KEY, "meetings");
     } catch {
       // Settings still opens when session storage is unavailable.
     }
@@ -2195,65 +2578,85 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }, [detail?.reprocessing, reprocessMutation]);
 
   return (
-    <div className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6" data-page-shell="meetings">
+    <div
+      className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6"
+      data-page-shell="meetings"
+    >
       <PageIntro
-        eyebrow={t("Meeting workspace · 02")}
+        eyebrow={t("Meeting workspace")}
         title={t("Meetings")}
         description={t("Record, review, summarize, and follow up in one place.")}
         sticky={false}
-        titleAccessory={activeMeeting ? <Badge variant="outline" className={stateTone(activeMeeting.state)}>{stateLabel(activeMeeting.state, t)}</Badge> : null}
-        actions={!selectedId ? <>
-          <input
-            ref={meetingImportRef}
-            type="file"
-            accept="audio/*,video/*,.m4a,.m4v,.mkv,.webm,.opus,.flac,.wav,.mp3,.mp4,.mov,.avi"
-            className="sr-only"
-            aria-label={t("Import meeting recording")}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              event.target.value = "";
-              if (!file) return;
-              const title = file.name.replace(/\.[^.]+$/, "");
-              setMeetingImportCandidate({ file, title, durationSeconds: null });
-              setMeetingImportProgress({
-                importId: "",
-                phase: "created",
-                stage: "Ready",
-                percentage: 0,
-              });
-              const objectUrl = URL.createObjectURL(file);
-              const probe = document.createElement("audio");
-              probe.preload = "metadata";
-              probe.onloadedmetadata = () => {
-                const durationSeconds = Number.isFinite(probe.duration) ? probe.duration : null;
-                setMeetingImportCandidate((current) => current?.file === file ? { ...current, durationSeconds } : current);
-                URL.revokeObjectURL(objectUrl);
-              };
-              probe.onerror = () => URL.revokeObjectURL(objectUrl);
-              probe.src = objectUrl;
-            }}
-          />
-          <Button
-            type="button"
-            variant="outline"
-            disabled={meetingImportBusy || Boolean(activeMeeting)}
-            onClick={() => meetingImportRef.current?.click()}
-          >
-            {meetingImportBusy
-              ? <Loader2 className="animate-spin" />
-              : <FileUp />}
-            <span className="hidden sm:inline">{t("Import recording")}</span>
-            <span className="sm:hidden">{t("Import")}</span>
-          </Button>
-        </> : null}
+        titleAccessory={
+          activeMeeting ? (
+            <Badge variant="outline" className={stateTone(activeMeeting.state)}>
+              {stateLabel(activeMeeting.state, t)}
+            </Badge>
+          ) : null
+        }
+        actions={
+          !selectedId ? (
+            <>
+              <input
+                ref={meetingImportRef}
+                type="file"
+                accept="audio/*,video/*,.m4a,.m4v,.mkv,.webm,.opus,.flac,.wav,.mp3,.mp4,.mov,.avi"
+                className="sr-only"
+                aria-label={t("Import meeting recording")}
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  const title = file.name.replace(/\.[^.]+$/, "");
+                  setMeetingImportCandidate({ file, title, durationSeconds: null });
+                  setMeetingImportProgress({
+                    importId: "",
+                    phase: "created",
+                    stage: "Ready",
+                    percentage: 0,
+                  });
+                  const objectUrl = URL.createObjectURL(file);
+                  const probe = document.createElement("audio");
+                  probe.preload = "metadata";
+                  probe.onloadedmetadata = () => {
+                    const durationSeconds = Number.isFinite(probe.duration) ? probe.duration : null;
+                    setMeetingImportCandidate((current) =>
+                      current?.file === file ? { ...current, durationSeconds } : current,
+                    );
+                    URL.revokeObjectURL(objectUrl);
+                  };
+                  probe.onerror = () => URL.revokeObjectURL(objectUrl);
+                  probe.src = objectUrl;
+                }}
+              />
+              <Button
+                type="button"
+                variant="outline"
+                disabled={meetingImportBusy || Boolean(activeMeeting)}
+                onClick={() => meetingImportRef.current?.click()}
+              >
+                {meetingImportBusy ? <Loader2 className="animate-spin" /> : <FileUp />}
+                <span className="hidden sm:inline">{t("Import recording")}</span>
+                <span className="sm:hidden">{t("Import")}</span>
+              </Button>
+            </>
+          ) : null
+        }
       />
 
       {!capabilitiesQuery.isLoading && !capabilitiesQuery.data?.nativeMeetingCapture && (
-        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100" role="status">
+        <div
+          className="mb-4 flex items-start gap-3 rounded-2xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100"
+          role="status"
+        >
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
           <div>
             <p className="font-semibold">{t("Native meeting capture is not connected")}</p>
-            <p className="mt-0.5 opacity-80">{t("Meeting recording requires the installed Windows app and its private audio sidecar. History and notes remain available.")}</p>
+            <p className="mt-0.5 opacity-80">
+              {t(
+                "Meeting recording requires the installed Windows app and its private audio sidecar. History and notes remain available.",
+              )}
+            </p>
           </div>
         </div>
       )}
@@ -2264,9 +2667,17 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           <div className="flex items-center justify-between px-2 py-2">
             <div>
               <p className="text-sm font-semibold">{t("Meetings")}</p>
-              <p className="text-xs text-muted-foreground">{t("{{count}} saved", { count: formatNumber(meetingsTotal) })}</p>
+              <p className="text-xs text-muted-foreground">
+                {t("{{count}} saved", { count: formatNumber(meetingsTotal) })}
+              </p>
             </div>
-            <Button type="button" size="icon" variant="outline" onClick={() => setLocation("/meetings")} aria-label={t("Create meeting")}>
+            <Button
+              type="button"
+              size="icon"
+              variant="outline"
+              onClick={() => setLocation("/meetings")}
+              aria-label={t("Create meeting")}
+            >
               <Plus className="h-4 w-4" />
             </Button>
           </div>
@@ -2282,8 +2693,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             onRefresh={() => void meetingImportsQuery.refetch()}
           />
           <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
-            {meetingsQuery.isLoading && [0, 1, 2].map((item) => <div key={item} className="h-[64px] min-w-0 animate-pulse rounded-xl bg-muted/70" />)}
-            {meetingsQuery.isError && <p className="px-2 py-5 text-sm text-destructive">{t("Meeting history could not be loaded.")}</p>}
+            {meetingsQuery.isLoading &&
+              [0, 1, 2].map((item) => (
+                <div key={item} className="h-[64px] min-w-0 animate-pulse rounded-xl bg-muted/70" />
+              ))}
+            {meetingsQuery.isError && (
+              <p className="px-2 py-5 text-sm text-destructive">{t("Meeting history could not be loaded.")}</p>
+            )}
             {!meetingsQuery.isLoading && !meetingsQuery.isError && meetings.length === 0 && (
               <div className="flex min-w-full items-center gap-3 px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-10 min-[1100px]:text-center">
                 <CalendarClock className="h-6 w-6 shrink-0 min-[1100px]:mx-auto min-[1100px]:mb-3 min-[1100px]:h-7 min-[1100px]:w-7" />
@@ -2302,17 +2718,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 >
                   <div className="flex items-center justify-between gap-2">
                     <span className="truncate text-sm font-medium text-foreground">{meeting.title}</span>
-                    {meeting.state === "recording" && <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />}
+                    {meeting.state === "recording" && (
+                      <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-red-500" />
+                    )}
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                     <span>{formatMoment(meeting.createdAt, formatDate)}</span>
-                     <span className="truncate">{stateLabel(meeting.state, t)}</span>
+                    <span>{formatMoment(meeting.createdAt, formatDate)}</span>
+                    <span className="truncate">{stateLabel(meeting.state, t)}</span>
                   </div>
                 </button>
                 <button
                   type="button"
                   aria-label={t("Delete {{title}}", { title: meeting.title })}
-                  title={OPEN_STATES.has(meeting.state) ? t("Stop this meeting before deleting it") : t("Delete meeting")}
+                  title={
+                    OPEN_STATES.has(meeting.state) ? t("Stop this meeting before deleting it") : t("Delete meeting")
+                  }
                   disabled={OPEN_STATES.has(meeting.state)}
                   onClick={() => setMeetingPendingDelete(meeting)}
                   className={`mr-1 flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground outline-none hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-30 min-[1100px]:h-8 min-[1100px]:w-8 ${selectedId === meeting.id ? "opacity-100" : "opacity-100 min-[1100px]:pointer-events-none min-[1100px]:opacity-0 min-[1100px]:group-hover:pointer-events-auto min-[1100px]:group-hover:opacity-100 min-[1100px]:group-focus-within:pointer-events-auto min-[1100px]:group-focus-within:opacity-100"}`}
@@ -2342,11 +2762,17 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             <div className="h-full overflow-y-auto">
               <header className="border-b border-border/60 px-5 py-5 md:px-6 md:py-6 lg:px-7">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-primary">{t("New meeting")}</p>
-                <h2 className="mt-1 font-heading text-[26px] font-semibold leading-tight tracking-[-0.03em] md:text-[28px]">{t("Ready to start")}</h2>
+                <h2 className="mt-1 font-heading text-[26px] font-semibold leading-tight tracking-[-0.03em] md:text-[28px]">
+                  {t("Ready to start")}
+                </h2>
                 <p className="mt-2 max-w-[65ch] text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
                   {selectedProfile?.transcriptionMode === "final_only"
-                    ? t("Check the title and choose which microphone and speakers to record. Scriber saves both on this device and creates the transcript after you stop.")
-                    : t("Check the title and choose which microphone and speakers to record. Scriber saves both on this device while it shows live text.")}
+                    ? t(
+                        "Check the title and choose which microphone and speakers to record. Scriber saves both on this device and creates the transcript after you stop.",
+                      )
+                    : t(
+                        "Check the title and choose which microphone and speakers to record. Scriber saves both on this device while it shows live text.",
+                      )}
                 </p>
               </header>
               <div className="border-b border-border/60 bg-muted/20 px-5 py-3.5 md:px-6 lg:px-7">
@@ -2357,160 +2783,380 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     { icon: Waves, label: "Echo control", detail: "Reduces speaker echo" },
                   ].map(({ icon: Icon, label, detail }) => (
                     <div key={label} className="flex min-w-0 items-center gap-2.5">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10"><Icon className="h-4 w-4 text-primary" /></span>
-                      <div><p className="text-sm font-medium">{t(label)}</p><p className="mt-0.5 text-xs text-muted-foreground">{t(detail)}</p></div>
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                        <Icon className="h-4 w-4 text-primary" />
+                      </span>
+                      <div>
+                        <p className="text-sm font-medium">{t(label)}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{t(detail)}</p>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
               <div className="grid gap-5 p-5 md:p-6 lg:p-7 min-[1380px]:grid-cols-[minmax(0,1fr)_260px]">
                 <section className="flex min-w-0 flex-col gap-4">
-                <div>
-                  <label htmlFor="meeting-title" className="text-sm font-medium">{t("Meeting title")}</label>
-                  <Input id="meeting-title" value={title} onChange={(event) => setTitle(event.target.value)} placeholder={t("Weekly product sync")} className="mt-2 h-12 text-base" />
-                  <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-                    <Button
-                      type="button"
-                      disabled={startBlocked || startMutation.isPending}
-                      aria-describedby="meeting-start-status"
-                      onClick={() => startMutation.mutate()}
-                      className="w-full min-w-[168px] sm:w-auto"
-                    >
-                      {startMutation.isPending ? <Loader2 className="animate-spin" /> : <CirclePlay />}
-                      {startMutation.isPending ? t("Starting…") : t("Start meeting")}
-                    </Button>
-                    <p id="meeting-start-status" className="flex min-h-5 items-center gap-1.5 text-xs leading-5 text-muted-foreground" role="status" aria-live="polite">
-                      <ShieldCheck className={`h-3.5 w-3.5 shrink-0 ${startBlocked ? "text-amber-600 dark:text-amber-300" : "text-emerald-600 dark:text-emerald-300"}`} />
-                      {meetingStartStatus}
-                    </p>
-                  </div>
-                </div>
-                {detectionQuery.data?.detection && <div className="rounded-2xl border border-primary/35 bg-primary/5 p-4">
-                  <div className="flex items-start gap-3">
-                    <MonitorSpeaker className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium">{t("Meeting activity detected")}</p>
-                      <p className="mt-1 truncate text-sm text-muted-foreground">{detectionQuery.data.detection.label}</p>
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        <Button type="button" size="sm" variant="secondary" onClick={() => {
-                          const calendarEvent = detectionQuery.data?.detection?.calendarEvent;
-                          setTitle(calendarEvent?.subject || detectionQuery.data?.detection?.label || t("Meeting"));
-                          if (calendarEvent?.id) {
-                            setSelectedCalendarEventId(calendarEvent.id);
-                            setCalendarSelectionNeedsReview(false);
-                            selectedCalendarSubjectRef.current = calendarEvent.subject;
-                          }
-                        }}>{t("Use suggestion")}</Button>
-                        <Button type="button" size="sm" variant="ghost" disabled={detectionDismissMutation.isPending} onClick={() => detectionDismissMutation.mutate(detectionQuery.data!.detection!.detectionId)}>{t("Dismiss")}</Button>
-                      </div>
+                  <div>
+                    <label htmlFor="meeting-title" className="text-sm font-medium">
+                      {t("Meeting title")}
+                    </label>
+                    <Input
+                      id="meeting-title"
+                      value={title}
+                      onChange={(event) => setTitle(event.target.value)}
+                      placeholder={t("Weekly product sync")}
+                      className="mt-2 h-12 text-base"
+                    />
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+                      <Button
+                        type="button"
+                        disabled={startBlocked || startMutation.isPending}
+                        aria-describedby="meeting-start-status"
+                        onClick={() => startMutation.mutate()}
+                        className="w-full min-w-[168px] sm:w-auto"
+                      >
+                        {startMutation.isPending ? <Loader2 className="animate-spin" /> : <CirclePlay />}
+                        {startMutation.isPending ? t("Starting…") : t("Start meeting")}
+                      </Button>
+                      <p
+                        id="meeting-start-status"
+                        className="flex min-h-5 items-center gap-1.5 text-xs leading-5 text-muted-foreground"
+                        role="status"
+                        aria-live="polite"
+                      >
+                        <ShieldCheck
+                          className={`h-3.5 w-3.5 shrink-0 ${startBlocked ? "text-amber-600 dark:text-amber-300" : "text-emerald-600 dark:text-emerald-300"}`}
+                        />
+                        {meetingStartStatus}
+                      </p>
                     </div>
                   </div>
-                </div>}
-                <OutlookMeetingPicker
-                  status={outlookQuery.data}
-                  events={outlookEventsQuery.data}
-                  statusLoading={outlookQuery.isLoading}
-                  statusError={outlookQuery.isError || outlookQuery.data?.credentialStatusAvailable === false}
-                  eventsLoading={outlookEventsQuery.isLoading || Boolean(outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && !outlookQuery.data.lastError)}
-                  eventsError={outlookEventsQuery.isError || Boolean(outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && outlookQuery.data.lastError)}
-                  refreshing={outlookSyncMutation.isPending || outlookQuery.isFetching || outlookEventsQuery.isFetching}
-                  selectedEventId={selectedCalendarEventId}
-                  selectionNeedsReview={calendarSelectionNeedsReview}
-                  onSelect={(event: OutlookCalendarEvent | null) => {
-                    setSelectedCalendarEventId(event?.id ?? "");
-                    setCalendarSelectionNeedsReview(false);
-                    selectedCalendarSubjectRef.current = event?.subject ?? "";
-                    if (event) setTitle(event.subject || t("Meeting"));
-                  }}
-                  onRefresh={() => {
-                    if (outlookQuery.data?.connected) outlookSyncMutation.mutate();
-                    else void outlookQuery.refetch();
-                  }}
-                  onOpenSettings={openMeetingSettings}
-                />
-                <div className="grid min-w-0 gap-4 overflow-hidden rounded-2xl border border-border/70 bg-background/55 p-4">
-                  <div className="min-w-0">
-                    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">{t("Transcription")}</p>
-                        <p className="mt-1 text-sm font-semibold text-foreground">
-                          {selectedProfile
-                            ? selectedProfile.transcriptionMode === "final_only"
-                              ? t("Transcript after meeting")
-                              : t("Live text + accurate transcript")
-                            : t("Loading transcription settings…")}
-                        </p>
-                        {selectedProfile && <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                          {selectedProfile.transcriptionMode === "final_only"
-                            ? t("No cloud live text · {{provider}} after you stop", { provider: selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider })
-                            : selectedProfile.livePreviewAvailable === false
-                              ? t("Live text needs a Soniox API key · {{provider}} still runs after you stop", { provider: selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider })
-                              : t("Soniox live text · {{provider}} final pass", { provider: selectedProfile.stages.find((stage) => stage.id === "final")?.provider ?? selectedProfile.finalProvider })}
-                          {selectedProfileCostPerHour != null
-                            ? ` · ${t("about ${{cost}} per meeting hour", { cost: formatNumber(selectedProfileCostPerHour, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}`
-                            : ` · ${t("provider price varies")}`}
-                        </p>}
-                      </div>
-                      <Button type="button" size="sm" variant="outline" className="shrink-0" onClick={openMeetingSettings}>{t("Change in Settings")}</Button>
-                    </div>
-                    {selectedProfile && <details className="group mt-3 rounded-xl border border-border/60 bg-muted/15">
-                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium marker:content-none">
-                        <span>{t("What happens")}</span>
-                        <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
-                      </summary>
-                      <div className="divide-y divide-border/60 border-t border-border/60 px-3">
-                        {(selectedProfile.stages ?? []).map((stage) => <div key={stage.id} className="grid gap-1 py-2.5 sm:grid-cols-[130px_minmax(0,1fr)]">
-                          <p className="text-[11px] font-medium text-muted-foreground">{t(stage.label)}</p>
-                          <div className="min-w-0">
-                            <p className="truncate text-xs font-semibold">{stage.provider}{stage.model ? <> · <span className="font-mono font-normal">{stage.model}</span></> : null}</p>
-                            <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">{t(stage.purpose)}</p>
+                  {detectionQuery.data?.detection && (
+                    <div className="rounded-2xl border border-primary/35 bg-primary/5 p-4">
+                      <div className="flex items-start gap-3">
+                        <MonitorSpeaker className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium">{t("Meeting activity detected")}</p>
+                          <p className="mt-1 truncate text-sm text-muted-foreground">
+                            {detectionQuery.data.detection.label}
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => {
+                                const calendarEvent = detectionQuery.data?.detection?.calendarEvent;
+                                setTitle(
+                                  calendarEvent?.subject || detectionQuery.data?.detection?.label || t("Meeting"),
+                                );
+                                if (calendarEvent?.id) {
+                                  setSelectedCalendarEventId(calendarEvent.id);
+                                  setCalendarSelectionNeedsReview(false);
+                                  selectedCalendarSubjectRef.current = calendarEvent.subject;
+                                }
+                              }}
+                            >
+                              {t("Use suggestion")}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              disabled={detectionDismissMutation.isPending}
+                              onClick={() =>
+                                detectionDismissMutation.mutate(detectionQuery.data!.detection!.detectionId)
+                              }
+                            >
+                              {t("Dismiss")}
+                            </Button>
                           </div>
-                        </div>)}
+                        </div>
                       </div>
-                    </details>}
-                    {selectedProfile && !selectedProfile.available && <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">{t(selectedProfile.unavailableReason)}</p>}
-                  </div>
-                  <div className="min-w-0 border-t border-border/60 pt-4">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="text-sm font-medium">{t("Audio devices")}</p>
-                      <Button type="button" size="sm" variant="ghost" disabled={audioDevicesQuery.isFetching} onClick={() => void audioDevicesQuery.refetch()}><RefreshCw className={audioDevicesQuery.isFetching ? "animate-spin" : ""} />{t("Refresh")}</Button>
                     </div>
-                    <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                      <div className="min-w-0"><label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">{t("Microphone")}</label><select id="meeting-microphone" value={microphoneEndpointHash} disabled={microphoneSelectDisabled} onChange={(event) => setMicrophoneEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="">{audioDeviceInitialLoading ? t("Looking for microphones…") : captureEndpoints.length === 0 ? t("Windows default microphone (automatic)") : t("Windows default microphone")}</option>{captureEndpoints.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? t(" (default)") : ""}</option>)}</select></div>
-                      <div className="min-w-0"><label htmlFor="meeting-render" className="text-xs text-muted-foreground">{t("Speakers / meeting audio")}</label><select id="meeting-render" value={renderEndpointHash} disabled={renderSelectDisabled} onChange={(event) => setRenderEndpointHash(event.target.value)} className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"><option value="">{audioDeviceInitialLoading ? t("Looking for speakers…") : renderEndpoints.length === 0 ? t("Windows default speakers (automatic)") : t("Windows default speakers")}</option>{renderEndpoints.map((endpoint) => <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>{endpoint.friendlyName}{endpoint.isDefault ? t(" (default)") : ""}</option>)}</select></div>
+                  )}
+                  <OutlookMeetingPicker
+                    status={outlookQuery.data}
+                    events={outlookEventsQuery.data}
+                    statusLoading={outlookQuery.isLoading}
+                    statusError={outlookQuery.isError || outlookQuery.data?.credentialStatusAvailable === false}
+                    eventsLoading={
+                      outlookEventsQuery.isLoading ||
+                      Boolean(
+                        outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && !outlookQuery.data.lastError,
+                      )
+                    }
+                    eventsError={
+                      outlookEventsQuery.isError ||
+                      Boolean(
+                        outlookQuery.data?.connected && !outlookQuery.data.lastSyncAt && outlookQuery.data.lastError,
+                      )
+                    }
+                    refreshing={
+                      outlookSyncMutation.isPending || outlookQuery.isFetching || outlookEventsQuery.isFetching
+                    }
+                    selectedEventId={selectedCalendarEventId}
+                    selectionNeedsReview={calendarSelectionNeedsReview}
+                    onSelect={(event: OutlookCalendarEvent | null) => {
+                      setSelectedCalendarEventId(event?.id ?? "");
+                      setCalendarSelectionNeedsReview(false);
+                      selectedCalendarSubjectRef.current = event?.subject ?? "";
+                      if (event) setTitle(event.subject || t("Meeting"));
+                    }}
+                    onRefresh={() => {
+                      if (outlookQuery.data?.connected) outlookSyncMutation.mutate();
+                      else void outlookQuery.refetch();
+                    }}
+                    onOpenSettings={openMeetingSettings}
+                  />
+                  <div className="grid min-w-0 gap-4 overflow-hidden rounded-2xl border border-border/70 bg-background/55 p-4">
+                    <div className="min-w-0">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">{t("Transcription")}</p>
+                          <p className="mt-1 text-sm font-semibold text-foreground">
+                            {selectedProfile
+                              ? selectedProfile.transcriptionMode === "final_only"
+                                ? t("Transcript after meeting")
+                                : t("Live text + accurate transcript")
+                              : t("Loading transcription settings…")}
+                          </p>
+                          {selectedProfile && (
+                            <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                              {selectedProfile.transcriptionMode === "final_only"
+                                ? t("No cloud live text · {{provider}} after you stop", {
+                                    provider:
+                                      selectedProfile.stages.find((stage) => stage.id === "final")?.provider ??
+                                      selectedProfile.finalProvider,
+                                  })
+                                : selectedProfile.livePreviewAvailable === false
+                                  ? t("Live text needs a Soniox API key · {{provider}} still runs after you stop", {
+                                      provider:
+                                        selectedProfile.stages.find((stage) => stage.id === "final")?.provider ??
+                                        selectedProfile.finalProvider,
+                                    })
+                                  : t("Soniox live text · {{provider}} final pass", {
+                                      provider:
+                                        selectedProfile.stages.find((stage) => stage.id === "final")?.provider ??
+                                        selectedProfile.finalProvider,
+                                    })}
+                              {selectedProfileCostPerHour != null
+                                ? ` · ${t("about ${{cost}} per meeting hour", { cost: formatNumber(selectedProfileCostPerHour, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) })}`
+                                : ` · ${t("provider price varies")}`}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          className="shrink-0"
+                          onClick={openMeetingSettings}
+                        >
+                          {t("Change in Settings")}
+                        </Button>
+                      </div>
+                      {selectedProfile && (
+                        <details className="group mt-3 rounded-xl border border-border/60 bg-muted/15">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-medium marker:content-none">
+                            <span>{t("What happens")}</span>
+                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
+                          </summary>
+                          <div className="divide-y divide-border/60 border-t border-border/60 px-3">
+                            {(selectedProfile.stages ?? []).map((stage) => (
+                              <div key={stage.id} className="grid gap-1 py-2.5 sm:grid-cols-[130px_minmax(0,1fr)]">
+                                <p className="text-[11px] font-medium text-muted-foreground">{t(stage.label)}</p>
+                                <div className="min-w-0">
+                                  <p className="truncate text-xs font-semibold">
+                                    {stage.provider}
+                                    {stage.model ? (
+                                      <>
+                                        {" "}
+                                        · <span className="font-mono font-normal">{stage.model}</span>
+                                      </>
+                                    ) : null}
+                                  </p>
+                                  <p className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+                                    {t(stage.purpose)}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
+                      )}
+                      {selectedProfile && !selectedProfile.available && (
+                        <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">
+                          {t(selectedProfile.unavailableReason)}
+                        </p>
+                      )}
                     </div>
-                    <p className={`mt-2 text-xs leading-5 ${audioDeviceInventoryUnavailable ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`} role="status" aria-live="polite">{audioDeviceStatus}</p>
-                    <Button type="button" size="sm" variant="outline" className="mt-3 h-auto min-h-9 w-full whitespace-normal px-3 text-center leading-5" disabled={!audioDevicesQuery.data?.available || deviceTestMutation.isPending || capabilitiesQuery.data?.liveMicBusy || Boolean(capabilitiesQuery.data?.activeMeeting)} onClick={() => deviceTestMutation.mutate()}>
-                      {deviceTestMutation.isPending ? <Loader2 className="animate-spin" /> : <Waves />}{t("Test microphone and playback")}
-                    </Button>
-                    <p className="mt-2 text-[11px] leading-4 text-muted-foreground">{t("Speak normally during the 3-second test. Scriber also plays a short sound through your speakers. Nothing is saved or uploaded.")}</p>
-                    {deviceTestMutation.data && <div className="mt-3 space-y-2" role="status">
-                      {(["microphone", "system"] as const).map((source) => {
-                        const result = deviceTestMutation.data?.sources[source];
-                        const rms = result?.rms ?? 0;
-                        const levelPercent = rms > 0
-                          ? Math.max(3, Math.min(100, ((20 * Math.log10(rms) + 60) / 60) * 100))
-                          : 0;
-                        const hasFrames = (result?.frames ?? 0) > 0 && !result?.errorCode;
-                        return <div key={source} className="rounded-lg border border-border/60 bg-muted/35 px-2.5 py-2">
-                          <div className="flex items-center justify-between gap-3 text-[11px]"><span className="font-medium">{source === "microphone" ? t("Microphone input") : t("Speaker loopback")}</span><span className={hasFrames ? "text-emerald-700 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{hasFrames ? t("Signal received") : result?.errorCode ? t("Could not read") : t("No signal")}</span></div>
-                          <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${levelPercent}%` }} /></div>
-                          <p className="mt-1 text-[10px] text-muted-foreground">{hasFrames ? t("Input level: {{percent}}%", { percent: formatNumber(Math.round(levelPercent)) }) : t("No sound detected")}</p>
-                        </div>;
-                      })}
-                      <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground"><Volume2 className="h-3.5 w-3.5" />{deviceTestMutation.data.testTonePlayed ? t("Speaker sound played") : t("Speaker sound unavailable")} · {t("Echo reduction")} {deviceTestMutation.data.aecActive ? t("ready") : t("unavailable")}</p>
-                    </div>}
+                    <div className="min-w-0 border-t border-border/60 pt-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <p className="text-sm font-medium">{t("Audio devices")}</p>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={audioDevicesQuery.isFetching}
+                          onClick={() => void audioDevicesQuery.refetch()}
+                        >
+                          <RefreshCw className={audioDevicesQuery.isFetching ? "animate-spin" : ""} />
+                          {t("Refresh")}
+                        </Button>
+                      </div>
+                      <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                        <div className="min-w-0">
+                          <label htmlFor="meeting-microphone" className="text-xs text-muted-foreground">
+                            {t("Microphone")}
+                          </label>
+                          <select
+                            id="meeting-microphone"
+                            value={microphoneEndpointHash}
+                            disabled={microphoneSelectDisabled}
+                            onChange={(event) => setMicrophoneEndpointHash(event.target.value)}
+                            className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <option value="">
+                              {audioDeviceInitialLoading
+                                ? t("Looking for microphones…")
+                                : captureEndpoints.length === 0
+                                  ? t("Windows default microphone (automatic)")
+                                  : t("Windows default microphone")}
+                            </option>
+                            {captureEndpoints.map((endpoint) => (
+                              <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>
+                                {endpoint.friendlyName}
+                                {endpoint.isDefault ? t(" (default)") : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        <div className="min-w-0">
+                          <label htmlFor="meeting-render" className="text-xs text-muted-foreground">
+                            {t("Speakers / meeting audio")}
+                          </label>
+                          <select
+                            id="meeting-render"
+                            value={renderEndpointHash}
+                            disabled={renderSelectDisabled}
+                            onChange={(event) => setRenderEndpointHash(event.target.value)}
+                            className="mt-1 h-9 w-full min-w-0 rounded-lg border border-input bg-background px-2 text-xs disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <option value="">
+                              {audioDeviceInitialLoading
+                                ? t("Looking for speakers…")
+                                : renderEndpoints.length === 0
+                                  ? t("Windows default speakers (automatic)")
+                                  : t("Windows default speakers")}
+                            </option>
+                            {renderEndpoints.map((endpoint) => (
+                              <option key={endpoint.endpointIdHash} value={endpoint.endpointIdHash}>
+                                {endpoint.friendlyName}
+                                {endpoint.isDefault ? t(" (default)") : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+                      <p
+                        className={`mt-2 text-xs leading-5 ${audioDeviceInventoryUnavailable ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground"}`}
+                        role="status"
+                        aria-live="polite"
+                      >
+                        {audioDeviceStatus}
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="mt-3 h-auto min-h-9 w-full whitespace-normal px-3 text-center leading-5"
+                        disabled={
+                          !audioDevicesQuery.data?.available ||
+                          deviceTestMutation.isPending ||
+                          capabilitiesQuery.data?.liveMicBusy ||
+                          Boolean(capabilitiesQuery.data?.activeMeeting)
+                        }
+                        onClick={() => deviceTestMutation.mutate()}
+                      >
+                        {deviceTestMutation.isPending ? <Loader2 className="animate-spin" /> : <Waves />}
+                        {t("Test microphone and playback")}
+                      </Button>
+                      <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+                        {t(
+                          "Speak normally during the 3-second test. Scriber also plays a short sound through your speakers. Nothing is saved or uploaded.",
+                        )}
+                      </p>
+                      {deviceTestMutation.data && (
+                        <div className="mt-3 space-y-2" role="status">
+                          {(["microphone", "system"] as const).map((source) => {
+                            const result = deviceTestMutation.data?.sources[source];
+                            const rms = result?.rms ?? 0;
+                            const levelPercent =
+                              rms > 0 ? Math.max(3, Math.min(100, ((20 * Math.log10(rms) + 60) / 60) * 100)) : 0;
+                            const hasFrames = (result?.frames ?? 0) > 0 && !result?.errorCode;
+                            return (
+                              <div key={source} className="rounded-lg border border-border/60 bg-muted/35 px-2.5 py-2">
+                                <div className="flex items-center justify-between gap-3 text-[11px]">
+                                  <span className="font-medium">
+                                    {source === "microphone" ? t("Microphone input") : t("Speaker loopback")}
+                                  </span>
+                                  <span
+                                    className={
+                                      hasFrames
+                                        ? "text-emerald-700 dark:text-emerald-300"
+                                        : "text-amber-700 dark:text-amber-300"
+                                    }
+                                  >
+                                    {hasFrames
+                                      ? t("Signal received")
+                                      : result?.errorCode
+                                        ? t("Could not read")
+                                        : t("No signal")}
+                                  </span>
+                                </div>
+                                <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-muted">
+                                  <div
+                                    className="h-full rounded-full bg-primary"
+                                    style={{ width: `${levelPercent}%` }}
+                                  />
+                                </div>
+                                <p className="mt-1 text-ui-micro text-muted-foreground">
+                                  {hasFrames
+                                    ? t("Input level: {{percent}}%", {
+                                        percent: formatNumber(Math.round(levelPercent)),
+                                      })
+                                    : t("No sound detected")}
+                                </p>
+                              </div>
+                            );
+                          })}
+                          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                            <Volume2 className="h-3.5 w-3.5" />
+                            {deviceTestMutation.data.testTonePlayed
+                              ? t("Speaker sound played")
+                              : t("Speaker sound unavailable")}{" "}
+                            · {t("Echo reduction")} {deviceTestMutation.data.aecActive ? t("ready") : t("unavailable")}
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
                 </section>
                 <aside className="h-fit min-w-0 rounded-[22px] border border-border/70 bg-background/45 p-4 min-[1380px]:sticky min-[1380px]:top-4">
                   <div className="flex items-center gap-2">
-                    <ShieldCheck className={`h-4 w-4 ${longSessionReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`} />
-                    <h3 className="text-sm font-semibold">{longSessionReady ? t("Ready for a long meeting") : t("Check before a long meeting")}</h3>
+                    <ShieldCheck
+                      className={`h-4 w-4 ${longSessionReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}
+                    />
+                    <h3 className="text-sm font-semibold">
+                      {longSessionReady ? t("Ready for a long meeting") : t("Check before a long meeting")}
+                    </h3>
                   </div>
                   <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
                     {longSessionReady
-                      ? t("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")
+                      ? t(
+                          "Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.",
+                        )
                       : !capabilitiesQuery.data?.nativeMeetingCapture
                         ? t("Meeting audio recording is not available on this PC right now.")
                         : longSession?.availableFreeBytes == null
@@ -2518,25 +3164,95 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           : !longSession.storageReady
                             ? t("There is not enough free space for a five-hour meeting.")
                             : !finalProviderCapability?.fiveHourSupported
-                              ? t("The selected transcription option cannot process a five-hour meeting. Choose another in Settings.")
+                              ? t(
+                                  "The selected transcription option cannot process a five-hour meeting. Choose another in Settings.",
+                                )
                               : t("Scriber could not confirm that this setup is ready for five hours.")}
                   </p>
                   <div className="mt-4 divide-y divide-border/60 rounded-xl border border-border/60 bg-muted/20 px-3">
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Audio recording")}</span><span className={capabilitiesQuery.data?.nativeMeetingCapture ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{capabilitiesQuery.data?.nativeMeetingCapture ? t("Ready") : t("Unavailable")}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Safety saves")}</span><span>{t("Every {{seconds}} s", { seconds: formatNumber(longSession?.checkpointIntervalSeconds ?? 30) })}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Free storage")}</span><span className={longSession?.storageReady ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{longSession?.availableFreeBytes != null ? formatImportBytes(longSession.availableFreeBytes, formatNumber) : t("Not checked")}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Estimated recording time")}</span><span>{formatCapacity(longSession?.estimatedCaptureSeconds, t, formatNumber)}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Final transcript")}</span><span className={finalProviderCapability?.fiveHourSupported ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderDurationLabel}</span></div>
-                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs"><span className="text-muted-foreground">{t("Speaker names")}</span><span className={finalProviderCapability?.batchDiarization ? "text-emerald-600 dark:text-emerald-300" : "text-amber-700 dark:text-amber-300"}>{finalProviderCapability?.batchDiarization ? t("Included") : t("Up to 60 min")}</span></div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Audio recording")}</span>
+                      <span
+                        className={
+                          capabilitiesQuery.data?.nativeMeetingCapture
+                            ? "text-emerald-600 dark:text-emerald-300"
+                            : "text-amber-700 dark:text-amber-300"
+                        }
+                      >
+                        {capabilitiesQuery.data?.nativeMeetingCapture ? t("Ready") : t("Unavailable")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Safety saves")}</span>
+                      <span>
+                        {t("Every {{seconds}} s", {
+                          seconds: formatNumber(longSession?.checkpointIntervalSeconds ?? 30),
+                        })}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Free storage")}</span>
+                      <span
+                        className={
+                          longSession?.storageReady
+                            ? "text-emerald-600 dark:text-emerald-300"
+                            : "text-amber-700 dark:text-amber-300"
+                        }
+                      >
+                        {longSession?.availableFreeBytes != null
+                          ? formatImportBytes(longSession.availableFreeBytes, formatNumber)
+                          : t("Not checked")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Estimated recording time")}</span>
+                      <span>{formatCapacity(longSession?.estimatedCaptureSeconds, t, formatNumber)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Final transcript")}</span>
+                      <span
+                        className={
+                          finalProviderCapability?.fiveHourSupported
+                            ? "text-emerald-600 dark:text-emerald-300"
+                            : "text-amber-700 dark:text-amber-300"
+                        }
+                      >
+                        {finalProviderDurationLabel}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <span className="text-muted-foreground">{t("Speaker names")}</span>
+                      <span
+                        className={
+                          finalProviderCapability?.batchDiarization
+                            ? "text-emerald-600 dark:text-emerald-300"
+                            : "text-amber-700 dark:text-amber-300"
+                        }
+                      >
+                        {finalProviderCapability?.batchDiarization ? t("Included") : t("Up to 60 min")}
+                      </span>
+                    </div>
                   </div>
-                  {!finalProviderCapability?.batchDiarization && <p className="mt-2 text-[11px] leading-4 text-muted-foreground">{t("For meetings over 60 minutes, choose a transcription option that includes speaker names.")}</p>}
+                  {!finalProviderCapability?.batchDiarization && (
+                    <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
+                      {t("For meetings over 60 minutes, choose a transcription option that includes speaker names.")}
+                    </p>
+                  )}
                 </aside>
               </div>
             </div>
           ) : detailQuery.isLoading ? (
-            <div className="space-y-4"><div className="h-12 animate-pulse rounded-xl bg-muted" /><div className="h-96 animate-pulse rounded-2xl bg-muted/70" /></div>
+            <div className="space-y-4">
+              <div className="h-12 animate-pulse rounded-xl bg-muted" />
+              <div className="h-96 animate-pulse rounded-2xl bg-muted/70" />
+            </div>
           ) : detailQuery.isError || !detail ? (
-            <div className="flex h-full items-center justify-center text-center"><div><AlertTriangle className="mx-auto mb-3 h-8 w-8 text-destructive" /><p className="font-medium">{t("Meeting could not be loaded.")}</p></div></div>
+            <div className="flex h-full items-center justify-center text-center">
+              <div>
+                <AlertTriangle className="mx-auto mb-3 h-8 w-8 text-destructive" />
+                <p className="font-medium">{t("Meeting could not be loaded.")}</p>
+              </div>
+            </div>
           ) : (
             <div className="flex h-full min-h-0 flex-col">
               <header className="flex flex-col gap-4 border-b border-border/60 px-5 py-5 sm:flex-row sm:items-center sm:justify-between md:px-6 lg:px-7">
@@ -2548,79 +3264,168 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     className="mb-2 -ml-2 h-7 px-2 text-xs min-[1100px]:hidden"
                     onClick={() => setLocation("/meetings")}
                   >
-                    <ChevronLeft className="mr-1 h-3.5 w-3.5" />{t("All meetings")}
+                    <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+                    {t("All meetings")}
                   </Button>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">{detail.title}</h2>
-                    <Badge variant="outline" className={stateTone(detail.state)}>{stateLabel(detail.state, t)}</Badge>
+                    <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">
+                      {detail.title}
+                    </h2>
+                    <Badge variant="outline" className={stateTone(detail.state)}>
+                      {stateLabel(detail.state, t)}
+                    </Badge>
                   </div>
-                  <p className="mt-1 text-xs text-muted-foreground">{t("Started {{moment}}", { moment: formatMoment(detail.startedAt || detail.createdAt, formatDate) })}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {t("Started {{moment}}", {
+                      moment: formatMoment(detail.startedAt || detail.createdAt, formatDate),
+                    })}
+                  </p>
                 </div>
-                {(detail.state === "recording" || detail.state === "paused") && <MeetingElapsedTime startedAt={detail.startedAt} audioGaps={detail.audioGaps} paused={detail.state === "paused"} pausedAtTimelineMs={detail.captureMetadata.pauseStartedAtMs} pausedAtUtc={detail.captureMetadata.pauseStartedAtUtc} recordingTimelineOffsetMs={detail.captureMetadata.timelineOffsetMs} recordingTimelineStartedAtUtc={detail.captureMetadata.timelineStartedAtUtc} finalProviderMaxDurationSeconds={detailFinalProviderCapability?.maxDurationSeconds} />}
+                {(detail.state === "recording" || detail.state === "paused") && (
+                  <MeetingElapsedTime
+                    startedAt={detail.startedAt}
+                    audioGaps={detail.audioGaps}
+                    paused={detail.state === "paused"}
+                    pausedAtTimelineMs={detail.captureMetadata.pauseStartedAtMs}
+                    pausedAtUtc={detail.captureMetadata.pauseStartedAtUtc}
+                    recordingTimelineOffsetMs={detail.captureMetadata.timelineOffsetMs}
+                    recordingTimelineStartedAtUtc={detail.captureMetadata.timelineStartedAtUtc}
+                    finalProviderMaxDurationSeconds={detailFinalProviderCapability?.maxDurationSeconds}
+                  />
+                )}
                 <div className="flex flex-wrap gap-2">
-                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && <Button type="button" variant="outline" className="h-9" disabled>
-                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />{detail.reprocessing.speakerIdentityRunning ? t("Refreshing speakers…") : t("Processing…")}
-                  </Button>}
-                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing && !detail.reprocessing.processingRunning && (detail.reprocessing.speakerIdentityAvailable || detail.reprocessing.fullTranscriptAvailable) && <Button type="button" variant="outline" className="h-9 active:scale-[0.97]" onClick={openReprocessDialog}>
-                    <RefreshCw className="mr-2 h-3.5 w-3.5" />{t("Process again")}
-                  </Button>}
-                  {detail.state === "ready" && <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
-                        <Download className="mr-2 h-3.5 w-3.5" />{t("Save or share")}<ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
+                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && (
+                    <Button type="button" variant="outline" className="h-9" disabled>
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      {detail.reprocessing.speakerIdentityRunning ? t("Refreshing speakers…") : t("Processing…")}
+                    </Button>
+                  )}
+                  {["ready", "analysis_failed"].includes(detail.state) &&
+                    detail.reprocessing &&
+                    !detail.reprocessing.processingRunning &&
+                    (detail.reprocessing.speakerIdentityAvailable || detail.reprocessing.fullTranscriptAvailable) && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-9 active:scale-[0.97]"
+                        onClick={openReprocessDialog}
+                      >
+                        <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                        {t("Process again")}
                       </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end" className="min-w-52">
-                      {(["json", "md", "pdf", "docx"] as const).map((format) => (
+                    )}
+                  {detail.state === "ready" && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
+                          <Download className="mr-2 h-3.5 w-3.5" />
+                          {t("Save or share")}
+                          <ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="min-w-52">
+                        {(["json", "md", "pdf", "docx"] as const).map((format) => (
+                          <DropdownMenuItem
+                            key={format}
+                            aria-label={t("Export meeting as {{format}}", { format: format.toUpperCase() })}
+                            disabled={exportMutation.isPending}
+                            onSelect={() => {
+                              exportMutation.mutate({
+                                path: `/api/meetings/${detail.id}/export/${format}`,
+                                fallbackName: `${detail.title}.${format}`,
+                              });
+                            }}
+                          >
+                            <FileText className="mr-2 h-3.5 w-3.5" />
+                            {t("Save {{format}}", {
+                              format:
+                                format === "docx"
+                                  ? t("Word document")
+                                  : format === "md"
+                                    ? "Markdown"
+                                    : format.toUpperCase(),
+                            })}
+                          </DropdownMenuItem>
+                        ))}
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem
-                          key={format}
-                          aria-label={t("Export meeting as {{format}}", { format: format.toUpperCase() })}
-                          disabled={exportMutation.isPending}
-                          onSelect={() => {
+                          disabled={exportMutation.isPending || !hasPlayableAudio}
+                          onSelect={() =>
                             exportMutation.mutate({
-                              path: `/api/meetings/${detail.id}/export/${format}`,
-                              fallbackName: `${detail.title}.${format}`,
-                            });
-                          }}
+                              path: `/api/meetings/${detail.id}/export/audio`,
+                              fallbackName: `${detail.title} - audio.opus`,
+                            })
+                          }
+                          className="items-start"
                         >
-                          <FileText className="mr-2 h-3.5 w-3.5" />{t("Save {{format}}", { format: format === "docx" ? t("Word document") : format === "md" ? "Markdown" : format.toUpperCase() })}
+                          <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
+                          <span>
+                            <span className="block">{t("Save compressed audio")}</span>
+                            <span className="mt-0.5 block text-ui-micro leading-4 text-muted-foreground">
+                              {hasPlayableAudio
+                                ? t("Small Opus file for sharing or archiving")
+                                : t("Compressed audio is not retained for this meeting")}
+                            </span>
+                          </span>
                         </DropdownMenuItem>
-                      ))}
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        disabled={exportMutation.isPending || !hasPlayableAudio}
-                        onSelect={() => exportMutation.mutate({
-                          path: `/api/meetings/${detail.id}/export/audio`,
-                          fallbackName: `${detail.title} - audio.opus`,
-                        })}
-                        className="items-start"
-                      >
-                        <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
-                        <span>
-                          <span className="block">{t("Save compressed audio")}</span>
-                          <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">{hasPlayableAudio ? t("Small Opus file for sharing or archiving") : t("Compressed audio is not retained for this meeting")}</span>
-                        </span>
-                      </DropdownMenuItem>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        onSelect={() => setEmailDialogOpen(true)}
-                      >
-                        <Mail className="mr-2 h-3.5 w-3.5" />{t("Create email draft")}
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>}
-                  {detail.state === "recording" && <Button variant="outline" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}><CirclePause className="h-4 w-4" />{t("Pause")}</Button>}
-                  {detail.state === "paused" && <Button variant="outline" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}><CirclePlay className="h-4 w-4" />{t("Resume")}</Button>}
-                  {(detail.state === "recording" || detail.state === "paused") && <Button variant="destructive" className="w-32" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}><Square className="h-4 w-4" />{t("Stop")}</Button>}
-                  {OPEN_STATES.has(detail.state) && controlMutation.isPending && <Loader2 className="h-5 w-5 animate-spin self-center text-muted-foreground" />}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onSelect={() => setEmailDialogOpen(true)}>
+                          <Mail className="mr-2 h-3.5 w-3.5" />
+                          {t("Create email draft")}
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                  {detail.state === "recording" && (
+                    <Button
+                      variant="outline"
+                      className="w-32"
+                      disabled={controlMutation.isPending}
+                      onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}
+                    >
+                      <CirclePause className="h-4 w-4" />
+                      {t("Pause")}
+                    </Button>
+                  )}
+                  {detail.state === "paused" && (
+                    <Button
+                      variant="outline"
+                      className="w-32"
+                      disabled={controlMutation.isPending}
+                      onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}
+                    >
+                      <CirclePlay className="h-4 w-4" />
+                      {t("Resume")}
+                    </Button>
+                  )}
+                  {(detail.state === "recording" || detail.state === "paused") && (
+                    <Button
+                      variant="destructive"
+                      className="w-32"
+                      disabled={controlMutation.isPending}
+                      onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}
+                    >
+                      <Square className="h-4 w-4" />
+                      {t("Stop")}
+                    </Button>
+                  )}
+                  {OPEN_STATES.has(detail.state) && controlMutation.isPending && (
+                    <Loader2 className="h-5 w-5 animate-spin self-center text-muted-foreground" />
+                  )}
                 </div>
               </header>
 
               {lastExport && (
-                <div className="border-b border-emerald-300/60 bg-emerald-500/10 px-5 py-3 text-emerald-950 dark:text-emerald-100 sm:px-6" role="status">
+                <div
+                  className="border-b border-emerald-300/60 bg-emerald-500/10 px-5 py-3 text-emerald-950 dark:text-emerald-100 sm:px-6"
+                  role="status"
+                >
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                     <div className="flex min-w-0 items-start gap-3">
-                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                      <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300"
+                        aria-hidden="true"
+                      />
                       <div className="min-w-0">
                         <p className="text-sm font-semibold">
                           {lastExport.desktop
@@ -2629,23 +3434,51 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                               })
                             : t("Download started")}
                         </p>
-                        <p className="mt-0.5 truncate text-xs opacity-80" title={lastExport.desktop ? lastExport.path : lastExport.filename}>
-                          {lastExport.desktop ? lastExport.path : t("{{filename}} · Check your browser's Downloads folder", { filename: lastExport.filename })}
+                        <p
+                          className="mt-0.5 truncate text-xs opacity-80"
+                          title={lastExport.desktop ? lastExport.path : lastExport.filename}
+                        >
+                          {lastExport.desktop
+                            ? lastExport.path
+                            : t("{{filename}} · Check your browser's Downloads folder", {
+                                filename: lastExport.filename,
+                              })}
                         </p>
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
                       {lastExport.desktop && (
                         <>
-                          <Button type="button" size="sm" variant="outline" className="h-8 bg-background/70 active:scale-[0.97]" onClick={() => void runSavedExportAction("open")}>
-                            <FileText className="mr-2 h-3.5 w-3.5" />{t("Open file")}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 bg-background/70 active:scale-[0.97]"
+                            onClick={() => void runSavedExportAction("open")}
+                          >
+                            <FileText className="mr-2 h-3.5 w-3.5" />
+                            {t("Open file")}
                           </Button>
-                          <Button type="button" size="sm" variant="outline" className="h-8 bg-background/70 active:scale-[0.97]" onClick={() => void runSavedExportAction("reveal")}>
-                            <FolderOpen className="mr-2 h-3.5 w-3.5" />{t("Open folder")}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 bg-background/70 active:scale-[0.97]"
+                            onClick={() => void runSavedExportAction("reveal")}
+                          >
+                            <FolderOpen className="mr-2 h-3.5 w-3.5" />
+                            {t("Open folder")}
                           </Button>
                         </>
                       )}
-                      <Button type="button" size="icon" variant="ghost" className="h-8 w-8 active:scale-[0.97]" onClick={() => setLastExport(null)} aria-label={t("Dismiss saved export message")}>
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 active:scale-[0.97]"
+                        onClick={() => setLastExport(null)}
+                        aria-label={t("Dismiss saved export message")}
+                      >
                         <X className="h-3.5 w-3.5" />
                       </Button>
                     </div>
@@ -2657,33 +3490,100 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <div className="border-b border-border/60 bg-muted/20 px-5 py-3 sm:px-6">
                   <div className="grid gap-2 sm:grid-cols-2">
                     {(["microphone", "system"] as const).map((source) => (
-                      <MeetingLevelMeter key={source} source={source} paused={detail.state === "paused"} levels={audioLevelsRef} />
+                      <MeetingLevelMeter
+                        key={source}
+                        source={source}
+                        paused={detail.state === "paused"}
+                        levels={audioLevelsRef}
+                      />
                     ))}
                   </div>
-                  <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground" role="status">
+                  <div
+                    className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground"
+                    role="status"
+                  >
                     <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-300" />
-                    <MeetingCheckpointStatus checkpoint={latestCheckpoint} expectedTrackCount={expectedCheckpointTrackCount} paused={detail.state === "paused"} />
+                    <MeetingCheckpointStatus
+                      checkpoint={latestCheckpoint}
+                      expectedTrackCount={expectedCheckpointTrackCount}
+                      paused={detail.state === "paused"}
+                    />
                     {latestCheckpoint && <span aria-hidden="true">·</span>}
-                    {latestCheckpoint && <span>{detail.transcriptionMode === "live_final"
-                      ? t(latestCheckpoint.segmentCount === 1 ? "{{count}} transcript part saved" : "{{count}} transcript parts saved", { count: formatNumber(latestCheckpoint.segmentCount) })
-                      : t("Transcript starts after you stop")}</span>}
+                    {latestCheckpoint && (
+                      <span>
+                        {detail.transcriptionMode === "live_final"
+                          ? t(
+                              latestCheckpoint.segmentCount === 1
+                                ? "{{count}} transcript part saved"
+                                : "{{count}} transcript parts saved",
+                              { count: formatNumber(latestCheckpoint.segmentCount) },
+                            )
+                          : t("Transcript starts after you stop")}
+                      </span>
+                    )}
                   </div>
-                  <div className="mt-2 space-y-2">{(["microphone", "system"] as const).map((source) => liveStatuses[source] && (
-                    <div key={`${source}-${liveStatuses[source]!.status}`} role="status" className={`rounded-lg border px-3 py-2 text-xs ${liveStatuses[source]!.status === "recovered" ? "border-emerald-300/60 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100" : "border-amber-300/60 bg-amber-500/10 text-amber-900 dark:text-amber-100"}`}>
-                      {source === "microphone" ? t("Microphone") : t("System audio")}: {liveStatuses[source]!.status === "reconnecting" ? t("live text is temporarily offline and reconnecting. Audio recording continues safely.") : liveStatuses[source]!.status === "degraded" ? t("live text may miss words for a moment. Audio recording continues safely.") : t("live text is back. The final transcript will be created from saved audio.")}{liveStatuses[source]!.reconnectCount > 0 ? ` ${t("Attempt {{count}}.", { count: formatNumber(liveStatuses[source]!.reconnectCount) })}` : ""}
-                    </div>
-                  ))}</div>
+                  <div className="mt-2 space-y-2">
+                    {(["microphone", "system"] as const).map(
+                      (source) =>
+                        liveStatuses[source] && (
+                          <div
+                            key={`${source}-${liveStatuses[source]!.status}`}
+                            role="status"
+                            className={`rounded-lg border px-3 py-2 text-xs ${liveStatuses[source]!.status === "recovered" ? "border-emerald-300/60 bg-emerald-500/10 text-emerald-900 dark:text-emerald-100" : "border-amber-300/60 bg-amber-500/10 text-amber-900 dark:text-amber-100"}`}
+                          >
+                            {source === "microphone" ? t("Microphone") : t("System audio")}:{" "}
+                            {liveStatuses[source]!.status === "reconnecting"
+                              ? t(
+                                  "live text is temporarily offline and reconnecting. Audio recording continues safely.",
+                                )
+                              : liveStatuses[source]!.status === "degraded"
+                                ? t("live text may miss words for a moment. Audio recording continues safely.")
+                                : t("live text is back. The final transcript will be created from saved audio.")}
+                            {liveStatuses[source]!.reconnectCount > 0
+                              ? ` ${t("Attempt {{count}}.", { count: formatNumber(liveStatuses[source]!.reconnectCount) })}`
+                              : ""}
+                          </div>
+                        ),
+                    )}
+                  </div>
                 </div>
               )}
 
-              {(["stopping", "finalizing", "analyzing"] as MeetingState[]).includes(detail.state) && <div className="mt-4 rounded-xl border border-border/60 bg-muted/35 px-4 py-3" role="status">
-                <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{detail.state === "analyzing" ? t("Creating summary, decisions, and action items") : detail.state === "stopping" ? t("Finishing the recording safely") : t("Creating the final transcript from saved audio")}</span><span className="tabular-nums text-muted-foreground">{meetingProgress ? `${formatNumber(Math.round(meetingProgress.progress * 100))}%` : t("Processing…")}</span></div>
-                <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meetingProgress ? Math.round(meetingProgress.progress * 100) : undefined} aria-valuetext={meetingProgress ? undefined : t("Processing…")}>
-                  {meetingProgress
-                    ? <div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingProgress.progress})` }} />
-                    : <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none" />}
+              {(["stopping", "finalizing", "analyzing"] as MeetingState[]).includes(detail.state) && (
+                <div className="mt-4 rounded-xl border border-border/60 bg-muted/35 px-4 py-3" role="status">
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="font-medium">
+                      {detail.state === "analyzing"
+                        ? t("Creating summary, decisions, and action items")
+                        : detail.state === "stopping"
+                          ? t("Finishing the recording safely")
+                          : t("Creating the final transcript from saved audio")}
+                    </span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {meetingProgress
+                        ? `${formatNumber(Math.round(meetingProgress.progress * 100))}%`
+                        : t("Processing…")}
+                    </span>
+                  </div>
+                  <div
+                    className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={meetingProgress ? Math.round(meetingProgress.progress * 100) : undefined}
+                    aria-valuetext={meetingProgress ? undefined : t("Processing…")}
+                  >
+                    {meetingProgress ? (
+                      <div
+                        className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none"
+                        style={{ transform: `scaleX(${meetingProgress.progress})` }}
+                      />
+                    ) : (
+                      <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none" />
+                    )}
+                  </div>
                 </div>
-              </div>}
+              )}
 
               {detail.errorMessage && (
                 <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
@@ -2698,51 +3598,91 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       >
                         {(profilesQuery.data?.finalProviderOptions ?? []).map((option) => (
                           <option key={option.id} value={option.id} disabled={option.available === false}>
-                            {option.label} · {option.model}{option.available === false ? ` · ${t("not configured")}` : ""}
+                            {option.label} · {option.model}
+                            {option.available === false ? ` · ${t("not configured")}` : ""}
                           </option>
                         ))}
                       </select>
                       <span className="mt-1 block font-normal opacity-80">
-                        {t("Choose another available option if this recording is longer than the previous one supports.")}
+                        {t(
+                          "Choose another available option if this recording is longer than the previous one supports.",
+                        )}
                       </span>
                     </label>
                   )}
-                  {["capture_failed", "finalization_failed", "analysis_failed", "interrupted"].includes(detail.state) && (
+                  {["capture_failed", "finalization_failed", "analysis_failed", "interrupted"].includes(
+                    detail.state,
+                  ) && (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {detail.state === "interrupted" && (
-                        <Button type="button" size="sm" disabled={controlMutation.isPending} onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}>
-                          <CirclePlay className="mr-2 h-3.5 w-3.5" />{t("Resume capture")}
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={controlMutation.isPending}
+                          onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}
+                        >
+                          <CirclePlay className="mr-2 h-3.5 w-3.5" />
+                          {t("Resume capture")}
                         </Button>
                       )}
                       <Button
                         type="button"
                         size="sm"
                         variant="outline"
-                        disabled={recoveryMutation.isPending || (detail.state === "finalization_failed" && !retryFinalProvider)}
-                        onClick={() => recoveryMutation.mutate({
-                          id: detail.id,
-                          action: "retry",
-                          finalProvider: detail.state === "finalization_failed" ? retryFinalProvider : undefined,
-                        })}
+                        disabled={
+                          recoveryMutation.isPending || (detail.state === "finalization_failed" && !retryFinalProvider)
+                        }
+                        onClick={() =>
+                          recoveryMutation.mutate({
+                            id: detail.id,
+                            action: "retry",
+                            finalProvider: detail.state === "finalization_failed" ? retryFinalProvider : undefined,
+                          })
+                        }
                       >
                         {recoveryMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
-                        {detail.state === "analysis_failed" ? t("Try meeting brief again") : t("Create transcript from saved audio")}
+                        {detail.state === "analysis_failed"
+                          ? t("Try meeting brief again")
+                          : t("Create transcript from saved audio")}
                       </Button>
-                      <Button type="button" size="sm" variant="ghost" disabled={recoveryMutation.isPending} onClick={() => recoveryMutation.mutate({ id: detail.id, action: "discard" })}>{t("Discard")}</Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={recoveryMutation.isPending}
+                        onClick={() => recoveryMutation.mutate({ id: detail.id, action: "discard" })}
+                      >
+                        {t("Discard")}
+                      </Button>
                     </div>
                   )}
                 </div>
               )}
 
               {outputsStale && (
-                <div className="mx-5 mt-3 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 sm:mx-6 sm:flex-row sm:items-center sm:justify-between" role="status">
+                <div
+                  className="mx-5 mt-3 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 sm:mx-6 sm:flex-row sm:items-center sm:justify-between"
+                  role="status"
+                >
                   <div className="min-w-0">
                     <p className="font-semibold">{t("Transcript corrected after this brief was generated")}</p>
-                    <p className="mt-0.5 text-xs opacity-80">{t("Playback, search, and new exports use the correction. Regenerate the brief when its wording depends on the edited passage.")}</p>
+                    <p className="mt-0.5 text-xs opacity-80">
+                      {t(
+                        "Playback, search, and new exports use the correction. Regenerate the brief when its wording depends on the edited passage.",
+                      )}
+                    </p>
                   </div>
                   {detail.state === "ready" && (
-                    <Button type="button" size="sm" variant="outline" className="shrink-0 active:scale-[0.97]" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>
-                      {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Regenerate brief")}
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0 active:scale-[0.97]"
+                      disabled={analysisMutation.isPending || !hasCanonicalTranscript}
+                      onClick={generateAnalysis}
+                    >
+                      {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                      {t("Regenerate brief")}
                     </Button>
                   )}
                 </div>
@@ -2778,11 +3718,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     onError={() => setPlaybackError("The saved meeting audio could not be loaded.")}
                     className="h-8 w-full sm:ml-auto sm:max-w-md"
                   />
-                  {playbackError && <p className="text-xs text-destructive sm:basis-full" role="alert">{t(playbackError)}</p>}
+                  {playbackError && (
+                    <p className="text-xs text-destructive sm:basis-full" role="alert">
+                      {t(playbackError)}
+                    </p>
+                  )}
                 </div>
               )}
               {detail.segments.length > 0 && !hasPlayableAudio && (
-                <div className="mx-5 mt-3 flex items-center gap-2 rounded-xl border border-border/60 bg-muted/35 px-3 py-2 text-xs text-muted-foreground sm:mx-6" role="status">
+                <div
+                  className="mx-5 mt-3 flex items-center gap-2 rounded-xl border border-border/60 bg-muted/35 px-3 py-2 text-xs text-muted-foreground sm:mx-6"
+                  role="status"
+                >
                   <Headphones className="h-3.5 w-3.5" />
                   {detail.captureMetadata.audioPurgedAt
                     ? t("Audio is no longer retained. The transcript and meeting outputs remain available.")
@@ -2796,171 +3743,408 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     <div className="max-w-3xl">
                       {workspaceView === "chat" ? (
                         <div className="space-y-4">
-                          <div><h3 className="text-sm font-semibold">{t("Ask this meeting")}</h3><p className="mt-1 text-xs text-muted-foreground">{t("Answers use only this meeting's final transcript. Click a source marker to jump to that moment.")}</p></div>
-                          {chatAnswer && <div className="rounded-2xl bg-muted/55 p-4"><p className="whitespace-pre-wrap text-sm leading-7">{chatAnswer.content}</p>{chatAnswer.citations.length > 0 && <div className="mt-3 flex flex-wrap gap-1.5">{chatAnswer.citations.map((citation) => <button type="button" key={citation} onClick={() => seekCitation(citation)}><Badge variant="outline" className="font-mono text-[10px] hover:border-primary">{citation.slice(0, 8)}</Badge></button>)}</div>}</div>}
-                          <Textarea value={chatQuestion} onChange={(event) => setChatQuestion(event.target.value)} placeholder={t("What did we decide about the launch?")} rows={3} />
-                          <Button disabled={!chatQuestion.trim() || chatMutation.isPending} onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}>{chatMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}{t("Ask meeting")}</Button>
+                          <div>
+                            <h3 className="text-sm font-semibold">{t("Ask this meeting")}</h3>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {t(
+                                "Answers use only this meeting's final transcript. Click a source marker to jump to that moment.",
+                              )}
+                            </p>
+                          </div>
+                          {chatAnswer && (
+                            <div className="rounded-2xl bg-muted/55 p-4">
+                              <p className="whitespace-pre-wrap text-sm leading-7">{chatAnswer.content}</p>
+                              {chatAnswer.citations.length > 0 && (
+                                <div className="mt-3 flex flex-wrap gap-1.5">
+                                  {chatAnswer.citations.map((citation) => (
+                                    <button type="button" key={citation} onClick={() => seekCitation(citation)}>
+                                      <Badge variant="outline" className="font-mono text-ui-micro hover:border-primary">
+                                        {citation.slice(0, 8)}
+                                      </Badge>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <Textarea
+                            value={chatQuestion}
+                            onChange={(event) => setChatQuestion(event.target.value)}
+                            placeholder={t("What did we decide about the launch?")}
+                            rows={3}
+                          />
+                          <Button
+                            disabled={!chatQuestion.trim() || chatMutation.isPending}
+                            onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}
+                          >
+                            {chatMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            {t("Ask meeting")}
+                          </Button>
                         </div>
                       ) : workspaceView === "notes" ? (
-                        <div className="max-w-2xl"><h3 className="text-sm font-semibold">{t("Meeting notes")}</h3><p className="mt-1 text-xs text-muted-foreground">{t("Your notes remain separate from generated outputs.")}</p><MeetingNotesEditor autosave={noteAutosave} rows={8} textareaClassName="mt-4" />{detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="mt-3 rounded-xl bg-muted/55 p-3"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-6">{savedNote.body}</p></div>)}</div>
+                        <div className="max-w-2xl">
+                          <h3 className="text-sm font-semibold">{t("Meeting notes")}</h3>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {t("Your notes remain separate from generated outputs.")}
+                          </p>
+                          <MeetingNotesEditor autosave={noteAutosave} rows={8} textareaClassName="mt-4" />
+                          {detail.notes
+                            .filter((savedNote) => savedNote.id !== "workspace")
+                            .map((savedNote) => (
+                              <div key={savedNote.id} className="mt-3 rounded-xl bg-muted/55 p-3">
+                                <p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p>
+                                <p className="mt-1 text-sm leading-6">{savedNote.body}</p>
+                              </div>
+                            ))}
+                        </div>
                       ) : !analysis ? (
                         <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                          <div>{detail.state === "analyzing" ? <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" /> : <AlertTriangle className="mx-auto mb-3 h-6 w-6" />}<p>{detail.state === "analyzing" ? t("Creating your meeting brief…") : t("No meeting brief yet.")}</p>{detail.state === "ready" && <Button type="button" size="sm" variant="outline" className="mt-4" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>{analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Create meeting brief")}</Button>}</div>
+                          <div>
+                            {detail.state === "analyzing" ? (
+                              <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" />
+                            ) : (
+                              <AlertTriangle className="mx-auto mb-3 h-6 w-6" />
+                            )}
+                            <p>
+                              {detail.state === "analyzing"
+                                ? t("Creating your meeting brief…")
+                                : t("No meeting brief yet.")}
+                            </p>
+                            {detail.state === "ready" && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                className="mt-4"
+                                disabled={analysisMutation.isPending || !hasCanonicalTranscript}
+                                onClick={generateAnalysis}
+                              >
+                                {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                                {t("Create meeting brief")}
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       ) : workspaceView === "overview" ? (
                         <div className="max-w-4xl">
                           <div className="flex items-center justify-between gap-3">
-                            <div><p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">{t("Meeting brief")}</p><h3 className="mt-1 text-lg font-semibold tracking-tight">{t("What matters now")}</h3></div>
-                            {detail.state === "ready" && <Button type="button" size="sm" variant="outline" disabled={analysisMutation.isPending || !hasCanonicalTranscript} onClick={generateAnalysis}>{analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Regenerate")}</Button>}
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-primary">
+                                {t("Meeting brief")}
+                              </p>
+                              <h3 className="mt-1 text-lg font-semibold tracking-tight">{t("What matters now")}</h3>
+                            </div>
+                            {detail.state === "ready" && (
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={analysisMutation.isPending || !hasCanonicalTranscript}
+                                onClick={generateAnalysis}
+                              >
+                                {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                                {t("Regenerate")}
+                              </Button>
+                            )}
                           </div>
                           <section className="mt-5 border-l-2 border-primary pl-4">
-                            <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">{t("Key outcome")}</h4></div>
-                            <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground/90">{analysis.executiveSummary ? String(analysis.executiveSummary) : t("No summary was produced.")}</p>
+                            <div className="flex items-center gap-2">
+                              <Sparkles className="h-4 w-4 text-primary" />
+                              <h4 className="text-sm font-semibold">{t("Key outcome")}</h4>
+                            </div>
+                            <p className="mt-2 whitespace-pre-wrap text-sm leading-7 text-foreground/90">
+                              {analysis.executiveSummary
+                                ? String(analysis.executiveSummary)
+                                : t("No summary was produced.")}
+                            </p>
                           </section>
                           <div className="mt-7 grid gap-7">
-                            <section><div className="flex items-center gap-2"><Check className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">{t("Decisions")}</h4></div><EvidenceList items={analysis.decisions} onCitation={seekCitation} /></section>
-                            <section><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">{t("Risks and open questions")}</h4></div><EvidenceList items={[...(Array.isArray(analysis.risks) ? analysis.risks : []), ...(Array.isArray(analysis.openQuestions) ? analysis.openQuestions : [])]} onCitation={seekCitation} /></section>
+                            <section>
+                              <div className="flex items-center gap-2">
+                                <Check className="h-4 w-4 text-primary" />
+                                <h4 className="text-sm font-semibold">{t("Decisions")}</h4>
+                              </div>
+                              <EvidenceList items={analysis.decisions} onCitation={seekCitation} />
+                            </section>
+                            <section>
+                              <div className="flex items-center gap-2">
+                                <AlertTriangle className="h-4 w-4 text-primary" />
+                                <h4 className="text-sm font-semibold">{t("Risks and open questions")}</h4>
+                              </div>
+                              <EvidenceList
+                                items={[
+                                  ...(Array.isArray(analysis.risks) ? analysis.risks : []),
+                                  ...(Array.isArray(analysis.openQuestions) ? analysis.openQuestions : []),
+                                ]}
+                                onCitation={seekCitation}
+                              />
+                            </section>
                           </div>
-                          <section className="mt-7 border-t border-border/60 pt-6"><div className="flex items-center gap-2"><FileText className="h-4 w-4 text-primary" /><h4 className="text-sm font-semibold">{t("Action items")}</h4></div><ActionItems items={detail.actionItems ?? []} saving={actionItemMutation.isPending} onCitation={seekCitation} onChange={(item, changes) => actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })} /></section>
+                          <section className="mt-7 border-t border-border/60 pt-6">
+                            <div className="flex items-center gap-2">
+                              <FileText className="h-4 w-4 text-primary" />
+                              <h4 className="text-sm font-semibold">{t("Action items")}</h4>
+                            </div>
+                            <ActionItems
+                              items={detail.actionItems ?? []}
+                              saving={actionItemMutation.isPending}
+                              onCitation={seekCitation}
+                              onChange={(item, changes) =>
+                                actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })
+                              }
+                            />
+                          </section>
                         </div>
-                      ) : workspaceView === "decisions" ? <EvidenceList items={analysis.decisions} onCitation={seekCitation} />
-                        : workspaceView === "actions" ? <ActionItems items={detail.actionItems ?? []} saving={actionItemMutation.isPending} onCitation={seekCitation} onChange={(item, changes) => actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })} />
-                          : <EvidenceList items={analysis.openQuestions} onCitation={seekCitation} />}
+                      ) : workspaceView === "decisions" ? (
+                        <EvidenceList items={analysis.decisions} onCitation={seekCitation} />
+                      ) : workspaceView === "actions" ? (
+                        <ActionItems
+                          items={detail.actionItems ?? []}
+                          saving={actionItemMutation.isPending}
+                          onCitation={seekCitation}
+                          onChange={(item, changes) =>
+                            actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })
+                          }
+                        />
+                      ) : (
+                        <EvidenceList items={analysis.openQuestions} onCitation={seekCitation} />
+                      )}
                     </div>
-                  ) : <>
-                  <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2"><Users className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">{t("Transcript")}</h3></div>
-                    <span className="text-xs text-muted-foreground">{transcriptSearch.trim() ? t("{{visible}} of {{total}} parts", { visible: formatNumber(visibleTranscriptSegments.length), total: formatNumber(groupedSegments.length) }) : t(groupedSegments.length === 1 ? "{{count}} part" : "{{count}} parts", { count: formatNumber(groupedSegments.length) })}</span>
-                  </div>
-                  <label className="relative mb-4 block max-w-xl">
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-                    <Input
-                      type="search"
-                      value={transcriptSearch}
-                      onChange={(event) => setTranscriptSearch(event.target.value)}
-                      placeholder={t("Search transcript, speaker, or phrase")}
-                      className="h-9 pl-9 text-sm"
-                      aria-label={t("Search this meeting transcript")}
-                    />
-                  </label>
-                  {detail.speakers.length > 0 && <div className="mb-4 grid gap-2 lg:grid-cols-2">
-                    {detail.speakers.map((speaker) => {
-                      const speakerProfileId = speaker.profileId;
-                      const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
-                      const savedVoiceName = profile?.displayName || "";
-                      const savedVoicePreviewUrl = profile?.preview?.url || "";
-                      const rawMeetingSpeakerName = speaker.displayName || speaker.label;
-                      const meetingSpeakerName = rawMeetingSpeakerName === "Meeting audio"
-                        ? t("Meeting audio")
-                        : rawMeetingSpeakerName;
-                      const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
-                      const hasSpeakerSnippet = canPlaySpeakerSamples && liveSegments.some((segment) => (
-                        segment.speakerId === speaker.id && segment.endMs > segment.startMs
-                      ));
-                      const renamingProfile = speakerProfileNameMutation.isPending
-                        && speakerProfileNameMutation.variables?.profileId === speaker.profileId;
-                      return <div key={speaker.id} className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs">
-                        <div className="flex min-w-0 flex-wrap items-center gap-2">
-                          <span className="shrink-0 text-muted-foreground">{speaker.sourceHint === "microphone" ? t("Mic") : t("Remote")}</span>
-                          <input
-                            key={`${speaker.id}-${speaker.updatedAt}`}
-                            defaultValue={meetingSpeakerName}
-                            aria-label={t("Name in this meeting for {{speaker}}", { speaker: meetingSpeakerName })}
-                            data-testid={`meeting-speaker-name-${speaker.id}`}
-                            className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
-                            onBlur={(event) => {
-                              const displayName = event.target.value.trim();
-                              if (displayName && displayName !== meetingSpeakerName) {
-                                speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
-                              }
-                            }}
-                          />
-                          <button
-                            type="button"
-                            disabled={!hasSpeakerSnippet}
-                            onClick={() => playSpeakerSnippet(speaker.id)}
-                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                            title={hasSpeakerSnippet ? t("Play a 5 to 8 second sample from this speaker") : t("No saved audio sample is available")}
-                          >
-                            <CirclePlay className="h-3.5 w-3.5" />{t("Meeting sample")}
-                          </button>
+                  ) : (
+                    <>
+                      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4 text-muted-foreground" />
+                          <h3 className="text-sm font-semibold">{t("Transcript")}</h3>
                         </div>
-                        {speakerProfileId && <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/55 pt-2">
-                          <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
-                          <span className="shrink-0 text-[11px] text-muted-foreground">{t("Saved voice")}</span>
-                          <input
-                            key={`${speakerProfileId}-${profile?.updatedAt || "meeting"}`}
-                            defaultValue={savedVoiceName}
-                            placeholder={speakerProfilesQuery.isLoading ? t("Loading name…") : t("Saved voice unavailable")}
-                            disabled={!profile || renamingProfile}
-                            aria-label={t("Saved voice profile name for {{speaker}}", { speaker: savedVoiceName || meetingSpeakerName })}
-                            className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
-                            onBlur={(event) => {
-                              const displayName = event.target.value.trim();
-                              if (profile && displayName && displayName !== savedVoiceName) {
-                                speakerProfileNameMutation.mutate({ profileId: speakerProfileId, displayName });
-                              }
-                            }}
+                        <span className="text-xs text-muted-foreground">
+                          {transcriptSearch.trim()
+                            ? t("{{visible}} of {{total}} parts", {
+                                visible: formatNumber(visibleTranscriptSegments.length),
+                                total: formatNumber(groupedSegments.length),
+                              })
+                            : t(groupedSegments.length === 1 ? "{{count}} part" : "{{count}} parts", {
+                                count: formatNumber(groupedSegments.length),
+                              })}
+                        </span>
+                      </div>
+                      <label className="relative mb-4 block max-w-xl">
+                        <Search
+                          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        <Input
+                          type="search"
+                          value={transcriptSearch}
+                          onChange={(event) => setTranscriptSearch(event.target.value)}
+                          placeholder={t("Search transcript, speaker, or phrase")}
+                          className="h-9 pl-9 text-sm"
+                          aria-label={t("Search this meeting transcript")}
+                        />
+                      </label>
+                      {detail.speakers.length > 0 && (
+                        <div className="mb-4 grid gap-2 lg:grid-cols-2">
+                          {detail.speakers.map((speaker) => {
+                            const speakerProfileId = speaker.profileId;
+                            const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
+                            const savedVoiceName = profile?.displayName || "";
+                            const savedVoicePreviewUrl = profile?.preview?.url || "";
+                            const rawMeetingSpeakerName = speaker.displayName || speaker.label;
+                            const meetingSpeakerName =
+                              rawMeetingSpeakerName === "Meeting audio" ? t("Meeting audio") : rawMeetingSpeakerName;
+                            const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
+                            const hasSpeakerSnippet =
+                              canPlaySpeakerSamples &&
+                              liveSegments.some(
+                                (segment) => segment.speakerId === speaker.id && segment.endMs > segment.startMs,
+                              );
+                            const renamingProfile =
+                              speakerProfileNameMutation.isPending &&
+                              speakerProfileNameMutation.variables?.profileId === speaker.profileId;
+                            return (
+                              <div
+                                key={speaker.id}
+                                className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs"
+                              >
+                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                  <span className="shrink-0 text-muted-foreground">
+                                    {speaker.sourceHint === "microphone" ? t("Mic") : t("Remote")}
+                                  </span>
+                                  <input
+                                    key={`${speaker.id}-${speaker.updatedAt}`}
+                                    defaultValue={meetingSpeakerName}
+                                    aria-label={t("Name in this meeting for {{speaker}}", {
+                                      speaker: meetingSpeakerName,
+                                    })}
+                                    data-testid={`meeting-speaker-name-${speaker.id}`}
+                                    className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
+                                    onBlur={(event) => {
+                                      const displayName = event.target.value.trim();
+                                      if (displayName && displayName !== meetingSpeakerName) {
+                                        speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
+                                      }
+                                    }}
+                                  />
+                                  <button
+                                    type="button"
+                                    disabled={!hasSpeakerSnippet}
+                                    onClick={() => playSpeakerSnippet(speaker.id)}
+                                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                                    title={
+                                      hasSpeakerSnippet
+                                        ? t("Play a 5 to 8 second sample from this speaker")
+                                        : t("No saved audio sample is available")
+                                    }
+                                  >
+                                    <CirclePlay className="h-3.5 w-3.5" />
+                                    {t("Meeting sample")}
+                                  </button>
+                                </div>
+                                {speakerProfileId && (
+                                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/55 pt-2">
+                                    <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                                      {t("Saved voice")}
+                                    </span>
+                                    <input
+                                      key={`${speakerProfileId}-${profile?.updatedAt || "meeting"}`}
+                                      defaultValue={savedVoiceName}
+                                      placeholder={
+                                        speakerProfilesQuery.isLoading
+                                          ? t("Loading name…")
+                                          : t("Saved voice unavailable")
+                                      }
+                                      disabled={!profile || renamingProfile}
+                                      aria-label={t("Saved voice profile name for {{speaker}}", {
+                                        speaker: savedVoiceName || meetingSpeakerName,
+                                      })}
+                                      className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
+                                      onBlur={(event) => {
+                                        const displayName = event.target.value.trim();
+                                        if (profile && displayName && displayName !== savedVoiceName) {
+                                          speakerProfileNameMutation.mutate({
+                                            profileId: speakerProfileId,
+                                            displayName,
+                                          });
+                                        }
+                                      }}
+                                    />
+                                    {renamingProfile && (
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
+                                    )}
+                                    {profile && savedVoicePreviewUrl && (
+                                      <button
+                                        type="button"
+                                        onClick={() => void playSavedVoicePreview(profile.id, savedVoicePreviewUrl)}
+                                        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui-micro font-medium text-muted-foreground hover:bg-background hover:text-foreground"
+                                        title={t("Play the short sample stored for this saved voice")}
+                                      >
+                                        <CirclePlay className="h-3.5 w-3.5" />
+                                        {t("Saved sample")}
+                                      </button>
+                                    )}
+                                    {voiceEvidenceCount > 0 && (
+                                      <span className="text-ui-micro text-muted-foreground">
+                                        {t(
+                                          voiceEvidenceCount === 1
+                                            ? "{{count}} matching sample"
+                                            : "{{count}} matching samples",
+                                          { count: formatNumber(voiceEvidenceCount) },
+                                        )}
+                                      </span>
+                                    )}
+                                    <span className="text-ui-micro text-muted-foreground">
+                                      {profile
+                                        ? t("Updates Settings too")
+                                        : speakerProfilesQuery.isLoading
+                                          ? t("Loading saved profile")
+                                          : t("Profile unavailable")}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      className="rounded px-1.5 py-1 text-ui-micro text-muted-foreground hover:bg-background hover:text-foreground"
+                                      disabled={splitSpeakerMutation.isPending}
+                                      onClick={() =>
+                                        splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id })
+                                      }
+                                      title={t("Do not match this speaker to the saved voice")}
+                                    >
+                                      {t("Wrong match")}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                      <div>
+                        {groupedSegments.length === 0 ? (
+                          <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
+                            <div>
+                              <Waves className="mx-auto mb-3 h-7 w-7" />
+                              <p>
+                                {OPEN_STATES.has(detail.state)
+                                  ? detail.transcriptionMode === "final_only"
+                                    ? t("Recording safely. The transcript appears after you stop.")
+                                    : t("Listening for speech…")
+                                  : t("No transcript is available.")}
+                              </p>
+                            </div>
+                          </div>
+                        ) : visibleTranscriptSegments.length === 0 ? (
+                          <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
+                            <div>
+                              <Search className="mx-auto mb-3 h-6 w-6" />
+                              <p>{t("No transcript text matches “{{query}}”.", { query: transcriptSearch.trim() })}</p>
+                            </div>
+                          </div>
+                        ) : (
+                          <VirtualMeetingTranscript
+                            key={detail.id}
+                            segments={visibleTranscriptSegments}
+                            search={transcriptSearch}
+                            hasPlayableAudio={hasPlayableAudio}
+                            isLive={detail.state === "recording" || detail.state === "paused"}
+                            onPlay={playSegment}
+                            canAssignSpeakers={!OPEN_STATES.has(detail.state)}
+                            onAssignSpeaker={focusSpeakerAssignment}
+                            canEdit={
+                              detail.state === "ready" &&
+                              visibleTranscriptSegments.every((segment) => segment.revision === "canonical")
+                            }
+                            savingSegmentId={
+                              segmentEditMutation.isPending ? (segmentEditMutation.variables?.segment.id ?? "") : ""
+                            }
+                            onSave={(segment, text) => segmentEditMutation.mutate({ segment, action: "edit", text })}
+                            onUndo={(segment) => segmentEditMutation.mutate({ segment, action: "undo" })}
                           />
-                          {renamingProfile && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
-                          {profile && savedVoicePreviewUrl && <button
-                            type="button"
-                            onClick={() => void playSavedVoicePreview(profile.id, savedVoicePreviewUrl)}
-                            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[10px] font-medium text-muted-foreground hover:bg-background hover:text-foreground"
-                            title={t("Play the short sample stored for this saved voice")}
-                          >
-                            <CirclePlay className="h-3.5 w-3.5" />{t("Saved sample")}
-                          </button>}
-                          {voiceEvidenceCount > 0 && <span className="text-[10px] text-muted-foreground">
-                            {t(voiceEvidenceCount === 1 ? "{{count}} matching sample" : "{{count}} matching samples", { count: formatNumber(voiceEvidenceCount) })}
-                          </span>}
-                          <span className="text-[10px] text-muted-foreground">{profile ? t("Updates Settings too") : speakerProfilesQuery.isLoading ? t("Loading saved profile") : t("Profile unavailable")}</span>
-                          <button
-                            type="button"
-                            className="rounded px-1.5 py-1 text-[10px] text-muted-foreground hover:bg-background hover:text-foreground"
-                            disabled={splitSpeakerMutation.isPending}
-                            onClick={() => splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id })}
-                            title={t("Do not match this speaker to the saved voice")}
-                          >
-                            {t("Wrong match")}
-                          </button>
-                        </div>}
-                      </div>;
-                    })}
-                  </div>}
-                  <div>
-                    {groupedSegments.length === 0 ? (
-                      <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                        <div><Waves className="mx-auto mb-3 h-7 w-7" /><p>{OPEN_STATES.has(detail.state) ? detail.transcriptionMode === "final_only" ? t("Recording safely. The transcript appears after you stop.") : t("Listening for speech…") : t("No transcript is available.")}</p></div>
+                        )}
                       </div>
-                    ) : visibleTranscriptSegments.length === 0 ? (
-                      <div className="flex min-h-48 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
-                        <div><Search className="mx-auto mb-3 h-6 w-6" /><p>{t("No transcript text matches “{{query}}”.", { query: transcriptSearch.trim() })}</p></div>
-                      </div>
-                    ) : <VirtualMeetingTranscript
-                      key={detail.id}
-                      segments={visibleTranscriptSegments}
-                      search={transcriptSearch}
-                      hasPlayableAudio={hasPlayableAudio}
-                      isLive={detail.state === "recording" || detail.state === "paused"}
-                      onPlay={playSegment}
-                      canAssignSpeakers={!OPEN_STATES.has(detail.state)}
-                      onAssignSpeaker={focusSpeakerAssignment}
-                      canEdit={detail.state === "ready" && visibleTranscriptSegments.every((segment) => segment.revision === "canonical")}
-                      savingSegmentId={segmentEditMutation.isPending ? segmentEditMutation.variables?.segment.id ?? "" : ""}
-                      onSave={(segment, text) => segmentEditMutation.mutate({ segment, action: "edit", text })}
-                      onUndo={(segment) => segmentEditMutation.mutate({ segment, action: "undo" })}
-                    />}
-                  </div>
-                  </>}
+                    </>
+                  )}
                 </section>
 
                 <aside className="border-t border-border/60 bg-muted/15 px-5 py-5 2xl:border-l 2xl:border-t-0">
-                  <div className="flex items-center gap-2"><NotebookPen className="h-4 w-4 text-muted-foreground" /><h3 className="text-sm font-semibold">{t("Live notes")}</h3></div>
+                  <div className="flex items-center gap-2">
+                    <NotebookPen className="h-4 w-4 text-muted-foreground" />
+                    <h3 className="text-sm font-semibold">{t("Live notes")}</h3>
+                  </div>
                   <MeetingNotesEditor autosave={noteAutosave} />
                   <div className="mt-5 space-y-2">
-                    {detail.notes.length === 0 && <p className="text-xs leading-5 text-muted-foreground">{t("Notes are timestamped and retained with this meeting.")}</p>}
-                    {detail.notes.filter((savedNote) => savedNote.id !== "workspace").map((savedNote) => <div key={savedNote.id} className="rounded-xl bg-muted/60 px-3 py-2.5"><p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p><p className="mt-1 text-sm leading-5">{savedNote.body}</p></div>)}
+                    {detail.notes.length === 0 && (
+                      <p className="text-xs leading-5 text-muted-foreground">
+                        {t("Notes are timestamped and retained with this meeting.")}
+                      </p>
+                    )}
+                    {detail.notes
+                      .filter((savedNote) => savedNote.id !== "workspace")
+                      .map((savedNote) => (
+                        <div key={savedNote.id} className="rounded-xl bg-muted/60 px-3 py-2.5">
+                          <p className="text-xs font-medium text-primary">{formatOffset(savedNote.atMs)}</p>
+                          <p className="mt-1 text-sm leading-5">{savedNote.body}</p>
+                        </div>
+                      ))}
                   </div>
                   <details className="group mt-5 rounded-xl border border-border/60 bg-background/35">
                     <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs font-semibold marker:content-none">
@@ -2968,61 +4152,199 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
                     </summary>
                     <div className="border-t border-border/60 p-3">
-                      <div className="flex items-center gap-2"><Sparkles className="h-4 w-4 text-primary" /><h3 className="text-xs font-semibold">{t("Models used")}</h3></div>
+                      <div className="flex items-center gap-2">
+                        <Sparkles className="h-4 w-4 text-primary" />
+                        <h3 className="text-xs font-semibold">{t("Models used")}</h3>
+                      </div>
                       <dl className="mt-3 space-y-2 text-[11px]">
-                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">{t("Live transcript")}</dt><dd className="text-right font-mono">{detail.origin === "imported" ? t("Not used (imported)") : detail.transcriptionMode === "final_only" ? t("Not used (transcript after meeting)") : detailLiveModel || detail.liveProvider}</dd></div>
-                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">{t("Final transcript")}</dt><dd className="text-right font-mono">{detail.finalRoute?.model || detail.finalProvider}</dd></div>
-                        <div className="flex items-start justify-between gap-3"><dt className="text-muted-foreground">{t("Summary and actions")}</dt><dd className="break-all text-right font-mono">{technicalAnalysisModel}</dd></div>
-                        {([[
-                          "Speaker separation",
-                          detail.processingComponents?.diarization,
-                        ], [
-                          "Voice activity detection",
-                          detail.processingComponents?.vad,
-                        ], [
-                          "Turn detection",
-                          detail.processingComponents?.turnDetection,
-                        ]] as const).map(([label, component]) => <div key={label} className="flex items-start justify-between gap-3 border-t border-border/45 pt-2">
-                          <dt className="text-muted-foreground">{t(label)}</dt>
-                          <dd className="max-w-[58%] text-right">
-                            <span className="block font-mono">{processingComponentLabel(component, t)}</span>
-                            {processingComponentModeLabel(component, t, formatNumber) && <span className="mt-0.5 block text-[10px] text-muted-foreground">{processingComponentModeLabel(component, t, formatNumber)}</span>}
+                        <div className="flex items-start justify-between gap-3">
+                          <dt className="text-muted-foreground">{t("Live transcript")}</dt>
+                          <dd className="text-right font-mono">
+                            {detail.origin === "imported"
+                              ? t("Not used (imported)")
+                              : detail.transcriptionMode === "final_only"
+                                ? t("Not used (transcript after meeting)")
+                                : detailLiveModel || detail.liveProvider}
                           </dd>
-                        </div>)}
-                      </dl>
-                      {detail.state === "ready" && aecMetrics && <div className="mt-4 border-t border-border/60 pt-3">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="text-xs font-medium">{t("Render-active attenuation")}</span>
-                          <span className={`font-mono text-sm font-semibold tabular-nums ${typeof aecMetrics.echoReductionDb === "number" && aecMetrics.echoReductionDb > 0 ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground"}`}>
-                            {typeof aecMetrics.echoReductionDb === "number" ? `${formatNumber(aecMetrics.echoReductionDb, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} dB` : t("Not measured")}
-                          </span>
                         </div>
-                        <p className="mt-1 text-[11px] leading-4 text-muted-foreground">{t("Raw-to-clean microphone energy while system audio was active · {{seconds}}s measured.", { seconds: formatNumber(Math.round((aecMetrics.renderActiveDurationMs ?? 0) / 1000)) })}</p>
-                      </div>}
+                        <div className="flex items-start justify-between gap-3">
+                          <dt className="text-muted-foreground">{t("Final transcript")}</dt>
+                          <dd className="text-right font-mono">{detail.finalRoute?.model || detail.finalProvider}</dd>
+                        </div>
+                        <div className="flex items-start justify-between gap-3">
+                          <dt className="text-muted-foreground">{t("Summary and actions")}</dt>
+                          <dd className="break-all text-right font-mono">{technicalAnalysisModel}</dd>
+                        </div>
+                        {(
+                          [
+                            ["Speaker separation", detail.processingComponents?.diarization],
+                            ["Voice activity detection", detail.processingComponents?.vad],
+                            ["Turn detection", detail.processingComponents?.turnDetection],
+                          ] as const
+                        ).map(([label, component]) => (
+                          <div
+                            key={label}
+                            className="flex items-start justify-between gap-3 border-t border-border/45 pt-2"
+                          >
+                            <dt className="text-muted-foreground">{t(label)}</dt>
+                            <dd className="max-w-[58%] text-right">
+                              <span className="block font-mono">{processingComponentLabel(component, t)}</span>
+                              {processingComponentModeLabel(component, t, formatNumber) && (
+                                <span className="mt-0.5 block text-ui-micro text-muted-foreground">
+                                  {processingComponentModeLabel(component, t, formatNumber)}
+                                </span>
+                              )}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                      {detail.state === "ready" && aecMetrics && (
+                        <div className="mt-4 border-t border-border/60 pt-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-xs font-medium">{t("Render-active attenuation")}</span>
+                            <span
+                              className={`font-mono text-sm font-semibold tabular-nums ${typeof aecMetrics.echoReductionDb === "number" && aecMetrics.echoReductionDb > 0 ? "text-emerald-600 dark:text-emerald-300" : "text-muted-foreground"}`}
+                            >
+                              {typeof aecMetrics.echoReductionDb === "number"
+                                ? `${formatNumber(aecMetrics.echoReductionDb, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} dB`
+                                : t("Not measured")}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                            {t(
+                              "Raw-to-clean microphone energy while system audio was active · {{seconds}}s measured.",
+                              { seconds: formatNumber(Math.round((aecMetrics.renderActiveDurationMs ?? 0) / 1000)) },
+                            )}
+                          </p>
+                        </div>
+                      )}
                     </div>
                   </details>
-                  {detail.state === "ready" && <details className="group mt-6 border-t border-border/60 pt-3">
-                    <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-2 text-sm font-semibold marker:content-none">
-                      <span>{t("Delivery & integrations")}</span>
-                      <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
-                    </summary>
-                    <div className="pt-2">
-                    <p className="text-xs leading-5 text-muted-foreground">{t("HTTPS only. Redirects are blocked, and the signing secret is never stored.")}</p>
-                    <div className="mt-3 space-y-2">
-                      <div><label htmlFor="meeting-webhook-url" className="text-xs text-muted-foreground">{t("Destination URL")}</label><Input id="meeting-webhook-url" value={webhookUrl} onChange={(event) => { setWebhookUrl(event.target.value); setWebhookPreview(null); setWebhookConfirmed(false); }} placeholder="https://automation.example/meeting" className="mt-1 h-9 text-xs" /></div>
-                      <div><label htmlFor="meeting-webhook-secret" className="text-xs text-muted-foreground">{t("Optional HMAC secret")}</label><Input id="meeting-webhook-secret" type="password" autoComplete="off" value={webhookSecret} onChange={(event) => setWebhookSecret(event.target.value)} className="mt-1 h-9 text-xs" /></div>
-                      <Button type="button" size="sm" variant="outline" disabled={!webhookUrl.trim() || webhookPreviewMutation.isPending} onClick={() => webhookPreviewMutation.mutate({ id: detail.id, url: webhookUrl.trim() })}>{webhookPreviewMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Preview payload")}</Button>
-                    </div>
-                    {webhookPreview && <div className="mt-3 rounded-xl border border-border/70 bg-muted/35 p-3 text-xs">
-                      <p className="font-medium">{webhookPreview.payload.event || "meeting.ready"}</p>
-                      <p className="mt-1 break-all text-muted-foreground">{webhookPreview.target}</p>
-                      <dl className="mt-3 grid grid-cols-3 gap-2"><div><dt className="text-muted-foreground">{t("Size")}</dt><dd className="mt-0.5 font-medium">{formatNumber(webhookPreview.byteSize)} B</dd></div><div><dt className="text-muted-foreground">{t("Segments")}</dt><dd className="mt-0.5 font-medium">{formatNumber(webhookPreview.payload.segments?.length ?? 0)}</dd></div><div><dt className="text-muted-foreground">{t("Notes")}</dt><dd className="mt-0.5 font-medium">{formatNumber(webhookPreview.payload.notes?.length ?? 0)}</dd></div></dl>
-                      <label className="mt-3 flex cursor-pointer items-start gap-2"><input type="checkbox" checked={webhookConfirmed} onChange={(event) => setWebhookConfirmed(event.target.checked)} className="mt-0.5 h-4 w-4 accent-primary" /><span>{t("I reviewed this target and payload.")}</span></label>
-                      <Button type="button" size="sm" className="mt-3" disabled={!webhookConfirmed || !webhookPreview || webhookDeliveryMutation.isPending} onClick={() => webhookPreview && webhookDeliveryMutation.mutate({ id: detail.id, url: webhookUrl, secret: webhookSecret, previewHash: webhookPreview.previewHash, confirmed: webhookConfirmed })}>{webhookDeliveryMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}{t("Send webhook")}</Button>
-                    </div>}
-                    {(deliveriesQuery.data?.items.length ?? 0) > 0 && <div className="mt-3 space-y-2">{deliveriesQuery.data?.items.slice(0, 3).map((delivery) => <div key={delivery.id} className="rounded-lg bg-muted/45 px-3 py-2 text-xs"><div className="flex items-center justify-between gap-2"><span className="truncate text-muted-foreground">{delivery.target}</span><Badge variant="outline">{t(delivery.status)}</Badge></div><p className="mt-1 text-muted-foreground">{t(delivery.attemptCount === 1 ? "{{count}} attempt" : "{{count}} attempts", { count: formatNumber(delivery.attemptCount) })}</p></div>)}</div>}
-                    </div>
-                  </details>}
+                  {detail.state === "ready" && (
+                    <details className="group mt-6 border-t border-border/60 pt-3">
+                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 py-2 text-sm font-semibold marker:content-none">
+                        <span>{t("Delivery & integrations")}</span>
+                        <ChevronDown className="h-4 w-4 text-muted-foreground group-open:rotate-180 motion-reduce:transform-none" />
+                      </summary>
+                      <div className="pt-2">
+                        <p className="text-xs leading-5 text-muted-foreground">
+                          {t("HTTPS only. Redirects are blocked, and the signing secret is never stored.")}
+                        </p>
+                        <div className="mt-3 space-y-2">
+                          <div>
+                            <label htmlFor="meeting-webhook-url" className="text-xs text-muted-foreground">
+                              {t("Destination URL")}
+                            </label>
+                            <Input
+                              id="meeting-webhook-url"
+                              value={webhookUrl}
+                              onChange={(event) => {
+                                setWebhookUrl(event.target.value);
+                                setWebhookPreview(null);
+                                setWebhookConfirmed(false);
+                              }}
+                              placeholder="https://automation.example/meeting"
+                              className="mt-1 h-9 text-xs"
+                            />
+                          </div>
+                          <div>
+                            <label htmlFor="meeting-webhook-secret" className="text-xs text-muted-foreground">
+                              {t("Optional HMAC secret")}
+                            </label>
+                            <Input
+                              id="meeting-webhook-secret"
+                              type="password"
+                              autoComplete="off"
+                              value={webhookSecret}
+                              onChange={(event) => setWebhookSecret(event.target.value)}
+                              className="mt-1 h-9 text-xs"
+                            />
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            disabled={!webhookUrl.trim() || webhookPreviewMutation.isPending}
+                            onClick={() => webhookPreviewMutation.mutate({ id: detail.id, url: webhookUrl.trim() })}
+                          >
+                            {webhookPreviewMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                            {t("Preview payload")}
+                          </Button>
+                        </div>
+                        {webhookPreview && (
+                          <div className="mt-3 rounded-xl border border-border/70 bg-muted/35 p-3 text-xs">
+                            <p className="font-medium">{webhookPreview.payload.event || "meeting.ready"}</p>
+                            <p className="mt-1 break-all text-muted-foreground">{webhookPreview.target}</p>
+                            <dl className="mt-3 grid grid-cols-3 gap-2">
+                              <div>
+                                <dt className="text-muted-foreground">{t("Size")}</dt>
+                                <dd className="mt-0.5 font-medium">{formatNumber(webhookPreview.byteSize)} B</dd>
+                              </div>
+                              <div>
+                                <dt className="text-muted-foreground">{t("Segments")}</dt>
+                                <dd className="mt-0.5 font-medium">
+                                  {formatNumber(webhookPreview.payload.segments?.length ?? 0)}
+                                </dd>
+                              </div>
+                              <div>
+                                <dt className="text-muted-foreground">{t("Notes")}</dt>
+                                <dd className="mt-0.5 font-medium">
+                                  {formatNumber(webhookPreview.payload.notes?.length ?? 0)}
+                                </dd>
+                              </div>
+                            </dl>
+                            <label className="mt-3 flex cursor-pointer items-start gap-2">
+                              <input
+                                type="checkbox"
+                                checked={webhookConfirmed}
+                                onChange={(event) => setWebhookConfirmed(event.target.checked)}
+                                className="mt-0.5 h-4 w-4 accent-primary"
+                              />
+                              <span>{t("I reviewed this target and payload.")}</span>
+                            </label>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="mt-3"
+                              disabled={!webhookConfirmed || !webhookPreview || webhookDeliveryMutation.isPending}
+                              onClick={() =>
+                                webhookPreview &&
+                                webhookDeliveryMutation.mutate({
+                                  id: detail.id,
+                                  url: webhookUrl,
+                                  secret: webhookSecret,
+                                  previewHash: webhookPreview.previewHash,
+                                  confirmed: webhookConfirmed,
+                                })
+                              }
+                            >
+                              {webhookDeliveryMutation.isPending && (
+                                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              )}
+                              {t("Send webhook")}
+                            </Button>
+                          </div>
+                        )}
+                        {(deliveriesQuery.data?.items.length ?? 0) > 0 && (
+                          <div className="mt-3 space-y-2">
+                            {deliveriesQuery.data?.items.slice(0, 3).map((delivery) => (
+                              <div key={delivery.id} className="rounded-lg bg-muted/45 px-3 py-2 text-xs">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="truncate text-muted-foreground">{delivery.target}</span>
+                                  <Badge variant="outline">{t(delivery.status)}</Badge>
+                                </div>
+                                <p className="mt-1 text-muted-foreground">
+                                  {t(delivery.attemptCount === 1 ? "{{count}} attempt" : "{{count}} attempts", {
+                                    count: formatNumber(delivery.attemptCount),
+                                  })}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </details>
+                  )}
                 </aside>
               </div>
             </div>
@@ -3042,50 +4364,143 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               {t("Create a meeting workspace with a transcript, speaker names, summary, search, and linked playback.")}
             </DialogDescription>
           </DialogHeader>
-          {meetingImportCandidate && <div className="space-y-4">
-            <div className="rounded-xl border border-border/65 bg-muted/30 p-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary"><FileUp className="h-4 w-4" /></div>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-medium">{meetingImportCandidate.file.name}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {formatImportDuration(meetingImportCandidate.durationSeconds, t)} · {formatImportBytes(meetingImportCandidate.file.size, formatNumber)}
-                  </p>
+          {meetingImportCandidate && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-border/65 bg-muted/30 p-4">
+                <div className="flex min-w-0 items-start gap-3">
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+                    <FileUp className="h-4 w-4" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium">{meetingImportCandidate.file.name}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {formatImportDuration(meetingImportCandidate.durationSeconds, t)} ·{" "}
+                      {formatImportBytes(meetingImportCandidate.file.size, formatNumber)}
+                    </p>
+                  </div>
                 </div>
               </div>
-            </div>
-            <div>
-              <label htmlFor="meeting-import-title" className="text-xs font-medium text-muted-foreground">{t("Meeting title")}</label>
-              <Input
-                id="meeting-import-title"
-                value={meetingImportCandidate.title}
-                disabled={meetingImportBusy}
-                onChange={(event) => setMeetingImportCandidate((current) => current ? { ...current, title: event.target.value } : current)}
-                className="mt-1.5 h-10"
-              />
-            </div>
-            <div>
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-xs font-medium text-muted-foreground">{t("Final transcript setting")}</p>
-                <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" disabled={meetingImportBusy} onClick={openMeetingSettings}>{t("Change in Settings")}</Button>
+              <div>
+                <label htmlFor="meeting-import-title" className="text-xs font-medium text-muted-foreground">
+                  {t("Meeting title")}
+                </label>
+                <Input
+                  id="meeting-import-title"
+                  value={meetingImportCandidate.title}
+                  disabled={meetingImportBusy}
+                  onChange={(event) =>
+                    setMeetingImportCandidate((current) =>
+                      current ? { ...current, title: event.target.value } : current,
+                    )
+                  }
+                  className="mt-1.5 h-10"
+                />
               </div>
-              {meetingImportProfile && <div className="mt-1.5 rounded-lg border border-border/55 px-3 py-2.5 text-xs leading-5">
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{t("Transcript service")}</span><span className="text-right font-medium">{meetingImportProfile.stages.find((stage) => stage.id === "final")?.provider || meetingImportProfile.finalProvider} · {meetingImportProfile.stages.find((stage) => stage.id === "final")?.model || meetingImportProfile.finalProvider}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{t("Maximum duration")}</span><span className="font-medium">{meetingImportFinalProviderCapability?.maxDurationSeconds != null ? formatImportDuration(meetingImportFinalProviderCapability.maxDurationSeconds, t) : t("No published duration limit")}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{t("Speaker names")}</span><span className="text-right font-medium">{profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]?.batchDiarization ? t("Included") : t("Added on this device · up to 60 min")}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{t("Language")}</span><span className="font-medium">{meetingImportProfile.language && meetingImportProfile.language !== "auto" ? meetingImportProfile.language : t("Auto")}</span></div>
-                <div className="flex items-center justify-between gap-3"><span className="text-muted-foreground">{t("Estimated STT cost")}</span><span className="font-mono font-medium">{meetingImportFinalCostPerAudioHour != null ? t("~${{cost}} / audio hour", { cost: formatNumber(meetingImportFinalCostPerAudioHour, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) }) : t("Provider rate varies")}</span></div>
-              </div>}
-              {meetingImportExceedsProviderDuration && <div className="mt-2 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:text-amber-100" role="alert">
-                {t("This transcription option cannot process a recording this long. Choose another option in Meeting settings.")}
-              </div>}
+              <div>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium text-muted-foreground">{t("Final transcript setting")}</p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 px-2 text-[11px]"
+                    disabled={meetingImportBusy}
+                    onClick={openMeetingSettings}
+                  >
+                    {t("Change in Settings")}
+                  </Button>
+                </div>
+                {meetingImportProfile && (
+                  <div className="mt-1.5 rounded-lg border border-border/55 px-3 py-2.5 text-xs leading-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{t("Transcript service")}</span>
+                      <span className="text-right font-medium">
+                        {meetingImportProfile.stages.find((stage) => stage.id === "final")?.provider ||
+                          meetingImportProfile.finalProvider}{" "}
+                        ·{" "}
+                        {meetingImportProfile.stages.find((stage) => stage.id === "final")?.model ||
+                          meetingImportProfile.finalProvider}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{t("Maximum duration")}</span>
+                      <span className="font-medium">
+                        {meetingImportFinalProviderCapability?.maxDurationSeconds != null
+                          ? formatImportDuration(meetingImportFinalProviderCapability.maxDurationSeconds, t)
+                          : t("No published duration limit")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{t("Speaker names")}</span>
+                      <span className="text-right font-medium">
+                        {profilesQuery.data?.providerCapabilities[meetingImportProfile.finalProvider]?.batchDiarization
+                          ? t("Included")
+                          : t("Added on this device · up to 60 min")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{t("Language")}</span>
+                      <span className="font-medium">
+                        {meetingImportProfile.language && meetingImportProfile.language !== "auto"
+                          ? meetingImportProfile.language
+                          : t("Auto")}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-muted-foreground">{t("Estimated STT cost")}</span>
+                      <span className="font-mono font-medium">
+                        {meetingImportFinalCostPerAudioHour != null
+                          ? t("~${{cost}} / audio hour", {
+                              cost: formatNumber(meetingImportFinalCostPerAudioHour, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              }),
+                            })
+                          : t("Provider rate varies")}
+                      </span>
+                    </div>
+                  </div>
+                )}
+                {meetingImportExceedsProviderDuration && (
+                  <div
+                    className="mt-2 rounded-lg border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs leading-5 text-amber-900 dark:text-amber-100"
+                    role="alert"
+                  >
+                    {t(
+                      "This transcription option cannot process a recording this long. Choose another option in Meeting settings.",
+                    )}
+                  </div>
+                )}
+              </div>
+              {meetingImportBusy && (
+                <div className="rounded-xl border border-border/65 bg-muted/25 px-4 py-3" role="status">
+                  <div className="flex items-center justify-between gap-3 text-xs">
+                    <span className="font-medium">{t(meetingImportProgress.stage)}</span>
+                    <span className="tabular-nums text-muted-foreground">
+                      {formatNumber(meetingImportProgress.percentage)}%
+                    </span>
+                  </div>
+                  <div
+                    className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={meetingImportProgress.percentage}
+                  >
+                    <div
+                      className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none"
+                      style={{ transform: `scaleX(${meetingImportProgress.percentage / 100})` }}
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t(
+                      "Scriber first saves a safe local copy. After the upload finishes, you can close this window without losing the import.",
+                    )}
+                  </p>
+                </div>
+              )}
             </div>
-            {meetingImportBusy && <div className="rounded-xl border border-border/65 bg-muted/25 px-4 py-3" role="status">
-              <div className="flex items-center justify-between gap-3 text-xs"><span className="font-medium">{t(meetingImportProgress.stage)}</span><span className="tabular-nums text-muted-foreground">{formatNumber(meetingImportProgress.percentage)}%</span></div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={meetingImportProgress.percentage}><div className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none" style={{ transform: `scaleX(${meetingImportProgress.percentage / 100})` }} /></div>
-              <p className="mt-2 text-xs text-muted-foreground">{t("Scriber first saves a safe local copy. After the upload finishes, you can close this window without losing the import.")}</p>
-            </div>}
-          </div>}
+          )}
           <DialogFooter>
             <Button
               type="button"
@@ -3094,12 +4509,14 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               onClick={() => {
                 if (meetingImportBusy && meetingImportId) {
                   meetingImportCancelMutation.mutate(meetingImportId);
-                  setMeetingImportProgress((current) => mergeMeetingImportProgress(current, {
-                    importId: meetingImportId || current.importId,
-                    phase: "cancel_requested",
-                    stage: "Cancel requested",
-                    percentage: 0,
-                  }));
+                  setMeetingImportProgress((current) =>
+                    mergeMeetingImportProgress(current, {
+                      importId: meetingImportId || current.importId,
+                      phase: "cancel_requested",
+                      stage: "Cancel requested",
+                      percentage: 0,
+                    }),
+                  );
                 } else setMeetingImportCandidate(null);
               }}
             >
@@ -3107,7 +4524,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             </Button>
             <Button
               type="button"
-              disabled={meetingImportBusy || !meetingImportCandidate?.title.trim() || !meetingImportProfile?.available || meetingImportExceedsProviderDuration}
+              disabled={
+                meetingImportBusy ||
+                !meetingImportCandidate?.title.trim() ||
+                !meetingImportProfile?.available ||
+                meetingImportExceedsProviderDuration
+              }
               onClick={() => {
                 if (!meetingImportCandidate || !meetingImportProfile) return;
                 meetingImportMutation.mutate({
@@ -3128,36 +4550,80 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-[680px]">
           <DialogHeader>
             <DialogTitle>{t("Share meeting by email")}</DialogTitle>
-            <DialogDescription>{t("Create a populated email in your default mail app, or save an Outlook-compatible draft. Suitable recipients come from the linked Outlook event and remain visible for review here. The summary, email body, and selected attachment use the transcript language.")}</DialogDescription>
+            <DialogDescription>
+              {t(
+                "Create a populated email in your default mail app, or save an Outlook-compatible draft. Suitable recipients come from the linked Outlook event and remain visible for review here. The summary, email body, and selected attachment use the transcript language.",
+              )}
+            </DialogDescription>
           </DialogHeader>
           {emailPreviewQuery.isLoading ? (
-            <div className="grid gap-3 py-3"><div className="h-12 animate-pulse rounded-xl bg-muted" /><div className="h-40 animate-pulse rounded-xl bg-muted" /></div>
+            <div className="grid gap-3 py-3">
+              <div className="h-12 animate-pulse rounded-xl bg-muted" />
+              <div className="h-40 animate-pulse rounded-xl bg-muted" />
+            </div>
           ) : emailPreviewQuery.isError || !emailPreviewQuery.data ? (
-            <p className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{t("The email template could not be prepared.")}</p>
+            <p className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
+              {t("The email template could not be prepared.")}
+            </p>
           ) : (
             <div className="space-y-4">
               <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/25 p-3 text-sm">
-                <div><p className="text-[11px] font-semibold text-muted-foreground">{t("To · from linked Outlook event")}</p><p className="mt-1 break-words">{emailPreviewQuery.data.recipients.length > 0 ? emailPreviewQuery.data.recipients.map((item) => item.name ? `${item.name} <${item.address}>` : item.address).join(", ") : t("No suitable Outlook participants were stored. Add recipients in your mail app.")}</p></div>
-                <div><p className="text-[11px] font-semibold text-muted-foreground">{t("Subject")}</p><p className="mt-1 font-medium">{emailPreviewQuery.data.subject}</p></div>
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground">
+                    {t("To · from linked Outlook event")}
+                  </p>
+                  <p className="mt-1 break-words">
+                    {emailPreviewQuery.data.recipients.length > 0
+                      ? emailPreviewQuery.data.recipients
+                          .map((item) => (item.name ? `${item.name} <${item.address}>` : item.address))
+                          .join(", ")
+                      : t("No suitable Outlook participants were stored. Add recipients in your mail app.")}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold text-muted-foreground">{t("Subject")}</p>
+                  <p className="mt-1 font-medium">{emailPreviewQuery.data.subject}</p>
+                </div>
               </div>
               <div>
                 <p className="text-xs font-semibold">{t("Email body preview")}</p>
-                <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded-xl border border-border/70 bg-background p-3 font-sans text-xs leading-5 text-foreground/85">{emailPreviewQuery.data.body}</pre>
+                <pre className="mt-2 max-h-52 overflow-y-auto whitespace-pre-wrap rounded-xl border border-border/70 bg-background p-3 font-sans text-xs leading-5 text-foreground/85">
+                  {emailPreviewQuery.data.body}
+                </pre>
               </div>
               <fieldset>
                 <legend className="text-xs font-semibold">{t("Draft attachment")}</legend>
                 <div className="mt-2 grid gap-2 sm:grid-cols-4">
-                  {([['', 'Body only'], ['pdf', 'PDF'], ['docx', 'Word'], ['md', 'Markdown']] as const).map(([value, label]) => (
-                    <label key={value || "body"} className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ${emailAttachment === value ? "border-primary bg-primary/5 text-foreground" : "border-border/70 text-muted-foreground hover:bg-muted/50"}`}>
-                      <input type="radio" name="meeting-email-attachment" value={value} checked={emailAttachment === value} onChange={() => setEmailAttachment(value)} className="accent-primary" />
-                      {value ? <Paperclip className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}{t(label)}
+                  {(
+                    [
+                      ["", "Body only"],
+                      ["pdf", "PDF"],
+                      ["docx", "Word"],
+                      ["md", "Markdown"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <label
+                      key={value || "body"}
+                      className={`flex cursor-pointer items-center gap-2 rounded-lg border px-3 py-2 text-xs ${emailAttachment === value ? "border-primary bg-primary/5 text-foreground" : "border-border/70 text-muted-foreground hover:bg-muted/50"}`}
+                    >
+                      <input
+                        type="radio"
+                        name="meeting-email-attachment"
+                        value={value}
+                        checked={emailAttachment === value}
+                        onChange={() => setEmailAttachment(value)}
+                        className="accent-primary"
+                      />
+                      {value ? <Paperclip className="h-3.5 w-3.5" /> : <Mail className="h-3.5 w-3.5" />}
+                      {t(label)}
                     </label>
                   ))}
                 </div>
               </fieldset>
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <Button type="button" variant="outline" onClick={() => void composeEmailBody()}>
-                  <Mail className="mr-2 h-4 w-4" />{t("Open email with summary")}
+                  <Mail className="mr-2 h-4 w-4" />
+                  {t("Open email with summary")}
                 </Button>
                 <Button
                   type="button"
@@ -3170,8 +4636,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     });
                   }}
                 >
-                  {exportMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Paperclip className="mr-2 h-4 w-4" />}
-                  {t("Save email draft")}{emailAttachment ? ` + ${emailAttachment.toUpperCase()}` : ""}
+                  {exportMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Paperclip className="mr-2 h-4 w-4" />
+                  )}
+                  {t("Save email draft")}
+                  {emailAttachment ? ` + ${emailAttachment.toUpperCase()}` : ""}
                 </Button>
               </div>
             </div>
@@ -3179,17 +4650,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={reprocessDialogOpen} onOpenChange={(open) => {
-        if (!reprocessMutation.isPending) setReprocessDialogOpen(open);
-      }}>
+      <Dialog
+        open={reprocessDialogOpen}
+        onOpenChange={(open) => {
+          if (!reprocessMutation.isPending) setReprocessDialogOpen(open);
+        }}
+      >
         <DialogContent className="sm:max-w-[660px]">
           <DialogHeader>
             <DialogTitle>{t("Process this meeting again")}</DialogTitle>
-            <DialogDescription>{t("Choose exactly what Scriber should rebuild. Your original recording is never changed or overwritten.")}</DialogDescription>
+            <DialogDescription>
+              {t(
+                "Choose exactly what Scriber should rebuild. Your original recording is never changed or overwritten.",
+              )}
+            </DialogDescription>
           </DialogHeader>
           <fieldset className="grid gap-3 py-1">
             <legend className="sr-only">{t("Choose what to process again")}</legend>
-            <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "speaker_identity" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.speakerIdentityAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}>
+            <label
+              className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "speaker_identity" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.speakerIdentityAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}
+            >
               <input
                 type="radio"
                 name="meeting-reprocess-mode"
@@ -3200,14 +4680,26 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 className="mt-1 accent-primary"
               />
               <span className="min-w-0">
-                <span className="flex items-center gap-2 text-sm font-semibold"><Users className="h-4 w-4 text-primary" />{t("Refresh speaker matches")}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{t("Uses the latest saved Voice Library names and participant context. Transcript wording, audio, notes, summary, and action items stay unchanged. Suggested people still require your confirmation.")}</span>
-                {!detail?.reprocessing?.speakerIdentityAvailable && detail?.reprocessing?.speakerIdentityUnavailableReason && (
-                  <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">{t(detail.reprocessing.speakerIdentityUnavailableReason)}</span>
-                )}
+                <span className="flex items-center gap-2 text-sm font-semibold">
+                  <Users className="h-4 w-4 text-primary" />
+                  {t("Refresh speaker matches")}
+                </span>
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {t(
+                    "Uses the latest saved Voice Library names and participant context. Transcript wording, audio, notes, summary, and action items stay unchanged. Suggested people still require your confirmation.",
+                  )}
+                </span>
+                {!detail?.reprocessing?.speakerIdentityAvailable &&
+                  detail?.reprocessing?.speakerIdentityUnavailableReason && (
+                    <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                      {t(detail.reprocessing.speakerIdentityUnavailableReason)}
+                    </span>
+                  )}
               </span>
             </label>
-            <label className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "full_transcript" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.fullTranscriptAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}>
+            <label
+              className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 ${reprocessMode === "full_transcript" ? "border-primary bg-primary/5" : "border-border/70 bg-muted/20"} ${detail?.reprocessing?.fullTranscriptAvailable === false ? "cursor-not-allowed opacity-55" : ""}`}
+            >
               <input
                 type="radio"
                 name="meeting-reprocess-mode"
@@ -3218,40 +4710,80 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 className="mt-1 accent-primary"
               />
               <span className="min-w-0">
-                <span className="flex items-center gap-2 text-sm font-semibold"><RefreshCw className="h-4 w-4 text-primary" />{t("Create a new full transcript")}</span>
-                <span className="mt-1 block text-xs leading-5 text-muted-foreground">{t("Retranscribes the complete saved recording with the model currently selected in Settings, then rebuilds timestamps and speaker segments. If the result changes, manual transcript corrections and speaker confirmations are cleared so they cannot point to the wrong words. Notes and the original audio remain unchanged.")}</span>
-                <span className="mt-2 block rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[11px] text-foreground/80">
-                  {detail?.reprocessing?.selectedFinalProvider || t("Selected provider")} · {detail?.reprocessing?.selectedFinalModel || t("Selected model")}
+                <span className="flex items-center gap-2 text-sm font-semibold">
+                  <RefreshCw className="h-4 w-4 text-primary" />
+                  {t("Create a new full transcript")}
                 </span>
-                <span className="mt-1.5 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">{t("This option sends the complete recording to the configured transcription provider and may incur normal provider costs.")}</span>
-                {!detail?.reprocessing?.fullTranscriptAvailable && detail?.reprocessing?.fullTranscriptUnavailableReason && (
-                  <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">{t(detail.reprocessing.fullTranscriptUnavailableReason)}</span>
-                )}
+                <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+                  {t(
+                    "Retranscribes the complete saved recording with the model currently selected in Settings, then rebuilds timestamps and speaker segments. If the result changes, manual transcript corrections and speaker confirmations are cleared so they cannot point to the wrong words. Notes and the original audio remain unchanged.",
+                  )}
+                </span>
+                <span className="mt-2 block rounded-lg bg-background/70 px-2.5 py-2 font-mono text-[11px] text-foreground/80">
+                  {detail?.reprocessing?.selectedFinalProvider || t("Selected provider")} ·{" "}
+                  {detail?.reprocessing?.selectedFinalModel || t("Selected model")}
+                </span>
+                <span className="mt-1.5 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                  {t(
+                    "This option sends the complete recording to the configured transcription provider and may incur normal provider costs.",
+                  )}
+                </span>
+                {!detail?.reprocessing?.fullTranscriptAvailable &&
+                  detail?.reprocessing?.fullTranscriptUnavailableReason && (
+                    <span className="mt-2 block text-[11px] leading-4 text-amber-700 dark:text-amber-300">
+                      {t(detail.reprocessing.fullTranscriptUnavailableReason)}
+                    </span>
+                  )}
               </span>
             </label>
           </fieldset>
           {detail?.reprocessing?.unavailableReason && (
-            <p className="rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-100" role="status">{t(detail.reprocessing.unavailableReason)}</p>
+            <p
+              className="rounded-xl border border-amber-300/60 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-900 dark:text-amber-100"
+              role="status"
+            >
+              {t(detail.reprocessing.unavailableReason)}
+            </p>
           )}
-          {reprocessMutation.isError && <p className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive" role="alert">{t(reprocessMutation.error.message)}</p>}
+          {reprocessMutation.isError && (
+            <p
+              className="rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-xs text-destructive"
+              role="alert"
+            >
+              {t(reprocessMutation.error.message)}
+            </p>
+          )}
           <div className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs leading-5 text-muted-foreground">
             <ShieldCheck className="mr-2 inline h-4 w-4 align-text-bottom text-primary" />
-            {t("The retained source audio is read-only for this operation. You can continue using the current meeting until the new result is ready.")}
+            {t(
+              "The retained source audio is read-only for this operation. You can continue using the current meeting until the new result is ready.",
+            )}
           </div>
           <DialogFooter>
-            <Button type="button" variant="outline" disabled={reprocessMutation.isPending} onClick={() => setReprocessDialogOpen(false)}>{t("Cancel")}</Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={reprocessMutation.isPending}
+              onClick={() => setReprocessDialogOpen(false)}
+            >
+              {t("Cancel")}
+            </Button>
             <Button
               type="button"
               disabled={
-                !detail
-                || reprocessMutation.isPending
-                || (reprocessMode === "speaker_identity" && !detail.reprocessing?.speakerIdentityAvailable)
-                || (reprocessMode === "full_transcript" && !detail.reprocessing?.fullTranscriptAvailable)
+                !detail ||
+                reprocessMutation.isPending ||
+                (reprocessMode === "speaker_identity" && !detail.reprocessing?.speakerIdentityAvailable) ||
+                (reprocessMode === "full_transcript" && !detail.reprocessing?.fullTranscriptAvailable)
               }
               onClick={() => detail && reprocessMutation.mutate({ id: detail.id, mode: reprocessMode })}
             >
               {reprocessMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-              {reprocessMutation.isPending ? t("Starting…") : reprocessMode === "speaker_identity" ? t("Refresh speakers") : t("Create new transcript")}
+              {reprocessMutation.isPending
+                ? t("Starting…")
+                : reprocessMode === "speaker_identity"
+                  ? t("Refresh speakers")
+                  : t("Create new transcript")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -3262,7 +4794,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           <AlertDialogHeader>
             <AlertDialogTitle>{t("Delete this meeting?")}</AlertDialogTitle>
             <AlertDialogDescription>
-              {t("“{{title}}” will be removed permanently, including its transcript, generated outputs, notes, and locally retained audio. This cannot be undone.", { title: meetingPendingDelete?.title || "" })}
+              {t(
+                "“{{title}}” will be removed permanently, including its transcript, generated outputs, notes, and locally retained audio. This cannot be undone.",
+                { title: meetingPendingDelete?.title || "" },
+              )}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -40,19 +40,12 @@ function downloadInBrowser(blob: Blob, filename: string): void {
   }
 }
 
-export async function saveTranscriptExport(
-  path: string,
-  fallbackName: string,
-): Promise<TranscriptExportResult> {
+export async function saveTranscriptExport(path: string, fallbackName: string): Promise<TranscriptExportResult> {
   const desktop = isTauriRuntime();
   const safePath = transcriptExportApiPath(path);
   let response: Response;
   try {
-    response = await fetchWithTimeout(
-      apiUrl(safePath),
-      { credentials: "include" },
-      EXPORT_TIMEOUT_MS,
-    );
+    response = await fetchWithTimeout(apiUrl(safePath), { credentials: "include" }, EXPORT_TIMEOUT_MS);
   } catch {
     throw new Error(transcriptExportDownloadErrorMessage());
   }
@@ -62,18 +55,15 @@ export async function saveTranscriptExport(
 
   const advertisedSize = Number(response.headers.get("Content-Length"));
   if (
-    desktop
-    && Number.isFinite(advertisedSize)
-    && advertisedSize >= 0
-    && !meetingExportFitsNativeLimit(advertisedSize)
+    desktop &&
+    Number.isFinite(advertisedSize) &&
+    advertisedSize >= 0 &&
+    !meetingExportFitsNativeLimit(advertisedSize)
   ) {
     throw new Error(transcriptExportNativeLimitErrorMessage());
   }
 
-  const filename = meetingExportFilename(
-    response.headers.get("Content-Disposition"),
-    fallbackName,
-  );
+  const filename = meetingExportFilename(response.headers.get("Content-Disposition"), fallbackName);
   let blob: Blob;
   try {
     blob = await response.blob();
@@ -107,10 +97,7 @@ export async function saveTranscriptExport(
       bytes,
     });
   } catch (error) {
-    throw meetingExportNativeCommandError(
-      error,
-      "Scriber could not save the transcript export. Please try again.",
-    );
+    throw meetingExportNativeCommandError(error, "Scriber could not save the transcript export. Please try again.");
   }
   if (!saved) return { status: "cancelled" };
   return { status: "saved", desktop: true, filename: saved.filename };

@@ -1,10 +1,6 @@
 {
   "extends": "./tsconfig.json",
-  "include": [
-    "client/src/**/*.test.ts",
-    "client/src/**/*.test.tsx",
-    "vitest.setup.ts"
-  ],
+  "include": ["client/src/**/*.test.ts", "client/src/**/*.test.tsx", "vitest.setup.ts"],
   "exclude": ["node_modules", "build", "dist"],
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo.tests",

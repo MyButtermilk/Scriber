@@ -38,41 +38,49 @@ async function warmPrimaryTabData(queryClient: QueryClient, isCancelled: () => b
   }
 
   if (!isCancelled()) {
-    await queryClient.prefetchQuery({
-      queryKey: ["/api/meetings"],
-      queryFn: async ({ signal }) => {
-        const response = await fetchWithTimeout(apiUrl(ACTIVE_MEETING_QUERY_PATH), {
-          credentials: "include",
-          signal,
-        }, 10_000);
-        if (!response.ok) throw new Error("Failed to preload meetings");
-        return response.json() as Promise<MeetingsResponse>;
-      },
-      staleTime: 10_000,
-    }).catch(() => undefined);
+    await queryClient
+      .prefetchQuery({
+        queryKey: ["/api/meetings"],
+        queryFn: async ({ signal }) => {
+          const response = await fetchWithTimeout(
+            apiUrl(ACTIVE_MEETING_QUERY_PATH),
+            {
+              credentials: "include",
+              signal,
+            },
+            10_000,
+          );
+          if (!response.ok) throw new Error("Failed to preload meetings");
+          return response.json() as Promise<MeetingsResponse>;
+        },
+        staleTime: 10_000,
+      })
+      .catch(() => undefined);
   }
 
   for (const type of PRIMARY_HISTORY_TYPES) {
     if (isCancelled()) return;
-    await queryClient.prefetchInfiniteQuery({
-      queryKey: transcriptHistoryQueryKey(type, ""),
-      queryFn: async ({ pageParam }) =>
-        fetchTranscriptHistoryPage<TranscriptHistoryItem>({
-          type,
-          q: "",
-          offset: typeof pageParam === "number" ? pageParam : 0,
-          pageSize: TRANSCRIPT_HISTORY_PAGE_SIZE,
-        }),
-      initialPageParam: 0,
-      getNextPageParam: (lastPage: TranscriptHistoryPage<TranscriptHistoryItem>) => {
-        const nextOffset = lastPage.offset + lastPage.items.length;
-        if (!lastPage.hasMore || nextOffset <= lastPage.offset) {
-          return undefined;
-        }
-        return nextOffset;
-      },
-      staleTime: Infinity,
-    }).catch(() => undefined);
+    await queryClient
+      .prefetchInfiniteQuery({
+        queryKey: transcriptHistoryQueryKey(type, ""),
+        queryFn: async ({ pageParam }) =>
+          fetchTranscriptHistoryPage<TranscriptHistoryItem>({
+            type,
+            q: "",
+            offset: typeof pageParam === "number" ? pageParam : 0,
+            pageSize: TRANSCRIPT_HISTORY_PAGE_SIZE,
+          }),
+        initialPageParam: 0,
+        getNextPageParam: (lastPage: TranscriptHistoryPage<TranscriptHistoryItem>) => {
+          const nextOffset = lastPage.offset + lastPage.items.length;
+          if (!lastPage.hasMore || nextOffset <= lastPage.offset) {
+            return undefined;
+          }
+          return nextOffset;
+        },
+        staleTime: Infinity,
+      })
+      .catch(() => undefined);
     await nextFrame();
   }
 }

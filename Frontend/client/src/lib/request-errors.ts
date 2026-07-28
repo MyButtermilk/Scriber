@@ -35,10 +35,14 @@ export function friendlyRequestMessage(rawMessage: string, fallback = "Request f
     return translateNow("The backend is taking too long to respond. It may still be starting. Please try again.");
   }
   if (CORS_ERROR_TOKENS.some((token) => normalized.includes(token))) {
-    return translateNow("Connection was blocked by browser security settings. Please check your backend URL and CORS settings.");
+    return translateNow(
+      "Connection was blocked by browser security settings. Please check your backend URL and CORS settings.",
+    );
   }
   if (INVALID_ARGUMENT_TOKENS.some((token) => normalized.includes(token))) {
-    return translateNow("The backend rejected the request (invalid argument). Please ensure the backend is running and retry.");
+    return translateNow(
+      "The backend rejected the request (invalid argument). Please ensure the backend is running and retry.",
+    );
   }
 
   return translateNow(message);
@@ -61,7 +65,7 @@ export async function responseDetailMessage(res: Response): Promise<string> {
   const contentType = (res.headers.get("content-type") || "").toLowerCase();
 
   if (contentType.includes("application/json")) {
-    const payload = await res.json().catch(() => null) as Record<string, unknown> | null;
+    const payload = (await res.json().catch(() => null)) as Record<string, unknown> | null;
     const message =
       (typeof payload?.message === "string" && payload.message) ||
       (typeof payload?.error === "string" && payload.error) ||
@@ -95,4 +99,3 @@ export function extractFailureMessage(content: string, step: string): string {
   }
   return (step || "").trim();
 }
-

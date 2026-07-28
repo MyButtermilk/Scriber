@@ -16,11 +16,7 @@ export function meetingControlVisibility(state: MeetingState): MeetingControlVis
 }
 
 /** Freeze processing-state clocks at the durable capture end boundary. */
-export function meetingTimerNowMs(
-  state: MeetingState,
-  endedAt: string | null,
-  nowMs: number,
-): number {
+export function meetingTimerNowMs(state: MeetingState, endedAt: string | null, nowMs: number): number {
   if (!["stopping", "finalizing", "analyzing"].includes(state) || !endedAt) {
     return nowMs;
   }

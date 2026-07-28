@@ -10,10 +10,7 @@ export function meetingContactIdentityKeys(contact: OutlookCalendarContact): str
     .filter(Boolean);
 }
 
-export function meetingContactsMatch(
-  left: OutlookCalendarContact,
-  right: OutlookCalendarContact,
-): boolean {
+export function meetingContactsMatch(left: OutlookCalendarContact, right: OutlookCalendarContact): boolean {
   const leftKeys = new Set(meetingContactIdentityKeys(left));
   return meetingContactIdentityKeys(right).some((key) => leftKeys.has(key));
 }
@@ -24,9 +21,7 @@ export function meetingAttendeeIdForContact(
 ): string {
   if (!contact) return "";
   const keys = new Set(meetingContactIdentityKeys(contact));
-  const attendee = attendees.find((candidate) => (
-    meetingContactIdentityKeys(candidate).some((key) => keys.has(key))
-  ));
+  const attendee = attendees.find((candidate) => meetingContactIdentityKeys(candidate).some((key) => keys.has(key)));
   return attendee ? meetingContactId(attendee) : "";
 }
 
@@ -43,7 +38,5 @@ export function initialMeetingParticipantId(
   if (currentId && attendees.some((attendee) => meetingContactId(attendee) === currentId)) {
     return currentId;
   }
-  return meetingAttendeeIdForContact(attendees, confirmed)
-    || meetingAttendeeIdForContact(attendees, suggested)
-    || "";
+  return meetingAttendeeIdForContact(attendees, confirmed) || meetingAttendeeIdForContact(attendees, suggested) || "";
 }

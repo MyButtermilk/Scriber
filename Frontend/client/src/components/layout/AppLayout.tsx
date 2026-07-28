@@ -6,12 +6,13 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { DesktopTitleBar } from "@/components/DesktopTitleBar";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { useState, useEffect, useCallback, lazy, Suspense, useRef } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { preloadRouteChunk } from "@/lib/route-preload";
 import { BrandMark } from "@/components/BrandMark";
 import { ActiveMeetingPill } from "@/components/meeting/ActiveMeetingPill";
 import { LanguageToggle } from "@/components/language-toggle";
 import { useI18n } from "@/i18n";
+import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -70,12 +71,11 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/meetings", icon: CalendarClock, label: t("Meetings") },
     { href: "/youtube", icon: Youtube, label: t("YouTube") },
     { href: "/file", icon: FolderOpen, label: t("File") },
-    { href: "/debug", icon: Terminal, label: t("Console") },
     { href: "/settings", icon: Settings, label: t("Settings") },
   ];
 
   const renderNav = (onNavigate?: () => void) => (
-    <nav className="flex-1 px-3 pt-1">
+    <nav className="flex-1 px-3 pt-1" aria-label={t("Main navigation")}>
       <ul className="space-y-1.5">
         {tabs.map((tab) => {
           const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
@@ -89,19 +89,13 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 onPointerDown={() => handleNavIntent(tab.href)}
                 onFocus={() => handleNavIntent(tab.href)}
                 onClick={onNavigate}
+                aria-current={isActive ? "page" : undefined}
                 className={cn(
                   "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer no-underline outline-none",
-                  isActive
-                    ? "neu-nav-active text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
+                  isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                <Icon
-                  className={cn(
-                    "w-5 h-5 shrink-0 stroke-[1.5px]",
-                    isActive && "stroke-[2px]",
-                  )}
-                />
+                <Icon className={cn("w-5 h-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} />
                 <span>{tab.label}</span>
               </Link>
             </li>
@@ -110,6 +104,31 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       </ul>
     </nav>
   );
+
+  const renderConsoleUtility = (onNavigate?: () => void) => {
+    const isActive = location.startsWith("/debug");
+    return (
+      <div className="mx-3 border-t border-border/60 pt-2">
+        <Link
+          href="/debug"
+          onPointerEnter={() => handleNavIntent("/debug")}
+          onPointerDown={() => handleNavIntent("/debug")}
+          onFocus={() => handleNavIntent("/debug")}
+          onClick={onNavigate}
+          aria-current={isActive ? "page" : undefined}
+          className={cn(
+            "flex min-h-9 items-center gap-2 rounded-lg px-3 text-xs font-medium no-underline outline-none",
+            isActive
+              ? "bg-background/65 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.7)]"
+              : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          <Terminal className="h-4 w-4 shrink-0 stroke-[1.5px]" aria-hidden="true" />
+          <span>{t("Console")}</span>
+        </Link>
+      </div>
+    );
+  };
 
   return (
     <div className="min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
@@ -129,7 +148,13 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           <div className="flex items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>
-                <Button type="button" variant="ghost" size="icon" className="min-h-[44px] min-w-[44px]" aria-label={t("Open navigation")}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="min-h-[44px] min-w-[44px]"
+                  aria-label={t("Open navigation")}
+                >
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
@@ -144,6 +169,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                     <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                   </div>
                   {renderNav(() => setMobileNavOpen(false))}
+                  {renderConsoleUtility(() => setMobileNavOpen(false))}
                   <div className="px-4 pb-5 pt-2">
                     <LanguageToggle className="mb-1 w-full" />
                     <ThemeToggle align="edge" />
@@ -185,6 +211,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
           {/* Navigation */}
           {renderNav()}
+          {renderConsoleUtility()}
 
           {/* Theme Toggle at bottom */}
           <div className="px-4 pb-5 pt-2">
@@ -197,9 +224,15 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         <main id="main-content" className="min-h-0 min-w-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
           {/* Content panel - rounded, inset within the sidebar-colored background */}
           <div className="min-w-0 flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
-            <div ref={scrollContainerRef} className="h-full min-w-0 overflow-y-auto overflow-x-hidden" data-app-scroll-container="true">
+            <div
+              ref={scrollContainerRef}
+              className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
+              data-app-scroll-container="true"
+            >
               <div className="min-h-full min-w-0">
-                {children}
+                <AppScrollContainerContext.Provider value={scrollContainerRef}>
+                  {children}
+                </AppScrollContainerContext.Provider>
               </div>
             </div>
           </div>

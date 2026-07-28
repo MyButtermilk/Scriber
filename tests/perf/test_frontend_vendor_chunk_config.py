@@ -13,9 +13,9 @@ def test_vite_config_keeps_manual_vendor_chunks() -> None:
     assert 'return "vendor-react"' in config
     assert 'return "vendor-query"' in config
     assert 'return "vendor-motion"' in config
-    assert 'return "vendor-charts"' in config
     assert 'return "vendor"' in config
     assert "/node_modules/react/" in config
     assert "/node_modules/@tanstack/" in config
-    assert "/node_modules/framer-motion/" in config
-    assert "/node_modules/recharts/" in config
+    assert "/node_modules/motion/" in config
+    assert "/node_modules/framer-motion/" not in config
+    assert "/node_modules/recharts/" not in config

@@ -1717,6 +1717,55 @@ class FrontendSmokeBackend:
                     "processingStartedAt": self.processing_started_at,
                 }
             )
+        if transcript_id == "file-00001":
+            item = transcript_item("file", 1)
+            item.update(
+                {
+                    "content": (
+                        "Speaker 1: We reviewed the desktop release candidate and agreed to keep the "
+                        "recording workflow focused on one primary action. "
+                        "Speaker 2: The new history layout is easier to scan, but the empty and loading "
+                        "states need the same spacing as completed recordings. "
+                        "Speaker 1: We will ship after the accessibility and installer checks pass."
+                    ),
+                    "summary": (
+                        "<section>"
+                        "<h2>Desktop release review</h2>"
+                        "<p>The team aligned on a focused release candidate with clearer recording controls, "
+                        "more consistent history views, and a final accessibility gate before publication.</p>"
+                        "<ul>"
+                        "<li><strong>Release scope:</strong> Keep one primary recording action and defer optional controls.</li>"
+                        "<li><strong>History:</strong> Use matching spacing for complete, empty, and loading states.</li>"
+                        "<li><strong>Quality gate:</strong> Complete keyboard, contrast, and installer verification.</li>"
+                        "<li><strong>Decision:</strong> Publish only after every release check passes.</li>"
+                        "</ul>"
+                        "</section>"
+                        "<section>"
+                        "<h2>Decisions and owners</h2>"
+                        "<h3>Interaction polish</h3>"
+                        "<p>The frontend owner will normalize card edges and keep page headings aligned with "
+                        "the content grid at every supported desktop width.</p>"
+                        "<h3>Release readiness</h3>"
+                        "<p>The release owner will validate the signed installer and updater metadata before publication.</p>"
+                        "</section>"
+                        "<section>"
+                        "<h2>Next steps</h2>"
+                        "<ol>"
+                        "<li>Finish the keyboard and contrast pass.</li>"
+                        "<li>Run the installed desktop smoke suite.</li>"
+                        "<li>Review the final release evidence together.</li>"
+                        "</ol>"
+                        "</section>"
+                    ),
+                    "summaryFormat": "html",
+                    "summaryStatus": "completed",
+                    "summaryError": "",
+                    "summaryUpdatedAt": "2026-06-01T12:05:00Z",
+                    "createdAt": "2026-06-01T12:00:00Z",
+                    "updatedAt": "2026-06-01T12:05:00Z",
+                }
+            )
+            return web.json_response(item)
         kind = transcript_id.split("-", maxsplit=1)[0] if "-" in transcript_id else "mic"
         index = 1
         with suppress(IndexError, ValueError):
@@ -1841,7 +1890,7 @@ class FrontendSmokeBackend:
             "fileUploadLimits": {
                 "compressionThresholdBytes": 50 * 1024 * 1024,
                 "compressionThresholdLabel": "50MB",
-                "providerLabel": "Synthetic",
+                "providerLabel": "Soniox",
                 "audioMaxLabel": "2GB",
                 "rawAudioIngestMaxLabel": "2GB",
                 "videoMaxLabel": "2GB",
@@ -4959,11 +5008,11 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
     ok: !!root
       && document.querySelectorAll('.perf-scroll-item').length > 0
       && text.includes('Synthetic File 00001')
-      && text.includes('Synthetic processes files in the app up to 2GB')
+      && text.includes('Soniox processes files in the app up to 2GB')
       && text.includes('video up to 2GB'),
     view: root?.getAttribute('data-history-view') || '',
     visibleCards: document.querySelectorAll('.perf-scroll-item').length,
-    hasUploadLimitHint: text.includes('Synthetic processes files in the app up to 2GB'),
+    hasUploadLimitHint: text.includes('Soniox processes files in the app up to 2GB'),
     hasVideoLimitHint: text.includes('video up to 2GB'),
     hasFirstFile: text.includes('Synthetic File 00001')
   };
@@ -5164,7 +5213,7 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
   const writes = window.__scriberSmokeFileClipboardWrites || [];
   return {
     ok: writes.length === 1
-      && writes[0].includes('synthetic transcript used by the frontend browser smoke test'),
+      && writes[0].includes('reviewed the desktop release candidate'),
     writes,
     stubbed: !!window.__scriberSmokeFileClipboardStubbed,
     toastVisible: (document.body?.innerText || '').includes('Transcript copied to clipboard.')
@@ -5877,6 +5926,37 @@ async def exercise_transcript_detail_actions(
             "Mic transcript detail added settings traffic beyond bootstrap: "
             f"{backend.settings_get_count} total request(s)"
         )
+    layout_state = await cdp.evaluate(
+        r"""
+(() => {
+  const header = document.querySelector('[data-transcript-detail-header="true"]');
+  const content = document.querySelector('.transcript-detail-shell');
+  if (!header || !content) {
+    return {
+      ok: false,
+      reason: !header ? 'missing transcript detail header hook' : 'missing transcript detail content shell'
+    };
+  }
+  const round = (value) => Math.round(value * 100) / 100;
+  const headerRect = header.getBoundingClientRect();
+  const contentRect = content.getBoundingClientRect();
+  const borderRadius = parseFloat(getComputedStyle(header).borderTopLeftRadius) || 0;
+  const leftDelta = Math.abs(headerRect.left - contentRect.left);
+  const widthDelta = Math.abs(headerRect.width - contentRect.width);
+  return {
+    ok: leftDelta <= 2 && widthDelta <= 2 && borderRadius >= 16,
+    headerWidth: round(headerRect.width),
+    contentWidth: round(contentRect.width),
+    leftDelta: round(leftDelta),
+    widthDelta: round(widthDelta),
+    borderRadius: round(borderRadius)
+  };
+})()
+""",
+        timeout=5,
+    )
+    if not layout_state or not layout_state.get("ok"):
+        raise RuntimeError(f"Transcript detail header does not align with its content shell: {layout_state}")
     detail_requests_before_generic_update = backend.transcript_detail_counts.get("mic-00001", 0)
     await backend.broadcast_history_updated()
     deadline = time.monotonic() + timeout_sec
@@ -6202,6 +6282,7 @@ async def exercise_transcript_detail_actions(
         "name": "transcript-detail-actions",
         "ok": True,
         "micSettingsRequests": settings_request_state,
+        "layout": layout_state,
         "genericHistoryRefresh": generic_refresh_state,
         "spySetup": setup_state,
         "copy": copy_state,
@@ -7165,6 +7246,21 @@ async def exercise_desktop_page_shell_layouts(
   const style = getComputedStyle(shell);
   const paddingLeft = parseFloat(style.paddingLeft) || 0;
   const paddingRight = parseFloat(style.paddingRight) || 0;
+  const pageIntro = shell.querySelector('[data-page-intro="true"]');
+  const pageIntroRect = pageIntro ? pageIntro.getBoundingClientRect() : null;
+  const pageIntroStyle = pageIntro ? getComputedStyle(pageIntro) : null;
+  const expectsPageIntro = route !== '/debug';
+  const expectedContentLeft = shellRect.left + paddingLeft;
+  const expectedContentWidth = shellRect.width - paddingLeft - paddingRight;
+  const introLeftDelta = pageIntroRect ? Math.abs(pageIntroRect.left - expectedContentLeft) : null;
+  const introWidthDelta = pageIntroRect ? Math.abs(pageIntroRect.width - expectedContentWidth) : null;
+  const introBorderRadius = pageIntroStyle ? parseFloat(pageIntroStyle.borderTopLeftRadius) || 0 : null;
+  const introMatchesContent = !expectsPageIntro || (
+    pageIntroRect !== null
+    && introLeftDelta <= 2
+    && introWidthDelta <= 2
+    && introBorderRadius >= 16
+  );
   const computedMaxWidth = parseFloat(style.maxWidth);
   const containerContentRight = containerRect.left + scrollContainer.clientWidth;
   const leftGutter = shellRect.left - containerRect.left;
@@ -7180,6 +7276,7 @@ async def exercise_desktop_page_shell_layouts(
       && scrollContainer.clientWidth > 0
       && leftGutter >= -2
       && rightGutter >= -2
+      && introMatchesContent
       && sidebarStyle?.display !== 'none',
     route,
     shellId,
@@ -7189,6 +7286,11 @@ async def exercise_desktop_page_shell_layouts(
     contentWidth: round(shellRect.width - paddingLeft - paddingRight),
     paddingLeft: round(paddingLeft),
     paddingRight: round(paddingRight),
+    expectsPageIntro,
+    introMatchesContent,
+    introLeftDelta: introLeftDelta === null ? null : round(introLeftDelta),
+    introWidthDelta: introWidthDelta === null ? null : round(introWidthDelta),
+    introBorderRadius: introBorderRadius === null ? null : round(introBorderRadius),
     computedMaxWidth: Number.isFinite(computedMaxWidth) ? round(computedMaxWidth) : null,
     maxWidthReached,
     containerClientWidth: scrollContainer.clientWidth,
@@ -7256,6 +7358,18 @@ async def exercise_desktop_page_shell_layouts(
         (float(item["centerDelta"]) for item in measured),
         default=999_999.0,
     )
+    intro_measurements = [item for item in measured if item.get("expectsPageIntro") is True]
+    max_intro_left_delta = max(
+        (float(item["introLeftDelta"]) for item in intro_measurements if isinstance(item.get("introLeftDelta"), (int, float))),
+        default=999_999.0,
+    )
+    max_intro_width_delta = max(
+        (float(item["introWidthDelta"]) for item in intro_measurements if isinstance(item.get("introWidthDelta"), (int, float))),
+        default=999_999.0,
+    )
+    page_intros_aligned = len(intro_measurements) == 5 and all(
+        item.get("introMatchesContent") is True for item in intro_measurements
+    )
     live = next((item for item in measured if item.get("route") == "/"), None)
     meetings = next((item for item in measured if item.get("route") == "/meetings"), None)
     meeting_at_most_live = bool(live and meetings and float(meetings["rectWidth"]) <= float(live["rectWidth"]) + 1)
@@ -7271,6 +7385,9 @@ async def exercise_desktop_page_shell_layouts(
         and max_padding_spread <= 2
         and max_gutter_imbalance <= 2
         and max_center_delta <= 2
+        and page_intros_aligned
+        and max_intro_left_delta <= 2
+        and max_intro_width_delta <= 2
         and meeting_at_most_live
         and max_width_reached
     )
@@ -7285,6 +7402,9 @@ async def exercise_desktop_page_shell_layouts(
         "maxPaddingSpread": max_padding_spread,
         "maxGutterImbalance": max_gutter_imbalance,
         "maxCenterDelta": max_center_delta,
+        "maxIntroLeftDelta": round(max_intro_left_delta, 2),
+        "maxIntroWidthDelta": round(max_intro_width_delta, 2),
+        "pageIntrosAligned": page_intros_aligned,
         "meetingAtMostLive": meeting_at_most_live,
         "maxWidthReached": max_width_reached,
         "results": results,
@@ -7377,7 +7497,16 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     route=route,
                     timeout_sec=args.page_timeout_sec,
                 )
-                if screenshot_dir and route in {"/", "/youtube", "/file"}:
+                screenshot_labels = {
+                    "/": "live-transcription",
+                    "/meetings": "meetings",
+                    "/youtube": "youtube-transcription",
+                    "/file": "file-transcription",
+                    "/debug": "debug-console",
+                    "/settings": "settings",
+                    "/transcript/file-00001": "transcript-detail",
+                }
+                if screenshot_dir and route in screenshot_labels:
                     await cdp.evaluate(
                         r"""
 (() => {
@@ -7392,11 +7521,7 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     )
                     # Capture the settled surface rather than the route-entry fade.
                     await asyncio.sleep(0.9)
-                    screenshot_label = {
-                        "/": "live-transcription",
-                        "/youtube": "youtube-transcription",
-                        "/file": "file-transcription",
-                    }[route]
+                    screenshot_label = screenshot_labels[route]
                     scenario["screenshot"] = await capture_page_screenshot(
                         cdp,
                         output_dir=screenshot_dir,
@@ -7789,6 +7914,9 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
         "maxPaddingSpread": 0,
         "maxGutterImbalance": 0,
         "maxCenterDelta": 0,
+        "maxIntroLeftDelta": 0,
+        "maxIntroWidthDelta": 0,
+        "pageIntrosAligned": True,
         "meetingAtMostLive": True,
         "maxWidthReached": True,
         "results": [
@@ -7802,6 +7930,11 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 "contentWidth": 1272,
                 "paddingLeft": 24,
                 "paddingRight": 24,
+                "expectsPageIntro": route != "/debug",
+                "introMatchesContent": True,
+                "introLeftDelta": 0 if route != "/debug" else None,
+                "introWidthDelta": 0 if route != "/debug" else None,
+                "introBorderRadius": 20 if route != "/debug" else None,
                 "computedMaxWidth": 1320,
                 "maxWidthReached": True,
                 "containerClientWidth": 1768,

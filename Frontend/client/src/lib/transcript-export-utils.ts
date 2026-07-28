@@ -10,18 +10,13 @@ export function transcriptExportApiPath(path: string): string {
 }
 
 export function transcriptExportDownloadErrorMessage(status?: number): string {
-  const safeStatus = typeof status === "number"
-    && Number.isInteger(status)
-    && status >= 100
-    && status <= 599
-    ? status
-    : undefined;
+  const safeStatus =
+    typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
   return safeStatus === undefined
     ? translateNow("The transcript export could not be downloaded. Please try again.")
-    : translateNow(
-        "The transcript export could not be downloaded (HTTP {{status}}). Please try again.",
-        { status: safeStatus },
-      );
+    : translateNow("The transcript export could not be downloaded (HTTP {{status}}). Please try again.", {
+        status: safeStatus,
+      });
 }
 
 export function transcriptExportNativeLimitErrorMessage(): string {

@@ -27,16 +27,17 @@ export function PageIntro({
 }: PageIntroProps) {
   return (
     <header
+      data-page-intro="true"
       className={cn(
-        "transcription-intro -mx-4 -mt-5 mb-6 border-b border-slate-200/80 bg-card/95 px-4 pt-5 text-left backdrop-blur-xl dark:border-white/[0.065] md:-mx-6 md:-mt-6 md:px-6 md:pt-6",
-        sticky ? "sticky top-0 z-20" : "relative z-0",
-        bottomContent ? "pb-0" : "pb-4",
+        "transcription-intro mb-6 overflow-clip rounded-[20px] border border-border/65 px-5 pt-5 text-left backdrop-blur-xl md:px-6 md:pt-6",
+        sticky ? "sticky top-3 z-20" : "relative z-0",
+        bottomContent ? "pb-0" : "pb-5 md:pb-6",
         className,
       )}
     >
       <div className={cn(actions && "flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6")}>
         <div className="min-w-0">
-          <div className="mb-3 flex items-center gap-2.5 text-[9.5px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+          <div className="mb-3 flex items-center gap-2.5 text-ui-micro font-semibold uppercase tracking-[0.22em] text-muted-foreground">
             <span className={cn("h-px w-7 shrink-0", accentClassName)} aria-hidden="true" />
             <span>{eyebrow}</span>
           </div>
@@ -53,11 +54,13 @@ export function PageIntro({
           </p>
         </div>
 
-        {actions ? <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pt-1">{actions}</div> : null}
+        {actions ? (
+          <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pt-1">{actions}</div>
+        ) : null}
       </div>
 
       {bottomContent ? (
-        <div className="-mx-4 mt-4 border-t border-slate-200/80 px-4 py-2 dark:border-white/[0.065] md:-mx-6 md:px-6">
+        <div className="-mx-5 mt-5 border-t border-border/55 bg-background/20 px-5 py-2.5 md:-mx-6 md:px-6">
           {bottomContent}
         </div>
       ) : null}

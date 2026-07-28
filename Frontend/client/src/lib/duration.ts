@@ -1,13 +1,4 @@
-const UNKNOWN_DURATION_VALUES = new Set([
-  "",
-  "--",
-  "--:--",
-  "-:--",
-  "—",
-  "n/a",
-  "na",
-  "unknown",
-]);
+const UNKNOWN_DURATION_VALUES = new Set(["", "--", "--:--", "-:--", "—", "n/a", "na", "unknown"]);
 
 function formatSeconds(totalSeconds: number): string {
   const safeSeconds = Math.max(0, Math.floor(totalSeconds));

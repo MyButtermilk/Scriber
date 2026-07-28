@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before } from "node:test";
+import { initializeLocaleCatalog } from "@/i18n";
 import {
   MAX_NATIVE_MEETING_EXPORT_BYTES,
   meetingAudioExportMeetingId,
@@ -14,18 +15,14 @@ import {
   meetingExportNativeLimitErrorMessage,
 } from "./meeting-export-utils";
 
+before(() => initializeLocaleCatalog());
+
 test("meeting export reads encoded and plain response filenames", () => {
   assert.equal(
-    meetingExportFilename(
-      "attachment; filename*=UTF-8''Weekly%20planning.pdf",
-      "Meeting.pdf",
-    ),
+    meetingExportFilename("attachment; filename*=UTF-8''Weekly%20planning.pdf", "Meeting.pdf"),
     "Weekly planning.pdf",
   );
-  assert.equal(
-    meetingExportFilename('attachment; filename="Fallback.docx"', "Meeting.docx"),
-    "Fallback.docx",
-  );
+  assert.equal(meetingExportFilename('attachment; filename="Fallback.docx"', "Meeting.docx"), "Fallback.docx");
   assert.equal(meetingExportFilename(null, "Meeting.md"), "Meeting.md");
 });
 
@@ -43,48 +40,27 @@ test("meeting export presents a human folder name", () => {
 });
 
 test("meeting export only fetches scoped meeting export endpoints", () => {
-  assert.equal(
-    meetingExportApiPath("/api/meetings/meeting_123/export/docx"),
-    "/api/meetings/meeting_123/export/docx",
-  );
+  assert.equal(meetingExportApiPath("/api/meetings/meeting_123/export/docx"), "/api/meetings/meeting_123/export/docx");
   assert.equal(
     meetingExportApiPath("/api/meetings/abc123/export-email?attachment=pdf"),
     "/api/meetings/abc123/export-email?attachment=pdf",
   );
-  assert.equal(
-    meetingExportApiPath("/api/meetings/abc123/export/audio"),
-    "/api/meetings/abc123/export/audio",
-  );
+  assert.equal(meetingExportApiPath("/api/meetings/abc123/export/audio"), "/api/meetings/abc123/export/audio");
   assert.equal(meetingAudioExportMeetingId("/api/meetings/abc123/export/audio"), "abc123");
   assert.equal(meetingAudioExportMeetingId("/api/meetings/abc123/export/pdf"), null);
   const localizedAddressError = {
     message: "Diese Meeting-Exportadresse ist nicht zulässig.",
   };
-  assert.throws(
-    () => meetingExportApiPath("https://example.com/report.pdf"),
-    localizedAddressError,
-  );
+  assert.throws(() => meetingExportApiPath("https://example.com/report.pdf"), localizedAddressError);
   assert.throws(() => meetingExportApiPath("/api/runtime/support-bundle"), localizedAddressError);
-  assert.throws(
-    () => meetingExportApiPath("/api/meetings/../secrets/export/pdf"),
-    localizedAddressError,
-  );
+  assert.throws(() => meetingExportApiPath("/api/meetings/../secrets/export/pdf"), localizedAddressError);
 });
 
 test("meeting email draft path preserves body-only and every selected attachment", () => {
   assert.equal(meetingEmailDraftPath("meeting_123", ""), "/api/meetings/meeting_123/export-email");
-  assert.equal(
-    meetingEmailDraftPath("meeting_123", "md"),
-    "/api/meetings/meeting_123/export-email?attachment=md",
-  );
-  assert.equal(
-    meetingEmailDraftPath("meeting_123", "pdf"),
-    "/api/meetings/meeting_123/export-email?attachment=pdf",
-  );
-  assert.equal(
-    meetingEmailDraftPath("meeting_123", "docx"),
-    "/api/meetings/meeting_123/export-email?attachment=docx",
-  );
+  assert.equal(meetingEmailDraftPath("meeting_123", "md"), "/api/meetings/meeting_123/export-email?attachment=md");
+  assert.equal(meetingEmailDraftPath("meeting_123", "pdf"), "/api/meetings/meeting_123/export-email?attachment=pdf");
+  assert.equal(meetingEmailDraftPath("meeting_123", "docx"), "/api/meetings/meeting_123/export-email?attachment=docx");
   assert.throws(() => meetingEmailDraftPath("../secrets", "pdf"));
 });
 

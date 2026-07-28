@@ -52,9 +52,7 @@ type VirtualRow<TItem> =
 function defaultGroupHeader(group: TranscriptHistoryGroup, itemCount: number) {
   return (
     <div className="flex items-baseline gap-2 px-1 pb-3 pt-2">
-      <h3 className="font-heading text-[13px] font-semibold tracking-[-0.01em] text-foreground">
-        {group.label}
-      </h3>
+      <h3 className="font-heading text-[13px] font-semibold tracking-[-0.01em] text-foreground">{group.label}</h3>
       <span className="text-[11px] tabular-nums text-muted-foreground">{itemCount}</span>
     </div>
   );
