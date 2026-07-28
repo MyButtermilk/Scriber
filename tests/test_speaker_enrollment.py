@@ -55,6 +55,9 @@ def test_voice_enrollment_capture_is_bounded_and_clearable() -> None:
     )
 
     capture.start("test-pipe")
+    assert capture._thread is not None
+    capture._thread.join(timeout=1)
+    assert not capture._thread.is_alive()
     snapshot = capture.stop()
 
     assert snapshot["frames"] == 2
