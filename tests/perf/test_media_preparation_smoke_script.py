@@ -79,6 +79,18 @@ def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_c
     assert "X-Scriber-Token" in script
     assert "DEFAULT_YOUTUBE_URL" in script
     assert "require_summary" in script
+    assert "failureCategory" in script
+    assert "urlSha256" in script
+    assert "sourceAssetCleanupVerified" in script
+    assert 'client.request_json("DELETE", "/api/runtime/logs")' in script
+    assert "/api/runtime/logs?limit=2000" in script
+    assert '"pipeline.transcription.completed"' in script
+    assert '"youtube.captions.completed"' in script
+    assert 'request_payload["preferCaptions"] = execution_mode == "captions-first"' in script
+    assert '"completionEvent": completion_event' in script
+    assert '"youtubeUrl"' not in script
+    assert '"sourceUrl"' not in script
+    assert '"dataDir": runtime.get' not in script
 
 
 def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:

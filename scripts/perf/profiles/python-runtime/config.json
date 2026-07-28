@@ -1,0 +1,139 @@
+{
+  "schemaVersion": 1,
+  "profile": "python-runtime-ab-v1",
+  "primaryMetric": "local_wux",
+  "lowerIsBetter": true,
+  "variants": {
+    "A13": {
+      "runtimeFamily": "official-3.13.14",
+      "runtimeFlavor": "Official",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": false
+    },
+    "O0": {
+      "runtimeFamily": "official-3.14.6",
+      "runtimeFlavor": "Official",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "O1": {
+      "runtimeFamily": "official-3.14.6",
+      "runtimeFlavor": "Official",
+      "jit": true,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "C0": {
+      "runtimeFamily": "clang-pgo-3.14.6",
+      "runtimeFlavor": "ClangPgo",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "C1": {
+      "runtimeFamily": "clang-pgo-3.14.6",
+      "runtimeFlavor": "ClangPgo",
+      "jit": true,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "T0": {
+      "runtimeFamily": "clang-pgo-tail-3.14.6",
+      "runtimeFlavor": "ClangPgoTail",
+      "jit": false,
+      "tailCallInterpreter": true,
+      "releaseCandidate": true
+    },
+    "T1": {
+      "runtimeFamily": "clang-pgo-tail-3.14.6",
+      "runtimeFlavor": "ClangPgoTail",
+      "jit": true,
+      "tailCallInterpreter": true,
+      "releaseCandidate": true
+    },
+    "K0": {
+      "runtimeFamily": "clang-calibration-3.14.6",
+      "runtimeFlavor": "ClangCalibration",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": false
+    }
+  },
+  "screening": {
+    "hosts": [
+      "intel",
+      "amd"
+    ],
+    "rotatedOrderRequired": true,
+    "fastLocalSamples": {
+      "cold": 2,
+      "warm": 4,
+      "providerReplayPerProviderAndDuration": 5,
+      "appUxPerScenario": 1
+    },
+    "providerReplayDurationsSeconds": [
+      5,
+      15,
+      30,
+      60
+    ],
+    "appUxScenarioCount": 9,
+    "frozenImportStartup": {
+      "warmups": 5,
+      "samples": 30
+    },
+    "requiredBackendBatches": [
+      "websocket-fanout",
+      "upload",
+      "pdf-docx",
+      "support-bundle",
+      "meeting-finalization",
+      "meeting-soak-30m"
+    ]
+  },
+  "fullLocal": {
+    "hosts": [
+      "intel",
+      "amd"
+    ],
+    "cleanInstallRebootBlocksPerHost": 2,
+    "counterbalancedOrderRequired": true,
+    "samples": {
+      "cold": 15,
+      "warm": 30,
+      "providerReplayPerProviderAndDuration": 30,
+      "appUxPerScenario": 20
+    },
+    "appUxScenarioCount": 9,
+    "jitSoakMinutes": 60,
+    "defenderRequired": true,
+    "standardUserRequired": true
+  },
+  "promotion": {
+    "minimumGainFraction": 0.05,
+    "baselineCvMultiplier": 2.0,
+    "bootstrapConfidence": 0.95,
+    "bootstrapReplicates": 20000,
+    "maximumProtectedP95RegressionFraction": 0.03,
+    "maximumActiveCpuRegressionFraction": 0.03,
+    "maximumRssPrivateBytesRegressionFraction": 0.05,
+    "maximumIdleCpuRegressionPercentagePoints": 0.5,
+    "requiredZeroErrorFields": [
+      "text",
+      "focus",
+      "clipboard",
+      "overlay",
+      "longTask",
+      "frame",
+      "token"
+    ],
+    "tieBreakOrder": [
+      "official",
+      "jit-disabled",
+      "non-tail"
+    ],
+    "fallbackVariant": "O0"
+  }
+}

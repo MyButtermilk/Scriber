@@ -332,7 +332,7 @@ def parse_llm_suggestions(
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.IGNORECASE)
     try:
         payload = json.loads(text)
-    except (TypeError, json.JSONDecodeError):
+    except TypeError, json.JSONDecodeError:
         return {}
     assignments = payload.get("assignments") if isinstance(payload, dict) else None
     if not isinstance(assignments, list):
@@ -353,7 +353,7 @@ def parse_llm_suggestions(
             continue
         try:
             confidence = float(assignment.get("confidence"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if not math.isfinite(confidence) or confidence < 0.60 or confidence > 1.0:
             continue

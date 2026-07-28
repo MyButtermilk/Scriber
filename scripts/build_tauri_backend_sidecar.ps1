@@ -46,11 +46,17 @@ param(
     [switch]$ParallelizeRustDiarizationBuild,
     [switch]$RustAudioOnly,
     [string]$RustAudioResultPath = "",
+    [switch]$RustAudioStageFromCacheOnly,
     [switch]$RustDiarizationPrestageOnly,
     [string]$RustDiarizationResultPath = "",
     [string]$RustDiarizationPrestageBackendDir = "",
     [switch]$DeterministicResearchMetadata,
     [switch]$LocalPyInstallerNoClean,
+    [ValidateSet("Official", "ClangPgo", "ClangPgoTail")]
+    [string]$PythonRuntimeFlavor = "Official",
+    [ValidateSet("Disabled", "Enabled")]
+    [string]$PythonJitMode = "Disabled",
+    [string]$PythonRuntimeLockPath = "packaging\cpython-windows-runtime-input-lock-v1.json",
     [switch]$CopyToTauriRelease
 )
 
@@ -131,6 +137,40 @@ function Assert-UnderRoot {
     }
 }
 
+function Resolve-LockedNumPyWheel {
+    param([string]$Root)
+
+    $lockPath = Join-Path $Root "packaging\wheels\numpy-noblas-wheel-lock-v1.json"
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "Missing locked NumPy no-BLAS manifest: $lockPath"
+    }
+    try {
+        $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Locked NumPy no-BLAS manifest is invalid JSON: $lockPath"
+    }
+    $relativePath = [string]$lock.artifact.relativePath
+    if (
+        [string]$lock.contract -ne "ScriberNumPyNoBlasWheelLockV1" -or
+        [int]$lock.schemaVersion -ne 1 -or
+        -not $relativePath -or
+        [System.IO.Path]::IsPathRooted($relativePath) -or
+        $relativePath -match '(^|[\\/])\.\.([\\/]|$)'
+    ) {
+        throw "Locked NumPy no-BLAS artifact path is invalid."
+    }
+    $wheelPath = [System.IO.Path]::GetFullPath((Join-Path $Root $relativePath))
+    $null = Assert-UnderRoot -Root $Root -Path $wheelPath -Label "Locked NumPy no-BLAS wheel"
+    if (-not (Test-Path -LiteralPath $wheelPath -PathType Leaf)) {
+        throw "Locked NumPy no-BLAS artifact is missing: $wheelPath"
+    }
+    return [pscustomobject]@{
+        LockPath = (Resolve-Path -LiteralPath $lockPath).Path
+        WheelPath = (Resolve-Path -LiteralPath $wheelPath).Path
+        RelativePath = $relativePath
+    }
+}
+
 function New-ValidatedNumPyPyInstallerOverlay {
     param(
         [string]$Root,
@@ -138,8 +178,9 @@ function New-ValidatedNumPyPyInstallerOverlay {
         [string]$Python
     )
 
-    $wheelPath = Join-Path $Root "packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"
-    $lockPath = Join-Path $Root "packaging\wheels\numpy-noblas-wheel-lock-v1.json"
+    $lockedWheel = Resolve-LockedNumPyWheel -Root $Root
+    $wheelPath = $lockedWheel.WheelPath
+    $lockPath = $lockedWheel.LockPath
     $validatorPath = Join-Path $Root "scripts\validate_numpy_noblas_wheel.py"
     foreach ($requiredPath in @($wheelPath, $lockPath, $validatorPath)) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
@@ -147,8 +188,6 @@ function New-ValidatedNumPyPyInstallerOverlay {
         }
     }
 
-    $wheelPath = (Resolve-Path -LiteralPath $wheelPath).Path
-    $lockPath = (Resolve-Path -LiteralPath $lockPath).Path
     $validatorPath = (Resolve-Path -LiteralPath $validatorPath).Path
     $overlayRoot = Join-Path $BuildWorkRoot "numpy-noblas-pyinstaller-overlay"
     $stagingRoot = Join-Path $BuildWorkRoot ("numpy-noblas-pyinstaller-overlay.staging-{0}" -f $PID)
@@ -622,6 +661,164 @@ function Get-ObjectPropertyValue {
     return $null
 }
 
+function Get-PythonRuntimeSelection {
+    param(
+        [string]$Python,
+        [string]$Flavor,
+        [string]$JitMode,
+        [string]$RuntimeLock
+    )
+
+    if (-not (Test-Path -LiteralPath $RuntimeLock -PathType Leaf)) {
+        throw "Python runtime lock was not found: $RuntimeLock"
+    }
+    try {
+        $runtimeLockPayload = Get-Content -LiteralPath $RuntimeLock -Raw | ConvertFrom-Json
+    } catch {
+        throw "Python runtime lock is invalid JSON."
+    }
+    if (
+        [string]$runtimeLockPayload.lockContract -ne "ScriberCPythonWindowsRuntimeInputLockV1" -or
+        [int]$runtimeLockPayload.schemaVersion -ne 1 -or
+        [string]$runtimeLockPayload.target.pythonVersion -ne "3.14.6" -or
+        [string]$runtimeLockPayload.target.cacheTag -ne "cpython-314" -or
+        [string]$runtimeLockPayload.target.architecture -ne "win_amd64"
+    ) {
+        throw "Python runtime lock does not target CPython 3.14.6 for Windows x64."
+    }
+    $jitValue = if ($JitMode -eq "Enabled") { "1" } else { "0" }
+    $savedValues = @{}
+    $savedPresent = @{}
+    foreach ($name in @("PYTHON_JIT", "PYTHON_GIL", "PYTHON_TLBC")) {
+        $savedPresent[$name] = Test-Path "Env:$name"
+        $savedValues[$name] = [System.Environment]::GetEnvironmentVariable($name, "Process")
+        [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    [System.Environment]::SetEnvironmentVariable("PYTHON_JIT", $jitValue, "Process")
+    try {
+        $identityJson = (& $Python -c "import json,platform,sys; j=getattr(sys,'_jit',None); print(json.dumps({'version':platform.python_version(),'cacheTag':sys.implementation.cache_tag,'compiler':platform.python_compiler(),'basePrefix':sys.base_prefix,'jitAvailable':bool(j and j.is_available()),'jitActive':bool(j and j.is_enabled())},separators=(',',':')))" 2>$null) -join "`n"
+        if ($LASTEXITCODE -ne 0 -or -not $identityJson) {
+            throw "Could not inspect the selected Python runtime."
+        }
+        $identity = $identityJson | ConvertFrom-Json
+    } finally {
+        foreach ($name in @("PYTHON_JIT", "PYTHON_GIL", "PYTHON_TLBC")) {
+            if ([bool]$savedPresent[$name]) {
+                [System.Environment]::SetEnvironmentVariable($name, [string]$savedValues[$name], "Process")
+            } else {
+                [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
+            }
+        }
+    }
+
+    if ([string]$identity.version -ne "3.14.6" -or [string]$identity.cacheTag -ne "cpython-314") {
+        throw "The frozen backend requires exactly CPython 3.14.6 (cpython-314)."
+    }
+    if ([bool]$identity.jitActive -ne ($JitMode -eq "Enabled")) {
+        throw "The selected CPython runtime did not honor PYTHON_JIT=$jitValue."
+    }
+    if ($JitMode -eq "Enabled" -and -not [bool]$identity.jitAvailable) {
+        throw "The selected CPython runtime does not provide the required JIT."
+    }
+    $compiler = [string]$identity.compiler
+    if ($Flavor -eq "Official" -and $compiler -notmatch '(?i)MSC') {
+        throw "PythonRuntimeFlavor=Official requires an MSVC CPython build."
+    }
+    if ($Flavor -ne "Official" -and $compiler -notmatch '(?i)Clang') {
+        throw "Custom Python runtime flavors require a Clang CPython build."
+    }
+    $matchingVariants = @(
+        $runtimeLockPayload.buildMatrix.PSObject.Properties |
+            Where-Object {
+                [string]$_.Value.runtimeFlavor -eq $Flavor -and
+                [bool]$_.Value.jit -eq ($JitMode -eq "Enabled") -and
+                [bool]$_.Value.tailCallInterpreter -eq ($Flavor -eq "ClangPgoTail") -and
+                [bool]$_.Value.releaseCandidate
+            }
+    )
+    if ($matchingVariants.Count -ne 1) {
+        throw "Python runtime flavor and JIT mode do not map to one locked release candidate."
+    }
+    $runtimeVariant = [string]$matchingVariants[0].Name
+    $runtimeDll = Join-Path ([string]$identity.basePrefix) "python314.dll"
+    if (-not (Test-Path -LiteralPath $runtimeDll -PathType Leaf)) {
+        throw "The selected CPython runtime is missing python314.dll."
+    }
+    if ($Flavor -eq "Official") {
+        $officialDll = @(
+            $runtimeLockPayload.officialRuntimes.O.lockedInstalledFiles |
+                Where-Object { [string]$_.relativePath -eq "python314.dll" }
+        )
+        if (
+            $officialDll.Count -ne 1 -or
+            [int64](Get-Item -LiteralPath $runtimeDll).Length -ne [int64]$officialDll[0].sizeBytes -or
+            (Get-Sha256Hex -Path $runtimeDll) -cne [string]$officialDll[0].sha256
+        ) {
+            throw "Official python314.dll does not match the locked CPython 3.14.6 runtime."
+        }
+    }
+
+    return [ordered]@{
+        python = [ordered]@{
+            version = [string]$identity.version
+            cacheTag = [string]$identity.cacheTag
+        }
+        runtimeFlavor = $Flavor
+        variantId = $runtimeVariant
+        compiler = $compiler
+        tailCallInterpreter = ($Flavor -eq "ClangPgoTail")
+        jit = [ordered]@{
+            available = [bool]$identity.jitAvailable
+            expected = ($JitMode -eq "Enabled")
+            active = [bool]$identity.jitActive
+        }
+        sourceRuntimeDll = [ordered]@{
+            length = [int64](Get-Item -LiteralPath $runtimeDll).Length
+            sha256 = Get-Sha256Hex -Path $runtimeDll
+        }
+        runtimeLockSha256 = Get-Sha256Hex -Path $RuntimeLock
+    }
+}
+
+function Write-PythonRuntimePolicyManifest {
+    param(
+        [string]$RuntimeDir,
+        [object]$Selection
+    )
+
+    $pythonDll = Join-Path $RuntimeDir "_internal\python314.dll"
+    if (-not (Test-Path -LiteralPath $pythonDll -PathType Leaf)) {
+        throw "The frozen backend did not contain _internal\\python314.dll."
+    }
+    $payload = [ordered]@{
+        schemaVersion = 1
+        name = "scriber-python-runtime-policy"
+        python = [ordered]@{
+            version = [string]$Selection.python.version
+            cacheTag = [string]$Selection.python.cacheTag
+            dll = [ordered]@{
+                path = "_internal/python314.dll"
+                length = [int64](Get-Item -LiteralPath $pythonDll).Length
+                sha256 = Get-Sha256Hex -Path $pythonDll
+            }
+        }
+        runtimeFlavor = [string]$Selection.runtimeFlavor
+        variantId = [string]$Selection.variantId
+        compiler = [string]$Selection.compiler
+        tailCallInterpreter = [bool]$Selection.tailCallInterpreter
+        jit = $Selection.jit
+        runtimeLockSha256 = [string]$Selection.runtimeLockSha256
+    }
+    $manifestPath = Join-Path $RuntimeDir "python-runtime-manifest.json"
+    $json = $payload | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText(
+        $manifestPath,
+        $json + "`n",
+        [System.Text.UTF8Encoding]::new($false)
+    )
+    return $manifestPath
+}
+
 function Get-SidecarFlagState {
     return [ordered]@{
         bundleMediaTools = [bool]$BundleMediaTools
@@ -633,6 +830,8 @@ function Get-SidecarFlagState {
         bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
         pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+        pythonRuntimeFlavor = [string]$PythonRuntimeFlavor
+        pythonJitMode = [string]$PythonJitMode
     }
 }
 
@@ -694,15 +893,17 @@ function Get-BackendRuntimeInputManifest {
     param(
         [string]$Root,
         [string]$Python,
-        [bool]$PyInstallerClean
+        [bool]$PyInstallerClean,
+        [object]$RuntimeSelection,
+        [string]$RuntimeLock
     )
 
     $pythonVersion = (& $Python -c "import sys; print(sys.version); print(sys.implementation.cache_tag)" 2>$null) -join "`n"
+    $lockedNumPy = Resolve-LockedNumPyWheel -Root $Root
     $inputPaths = @(
         "packaging\scriber-backend.spec",
         "packaging\backend-sidecar-output-contract.json",
         "packaging\nltk-punkt-tab-lock-v1.json",
-        "packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
         "packaging\wheels\numpy-noblas-wheel-lock-v1.json",
         "packaging\quickjs-youtube-runtime-lock-v1.json",
         "requirements-base.txt",
@@ -718,6 +919,8 @@ function Get-BackendRuntimeInputManifest {
         "native\scriber-quickjs-wrapper\src\main.rs"
     )
     $files = @(Get-InputFileEntries -Root $Root -RelativePaths $inputPaths)
+    $files += Get-FileHashEntry -Root $Root -Path $lockedNumPy.WheelPath
+    $files += Get-FileHashEntry -Root $Root -Path $RuntimeLock
     $files += @(Get-PythonFileEntries -Root $Root -RelativeDirectories @("backend_runtime", "pyloudnorm"))
     return [ordered]@{
         apiVersion = "1"
@@ -727,6 +930,7 @@ function Get-BackendRuntimeInputManifest {
         flags = [ordered]@{
             pyInstallerClean = $PyInstallerClean
         }
+        runtimePolicy = $RuntimeSelection
         files = $files
     }
 }
@@ -775,8 +979,6 @@ function Get-SidecarInputManifest {
         if (-not $SkipFfprobe) {
             $tools += Get-ToolMetadataEntry -Path (Resolve-MediaTool -Names @("ffprobe.exe", "ffprobe") -SearchDir $SearchDir) -Name "ffprobe"
         }
-        $resolvedYtDlp = Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp") -Python $PythonPath -ExpectedRuntimeCacheKey $RuntimeCacheKey
-        $tools += Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"
         # This key is computed before the stable runtime cache necessarily
         # exists. Bind every future QuickJS runtime file directly to the lock;
         # RuntimeCacheKey binds the builder, wrapper sources, manifest, and
@@ -936,7 +1138,7 @@ function Resolve-BackendSidecarCandidateMediaTool {
                     $stableMap = @{}
                     foreach ($entry in @($manifest.mediaFiles)) {
                         $leaf = [System.IO.Path]::GetFileName([string]$entry.path).ToLowerInvariant()
-                        if ($leaf -in @("qjs.exe", "qjs-engine.exe", "license.quickjs-ng.txt", "js-runtime-manifest.json", "yt-dlp", "yt-dlp.exe")) {
+                        if ($leaf -in @("qjs.exe", "qjs-engine.exe", "license.quickjs-ng.txt", "js-runtime-manifest.json")) {
                             $stableMap[$leaf] = [pscustomobject]@{
                                 path = Join-Path $backendDir ("tools\ffmpeg\{0}" -f [string]$entry.path)
                                 length = [int64]$entry.length
@@ -1053,11 +1255,11 @@ function Initialize-BackendRuntimeStableMediaTools {
         -ManifestPath (Join-Path $stableRoot "js-runtime-manifest.json") `
         -BuildWorkRoot $BuildWorkRoot
 
-    $ytDlp = Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir ""
-    if ($ytDlp) {
-        $ytDlpName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "yt-dlp.exe" } else { "yt-dlp" }
-        Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $stableRoot $ytDlpName) -Force
+    $expectedYtDlpVersion = (& $Python -c "from yt_dlp.version import __version__; print(__version__)" 2>$null).Trim()
+    if ($LASTEXITCODE -ne 0 -or -not $expectedYtDlpVersion) {
+        throw "Could not resolve the yt-dlp package version from the exact backend Python environment."
     }
+    Write-Host "Frozen yt-dlp package version: $expectedYtDlpVersion"
 }
 
 function Test-BackendMediaFiles {
@@ -1319,6 +1521,7 @@ function Write-BackendRuntimeCacheMetadata {
             revision = $script:BackendRuntimeContractRevision
         }
         python = ($pythonIdentity | ConvertFrom-Json)
+        runtimePolicy = $script:PythonRuntimeSelection
         executable = $identity
         content = [ordered]@{
             fileCount = $runtimeFiles.Count
@@ -1499,11 +1702,56 @@ function Sync-DirectoryContents {
     }
 }
 
+function Get-FrontendApplicationVersion {
+    param([string]$Root)
+
+    $packagePath = Join-Path $Root "Frontend\package.json"
+    if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+        throw "Frontend package manifest was not found: $packagePath"
+    }
+    try {
+        $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
+    } catch {
+        throw "Frontend package manifest is invalid JSON: $packagePath"
+    }
+    $version = [string](Get-ObjectPropertyValue -Object $package -Name "version")
+    if (
+        -not $version -or
+        $version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+    ) {
+        throw "Frontend package version is not canonical SemVer: $packagePath"
+    }
+    return $version
+}
+
+function Get-WindowsPeApplicationVersion {
+    param(
+        [string]$Path,
+        [string]$Label
+    )
+
+    if (-not ($IsWindows -or $env:OS -eq "Windows_NT")) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label was not found: $Path"
+    }
+    $versionInfo = (Get-Item -LiteralPath $Path).VersionInfo
+    $fileVersion = ([string]$versionInfo.FileVersion).Trim()
+    $productVersion = ([string]$versionInfo.ProductVersion).Trim()
+    if (-not $fileVersion -or -not $productVersion -or $fileVersion -cne $productVersion) {
+        throw "$Label has missing or inconsistent Windows PE version metadata: $Path"
+    }
+    return $productVersion
+}
+
 function Get-RustAudioSidecarInputManifest {
     param([string]$Root)
 
     $relativePaths = @(
         "Frontend\src-tauri\build.rs",
+        "Frontend\src-tauri\tauri.conf.json",
+        "Frontend\src-tauri\icons\icon.ico",
         "Frontend\src-tauri\src\audio_sidecar.rs",
         "Frontend\src-tauri\src\audio_codec.rs",
         "Frontend\src-tauri\src\audio_frame_pipe.rs",
@@ -1536,7 +1784,8 @@ function Get-RustAudioSidecarInputManifest {
     $entries += Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
 
     return [ordered]@{
-        apiVersion = "1"
+        apiVersion = "2"
+        applicationVersion = Get-FrontendApplicationVersion -Root $Root
         files = $entries
     }
 }
@@ -1552,7 +1801,8 @@ function Get-RustAudioSidecarCacheKey {
 function Copy-RustAudioSidecarToTauriRelease {
     param(
         [string]$Root,
-        [bool]$UseIsolatedTarget = $false
+        [bool]$UseIsolatedTarget = $false,
+        [bool]$RequireCacheHit = $false
     )
 
     $tauriDir = Join-Path $Root "Frontend\src-tauri"
@@ -1574,19 +1824,37 @@ function Copy-RustAudioSidecarToTauriRelease {
     $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
     $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
     $cacheKey = Get-StringSha256 -Value $inputManifestJson
+    $applicationVersion = [string]$inputManifest.applicationVersion
+    $isWindowsHost = [bool]($IsWindows -or $env:OS -eq "Windows_NT")
     $cacheHit = $false
 
     if ((Test-Path -LiteralPath $cacheExe -PathType Leaf) -and (Test-Path -LiteralPath $cacheManifestPath -PathType Leaf)) {
         try {
             $cacheManifest = Get-Content -LiteralPath $cacheManifestPath -Raw | ConvertFrom-Json
+            $cachedPeVersion = Get-WindowsPeApplicationVersion `
+                -Path $cacheExe `
+                -Label "Cached Rust audio sidecar"
             $cacheHit = (
+                [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 2 -and
                 ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
+                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "applicationVersion") -ceq $applicationVersion -and
                 [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
                 [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length
             )
+            if ($isWindowsHost) {
+                $cacheHit = (
+                    $cacheHit -and
+                    $cachedPeVersion -ceq $applicationVersion -and
+                    [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "executablePeVersion") -ceq $applicationVersion
+                )
+            }
         } catch {
             $cacheHit = $false
         }
+    }
+
+    if ($RequireCacheHit -and -not $cacheHit) {
+        throw "Rust audio sidecar cache is missing, stale, or does not match application version $applicationVersion."
     }
 
     if (-not $cacheHit) {
@@ -1604,12 +1872,26 @@ function Copy-RustAudioSidecarToTauriRelease {
         if (-not (Test-Path -LiteralPath $sourceExe -PathType Leaf)) {
             throw "Rust audio sidecar executable was not found: $sourceExe"
         }
+        $sourcePeVersion = Get-WindowsPeApplicationVersion `
+            -Path $sourceExe `
+            -Label "Built Rust audio sidecar"
+        if ($isWindowsHost -and $sourcePeVersion -cne $applicationVersion) {
+            throw "Built Rust audio sidecar PE version mismatch: expected $applicationVersion, got $sourcePeVersion."
+        }
 
         New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
         Copy-FileIfChanged -SourcePath $sourceExe -TargetPath $cacheExe | Out-Null
+        $cachedPeVersion = Get-WindowsPeApplicationVersion `
+            -Path $cacheExe `
+            -Label "Cached Rust audio sidecar"
+        if ($isWindowsHost -and $cachedPeVersion -cne $applicationVersion) {
+            throw "Cached Rust audio sidecar PE version mismatch: expected $applicationVersion, got $cachedPeVersion."
+        }
         $cacheManifestPayload = [ordered]@{
-            apiVersion = "1"
+            apiVersion = "2"
             cacheKey = $cacheKey
+            applicationVersion = $applicationVersion
+            executablePeVersion = $cachedPeVersion
             executableSha256 = Get-Sha256Hex -Path $cacheExe
             executableLength = [int64](Get-Item -LiteralPath $cacheExe).Length
             inputManifest = $inputManifest
@@ -1624,6 +1906,18 @@ function Copy-RustAudioSidecarToTauriRelease {
     New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
     $targetExe = Join-Path $targetDir $exeName
     $targetCopied = Copy-FileIfChanged -SourcePath $cacheExe -TargetPath $targetExe
+    $targetPeVersion = Get-WindowsPeApplicationVersion `
+        -Path $targetExe `
+        -Label "Staged Rust audio sidecar"
+    if ($isWindowsHost -and $targetPeVersion -cne $applicationVersion) {
+        throw "Staged Rust audio sidecar PE version mismatch: expected $applicationVersion, got $targetPeVersion."
+    }
+    if (
+        (Get-Sha256Hex -Path $targetExe) -ne (Get-Sha256Hex -Path $cacheExe) -or
+        [int64](Get-Item -LiteralPath $targetExe).Length -ne [int64](Get-Item -LiteralPath $cacheExe).Length
+    ) {
+        throw "Staged Rust audio sidecar does not match the validated cache executable."
+    }
     & $targetExe --self-test | Out-Null
     if ($LASTEXITCODE -ne 0) {
         throw "Rust audio sidecar self-test failed for packaged executable."
@@ -1648,10 +1942,12 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 
     $metadata = [ordered]@{
-        apiVersion = "1"
+        apiVersion = "2"
         generatedAt = (Get-Date).ToUniversalTime().ToString("o")
         cacheHit = $cacheHit
         cacheKey = $cacheKey
+        applicationVersion = $applicationVersion
+        executablePeVersion = $targetPeVersion
         sourceExe = $cacheExe
         targetExe = $targetExe
         cargoTargetDir = $cargoTargetDir
@@ -1672,6 +1968,8 @@ function Copy-RustAudioSidecarToTauriRelease {
         length = $metadata.length
         cacheHit = $cacheHit
         cacheKey = $cacheKey
+        applicationVersion = $applicationVersion
+        executablePeVersion = $targetPeVersion
         isolatedCargoTarget = [bool]$UseIsolatedTarget
     }
 }
@@ -2101,7 +2399,14 @@ function Test-SidecarTargetCurrent {
 
     $flags = Get-ObjectPropertyValue -Object $metadata -Name "flags"
     foreach ($key in $ExpectedFlags.Keys) {
-        if ([bool](Get-ObjectPropertyValue -Object $flags -Name $key) -ne [bool]$ExpectedFlags[$key]) {
+        $expectedValue = $ExpectedFlags[$key]
+        $actualValue = Get-ObjectPropertyValue -Object $flags -Name $key
+        $matches = if ($expectedValue -is [bool]) {
+            [bool]$actualValue -eq [bool]$expectedValue
+        } else {
+            [string]$actualValue -eq [string]$expectedValue
+        }
+        if (-not $matches) {
             return $false
         }
     }
@@ -2386,6 +2691,8 @@ function Write-SidecarBuildMetadata {
             bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
             pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
             rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
+            pythonRuntimeFlavor = [string]$PythonRuntimeFlavor
+            pythonJitMode = [string]$PythonJitMode
         }
         preparedMediaTools = $metadataPreparedMediaTools
         mediaToolsCopied = $metadataMediaToolsCopied
@@ -2519,15 +2826,58 @@ function Invoke-FrozenBackendRuntimeImportCheck {
     $stderrPath = Join-Path $LogRoot "frozen-runtime-import-check.err"
     Remove-Item -LiteralPath $stdoutPath, $stderrPath -Force -ErrorAction SilentlyContinue
 
-    $process = Start-Process `
-        -FilePath $SidecarExe `
-        -ArgumentList @("--runtime-import-check") `
-        -WorkingDirectory $SidecarDir `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath `
-        -Wait `
-        -PassThru
+    $policyPath = Join-Path $SidecarDir "python-runtime-manifest.json"
+    if (-not (Test-Path -LiteralPath $policyPath -PathType Leaf)) {
+        throw "Frozen backend Python runtime policy is missing."
+    }
+    $policy = Get-Content -LiteralPath $policyPath -Raw | ConvertFrom-Json
+    $runtimeEnv = @(
+        "PYTHON_JIT",
+        "PYTHON_GIL",
+        "PYTHON_TLBC",
+        "SCRIBER_RUNTIME_MODE",
+        "SCRIBER_PYTHON_RUNTIME_MANIFEST",
+        "SCRIBER_PYTHON_RUNTIME_LOCK_SHA256"
+    )
+    $savedRuntimeEnv = @{}
+    foreach ($name in $runtimeEnv) {
+        $savedRuntimeEnv[$name] = [System.Environment]::GetEnvironmentVariable($name, "Process")
+        [System.Environment]::SetEnvironmentVariable($name, $null, "Process")
+    }
+    [System.Environment]::SetEnvironmentVariable(
+        "PYTHON_JIT",
+        $(if ([bool]$policy.jit.expected) { "1" } else { "0" }),
+        "Process"
+    )
+    [System.Environment]::SetEnvironmentVariable(
+        "SCRIBER_PYTHON_RUNTIME_MANIFEST",
+        $policyPath,
+        "Process"
+    )
+    [System.Environment]::SetEnvironmentVariable(
+        "SCRIBER_PYTHON_RUNTIME_LOCK_SHA256",
+        [string]$policy.runtimeLockSha256,
+        "Process"
+    )
+    try {
+        $process = Start-Process `
+            -FilePath $SidecarExe `
+            -ArgumentList @("--runtime-import-check") `
+            -WorkingDirectory $SidecarDir `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdoutPath `
+            -RedirectStandardError $stderrPath `
+            -Wait `
+            -PassThru
+    } finally {
+        foreach ($name in $runtimeEnv) {
+            [System.Environment]::SetEnvironmentVariable(
+                $name,
+                $savedRuntimeEnv[$name],
+                "Process"
+            )
+        }
+    }
 
     if ($process.ExitCode -ne 0) {
         $stdout = if (Test-Path $stdoutPath) { Get-Content -LiteralPath $stdoutPath -Raw } else { "" }
@@ -2941,12 +3291,6 @@ function Copy-MediaTools {
         $copied += $profileManifestPath
     }
 
-    $ytDlp = Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey
-    if ($ytDlp) {
-        Copy-Item -LiteralPath $ytDlp -Destination (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf)) -Force
-        $copied += (Join-Path $toolsTarget (Split-Path $ytDlp -Leaf))
-    }
-
     $quickJs = Resolve-BackendStableMediaTool -Names @("qjs.exe") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
     $quickJsEngine = Resolve-BackendStableMediaTool -Names @("qjs-engine.exe") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
     $quickJsLicense = Resolve-BackendStableMediaTool -Names @("LICENSE.quickjs-ng.txt") -Python $PythonPath -ExpectedRuntimeCacheKey $runtimeCacheKey -Required
@@ -3015,6 +3359,24 @@ Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "
 Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
 
+if (-not $RustAudioOnly -and -not $RustAudioStageFromCacheOnly -and -not $RustDiarizationPrestageOnly) {
+    $runtimeLockCandidate = if ([System.IO.Path]::IsPathRooted($PythonRuntimeLockPath)) {
+        $PythonRuntimeLockPath
+    } else {
+        Join-Path $RepoRoot $PythonRuntimeLockPath
+    }
+    if (-not (Test-Path -LiteralPath $runtimeLockCandidate -PathType Leaf)) {
+        throw "Python runtime lock was not found: $runtimeLockCandidate"
+    }
+    $PythonRuntimeLockPath = (Resolve-Path -LiteralPath $runtimeLockCandidate).Path
+    $null = Assert-UnderRoot -Root $RepoRoot -Path $PythonRuntimeLockPath -Label "Python runtime lock"
+    $script:PythonRuntimeSelection = Get-PythonRuntimeSelection `
+        -Python $PythonPath `
+        -Flavor $PythonRuntimeFlavor `
+        -JitMode $PythonJitMode `
+        -RuntimeLock $PythonRuntimeLockPath
+}
+
 if ($RustAudioOnly) {
     if (-not $RustAudioResultPath) {
         throw "-RustAudioOnly requires -RustAudioResultPath."
@@ -3042,6 +3404,15 @@ if ($RustAudioOnly) {
     $rustAudioPayload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rustAudioTempPath -Encoding utf8
     Move-Item -LiteralPath $rustAudioTempPath -Destination $RustAudioResultPath -Force
     $rustAudioPayload | ConvertTo-Json -Depth 8 -Compress
+    return
+}
+
+if ($RustAudioStageFromCacheOnly) {
+    $rustAudioResult = Copy-RustAudioSidecarToTauriRelease `
+        -Root $RepoRoot `
+        -UseIsolatedTarget $false `
+        -RequireCacheHit $true
+    $rustAudioResult | ConvertTo-Json -Depth 8 -Compress
     return
 }
 
@@ -3238,7 +3609,9 @@ Invoke-TimedStep -Label "backend-runtime-cache-key" -Command {
     $script:BackendRuntimeInputManifest = Get-BackendRuntimeInputManifest `
         -Root $RepoRoot `
         -Python $PythonPath `
-        -PyInstallerClean (-not [bool]$LocalPyInstallerNoClean)
+        -PyInstallerClean (-not [bool]$LocalPyInstallerNoClean) `
+        -RuntimeSelection $script:PythonRuntimeSelection `
+        -RuntimeLock $PythonRuntimeLockPath
     $runtimeManifestJson = $script:BackendRuntimeInputManifest | ConvertTo-Json -Depth 10 -Compress
     $script:BackendRuntimeCacheKey = Get-StringSha256 -Value $runtimeManifestJson
     $script:BackendApplicationInputManifest = Get-BackendApplicationInputManifest -Root $RepoRoot
@@ -3682,6 +4055,9 @@ if (-not $cacheHit) {
                 -CacheRoot $RuntimeCacheRoot `
                 -Python $PythonPath `
                 -BuildWorkRoot (Join-Path $WorkRoot "quickjs-youtube-runtime")
+            Write-PythonRuntimePolicyManifest `
+                -RuntimeDir $cachedRuntimeDir `
+                -Selection $script:PythonRuntimeSelection | Out-Null
             Write-BackendRuntimeCacheMetadata `
                 -RuntimeDir $cachedRuntimeDir `
                 -RuntimeExe $cachedRuntimeExe `

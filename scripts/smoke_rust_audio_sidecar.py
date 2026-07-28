@@ -18,11 +18,15 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from src.runtime.audio_frame_pipe import (  # noqa: E402
+    AUDIO_FRAME_FLAG_END_OF_STREAM,
     AUDIO_FRAME_FLAG_PREBUFFER,
     AUDIO_FRAME_HEADER_LEN,
     AUDIO_FRAME_VERSION,
     decode_audio_frame_header,
 )
+
+CAPTURE_STOP_TIMEOUT_SEC = 6.0
+FRAME_DRAIN_JOIN_TIMEOUT_SEC = 2.0
 
 
 def hash_hint(value: str) -> str:
@@ -154,6 +158,7 @@ def read_frames(
     *,
     duration_sec: float,
     max_frames: int,
+    target_reached: threading.Event,
 ) -> dict[str, Any]:
     opened_at = time.perf_counter()
     frames_read = 0
@@ -169,13 +174,34 @@ def read_frames(
     last_sequence: int | None = None
     last_timestamp_micros: int | None = None
     last_flags: int | None = None
+    end_of_stream_read = False
+    end_of_stream_sequence: int | None = None
+    target_frame_count: int | None = None
     deadline = opened_at + max(5.0, duration_sec + 15.0)
 
     with open_pipe_for_read(pipe_path) as reader:
-        while frames_read < max_frames and time.perf_counter() <= deadline:
+        while time.perf_counter() <= deadline:
             header_bytes = read_exact(reader, AUDIO_FRAME_HEADER_LEN)
             header = decode_audio_frame_header(header_bytes)
             payload = read_exact(reader, header.payload_len)
+            is_end_of_stream = bool(header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM)
+            if is_end_of_stream:
+                if header.frame_count != 0 or header.payload_len != 0:
+                    raise RuntimeError("terminal end-of-stream frame must not contain audio")
+                if header.flags & AUDIO_FRAME_FLAG_PREBUFFER:
+                    raise RuntimeError("terminal end-of-stream frame must not be marked as prebuffer")
+                if last_sequence is not None and header.sequence != last_sequence + 1:
+                    sequence_gaps.append(
+                        {
+                            "expected": last_sequence + 1,
+                            "actual": int(header.sequence),
+                        }
+                    )
+                end_of_stream_read = True
+                end_of_stream_sequence = int(header.sequence)
+                bytes_read += len(header_bytes)
+                break
+
             now = time.perf_counter()
             if first_frame_ms is None:
                 first_frame_ms = (now - opened_at) * 1000.0
@@ -203,8 +229,13 @@ def read_frames(
             last_timestamp_micros = int(header.timestamp_micros)
             last_flags = int(header.flags)
             observed = observed_duration_sec(first_timestamp_micros, last_timestamp_micros)
-            if observed is not None and observed >= max(0.0, duration_sec):
-                break
+            if target_frame_count is None and (
+                frames_read >= max_frames or (observed is not None and observed >= max(0.0, duration_sec))
+            ):
+                target_frame_count = frames_read
+                target_reached.set()
+        else:
+            raise TimeoutError("frame pipe did not reach terminal end-of-stream before the read deadline")
 
     return {
         "framesRead": frames_read,
@@ -223,6 +254,9 @@ def read_frames(
             last_timestamp_micros,
         ),
         "lastFlags": last_flags,
+        "targetFrameCount": target_frame_count,
+        "endOfStreamRead": end_of_stream_read,
+        "endOfStreamSequence": end_of_stream_sequence,
         "sequenceGapCount": len(sequence_gaps),
         "sequenceGaps": sequence_gaps[:10],
     }
@@ -277,24 +311,70 @@ def run_capture(
 
     stream_id = str(start_payload.get("streamId") or "")
     frame_pipe = str(start_payload.get("framePipe") or "")
-    try:
-        result["frames"] = read_frames(
-            frame_pipe,
-            duration_sec=duration_sec,
-            max_frames=max_frames,
-        )
-    except Exception as exc:
+    target_reached = threading.Event()
+    reader_done = threading.Event()
+    reader_result: dict[str, Any] = {}
+
+    def read_until_end_of_stream() -> None:
+        try:
+            reader_result["frames"] = read_frames(
+                frame_pipe,
+                duration_sec=duration_sec,
+                max_frames=max_frames,
+                target_reached=target_reached,
+            )
+        except Exception as exc:
+            reader_result["error"] = exc
+        finally:
+            reader_done.set()
+
+    reader_thread = threading.Thread(
+        target=read_until_end_of_stream,
+        name=f"rust-audio-smoke-reader-{stream_id}",
+        daemon=True,
+    )
+    reader_thread.start()
+    target_deadline = time.monotonic() + max(5.0, duration_sec + 15.0)
+    while not target_reached.is_set() and not reader_done.is_set() and time.monotonic() < target_deadline:
+        target_reached.wait(timeout=0.05)
+
+    if not target_reached.is_set():
         result["ok"] = False
-        result["frameReadError"] = str(exc)
-    finally:
+        if reader_done.is_set():
+            result["frameReadError"] = "frame reader ended before the requested capture target"
+        else:
+            result["frameReadError"] = "frame reader did not reach the requested capture target before timeout"
+
+    stop_response: dict[str, Any] = {}
+    try:
         stop_started_at = time.perf_counter()
-        stop_response = client.call("captureStop", {"streamId": stream_id}, timeout=6.0)
+        stop_response = client.call(
+            "captureStop",
+            {"streamId": stream_id},
+            timeout=CAPTURE_STOP_TIMEOUT_SEC,
+        )
         stop_ms = (time.perf_counter() - stop_started_at) * 1000.0
         stop_payload = stop_response.get("payload") if isinstance(stop_response, dict) else {}
         if not isinstance(stop_payload, dict):
             stop_payload = {}
         result["captureStopResponseMs"] = round(stop_ms, 3)
         result["stop"] = stop_payload
+    except Exception as exc:
+        result["ok"] = False
+        result["captureStopError"] = f"{type(exc).__name__}: {exc}"
+    finally:
+        reader_thread.join(timeout=FRAME_DRAIN_JOIN_TIMEOUT_SEC)
+
+    if reader_thread.is_alive():
+        result["ok"] = False
+        result["frameDrainError"] = "frame reader did not finish after captureStop"
+    elif isinstance(reader_result.get("error"), Exception):
+        read_error = reader_result["error"]
+        result["ok"] = False
+        result["frameReadError"] = f"{type(read_error).__name__}: {read_error}"
+    elif isinstance(reader_result.get("frames"), dict):
+        result["frames"] = reader_result["frames"]
+
     if not stop_response.get("success"):
         result["ok"] = False
         result["stopErrorCode"] = stop_response.get("errorCode")
@@ -371,8 +451,12 @@ def validate_capture_metrics(
         errors.append("sequenceGapCount must be 0")
     if stop.get("stopped") is not True:
         errors.append("stop.stopped must be true")
+    if stop.get("eosWritten") is not True:
+        errors.append("stop.eosWritten must be true")
     if stop.get("writerError") not in (None, ""):
         errors.append("writerError must be empty")
+    if frames.get("endOfStreamRead") is not True:
+        errors.append("endOfStreamRead must be true")
     observed_duration = frames.get("observedDurationSec")
     if min_observed_duration_sec > 0 and (
         not isinstance(observed_duration, (int, float)) or float(observed_duration) < float(min_observed_duration_sec)

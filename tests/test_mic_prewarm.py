@@ -8,7 +8,7 @@ from src.mic_prewarm import RustAudioPrewarmManager
 
 
 class _FakeInputStream:
-    instances: list["_FakeInputStream"] = []
+    instances: list[_FakeInputStream] = []
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs

@@ -399,23 +399,27 @@ Packaging/build:
   `targetCurrent=true` and skips PyInstaller restore, frozen import check,
   backend tree sync, and Rust audio sidecar copy work.
 - The Rust audio sidecar has its own input hash cache under
-  `build\rust-audio-sidecar-cache`. Its cache key is limited to
-  `Cargo.toml`, `Cargo.lock`, `build.rs`, `audio_sidecar.rs`,
-  `audio_frame_pipe.rs`, and `redaction.rs`, with a module guard in the build
-  script. Official release builds use Tauri's restored shared Cargo target for
-  an audio-cache miss. The app compile and PyInstaller begin together; audio
-  preparation follows the Python sidecar phase and reuses the shared target's
-  dependency objects. Cargo's target lock serializes any small remaining
-  overlap safely. `-RustAudioIsolatedTarget` remains available for diagnostics,
-  but it is not the release default because a cold isolated target took
-  `437.3s` in `v0.5.13` despite a warm main Cargo cache.
+  `build\rust-audio-sidecar-cache`. The exact worker is version-bound:
+  `tauri_build` embeds the concrete app version from `Frontend/package.json`
+  into the PE version resource, so a version-only release must invalidate and
+  rebuild this finished-product cache. The restored Cargo dependency and
+  incremental layers remain reusable and keep that rebuild bounded. Official
+  release builds use Tauri's restored shared Cargo target for an audio-cache
+  miss. The app compile and PyInstaller begin together; audio preparation
+  follows the Python sidecar phase and reuses the shared target's dependency
+  objects. Cargo's target lock serializes any small remaining overlap safely.
+  `-RustAudioIsolatedTarget` remains available for diagnostics, but it is not
+  the release default because a cold isolated target took `437.3s` in
+  `v0.5.13` despite a warm main Cargo cache.
 - The static Rust diarization worker has a separate focused input cache under
   `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
   lockfile, static-CRT config, manifest writer, target contract, and pinned
   Sherpa archive identity. The 1.13.3 static-MT archive is checksum-verified in
   `build\sherpa-onnx-archive-cache`. Neither cache is part of the Tauri/audio
   Cargo graph or the Python backend cache, and neither cache contains optional
-  diarization models.
+  diarization models. Unlike the audio sidecar, this standalone worker does not
+  embed the Tauri app version and remains reusable across version-only releases
+  when its own inputs are unchanged.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
   embedded in the Python/PyInstaller backend sidecar.
 - YouTube EJS execution uses a four-file, manifest-bound QuickJS-ng runtime
@@ -925,13 +929,17 @@ Release workflow:
 - Main run `29004179335` verified the revert back to `dtolnay`: job time
   returned to `2m34s`, `build_windows.ps1` took `55.1s`, the Tauri bundle took
   `38.7s`, and the log again had only one `scriber-desktop` Cargo compile line.
-- Version-only app releases must not invalidate durable cache artifacts unless
-  their real inputs changed. The Rust shell passes `SCRIBER_VERSION` to the
-  Python backend at launch, so a version-normalized backend sidecar can still
-  report the installed app version through `/api/health`. The Rust shell reads
-  the installed package version from Tauri package metadata instead of
-  `CARGO_PKG_VERSION`, because Cargo's package version is a stable internal
-  build-cache input.
+- Version-only app releases invalidate exact finished products that embed or
+  attest the concrete version: the composed backend, Tauri app, and Rust audio
+  sidecar. The audio PE receives that version from `Frontend/package.json`
+  through `tauri_build`; reusing an older exact worker would ship stale native
+  version metadata. Keep the expensive Cargo dependency/incremental layers and
+  the standalone diarization worker reusable. The Rust shell passes
+  `SCRIBER_VERSION` to the Python backend at launch, so the version-neutral
+  frozen backend runtime can still report the installed app version through
+  `/api/health`. The Rust shell reads the installed package version from Tauri
+  package metadata instead of `CARGO_PKG_VERSION`, because Cargo's package
+  version is a stable internal build-cache input.
 - The main Tauri desktop build uses a stable Actions dependency cache first,
   then an optional normalized internal release artifact that contains Cargo
   registry/git data plus selected `target\release` directories, including the
@@ -1047,16 +1055,19 @@ Current packaging choices:
   writer emits a complete minimal OOXML package with Unicode text, styles,
   numbering, and A4 layout. The PDF writer emits paginated A4 PDF 1.4 with the
   same WinAnsi text range used by the previous default-font path. The frozen
-  runtime excludes the complete Pillow, lxml, python-docx, and ReportLab graphs.
-  A marker-only compatibility surface preserves the protected historical
-  `docx` and `reportlab.platypus` imports plus Pipecat/PyAutoGUI's eager Pillow
-  imports without shipping those libraries. Image/video and screenshot helpers
-  are not Scriber product features; the frozen surface fails explicitly if an
-  upstream dependency tries to invoke them. Pillow remains available to
+  runtime excludes the complete Pillow, python-docx, and ReportLab graphs. A
+  marker-only compatibility surface preserves the protected historical `docx`
+  and `reportlab.platypus` imports plus Pipecat/PyAutoGUI's eager Pillow imports
+  without shipping those libraries. `lxml.etree` is not used by the export
+  implementation; only its native parser and `_elementpath` helper remain as
+  an explicit CPython 3.14 source/frozen qualification dependency. A local
+  PyInstaller hook prevents lxml's default collect-all hook from restoring its
+  unused HTML, objectify, Schematron, or SAX graph. Image/video and screenshot
+  helpers are not Scriber product features; the frozen surface fails explicitly
+  if an upstream dependency tries to invoke them. Pillow remains available to
   development and icon tooling. Frozen validation renders and parses
   140-paragraph English and German PDF/DOCX documents, checks five or more PDF
-  pages, preserves German umlauts/eszett and full DOCX Unicode, and rejects any
-  resolution to a real legacy export package.
+  pages, and preserves German umlauts/eszett and full DOCX Unicode.
 - Runtime dependency footprint gates reject SciPy, AWS SDK packages, PySide6,
   customtkinter, Tk, the legacy export stack, and unused provider SDK
   reintroduction in the packaged backend.
@@ -3082,6 +3093,76 @@ Near-term Rust work should harden the promoted WASAPI path: selected-device
 evidence, dock/USB/default-device transitions, longer Always-On-Mic runs,
 restart diagnostics, and eventually moving more device-listing/mapping helpers
 out of `sounddevice`.
+
+## Python 3.14.6 runtime performance
+
+The product runtime is CPython 3.14.6. Its conservative release configuration
+is the official Windows x64 build with JIT disabled; this captures the standard
+3.14 interpreter and library improvements without accepting experimental JIT
+warm-up or a custom compiler/runtime chain without user-latency evidence.
+
+The isolated `python-runtime-ab-v1` profile can compare the official 3.13.14
+anchor, official 3.14.6 with JIT off/on, ClangCL+ThinLTO+PGO with JIT off/on,
+and the same custom runtime with the tail-call interpreter. All candidates are
+full frozen/Tauri builds from one dependency/runtime lock. JIT warm-up and
+compile time remain in the user-facing latency score. Promotion requires a
+block-by-block gain of at least `max(5%, 2 * baseline CV)` against both A13 and
+O0, a bootstrap 95% interval entirely on the winning side, no provider
+p50/p95 regression, bounded CPU/RSS/idle cost, and zero protected UX failures.
+If nothing clears that bar on both Intel and AMD installed systems, O0 remains
+the product runtime.
+
+The final AMD-only screening compared clean, source-attested O0, C0
+(ClangCL+ThinLTO+PGO), and T0 (the same custom toolchain plus the tail-call
+interpreter) frozen/Tauri payloads. Frozen startup used 5 warmups and 30
+position-rotated measurements per variant. C0 improved startup p50 by only
+3.56% and the mean by 2.96%, while p95 regressed by 0.26%. T0 improved startup
+mean by 3.95%, p50 by 4.32%, and p95 by 3.17%. Neither custom runtime reached
+the 5% promotion floor.
+
+The installed FastLocal comparison collected five samples for every Microsoft,
+Soniox, and Speechmatics 5/15/30/60-second replay series. Across the 48
+provider p50/p95 metrics, C0's median change was effectively zero (-0.007%),
+23 series regressed, and 11 exceeded the protected 3% regression limit; the
+worst regression was 32.67%. C0 also regressed App UX p50 from 437.398 ms to
+462.297 ms (+5.69%), while its App UX p95 improved only 0.45%. Runtime and App
+UX attestations remained stable, all provider series had five capture-attested
+samples and zero failures, and both variants produced zero protected App UX
+errors.
+
+The independent T0 packet rebuilt O0 and T0 from source content
+`ca786a90dfd4da750d52a59d032710bcd148807325fc0fcb887db273eb2c5aff`
+and used byte-identical desktop and audio-sidecar binaries. T0 improved 43 of
+the 48 canonical provider p50/p95 values, with a median change of -1.41%, but
+five protected values regressed. The worst was Soniox 15-second
+stop-to-final-text p50 at +27.93%. T0 also regressed App UX p50 from
+456.661 ms to 500.911 ms (+9.69%); its composite App UX score was 3.89% slower,
+and six App UX guardrails failed. Working set fell by 0.83% and idle CPU by
+0.301 percentage points, but resource savings cannot compensate for
+user-latency regressions. All 24 provider series retained five
+capture-attested samples and zero failures, all protected error counters
+remained zero, and the independent evaluator recheck selected O0.
+
+The normal B6 AutoResearch baseline intentionally remains unchanged. It lacks
+the newer canonical provider metrics, so the legacy FastLocal aggregate reports
+`canonical_provider_replay_not_promotion_eligible`; the isolated runtime
+profile compares O0 directly against C0 and T0 instead of rewriting that
+baseline. Both custom runtimes fail the provider, App UX, and minimum-gain
+promotion rules independently of that structural block. O0 is therefore the
+selected production runtime: official CPython 3.14.6 with JIT disabled. The
+AMD evidence is emitted below `build/python-runtime-amd` and remains
+intentionally untracked.
+
+Stock PyInstaller 6.20 initializes its embedded CPython with isolated
+configuration, so `PYTHON_JIT=1` is ignored by the frozen interpreter even
+though the same source runtime honors it. O1/C1/T1 therefore fail the packaged
+runtime policy and are ineligible for this release. Enabling all Python
+environment processing would weaken the frozen-runtime isolation contract; a
+selective native-launcher or CPython initialization change belongs in a
+separate research goal.
+
+Free-threaded CPython is intentionally outside this profile: it excludes the
+3.14 JIT and would require a separate complete `cp314t` native-wheel graph.
 ## Meeting Audio Packaging
 
 - `aec3 = 0.2.0` is compiled into the existing crash-isolated Rust audio

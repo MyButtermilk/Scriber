@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 5
+RUNTIME_CONTRACT_REVISION = 7
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
 APPLICATION_DIRECTORY_NAME = "app"
 APPLICATION_MANIFEST_NAME = "app-layer-manifest.json"
 RUNTIME_MANIFEST_NAME = "runtime-layer-manifest.json"
+PYTHON_RUNTIME_POLICY_SCHEMA_VERSION = 1
+PYTHON_RUNTIME_POLICY_NAME = "scriber-python-runtime-policy"
+PYTHON_RUNTIME_POLICY_MANIFEST_NAME = "python-runtime-manifest.json"
+PYTHON_RUNTIME_POLICY_ENV = "SCRIBER_PYTHON_RUNTIME_MANIFEST"
+PYTHON_RUNTIME_LOCK_SHA256_ENV = "SCRIBER_PYTHON_RUNTIME_LOCK_SHA256"
 
 # These imports are the third-party boundary required by Scriber.  The frozen
 # runtime check imports every entry without importing application code.  Keep
@@ -19,10 +24,14 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("aiohttp", "backend HTTP and WebSocket server runtime"),
     ("audioop", "PCM16 RMS runtime supplied by audioop-lts"),
     ("comtypes", "Windows audio endpoint integration"),
+    ("compression.zstd", "CPython Zstandard compression runtime"),
+    ("cryptography.fernet", "native OpenSSL-backed cryptography runtime"),
     ("docx", "DOCX meeting export runtime"),
     ("dotenv", "local settings environment loader"),
+    ("grpc", "native provider gRPC transport runtime"),
     ("huggingface_hub", "local ONNX model download runtime"),
     ("keyboard", "compatibility hotkey runtime"),
+    ("lxml.etree", "native XML parser qualification runtime"),
     ("loguru", "structured backend logging runtime"),
     ("numpy", "audio and model array runtime"),
     ("onnx_asr", "local ONNX speech-to-text runtime"),
@@ -65,6 +74,8 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("pyloudnorm", "local loudness compatibility runtime"),
     ("reportlab.platypus", "PDF meeting export runtime"),
     ("sounddevice", "audio device enumeration runtime"),
+    ("sqlite3", "CPython SQLite persistence runtime"),
+    ("ssl", "CPython OpenSSL transport runtime"),
     ("tqdm", "model download progress runtime"),
     ("websockets.asyncio.client", "provider WebSocket client runtime"),
     ("yt_dlp", "YouTube media extraction runtime"),

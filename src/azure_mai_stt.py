@@ -232,7 +232,7 @@ async def _pcm_stream_to_mp3(
             while chunk := await asyncio.to_thread(audio_source.read, 1024 * 1024):
                 proc.stdin.write(chunk)
                 await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
+        except BrokenPipeError, ConnectionResetError:
             pass
         finally:
             proc.stdin.close()

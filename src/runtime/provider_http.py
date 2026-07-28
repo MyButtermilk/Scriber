@@ -104,7 +104,7 @@ class _ProviderHttpSessionView:
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
         value = float(os.environ.get(name, default))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     if not math.isfinite(value):
         value = default
@@ -114,7 +114,7 @@ def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     try:
         value = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     return min(maximum, max(minimum, value))
 

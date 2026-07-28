@@ -182,7 +182,7 @@ if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw "Reposito
 if ($SourceRunId -notmatch '^\d+$') { throw "Source run id is not valid." }
 if ($SourceSha -notmatch '^[0-9a-f]{40}$') { throw "Source SHA is not valid." }
 if ($SourceRef -notmatch '^refs/tags/v[0-9A-Za-z.+-]+$') { throw "Cache handoff is allowed only for a v* tag ref." }
-if ($PythonVersion -notmatch '^3\.13\.\d+$') { throw "Cache handoff requires an exact Python 3.13 patch version." }
+if ($PythonVersion -ne '3.14.6') { throw "Cache handoff requires exact Python 3.14.6." }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $buildRoot = Resolve-RepoPath -Root $repoRoot -Path "build"

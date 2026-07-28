@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -11,7 +12,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR_PATH = REPO_ROOT / "scripts" / "validate_numpy_noblas_wheel.py"
 LOCK_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-noblas-wheel-lock-v1.json"
-WHEEL_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"
+WHEEL_PATH = REPO_ROOT / "packaging" / "wheels" / "numpy-2.4.6+scriber.noblas.1-cp314-cp314-win_amd64.whl"
 
 
 def _load_validator():
@@ -32,14 +33,61 @@ def _write_lock(tmp_path: Path, payload: dict[str, object]) -> Path:
     return path
 
 
+def _write_raw_build_wheel(path: Path, *, work_root: str, reverse: bool) -> None:
+    members = [
+        (
+            "numpy/__config__.py",
+            (
+                "CONFIG = {\n"
+                '    "Python Information": {\n'
+                f'        "path": r"{work_root}\\venv\\Scripts\\python.exe",\n'
+                "    },\n"
+                "}\n"
+            ).encode(),
+        ),
+        ("numpy/_core/lib/npymath.lib", f"volatile-{work_root}".encode()),
+        ("numpy/random/lib/npyrandom.lib", f"volatile-{work_root}".encode()),
+        ("numpy/value.txt", b"stable-runtime-payload"),
+        ("numpy-2.4.6+scriber.noblas.1.dist-info/RECORD", b"untrusted build record"),
+    ]
+    if reverse:
+        members.reverse()
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in members:
+            info = zipfile.ZipInfo(name, (2026, 7, 27, 19, 0, 0))
+            archive.writestr(info, data)
+
+
 def test_repository_numpy_noblas_wheel_matches_lock() -> None:
     summary = validator.validate(LOCK_PATH, WHEEL_PATH)
 
     assert summary["ok"] is True
     assert summary["version"] == "2.4.6+scriber.noblas.1"
-    assert summary["sha256"] == ("e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c")
+    assert summary["sha256"] == ("6a236700849cc09acbbf95185d3655650738a6ea6f9e166a4de87f2996007a13")
     assert summary["blas"] == "none"
     assert summary["lapack"] == "none"
+
+
+def test_raw_wheels_from_different_workroots_canonicalize_identically(tmp_path: Path) -> None:
+    first = tmp_path / "first.whl"
+    second = tmp_path / "second.whl"
+    _write_raw_build_wheel(first, work_root=r"C:\build\first", reverse=False)
+    _write_raw_build_wheel(second, work_root=r"D:\other\second", reverse=True)
+
+    validator.canonicalize_built_wheel(first)
+    validator.canonicalize_built_wheel(second)
+
+    assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(second.read_bytes()).digest()
+    with zipfile.ZipFile(first) as archive:
+        assert not validator.REMOVED_BUILD_ONLY_MEMBERS.intersection(archive.namelist())
+        config = archive.read("numpy/__config__.py").decode()
+        assert validator.CANONICAL_BUILD_PYTHON in config
+        assert "C:\\build" not in config
+        validator._validate_record(
+            archive,
+            archive.namelist(),
+            "numpy-2.4.6+scriber.noblas.1.dist-info/RECORD",
+        )
 
 
 def test_validated_wheel_extracts_to_empty_overlay(tmp_path: Path) -> None:
@@ -50,11 +98,13 @@ def test_validated_wheel_extracts_to_empty_overlay(tmp_path: Path) -> None:
     extracted = validator.extract_validated_wheel(WHEEL_PATH, destination)
 
     assert summary["ok"] is True
-    assert extracted == 930
+    assert extracted == 928
     assert (destination / "numpy" / "__init__.py").is_file()
     assert (destination / "numpy-2.4.6+scriber.noblas.1.dist-info" / "METADATA").is_file()
     assert not list(destination.rglob("*openblas*"))
     assert not list(destination.rglob("*.dll"))
+    for member in validator.REMOVED_BUILD_ONLY_MEMBERS:
+        assert not (destination / Path(*member.split("/"))).exists()
 
 
 def test_validated_wheel_refuses_nonempty_overlay(tmp_path: Path) -> None:
@@ -82,6 +132,20 @@ def test_static_runtime_version_must_match_metadata() -> None:
 
     with pytest.raises(validator.ValidationError, match="runtime version"):
         validator._validate_static_runtime_version(changed, expected_version="2.4.6+scriber.noblas.1")
+
+
+def test_static_build_config_rejects_noncanonical_python_path() -> None:
+    with zipfile.ZipFile(WHEEL_PATH) as archive:
+        source = archive.read("numpy/__config__.py")
+    changed = source.replace(
+        validator.CANONICAL_BUILD_PYTHON.encode(),
+        rb"C:\volatile\venv\Scripts\python.exe",
+        1,
+    )
+    assert changed != source
+
+    with pytest.raises(validator.ValidationError, match="non-canonical"):
+        validator._validate_static_build_dependencies(changed)
 
 
 def test_validator_rejects_dll_archive_member() -> None:

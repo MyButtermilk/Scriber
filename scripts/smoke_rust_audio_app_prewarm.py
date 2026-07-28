@@ -241,7 +241,7 @@ def _valid_manager_health_snapshot(
     try:
         if int(value.get("healthRestartCount") or 0) != 0:
             return False
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     status = value.get("lastStatus")
     if not isinstance(status, dict):

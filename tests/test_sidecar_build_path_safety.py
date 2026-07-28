@@ -51,7 +51,7 @@ def _create_directory_reparse_point(link: Path, target: Path) -> None:
     try:
         os.symlink(target, link, target_is_directory=True)
         return
-    except (NotImplementedError, OSError):
+    except NotImplementedError, OSError:
         pass
     cmd = shutil.which("cmd.exe")
     if not cmd:

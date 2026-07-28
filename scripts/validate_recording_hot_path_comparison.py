@@ -92,7 +92,7 @@ def segment_values(report: dict[str, Any], segment: str) -> list[float]:
             continue
         try:
             values.append(float(segments[segment]))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
     return values
 

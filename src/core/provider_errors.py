@@ -272,7 +272,7 @@ def parse_provider_json_response(
     invalid_json = False
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         payload = None
         invalid_json = True
     if invalid_json:
@@ -301,7 +301,7 @@ def _provider_code_from_body(response_body: str | bytes | None) -> str:
         return ""
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except TypeError, ValueError, json.JSONDecodeError:
         return ""
     if not isinstance(payload, dict):
         return ""
@@ -605,7 +605,7 @@ def _status_code(raw: str, payload: dict[str, Any]) -> int | None:
         value = _find_payload_value(payload, key)
         try:
             status = int(value)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if 100 <= status <= 599:
             return status

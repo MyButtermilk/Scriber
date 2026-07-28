@@ -43,6 +43,10 @@ def block_before_backend_start() -> None:
 
 
 def main() -> int:
+    from backend_runtime.runtime_policy import enforce_runtime_policy_if_configured
+
+    enforce_runtime_policy_if_configured()
+
     if "--runtime-import-check" in sys.argv:
         return run_runtime_import_check()
 

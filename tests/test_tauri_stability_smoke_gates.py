@@ -8,7 +8,10 @@ import subprocess
 import uuid
 from pathlib import Path
 
+import pytest
 import yaml
+
+from scripts.perf import runtime_attestation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -219,6 +222,59 @@ def test_installer_and_build_scripts_forward_real_media_workflow_gate() -> None:
     assert "$RunInstallerRealMediaWorkflowSmoke" in build
     assert '$installerSmokeArgs += "-VerifyRealMediaWorkflows"' in build
     assert "[string]$InstallerRealWorkflowYoutubeUrl" in build
+
+
+def test_installed_youtube_matrix_is_install_once_sequential_redacted_and_retry_bounded() -> None:
+    runner = read_script("scripts/run_installed_youtube_video_matrix.ps1")
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    preflight = read_script("scripts/prevet_installed_youtube_video_matrix.py")
+    frozen_probe = read_script("backend_runtime/installer_youtube_holdout_probe.py")
+
+    assert "-FilePath $InstallerPath" in runner
+    assert runner.index("-FilePath $InstallerPath") < runner.index("foreach ($lane in $fixture.lanes)")
+    assert runner.index("smoke_quickjs_youtube_runtime.py") < runner.index("foreach ($lane in $fixture.lanes)")
+    assert "[string]$PreflightEvidencePath" in runner
+    assert "validate-preflight" in runner
+    assert "--candidate-payload $InstallDir" in runner
+    assert runner.count('Invoke-LaneAttempt -Lane $lane -SelectionMarker "primary"') == 2
+    assert runner.count('Invoke-LaneAttempt -Lane $lane -SelectionMarker "replacement"') == 1
+    assert runner.count('$selected.failureCategory -eq "external-availability"') == 2
+    assert "one-transient-primary-retry-then-replacement" in runner
+    assert "fixtureUrlSha256" in runner
+    assert "installerSha256" in runner
+    assert "dataRootSha256" in runner
+    assert "childProcessCleanupVerified" in runner
+    assert "preflightEvidenceSha256" in runner
+    assert "observedExtraction" in runner
+    assert '[string]$EnvFile = ""' in runner
+    assert "Invoke-WithScopedEnvironment" in runner
+    assert "SetEnvironmentVariable" in runner
+    assert "$desktopProcess.WaitForExit($attemptTimeoutSec * 1000)" in runner
+    assert "Stop-IsolatedInstallProcesses -Root $InstallDir" in runner
+    assert "Invoke-StrictUninstall -Root $InstallDir" in runner
+    assert "strictUninstallVerified" in runner
+    assert "ephemeralCleanupVerified" in runner
+    assert "$finalAggregate.ok = $false" in runner
+    assert "strict uninstall was not verified" in runner
+    assert "ephemeral matrix cleanup was not verified" in runner
+    assert "Remove-Item -LiteralPath $InstallDir" not in runner
+    assert '"-ExecutionPolicy", "Bypass"' not in runner
+    assert "RealWorkflowEvidenceOutputPath" in desktop
+    assert "& $PythonPath @workflowArgs" in desktop
+    assert "python @workflowArgs" not in desktop
+    assert 'request["formatSelectionProbe"] = True' in preflight
+    assert 'request["captionSelectionProbe"] = True' in preflight
+    assert "urlSha256" in preflight
+    assert "candidate-payload" in preflight
+    assert "backend" in preflight
+    assert "quickJsWrapper" in preflight
+    assert "quickJsEngine" in preflight
+    assert "ffmpeg" in preflight
+    assert "runtimeManifest" in preflight
+    assert "from src.youtube_download import (" in frozen_probe
+    assert "_FORMAT_SELECTORS" in frozen_probe
+    assert "_is_format_unavailable_error" in frozen_probe
+    assert '"selectedFormat"' in frozen_probe
 
 
 def test_installer_smoke_requires_packaged_audio_sidecar() -> None:
@@ -452,6 +508,7 @@ def test_gyan_essentials_prepare_script_downloads_and_verifies_archive() -> None
 
 def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> None:
     build = read_script("scripts/build_windows.ps1")
+    sidecar = read_script("scripts/build_tauri_backend_sidecar.ps1")
 
     assert "PrunePySide6" not in build
     assert "[switch]$SkipBundledFfprobe" in build
@@ -505,6 +562,13 @@ def test_release_build_can_opt_into_experimental_ffmpeg_only_media_bundle() -> N
     assert build.index('-Label "Tauri app binary build"') < build.index(
         "Complete-TrackedReleaseProcesses -Tasks $parallelTasks"
     )
+    parallel_join_index = build.index("Complete-TrackedReleaseProcesses -Tasks $parallelTasks")
+    audio_restage_index = build.index('-Label "Rust audio sidecar final cache stage"')
+    bundle_index = build.index('Invoke-Checked -Label "Tauri Windows bundle"')
+    assert parallel_join_index < audio_restage_index < bundle_index
+    assert "-RustAudioStageFromCacheOnly" in build
+    assert "[switch]$RustAudioStageFromCacheOnly" in sidecar
+    assert "-RequireCacheHit $true" in sidecar
     assert "$bundleExistingTauriApp = $UsePrebuiltTauriApp -or $tauriAppBuiltBeforeBundle" in build
     assert 'lastProgressStatus = ""' in build
     assert ".TotalSeconds -ge 60" in build
@@ -1017,7 +1081,7 @@ def test_release_cache_key_script_normalizes_version_only_churn() -> None:
     assert contract == {
         "schemaVersion": 1,
         "name": "scriber-backend-onedir",
-        "revision": 4,
+        "revision": 5,
     }
 
     assert "frontend-dependencies.txt" in script
@@ -1128,7 +1192,7 @@ def test_tauri_build_embeds_validated_outlook_configuration_for_backend() -> Non
     assert "outlook_config::configured_client_id()" in desktop
 
 
-def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
+def test_release_cache_key_outputs_invalidate_exact_product_artifacts_for_version_churn() -> None:
     tracked_paths = [
         REPO_ROOT / "src" / "version.py",
         REPO_ROOT / "Frontend" / "package.json",
@@ -1219,9 +1283,12 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
         tauri_after = after.pop("tauri-app-binary.txt")
         backend_before = before.pop("backend-sidecar.txt")
         backend_after = after.pop("backend-sidecar.txt")
+        rust_audio_before = before.pop("rust-audio-sidecar.txt")
+        rust_audio_after = after.pop("rust-audio-sidecar.txt")
         assert before == after
         assert tauri_before != tauri_after
         assert backend_before != backend_after
+        assert rust_audio_before != rust_audio_after
         assert before["backend-runtime.txt"] == after["backend-runtime.txt"]
     finally:
         for path, content in original_bytes.items():
@@ -1229,15 +1296,86 @@ def test_release_cache_key_outputs_are_stable_for_version_only_churn() -> None:
         shutil.rmtree(output_root, ignore_errors=True)
 
 
-def test_rust_audio_sidecar_cache_key_ignores_app_version_only_churn() -> None:
+def test_rust_audio_sidecar_exact_cache_key_binds_canonical_application_version() -> None:
     script = read_script("scripts/build_tauri_backend_sidecar.ps1")
+    manifest_function = script.split("function Get-RustAudioSidecarInputManifest", 1)[1].split(
+        "function Get-RustAudioSidecarCacheKey", 1
+    )[0]
 
     assert "Normalize-CargoTomlForCache" in script
     assert "Normalize-CargoLockForCache" in script
     assert 'version = "__app_version__"' in script
     assert "scriber-desktop" in script
+    assert '"Frontend\\package.json"' in script
+    assert 'apiVersion = "2"' in manifest_function
+    assert "applicationVersion" in manifest_function
     assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.toml"' in script
     assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.lock"' in script
+
+
+def _runtime_attestation_version_fixture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[Path, Path]:
+    repo_root = tmp_path / "repo"
+    install_root = tmp_path / "install"
+    (repo_root / "Frontend").mkdir(parents=True)
+    (repo_root / "Frontend" / "package.json").write_text('{"version":"0.5.48"}\n', encoding="utf-8")
+    (install_root / "backend").mkdir(parents=True)
+    (install_root / "scriber-desktop.exe").write_bytes(b"desktop")
+    (install_root / "backend" / "scriber-backend.exe").write_bytes(b"backend")
+    (install_root / "scriber-audio-sidecar.exe").write_bytes(b"audio")
+    source = {
+        "head": "a" * 40,
+        "contentSha256": "b" * 64,
+        "fileCount": 1,
+    }
+    monkeypatch.setattr(runtime_attestation, "source_identity", lambda _repo_root: source)
+    return repo_root, install_root
+
+
+def test_runtime_attestation_write_rejects_stale_audio_sidecar_pe_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, install_root = _runtime_attestation_version_fixture(tmp_path, monkeypatch)
+
+    def version_reader(path: Path) -> str:
+        return "0.5.47" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
+
+    with pytest.raises(runtime_attestation.AttestationError) as raised:
+        runtime_attestation.write_attestation(repo_root, install_root, version_reader=version_reader)
+
+    assert raised.value.code == "component_version_mismatch"
+    assert "audioSidecar version 0.5.47" in str(raised.value)
+
+
+def test_runtime_attestation_verify_rejects_audio_sidecar_pe_version_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, install_root = _runtime_attestation_version_fixture(tmp_path, monkeypatch)
+
+    runtime_attestation.write_attestation(
+        repo_root,
+        install_root,
+        version_reader=lambda path: "0.5.48" if path.suffix == ".exe" else "",
+    )
+
+    def stale_audio_version_reader(path: Path) -> str:
+        return "0.5.47" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
+
+    result = runtime_attestation.verify_attestation(
+        repo_root,
+        install_root,
+        version_reader=stale_audio_version_reader,
+    )
+
+    assert result["ok"] is False
+    assert any(
+        error["code"] == "component_version_mismatch" and error.get("component") == "audioSidecar"
+        for error in result["errors"]
+    )
 
 
 def test_native_recording_overlay_is_tauri_owned() -> None:
@@ -1612,3 +1750,10 @@ def test_installed_smoke_can_drive_real_synthetic_meeting_audio_pipes() -> None:
     assert "[switch]$RunInstallerMeetingAudioDeviceTestSmoke" in build
     assert "$RunInstallerMeetingAudioDeviceTestSmoke" in build
     assert '"-VerifyMeetingAudioDeviceTest"' in build
+
+
+def test_installed_smoke_rejects_combined_synthetic_meeting_and_live_mic_evidence() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+
+    assert "if ($LiveRecordingDurationSec -gt 0 -and $VerifyMeetingAudioDeviceTest)" in desktop
+    assert "Meeting test forces synthetic capture" in desktop

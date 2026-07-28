@@ -145,6 +145,23 @@ def test_find_media_tool_uses_media_tools_dir(
     assert media_tools.find_media_tool("ffprobe") == str(configured.resolve())
 
 
+def test_frozen_yt_dlp_resolution_never_uses_env_bundle_or_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    explicit = _tool_file(tmp_path / "explicit", "yt-dlp")
+    _tool_file(tmp_path / "app" / "tools" / "ffmpeg", "yt-dlp")
+    path_tool = _tool_file(tmp_path / "path", "yt-dlp")
+
+    monkeypatch.setenv("SCRIBER_YT_DLP_PATH", str(explicit))
+    monkeypatch.setattr(media_tools, "is_frozen", lambda: True)
+    monkeypatch.setattr(media_tools, "app_root", lambda: tmp_path / "app")
+    monkeypatch.setattr(media_tools, "repo_root", lambda: tmp_path / "repo")
+    monkeypatch.setattr(media_tools.shutil, "which", lambda _name: str(path_tool))
+
+    assert media_tools.find_media_tool("yt-dlp") is None
+
+
 def test_find_media_tool_supports_explicit_quickjs_runtime(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

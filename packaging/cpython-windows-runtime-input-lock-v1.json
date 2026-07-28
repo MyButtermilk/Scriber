@@ -1,0 +1,266 @@
+{
+  "lockContract": "ScriberCPythonWindowsRuntimeInputLockV1",
+  "schemaVersion": 1,
+  "target": {
+    "pythonVersion": "3.14.6",
+    "cacheTag": "cpython-314",
+    "architecture": "win_amd64",
+    "cpythonTag": "v3.14.6"
+  },
+  "officialRuntimes": {
+    "A13": {
+      "version": "3.13.14",
+      "cacheTag": "cpython-313",
+      "installer": {
+        "fileName": "python-3.13.14-amd64.exe",
+        "url": "https://www.python.org/ftp/python/3.13.14/python-3.13.14-amd64.exe",
+        "sizeBytes": 29225624,
+        "sha256": "c54d9b9bbb8a36e6489363ddd01139707fd781d72f1f9e90c7ec65d0061368e0"
+      }
+    },
+    "O": {
+      "version": "3.14.6",
+      "cacheTag": "cpython-314",
+      "installer": {
+        "fileName": "python-3.14.6-amd64.exe",
+        "url": "https://www.python.org/ftp/python/3.14.6/python-3.14.6-amd64.exe",
+        "sizeBytes": 30774112,
+        "sha256": "14b3e9a710a3fcf0bd9b55ab6b60412bd91227563f813fc49040cabc0209e0bd"
+      },
+      "lockedInstalledFiles": [
+        {
+          "relativePath": "python.exe",
+          "sizeBytes": 106208,
+          "sha256": "03168c01b7b7491423350e82c26fee71f35b43694d1319d3c668bda6903a0c38"
+        },
+        {
+          "relativePath": "python3.dll",
+          "sizeBytes": 73952,
+          "sha256": "22c6e46d8bd563cdb072650901461ef68be2ea6cb1e80af859559d9395a27e39"
+        },
+        {
+          "relativePath": "python314.dll",
+          "sizeBytes": 6778592,
+          "sha256": "fde89cdb5c2d08ae65de7ef4abca1876c93ba3796002f5ac0bf7e4d4f5a94da0"
+        }
+      ]
+    }
+  },
+  "customBuildInputs": {
+    "source": {
+      "fileName": "Python-3.14.6.tar.xz",
+      "url": "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz",
+      "sizeBytes": 23921184,
+      "sha256": "143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63"
+    },
+    "llvm": {
+      "version": "19.1.7",
+      "fileName": "clang+llvm-19.1.7-x86_64-pc-windows-msvc.tar.xz",
+      "url": "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/clang%2Bllvm-19.1.7-x86_64-pc-windows-msvc.tar.xz",
+      "sizeBytes": 845236708,
+      "sha256": "b4557b4f012161f56a2f5d9e877ab9635cafd7a08f7affe14829bd60c9d357f0"
+    },
+    "visualStudio": {
+      "product": "Microsoft.VisualStudio.Product.BuildTools",
+      "channel": "VisualStudio.17.Release",
+      "displayVersion": "17.14.37",
+      "installationVersion": "17.14.37516.0",
+      "platformToolset": "ClangCL",
+      "bootstrapper": {
+        "fileName": "vs_BuildTools-17.14.37.exe",
+        "url": "https://download.visualstudio.microsoft.com/download/pr/f7f5ecbc-83ca-4cf0-bdb2-aaf70efb6d97/e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575/vs_BuildTools.exe",
+        "sizeBytes": 4459960,
+        "sha256": "e0b8ea16494b4a79c68da26773131562aefecc8d87f1923c24d579c7a72e0575",
+        "signerSubject": "CN=Microsoft Corporation, O=Microsoft Corporation, L=Redmond, S=Washington, C=US"
+      },
+      "components": [
+        "Microsoft.VisualStudio.Workload.VCTools",
+        "Microsoft.VisualStudio.Component.VC.Tools.x86.x64",
+        "Microsoft.VisualStudio.Component.Windows11SDK.26100",
+        "Microsoft.VisualStudio.Component.VC.Llvm.ClangToolset"
+      ]
+    },
+    "windowsSdk": {
+      "directoryVersion": "10.0.26100.0",
+      "servicingVersion": "10.0.26100.6584"
+    },
+    "hostPython": {
+      "version": "3.14.6",
+      "cacheTag": "cpython-314",
+      "files": [
+        {
+          "relativePath": "python.exe",
+          "sizeBytes": 106208,
+          "sha256": "03168c01b7b7491423350e82c26fee71f35b43694d1319d3c668bda6903a0c38"
+        },
+        {
+          "relativePath": "python3.dll",
+          "sizeBytes": 73952,
+          "sha256": "22c6e46d8bd563cdb072650901461ef68be2ea6cb1e80af859559d9395a27e39"
+        },
+        {
+          "relativePath": "python314.dll",
+          "sizeBytes": 6778592,
+          "sha256": "fde89cdb5c2d08ae65de7ef4abca1876c93ba3796002f5ac0bf7e4d4f5a94da0"
+        }
+      ]
+    },
+    "externals": [
+      {
+        "directory": "bzip2-1.0.8",
+        "fileCount": 56,
+        "sizeBytes": 3095904,
+        "treeSha256": "f47f739e52f7fc352c3bb63ac52b91e4f86b487a917568dc4c9b0dcbbd417f6a"
+      },
+      {
+        "directory": "libffi-3.4.4",
+        "fileCount": 17,
+        "sizeBytes": 216694,
+        "treeSha256": "b956549137d45d388c65cb45426ddbd29955a2900ba241c866de2ab256d4a229"
+      },
+      {
+        "directory": "mpdecimal-4.0.0",
+        "fileCount": 142,
+        "sizeBytes": 1764443,
+        "treeSha256": "d9f9a50ea4c124a5414a513b7e453c30ba5b301cadd7a6940468adaa31501088"
+      },
+      {
+        "directory": "openssl-bin-3.5.7",
+        "fileCount": 541,
+        "sizeBytes": 122700595,
+        "treeSha256": "d3cce675ba80815b66f0d3c8c53fa0a518eb21e575b006ec0ba08d2e34ff12fb"
+      },
+      {
+        "directory": "sqlite-3.50.4.0",
+        "fileCount": 5,
+        "sizeBytes": 11050706,
+        "treeSha256": "95a0be170daec714fa3a7fa11f7e99938ed1c6b8988b91a7006cbe83df3806e4"
+      },
+      {
+        "directory": "tcltk-8.6.15.0",
+        "fileCount": 3175,
+        "sizeBytes": 29763999,
+        "treeSha256": "d178918f763ba52596561ad5e8d4f67636d4ae3811a449ed423ebd7c427dd8ea"
+      },
+      {
+        "directory": "xz-5.2.5",
+        "fileCount": 480,
+        "sizeBytes": 5933159,
+        "treeSha256": "ba97ab8bc82a6948a5b57c4f0026816563121401cd664a22100189bdc06b3293"
+      },
+      {
+        "directory": "zlib-ng-2.2.4",
+        "fileCount": 330,
+        "sizeBytes": 7190075,
+        "treeSha256": "c5fe930bf70c48efc9cdd61db801cf09c01dd4d4bab200900364c89797e65284"
+      },
+      {
+        "directory": "zstd-1.5.7",
+        "fileCount": 628,
+        "sizeBytes": 8301270,
+        "treeSha256": "8caaae4698b11abc0cd85c01279f657e8f60ce0aef4df78b2cc8e66a11dbc118"
+      }
+    ]
+  },
+  "buildMatrix": {
+    "A13": {
+      "family": "official-3.13.14",
+      "runtimeFlavor": "Official",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": false
+    },
+    "O0": {
+      "family": "official-3.14.6",
+      "runtimeFlavor": "Official",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "O1": {
+      "family": "official-3.14.6",
+      "runtimeFlavor": "Official",
+      "jit": true,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "C0": {
+      "family": "clang-pgo-3.14.6",
+      "runtimeFlavor": "ClangPgo",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "C1": {
+      "family": "clang-pgo-3.14.6",
+      "runtimeFlavor": "ClangPgo",
+      "jit": true,
+      "tailCallInterpreter": false,
+      "releaseCandidate": true
+    },
+    "T0": {
+      "family": "clang-pgo-tail-3.14.6",
+      "runtimeFlavor": "ClangPgoTail",
+      "jit": false,
+      "tailCallInterpreter": true,
+      "releaseCandidate": true
+    },
+    "T1": {
+      "family": "clang-pgo-tail-3.14.6",
+      "runtimeFlavor": "ClangPgoTail",
+      "jit": true,
+      "tailCallInterpreter": true,
+      "releaseCandidate": true
+    },
+    "K0": {
+      "family": "clang-calibration-3.14.6",
+      "runtimeFlavor": "ClangCalibration",
+      "jit": false,
+      "tailCallInterpreter": false,
+      "releaseCandidate": false
+    }
+  },
+  "customBuildCommands": {
+    "C": [
+      "PCbuild\\build.bat",
+      "-p",
+      "x64",
+      "--pgo",
+      "--pgo-job",
+      "-m test --pgo",
+      "--experimental-jit-off",
+      "/p:PlatformToolset=ClangCL",
+      "/p:LLVMToolsVersion=19.1.7"
+    ],
+    "T": [
+      "PCbuild\\build.bat",
+      "-p",
+      "x64",
+      "--pgo",
+      "--pgo-job",
+      "-m test --pgo",
+      "--experimental-jit-off",
+      "--tail-call-interp",
+      "/p:PlatformToolset=ClangCL",
+      "/p:LLVMToolsVersion=19.1.7"
+    ],
+    "K": [
+      "PCbuild\\build.bat",
+      "-p",
+      "x64",
+      "/p:PlatformToolset=ClangCL",
+      "/p:LLVMToolsVersion=19.1.7"
+    ]
+  },
+  "requiredRuntimeOutputs": [
+    "python.exe",
+    "python3.dll",
+    "python314.dll"
+  ],
+  "networkPolicy": {
+    "provisioningMayUseNetwork": true,
+    "buildMayUseNetwork": false,
+    "forbiddenBuildArgument": "-E",
+    "jitSelectionEnvironmentVariable": "PYTHON_JIT"
+  }
+}

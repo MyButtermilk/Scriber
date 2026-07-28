@@ -17,6 +17,7 @@ def write_fake_sidecar(root: Path) -> Path:
         "onnxruntime/capi/onnxruntime_pybind11_state.pyd": b"p" * 4096,
         "google/__init__.py": b"",
         "grpc/_cython/cygrpc.pyd": b"r" * 1024,
+        "lxml/etree.cp314-win_amd64.pyd": b"l" * 1024,
     }
     sidecar_files = {
         "tools/ffmpeg/ffmpeg.exe": b"f" * 20480,
@@ -132,7 +133,6 @@ def test_runtime_dependency_footprint_fails_when_legacy_export_stack_is_bundled(
     assert set(report["summary"]["componentDisallowedPaths"]) == {
         "legacyExportStack:_internal\\PIL",
         "legacyExportStack:_internal\\docx",
-        "legacyExportStack:_internal\\lxml",
         "legacyExportStack:_internal\\reportlab",
     }
 

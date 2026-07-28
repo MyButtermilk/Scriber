@@ -72,7 +72,9 @@ Backend and runtime:
   ffmpeg/ffprobe resolution and media preparation. YouTube extraction uses the
   pinned yt-dlp/EJS/QuickJS-ng runtime and validates downloaded audio before
   provider upload. Frozen builds accept only the complete manifest-bound
-  wrapper bundle under `tools/ffmpeg`; source runs may use the explicit
+  wrapper bundle under `tools/ffmpeg`; yt-dlp itself is imported from the
+  frozen PyInstaller package and no pip/distlib launcher is shipped. Source
+  runs may use the explicit
   `SCRIBER_QUICKJS_DEV_WRAPPER_PATH` override, but never an arbitrary `qjs`
   from `PATH`.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
@@ -160,11 +162,29 @@ Frontend and shell:
 Packaging and scripts:
 
 - `packaging/scriber-backend.spec`: PyInstaller onedir backend sidecar spec.
-- `packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl`:
+- `packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp314-cp314-win_amd64.whl`:
   locked no-external-BLAS NumPy product wheel for the frozen backend only. Its
   provenance and complete validation contract live in
   `packaging/wheels/numpy-noblas-wheel-lock-v1.json`; never install it into the
-  shared build venv or replace the public NumPy requirement with it.
+  shared build venv or replace the public NumPy requirement with it. Rebuild it
+  only through the fail-closed builder with the tracked `stdalign.h` input; two
+  independent clean builds must produce identical shipping bytes.
+- `packaging/cpython-windows-runtime-input-lock-v1.json`,
+  `scripts/build_cpython_windows_runtime.ps1`, and
+  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.6/LLVM 19.1.7
+  runtime inputs, offline ClangCL/ThinLTO/PGO/tail builders, and the isolated
+  `python-runtime-ab-v1` promotion profile. Shipping defaults to official
+  CPython 3.14.6 with JIT disabled unless installed FullLocal evidence promotes
+  a variant; microbenchmarks cannot select a product runtime. Stock PyInstaller
+  6.20 ignores `PYTHON_JIT` in its isolated embedded interpreter, so O1/C1/T1
+  currently fail the frozen runtime policy and are not eligible variants.
+- `packaging/python-314-upgrade-from-v0.5.47.json`: public v0.5.47 installer
+  identity, 33 exact CP313 ABI tombstones, 43 exact CP313/UCRT runtime
+  tombstones, and the one known empty runtime directory for the 3.14
+  transition. Installer hooks may use only exact `Delete` and non-recursive
+  `RMDir` statements. Final acceptance compares a real v0.5.47 overlay
+  byte-for-byte with a clean CP314 install and preserves user data through
+  strict uninstall.
 - `packaging/nltk-punkt-tab-lock-v1.json` and
   `scripts/prepare_nltk_punkt_data.py`: locked source for the English/German
   Punkt build data. A clean frozen-runtime miss must prepare it below the build
@@ -214,6 +234,19 @@ Packaging and scripts:
 - `scripts/ffmpeg/build_profile_b_msys2.ps1`: Profile B custom ffmpeg build.
 - `scripts/smoke_*.ps1` and `scripts/smoke_*.py`: installed app, desktop,
   frontend, media, and workflow gates.
+- `scripts/fixtures/installed-youtube-video-matrix-v1.json`,
+  `scripts/run_installed_youtube_video_matrix.ps1`, and
+  `scripts/installed_youtube_video_matrix.py`: install-once five-lane YouTube
+  release gate, redacted lane evidence, and strict aggregation. Audio lanes
+  remain fail-closed until the exact installed extractor runtime has produced a
+  hash-bound pre-vetting artifact whose observed selector/format proves the
+  expected lane. The captions-first lane additionally fetches and parses the
+  selected bounded caption payload; public caption metadata is not sufficient.
+  The installed run clears its bounded log window and must emit the lane's exact
+  `youtube.captions.completed` or `pipeline.transcription.completed` event.
+  Never use an unselected alternate format catalog or a test-only selector
+  override as production-path evidence. Only `external-availability` receives
+  one primary retry followed by one replacement attempt.
 - `scripts/run_hybrid_release_readiness.ps1 -RunReleaseBuild` may invoke
   `scripts/build_windows.ps1` as an evidence producer, but it still requires
   real updater signing secrets, HTTPS publication, and Authenticode signing
@@ -238,6 +271,16 @@ Packaging and scripts:
 ### Tauri Runtime
 
 - Tauri is the primary desktop runtime.
+- The packaged backend runtime is exact CPython 3.14.6 (`cpython-314`). Release
+  defaults are `PythonRuntimeFlavor=Official` and
+  `PythonJitMode=Disabled`; they are build parameters, not `.env` or Settings
+  values. Before launching the worker, Rust removes inherited `PYTHON_JIT`,
+  `PYTHON_GIL`, and `PYTHON_TLBC`, then sets the manifest-bound JIT state
+  explicitly. The frozen backend must fail closed when its version, cache tag,
+  `python314.dll` hash, runtime-lock hash, flavour, tail status, JIT
+  availability, or expected/actual JIT state disagrees with the packaged
+  policy. Do not enable general Python environment processing to make JIT work
+  in PyInstaller; that would weaken the embedded-runtime isolation contract.
 - The Rust supervisor validates `/api/health` before attaching to a backend.
 - Managed workers receive `SCRIBER_RUNTIME_MODE=tauri-supervised`,
   `SCRIBER_WEB_HOST`, `SCRIBER_WEB_PORT`, `SCRIBER_SESSION_TOKEN`,
@@ -1080,10 +1123,14 @@ Packaging and scripts:
   manifest, and license to the committed app-layer trust root and require the
   exact wrapper self-test; the installed manifest must never authenticate its
   own file identities. Run that synchronous attestation off the aiohttp event
-  loop and reuse its result for yt-dlp's library and subprocess fallback paths.
+  loop and reuse its result for yt-dlp's library path and the source/dev-only
+  subprocess fallback. Frozen builds import the exact pinned PyInstaller
+  package and fail closed if it is unavailable; never stage a pip/distlib
+  `yt-dlp.exe`, because its embedded shebang names the build-machine Python.
   Do not fall back to a raw QuickJS executable.
   The NSIS postinstall hook must continue deleting exactly the superseded
-  `backend\tools\ffmpeg\deno.exe` so an in-place upgrade matches a clean install.
+  `backend\tools\ffmpeg\deno.exe` and path-bound `yt-dlp.exe` so an in-place
+  upgrade matches a clean install.
   Let current yt-dlp defaults select YouTube player clients; do not restore the
   stale forced `android,web` client pair. Every returned download must pass
   ffprobe container and audio stream validation before transcription. Keep
@@ -1429,8 +1476,8 @@ Already implemented and should not be regressed:
   every startup and tab preload.
 - Layered backend caches avoid PyInstaller when only application code changes.
   `build\tauri-sidecar-runtime-cache` contains the stable frozen Python runtime
-  plus exact file-integrity metadata and stable QuickJS-wrapper/yt-dlp media
-  executables;
+  plus exact file-integrity metadata and the stable QuickJS wrapper quartet;
+  yt-dlp is part of the frozen Python package set rather than a media executable;
   tracked current `src` files are staged separately under `backend\app` with a
   concrete-version manifest. The full sidecar key uses media-tool content
   hashes instead of timestamps. Both the internal manifests and
@@ -1449,17 +1496,23 @@ Already implemented and should not be regressed:
   when `target\release\backend` already matches the current cache key and
   release resource flags.
 - Rust audio sidecar hash cache that avoids recompiling when inputs are
-  unchanged; the cache key is limited to the Rust audio sidecar dependency set,
-  normalizes app-version-only Cargo metadata churn, and the normal Tauri Cargo
-  target is used by default. GitHub release builds keep
+  unchanged. The exact finished worker is not version-neutral:
+  `tauri_build` embeds the current `Frontend\package.json` version in its PE
+  resource, so a version-only release must invalidate that exact cache. Reuse
+  the dependency/toolchain-keyed Cargo and incremental layers for the bounded
+  rebuild; keep the standalone diarization worker reusable when its own inputs
+  are unchanged. The normal Tauri Cargo target is used by default. GitHub
+  release builds keep
   `build\rust-audio-sidecar-cache` in a separate Actions cache from the Python
   backend sidecar cache so Python/backend changes do not force an audio sidecar
   executable rebuild.
 - Release workflow cache keys normalize app-version-only files before hashing
   dependency/build caches, so patch version bumps do not invalidate frontend,
-  Rust, or backend scratch caches without real input changes. The main Rust
-  release key still includes real Tauri shell inputs such as `tauri.conf.json`,
-  capabilities, and icons.
+  Rust, or backend scratch caches without real input changes. Exact
+  version-bearing outputs are excluded from this rule: composed backend, Tauri
+  app, and Rust audio sidecar must all change. The main Rust release key still
+  includes real Tauri shell inputs such as `tauri.conf.json`, capabilities, and
+  icons.
 - Frontend dependency reuse in GitHub release builds is two-layered: restore
   `Frontend\node_modules` first, then restore the explicitly keyed npm package
   store only when that stronger cache misses. `actions/setup-node` must not

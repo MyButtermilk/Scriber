@@ -22,7 +22,7 @@ def _powershell() -> str:
                 text=True,
             )
             return candidate
-        except (FileNotFoundError, subprocess.CalledProcessError):
+        except FileNotFoundError, subprocess.CalledProcessError:
             continue
     pytest.skip("PowerShell is unavailable")
 

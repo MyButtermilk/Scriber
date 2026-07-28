@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import dis
+import json
 import importlib.metadata
 import importlib.util
 import inspect
@@ -13,13 +14,19 @@ repo_root = Path(os.environ.get("SCRIBER_REPO_ROOT", Path.cwd())).resolve()
 if str(repo_root) not in sys.path:
     sys.path.insert(0, str(repo_root))
 
-numpy_version = "2.4.6+scriber.noblas.1"
-expected_numpy_wheel = (
-    repo_root
-    / "packaging"
-    / "wheels"
-    / f"numpy-{numpy_version}-cp313-cp313-win_amd64.whl"
+numpy_lock_path = (
+    repo_root / "packaging" / "wheels" / "numpy-noblas-wheel-lock-v1.json"
 ).resolve()
+numpy_lock = json.loads(numpy_lock_path.read_text(encoding="utf-8"))
+numpy_artifact = numpy_lock["artifact"]
+numpy_version = str(numpy_artifact["version"])
+if (
+    numpy_artifact.get("pythonTag") != "cp314"
+    or numpy_artifact.get("abiTag") != "cp314"
+    or numpy_artifact.get("platformTag") != "win_amd64"
+):
+    raise RuntimeError("PyInstaller requires the locked CPython 3.14 Windows x64 NumPy wheel")
+expected_numpy_wheel = (repo_root / str(numpy_artifact["relativePath"])).resolve()
 numpy_wheel_value = os.environ.get("SCRIBER_NUMPY_WHEEL_PATH")
 numpy_overlay_value = os.environ.get("SCRIBER_NUMPY_OVERLAY_ROOT")
 if not numpy_wheel_value or not numpy_overlay_value:
@@ -312,11 +319,12 @@ hiddenimports += [
 hiddenimports += list(HUGGINGFACE_HUB_REQUIRED_HIDDEN_IMPORTS)
 
 # PDF and DOCX export use only Python's standard library. The frozen runtime's
-# protected revision-4 import contract still names docx and reportlab.platypus,
+# protected import contract still names docx and reportlab.platypus,
 # while Pipecat and PyAutoGUI import Pillow for video/screenshot paths that
 # Scriber does not expose. Analysis resolves those names to tiny packaging-only
-# compatibility modules. lxml, Pillow binaries, and the real document libraries
-# and their data stay out of the installer.
+# compatibility modules. Pillow binaries and the real document libraries and
+# their data stay out of the installer. lxml.etree remains solely as a native
+# CP314 qualification dependency and is bounded by the local PyInstaller hook.
 
 yt_dlp_modules, excluded_yt_dlp_extractor_modules = partition_yt_dlp_modules(
     collect_submodules("yt_dlp")
@@ -408,7 +416,6 @@ a = Analysis(
     ],
     excludes=[
         *excluded_yt_dlp_extractor_modules,
-        "lxml",
         *HUGGINGFACE_HUB_EXCLUDED_MODULES,
         "pytest",
         "_pytest",
@@ -566,7 +573,6 @@ a.pure[:] = exclude_pure_modules(
         "openai.types.webhooks",
         "openai.resources.webhooks",
         "openai.lib._realtime",
-        "grpc._channel",
         "grpc._server",
         "grpc._interceptor",
         "grpc._utilities",

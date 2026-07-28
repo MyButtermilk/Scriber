@@ -3,13 +3,21 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import types
 from pathlib import Path
 
+import scripts.smoke_rust_audio_sidecar as smoke
 from scripts.smoke_rust_audio_sidecar import (
     effective_max_frames,
     observed_duration_sec,
+    run_capture,
     validate_capture_metrics,
+)
+from src.runtime.audio_frame_pipe import (
+    AUDIO_FRAME_FLAG_END_OF_STREAM,
+    AudioFrameHeader,
+    encode_audio_frame,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -101,6 +109,7 @@ def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metric
                 "liveFramesRead": 6,
                 "prebufferAfterLiveCount": 0,
                 "observedDurationSec": 10.0,
+                "endOfStreamRead": True,
                 "sequenceGapCount": 0,
             },
             "stop": {
@@ -108,6 +117,7 @@ def test_rust_audio_sidecar_smoke_validation_accepts_consistent_prebuffer_metric
                 "framesWritten": 10,
                 "prebufferFramesWritten": 4,
                 "liveFramesWritten": 6,
+                "eosWritten": True,
                 "writerError": None,
             },
         },
@@ -127,6 +137,7 @@ def test_rust_audio_sidecar_smoke_validation_rejects_inconsistent_writer_metrics
                 "liveFramesRead": 6,
                 "prebufferAfterLiveCount": 0,
                 "observedDurationSec": 10.0,
+                "endOfStreamRead": True,
                 "sequenceGapCount": 0,
             },
             "stop": {
@@ -134,6 +145,7 @@ def test_rust_audio_sidecar_smoke_validation_rejects_inconsistent_writer_metrics
                 "framesWritten": 10,
                 "prebufferFramesWritten": 2,
                 "liveFramesWritten": 6,
+                "eosWritten": True,
                 "writerError": None,
             },
         },
@@ -153,6 +165,7 @@ def test_rust_audio_sidecar_smoke_validation_rejects_short_observed_duration() -
                 "liveFramesRead": 6,
                 "prebufferAfterLiveCount": 0,
                 "observedDurationSec": 3.0,
+                "endOfStreamRead": True,
                 "sequenceGapCount": 0,
             },
             "stop": {
@@ -160,6 +173,7 @@ def test_rust_audio_sidecar_smoke_validation_rejects_short_observed_duration() -
                 "framesWritten": 10,
                 "prebufferFramesWritten": 4,
                 "liveFramesWritten": 6,
+                "eosWritten": True,
                 "writerError": None,
             },
         },
@@ -168,3 +182,96 @@ def test_rust_audio_sidecar_smoke_validation_rejects_short_observed_duration() -
     )
 
     assert "observedDurationSec must be at least 10" in errors
+
+
+def test_rust_audio_sidecar_smoke_keeps_reader_alive_until_stop_and_eos(monkeypatch) -> None:
+    stop_requested = threading.Event()
+    eos_read = threading.Event()
+    audio_payload = b"\x01\x00" * 160
+    audio_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(audio_payload),
+            sequence=0,
+            timestamp_micros=100_000,
+            frame_count=160,
+            channels=1,
+        ),
+        audio_payload,
+    )
+    eos_frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=0,
+            sequence=1,
+            timestamp_micros=110_000,
+            frame_count=0,
+            channels=1,
+            flags=AUDIO_FRAME_FLAG_END_OF_STREAM,
+        ),
+        b"",
+    )
+
+    class BlockingFrameReader:
+        def __init__(self) -> None:
+            self.buffer = bytearray(audio_frame)
+            self.eos_loaded = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def read(self, length: int) -> bytes:
+            if not self.buffer and not self.eos_loaded:
+                assert stop_requested.wait(timeout=1.0), "reader closed before captureStop"
+                self.buffer.extend(eos_frame)
+                self.eos_loaded = True
+            if not self.buffer:
+                return b""
+            chunk = bytes(self.buffer[:length])
+            del self.buffer[:length]
+            if self.eos_loaded and not self.buffer:
+                eos_read.set()
+            return chunk
+
+    class FakeClient:
+        def call(self, command, payload, *, timeout=6.0):
+            if command == "captureStart":
+                return {
+                    "success": True,
+                    "payload": {
+                        "streamId": "stream-regression",
+                        "framePipe": "fake-frame-pipe",
+                    },
+                }
+            assert command == "captureStop"
+            assert payload == {"streamId": "stream-regression"}
+            stop_requested.set()
+            assert eos_read.wait(timeout=1.0), "captureStop returned before EOS was drained"
+            return {
+                "success": True,
+                "payload": {
+                    "stopped": True,
+                    "framesWritten": 1,
+                    "prebufferFramesWritten": 0,
+                    "liveFramesWritten": 1,
+                    "eosWritten": True,
+                    "writerError": None,
+                },
+            }
+
+    monkeypatch.setattr(smoke, "open_pipe_for_read", lambda _path: BlockingFrameReader())
+
+    result = run_capture(
+        FakeClient(),
+        name="reader-stop-eos-regression",
+        request_payload={"prebufferMs": 0},
+        duration_sec=0.0,
+        max_frames=1,
+    )
+
+    assert result["ok"] is True
+    assert result["frames"]["framesRead"] == 1
+    assert result["frames"]["endOfStreamRead"] is True
+    assert result["frames"]["endOfStreamSequence"] == 1
+    assert result["stop"]["eosWritten"] is True

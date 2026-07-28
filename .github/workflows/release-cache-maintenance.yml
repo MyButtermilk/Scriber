@@ -16,7 +16,9 @@ permissions:
   contents: write
 
 env:
-  SCRIBER_RELEASE_PYTHON_VERSION: "3.13.14"
+  SCRIBER_RELEASE_PYTHON_VERSION: "3.14.6"
+  SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR: Official
+  SCRIBER_RELEASE_PYTHON_JIT_MODE: Disabled
   SCRIBER_RELEASE_RUST_TOOLCHAIN: "1.97.0"
   SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v4
   SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
@@ -191,7 +193,9 @@ jobs:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
           SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
         run: |
-          & .\scripts\ci\write_release_cache_keys.ps1
+          & .\scripts\ci\write_release_cache_keys.ps1 `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
           & .\scripts\ci\finalize_release_cache_keys.ps1 `
             -SourceCommit "${{ github.event.workflow_run.head_sha }}" `
             -UpdaterPublicKey $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY `

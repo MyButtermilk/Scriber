@@ -414,7 +414,7 @@ def _terminate_process_tree(process: subprocess.Popen[str]) -> None:
         try:
             os.killpg(process.pid, signal.SIGTERM)
             process.wait(timeout=5)
-        except (ProcessLookupError, subprocess.TimeoutExpired):
+        except ProcessLookupError, subprocess.TimeoutExpired:
             with suppress(ProcessLookupError):
                 os.killpg(process.pid, signal.SIGKILL)
     if process.poll() is None:

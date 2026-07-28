@@ -1,4 +1,4 @@
-"""Validate Scriber's locked CPython 3.13 NumPy no-BLAS wheel.
+"""Canonicalize and validate Scriber's locked CPython 3.14 NumPy no-BLAS wheel.
 
 The validator is intentionally standard-library-only so it can run before the
 backend environment exists.  It treats the wheel, its lock, its static runtime
@@ -33,6 +33,14 @@ CONTRACT = "ScriberNumPyNoBlasWheelLockV1"
 SCHEMA_VERSION = 1
 MAX_PYD_BYTES = 64 * 1024 * 1024
 SHA256_RE = re.compile(r"[0-9a-f]{64}")
+CANONICAL_ZIP_TIMESTAMP = (2000, 1, 1, 0, 0, 0)
+CANONICAL_BUILD_PYTHON = r"<scriber-cpython-3.14-build>\python.exe"
+REMOVED_BUILD_ONLY_MEMBERS = frozenset(
+    {
+        "numpy/_core/lib/npymath.lib",
+        "numpy/random/lib/npyrandom.lib",
+    }
+)
 
 
 class ValidationError(RuntimeError):
@@ -107,6 +115,88 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _record_bytes(members: Mapping[str, bytes], record_name: str) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\n")
+    for name in sorted(members):
+        data = members[name]
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
+        writer.writerow((name, f"sha256={digest}", str(len(data))))
+    writer.writerow((record_name, "", ""))
+    return output.getvalue().encode("utf-8")
+
+
+def canonicalize_built_wheel(wheel_path: Path) -> dict[str, Any]:
+    """Remove build-only archives and rewrite volatile wheel metadata deterministically."""
+
+    wheel_path = wheel_path.resolve(strict=True)
+    try:
+        with zipfile.ZipFile(wheel_path) as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            _validate_member_names(names)
+            for info in infos:
+                mode = (info.external_attr >> 16) & 0o170000
+                if info.is_dir() or stat.S_ISLNK(mode):
+                    raise ValidationError("built NumPy wheel may contain only regular files")
+            record_name = _single_member(names, ".dist-info/RECORD")
+            members = {
+                info.filename: archive.read(info)
+                for info in infos
+                if info.filename != record_name and info.filename not in REMOVED_BUILD_ONLY_MEMBERS
+            }
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise ValidationError("built NumPy wheel is not a valid ZIP archive") from exc
+
+    missing_build_members = REMOVED_BUILD_ONLY_MEMBERS.difference(names)
+    if missing_build_members:
+        raise ValidationError(
+            "built NumPy wheel is missing expected build-only archives: " + ", ".join(sorted(missing_build_members))
+        )
+
+    config_name = "numpy/__config__.py"
+    try:
+        config = members[config_name].decode("utf-8")
+    except (KeyError, UnicodeDecodeError) as exc:
+        raise ValidationError("built NumPy wheel has no valid numpy/__config__.py") from exc
+    pattern = re.compile(r'(?m)^(\s*"path": r")[^"\r\n]+\\venv\\Scripts\\python\.exe(",$)')
+    config, replacements = pattern.subn(
+        lambda match: f"{match.group(1)}{CANONICAL_BUILD_PYTHON}{match.group(2)}",
+        config,
+    )
+    if replacements != 1:
+        raise ValidationError("built NumPy wheel must contain exactly one volatile build-Python path")
+    members[config_name] = config.encode("utf-8")
+    members[record_name] = _record_bytes(members, record_name)
+
+    temporary_path = wheel_path.with_name(f".{wheel_path.name}.canonical.tmp")
+    try:
+        with zipfile.ZipFile(
+            temporary_path,
+            mode="w",
+            compression=zipfile.ZIP_DEFLATED,
+            compresslevel=9,
+            strict_timestamps=True,
+        ) as archive:
+            for name in sorted(members):
+                info = zipfile.ZipInfo(name, CANONICAL_ZIP_TIMESTAMP)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                info.create_system = 3
+                info.external_attr = 0o100644 << 16
+                archive.writestr(info, members[name], compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+        os.replace(temporary_path, wheel_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+    return {
+        "canonicalized": True,
+        "wheel": wheel_path.name,
+        "length": wheel_path.stat().st_size,
+        "sha256": _sha256_file(wheel_path),
+        "removedBuildOnlyMembers": sorted(REMOVED_BUILD_ONLY_MEMBERS),
+    }
+
+
 def _validate_artifact_lock(lock: Mapping[str, Any]) -> dict[str, Any]:
     artifact = lock["artifact"]
     validation = lock["validation"]
@@ -163,6 +253,8 @@ def _validate_artifact_lock(lock: Mapping[str, Any]) -> dict[str, Any]:
     expected_file_name = f"{distribution}-{version}-{python_tag}-{abi_tag}-{platform_tag}.whl"
     if file_name != expected_file_name or wheel_tag != f"{python_tag}-{abi_tag}-{platform_tag}":
         raise ValidationError("artifact filename and wheel tags are inconsistent")
+    if (python_tag, abi_tag, platform_tag) != ("cp314", "cp314", "win_amd64"):
+        raise ValidationError("artifact must be the CPython 3.14 Windows x64 product wheel")
 
     if validation.get("metadataName") != distribution:
         raise ValidationError("validation metadata name differs from artifact distribution")
@@ -179,6 +271,16 @@ def _validate_artifact_lock(lock: Mapping[str, Any]) -> dict[str, Any]:
     _require_string_list(validation, "allowedPeImports", label="validation")
     _require_string_list(validation, "licenseFiles", label="validation")
     _require_string(validation, "licenseExpression", label="validation")
+    build = lock["build"]
+    assert isinstance(build, dict)
+    determinism = build.get("determinism")
+    if not isinstance(determinism, dict) or determinism.get("wheelCanonicalization") != {
+        "zipTimestamp": "2000-01-01T00:00:00Z",
+        "compression": "deflate-9",
+        "buildPythonPath": CANONICAL_BUILD_PYTHON,
+        "removedBuildOnlyMembers": sorted(REMOVED_BUILD_ONLY_MEMBERS),
+    }:
+        raise ValidationError("NumPy wheel canonicalization contract is invalid")
     return dict(artifact)
 
 
@@ -342,6 +444,10 @@ def _validate_static_build_dependencies(source: bytes) -> None:
         name_node = _dict_entry(entry, "name", label=f"CONFIG {dependency}")
         if not isinstance(name_node, ast.Constant) or name_node.value != "none":
             raise ValidationError(f"numpy/__config__.py does not lock {dependency} to none")
+    python_information = _dict_entry(config_node, "Python Information", label="CONFIG")
+    path_node = _dict_entry(python_information, "path", label="CONFIG Python Information")
+    if not isinstance(path_node, ast.Constant) or path_node.value != CANONICAL_BUILD_PYTHON:
+        raise ValidationError("numpy/__config__.py exposes a non-canonical build-Python path")
 
 
 def _rva_to_offset(rva: int, sections: Sequence[tuple[int, int, int, int]]) -> int:
@@ -605,9 +711,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--lock", type=Path, default=DEFAULT_LOCK_PATH)
     parser.add_argument("--wheel", type=Path)
     parser.add_argument("--extract-to", type=Path)
+    parser.add_argument("--canonicalize-built-wheel", action="store_true")
     args = parser.parse_args(argv)
     try:
-        summary = validate(args.lock, args.wheel)
+        if args.canonicalize_built_wheel:
+            if args.wheel is None or args.extract_to is not None:
+                raise ValidationError("--canonicalize-built-wheel requires --wheel and cannot extract")
+            summary = canonicalize_built_wheel(args.wheel)
+        else:
+            summary = validate(args.lock, args.wheel)
         if args.extract_to is not None:
             wheel_path = args.wheel
             if wheel_path is None:

@@ -635,11 +635,15 @@ def validate_provider_replay_prepare_request_payload(
     payload: dict[str, Any],
     *,
     configured_run_id: str | None,
+    manual_stop_enabled: bool = False,
 ) -> dict[str, Any]:
     contract = "POST /api/runtime/benchmark/provider-replay/prepare"
     if not isinstance(payload, dict):
         raise RESTContractError(f"{contract} payload must be a dict")
-    if set(payload) != {"schemaVersion", "runId", "provider"}:
+    expected_fields = {"schemaVersion", "runId", "provider"}
+    if manual_stop_enabled:
+        expected_fields.add("manualStopRequired")
+    if set(payload) != expected_fields:
         raise RESTContractError(f"{contract} contains unsupported fields")
     if _require_int(payload, "schemaVersion", contract) != 1:
         raise RESTContractError(f"{contract} requires schemaVersion 1")
@@ -651,10 +655,16 @@ def validate_provider_replay_prepare_request_payload(
     provider = _require_string(payload, "provider", contract).strip().lower()
     if provider not in {"microsoft", "soniox", "speechmatics"}:
         raise RESTContractError(f"{contract} provider must be 'microsoft', 'soniox', or 'speechmatics'")
+    manual_stop_required = False
+    if manual_stop_enabled:
+        manual_stop_required = _require_bool(payload, "manualStopRequired", contract)
+        if not manual_stop_required:
+            raise RESTContractError(f"{contract} requires manualStopRequired true")
     return {
         "schemaVersion": 1,
         "runId": run_id,
         "provider": provider,
+        "manualStopRequired": manual_stop_required,
     }
 
 

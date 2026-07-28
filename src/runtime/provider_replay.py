@@ -26,6 +26,7 @@ from src.runtime.subprocess_utils import hidden_subprocess_kwargs, read_stream_l
 PROVIDER_REPLAY_RUN_ID_ENV = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID"
 PROVIDER_REPLAY_FIXTURE_DURATION_MS_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"
 PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"
+PROVIDER_REPLAY_MANUAL_STOP_ENV = "SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP"
 PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
 PROVIDER_REPLAY_RUNTIME_MODE = "tauri-supervised"
 PROVIDER_REPLAY_LAUNCH_KIND = "sidecar"
@@ -36,6 +37,7 @@ PROVIDER_REPLAY_MAX_ENTRIES = 256
 PROVIDER_REPLAY_PROVIDERS = frozenset({"microsoft", "soniox", "speechmatics"})
 PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS = 350
 PROVIDER_REPLAY_MAX_FIXTURE_DURATION_MS = 600_000
+PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS = 0.75
 PROVIDER_REPLAY_AZURE_REGION = "northeurope"
 _AZURE_REPLAY_INPUT_SAMPLE_RATE = 48_000
 _AZURE_REPLAY_OUTPUT_SAMPLE_RATE = 16_000
@@ -85,6 +87,7 @@ _PROVIDER_REPLAY_ERROR_CODES = frozenset(
         "arm_failed",
         "capture_timeout",
         "expired",
+        "manual_stop_missing",
         "pipeline_failed",
         "provider_failed",
         "shutdown",
@@ -155,7 +158,7 @@ class ProviderReplayCapacityError(ProviderReplayError):
 def canonical_replay_uuid(value: str | None) -> str | None:
     try:
         parsed = UUID(str(value or "").strip())
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return None
     if parsed.int == 0:
         return None
@@ -368,6 +371,17 @@ def provider_replay_fixture_duration_ms_from_environment() -> int:
     if not 100 <= duration_ms <= PROVIDER_REPLAY_MAX_FIXTURE_DURATION_MS:
         return PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
     return duration_ms
+
+
+def provider_replay_manual_stop_from_environment() -> bool:
+    """Return the exact private manual-stop gate or reject an ambiguous value."""
+
+    raw = os.getenv(PROVIDER_REPLAY_MANUAL_STOP_ENV, "").strip()
+    if raw in {"", "0"}:
+        return False
+    if raw == "1":
+        return True
+    raise ProviderReplayDisabled("manual_stop_mode_invalid")
 
 
 def create_azure_mai_replay_transport(
@@ -1310,6 +1324,11 @@ class _ProviderReplaySample:
     capture_attestation: dict[str, Any] | None = None
     expected_audio_preparation_implementation: str | None = None
     actual_audio_preparation_implementation: str | None = None
+    manual_stop_required: bool = False
+    manual_stop_ready: bool = False
+    manual_stop_ready_attestation: dict[str, Any] | None = None
+    manual_stop_request: dict[str, Any] | None = None
+    manual_stop_completed: bool = False
     error_code: str | None = None
 
 
@@ -1327,11 +1346,14 @@ class ProviderReplayExecution:
     speechmatics_batch_raw_transport: Callable[..., Any] | None = None
     soniox_server: LocalSonioxReplayServer | None = None
     session_id: str | None = None
+    manual_stop_required: bool = False
     watchdog_task: asyncio.Task | None = None
     auto_stop_task: asyncio.Task | None = None
     authoritative_fixture_duration_ms: int = PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
     _closed: bool = False
     _pending_markers: list[tuple[str, int, int]] = field(default_factory=list)
+    _pending_manual_stop_ready: tuple[int, int] | None = None
+    _manual_stop_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def soniox_url(self) -> str | None:
@@ -1347,7 +1369,9 @@ class ProviderReplayExecution:
             sample_id=self.sample_id,
             session_id=session_id,
         )
-        self.session_id = str(result["sessionId"])
+        with self._manual_stop_lock:
+            self.session_id = str(result["sessionId"])
+            pending_ready, self._pending_manual_stop_ready = self._pending_manual_stop_ready, None
         pending, self._pending_markers = self._pending_markers, []
         for marker, qpc_ticks, qpc_frequency in pending:
             self.registry.record_marker(
@@ -1357,6 +1381,14 @@ class ProviderReplayExecution:
                 marker=marker,
                 qpc_ticks=qpc_ticks,
                 qpc_frequency=qpc_frequency,
+            )
+        if pending_ready is not None:
+            self.registry.mark_manual_stop_ready(
+                run_id=self.run_id,
+                sample_id=self.sample_id,
+                session_id=self.session_id,
+                qpc_ticks=pending_ready[0],
+                qpc_frequency=pending_ready[1],
             )
         return result
 
@@ -1419,6 +1451,45 @@ class ProviderReplayExecution:
             implementation=implementation,
         )
 
+    def mark_manual_stop_ready(self) -> dict[str, Any]:
+        if not self.manual_stop_required:
+            raise ProviderReplayConflict("provider replay manual stop is not enabled")
+        with self._manual_stop_lock:
+            bound_session = self.session_id
+            if bound_session is None:
+                if self._pending_manual_stop_ready is not None:
+                    raise ProviderReplayConflict("provider replay manual stop readiness already recorded")
+                self._pending_manual_stop_ready = self.registry.capture_manual_stop_timestamp()
+                pending_ready = self._pending_manual_stop_ready
+            else:
+                pending_ready = None
+        if pending_ready is not None:
+            return {
+                "source": "rust_audio_frame_pipe_fixture_consumed",
+                "qpcTicks": pending_ready[0],
+                "qpcFrequency": pending_ready[1],
+            }
+        if bound_session is None:  # pragma: no cover - guarded by the lock branch above
+            raise ProviderReplayConflict("provider replay manual stop session is unavailable")
+        return self.registry.mark_manual_stop_ready(
+            run_id=self.run_id,
+            sample_id=self.sample_id,
+            session_id=bound_session,
+        )
+
+    def attest_manual_stop_request(self, session_id: str) -> dict[str, Any]:
+        if not self.manual_stop_required:
+            raise ProviderReplayConflict("provider replay manual stop is not enabled")
+        with self._manual_stop_lock:
+            bound_session = self.session_id
+        if bound_session is None or not hmac.compare_digest(bound_session, session_id):
+            raise ProviderReplayConflict("provider replay manual stop session binding failed")
+        return self.registry.record_manual_stop_request(
+            run_id=self.run_id,
+            sample_id=self.sample_id,
+            session_id=session_id,
+        )
+
     async def close(self) -> None:
         if self._closed:
             return
@@ -1454,6 +1525,7 @@ class ProviderReplayRegistry:
         uuid_factory: Callable[[], UUID] = uuid4,
         qpc_clock: Callable[[], tuple[int, int]] = windows_qpc_snapshot,
         authoritative_fixture_duration_ms: int = (PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS),
+        manual_stop_enabled: bool = False,
     ) -> None:
         if ttl_seconds <= 0 or ttl_seconds > 1_200:
             raise ValueError("provider replay TTL must be in (0, 1200]")
@@ -1469,6 +1541,7 @@ class ProviderReplayRegistry:
         if not 100 <= duration_ms <= PROVIDER_REPLAY_MAX_FIXTURE_DURATION_MS:
             raise ValueError("provider replay fixture duration is out of bounds")
         self.authoritative_fixture_duration_ms = duration_ms
+        self.manual_stop_enabled = bool(manual_stop_enabled)
         self._samples: dict[str, _ProviderReplaySample] = {}
         self._lock = threading.Lock()
 
@@ -1542,11 +1615,14 @@ class ProviderReplayRegistry:
         run_id: str,
         provider: str,
         expected_audio_preparation_implementation: str | None = None,
+        manual_stop_required: bool = False,
     ) -> dict[str, Any]:
         canonical_run = self._canonical_matching_run(run_id)
         normalized_provider = str(provider or "").strip().lower()
         if normalized_provider not in PROVIDER_REPLAY_PROVIDERS:
             raise ValueError("unsupported provider replay provider")
+        if bool(manual_stop_required) is not self.manual_stop_enabled:
+            raise ProviderReplayConflict("provider replay manual stop gate mismatch")
         now = self._monotonic()
         with self._lock:
             self._expire_locked(now)
@@ -1569,6 +1645,7 @@ class ProviderReplayRegistry:
                 expected_audio_preparation_implementation=(
                     str(expected_audio_preparation_implementation or "").strip() or None
                 ),
+                manual_stop_required=self.manual_stop_enabled,
             )
             self._samples[sample_id] = sample
             return self._public_locked(sample, now=now)
@@ -1721,6 +1798,106 @@ class ProviderReplayRegistry:
             sample.error_code = normalized_error
             return self._public_locked(sample, now=now)
 
+    def mark_manual_stop_ready(
+        self,
+        *,
+        run_id: str,
+        sample_id: str,
+        session_id: str,
+        qpc_ticks: int | None = None,
+        qpc_frequency: int | None = None,
+    ) -> dict[str, Any]:
+        """Attest that the exact replay fixture reached its reader boundary."""
+
+        canonical_session = canonical_replay_uuid(session_id)
+        if canonical_session is None:
+            raise ProviderReplayConflict("provider replay session id is invalid")
+        now = self._monotonic()
+        with self._lock:
+            self._expire_locked(now)
+            sample = self._sample_locked(
+                run_id=run_id,
+                sample_id=sample_id,
+                now=now,
+            )
+            if (
+                not self.manual_stop_enabled
+                or not sample.manual_stop_required
+                or sample.state != "armed"
+                or sample.session_id is None
+                or not hmac.compare_digest(sample.session_id, canonical_session)
+            ):
+                raise ProviderReplayConflict("provider replay manual stop readiness binding failed")
+            if sample.manual_stop_ready_attestation is not None:
+                raise ProviderReplayConflict("provider replay manual stop readiness already recorded")
+            ticks, frequency = self._manual_stop_timestamp(
+                qpc_ticks=qpc_ticks,
+                qpc_frequency=qpc_frequency,
+            )
+            artifact = {
+                "contractVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
+                "source": "rust_audio_frame_pipe_fixture_consumed",
+                "runId": sample.run_id,
+                "sampleId": sample.sample_id,
+                "sessionId": sample.session_id,
+                "processGenerationFingerprint": (self.gate.process_generation_fingerprint),
+                "qpcTicks": ticks,
+                "qpcFrequency": frequency,
+            }
+            sample.manual_stop_ready = True
+            sample.manual_stop_ready_attestation = artifact
+            return dict(artifact)
+
+    def record_manual_stop_request(
+        self,
+        *,
+        run_id: str,
+        sample_id: str,
+        session_id: str,
+        qpc_ticks: int | None = None,
+        qpc_frequency: int | None = None,
+    ) -> dict[str, Any]:
+        """Bind the visible frontend Stop request to one ready replay sample."""
+
+        canonical_session = canonical_replay_uuid(session_id)
+        if canonical_session is None:
+            raise ProviderReplayConflict("provider replay session id is invalid")
+        now = self._monotonic()
+        with self._lock:
+            self._expire_locked(now)
+            sample = self._sample_locked(
+                run_id=run_id,
+                sample_id=sample_id,
+                now=now,
+            )
+            if (
+                not self.manual_stop_enabled
+                or not sample.manual_stop_required
+                or not sample.manual_stop_ready
+                or sample.state != "armed"
+                or sample.session_id is None
+                or not hmac.compare_digest(sample.session_id, canonical_session)
+            ):
+                raise ProviderReplayConflict("provider replay manual stop request binding failed")
+            if sample.manual_stop_request is not None:
+                raise ProviderReplayConflict("provider replay manual stop request already recorded")
+            ticks, frequency = self._manual_stop_timestamp(
+                qpc_ticks=qpc_ticks,
+                qpc_frequency=qpc_frequency,
+            )
+            artifact = {
+                "contractVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
+                "source": "uia_stop_request",
+                "runId": sample.run_id,
+                "sampleId": sample.sample_id,
+                "sessionId": sample.session_id,
+                "processGenerationFingerprint": (self.gate.process_generation_fingerprint),
+                "qpcTicks": ticks,
+                "qpcFrequency": frequency,
+            }
+            sample.manual_stop_request = artifact
+            return dict(artifact)
+
     def record_marker(
         self,
         *,
@@ -1777,7 +1954,12 @@ class ProviderReplayRegistry:
             }
             sample.markers[marker] = artifact
             if marker == "session_finished_emitted":
-                sample.state = "completed"
+                if sample.manual_stop_required and sample.manual_stop_request is None:
+                    sample.state = "failed"
+                    sample.error_code = "manual_stop_missing"
+                else:
+                    sample.manual_stop_completed = sample.manual_stop_required
+                    sample.state = "completed"
             return dict(artifact)
 
     def record_capture_attestation(
@@ -1876,6 +2058,27 @@ class ProviderReplayRegistry:
             raise ProviderReplayDisabled("windows_qpc_invalid")
         return int(ticks), int(frequency)
 
+    def capture_manual_stop_timestamp(self) -> tuple[int, int]:
+        return self._manual_stop_timestamp()
+
+    def _manual_stop_timestamp(
+        self,
+        *,
+        qpc_ticks: int | None = None,
+        qpc_frequency: int | None = None,
+    ) -> tuple[int, int]:
+        if (qpc_ticks is None) != (qpc_frequency is None):
+            raise ProviderReplayDisabled("windows_qpc_invalid")
+        if qpc_ticks is None:
+            ticks, frequency = self._qpc_clock()
+        else:
+            if qpc_frequency is None:
+                raise ProviderReplayDisabled("windows_qpc_invalid")
+            ticks, frequency = int(qpc_ticks), int(qpc_frequency)
+        if ticks <= 0 or frequency <= 0:
+            raise ProviderReplayDisabled("windows_qpc_invalid")
+        return int(ticks), int(frequency)
+
     def _public_locked(
         self,
         sample: _ProviderReplaySample,
@@ -1907,5 +2110,13 @@ class ProviderReplayRegistry:
             ),
             "audioPreparationImplementationExpected": (sample.expected_audio_preparation_implementation),
             "audioPreparationImplementationActual": (sample.actual_audio_preparation_implementation),
+            "manualStopRequired": sample.manual_stop_required,
+            "manualStopReady": sample.manual_stop_ready,
+            "manualStopReadyAttestation": (
+                dict(sample.manual_stop_ready_attestation) if sample.manual_stop_ready_attestation is not None else None
+            ),
+            "manualStopRequested": sample.manual_stop_request is not None,
+            "manualStopCompleted": sample.manual_stop_completed,
+            "manualStopRequest": (dict(sample.manual_stop_request) if sample.manual_stop_request is not None else None),
             "markers": [dict(item) for item in sample.markers.values()],
         }

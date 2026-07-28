@@ -2041,7 +2041,7 @@ class MeetingFinalizer:
     def _positive_seconds(value: Any) -> float | None:
         try:
             seconds = float(value)
-        except (TypeError, ValueError, OverflowError):
+        except TypeError, ValueError, OverflowError:
             return None
         return seconds if seconds > 0.0 and seconds < float("inf") else None
 

@@ -418,7 +418,7 @@ def _gemini_audio_source_size(audio_source: bytes | BinaryIO) -> int:
         size = int(audio_source.tell())
         audio_source.seek(0)
         return max(0, size)
-    except (AttributeError, OSError):
+    except AttributeError, OSError:
         return -1
 
 

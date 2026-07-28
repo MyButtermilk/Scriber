@@ -1,0 +1,308 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.invalid/schemas/python-runtime-amd-evidence-v1.schema.json",
+  "title": "PythonRuntimeAMDEvidenceV1",
+  "type": "object",
+  "required": [
+    "evidenceContract",
+    "schemaVersion",
+    "profile",
+    "sourceCommit",
+    "bindings",
+    "blocks"
+  ],
+  "properties": {
+    "evidenceContract": {
+      "const": "PythonRuntimeAMDEvidenceV1"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "profile": {
+      "const": "python-runtime-amd-v1"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "bindings": {
+      "type": "object",
+      "required": [
+        "dependencyLockSha256",
+        "runtimeLockSha256",
+        "profileConfigSha256",
+        "evaluatorSha256",
+        "frontendSha256",
+        "tauriSha256",
+        "backendSha256",
+        "audioSha256",
+        "cacheKey"
+      ],
+      "properties": {
+        "dependencyLockSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runtimeLockSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "profileConfigSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluatorSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "frontendSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "tauriSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "backendSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "audioSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cacheKey": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    },
+    "blocks": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "$ref": "#/$defs/block"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "positiveSamples": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "number",
+        "exclusiveMinimum": 0
+      }
+    },
+    "variant": {
+      "type": "object",
+      "required": [
+        "identity",
+        "localWuxSamples",
+        "providerSeries",
+        "protectedP95",
+        "resources",
+        "errors"
+      ],
+      "properties": {
+        "identity": {
+          "type": "object",
+          "required": [
+            "pythonVersion",
+            "cacheTag",
+            "runtimeFlavor",
+            "compiler",
+            "pythonDllSha256",
+            "tailCallInterpreter",
+            "jitAvailable",
+            "jitExpected",
+            "jitActive",
+            "soakMinutes"
+          ],
+          "properties": {
+            "pythonVersion": {
+              "type": "string"
+            },
+            "cacheTag": {
+              "type": "string"
+            },
+            "runtimeFlavor": {
+              "type": "string"
+            },
+            "compiler": {
+              "type": "string"
+            },
+            "pythonDllSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "tailCallInterpreter": {
+              "type": "boolean"
+            },
+            "jitAvailable": {
+              "type": "boolean"
+            },
+            "jitExpected": {
+              "type": "boolean"
+            },
+            "jitActive": {
+              "type": "boolean"
+            },
+            "soakMinutes": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": true
+        },
+        "localWuxSamples": {
+          "$ref": "#/$defs/positiveSamples"
+        },
+        "providerSeries": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "p50",
+              "p95"
+            ],
+            "properties": {
+              "p50": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "p95": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "protectedP95": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "resources": {
+          "type": "object",
+          "required": [
+            "activeCpu",
+            "rssPrivateBytes",
+            "idleCpuPercentagePoints"
+          ],
+          "properties": {
+            "activeCpu": {
+              "type": "number",
+              "minimum": 0
+            },
+            "rssPrivateBytes": {
+              "type": "number",
+              "minimum": 0
+            },
+            "idleCpuPercentagePoints": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false
+        },
+        "errors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "block": {
+      "type": "object",
+      "required": [
+        "blockId",
+        "phase",
+        "cpuFamily",
+        "hostProfileSha256",
+        "cleanInstall",
+        "rebooted",
+        "order",
+        "measurementCounts",
+        "environment",
+        "variants"
+      ],
+      "properties": {
+        "blockId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phase": {
+          "enum": [
+            "screening",
+            "full-local"
+          ]
+        },
+        "cpuFamily": {
+          "const": "amd"
+        },
+        "hostProfileSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "cleanInstall": {
+          "type": "boolean"
+        },
+        "rebooted": {
+          "type": "boolean"
+        },
+        "order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "measurementCounts": {
+          "type": "object",
+          "required": [
+            "cold",
+            "warm",
+            "providerReplayPerProviderAndDuration",
+            "appUxPerScenario",
+            "appUxScenarioCount"
+          ],
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "environment": {
+          "type": "object",
+          "required": [
+            "defenderEnabled",
+            "standardUser"
+          ],
+          "properties": {
+            "defenderEnabled": {
+              "type": "boolean"
+            },
+            "standardUser": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false
+        },
+        "variants": {
+          "type": "object",
+          "required": [
+            "A13",
+            "O0"
+          ],
+          "additionalProperties": {
+            "$ref": "#/$defs/variant"
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

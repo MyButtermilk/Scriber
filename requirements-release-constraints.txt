@@ -1,6 +1,6 @@
-# Fully resolved Windows CPython 3.13 release environment.
+# Fully resolved Windows CPython 3.14.6 release environment.
 # This graph is intentionally aligned with requirements-test-constraints.txt.
-# Regenerate and validate both files together in a clean Windows CPython 3.13
+# Regenerate and validate both files together in a clean Windows CPython 3.14.6
 # environment with `python -m pip check`.
 aiofiles==25.1.0
 aiohappyeyeballs==2.7.1
@@ -118,8 +118,8 @@ speechmatics-voice==0.2.8
 sympy==1.14.0
 tenacity==9.1.4
 tqdm==4.69.1
-typing-inspection==0.4.2
 typing_extensions==4.16.0
+typing-inspection==0.4.2
 tzdata==2025.3
 urllib3==2.7.0
 websockets==15.0.1

@@ -151,7 +151,7 @@ def _rust_capture_wav_plan(
     try:
         sample_rate = int(sample_rate)
         channels = int(channels)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if not 8_000 <= sample_rate <= 192_000 or not 1 <= channels <= 16:
         return None
@@ -663,19 +663,19 @@ def direct_file_workflow_timeout_seconds(
     """
     try:
         duration = float(expected_duration_seconds or 0.0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         duration = 0.0
     if not math.isfinite(duration) or duration < 0.0:
         duration = 0.0
     try:
         minimum = max(1.0, float(minimum_seconds))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         minimum = 600.0
     if not math.isfinite(minimum):
         minimum = 600.0
     try:
         maximum = max(minimum, float(maximum_seconds))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         maximum = max(minimum, 21_600.0)
     if not math.isfinite(maximum):
         maximum = max(minimum, 21_600.0)
@@ -1313,7 +1313,7 @@ def _pipecat_language(language: str | None) -> Language | str | None:
 def _filter_supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
     try:
         signature = inspect.signature(callable_obj)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return dict(kwargs)
     if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
         return dict(kwargs)
@@ -1919,7 +1919,7 @@ class ScriberPipeline:
         self.execution_route = dict(execution_route) if execution_route is not None else None
         try:
             expected_duration = float(direct_file_expected_duration_seconds or 0.0)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             expected_duration = 0.0
         self.direct_file_expected_duration_seconds = (
             expected_duration if math.isfinite(expected_duration) and expected_duration > 0.0 else 0.0
@@ -2281,7 +2281,7 @@ class ScriberPipeline:
         raw = os.getenv("SCRIBER_SONIOX_RT_STOP_FINAL_TIMEOUT_SECONDS", "3.0")
         try:
             value = float(raw)
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             value = 3.0
         return min(10.0, max(0.25, value))
 
@@ -2833,7 +2833,7 @@ class ScriberPipeline:
             return False
         try:
             stopped_at = time.monotonic() - max(0.0, float(stopped_ago))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return False
         return self._last_final_transcription_at < stopped_at
 

@@ -56,7 +56,7 @@ DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     try:
         value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     return max(minimum, min(maximum, value))
 
@@ -64,7 +64,7 @@ def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
         value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         value = default
     if not math.isfinite(value):
         value = default

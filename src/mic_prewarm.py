@@ -685,7 +685,7 @@ class RustAudioPrewarmManager:
                         (mapping for mapping in mappings if mapping.portaudio_index == wanted_index),
                         None,
                     )
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     match = None
             if match is None and raw_device_is_default:
                 match = next((mapping for mapping in mappings if mapping.is_default), None)

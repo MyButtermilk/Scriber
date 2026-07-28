@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Collect the externally visible B7 App-UX scenario matrix on Windows.
 
 Six scenarios are driven through real Windows UI Automation actions against an
@@ -21,16 +19,18 @@ requested number of samples.  No internal navigation callback or fabricated
 provider marker can substitute for a UIA stable frame or installed event.
 """
 
+from __future__ import annotations
+
 import argparse
 import copy
 import ctypes
+import hashlib
 import json
 import os
 import shutil
 import socket
 import sqlite3
 import subprocess
-import sys
 import time
 import urllib.parse
 import urllib.request
@@ -52,18 +52,40 @@ except ImportError:  # Direct script execution from benchmarks/windows.
 
 LIFECYCLE_REQUEST_CONTRACT = "b7-app-ux-lifecycle-request-v1"
 UIA_SCENARIOS = tuple(
-    scenario
-    for scenario in contract.APP_UX_SCENARIOS
-    if scenario not in contract.APP_UX_LIFECYCLE_SCENARIOS
+    scenario for scenario in contract.APP_UX_SCENARIOS if scenario not in contract.APP_UX_LIFECYCLE_SCENARIOS
 )
 LIFECYCLE_SCENARIOS = tuple(
-    scenario
-    for scenario in contract.APP_UX_SCENARIOS
-    if scenario in contract.APP_UX_LIFECYCLE_SCENARIOS
+    scenario for scenario in contract.APP_UX_SCENARIOS if scenario in contract.APP_UX_LIFECYCLE_SCENARIOS
 )
 FIRST_TRANSCRIPT_TITLE = "B7 stable transcript alpha"
 SECOND_TRANSCRIPT_TITLE = "B7 stable transcript beta"
 QPC_FREQUENCY = contract.qpc_frequency()
+UI_TEXT: dict[str, dict[str, str]] = {
+    "en": {
+        "close_window": "Close window",
+        "configure_capture": "Configure capture",
+        "go_back": "Go back",
+        "live_mic": "Live Mic",
+        "open_command_palette": "Open command palette",
+        "recent_recordings": "Recent recordings",
+        "search_scriber": "Search Scriber",
+        "settings": "Settings",
+        "saved_to_recent_recordings": "Saved to Recent recordings.",
+        "transcribing": "Transcribing",
+    },
+    "de": {
+        "close_window": "Fenster schließen",
+        "configure_capture": "Konfiguriere Aufnahme",
+        "go_back": "Zurück",
+        "live_mic": "Live-Mikrofon",
+        "open_command_palette": "Befehlspalette öffnen",
+        "recent_recordings": "Letzte Aufnahmen",
+        "search_scriber": "Scriber durchsuchen",
+        "settings": "Einstellungen",
+        "saved_to_recent_recordings": "Unter „Letzte Aufnahmen“ gespeichert.",
+        "transcribing": "Wird transkribiert",
+    },
+}
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -174,9 +196,7 @@ def _start_observer(
     if process_id > 0:
         arguments.extend(["-ExpectedProcessId", str(process_id)])
     if process_creation_time_100ns > 0:
-        arguments.extend(
-            ["-ExpectedProcessCreationTime100ns", str(process_creation_time_100ns)]
-        )
+        arguments.extend(["-ExpectedProcessCreationTime100ns", str(process_creation_time_100ns)])
     if gate_path is not None:
         arguments.extend(["-StartAfterPath", str(gate_path)])
     return (
@@ -236,9 +256,7 @@ def _run_action(
     )
     payload = contract.load_json(output_path)
     if exit_code != 0 or payload.get("ok") is not True:
-        raise RuntimeError(
-            f"UIA action {control_name!r} failed (exit {exit_code}): {stderr[-500:]}"
-        )
+        raise RuntimeError(f"UIA action {control_name!r} failed (exit {exit_code}): {stderr[-500:]}")
     return payload
 
 
@@ -256,10 +274,63 @@ def _wait_observer(
     )
     payload = contract.load_json(output_path)
     if exit_code != 0 or payload.get("ok") is not True:
-        raise RuntimeError(
-            f"UIA stable-frame observer failed (exit {exit_code}): {stderr[-500:]}"
-        )
+        raise RuntimeError(f"UIA stable-frame observer failed (exit {exit_code}): {stderr[-500:]}")
     return payload
+
+
+def _preferred_ui_locale_order() -> tuple[str, str]:
+    """Prefer the Windows UI locale while still honoring persisted app state."""
+
+    if os.name == "nt":
+        try:
+            buffer = ctypes.create_unicode_buffer(85)
+            if ctypes.windll.kernel32.GetUserDefaultLocaleName(
+                buffer, len(buffer)
+            ) > 0 and buffer.value.lower().startswith("de"):
+                return ("de", "en")
+        except AttributeError, OSError:
+            pass
+    return ("en", "de")
+
+
+def _detect_ui_locale(
+    repo_root: Path,
+    sample_dir: Path,
+    *,
+    process_id: int,
+    process_creation_time_100ns: int,
+    timeout_sec: float,
+) -> str:
+    """Attest the active en/de UI without retaining the visible UI text."""
+
+    detection_timeout = min(3.0, max(1.5, timeout_sec))
+    failures: list[str] = []
+    for locale in _preferred_ui_locale_order():
+        locale_dir = sample_dir / f"locale-{locale}"
+        process, output_path = _start_observer(
+            repo_root,
+            locale_dir,
+            expected_text=UI_TEXT[locale]["recent_recordings"],
+            process_id=process_id,
+            process_creation_time_100ns=process_creation_time_100ns,
+            timeout_sec=detection_timeout,
+        )
+        try:
+            _wait_observer(process, output_path, locale_dir, detection_timeout)
+        except RuntimeError as exc:
+            failures.append(f"{locale}:{exc}")
+            continue
+        _write_json(
+            sample_dir / "ui-locale.json",
+            {
+                "schemaVersion": 1,
+                "locale": locale,
+                "source": "windows_uia_allowlisted_text",
+                "expectedTextSha256": hashlib.sha256(UI_TEXT[locale]["recent_recordings"].encode("utf-8")).hexdigest(),
+            },
+        )
+        return locale
+    raise RuntimeError("installed UI locale could not be attested as en or de: " + " | ".join(failures))
 
 
 def _request_json(
@@ -492,7 +563,7 @@ def _seed_transcripts(data_dir: Path) -> None:
         connection.commit()
 
 
-def _runtime_environment(data_dir: Path, token: str, port: int) -> dict[str, str]:
+def _runtime_environment(data_dir: Path, token: str) -> dict[str, str]:
     env = dict(os.environ)
     for name in (
         "SCRIBER_REPO_ROOT",
@@ -509,7 +580,6 @@ def _runtime_environment(data_dir: Path, token: str, port: int) -> dict[str, str
             "SCRIBER_FORCE_MANAGED_BACKEND": "1",
             "SCRIBER_SESSION_TOKEN": token,
             "SCRIBER_WEB_HOST": "127.0.0.1",
-            "SCRIBER_WEB_PORT": str(port),
             "SCRIBER_DISABLE_HOTKEYS": "1",
             "SCRIBER_DISABLE_DEVICE_MONITOR": "1",
             "SCRIBER_SKIP_LEGACY_DATA_MIGRATION": "1",
@@ -521,35 +591,61 @@ def _runtime_environment(data_dir: Path, token: str, port: int) -> dict[str, str
     return env
 
 
+def _runtime_port_candidates(app_pid: int, hinted_port: int) -> list[int]:
+    if psutil is None:
+        raise RuntimeError("psutil is required for installed runtime discovery")
+    ports = {hinted_port} if 0 < hinted_port <= 65_535 else set()
+    try:
+        root = psutil.Process(app_pid)
+        processes = [root, *root.children(recursive=True)]
+    except psutil.Error:
+        return sorted(ports)
+    for process in processes:
+        try:
+            connections = process.net_connections(kind="tcp")
+        except psutil.Error:
+            continue
+        for connection in connections:
+            if connection.status != psutil.CONN_LISTEN or not connection.laddr:
+                continue
+            host = str(connection.laddr.ip).split("%", 1)[0].casefold()
+            if host in {"127.0.0.1", "::1"}:
+                ports.add(int(connection.laddr.port))
+    return sorted(ports)
+
+
 def _wait_runtime(
     app_process: subprocess.Popen[Any],
     port: int,
     token: str,
     timeout_sec: float,
-) -> tuple[int, dict[str, Any]]:
+) -> tuple[int, dict[str, Any], int]:
     deadline = time.monotonic() + max(1.0, timeout_sec)
     health: dict[str, Any] = {}
+    observed_ports: set[int] = set()
     while time.monotonic() < deadline:
         if app_process.poll() is not None:
-            raise RuntimeError(
-                f"installed Scriber exited during startup with {app_process.returncode}"
-            )
-        try:
-            health = _request_json(port, token, "/api/health")
-            backend_pid = int(health.get("pid") or 0)
-            if (
-                health.get("ok") is True
-                and health.get("runtimeMode") == "tauri-supervised"
-                and backend_pid > 0
-            ):
-                ready = _request_json(port, token, "/api/runtime/frontend-ready")
-                last_seen = ready.get("lastSeen") if isinstance(ready.get("lastSeen"), dict) else {}
-                if ready.get("ready") is True and int(last_seen.get("pid") or 0) == backend_pid:
-                    return backend_pid, health
-        except Exception:
-            pass
+            raise RuntimeError(f"installed Scriber exited during startup with {app_process.returncode}")
+        for candidate_port in _runtime_port_candidates(app_process.pid, port):
+            observed_ports.add(candidate_port)
+            try:
+                health = _request_json(candidate_port, token, "/api/health")
+                backend_pid = int(health.get("pid") or 0)
+                if health.get("ok") is True and health.get("runtimeMode") == "tauri-supervised" and backend_pid > 0:
+                    ready = _request_json(
+                        candidate_port,
+                        token,
+                        "/api/runtime/frontend-ready",
+                    )
+                    last_seen = ready.get("lastSeen") if isinstance(ready.get("lastSeen"), dict) else {}
+                    if ready.get("ready") is True and int(last_seen.get("pid") or 0) == backend_pid:
+                        return backend_pid, health, candidate_port
+            except Exception:
+                continue
         time.sleep(0.05)
-    raise RuntimeError(f"installed Scriber runtime did not become ready: {health}")
+    raise RuntimeError(
+        f"installed Scriber runtime did not become ready (observed loopback ports={sorted(observed_ports)}): {health}"
+    )
 
 
 def _wait_generation(
@@ -578,7 +674,7 @@ def _same_executable_processes(executable: Path) -> list[int]:
         try:
             if os.path.normcase(str(Path(process.info["exe"]).resolve())) == expected:
                 matches.append(int(process.info["pid"]))
-        except (psutil.Error, OSError, TypeError):
+        except psutil.Error, OSError, TypeError:
             continue
     return matches
 
@@ -756,9 +852,7 @@ def _run_uia_sample(
         timeout_sec=timeout_sec,
     )
     action_path = sample_dir / "user-action.json"
-    observer = _wait_observer(
-        observer_process, observer_path, sample_dir, timeout_sec
-    )
+    observer = _wait_observer(observer_process, observer_path, sample_dir, timeout_sec)
     performance, performance_binding = _collect_frontend_performance_window(
         artifact_root,
         sample_dir,
@@ -768,9 +862,7 @@ def _run_uia_sample(
         baseline=baseline,
         timeout_sec=timeout_sec,
     )
-    observed_generation = _wait_generation(
-        app_pid, backend_pid, port, token, timeout_sec
-    )
+    observed_generation = _wait_generation(app_pid, backend_pid, port, token, timeout_sec)
     if not contract.process_generation_matches(generation, observed_generation):
         raise RuntimeError(f"{scenario} crossed an installed process generation")
     return _sample_from_artifacts(
@@ -840,21 +932,20 @@ def _run_cold_launch(
     port: int,
     token: str,
     timeout_sec: float,
-) -> tuple[dict[str, Any], subprocess.Popen[Any], int, dict[str, Any]]:
+) -> tuple[dict[str, Any], subprocess.Popen[Any], int, dict[str, Any], int]:
     if _same_executable_processes(executable):
-        raise RuntimeError(
-            "another installed Scriber process is running; cold launch would be ambiguous"
-        )
+        raise RuntimeError("another installed Scriber process is running; cold launch would be ambiguous")
     gate_path = sample_dir / "input-ready.marker"
     observer_process, observer_path = _start_observer(
         repo_root,
         sample_dir,
-        expected_text="Recent recordings",
+        expected_text=FIRST_TRANSCRIPT_TITLE,
         gate_path=gate_path,
         timeout_sec=timeout_sec,
     )
     app_process: subprocess.Popen[Any] | None = None
     backend_pid = 0
+    runtime_port = port
     completed = False
     try:
         gate_path.parent.mkdir(parents=True, exist_ok=True)
@@ -878,25 +969,28 @@ def _run_cold_launch(
         }
         action_path = sample_dir / "user-action.json"
         _write_json(action_path, action_payload)
-        backend_pid, _ = _wait_runtime(app_process, port, token, timeout_sec)
-        observer = _wait_observer(
-            observer_process, observer_path, sample_dir, timeout_sec
+        backend_pid, _, runtime_port = _wait_runtime(
+            app_process,
+            port,
+            token,
+            timeout_sec,
         )
+        observer = _wait_observer(observer_process, observer_path, sample_dir, timeout_sec)
         if int(observer.get("processId") or 0) != app_process.pid:
-            raise RuntimeError(
-                "cold stable frame did not belong to the launched installed process"
-            )
+            raise RuntimeError("cold stable frame did not belong to the launched installed process")
         generation = _wait_generation(
-            app_process.pid, backend_pid, port, token, timeout_sec
+            app_process.pid,
+            backend_pid,
+            runtime_port,
+            token,
+            timeout_sec,
         )
-        if int(observer.get("processCreationTime100ns") or 0) != int(
-            generation["app"]["creationTime100ns"]
-        ):
+        if int(observer.get("processCreationTime100ns") or 0) != int(generation["app"]["creationTime100ns"]):
             raise RuntimeError("cold stable frame crossed the launched process generation")
         performance, performance_binding = _collect_frontend_performance_window(
             artifact_root,
             sample_dir,
-            port,
+            runtime_port,
             token,
             int(observer["stableQpcTicks"]),
             baseline=None,
@@ -904,7 +998,11 @@ def _run_cold_launch(
             timeout_sec=timeout_sec,
         )
         final_generation = _wait_generation(
-            app_process.pid, backend_pid, port, token, timeout_sec
+            app_process.pid,
+            backend_pid,
+            runtime_port,
+            token,
+            timeout_sec,
         )
         if not contract.process_generation_matches(generation, final_generation):
             raise RuntimeError("cold launch crossed an installed process generation")
@@ -925,7 +1023,7 @@ def _run_cold_launch(
             performance_binding=performance_binding,
         )
         completed = True
-        return sample, app_process, backend_pid, generation
+        return sample, app_process, backend_pid, generation, runtime_port
     finally:
         if not completed:
             if observer_process.poll() is None:
@@ -934,15 +1032,23 @@ def _run_cold_launch(
             if backend_pid <= 0:
                 try:
                     backend_pid = int(
-                        _request_json(port, token, "/api/health", timeout_sec=1.0).get(
-                            "pid"
-                        )
+                        _request_json(
+                            runtime_port,
+                            token,
+                            "/api/health",
+                            timeout_sec=1.0,
+                        ).get("pid")
                         or 0
                     )
                 except Exception:
                     backend_pid = 0
             if app_process is not None and backend_pid > 0:
-                contract.terminate_runtime(app_process.pid, backend_pid, port, token)
+                contract.terminate_runtime(
+                    app_process.pid,
+                    backend_pid,
+                    runtime_port,
+                    token,
+                )
             elif app_process is not None and app_process.poll() is None:
                 app_process.terminate()
                 try:
@@ -966,6 +1072,7 @@ def _run_warm_activation(
     backend_pid: int,
     port: int,
     token: str,
+    ui_text: dict[str, str],
     timeout_sec: float,
 ) -> dict[str, Any]:
     generation = _wait_generation(app_pid, backend_pid, port, token, timeout_sec)
@@ -976,7 +1083,7 @@ def _run_warm_activation(
         setup_dir,
         process_id=app_pid,
         process_creation_time_100ns=app_created,
-        control_name="Close window",
+        control_name=ui_text["close_window"],
         control_type="Button",
         gate_path=None,
         timeout_sec=timeout_sec,
@@ -988,7 +1095,7 @@ def _run_warm_activation(
     observer_process, observer_path = _start_observer(
         repo_root,
         sample_dir,
-        expected_text="Recent recordings",
+        expected_text=FIRST_TRANSCRIPT_TITLE,
         process_id=app_pid,
         process_creation_time_100ns=app_created,
         gate_path=gate_path,
@@ -1023,15 +1130,13 @@ def _run_warm_activation(
     }
     action_path = sample_dir / "user-action.json"
     _write_json(action_path, action_payload)
-    observer = _wait_observer(
-        observer_process, observer_path, sample_dir, timeout_sec
-    )
+    observer = _wait_observer(observer_process, observer_path, sample_dir, timeout_sec)
     try:
         second.wait(timeout=5)
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
         second.kill()
         second.wait(timeout=5)
-        raise RuntimeError("second Scriber instance did not exit after activation signal")
+        raise RuntimeError("second Scriber instance did not exit after activation signal") from exc
     performance, performance_binding = _collect_frontend_performance_window(
         artifact_root,
         sample_dir,
@@ -1041,9 +1146,7 @@ def _run_warm_activation(
         baseline=baseline,
         timeout_sec=timeout_sec,
     )
-    observed_generation = _wait_generation(
-        app_pid, backend_pid, port, token, timeout_sec
-    )
+    observed_generation = _wait_generation(app_pid, backend_pid, port, token, timeout_sec)
     if not contract.process_generation_matches(generation, observed_generation):
         raise RuntimeError("warm activation replaced the primary process generation")
     return _sample_from_artifacts(
@@ -1080,12 +1183,12 @@ def _collect_uia_iteration(
     _seed_transcripts(data_dir)
     token = uuid.uuid4().hex
     port = _free_loopback_port()
-    runtime_env = _runtime_environment(data_dir, token, port)
+    runtime_env = _runtime_environment(data_dir, token)
     app_process: subprocess.Popen[Any] | None = None
     backend_pid = 0
     samples: list[dict[str, Any]] = []
     try:
-        cold, app_process, backend_pid, generation = _run_cold_launch(
+        cold, app_process, backend_pid, generation, port = _run_cold_launch(
             repo_root,
             artifact_root,
             iteration_dir / "cold_app_launch",
@@ -1102,6 +1205,14 @@ def _collect_uia_iteration(
         samples.append(cold)
         app_pid = int(app_process.pid)
         app_created = int(generation["app"]["creationTime100ns"])
+        ui_locale = _detect_ui_locale(
+            repo_root,
+            iteration_dir / "locale-detection",
+            process_id=app_pid,
+            process_creation_time_100ns=app_created,
+            timeout_sec=timeout_sec,
+        )
+        ui_text = UI_TEXT[ui_locale]
         samples.append(
             _run_warm_activation(
                 repo_root,
@@ -1117,6 +1228,7 @@ def _collect_uia_iteration(
                 backend_pid=backend_pid,
                 port=port,
                 token=token,
+                ui_text=ui_text,
                 timeout_sec=timeout_sec,
             )
         )
@@ -1134,10 +1246,10 @@ def _collect_uia_iteration(
                 backend_pid=backend_pid,
                 port=port,
                 token=token,
-                control_name="Settings",
+                control_name=ui_text["settings"],
                 control_type="Hyperlink",
-                expected_text="Configure capture",
-                forbidden_text="Recent recordings",
+                expected_text=ui_text["configure_capture"],
+                forbidden_text=ui_text["recent_recordings"],
                 timeout_sec=timeout_sec,
             )
         )
@@ -1146,9 +1258,9 @@ def _collect_uia_iteration(
             iteration_dir / "setup-live-mic",
             app_pid=app_pid,
             app_created=app_created,
-            control_name="Live Mic",
+            control_name=ui_text["live_mic"],
             control_type="Hyperlink",
-            expected_text="Recent recordings",
+            expected_text=ui_text["recent_recordings"],
             timeout_sec=timeout_sec,
         )
         samples.append(
@@ -1167,19 +1279,30 @@ def _collect_uia_iteration(
                 token=token,
                 control_name=FIRST_TRANSCRIPT_TITLE,
                 control_type="Button",
+                control_name_match="Prefix",
                 expected_text=FIRST_TRANSCRIPT_TITLE,
-                forbidden_text="Recent recordings",
+                forbidden_text=ui_text["recent_recordings"],
                 timeout_sec=timeout_sec,
             )
+        )
+        _navigate_unmeasured(
+            repo_root,
+            iteration_dir / "setup-return-from-transcript-detail",
+            app_pid=app_pid,
+            app_created=app_created,
+            control_name=ui_text["go_back"],
+            control_type="Button",
+            expected_text=ui_text["recent_recordings"],
+            timeout_sec=timeout_sec,
         )
         _navigate_unmeasured(
             repo_root,
             iteration_dir / "setup-switch-command-palette",
             app_pid=app_pid,
             app_created=app_created,
-            control_name="Open command palette",
+            control_name=ui_text["open_command_palette"],
             control_type="Button",
-            expected_text="Search Scriber",
+            expected_text=ui_text["search_scriber"],
             timeout_sec=timeout_sec,
         )
         samples.append(
@@ -1200,7 +1323,7 @@ def _collect_uia_iteration(
                 control_type="ListItem",
                 control_name_match="Prefix",
                 expected_text=SECOND_TRANSCRIPT_TITLE,
-                forbidden_text="Recent recordings",
+                forbidden_text=ui_text["recent_recordings"],
                 timeout_sec=timeout_sec,
             )
         )
@@ -1218,25 +1341,28 @@ def _collect_uia_iteration(
                 backend_pid=backend_pid,
                 port=port,
                 token=token,
-                control_name="Go back",
+                control_name=ui_text["go_back"],
                 control_type="Button",
-                expected_text="Recent recordings",
+                expected_text=ui_text["recent_recordings"],
                 forbidden_text="",
                 timeout_sec=timeout_sec,
             )
         )
-        resources = _idle_resource_observation(app_pid, backend_pid)
-        final_generation = _wait_generation(
-            app_pid, backend_pid, port, token, timeout_sec
+        resource_generation = _wait_generation(
+            app_pid,
+            backend_pid,
+            port,
+            token,
+            timeout_sec,
         )
-        if not contract.process_generation_matches(generation, final_generation):
-            raise RuntimeError("UIA iteration ended in a different process generation")
+        resources = _idle_resource_observation(app_pid, backend_pid)
+        final_generation = _wait_generation(app_pid, backend_pid, port, token, timeout_sec)
+        if not contract.process_generation_matches(resource_generation, final_generation):
+            raise RuntimeError("UIA resource observation crossed a process generation")
         return samples, resources
     finally:
         if app_process is not None and backend_pid > 0:
-            cleanup = contract.terminate_runtime(
-                int(app_process.pid), backend_pid, port, token
-            )
+            cleanup = contract.terminate_runtime(int(app_process.pid), backend_pid, port, token)
             _write_json(iteration_dir / "runtime-cleanup.json", cleanup)
         elif app_process is not None and app_process.poll() is None:
             app_process.terminate()
@@ -1285,8 +1411,7 @@ def _bind_lifecycle_import(
     )
     if not validation.get("metricEligible"):
         raise RuntimeError(
-            "installed lifecycle evidence failed closed: "
-            + ", ".join(validation.get("reasons") or ["unknown reason"])
+            "installed lifecycle evidence failed closed: " + ", ".join(validation.get("reasons") or ["unknown reason"])
         )
     bound_samples: list[dict[str, Any]] = []
     for sample in validation["results"]:
@@ -1383,9 +1508,7 @@ def _write_lifecycle_request(
                 "path": "benchmarks/windows/app_ux_lifecycle_import.schema.json",
                 "sha256": contract.sha256_file(schema_path),
             },
-            "semanticValidator": (
-                "benchmarks.windows.endpoint_probe.validate_app_ux_lifecycle_import"
-            ),
+            "semanticValidator": ("benchmarks.windows.endpoint_probe.validate_app_ux_lifecycle_import"),
             "rules": [
                 "Use the installed production runtime and its real WebSocket/state/provider events.",
                 "Invoke Stop through Windows UI Automation for stop_to_transcribing_visible.",
@@ -1404,14 +1527,12 @@ def _existing_request_run_id(path: Path) -> str | None:
         return None
     try:
         return _canonical_uuid(str(payload.get("runId") or ""))
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return None
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        description="Collect the complete installed B7 App UX scenario matrix."
-    )
+    parser = argparse.ArgumentParser(description="Collect the complete installed B7 App UX scenario matrix.")
     parser.add_argument("--repo-root", default=".")
     parser.add_argument("--install-root", default="")
     parser.add_argument("--output", required=True)
@@ -1432,11 +1553,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.samples_per_scenario < 1:
         raise SystemExit("--samples-per-scenario must be positive")
     repo_root = Path(args.repo_root).resolve()
-    install_root = (
-        Path(args.install_root).resolve()
-        if args.install_root
-        else repo_root / "Scriber Install"
-    )
+    install_root = Path(args.install_root).resolve() if args.install_root else repo_root / "Scriber Install"
     executable = install_root / "scriber-desktop.exe"
     if not executable.is_file():
         raise SystemExit(f"missing installed production executable: {executable}")
@@ -1444,9 +1561,7 @@ def main(argv: list[str] | None = None) -> int:
     artifact_root = output_path.parent
     artifact_root.mkdir(parents=True, exist_ok=True)
     request_path = artifact_root / "app-ux-lifecycle-request.json"
-    run_id = _canonical_uuid(
-        args.run_id or _existing_request_run_id(request_path)
-    )
+    run_id = _canonical_uuid(args.run_id or _existing_request_run_id(request_path))
     installed_sha256 = contract.sha256_file(executable)
     harness_sha256 = contract.app_ux_harness_manifest_sha256(repo_root)
     _write_lifecycle_request(
@@ -1482,15 +1597,13 @@ def main(argv: list[str] | None = None) -> int:
     lifecycle_resources: dict[str, float] | None = None
     lifecycle_import_binding: dict[str, str] | None = None
     if args.lifecycle_evidence:
-        lifecycle_samples, lifecycle_resources, lifecycle_import_binding = (
-            _bind_lifecycle_import(
-                Path(args.lifecycle_evidence).resolve(),
-                artifact_root,
-                run_id=run_id,
-                installed_sha256=installed_sha256,
-                harness_sha256=harness_sha256,
-                samples_per_scenario=args.samples_per_scenario,
-            )
+        lifecycle_samples, lifecycle_resources, lifecycle_import_binding = _bind_lifecycle_import(
+            Path(args.lifecycle_evidence).resolve(),
+            artifact_root,
+            run_id=run_id,
+            installed_sha256=installed_sha256,
+            harness_sha256=harness_sha256,
+            samples_per_scenario=args.samples_per_scenario,
         )
 
     uia_samples: list[dict[str, Any]] = []

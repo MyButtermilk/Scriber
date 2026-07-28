@@ -59,9 +59,11 @@ YouTube/file:
   scripts plus a manifest-bound QuickJS-ng 0.15.0 wrapper/engine quartet, leaves
   player-client selection to yt-dlp, and validates audio-stream and container
   integrity with ffprobe before provider upload. Frozen builds never resolve a
-  raw QuickJS binary from `PATH`; in-place upgrades delete the exact superseded
-  Deno executable. Corrupted/incomplete transfers are retryable download
-  failures rather than successful downloads that later fail inside Azure MAI.
+  raw QuickJS binary from `PATH` and import yt-dlp from the frozen package
+  instead of shipping a build-machine-bound pip launcher; in-place upgrades
+  delete the exact superseded Deno executable. Corrupted/incomplete transfers
+  are retryable download failures rather than successful downloads that later
+  fail inside Azure MAI.
 - YouTube jobs now prefer manual or automatic caption tracks before downloading
   audio. The default-on preference is stored in runtime settings across installer
   upgrades, and missing or unreadable captions fall back to the audio path.
@@ -197,10 +199,19 @@ Packaging/performance:
 - Live-meeting PCM16 RMS checks share the native `audioop-lts` implementation
   instead of per-sample Python loops. Provider wrappers are imported only by the
   selected pipeline branch, and transcript timing uses prefix sums.
-- Release dependency resolution is constrained by an exact Windows CPython 3.13
+- Release dependency resolution is constrained by an exact Windows CPython 3.14.6
   graph. Profile-B restoration is bound to a versioned artifact identity, and
   tag releases remain drafts until downloaded assets, updater signatures,
   Authenticode evidence, installed smoke, and uninstall gates all pass.
+- The Python 3.14.6 product runtime is official O0 with JIT disabled. Final
+  source-attested AMD screening rejected Clang/PGO C0: startup p50 improved only
+  3.56%, App UX p50 regressed 5.69%, and 11 of 48 provider p50/p95 series
+  exceeded the protected 3% regression limit. It also rejected Clang/PGO/Tail
+  T0: startup p50 improved 4.32% but stayed below the 5% floor, App UX p50
+  regressed 9.69%, and five protected provider values regressed, with a 27.93%
+  worst case. Stock PyInstaller 6.20 ignores `PYTHON_JIT` in its isolated
+  interpreter, so O1/C1/T1 fail closed and require a separate launcher research
+  goal rather than a release workaround.
 - The latest local unsigned `v0.4.35` LZMA installer is `124.77 MiB`, SHA-256
   `62a141b5f805ae0a61c2ab555b89fd489f6415293854af23601983ddb18a6af8`; its
   installed package smoke measured `320.00 MiB` and passed frontend ownership,
@@ -1242,7 +1253,7 @@ Signing/updater:
   them against a public key embedded in the frozen launcher before importing
   physical application code.
 - Rebuilding an expired Python runtime cache now uses an exact
-  Windows/Python-3.13 constraints graph. The graph does not yet carry wheel
+  Windows/Python-3.14.6 constraints graph. The graph does not yet carry wheel
   hashes, so independently rebuilt generations still require the existing
   wheelhouse and runtime-inventory evidence rather than being assumed
   byte-identical.

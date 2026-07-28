@@ -1,0 +1,158 @@
+{
+  "schemaVersion": "1",
+  "contract": "scriber-installed-youtube-video-matrix-v1",
+  "lanes": [
+    {
+      "laneId": "short-direct-audio",
+      "description": "Short public spoken-word video exercising the direct short-form extraction path.",
+      "preVetted": true,
+      "installedExtractionPreVetted": false,
+      "preVettingScope": "public availability, title, language, and duration metadata",
+      "executionMode": "audio-provider",
+      "expectedCompletionEvent": "pipeline.transcription.completed",
+      "probeKind": "audio-format",
+      "expectedExtractionLane": "short-direct-audio",
+      "expectedExtractionObservation": {
+        "routeKinds": ["audio-format"],
+        "selectorIndexes": [1]
+      },
+      "primary": {
+        "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+        "durationBandSeconds": {
+          "min": 10,
+          "max": 30
+        }
+      },
+      "replacement": {
+        "url": "https://www.youtube.com/watch?v=1aA1WGON49E",
+        "durationBandSeconds": {
+          "min": 65,
+          "max": 95
+        }
+      }
+    },
+    {
+      "laneId": "segmented-adaptive",
+      "description": "Longer public spoken-word video expected to exercise adaptive or segmented extraction.",
+      "preVetted": true,
+      "installedExtractionPreVetted": false,
+      "preVettingScope": "public availability, title, language, and duration metadata; extraction is verified by the installed lane",
+      "executionMode": "audio-provider",
+      "expectedCompletionEvent": "pipeline.transcription.completed",
+      "probeKind": "audio-format",
+      "expectedExtractionLane": "segmented-adaptive",
+      "expectedExtractionObservation": {
+        "routeKinds": ["audio-format"],
+        "selectorIndexes": [1],
+        "extensions": ["webm"],
+        "containers": ["webm_dash"],
+        "audioCodecPrefixes": ["opus"],
+        "formatIds": ["251"]
+      },
+      "primary": {
+        "url": "https://www.youtube.com/watch?v=Y-rmzh0PI3c",
+        "durationBandSeconds": {
+          "min": 700,
+          "max": 760
+        }
+      },
+      "replacement": {
+        "url": "https://www.youtube.com/watch?v=R6MlUcmOul8",
+        "durationBandSeconds": {
+          "min": 704,
+          "max": 764
+        }
+      }
+    },
+    {
+      "laneId": "non-ascii-metadata",
+      "description": "Public video whose title contains non-ASCII metadata.",
+      "preVetted": true,
+      "installedExtractionPreVetted": false,
+      "preVettingScope": "public availability, Unicode title, language, and duration metadata",
+      "executionMode": "audio-provider",
+      "expectedCompletionEvent": "pipeline.transcription.completed",
+      "probeKind": "audio-format",
+      "expectedExtractionLane": "non-ascii-metadata",
+      "expectedExtractionObservation": {
+        "routeKinds": ["audio-format"],
+        "selectorIndexes": [1, 2, 3]
+      },
+      "primary": {
+        "url": "https://www.youtube.com/watch?v=EpkzT-AeVZU",
+        "durationBandSeconds": {
+          "min": 450,
+          "max": 485
+        }
+      },
+      "replacement": {
+        "url": "https://www.youtube.com/watch?v=JZdMfSjWQjQ",
+        "durationBandSeconds": {
+          "min": 310,
+          "max": 345
+        }
+      }
+    },
+    {
+      "laneId": "captions-first",
+      "description": "Public video whose real timed captions must be parsed and selected by the installed captions-first route.",
+      "preVetted": true,
+      "installedExtractionPreVetted": false,
+      "preVettingScope": "public availability, provenance, language, and duration metadata; timed caption usability remains unproven until exact-runtime pre-vetting",
+      "executionMode": "captions-first",
+      "expectedCompletionEvent": "youtube.captions.completed",
+      "probeKind": "caption-route",
+      "expectedExtractionLane": "captions-first-timed-cues",
+      "expectedExtractionObservation": {
+        "routeKinds": ["youtube-captions"],
+        "captionKinds": ["manual", "automatic"],
+        "captionFormats": ["json3", "vtt"],
+        "minCueCount": 1,
+        "minTextChars": 40
+      },
+      "primary": {
+        "url": "https://www.youtube.com/watch?v=_cMxraX_5RE",
+        "durationBandSeconds": {
+          "min": 600,
+          "max": 660
+        }
+      },
+      "replacement": {
+        "url": "https://www.youtube.com/watch?v=-moW9jvvMr4",
+        "durationBandSeconds": {
+          "min": 540,
+          "max": 590
+        }
+      }
+    },
+    {
+      "laneId": "long-spoken-word",
+      "description": "Long-form public lecture exercising provider upload, transcription, and final cleanup end to end.",
+      "preVetted": true,
+      "installedExtractionPreVetted": false,
+      "preVettingScope": "public availability, title, language, and duration metadata",
+      "executionMode": "audio-provider",
+      "expectedCompletionEvent": "pipeline.transcription.completed",
+      "probeKind": "audio-format",
+      "expectedExtractionLane": "long-spoken-word-provider-e2e",
+      "expectedExtractionObservation": {
+        "routeKinds": ["audio-format"],
+        "selectorIndexes": [1, 2, 3]
+      },
+      "primary": {
+        "url": "https://www.youtube.com/watch?v=qzR62JJCMBQ",
+        "durationBandSeconds": {
+          "min": 545,
+          "max": 585
+        }
+      },
+      "replacement": {
+        "url": "https://www.youtube.com/watch?v=arj7oStGLkU",
+        "durationBandSeconds": {
+          "min": 810,
+          "max": 880
+        }
+      }
+    }
+  ]
+}

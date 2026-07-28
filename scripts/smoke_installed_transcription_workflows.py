@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -17,6 +18,122 @@ DEFAULT_YOUTUBE_URL = "https://www.youtube.com/watch?v=0wEjbSYNUM8"
 DEFAULT_FILE_TEXT = (
     "Scriber Workflow Test. Diese Audiodatei prueft die installierte Datei Transkription und Zusammenfassung."
 )
+FAILURE_PATTERNS = {
+    "external-availability": (
+        "age-restricted",
+        "age restricted",
+        "copyright",
+        "forbidden",
+        "geo-restricted",
+        "geoblocked",
+        "not available",
+        "not available in your country",
+        "private video",
+        "removed",
+        "sign in to confirm",
+        "unavailable",
+        "http 403",
+        "http 404",
+    ),
+    "bundled-runtime": (
+        "ejs",
+        "javascript runtime",
+        "quickjs",
+        "qjs",
+        "runtime manifest",
+        "signature solving",
+    ),
+    "media-preparation": (
+        "audio preparation",
+        "codec",
+        "container",
+        "ffmpeg",
+        "ffprobe",
+        "media preparation",
+    ),
+    "extractor": (
+        "download failed",
+        "extractor",
+        "format is not available",
+        "requested format",
+        "yt-dlp",
+        "youtube download",
+    ),
+}
+YOUTUBE_COMPLETION_EVENTS = {
+    "audio-provider": "pipeline.transcription.completed",
+    "captions-first": "youtube.captions.completed",
+}
+
+
+class WorkflowFailure(RuntimeError):
+    def __init__(self, category: str, code: str) -> None:
+        super().__init__(code)
+        self.category = category
+        self.code = code
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def normalized_path_sha256(value: str | Path) -> str:
+    normalized = os.path.normcase(os.path.abspath(os.fspath(value))).replace("\\", "/")
+    return sha256_text(normalized)
+
+
+def classify_failure(value: Any) -> str:
+    text = str(value or "").casefold()
+    for category, patterns in FAILURE_PATTERNS.items():
+        if not any(pattern in text for pattern in patterns):
+            continue
+        if category == "external-availability" and not any(
+            boundary in text for boundary in ("download", "extractor", "video", "youtube")
+        ):
+            continue
+        return category
+    return "provider"
+
+
+def parse_duration_seconds(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return round(float(value), 3) if value >= 0 else None
+    parts = str(value or "").strip().split(":")
+    if not parts or len(parts) > 3:
+        return None
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError:
+        return None
+    if any(number < 0 for number in numbers):
+        return None
+    seconds = 0.0
+    for number in numbers:
+        seconds = seconds * 60 + number
+    return round(seconds, 3)
+
+
+def inventory_source_assets(root: Path) -> set[str]:
+    if not root.is_dir():
+        return set()
+    inventory: set[str] = set()
+    try:
+        for path in root.rglob("*"):
+            inventory.add(os.path.normcase(str(path.resolve())))
+    except OSError:
+        return set()
+    return inventory
+
+
+def wait_for_source_asset_cleanup(root: Path, baseline: set[str], timeout_sec: float = 30.0) -> bool:
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        if not (inventory_source_assets(root) - baseline):
+            return True
+        time.sleep(0.5)
+    return not (inventory_source_assets(root) - baseline)
 
 
 def ps_single_quote(value: str) -> str:
@@ -136,7 +253,6 @@ def synthesize_speech_wav(target: Path, text: str) -> dict[str, Any]:
     if not target.exists() or target.stat().st_size <= 0:
         raise RuntimeError(f"Windows SAPI did not create a non-empty WAV file: {target}")
     return {
-        "path": str(target),
         "sizeBytes": target.stat().st_size,
         "textChars": len(text),
     }
@@ -146,16 +262,12 @@ def transcript_summary(detail: dict[str, Any]) -> dict[str, Any]:
     content = str(detail.get("content") or "")
     summary = str(detail.get("summary") or "")
     return {
-        "id": str(detail.get("id") or ""),
-        "title": str(detail.get("title") or ""),
         "type": str(detail.get("type") or ""),
         "status": str(detail.get("status") or ""),
-        "step": str(detail.get("step") or ""),
-        "duration": str(detail.get("duration") or ""),
+        "durationSeconds": parse_duration_seconds(detail.get("duration")),
         "summaryStatus": str(detail.get("summaryStatus") or ""),
         "contentChars": len(content.strip()),
         "summaryChars": len(summary.strip()),
-        "sourceUrl": str(detail.get("sourceUrl") or ""),
     }
 
 
@@ -180,7 +292,10 @@ def wait_for_workflow(
         summary_status = str(last_detail.get("summaryStatus") or "").lower()
 
         if status == "failed":
-            raise RuntimeError(f"Transcript {transcript_id} failed: {transcript_summary(last_detail)}")
+            failure_context = " ".join(
+                str(last_detail.get(field) or "") for field in ("step", "error", "message", "content", "summaryError")
+            )
+            raise WorkflowFailure(classify_failure(failure_context), "transcript_failed")
 
         content_ready = status == "completed" and len(content) >= min_content_chars
         if content_ready and not require_summary:
@@ -197,9 +312,50 @@ def wait_for_workflow(
 
         time.sleep(max(0.5, poll_sec))
 
-    raise TimeoutError(
-        f"Transcript {transcript_id} did not complete in {timeout_sec}s. Last detail: {transcript_summary(last_detail)}"
-    )
+    raise WorkflowFailure("provider", "workflow_timeout")
+
+
+def wait_for_youtube_completion_event(
+    client: HttpClient,
+    *,
+    execution_mode: str,
+    timeout_sec: float = 15.0,
+    poll_sec: float = 0.5,
+) -> str:
+    expected_event = YOUTUBE_COMPLETION_EVENTS.get(execution_mode)
+    if expected_event is None:
+        raise WorkflowFailure("bundled-runtime", "invalid_youtube_execution_mode")
+    completion_events = set(YOUTUBE_COMPLETION_EVENTS.values())
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        payload = client.request_json("GET", "/api/runtime/logs?limit=2000")
+        if payload.get("truncated") is True:
+            raise WorkflowFailure("bundled-runtime", "youtube_route_log_window_truncated")
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise WorkflowFailure("bundled-runtime", "youtube_route_log_payload_invalid")
+        observed: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            context = item.get("context")
+            if not isinstance(context, dict):
+                continue
+            event = context.get("event")
+            if (
+                event in completion_events
+                and context.get("workflow") == "youtube"
+                and context.get("stage") == "transcript_done"
+                and context.get("outcome") == "success"
+            ):
+                observed.add(str(event))
+        unexpected = observed - {expected_event}
+        if unexpected:
+            raise WorkflowFailure("bundled-runtime", "youtube_execution_route_mismatch")
+        if expected_event in observed:
+            return expected_event
+        time.sleep(max(0.1, poll_sec))
+    raise WorkflowFailure("bundled-runtime", "youtube_completion_event_missing")
 
 
 def run_file_workflow(client: HttpClient, args: argparse.Namespace, work_dir: Path) -> dict[str, Any]:
@@ -232,17 +388,30 @@ def run_file_workflow(client: HttpClient, args: argparse.Namespace, work_dir: Pa
     }
 
 
-def run_youtube_workflow(client: HttpClient, args: argparse.Namespace) -> dict[str, Any]:
+def run_youtube_workflow(
+    client: HttpClient,
+    args: argparse.Namespace,
+    runtime_data_dir: Path,
+) -> dict[str, Any]:
     started = time.monotonic()
+    source_assets_root = runtime_data_dir / "downloads" / "youtube"
+    baseline_source_assets = inventory_source_assets(source_assets_root)
+    execution_mode = str(args.youtube_execution_mode or "")
+    request_payload: dict[str, Any] = {
+        "url": args.youtube_url,
+        "title": args.youtube_title,
+        "channelTitle": "Installed workflow smoke",
+        "duration": "--:--",
+    }
+    if execution_mode:
+        cleared = client.request_json("DELETE", "/api/runtime/logs")
+        if cleared.get("ok") is not True:
+            raise WorkflowFailure("bundled-runtime", "runtime_log_clear_failed")
+        request_payload["preferCaptions"] = execution_mode == "captions-first"
     response = client.request_json(
         "POST",
         "/api/youtube/transcribe",
-        payload={
-            "url": args.youtube_url,
-            "title": args.youtube_title,
-            "channelTitle": "Installed workflow smoke",
-            "duration": "--:--",
-        },
+        payload=request_payload,
         timeout_sec=args.request_timeout_sec,
     )
     transcript_id = str(response.get("id") or "")
@@ -257,12 +426,39 @@ def run_youtube_workflow(client: HttpClient, args: argparse.Namespace) -> dict[s
         min_summary_chars=args.min_summary_chars,
         require_summary=args.require_summary,
     )
+    transcript = transcript_summary(detail)
+    completion_event = (
+        wait_for_youtube_completion_event(
+            client,
+            execution_mode=execution_mode,
+        )
+        if execution_mode
+        else None
+    )
+    duration_seconds = transcript["durationSeconds"]
+    if args.youtube_duration_min >= 0 and (duration_seconds is None or duration_seconds < args.youtube_duration_min):
+        raise WorkflowFailure("extractor", "duration_below_expected_band")
+    if args.youtube_duration_max >= 0 and (duration_seconds is None or duration_seconds > args.youtube_duration_max):
+        raise WorkflowFailure("extractor", "duration_above_expected_band")
+    cleanup_verified = wait_for_source_asset_cleanup(
+        source_assets_root,
+        baseline_source_assets,
+        timeout_sec=args.source_cleanup_timeout_sec,
+    )
+    if not cleanup_verified:
+        raise WorkflowFailure("media-preparation", "source_asset_cleanup_failed")
     return {
         "ok": True,
         "workflow": "youtube",
         "elapsedMs": round((time.monotonic() - started) * 1000, 3),
-        "youtubeUrl": args.youtube_url,
-        "transcript": transcript_summary(detail),
+        "urlSha256": sha256_text(args.youtube_url),
+        "laneId": args.youtube_lane_id or None,
+        "selectionMarker": args.youtube_selection_marker or None,
+        "expectedExtractionLane": args.youtube_expected_extraction_lane or None,
+        "executionMode": execution_mode or None,
+        "completionEvent": completion_event,
+        "sourceAssetCleanupVerified": cleanup_verified,
+        "transcript": transcript,
     }
 
 
@@ -275,31 +471,65 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
 
     runtime = client.request_json("GET", "/api/runtime", timeout_sec=args.request_timeout_sec)
+    runtime_data_dir = Path(str(runtime.get("dataDir") or "")).resolve()
+    runtime_data_root_sha256 = normalized_path_sha256(runtime_data_dir)
     checks: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
 
+    if args.expected_data_root_sha256 and runtime_data_root_sha256 != args.expected_data_root_sha256:
+        failures.append(
+            {
+                "workflow": "identity",
+                "ok": False,
+                "failureCategory": "bundled-runtime",
+                "failureCode": "data_root_identity_mismatch",
+            }
+        )
+
     for name, runner in (
         ("file", lambda: run_file_workflow(client, args, work_dir)),
-        ("youtube", lambda: run_youtube_workflow(client, args)),
+        ("youtube", lambda: run_youtube_workflow(client, args, runtime_data_dir)),
     ):
+        if failures:
+            break
         if name == "file" and args.skip_file:
             continue
         if name == "youtube" and args.skip_youtube:
             continue
         try:
             checks.append(runner())
+        except WorkflowFailure as exc:
+            failures.append(
+                {
+                    "workflow": name,
+                    "ok": False,
+                    "failureCategory": exc.category,
+                    "failureCode": exc.code,
+                }
+            )
         except Exception as exc:
-            failures.append({"workflow": name, "ok": False, "error": str(exc)})
+            failures.append(
+                {
+                    "workflow": name,
+                    "ok": False,
+                    "failureCategory": classify_failure(exc),
+                    "failureCode": type(exc).__name__,
+                }
+            )
 
     payload = {
         "apiVersion": "1",
         "ok": not failures and bool(checks),
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "baseUrl": args.base_url.rstrip("/"),
         "runtime": {
             "runtimeMode": runtime.get("runtimeMode"),
             "launchKind": runtime.get("launchKind"),
-            "dataDir": runtime.get("dataDir"),
+            "dataRootSha256": runtime_data_root_sha256,
+        },
+        "identity": {
+            "releaseTag": args.release_tag or None,
+            "installerSha256": args.installer_sha256 or None,
+            "dataRootSha256": args.expected_data_root_sha256 or runtime_data_root_sha256,
         },
         "requireSummary": bool(args.require_summary),
         "checks": checks,
@@ -322,11 +552,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--work-dir", default="")
     parser.add_argument("--youtube-url", default=DEFAULT_YOUTUBE_URL)
     parser.add_argument("--youtube-title", default="Installed YouTube workflow smoke")
+    parser.add_argument("--youtube-lane-id", default="")
+    parser.add_argument("--youtube-selection-marker", choices=("", "primary", "replacement"), default="")
+    parser.add_argument("--youtube-expected-extraction-lane", default="")
+    parser.add_argument("--youtube-execution-mode", choices=("", *YOUTUBE_COMPLETION_EVENTS), default="")
+    parser.add_argument("--youtube-duration-min", type=float, default=-1)
+    parser.add_argument("--youtube-duration-max", type=float, default=-1)
+    parser.add_argument("--release-tag", default="")
+    parser.add_argument("--installer-sha256", default="")
+    parser.add_argument("--expected-data-root-sha256", default="")
     parser.add_argument("--file-text", default=DEFAULT_FILE_TEXT)
     parser.add_argument("--request-timeout-sec", type=float, default=60.0)
     parser.add_argument("--file-timeout-sec", type=float, default=240.0)
     parser.add_argument("--youtube-timeout-sec", type=float, default=420.0)
     parser.add_argument("--poll-sec", type=float, default=3.0)
+    parser.add_argument("--source-cleanup-timeout-sec", type=float, default=30.0)
     parser.add_argument("--min-content-chars", type=int, default=20)
     parser.add_argument("--min-summary-chars", type=int, default=20)
     parser.add_argument("--skip-file", action="store_true")

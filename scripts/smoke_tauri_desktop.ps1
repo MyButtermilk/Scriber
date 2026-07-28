@@ -112,6 +112,18 @@ param(
     [int]$RealWorkflowFileTimeoutSec = 240,
     [int]$RealWorkflowYoutubeTimeoutSec = 420,
     [int]$RealWorkflowPollSec = 3,
+    [string]$RealWorkflowEvidenceOutputPath = "",
+    [string]$RealWorkflowYoutubeLaneId = "",
+    [ValidateSet("", "primary", "replacement")]
+    [string]$RealWorkflowYoutubeSelectionMarker = "",
+    [string]$RealWorkflowYoutubeExpectedExtractionLane = "",
+    [ValidateSet("", "audio-provider", "captions-first")]
+    [string]$RealWorkflowYoutubeExecutionMode = "",
+    [double]$RealWorkflowYoutubeDurationMinSec = -1,
+    [double]$RealWorkflowYoutubeDurationMaxSec = -1,
+    [string]$RealWorkflowReleaseTag = "",
+    [string]$RealWorkflowInstallerSha256 = "",
+    [string]$RealWorkflowDataRootSha256 = "",
     [switch]$RealWorkflowSkipFile,
     [switch]$RealWorkflowSkipYoutube,
     [switch]$RealWorkflowNoSummary,
@@ -1625,7 +1637,17 @@ function Test-RealMediaWorkflows {
         throw "Real media workflow smoke requires a session token."
     }
 
-    $outputPath = Join-Path $RuntimeDataDir "installed-real-media-workflows-smoke.json"
+    $outputPath = if ($RealWorkflowEvidenceOutputPath) {
+        [System.IO.Path]::GetFullPath($RealWorkflowEvidenceOutputPath)
+    } else {
+        Join-Path $RuntimeDataDir "installed-real-media-workflows-smoke.json"
+    }
+    if ($RealWorkflowEvidenceOutputPath) {
+        $allowedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "tmp")).TrimEnd("\")
+        if (-not $outputPath.StartsWith($allowedOutputRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Real workflow evidence output must remain below the repository tmp root."
+        }
+    }
     $workflowArgs = @(
         "scripts\smoke_installed_transcription_workflows.py",
         "--base-url",
@@ -1643,6 +1665,33 @@ function Test-RealMediaWorkflows {
         "--poll-sec",
         $RealWorkflowPollSec.ToString()
     )
+    if ($RealWorkflowYoutubeLaneId) {
+        $workflowArgs += @("--youtube-lane-id", $RealWorkflowYoutubeLaneId)
+    }
+    if ($RealWorkflowYoutubeSelectionMarker) {
+        $workflowArgs += @("--youtube-selection-marker", $RealWorkflowYoutubeSelectionMarker)
+    }
+    if ($RealWorkflowYoutubeExpectedExtractionLane) {
+        $workflowArgs += @("--youtube-expected-extraction-lane", $RealWorkflowYoutubeExpectedExtractionLane)
+    }
+    if ($RealWorkflowYoutubeExecutionMode) {
+        $workflowArgs += @("--youtube-execution-mode", $RealWorkflowYoutubeExecutionMode)
+    }
+    if ($RealWorkflowYoutubeDurationMinSec -ge 0) {
+        $workflowArgs += @("--youtube-duration-min", $RealWorkflowYoutubeDurationMinSec.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($RealWorkflowYoutubeDurationMaxSec -ge 0) {
+        $workflowArgs += @("--youtube-duration-max", $RealWorkflowYoutubeDurationMaxSec.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($RealWorkflowReleaseTag) {
+        $workflowArgs += @("--release-tag", $RealWorkflowReleaseTag)
+    }
+    if ($RealWorkflowInstallerSha256) {
+        $workflowArgs += @("--installer-sha256", $RealWorkflowInstallerSha256)
+    }
+    if ($RealWorkflowDataRootSha256) {
+        $workflowArgs += @("--expected-data-root-sha256", $RealWorkflowDataRootSha256)
+    }
     if ($RealWorkflowSkipFile) {
         $workflowArgs += "--skip-file"
     }
@@ -1657,7 +1706,7 @@ function Test-RealMediaWorkflows {
     $env:SCRIBER_SMOKE_SESSION_TOKEN = $Token
     Push-Location $RepoRoot
     try {
-        python @workflowArgs
+        & $PythonPath @workflowArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Installed real media workflow smoke failed with exit code $LASTEXITCODE."
         }
@@ -3101,6 +3150,9 @@ if ($LiveRecordingDurationSec -gt 0 -and ($SimulateBackendCrash -or $SimulateBac
 }
 if ($LiveRecordingDurationSec -gt 0 -and ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)) {
     throw "-LiveRecordingDurationSec cannot be combined with global hotkey smoke options because hotkey smokes override STT settings."
+}
+if ($LiveRecordingDurationSec -gt 0 -and $VerifyMeetingAudioDeviceTest) {
+    throw "-VerifyMeetingAudioDeviceTest cannot be combined with -LiveRecordingDurationSec because the Meeting test forces synthetic capture and would invalidate live microphone evidence."
 }
 if (($LiveRecordingEnvFile -or $LiveRecordingDefaultStt -or $LiveRecordingSonioxMode) -and $LiveRecordingDurationSec -le 0) {
     throw "Live recording provider overrides require -LiveRecordingDurationSec."

@@ -1,5 +1,9 @@
 param(
-    [string]$OutputDir = "build\cache-keys"
+    [string]$OutputDir = "build\cache-keys",
+    [ValidateSet("Official", "ClangPgo", "ClangPgoTail")]
+    [string]$PythonRuntimeFlavor = "Official",
+    [ValidateSet("Disabled", "Enabled")]
+    [string]$PythonJitMode = "Disabled"
 )
 
 $ErrorActionPreference = "Stop"
@@ -7,6 +11,19 @@ $ErrorActionPreference = "Stop"
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 $resolvedOutputDir = Join-Path $repoRoot $OutputDir
 New-Item -ItemType Directory -Force -Path $resolvedOutputDir | Out-Null
+$frontendPackagePath = Join-Path $repoRoot "Frontend\package.json"
+try {
+    $frontendPackage = Get-Content -LiteralPath $frontendPackagePath -Raw | ConvertFrom-Json
+} catch {
+    throw "Frontend package manifest is invalid JSON: $frontendPackagePath"
+}
+$applicationVersion = ([string]$frontendPackage.version).Trim()
+if (
+    -not $applicationVersion -or
+    $applicationVersion -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+) {
+    throw "Frontend package version is not canonical SemVer: $frontendPackagePath"
+}
 
 function Get-RelativePath {
     param([string]$Path)
@@ -298,10 +315,13 @@ Write-KeyFile -Name "tauri-app-binary.txt" -Entries $tauriAppEntries
 
 $rustAudioEntries = New-EntryList
 $rustAudioEntries.Add("constant`ttoolchain`trust-1.97.0")
+$rustAudioEntries.Add("constant`tapplication-version`t$applicationVersion")
 Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
 foreach ($path in @(
     "Frontend/src-tauri/build.rs",
+    "Frontend/src-tauri/tauri.conf.json",
+    "Frontend/src-tauri/icons/icon.ico",
     "Frontend/src-tauri/src/audio_sidecar.rs",
     "Frontend/src-tauri/src/audio_codec.rs",
     "Frontend/src-tauri/src/audio_frame_pipe.rs",
@@ -335,19 +355,45 @@ $sherpaArchiveEntries.Add("constant`tname`tsherpa-onnx-v1.13.3-win-x64-static-MT
 $sherpaArchiveEntries.Add("constant`tsha256`tf6555701d6397d74f1302b0666a661f32708b599a14a5fde80835d4902fcd315")
 Write-KeyFile -Name "sherpa-onnx-archive.txt" -Entries $sherpaArchiveEntries
 
-$backendRuntimeEntries = New-EntryList
+$numpyWheelLockPath = Join-Path $RepoRoot "packaging/wheels/numpy-noblas-wheel-lock-v1.json"
+$numpyWheelLock = Get-Content -LiteralPath $numpyWheelLockPath -Raw | ConvertFrom-Json -Depth 100
+$numpyWheelRelativePath = [string]$numpyWheelLock.artifact.relativePath
+if (
+    [string]::IsNullOrWhiteSpace($numpyWheelRelativePath) -or
+    $numpyWheelRelativePath -notmatch '^packaging/wheels/numpy-[^/]+-cp314-cp314-win_amd64\.whl$'
+) {
+    throw "NumPy no-BLAS wheel lock does not reference the required CPython 3.14 Windows x64 wheel."
+}
+
+$pythonDependencyEntries = New-EntryList
 foreach ($path in @(
     "requirements-base.txt",
     "requirements-build.txt",
     "requirements-release-constraints.txt",
+    "packaging/cpython-windows-runtime-input-lock-v1.json",
+    $numpyWheelRelativePath,
+    "packaging/wheels/numpy-noblas-wheel-lock-v1.json"
+)) {
+    Add-RawFileEntry -Entries $pythonDependencyEntries -Path $path
+}
+$pythonDependencyEntries.Add("constant`tpython-version`t3.14.6")
+$pythonDependencyEntries.Add("constant`tpython-cache-tag`tcpython-314")
+$pythonDependencyEntries.Add("parameter`tpython-runtime-flavor`t$PythonRuntimeFlavor")
+$pythonDependencyEntries.Add("parameter`tpython-jit-mode`t$PythonJitMode")
+Write-KeyFile -Name "python-dependencies.txt" -Entries $pythonDependencyEntries
+
+$backendRuntimeEntries = New-EntryList
+foreach ($entry in $pythonDependencyEntries) {
+    $backendRuntimeEntries.Add($entry)
+}
+foreach ($path in @(
     "packaging/scriber-backend.spec",
     "packaging/backend-sidecar-output-contract.json",
     "packaging/nltk-punkt-tab-lock-v1.json",
-    "packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl",
-    "packaging/wheels/numpy-noblas-wheel-lock-v1.json",
     "packaging/quickjs-youtube-runtime-lock-v1.json",
     "packaging/ffmpeg-profile-b-release-lock-v1.json",
     "scripts/validate_numpy_noblas_wheel.py",
+    "scripts/build_cpython_windows_runtime.ps1",
     "scripts/prepare_nltk_punkt_data.py",
     "scripts/build_quickjs_youtube_runtime.py",
     "scripts/perf/profiles/installer-size/quickjs-runtime-lock-v1.json",

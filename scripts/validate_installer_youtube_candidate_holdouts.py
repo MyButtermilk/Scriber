@@ -1457,7 +1457,7 @@ def _remove_created_private_root(*, scratch_root: Path, root: Path, identity: tu
             return False
         shutil.rmtree(current)
         return not current.exists()
-    except (HoldoutError, OSError):
+    except HoldoutError, OSError:
         # A missing, replaced, or reparse-point path is not ours to delete.
         return False
 

@@ -70,6 +70,9 @@ def test_sidecar_builder_stages_only_locked_quickjs_wrapper_runtime() -> None:
     assert 'Resolve-BackendStableMediaTool -Names @("qjs.exe")' in copier
     assert 'Resolve-BackendStableMediaTool -Names @("qjs-engine.exe")' in copier
     assert 'Resolve-BackendStableMediaTool -Names @("js-runtime-manifest.json")' in copier
+    assert 'Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in copier
+    assert "Copy-Item -LiteralPath $ytDlp" not in initializer
+    assert "Copy-Item -LiteralPath $ytDlp" not in copier
     assert "-VerifyOnly" in copier
     assert '"packaging\\quickjs-youtube-runtime-lock-v1.json"' in source
     assert '"scripts\\build_quickjs_youtube_runtime.py"' in source

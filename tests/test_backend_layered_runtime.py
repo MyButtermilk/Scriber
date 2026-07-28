@@ -169,7 +169,15 @@ def test_src_external_imports_are_explicit_runtime_or_optional_exclusions() -> N
             ):
                 roots.add(node.module.split(".", 1)[0])
 
-    external = roots - set(sys.stdlib_module_names) - {"src", "scripts"}
+    external = (
+        roots
+        - set(sys.stdlib_module_names)
+        - {
+            "backend_runtime",
+            "src",
+            "scripts",
+        }
+    )
     declared = set(APPLICATION_EXTERNAL_IMPORT_ROOTS)
     assert external <= declared, f"Undeclared application imports: {sorted(external - declared)}"
     assert (
@@ -292,7 +300,9 @@ def test_numpy_product_overlay_is_validated_safe_fail_closed_and_pyinstaller_sco
     assert "$env:PYTHONPATH = $script:NumPyPyInstallerOverlay.OverlayRoot" in pyinstaller_block
     assert "-m pip install" not in overlay_function
 
-    assert 'numpy_version = "2.4.6+scriber.noblas.1"' in spec
+    assert 'numpy_version = str(numpy_artifact["version"])' in spec
+    assert 'numpy_artifact.get("pythonTag") != "cp314"' in spec
+    assert 'numpy_artifact.get("abiTag") != "cp314"' in spec
     assert 'os.environ.get("SCRIBER_NUMPY_WHEEL_PATH")' in spec
     assert 'os.environ.get("SCRIBER_NUMPY_OVERLAY_ROOT")' in spec
     assert "numpy_wheel_path != expected_numpy_wheel" in spec
@@ -309,15 +319,24 @@ def test_numpy_product_overlay_is_validated_safe_fail_closed_and_pyinstaller_sco
 
 def test_runtime_cache_key_source_excludes_application_code() -> None:
     script = (REPO_ROOT / "scripts" / "ci" / "write_release_cache_keys.ps1").read_text(encoding="utf-8")
+    dependency_block = script.split("$pythonDependencyEntries = New-EntryList", 1)[1].split(
+        'Write-KeyFile -Name "python-dependencies.txt"', 1
+    )[0]
     runtime_block = script.split("$backendRuntimeEntries = New-EntryList", 1)[1].split(
         'Write-KeyFile -Name "backend-runtime.txt"', 1
     )[0]
     application_block = script.split("$backendEntries = New-EntryList", 1)[1]
 
     assert '"backend_runtime"' in runtime_block
-    assert '"requirements-base.txt"' in runtime_block
-    assert '"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"' in runtime_block
-    assert '"packaging/wheels/numpy-noblas-wheel-lock-v1.json"' in runtime_block
+    assert "$pythonDependencyEntries" in runtime_block
+    assert '"requirements-base.txt"' in dependency_block
+    assert '"requirements-release-constraints.txt"' in dependency_block
+    assert '"packaging/cpython-windows-runtime-input-lock-v1.json"' in dependency_block
+    assert "$numpyWheelRelativePath" in dependency_block
+    assert "cp314-cp314-win_amd64" in script
+    assert '"packaging/wheels/numpy-noblas-wheel-lock-v1.json"' in dependency_block
+    assert "python-runtime-flavor" in dependency_block
+    assert "python-jit-mode" in dependency_block
     assert '"scripts/validate_numpy_noblas_wheel.py"' in runtime_block
     assert '"src"' not in runtime_block
     assert 'Add-GitTrackedEntries -Entries $backendEntries -Paths @("src")' in application_block

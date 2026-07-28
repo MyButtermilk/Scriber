@@ -126,7 +126,7 @@ def _quickjs_self_test_matches(candidate: Path) -> bool:
             timeout=_QUICKJS_SELF_TEST_TIMEOUT_SECONDS,
             **hidden_subprocess_kwargs(),
         )
-    except (OSError, subprocess.SubprocessError):
+    except OSError, subprocess.SubprocessError:
         return False
     return result.returncode == 0 and result.stdout == _QUICKJS_SELF_TEST_STDOUT and result.stderr == b""
 
@@ -173,7 +173,7 @@ def _resolve_quickjs_wrapper(
         if manifest_path.stat().st_size > 64 * 1024:
             return None
         manifest = json.loads(manifest_path.read_text(encoding="utf-8", errors="strict"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+    except OSError, UnicodeError, json.JSONDecodeError:
         return None
     if not isinstance(manifest, dict):
         return None
@@ -282,6 +282,11 @@ def find_media_tool(tool: str) -> str | None:
         return None
     if tool == "qjs":
         return _find_quickjs_wrapper()
+    if tool == "yt-dlp" and is_frozen():
+        # Frozen builds import the pinned PyInstaller package. A pip/distlib
+        # launcher embeds its build-machine Python path and is never a valid
+        # installed fallback, even when inherited through env or PATH.
+        return None
 
     env_name = _TOOL_ENV.get(tool)
     if env_name:

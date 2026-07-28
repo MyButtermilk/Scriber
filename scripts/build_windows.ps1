@@ -102,7 +102,13 @@ param(
     [switch]$RunInstallerUpgradeSmoke,
     [switch]$RunInstallerUninstallSmoke,
     [switch]$RunMediaPreparationSmoke,
+    [ValidateSet("Official", "ClangPgo", "ClangPgoTail")]
+    [string]$PythonRuntimeFlavor = "Official",
+    [ValidateSet("Disabled", "Enabled")]
+    [string]$PythonJitMode = "Disabled",
+    [string]$PythonRuntimeLockPath = "packaging\cpython-windows-runtime-input-lock-v1.json",
     [string]$PythonExecutable = "",
+    [string]$PythonRuntimeExperimentRoot = "",
     [string]$ResearchBuildRoot = "",
     [string]$ResearchToolchainManifest = ""
 )
@@ -255,7 +261,43 @@ if ($pythonExecutableWasExplicit) {
     }
 }
 $resolvedResearchBuildRoot = ""
+$resolvedPythonRuntimeExperimentRoot = ""
+if (-not [string]::IsNullOrWhiteSpace($PythonRuntimeExperimentRoot)) {
+    if (-not $pythonExecutableWasExplicit) {
+        throw "-PythonRuntimeExperimentRoot requires an explicit -PythonExecutable."
+    }
+    $runtimeExperimentCandidate = if ([System.IO.Path]::IsPathRooted($PythonRuntimeExperimentRoot)) {
+        $PythonRuntimeExperimentRoot
+    } else {
+        Join-Path $RepoRoot $PythonRuntimeExperimentRoot
+    }
+    $resolvedPythonRuntimeExperimentRoot = [System.IO.Path]::GetFullPath($runtimeExperimentCandidate).TrimEnd('\', '/')
+    $repoPrefix = $RepoRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    if (-not $resolvedPythonRuntimeExperimentRoot.StartsWith($repoPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "PythonRuntimeExperimentRoot must be a strict descendant of RepoRoot."
+    }
+    $resolvedPythonRuntimeExperimentRoot = Assert-NoResearchReparsePath `
+        -Root $RepoRoot `
+        -Path $resolvedPythonRuntimeExperimentRoot `
+        -Label "PythonRuntimeExperimentRoot"
+    New-Item -ItemType Directory -Path $resolvedPythonRuntimeExperimentRoot -Force | Out-Null
+    foreach ($runtimeChildName in @("dist", "work", "sidecar-cache", "runtime-cache", "payload")) {
+        $runtimeChild = Join-Path $resolvedPythonRuntimeExperimentRoot $runtimeChildName
+        if (Test-Path -LiteralPath $runtimeChild) {
+            $runtimeChildItem = Get-Item -LiteralPath $runtimeChild -Force
+            if (
+                -not $runtimeChildItem.PSIsContainer -or
+                ($runtimeChildItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+            ) {
+                throw "Python runtime experiment child must be a plain directory: $runtimeChild"
+            }
+        }
+    }
+}
 if (-not [string]::IsNullOrWhiteSpace($ResearchBuildRoot)) {
+    if ($resolvedPythonRuntimeExperimentRoot) {
+        throw "Use either -PythonRuntimeExperimentRoot or -ResearchBuildRoot, not both."
+    }
     if (-not $pythonExecutableWasExplicit) {
         throw "-ResearchBuildRoot requires an explicit -PythonExecutable."
     }
@@ -608,6 +650,12 @@ function New-SidecarBuildScriptArguments {
         "scripts\build_tauri_backend_sidecar.ps1",
         "-PythonPath",
         $releasePython,
+        "-PythonRuntimeFlavor",
+        $PythonRuntimeFlavor,
+        "-PythonJitMode",
+        $PythonJitMode,
+        "-PythonRuntimeLockPath",
+        $PythonRuntimeLockPath,
         "-SkipFrontendBuild",
         "-BundleMediaTools",
         "-BundleRustAudioSidecar",
@@ -636,6 +684,13 @@ function New-SidecarBuildScriptArguments {
             "-SidecarCacheRoot", (Join-Path $resolvedResearchBuildRoot "sidecar-cache"),
             "-RuntimeCacheRoot", (Join-Path $resolvedResearchBuildRoot "runtime-cache"),
             "-DeterministicResearchMetadata"
+        )
+    } elseif ($resolvedPythonRuntimeExperimentRoot) {
+        $sidecarArgs += @(
+            "-DistRoot", (Join-Path $resolvedPythonRuntimeExperimentRoot "dist"),
+            "-WorkRoot", (Join-Path $resolvedPythonRuntimeExperimentRoot "work"),
+            "-SidecarCacheRoot", (Join-Path $resolvedPythonRuntimeExperimentRoot "sidecar-cache"),
+            "-RuntimeCacheRoot", (Join-Path $resolvedPythonRuntimeExperimentRoot "runtime-cache")
         )
     }
     if ($ReuseSidecarIfUnchanged) {
@@ -1106,6 +1161,23 @@ try {
 
                 Complete-TrackedReleaseProcesses -Tasks $parallelTasks
                 $parallelTasks = @()
+
+                # The compile-only Tauri build invokes Cargo for every package
+                # binary and can touch target\release\scriber-audio-sidecar.exe.
+                # After all producers join, restore the exact version/hash-bound
+                # cache artifact so bundle input cannot depend on last-writer
+                # timing between the two processes.
+                Invoke-Checked -Label "Rust audio sidecar final cache stage" -Command {
+                    Push-Location $RepoRoot
+                    try {
+                        powershell -NoProfile -ExecutionPolicy Bypass `
+                            -File scripts\build_tauri_backend_sidecar.ps1 `
+                            -RepoRoot $RepoRoot `
+                            -RustAudioStageFromCacheOnly
+                    } finally {
+                        Pop-Location
+                    }
+                }
             } catch {
                 Stop-TrackedReleaseProcesses -Tasks $parallelTasks
                 throw
@@ -1281,6 +1353,8 @@ try {
                 Pop-Location
             }
         }
+    } elseif ($resolvedPythonRuntimeExperimentRoot) {
+        $researchPayloadRoot = Join-Path $resolvedPythonRuntimeExperimentRoot "payload"
     }
 
     if ($RunMediaPreparationSmoke) {
@@ -1659,6 +1733,21 @@ try {
         }
     }
 
+    if ($resolvedPythonRuntimeExperimentRoot) {
+        Invoke-Checked -Label "Stage exact Python runtime experiment payload" -Command {
+            Push-Location $RepoRoot
+            try {
+                & $releasePython scripts\stage_installer_research_payload.py `
+                    --release-root $targetRelease `
+                    --notices (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") `
+                    --output $researchPayloadRoot `
+                    --include-runtime-attestation
+            } finally {
+                Pop-Location
+            }
+        }
+    }
+
     $buildMode = [ordered]@{
         artifactKind = if ($FastLocalStagedApp) { "staged-app" } else { "installer" }
         devOnly = [bool]($FastLocalInstaller -or $FastLocalStagedApp -or $LocalPyInstallerNoClean)
@@ -1678,6 +1767,7 @@ try {
         runtimeAttested = [bool]$runtimeAttestationPath
         pythonExecutableExplicit = $pythonExecutableWasExplicit
         researchBuildIsolated = [bool]$resolvedResearchBuildRoot
+        pythonRuntimeExperimentIsolated = [bool]$resolvedPythonRuntimeExperimentRoot
         researchToolchainExplicit = $researchToolchainExplicit
         researchToolchainHash = $researchToolchainHash
     }
@@ -1732,6 +1822,7 @@ try {
         failed = $true
         pythonExecutableExplicit = $pythonExecutableWasExplicit
         researchBuildIsolated = [bool]$resolvedResearchBuildRoot
+        pythonRuntimeExperimentIsolated = [bool]$resolvedPythonRuntimeExperimentRoot
         researchToolchainExplicit = $researchToolchainExplicit
         researchToolchainHash = $researchToolchainHash
     }

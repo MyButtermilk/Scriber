@@ -28,7 +28,7 @@ FIXED_NOW = datetime(2026, 7, 18, 10, 0, 0, tzinfo=UTC)
 UX_FILE_HASHES = {
     "scripts/perf/doctor.py": "86610903171941f41cb65c48e0b6f037242d78b21b183bbfad5e3e882e572e16",
     "scripts/perf/evaluator/local_wux.py": "5dbc540b4cebe146fa30549ebe05cbf232c1896da9f1db310481f24e28da8d09",
-    "scripts/perf/run.ps1": "c58213a3222e4b9c39d9fce5f700656dd3ca0b8503b2e80b1ea43ac57f2224fa",
+    "scripts/perf/run.ps1": "d48ace9a4db00c07f5f203f7328badc54cd6e7cbf2c72e9a156a84bfc1be416a",
 }
 
 
@@ -381,7 +381,7 @@ def _create_directory_reparse_point(link: Path, target: Path) -> None:
     try:
         os.symlink(target, link, target_is_directory=True)
         return
-    except (NotImplementedError, OSError):
+    except NotImplementedError, OSError:
         pass
     cmd = shutil.which("cmd.exe")
     if not cmd:

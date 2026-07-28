@@ -52,7 +52,7 @@ class LatencyMetricsStore:
                     int(os.getenv("SCRIBER_HOT_PATH_METRICS_RETENTION", "5000") or 5000),
                 ),
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             self._retention_rows = 5000
         self.init_schema()
 
@@ -121,7 +121,7 @@ class LatencyMetricsStore:
         for key, value in (segments or {}).items():
             try:
                 number = float(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 continue
             if math.isfinite(number):
                 payload[str(key)] = number
@@ -193,13 +193,13 @@ class LatencyMetricsStore:
             for key, value in segments.items():
                 try:
                     number = float(value)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     continue
                 if math.isfinite(number):
                     clean_segments[str(key)] = number
             try:
                 total_ms = float(row["total_ms"] or 0.0)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 total_ms = 0.0
             if not math.isfinite(total_ms):
                 total_ms = 0.0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import importlib.metadata
 import io
@@ -79,11 +80,22 @@ FROZEN_EXPORT_COMPAT_IMPORTS: tuple[str, ...] = (
     "reportlab.platypus",
 )
 
-BLOCKED_FROZEN_EXPORT_IMPORTS: tuple[str, ...] = ("lxml",)
+PYTHON314_NATIVE_RUNTIME_IMPORTS: tuple[str, ...] = (
+    "aiohttp",
+    "comtypes",
+    "compression.zstd",
+    "cryptography.fernet",
+    "grpc",
+    "lxml.etree",
+    "numpy",
+    "onnxruntime",
+    "sounddevice",
+    "sqlite3",
+    "ssl",
+)
 
 BLOCKED_FROZEN_UNUSED_PROVIDER_IMPORTS: tuple[str, ...] = (
     "deepgram.agent",
-    "grpc._channel",
     "openai.types.realtime",
 )
 
@@ -514,14 +526,6 @@ def check_frozen_text_export_graph(
             for formatting_marker in ("<w:b/>", "<w:i/>", "<w:numPr>", 'w:ascii="Consolas"'):
                 if formatting_marker not in document_xml:
                     raise RuntimeError(f"{language} DOCX formatting was not preserved")
-        for module_name in BLOCKED_FROZEN_EXPORT_IMPORTS:
-            try:
-                import_module(module_name)
-            except ModuleNotFoundError as exc:
-                if exc.name == module_name:
-                    continue
-                raise
-            raise RuntimeError(f"blocked export import succeeded: {module_name}")
     except Exception as exc:
         return [
             {
@@ -530,6 +534,110 @@ def check_frozen_text_export_graph(
                 "error": f"{type(exc).__name__}: text export runtime graph check failed",
             }
         ]
+    return []
+
+
+def check_python314_native_runtime(
+    *,
+    import_module: Callable[[str], object] = importlib.import_module,
+) -> list[dict[str, str]]:
+    """Exercise the CP314 native/stdlib surface used by source and frozen builds."""
+
+    active_module = "unknown"
+    com_initialized = False
+    comtypes_module: object | None = None
+    grpc_channel: object | None = None
+    sqlite_connection: object | None = None
+    try:
+        loaded: dict[str, object] = {}
+        for module_name in PYTHON314_NATIVE_RUNTIME_IMPORTS:
+            active_module = module_name
+            loaded[module_name] = import_module(module_name)
+
+        aiohttp = loaded["aiohttp"]
+
+        async def exercise_aiohttp() -> None:
+            timeout = aiohttp.ClientTimeout(total=0.01)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                if session.closed:
+                    raise RuntimeError("aiohttp session closed before use")
+            if not session.closed:
+                raise RuntimeError("aiohttp session did not close")
+
+        active_module = "aiohttp"
+        asyncio.run(exercise_aiohttp())
+
+        active_module = "comtypes"
+        comtypes_module = loaded["comtypes"]
+        comtypes_module.CoInitialize()
+        com_initialized = True
+
+        active_module = "compression.zstd"
+        zstd = loaded["compression.zstd"]
+        zstd_payload = b"scriber-python314" * 128
+        if zstd.decompress(zstd.compress(zstd_payload)) != zstd_payload:
+            raise RuntimeError("Zstandard round trip failed")
+
+        active_module = "cryptography.fernet"
+        fernet_module = loaded["cryptography.fernet"]
+        key = fernet_module.Fernet.generate_key()
+        cipher = fernet_module.Fernet(key)
+        if cipher.decrypt(cipher.encrypt(b"scriber")) != b"scriber":
+            raise RuntimeError("cryptography round trip failed")
+
+        active_module = "grpc"
+        grpc = loaded["grpc"]
+        grpc_channel = grpc.insecure_channel("127.0.0.1:1")
+        if grpc_channel is None:
+            raise RuntimeError("gRPC channel construction failed")
+
+        active_module = "lxml.etree"
+        etree = loaded["lxml.etree"]
+        if etree.fromstring(b"<root><item/></root>").tag != "root":
+            raise RuntimeError("lxml parse failed")
+
+        active_module = "numpy"
+        numpy = loaded["numpy"]
+        if int(numpy.asarray([1, 2, 3], dtype=numpy.int64).sum()) != 6:
+            raise RuntimeError("NumPy array operation failed")
+
+        active_module = "onnxruntime"
+        onnxruntime = loaded["onnxruntime"]
+        if not onnxruntime.get_available_providers():
+            raise RuntimeError("ONNX Runtime has no execution provider")
+
+        active_module = "sounddevice"
+        sounddevice = loaded["sounddevice"]
+        if int(sounddevice.get_portaudio_version()[0]) <= 0:
+            raise RuntimeError("PortAudio runtime is unavailable")
+
+        active_module = "sqlite3"
+        sqlite3 = loaded["sqlite3"]
+        sqlite_connection = sqlite3.connect(":memory:")
+        sqlite_connection.execute("CREATE TABLE smoke(value INTEGER)")
+        sqlite_connection.execute("INSERT INTO smoke VALUES (314)")
+        if sqlite_connection.execute("SELECT value FROM smoke").fetchone() != (314,):
+            raise RuntimeError("SQLite round trip failed")
+
+        active_module = "ssl"
+        ssl = loaded["ssl"]
+        if not ssl.OPENSSL_VERSION or ssl.create_default_context() is None:
+            raise RuntimeError("SSL context construction failed")
+    except Exception as exc:
+        return [
+            {
+                "module": f"python314-native-runtime:{active_module}",
+                "reason": "functional CPython 3.14 source/frozen native dependency surface",
+                "error": f"{type(exc).__name__}: native runtime probe failed",
+            }
+        ]
+    finally:
+        if sqlite_connection is not None:
+            sqlite_connection.close()
+        if grpc_channel is not None:
+            grpc_channel.close()
+        if com_initialized and comtypes_module is not None:
+            comtypes_module.CoUninitialize()
     return []
 
 
@@ -810,6 +918,7 @@ def check_runtime_requirements() -> list[dict[str, str]]:
         *version_failures,
         *check_frozen_youtube_only_yt_dlp(),
         *check_frozen_text_export_graph(),
+        *check_python314_native_runtime(),
         *check_provider_initialization_matrix(),
         *check_frozen_build_tool_pruning(),
         *check_frozen_docstring_pruning(),
