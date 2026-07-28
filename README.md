@@ -1,15 +1,15 @@
 <p align="center">
-  <img src="Frontend/client/public/favicon.png" width="88" alt="Scriber app icon">
+  <img src="Frontend/client/public/favicon-dark.svg" width="104" alt="Scriber feather app icon">
 </p>
 
 <h1 align="center">Scriber</h1>
 
 <p align="center">
-  <strong>Turn live speech, YouTube videos, and media files into useful text from one Windows workspace.</strong>
+  <strong>Turn live speech, bot-free meetings, YouTube videos, and media files into useful text from one Windows workspace.</strong>
 </p>
 
 <p align="center">
-  Dictate into any app. Keep every transcript searchable. Choose the cloud or local model that fits the job.
+  Dictate into any app. Capture calls without a joining bot. Keep every transcript searchable. Choose the cloud or local model that fits the job.
 </p>
 
 <p align="center">
@@ -25,6 +25,24 @@
 </p>
 
 ![Scriber live transcription workspace](docs/screenshots/live_mic.png)
+
+## Latest highlights
+
+- **Bot-free Meetings:** record microphone and Windows system audio on one
+  timeline, remove speaker echo with AEC3, and create transcripts, summaries,
+  decisions, action items, cited answers, and reusable exports.
+- **Smarter speaker workflows:** use provider-native speaker turns or optional
+  offline Sherpa-ONNX diarization, then confirm names with Meeting-local labels,
+  an opt-in Voice Library, and optional Outlook Calendar context.
+- **Faster everyday dictation:** separate global shortcuts for faithful text and
+  prompt-driven post-processing, backed by native WASAPI capture, mic
+  pre-warming, and a responsive recording overlay.
+- **More provider choice:** multilingual Modulate.AI batch and realtime
+  transcription, Soniox US/EU routing, cloud streaming and batch providers, and
+  downloadable local ONNX models share the same workflow.
+- **Richer results:** German and English interface localization, synchronized
+  summary navigation, transcript search, and polished PDF/DOCX export across
+  Live Mic, Meetings, YouTube, and File.
 
 ## One desktop. Every spoken workflow.
 
@@ -121,7 +139,7 @@ summary, decisions, action items, cited chat answers, and reusable exports.
 
 Every source lands in the same local transcript library. From there, Scriber helps turn raw speech into something you can actually use.
 
-- Search across live recordings, YouTube videos, and imported files
+- Search across live recordings, Meetings, YouTube videos, and imported files
 - Automatic or manual summaries
 - Follow structured File and YouTube summaries with a scroll-synchronized table of contents whose label follows the summary language
 - Separate models and prompts for summaries and live post-processing
@@ -222,7 +240,7 @@ The installed app is more than a packaged website:
 
 - **Tauri 2 shell** for tray actions, autostart, global shortcuts, single-instance behavior, updates, and backend supervision
 - **Rust audio sidecar** for crash-isolated WASAPI microphone capture and pre-warming
-- **React workspace** for fast navigation across Live Mic, YouTube, File, Settings, Console, and transcript details
+- **React workspace** for fast navigation across Live Mic, Meetings, YouTube, File, Settings, Console, and transcript details
 - **Python backend sidecar** for provider routing, job state, summaries, local storage, and support tooling
 - **Bundled media stack** with ffmpeg, ffprobe, yt-dlp extraction support, and a bounded QuickJS-ng runtime
 - **Signed updater artifacts** with published checksums and release diagnostics
