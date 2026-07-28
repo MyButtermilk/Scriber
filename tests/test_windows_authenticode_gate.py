@@ -256,6 +256,18 @@ def test_release_cache_publisher_fails_closed_and_validates_native_zip_inventory
     assert "ZIP contains an unsafe path" in script
 
 
+def test_ffmpeg_cache_publisher_never_clobbers_the_immutable_locked_asset() -> None:
+    script = PUBLISH_FFMPEG_PROFILE_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'LockPath = "packaging\\ffmpeg-profile-b-release-lock-v1.json"' in script
+    assert "does not match the immutable release lock" in script
+    assert "Refusing to overwrite FFmpeg Profile B asset" in script
+    assert "Reused immutable FFmpeg Profile B release artifact" in script
+    assert "Assert-FileIdentity" in script
+    upload_block = script[script.index('"upload",') :]
+    assert '"--clobber"' not in upload_block
+
+
 @pytest.mark.parametrize(
     ("script", "extra_args", "expected"),
     [

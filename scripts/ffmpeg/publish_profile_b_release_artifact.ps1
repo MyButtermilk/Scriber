@@ -5,13 +5,23 @@ param(
     [string]$Tag,
     [Parameter(Mandatory = $true)]
     [string]$AssetName,
-    [string]$BuildRoot = "build\ffmpeg-profile-b-msys2"
+    [string]$BuildRoot = "build\ffmpeg-profile-b-msys2",
+    [string]$LockPath = "packaging\ffmpeg-profile-b-release-lock-v1.json"
 )
 
 $ErrorActionPreference = "Stop"
+$repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 if ($Tag -notmatch '^ffmpeg-profile-b-n\d+(?:\.\d+)?-v\d+$') {
     throw "Refusing FFmpeg cache publication for non-cache release tag '$Tag'."
+}
+
+function Resolve-RepoPath {
+    param([string]$Path)
+    if ([System.IO.Path]::IsPathRooted($Path)) {
+        return [System.IO.Path]::GetFullPath($Path)
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $Path))
 }
 
 function Write-GitHubOutput {
@@ -47,45 +57,37 @@ function Invoke-GhCommand {
     }
 }
 
-function Remove-SupersededCacheAssets {
-    param([string]$ReleaseTag, [string]$KeepAssetName)
-
+function Get-ReleaseAssets {
     $previousPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = "Continue"
-        $assets = @()
-        for ($attempt = 1; $attempt -le 5; $attempt++) {
-            $assetsJson = & gh release view $ReleaseTag --repo $Repo --json assets 2>$null
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "Could not list FFmpeg cache assets for '$ReleaseTag'; superseded assets were not pruned."
-                return 0
-            }
-            $assets = @(($assetsJson | ConvertFrom-Json).assets)
-            if ($assets.name -contains $KeepAssetName) {
-                break
-            }
-            if ($attempt -lt 5) {
-                Start-Sleep -Seconds 1
-            }
+        $assetsJson = & gh release view $Tag --repo $Repo --json assets 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            return $null
         }
-        $assets = @(
-            $assets |
-                Sort-Object -Property `
-                    @{ Expression = { [DateTimeOffset]$_.createdAt }; Descending = $true }, `
-                    @{ Expression = { if ([string]$_.apiUrl -match '/(\d+)$') { [int64]$Matches[1] } else { 0 } }; Descending = $true }, `
-                    @{ Expression = { [string]$_.name }; Descending = $true }
-        )
-        $removed = 0
-        foreach ($asset in @($assets | Select-Object -Skip 1)) {
-            $null = & gh release delete-asset $ReleaseTag ([string]$asset.name) --repo $Repo --yes
-            if ($LASTEXITCODE -ne 0) {
-                throw "Deleting superseded FFmpeg cache asset '$($asset.name)' failed."
-            }
-            $removed += 1
-        }
-        return $removed
+        return @((($assetsJson | ConvertFrom-Json).assets))
     } finally {
         $ErrorActionPreference = $previousPreference
+    }
+}
+
+function Assert-FileIdentity {
+    param(
+        [string]$Path,
+        [long]$ExpectedSize,
+        [string]$ExpectedSha256,
+        [string]$Label
+    )
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label is missing: $Path"
+    }
+    $item = Get-Item -LiteralPath $Path
+    if ([long]$item.Length -ne $ExpectedSize) {
+        throw "$Label size mismatch: expected $ExpectedSize bytes, found $($item.Length)."
+    }
+    $actualSha256 = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSha256 -cne $ExpectedSha256) {
+        throw "$Label SHA-256 mismatch: expected $ExpectedSha256, found $actualSha256."
     }
 }
 
@@ -93,6 +95,81 @@ Write-GitHubOutput -Name "published" -Value "false"
 
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     Stop-Soft "GitHub CLI is not available; skipping FFmpeg Profile B release artifact publish."
+}
+
+$resolvedLockPath = Resolve-RepoPath -Path $LockPath
+if (-not (Test-Path -LiteralPath $resolvedLockPath -PathType Leaf)) {
+    throw "FFmpeg Profile B release lock is missing: $resolvedLockPath"
+}
+$lock = Get-Content -LiteralPath $resolvedLockPath -Raw | ConvertFrom-Json
+if (
+    [int]$lock.schemaVersion -ne 1 -or
+    [string]$lock.profile -cne "profile-b" -or
+    [string]$lock.repository -cne $Repo -or
+    [string]$lock.release.tag -cne $Tag -or
+    [string]$lock.release.asset.name -cne $AssetName
+) {
+    throw "FFmpeg Profile B publication request does not match the immutable release lock."
+}
+$lockedArchiveSize = [long]$lock.release.asset.sizeBytes
+$lockedArchiveSha256 = [string]$lock.release.asset.sha256
+if (
+    $lockedArchiveSize -le 0 -or
+    $lockedArchiveSha256 -cnotmatch '^[0-9a-f]{64}$'
+) {
+    throw "FFmpeg Profile B release lock has an invalid archive identity."
+}
+
+$packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("scriber-ffmpeg-profile-b-artifact-" + [System.Guid]::NewGuid().ToString("N"))
+$assetPath = Join-Path ([System.IO.Path]::GetTempPath()) $AssetName
+if (Test-Path -LiteralPath $assetPath -PathType Leaf) {
+    Remove-Item -LiteralPath $assetPath -Force
+}
+
+$releaseAssets = Get-ReleaseAssets
+if ($null -ne $releaseAssets) {
+    $matchingAssets = @($releaseAssets | Where-Object { [string]$_.name -ceq $AssetName })
+    if ($matchingAssets.Count -gt 1) {
+        throw "FFmpeg Profile B release contains duplicate locked assets."
+    }
+    if ($matchingAssets.Count -eq 1) {
+        $matchingAsset = $matchingAssets[0]
+        $reportedDigest = [string]$matchingAsset.digest
+        if (
+            [long]$matchingAsset.size -ne $lockedArchiveSize -or
+            $reportedDigest -cne "sha256:$lockedArchiveSha256"
+        ) {
+            throw "Refusing to overwrite FFmpeg Profile B asset '$AssetName': the published asset differs from the immutable release lock."
+        }
+        $downloadExitCode = Invoke-GhCommand -Arguments @(
+            "release",
+            "download",
+            $Tag,
+            "--repo",
+            $Repo,
+            "--pattern",
+            $AssetName,
+            "--dir",
+            ([System.IO.Path]::GetDirectoryName($assetPath)),
+            "--clobber"
+        )
+        if ($downloadExitCode -ne 0) {
+            throw "Downloading the existing locked FFmpeg Profile B asset failed."
+        }
+        Assert-FileIdentity `
+            -Path $assetPath `
+            -ExpectedSize $lockedArchiveSize `
+            -ExpectedSha256 $lockedArchiveSha256 `
+            -Label "Published FFmpeg Profile B archive"
+        Write-Host "Reused immutable FFmpeg Profile B release artifact '$AssetName'; no archive or upload was needed."
+        Write-GitHubOutput -Name "published" -Value "true"
+        Write-GitHubOutput -Name "source" -Value "existing-locked-release"
+        Remove-Item -LiteralPath $assetPath -Force
+        return
+    }
+    if ($releaseAssets.Count -gt 0) {
+        throw "Refusing FFmpeg Profile B publication because the fixed cache release already contains a different asset."
+    }
 }
 
 $requiredPaths = @(
@@ -106,12 +183,6 @@ foreach ($path in $requiredPaths) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         Stop-Soft "Cannot publish FFmpeg Profile B release artifact because required file is missing: $path"
     }
-}
-
-$packageRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("scriber-ffmpeg-profile-b-artifact-" + [System.Guid]::NewGuid().ToString("N"))
-$assetPath = Join-Path ([System.IO.Path]::GetTempPath()) $AssetName
-if (Test-Path -LiteralPath $assetPath -PathType Leaf) {
-    Remove-Item -LiteralPath $assetPath -Force
 }
 
 try {
@@ -157,6 +228,11 @@ try {
         }
     }
     Compress-Archive -Path (Join-Path $packageRoot "*") -DestinationPath $assetPath -CompressionLevel Fastest -Force
+    Assert-FileIdentity `
+        -Path $assetPath `
+        -ExpectedSize $lockedArchiveSize `
+        -ExpectedSha256 $lockedArchiveSha256 `
+        -Label "Prepared FFmpeg Profile B archive"
 
     $releaseUploadExitCode = Invoke-GhCommand -Arguments @(
         "release",
@@ -164,16 +240,15 @@ try {
         $Tag,
         $assetPath,
         "--repo",
-        $Repo,
-        "--clobber"
+        $Repo
     )
     if ($releaseUploadExitCode -ne 0) {
         Stop-Soft "Failed to upload FFmpeg Profile B release artifact '$AssetName'."
     }
-    $prunedAssetCount = Remove-SupersededCacheAssets -ReleaseTag $Tag -KeepAssetName $AssetName
 
-    Write-Host "Published FFmpeg Profile B release artifact '$AssetName' to '$Tag'; pruned $prunedAssetCount superseded asset(s)."
+    Write-Host "Published the exact locked FFmpeg Profile B release artifact '$AssetName' to '$Tag'."
     Write-GitHubOutput -Name "published" -Value "true"
+    Write-GitHubOutput -Name "source" -Value "new-locked-release"
 } finally {
     if (Test-Path -LiteralPath $packageRoot -PathType Container) {
         Remove-Item -LiteralPath $packageRoot -Recurse -Force

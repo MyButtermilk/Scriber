@@ -945,6 +945,9 @@ def test_finished_component_cache_publication_is_parallel_and_post_release() -> 
     assert evidence_step.get("continue-on-error") is not True
     cache_condition = str(cache_step["if"])
     assert all(status_function not in cache_condition for status_function in ("always()", "failure()", "cancelled()"))
+    assert cache_step["env"]["SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE"] == (
+        "${{ steps.ffmpeg-profile-b-resolve.outputs.usable != 'true' && 'true' || 'false' }}"
+    )
     assert 'phase="published"' in publisher
     assert "published_report = verify_github_release_state(" in publisher
     assert "post_publish_live_ref_report = validate_live_release_ref(" in publisher

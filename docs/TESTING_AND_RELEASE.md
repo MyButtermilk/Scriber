@@ -1469,6 +1469,10 @@ Actions cache scope isolation prevents a new tag from seeing a previously saved
 cache. Every restored copy is still validated with the Profile B manifest and
 media-preparation smoke before it can be bundled. Refresh it only through the
 manual release-cache refresh workflow path after real Profile B input changes.
+The versioned tag and locked ZIP are immutable: a valid existing asset is
+reused without repacking or upload, and any byte mismatch fails closed. A real
+Profile B payload change requires a new `vN` cache tag and a new reviewed lock;
+global cache refreshes must never clobber the current locked generation.
 The v4 gate explicitly requires the WAV muxer and proves WebM/Opus to mono
 16 kHz PCM WAV conversion for local ASR and speaker separation; an older v3
 binary must be rejected rather than silently reused.

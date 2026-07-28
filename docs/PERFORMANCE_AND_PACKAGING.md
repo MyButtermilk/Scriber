@@ -772,7 +772,10 @@ In GitHub release builds, Profile B reuse is layered:
 
 When a real Profile B rebuild is required, refresh the internal artifact through
 the manual release-cache refresh workflow path. Normal app version changes
-alone must not rebuild or republish Profile B.
+alone must not rebuild or republish Profile B. Each versioned Profile B tag is
+immutable: matching locked bytes are reused as-is, a mismatch blocks
+publication, and changed payloads require a new tag/lock generation rather than
+`--clobber` on an existing asset.
 
 Profile B keeps required Scriber capabilities:
 

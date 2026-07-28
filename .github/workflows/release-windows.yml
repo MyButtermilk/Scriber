@@ -2473,7 +2473,7 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || steps.ffmpeg-profile-b-resolve.outputs.usable != 'true') && 'true' || 'false' }}
+          SCRIBER_PUBLISH_FFMPEG_FINISHED_CACHE: ${{ steps.ffmpeg-profile-b-resolve.outputs.usable != 'true' && 'true' || 'false' }}
           SCRIBER_PUBLISH_RUST_AUDIO_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.rust-audio-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-audio-sidecar-restored != 'true')) && 'true' || 'false' }}
           SCRIBER_PUBLISH_RUST_DIARIZATION_FINISHED_CACHE: ${{ (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.rust-diarization-sidecar-cache.outputs.cache-hit != 'true' && steps.component-cache-artifacts.outputs.rust-diarization-sidecar-restored != 'true')) && 'true' || 'false' }}
           SCRIBER_PUBLISH_BACKEND_RUNTIME_FINISHED_CACHE: ${{ steps.backend-runtime-final-validation.outputs.usable == 'true' && (env.SCRIBER_PUBLISH_RELEASE_CACHE_ARTIFACTS == 'true' || (steps.backend-runtime-cache.outputs.cache-hit != 'true' && steps.backend-runtime-artifact.outputs.restored != 'true')) && 'true' || 'false' }}

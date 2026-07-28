@@ -1709,7 +1709,10 @@ Already implemented and should not be regressed:
 - FFmpeg Profile B release builds restore from Actions cache first, then from
   the internal reusable GitHub release artifact `ffmpeg-profile-b-n7.0-v4`, and
   rebuild through MSYS2 only when restored Profile B tools are absent or fail
-  validation.
+  validation. Treat every versioned Profile B tag and locked ZIP as immutable:
+  reuse an exact existing asset, fail closed on any mismatch, and introduce a
+  new `vN` tag plus reviewed lock for changed bytes. General cache refreshes
+  must never clobber the locked generation.
 - Profile B ffmpeg media tools, about `5.11 MiB` installed. Meeting
   finalization requires the FLAC encoder, Matroska and Ogg muxers, and `amix`;
   keep all four in the profile and fixture gate.
