@@ -152,8 +152,9 @@
   --neu-light: 0 0% 100%;
   --neu-dark: 220 10% 82%;
 
-  /* Sidebar - same surface as main for unified feel */
-  --sidebar: 220 15% 91%;
+  /* Sidebar shell - a restrained step darker than the workspace so the
+     navigation remains structurally distinct in the light theme as well. */
+  --sidebar: 220 15% 89%;
 
   /* Background - cool gray base (matches neu-bg) */
   --background: 220 15% 91%;
@@ -175,7 +176,7 @@
   --secondary-foreground: 220 20% 25%;
 
   --muted: 220 15% 88%;
-  --muted-foreground: 220 10% 45%;
+  --muted-foreground: 220 11% 39%;
 
   --accent: 220 15% 90%;
   --accent-foreground: 220 20% 15%;
@@ -523,8 +524,10 @@ html:has(body[data-scroll-locked]) {
   transition: none;
 }
 
-/* Active nav item - raised from surface */
-.neu-nav-active {
+/* Shared selected surface. Navigation, segmented controls, provider choices,
+   and selected rows use one raised treatment throughout the application. */
+.neu-nav-active,
+.ui-selection-toggle[data-state="on"] {
   background: var(--neu-surface-alt);
   box-shadow: var(--neu-raised-1);
   border: 1px solid var(--neu-stroke);
@@ -532,7 +535,8 @@ html:has(body[data-scroll-locked]) {
   position: relative;
 }
 
-.neu-nav-active::before {
+.neu-nav-active::before,
+.ui-selection-toggle[data-state="on"]::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -708,13 +712,15 @@ html:has(body[data-scroll-locked]) {
   border: 1px solid rgba(255, 255, 255, 0.04);
 }
 
-.dark .neu-nav-active {
+.dark .neu-nav-active,
+.dark .ui-selection-toggle[data-state="on"] {
   background: var(--neu-surface-alt);
   box-shadow: var(--neu-raised-1);
   border: 1px solid var(--neu-stroke);
 }
 
-.dark .neu-nav-active::before {
+.dark .neu-nav-active::before,
+.dark .ui-selection-toggle[data-state="on"]::before {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.03),
     inset 0 -1px 0 rgba(0, 0, 0, 0.1);
@@ -1129,20 +1135,21 @@ html:has(body[data-scroll-locked]) {
   --workspace-soft: rgba(255, 255, 255, 0.045);
 }
 
-.transcription-intro,
+.transcription-intro {
+  background: transparent;
+  box-shadow: none;
+}
+
 .transcript-detail-header-shell {
-  border-color: hsl(var(--border) / 0.72);
-  background: linear-gradient(135deg, hsl(var(--foreground) / 0.035), transparent 54%), hsl(var(--card) / 0.9);
-  box-shadow:
-    0 22px 48px -42px hsl(var(--foreground) / 0.34),
-    inset 0 1px 0 hsl(var(--foreground) / 0.055);
+  background: transparent;
+  box-shadow: none;
 }
 
 .transcription-intro.sticky {
+  background: hsl(var(--background) / 0.94);
   box-shadow:
     0 -16px 0 hsl(var(--background)),
-    0 22px 48px -42px hsl(var(--foreground) / 0.34),
-    inset 0 1px 0 hsl(var(--foreground) / 0.055);
+    0 18px 34px -32px hsl(var(--foreground) / 0.32);
 }
 
 .transcript-detail-header-sticky {
@@ -1154,9 +1161,9 @@ html:has(body[data-scroll-locked]) {
   width: 100%;
   max-width: 1040px;
   margin-inline: auto;
-  padding: 0.5rem 1rem;
-  border: 1px solid hsl(var(--border) / 0.72);
-  border-radius: 20px;
+  padding: 0.625rem 0;
+  border: 0;
+  border-radius: 0;
   pointer-events: auto;
 }
 
@@ -1190,7 +1197,15 @@ html:has(body[data-scroll-locked]) {
 }
 
 .meetings-history-rail {
-  background: color-mix(in srgb, var(--live-control) 82%, var(--live-core));
+  background: color-mix(in srgb, var(--live-control) 84%, var(--live-core));
+}
+
+.meetings-history-header,
+.meetings-history-empty {
+  background: var(--workspace-soft);
+  box-shadow:
+    inset 0 1px 0 var(--live-highlight),
+    inset 0 0 0 1px var(--live-hairline);
 }
 
 .meetings-workspace-panel {
@@ -3619,6 +3634,11 @@ html:has(body[data-scroll-locked]) {
   line-height: 1.65;
 }
 
+.summary-document[data-summary-format="html"] > section:not(:first-of-type),
+.summary-document--markdown {
+  max-width: 76ch;
+}
+
 .summary-document[data-summary-format="html"] > section:first-of-type > ul {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -5368,38 +5388,94 @@ html:has(body[data-scroll-locked]) {
 
 .settings-page .language-dropdown-header,
 .settings-page .model-dropdown-header {
-  min-height: 56px;
-  gap: 12px;
-  border-radius: 14px;
-  padding: 14px 18px;
+  min-height: 42px;
+  gap: 10px;
+  border-radius: 12px;
+  padding: 9px 12px;
 }
 
 .settings-page .language-dropdown-selected-text,
 .settings-page .model-dropdown-selected-text {
-  font-size: 0.98rem;
+  font-size: 0.84rem;
+  font-weight: 650;
+  text-shadow: none;
 }
 
 .settings-page .mic-device-dropdown-header {
-  min-height: 38px;
-  gap: 8px;
+  min-height: 42px;
+  gap: 10px;
   border-radius: 12px;
   padding: 9px 12px;
 }
 
 .settings-page .mic-device-dropdown-selected-text {
-  font-size: 0.82rem;
+  font-size: 0.84rem;
   font-weight: 650;
   line-height: 1.2;
   text-shadow: none;
+}
+
+.settings-page .mic-device-dropdown,
+.settings-page .language-dropdown {
+  --mic-dd-color-on: hsl(var(--primary));
+  --mic-dd-item-hover: hsl(var(--foreground) / 0.045);
+  --mic-dd-item-active-bg: hsl(var(--primary) / 0.075);
+  --mic-dd-glow-on: none;
+  --mic-dd-wave-on: transparent;
+  --mic-dd-ambient-on: hsl(var(--primary) / 0.18);
+  --lang-dd-color-on: hsl(var(--primary));
+  --lang-dd-item-hover: hsl(var(--foreground) / 0.045);
+  --lang-dd-item-active-bg: hsl(var(--primary) / 0.075);
+  --lang-dd-glow-on: none;
+  --lang-dd-wave-on: transparent;
+  --lang-dd-ambient-on: hsl(var(--primary) / 0.18);
+}
+
+.settings-page .mic-device-dropdown-header,
+.settings-page .language-dropdown-header,
+.settings-page .model-dropdown-header {
+  border-color: hsl(var(--foreground) / 0.13);
+  background: hsl(var(--background) / 0.74);
+  box-shadow:
+    inset 0 1px 0 hsl(var(--foreground) / 0.035),
+    0 10px 24px -22px hsl(var(--foreground) / 0.42);
+  transition:
+    border-color var(--duration-quick) var(--ease-smooth-out),
+    background-color var(--duration-quick) var(--ease-smooth-out),
+    box-shadow var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-micro) var(--ease-smooth-out);
+}
+
+.settings-page .mic-device-dropdown.is-open .mic-device-dropdown-header,
+.settings-page .language-dropdown.is-open .language-dropdown-header,
+.settings-page .model-dropdown.is-open .model-dropdown-header {
+  border-color: hsl(var(--primary) / 0.45);
+  border-bottom-color: hsl(var(--primary) / 0.45);
+  background: hsl(var(--background));
+  box-shadow:
+    0 0 0 3px hsl(var(--primary) / 0.1),
+    0 14px 30px -22px hsl(var(--foreground) / 0.42),
+    inset 0 1px 0 hsl(var(--foreground) / 0.035);
 }
 
 .settings-page .mic-device-dropdown-selected-text.is-selected {
   color: hsl(var(--foreground));
 }
 
-.settings-page .mic-device-dropdown-chevron {
-  width: 16px;
-  height: 16px;
+.settings-page .language-dropdown-selected-text.is-selected,
+.settings-page .model-dropdown-selected-text.is-selected {
+  color: hsl(var(--foreground));
+}
+
+.settings-page .mic-device-dropdown-chevron,
+.settings-page .language-dropdown-chevron,
+.settings-page .model-dropdown-chevron {
+  box-sizing: content-box;
+  width: 15px;
+  height: 15px;
+  border-radius: 7px;
+  padding: 3px;
+  background: hsl(var(--foreground) / 0.045);
 }
 
 .settings-page .mic-device-dropdown-tray {
@@ -5413,7 +5489,12 @@ html:has(body[data-scroll-locked]) {
 .settings-page .mic-device-dropdown-tray-inner {
   margin: 6px 0;
   padding: 6px;
-  border-radius: 14px;
+  border: 1px solid hsl(var(--foreground) / 0.13);
+  border-radius: 12px;
+  background: hsl(var(--popover) / 0.98);
+  box-shadow:
+    0 22px 48px -28px hsl(var(--foreground) / 0.48),
+    inset 0 1px 0 hsl(var(--foreground) / 0.04);
 }
 
 .settings-page .mic-device-list {
@@ -5421,7 +5502,13 @@ html:has(body[data-scroll-locked]) {
 }
 
 .settings-page .mic-device-item {
-  border-radius: 10px;
+  min-height: 40px;
+  border-radius: 8px;
+}
+
+.settings-page .mic-device-item.is-selected {
+  background: hsl(var(--primary) / 0.075);
+  box-shadow: inset 2px 0 0 hsl(var(--primary) / 0.72);
 }
 
 .settings-page .mic-device-label {
@@ -5430,7 +5517,7 @@ html:has(body[data-scroll-locked]) {
 }
 
 .settings-page .mic-device-name {
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-weight: 550;
   line-height: 1.2;
   text-shadow: none;
@@ -5443,7 +5530,9 @@ html:has(body[data-scroll-locked]) {
 .settings-page .mic-device-check {
   width: 14px;
   height: 14px;
+  stroke: hsl(var(--primary));
   stroke-width: 3;
+  filter: none;
 }
 
 .settings-page .mic-device-star-label {
@@ -5455,9 +5544,75 @@ html:has(body[data-scroll-locked]) {
   height: 15px;
 }
 
+.settings-page .mic-device-row-waves,
+.settings-page .language-row-waves,
+.settings-page .model-row-waves {
+  display: none;
+}
+
+.settings-page .language-dropdown-tray-inner,
+.settings-page .model-dropdown-tray-inner {
+  margin: 6px 0;
+  padding: 6px;
+  border: 1px solid hsl(var(--foreground) / 0.13);
+  border-radius: 12px;
+  background: hsl(var(--popover) / 0.98);
+  box-shadow:
+    0 22px 48px -28px hsl(var(--foreground) / 0.48),
+    inset 0 1px 0 hsl(var(--foreground) / 0.04);
+}
+
+.settings-page .language-item,
+.settings-page .model-item {
+  min-height: 40px;
+  border-radius: 8px;
+}
+
+.settings-page .language-item.is-selected,
+.settings-page .model-item.is-selected {
+  background: hsl(var(--primary) / 0.075);
+  box-shadow: inset 2px 0 0 hsl(var(--primary) / 0.72);
+}
+
+.settings-page .language-option-label,
+.settings-page .model-option-label {
+  gap: 9px;
+  padding: 8px 10px;
+}
+
+.settings-page .language-name,
+.settings-page .model-name {
+  font-size: 0.82rem;
+  font-weight: 550;
+  text-shadow: none;
+}
+
+.settings-page .language-check,
+.settings-page .model-check {
+  width: 14px;
+  height: 14px;
+  stroke: hsl(var(--primary));
+  stroke-width: 3;
+  filter: none;
+}
+
+.settings-page .language-flag-icon {
+  width: 24px;
+  height: 17px;
+  box-shadow: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .settings-page .mic-device-dropdown-header:hover,
+  .settings-page .language-dropdown-header:hover,
+  .settings-page .model-dropdown-header:hover {
+    border-color: hsl(var(--foreground) / 0.2);
+    background: hsl(var(--background) / 0.92);
+  }
+}
+
 .settings-page .settings-section-attention {
   border-color: rgb(37 99 235 / 0.34);
-  border-radius: 16px;
   animation: settingsSectionAttention 1.35s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -5468,17 +5623,14 @@ html:has(body[data-scroll-locked]) {
 
 @keyframes settingsSectionAttention {
   0% {
-    background: rgb(37 99 235 / 0);
     box-shadow: inset 0 0 0 0 rgb(37 99 235 / 0);
   }
   18% {
-    background: rgb(37 99 235 / 0.08);
     box-shadow:
-      inset 0 0 0 1px rgb(37 99 235 / 0.18),
-      0 14px 32px rgb(37 99 235 / 0.08);
+      inset 0 0 0 1px rgb(37 99 235 / 0.24),
+      0 14px 32px rgb(37 99 235 / 0.12);
   }
   100% {
-    background: rgb(37 99 235 / 0);
     box-shadow: inset 0 0 0 0 rgb(37 99 235 / 0);
   }
 }
@@ -5486,7 +5638,6 @@ html:has(body[data-scroll-locked]) {
 @media (prefers-reduced-motion: reduce) {
   .settings-page .settings-section-attention {
     animation: none;
-    background: rgb(37 99 235 / 0.07);
     box-shadow: inset 0 0 0 1px rgb(37 99 235 / 0.18);
   }
 }

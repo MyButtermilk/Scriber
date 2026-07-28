@@ -1,12 +1,5 @@
 import type { MouseEvent } from "react";
-import { Monitor } from "lucide-react";
 import { cn } from "@/lib/utils";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useTheme } from "@/components/theme-provider";
 import { useI18n } from "@/i18n";
 
@@ -16,7 +9,7 @@ type ThemeToggleProps = {
 
 export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
   const { t } = useI18n();
-  const { theme, resolvedTheme, setTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
   const isDark = resolvedTheme === "dark";
 
   const handleToggleClick = (event: MouseEvent<HTMLButtonElement>) => {
@@ -30,7 +23,7 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
   };
 
   return (
-    <div className={cn("flex items-center gap-1", align === "edge" && "w-full px-1.5")}>
+    <div className={cn("flex items-center", align === "edge" && "shrink-0")}>
       <button
         type="button"
         role="switch"
@@ -106,37 +99,6 @@ export function ThemeToggle({ align = "compact" }: ThemeToggleProps) {
           </span>
         </span>
       </button>
-
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            aria-label={t("Theme mode options")}
-            className={cn(
-              "h-7 w-7 shrink-0 rounded-full border border-border/60 bg-card/70 text-muted-foreground transition-colors hover:bg-accent/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
-              theme === "system" && (align === "edge" ? "text-primary" : "border-primary/60 text-primary"),
-              align === "edge" &&
-                "ml-auto mr-0.5 rounded-md border-transparent bg-transparent text-muted-foreground/80 hover:bg-accent/45",
-            )}
-          >
-            <Monitor className="mx-auto h-3.5 w-3.5" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => setTheme("light")} className="justify-between gap-3">
-            <span>{t("Light")}</span>
-            {theme === "light" && <span className="text-primary">✓</span>}
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setTheme("dark")} className="justify-between gap-3">
-            <span>{t("Dark")}</span>
-            {theme === "dark" && <span className="text-primary">✓</span>}
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => setTheme("system")} className="justify-between gap-3">
-            <span>{t("System")}</span>
-            {theme === "system" && <span className="text-primary">✓</span>}
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
     </div>
   );
 }

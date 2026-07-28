@@ -1225,13 +1225,15 @@ export default function LiveMic() {
                 </div>
               )}
 
-              <div className="live-mic-signal-bed mt-3 overflow-hidden rounded-lg px-1">
-                <AudioVisualizer
-                  isRecording={isRecording}
-                  audioLevelRef={audioLevelRef}
-                  barCount={visualizerBarCount}
-                />
-              </div>
+              {isRecording ? (
+                <div className="live-mic-signal-bed mt-3 overflow-hidden rounded-lg px-1">
+                  <AudioVisualizer
+                    isRecording={isRecording}
+                    audioLevelRef={audioLevelRef}
+                    barCount={visualizerBarCount}
+                  />
+                </div>
+              ) : null}
             </div>
           </div>
         </section>

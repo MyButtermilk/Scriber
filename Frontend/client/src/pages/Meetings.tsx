@@ -2662,9 +2662,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       )}
 
       <h2 className="sr-only">{t("Meeting workspace")}</h2>
-      <div className="grid min-h-[680px] flex-1 gap-4 min-[1100px]:grid-cols-[232px_minmax(0,1fr)]">
-        <aside className={`${selectedId ? "hidden min-[1100px]:block" : ""} meetings-history-rail rounded-[22px] p-2`}>
-          <div className="flex items-center justify-between px-2 py-2">
+      <div className="grid min-h-[680px] flex-1 gap-4 min-[1100px]:grid-cols-[244px_minmax(0,1fr)]">
+        <aside className={`${selectedId ? "hidden min-[1100px]:block" : ""} meetings-history-rail rounded-[22px] p-3`}>
+          <div className="meetings-history-header flex items-center justify-between rounded-[16px] px-3 py-3">
             <div>
               <p className="text-sm font-semibold">{t("Meetings")}</p>
               <p className="text-xs text-muted-foreground">
@@ -2692,7 +2692,15 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             onOpen={(meetingId) => setLocation(`/meetings/${meetingId}`)}
             onRefresh={() => void meetingImportsQuery.refetch()}
           />
-          <div className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
+          <div className="mt-3 flex items-center justify-between px-2">
+            <p className="text-xs font-semibold text-foreground">{t("Saved meetings")}</p>
+            {meetings.length > 0 ? (
+              <span className="font-mono text-ui-micro tabular-nums text-muted-foreground">
+                {formatNumber(meetingsTotal)}
+              </span>
+            ) : null}
+          </div>
+          <div className="mt-1.5 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
             {meetingsQuery.isLoading &&
               [0, 1, 2].map((item) => (
                 <div key={item} className="h-[64px] min-w-0 animate-pulse rounded-xl bg-muted/70" />
@@ -2701,7 +2709,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               <p className="px-2 py-5 text-sm text-destructive">{t("Meeting history could not be loaded.")}</p>
             )}
             {!meetingsQuery.isLoading && !meetingsQuery.isError && meetings.length === 0 && (
-              <div className="flex min-w-full items-center gap-3 px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-10 min-[1100px]:text-center">
+              <div className="meetings-history-empty flex min-w-full items-center gap-3 rounded-[14px] px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-8 min-[1100px]:text-center">
                 <CalendarClock className="h-6 w-6 shrink-0 min-[1100px]:mx-auto min-[1100px]:mb-3 min-[1100px]:h-7 min-[1100px]:w-7" />
                 {t("Your first meeting will appear here.")}
               </div>

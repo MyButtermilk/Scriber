@@ -31,6 +31,8 @@ export const settingsTranslations = {
   "{{price}}€/h with model-dependent Error": "{{price}} €/h · variable Fehlerquote",
   "{{price}}/h · WER {{error}}%": "{{price}}/Std. · WER {{error}} %",
   "{{price}}/h · model-dependent WER": "{{price}}/Std. · modellabhängige WER",
+  "{{ready}} of {{total}} providers ready": "{{ready}} von {{total}} Anbietern einsatzbereit",
+  "Ready only": "Nur einsatzbereite",
   "0,00€/h with model-dependent Error": "0,00 €/h · variable Fehlerquote",
   "Benchmark notes": "Hinweise zu Benchmarks",
   "WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.":
@@ -616,6 +618,7 @@ export const settingsTranslations = {
   "Manage provider credentials without expanding the whole page.":
     "Verwalte Anmeldedaten der Anbieter, ohne die gesamte Seite aufzuklappen.",
   "Credential required before model selection.": "Vor der Modellauswahl sind Anmeldedaten erforderlich.",
+  "Key missing": "Key fehlt",
   "below, or choose a model that already has credentials.":
     "unten oder wähle ein Modell aus, für das bereits Anmeldedaten hinterlegt sind.",
   "No cloud STT credentials are saved yet.": "Noch keine Cloud-STT-Anmeldedaten gespeichert.",

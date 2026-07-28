@@ -338,8 +338,8 @@ export function OutlookMeetingPicker({
                   key={event.id}
                   role="listitem"
                   className={cn(
-                    "rounded-xl border transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none",
-                    selected ? "border-primary/55 bg-primary/5" : "border-border/65 bg-muted/20 hover:bg-muted/40",
+                    "neu-nav-item rounded-xl border transition-[background-color,box-shadow,transform] duration-[var(--duration-quick)] motion-reduce:transition-none",
+                    selected ? "neu-nav-active text-foreground" : "border-transparent bg-transparent hover:bg-muted/40",
                   )}
                 >
                   <button

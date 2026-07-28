@@ -1,15 +1,4 @@
-import {
-  Search,
-  Clock,
-  PlayCircle,
-  Youtube as YoutubeIcon,
-  Loader2,
-  CheckCircle2,
-  ThumbsUp,
-  Eye,
-  RotateCcw,
-  X,
-} from "lucide-react";
+import { Search, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, ThumbsUp, Eye, RotateCcw, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -271,12 +260,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   >
                     {t("Stopped")}
                   </Badge>
-                ) : (
-                  <div className="flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full shrink-0">
-                    <CheckCircle2 className="w-3 h-3" />
-                    {t("Ready")}
-                  </div>
-                )}
+                ) : null}
               </div>
               <p className="mt-1 truncate text-[12px] text-muted-foreground">
                 {item.channel || item.channelTitle || t("Unknown channel")} • {dateLabel}
@@ -362,12 +346,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50/90 text-ui-micro">
                     {t("Stopped")}
                   </Badge>
-                ) : (
-                  <div className="flex items-center gap-1 rounded-full bg-green-50/90 px-2 py-1 text-ui-micro font-medium text-green-600 dark:bg-green-950/70 dark:text-green-300">
-                    <CheckCircle2 className="w-3 h-3" />
-                    {t("Ready")}
-                  </div>
-                )}
+                ) : null}
               </div>
             </div>
             <div className="p-4">

@@ -211,6 +211,7 @@ export const meetingsTranslations = {
   "Meeting deleted": "Meeting gelöscht",
   "Meeting elapsed time {{time}}": "Verstrichene Meeting-Zeit: {{time}}",
   "Meeting history could not be loaded.": "Der Meeting-Verlauf konnte nicht geladen werden.",
+  "Saved meetings": "Gespeicherte Meetings",
   Meeting: "Meeting",
   "Meeting import canceled": "Meeting-Import abgebrochen",
   "Meeting import could not be canceled": "Der Meeting-Import konnte nicht abgebrochen werden",
@@ -338,7 +339,7 @@ export const meetingsTranslations = {
   "Reconnect Outlook to continue.": "Verbinde Outlook erneut, um fortzufahren.",
   "Reconnect in Settings": "In den Einstellungen erneut verbinden",
   "Record, review, summarize, and follow up in one place.":
-    "Aufnehmen, prüfen, zusammenfassen und nachverfolgen – alles an einem Ort.",
+    "Aufnehmen, prüfen, zusammenfassen und nachverfolgen. Alles an einem Ort.",
   "Recording paused": "Aufnahme pausiert",
   "Recording safely uploaded": "Aufnahme sicher hochgeladen",
   "Recording safely. The transcript appears after you stop.":

@@ -1,6 +1,6 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
-import { AlertCircle, UploadCloud, FileAudio, CheckCircle2, Loader2, XCircle, Square, ArrowRight } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, Loader2, XCircle, Square, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
@@ -155,7 +155,7 @@ const FileCard = memo(function FileCard({
                       ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
                       : historyStatus === "stopped"
                         ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
-                        : "bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600"
+                        : "bg-primary/[0.08] text-primary"
                 }`}
               >
                 {historyStatus === "failed" ? (
@@ -217,12 +217,7 @@ const FileCard = memo(function FileCard({
                 <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro">
                   {t("Stopped")}
                 </Badge>
-              ) : (
-                <div className="hidden sm:flex items-center gap-1 text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">
-                  <CheckCircle2 className="w-3 h-3" />
-                  {t("Ready")}
-                </div>
-              )}
+              ) : null}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
@@ -253,7 +248,7 @@ const FileCard = memo(function FileCard({
                       ? "bg-blue-50 dark:bg-blue-900/20 text-blue-600"
                       : historyStatus === "stopped"
                         ? "bg-yellow-50 dark:bg-yellow-900/20 text-yellow-600"
-                        : "bg-gradient-to-br from-green-500/20 to-green-500/5 text-green-600"
+                        : "bg-primary/[0.08] text-primary"
                 }`}
               >
                 {historyStatus === "failed" ? (
@@ -291,12 +286,7 @@ const FileCard = memo(function FileCard({
                   <Badge variant="outline" className="text-yellow-600 border-yellow-200 bg-yellow-50 text-ui-micro">
                     {t("Stopped")}
                   </Badge>
-                ) : (
-                  <div className="flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-ui-micro font-medium text-green-600 dark:bg-green-950/40 dark:text-green-300">
-                    <CheckCircle2 className="w-3 h-3" />
-                    {t("Ready")}
-                  </div>
-                )}
+                ) : null}
               </div>
             </div>
             <h3 className="mb-2">
@@ -801,21 +791,19 @@ export default function FileTranscribe() {
                   <FileAudio className="h-5 w-5" aria-hidden="true" />
                 </div>
                 <div className="flex-1 min-w-0">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="min-w-0 flex-1 truncate font-heading text-[14px] font-medium">{item.title}</span>
-                    <Badge
-                      variant="outline"
-                      className="flex shrink-0 items-center gap-1 border-primary/20 bg-primary/[0.06] text-ui-micro text-primary"
-                    >
-                      <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-                      {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
-                    </Badge>
-                  </div>
+                  <span className="block truncate font-heading text-[14px] font-medium">{item.title}</span>
                   <p className="mt-1 text-xs text-muted-foreground">
                     {item.channel ? t(item.channel) : t("Preparing your transcript")}
                   </p>
                 </div>
-                <div className="flex items-center gap-1.5 self-stretch sm:self-auto">
+                <div className="flex flex-wrap items-center gap-2 self-stretch sm:flex-nowrap sm:self-auto">
+                  <Badge
+                    variant="outline"
+                    className="inline-flex h-9 shrink-0 items-center gap-1.5 border-primary/20 bg-primary/[0.06] px-2.5 text-ui-micro leading-none text-primary"
+                  >
+                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                    {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
+                  </Badge>
                   <TranscriptStopButton
                     transcriptId={item.id}
                     compact
@@ -831,8 +819,8 @@ export default function FileTranscribe() {
                     aria-label={t("View transcript {{title}}", { title: item.title })}
                     onClick={() => setLocation(`/transcript/${item.id}`)}
                   >
+                    <ArrowRight className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                     {t("View")}
-                    <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
                   </Button>
                 </div>
               </div>

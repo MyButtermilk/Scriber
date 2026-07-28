@@ -53,9 +53,9 @@ export function TranscriptStopButton({
       aria-label={t("Stop")}
     >
       {isStopping ? (
-        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
       ) : (
-        <Square className="h-3 w-3 fill-current" aria-hidden="true" />
+        <Square className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden="true" />
       )}
       {t("Stop")}
     </Button>

@@ -732,10 +732,10 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         )
     }
 
-    assert 'className="mt-3 max-w-[65ch] text-pretty text-[13px]' in component_source
+    assert 'className="mt-3 max-w-[72ch] text-pretty text-[13px]' in component_source
     assert "sticky = true" in component_source
     assert 'data-page-intro="true"' in component_source
-    assert "rounded-[20px]" in component_source
+    assert "rounded-[20px]" not in component_source
     assert 'sticky ? "sticky top-3 z-20" : "relative z-0"' in component_source
     assert "-mx-4 -mt-5" not in component_source
     assert "bottomContent" in component_source
@@ -804,7 +804,7 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
     assert 'label: "Capture"' not in settings_source
     assert 'label: "Summary"' not in settings_source
     assert "Most changes save automatically" not in settings_source
-    assert 'document.querySelector<HTMLElement>(".settings-page .transcription-intro")' in settings_source
+    assert 'document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav")' in settings_source
     assert "target.style.scrollMarginTop = `${stickyOffset}px`" in settings_source
     assert "event.preventDefault()" in settings_source
     assert "new IntersectionObserver(" in settings_source
@@ -1606,9 +1606,10 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert "onCredentialAction={() => openCredentialDialog(requirement)}" in settings_source
     assert "openCredentialDialog(requirement);" in settings_source
     assert "disabled={Boolean(disabledReason)}" in settings_source
-    assert "disabled={disabled}" in settings_source
+    assert 'aria-haspopup={disabled && onCredentialAction ? "dialog" : undefined}' in settings_source
+    assert "onClick={disabled && onCredentialAction ? onCredentialAction : onSelect}" in settings_source
     assert "<Key className=" in settings_source
-    assert 'title={t("Add or update the credential for this provider.")}' in settings_source
+    assert 't("Add or update the credential for this provider.")' in settings_source
     assert "{option.detail}" in settings_source
     assert "{disabledReason ? (" in settings_source
     assert 'const MISSING_CREDENTIAL_CTA = "Add API Key";' in settings_source
@@ -2420,7 +2421,7 @@ def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -
 def test_settings_cards_follow_the_requested_two_column_order() -> None:
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     rendered = settings[settings.index("<PageIntro") :]
-    navigation = rendered[rendered.index('{ section: "transcription"') : rendered.index("].map((item)")]
+    navigation = settings[settings.index("const settingsNavItems = [") : settings.index("] satisfies Array<{")]
 
     assert rendered.index('id="settings-transcription"') < rendered.index("{speechToTextProviderPanel}")
     assert rendered.index("{speechToTextProviderPanel}") < rendered.index('id="settings-meetings"')

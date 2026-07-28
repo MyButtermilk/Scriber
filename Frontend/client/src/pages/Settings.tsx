@@ -1040,21 +1040,21 @@ function SectionPanel({
     <section
       id={id}
       className={cn(
-        "settings-section min-w-0 scroll-mt-28 rounded-2xl border border-slate-200/80 bg-white/35 p-4 shadow-[0_18px_44px_-40px_rgba(15,23,42,0.45)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-core)]",
+        "settings-section min-w-0 scroll-mt-6 rounded-[20px] border border-slate-200/85 bg-white/65 p-5 shadow-[0_22px_48px_-42px_rgba(15,23,42,0.46)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-core)] dark:shadow-[0_24px_54px_-42px_rgba(0,0,0,0.72)] md:p-6",
         className,
       )}
     >
-      <div className="mb-3.5 flex min-w-0 items-start gap-2.5">
+      <div className="mb-5 flex min-w-0 items-start gap-3">
         {Icon ? (
-          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-blue-50 text-blue-600 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.09)] dark:bg-blue-950/35 dark:text-blue-300">
-            <Icon className="h-4 w-4" aria-hidden="true" />
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center text-blue-600 dark:text-blue-300">
+            <Icon className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden="true" />
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="text-[17px] !font-semibold leading-5 tracking-[-0.015em] text-slate-950 dark:text-slate-100 md:text-[18px]">
+          <h2 className="text-[19px] !font-bold leading-6 tracking-[-0.02em] text-slate-950 dark:text-slate-50 md:text-[20px]">
             {title}
           </h2>
-          <p className="mt-1 max-w-[62ch] text-[11.5px] leading-[16px] text-slate-500 dark:text-slate-400">
+          <p className="mt-1.5 max-w-[62ch] text-[12.5px] leading-[18px] text-slate-600 dark:text-slate-400">
             {description}
           </p>
         </div>
@@ -1080,9 +1080,9 @@ function SettingLine({
       className={cn("grid gap-2.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}
     >
       <div className="min-w-0">
-        <Label className="text-[12.5px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
+        <Label className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
         {description ? (
-          <p className="mt-1 text-[11.5px] leading-[15px] text-slate-500 dark:text-slate-400">{description}</p>
+          <p className="mt-1 text-[12px] leading-[16px] text-slate-600 dark:text-slate-400">{description}</p>
         ) : null}
       </div>
       <div className="min-w-0 sm:justify-self-end">{children}</div>
@@ -1108,20 +1108,22 @@ function SettingsSubsection({
   return (
     <div
       className={cn(
-        "settings-subsection rounded-xl border border-slate-200/65 bg-white/65 p-3.5 shadow-[0_12px_32px_-30px_rgba(15,23,42,0.5)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-card)]",
+        "settings-subsection rounded-[15px] border border-slate-200/90 bg-slate-50/75 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_12px_28px_-28px_rgba(15,23,42,0.4)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-card)] dark:shadow-[inset_0_1px_0_var(--live-highlight),0_14px_30px_-28px_rgba(0,0,0,0.72)]",
         className,
       )}
     >
-      <div className="mb-3 flex min-w-0 items-start justify-between gap-3">
+      <div className="mb-3.5 flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {Icon ? (
-            <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white/80 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.07)] dark:bg-[var(--live-well)] dark:text-slate-400">
-              <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] bg-blue-50/90 text-blue-600 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.09)] dark:bg-blue-950/35 dark:text-blue-300">
+              <Icon className="h-4 w-4" strokeWidth={2.1} aria-hidden="true" />
             </span>
           ) : null}
           <div className="min-w-0 flex-1">
-            <h3 className="text-[13.5px] !font-semibold leading-4 text-slate-950 dark:text-slate-100">{title}</h3>
-            <p className="mt-1 max-w-[62ch] text-[11.5px] leading-4 text-slate-500 dark:text-slate-400">
+            <h3 className="text-[14.5px] !font-bold leading-5 tracking-[-0.01em] text-slate-950 dark:text-slate-100">
+              {title}
+            </h3>
+            <p className="mt-1 max-w-[62ch] text-[12px] leading-[17px] text-slate-600 dark:text-slate-400">
               {description}
             </p>
           </div>
@@ -1147,7 +1149,7 @@ function revealRequestedSettingsSection(section: string) {
     if (!target) {
       return;
     }
-    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .transcription-intro");
+    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
     const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
     target.style.scrollMarginTop = `${stickyOffset}px`;
     const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -1179,9 +1181,9 @@ function ProviderChoice({
   return (
     <div
       className={cn(
-        "group flex min-h-[40px] w-full items-center gap-1 rounded-lg transition-[background-color,box-shadow] duration-200",
+        "group flex min-h-[52px] w-full items-stretch rounded-lg transition-[background-color,box-shadow] duration-200",
         selected
-          ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
+          ? "neu-nav-active text-foreground"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
       )}
     >
@@ -1189,10 +1191,15 @@ function ProviderChoice({
         type="button"
         role="radio"
         aria-checked={selected}
-        disabled={disabled}
-        onClick={onSelect}
+        aria-haspopup={disabled && onCredentialAction ? "dialog" : undefined}
+        aria-label={
+          disabled
+            ? `${option.label}. ${t("Key missing")}. ${t("Add or update the credential for this provider.")}`
+            : undefined
+        }
+        onClick={disabled && onCredentialAction ? onCredentialAction : onSelect}
         title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-transform duration-200 enabled:active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-70 dark:focus-visible:ring-offset-[var(--live-card)]"
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2 py-1.5 text-left outline-none transition-transform duration-200 active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-[var(--live-card)]"
       >
         {option.icon ? (
           <ProviderIcon icon={option.icon} label={option.label} />
@@ -1209,6 +1216,12 @@ function ProviderChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
+          {disabled ? (
+            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
+              <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
+              {t("Key missing")}
+            </span>
+          ) : null}
         </span>
         <span
           className={cn(
@@ -1222,17 +1235,6 @@ function ProviderChoice({
           {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
         </span>
       </button>
-      {disabled && onCredentialAction ? (
-        <button
-          type="button"
-          onClick={onCredentialAction}
-          aria-label={`${disabledReason || t("Credential required before model selection.")} ${t("Add or update the credential for this provider.")}`}
-          title={t("Add or update the credential for this provider.")}
-          className="mr-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 outline-none transition-[background-color,color,transform] duration-200 hover:bg-white hover:text-slate-900 active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-[var(--live-card-hover)] dark:hover:text-slate-100"
-        >
-          <Key className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -1257,9 +1259,9 @@ function SummaryModelChoice({
   return (
     <div
       className={cn(
-        "group flex min-h-[44px] w-full items-center gap-1 rounded-lg transition-[background-color,box-shadow] duration-200",
+        "group flex min-h-[52px] w-full items-stretch rounded-lg transition-[background-color,box-shadow] duration-200",
         selected
-          ? "bg-blue-50 text-blue-950 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.18)] dark:bg-blue-950/35 dark:text-blue-100"
+          ? "neu-nav-active text-foreground"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
       )}
     >
@@ -1267,10 +1269,15 @@ function SummaryModelChoice({
         type="button"
         role="radio"
         aria-checked={selected}
-        disabled={disabled}
-        onClick={onSelect}
+        aria-haspopup={disabled && onCredentialAction ? "dialog" : undefined}
+        aria-label={
+          disabled
+            ? `${option.label}. ${t("Key missing")}. ${t("Add or update the credential for this provider.")}`
+            : undefined
+        }
+        onClick={disabled && onCredentialAction ? onCredentialAction : onSelect}
         title={`${option.label}: ${option.detail}${disabledReason ? ` - ${disabledReason}` : ""}`}
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left outline-none transition-transform duration-200 enabled:active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white disabled:cursor-not-allowed disabled:opacity-70 dark:focus-visible:ring-offset-[var(--live-card)]"
+        className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 py-2 text-left outline-none transition-transform duration-200 active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-[var(--live-card)]"
       >
         <ProviderIcon icon={option.icon} label={option.label} />
         <span className="min-w-0 flex-1">
@@ -1278,6 +1285,12 @@ function SummaryModelChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
+          {disabled ? (
+            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
+              <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
+              {t("Key missing")}
+            </span>
+          ) : null}
         </span>
         <span
           className={cn(
@@ -1291,17 +1304,6 @@ function SummaryModelChoice({
           {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
         </span>
       </button>
-      {disabled && onCredentialAction ? (
-        <button
-          type="button"
-          onClick={onCredentialAction}
-          aria-label={`${disabledReason || t("Credential required before model selection.")} ${t("Add or update the credential for this provider.")}`}
-          title={t("Add or update the credential for this provider.")}
-          className="mr-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-slate-500 outline-none transition-[background-color,color,transform] duration-200 hover:bg-white hover:text-slate-900 active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60 dark:hover:bg-[var(--live-card-hover)] dark:hover:text-slate-100"
-        >
-          <Key className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -1309,9 +1311,9 @@ function SummaryModelChoice({
 function FieldShell({ label, children, detail }: { label: string; children: ReactNode; detail?: string }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-ui-micro font-bold text-slate-600 dark:text-slate-300">{label}</Label>
+      <Label className="text-[12px] font-bold text-slate-700 dark:text-slate-300">{label}</Label>
       {children}
-      {detail ? <p className="text-ui-micro leading-4 text-slate-500 dark:text-slate-400">{detail}</p> : null}
+      {detail ? <p className="text-[12px] leading-4 text-slate-600 dark:text-slate-400">{detail}</p> : null}
     </div>
   );
 }
@@ -1635,6 +1637,7 @@ export default function Settings() {
   const savedKeyResetTimersRef = useRef<Map<string, number>>(new Map());
   const [credentialReadyKeys, setCredentialReadyKeys] = useState<Record<string, boolean>>({});
   const [credentialDialogProvider, setCredentialDialogProvider] = useState<string | null>(null);
+  const [showReadyProvidersOnly, setShowReadyProvidersOnly] = useState(false);
   const remoteCredentialDialogScrollRef = useRef<ScrollSnapshot | null>(null);
 
   const [inputDevices, setInputDevices] = useState<MicrophoneDevice[]>([]);
@@ -2038,7 +2041,7 @@ export default function Settings() {
     }
 
     const visibleSections = new Set<SettingsSectionKey>();
-    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .transcription-intro");
+    const stickyHeader = document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
     const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
     const observer = new IntersectionObserver(
       (entries) => {
@@ -3847,6 +3850,21 @@ export default function Settings() {
       items: providerModelOptions.filter((option) => option.group === "local"),
     },
   ];
+  const readyProviderCount = providerModelOptions.filter((option) => {
+    const requirement = requiredCredentialForTranscriptionModel(option.value);
+    return !missingCredentialReason(requirement);
+  }).length;
+  const displayedProviderGroups = providerGroups
+    .map((group) => ({
+      ...group,
+      items: showReadyProvidersOnly
+        ? group.items.filter((option) => {
+            const requirement = requiredCredentialForTranscriptionModel(option.value);
+            return !missingCredentialReason(requirement);
+          })
+        : group.items,
+    }))
+    .filter((group) => group.items.length > 0);
   const summaryModelGroups = [
     {
       key: "gemini",
@@ -4186,37 +4204,62 @@ export default function Settings() {
       description={t("Choose the primary transcription provider.")}
       icon={Cloud}
     >
-      <div className="mb-2.5 rounded-xl bg-slate-50 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
-        <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">{t("Current provider")}</p>
-        <div className="mt-1 flex items-center gap-2">
-          <ProviderIcon
-            icon={providerModelOptions.find((option) => option.value === transcriptionModel)?.icon}
-            label={compactTranscriptionModelLabel}
-          />
-          <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
-            {compactTranscriptionModelLabel}
-          </p>
+      <div className="mb-4 space-y-3 border-b border-slate-200/80 pb-4 dark:border-[var(--workspace-border)]">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400">{t("Current provider")}</p>
+          <div className="mt-1 flex items-center gap-2">
+            <ProviderIcon
+              icon={providerModelOptions.find((option) => option.value === transcriptionModel)?.icon}
+              label={compactTranscriptionModelLabel}
+            />
+            <div className="min-w-0">
+              <p className="truncate text-[14px] font-semibold text-slate-950 dark:text-slate-100">
+                {compactTranscriptionModelLabel}
+              </p>
+              {selectedProviderModelOption?.model ? (
+                <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+                  {t("Model Name")}:{" "}
+                  <strong className="font-mono font-semibold text-slate-700 dark:text-slate-200">
+                    {selectedProviderModelOption.model}
+                  </strong>
+                </p>
+              ) : null}
+            </div>
+          </div>
         </div>
-        {selectedProviderModelOption?.model ? (
-          <p className="mt-1 truncate text-[11px] text-slate-500 dark:text-slate-400">
-            {t("Model Name")}:{" "}
-            <strong className="font-mono font-semibold text-slate-700 dark:text-slate-200">
-              {selectedProviderModelOption.model}
-            </strong>
-          </p>
-        ) : null}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+            {t("{{ready}} of {{total}} providers ready", {
+              ready: formatNumber(readyProviderCount),
+              total: formatNumber(providerModelOptions.length),
+            })}
+          </span>
+          <button
+            type="button"
+            aria-pressed={showReadyProvidersOnly}
+            onClick={() => setShowReadyProvidersOnly((current) => !current)}
+            className={cn(
+              "neu-nav-item h-9 rounded-xl border border-transparent px-3 text-[11px] font-semibold outline-none transition-[background-color,color,box-shadow,transform] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-blue-500/60",
+              showReadyProvidersOnly
+                ? "neu-nav-active text-foreground"
+                : "text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100",
+            )}
+          >
+            {t("Ready only")}
+          </button>
+        </div>
       </div>
 
       <div className="space-y-2.5">
         <div className="space-y-2.5">
-          {providerGroups.map((group) => (
+          {displayedProviderGroups.map((group) => (
             <div
               key={group.key}
               role="radiogroup"
               aria-label={t("{{group}} transcription providers", { group: group.label })}
-              className="rounded-xl bg-slate-50/90 p-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
+              className="border-t border-slate-200/80 pt-3 first:border-t-0 first:pt-0 dark:border-[var(--workspace-border)]"
             >
-              <div className="mb-1.5">
+              <div className="mb-2 px-1">
                 <div className="min-w-0">
                   <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">{group.label}</h3>
                   <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">{group.description}</p>
@@ -4250,7 +4293,7 @@ export default function Settings() {
         <div
           role="note"
           aria-label={t("Benchmark notes")}
-          className="rounded-lg bg-slate-50/80 px-2.5 py-2 text-ui-micro leading-4 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-[var(--live-well)] dark:text-slate-400"
+          className="border-t border-slate-200/80 px-1 pt-3 text-ui-micro leading-4 text-slate-500 dark:border-[var(--workspace-border)] dark:text-slate-400"
         >
           <p>
             {t("WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.")}
@@ -4264,6 +4307,21 @@ export default function Settings() {
       </div>
     </SectionPanel>
   );
+
+  const settingsNavItems = [
+    { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
+    { section: "providers", href: "#settings-providers", label: "Speech-to-text", icon: Cloud },
+    { section: "meetings", href: "#settings-meetings", label: "Meetings", icon: Users },
+    { section: "apiKeys", href: "#settings-api-keys", label: "API keys", icon: Key },
+    { section: "summarization", href: "#settings-summaries", label: "Summarization", icon: Sparkles },
+    { section: "updates", href: "#settings-updates", label: "Updates", icon: Shield },
+    { section: "language", href: "#settings-language", label: "Language", icon: Languages },
+  ] satisfies Array<{
+    section: SettingsSectionKey;
+    href: string;
+    label: string;
+    icon: LucideIcon;
+  }>;
 
   return (
     <div
@@ -4288,56 +4346,41 @@ export default function Settings() {
         description={t(
           "Configure capture, transcription providers, AI processing, credentials, updates, and language behavior.",
         )}
-        bottomContent={
-          <nav aria-label={t("Settings sections")} className="settings-section-nav overflow-x-auto">
-            <div className="flex w-max items-center gap-1 rounded-xl bg-slate-100/80 p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-[var(--live-well)]">
-              {(
-                [
-                  { section: "transcription", href: "#settings-transcription", label: "Transcription", icon: Mic },
-                  { section: "providers", href: "#settings-providers", label: "Speech-to-text", icon: Cloud },
-                  { section: "meetings", href: "#settings-meetings", label: "Meetings", icon: Users },
-                  { section: "apiKeys", href: "#settings-api-keys", label: "API keys", icon: Key },
-                  { section: "summarization", href: "#settings-summaries", label: "Summarization", icon: Sparkles },
-                  { section: "updates", href: "#settings-updates", label: "Updates", icon: Shield },
-                  { section: "language", href: "#settings-language", label: "Language", icon: Languages },
-                ] satisfies Array<{
-                  section: SettingsSectionKey;
-                  href: string;
-                  label: string;
-                  icon: LucideIcon;
-                }>
-              ).map((item) => {
-                const active = activeSettingsSection === item.section;
-                return (
-                  <a
-                    key={item.href}
-                    href={item.href}
-                    aria-current={active ? "location" : undefined}
-                    data-settings-nav-section={item.section}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      window.history.replaceState(null, "", item.href);
-                      setActiveSettingsSection(item.section);
-                      revealRequestedSettingsSection(item.section);
-                    }}
-                    className={cn(
-                      "inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-ui-micro font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:translate-y-px focus-visible:ring-2 focus-visible:ring-blue-500/60",
-                      active
-                        ? "bg-white text-primary shadow-sm dark:bg-[var(--live-card-hover)] dark:text-blue-300"
-                        : "text-slate-500 hover:bg-white/70 hover:text-slate-950 dark:hover:bg-[var(--live-card-hover)] dark:hover:text-slate-100",
-                    )}
-                  >
-                    <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t(item.label)}
-                  </a>
-                );
-              })}
-            </div>
-          </nav>
-        }
+        sticky={false}
       />
 
-      <div className="grid gap-4 min-[1280px]:grid-cols-2 min-[1280px]:items-start">
+      <nav aria-label={t("Settings sections")} className="settings-section-nav mb-6 overflow-x-auto px-1 py-1">
+        <div className="flex w-max items-center gap-1">
+          {settingsNavItems.map((item) => {
+            const active = activeSettingsSection === item.section;
+            return (
+              <a
+                key={item.href}
+                href={item.href}
+                aria-current={active ? "location" : undefined}
+                data-settings-nav-section={item.section}
+                onClick={(event) => {
+                  event.preventDefault();
+                  window.history.replaceState(null, "", item.href);
+                  setActiveSettingsSection(item.section);
+                  revealRequestedSettingsSection(item.section);
+                }}
+                className={cn(
+                  "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-blue-500/60",
+                  active
+                    ? "neu-nav-active text-foreground"
+                    : "text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100",
+                )}
+              >
+                <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
+                {t(item.label)}
+              </a>
+            );
+          })}
+        </div>
+      </nav>
+
+      <div className="grid gap-5 min-[1280px]:grid-cols-2 min-[1280px]:items-start">
         <SectionPanel
           id="settings-transcription"
           title={t("Transcription")}

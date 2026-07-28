@@ -293,7 +293,6 @@ foreach ($path in @(
     "Frontend/components.json",
     "Frontend/postcss.config.js",
     "Frontend/tsconfig.json",
-    "Frontend/vite-plugin-meta-images.ts",
     "Frontend/vite.config.ts",
     "Frontend/src-tauri/Cargo.toml",
     "Frontend/src-tauri/Cargo.lock",

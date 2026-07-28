@@ -108,7 +108,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   const renderConsoleUtility = (onNavigate?: () => void) => {
     const isActive = location.startsWith("/debug");
     return (
-      <div className="mx-3 border-t border-border/60 pt-2">
+      <div className="px-3">
         <Link
           href="/debug"
           onPointerEnter={() => handleNavIntent("/debug")}
@@ -117,13 +117,11 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           onClick={onNavigate}
           aria-current={isActive ? "page" : undefined}
           className={cn(
-            "flex min-h-9 items-center gap-2 rounded-lg px-3 text-xs font-medium no-underline outline-none",
-            isActive
-              ? "bg-background/65 text-foreground shadow-[inset_0_0_0_1px_hsl(var(--border)/0.7)]"
-              : "text-muted-foreground hover:text-foreground",
+            "neu-nav-item flex min-h-10 items-center gap-3 rounded-xl border border-transparent px-3 text-sm font-medium no-underline outline-none",
+            isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
           )}
         >
-          <Terminal className="h-4 w-4 shrink-0 stroke-[1.5px]" aria-hidden="true" />
+          <Terminal className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
           <span>{t("Console")}</span>
         </Link>
       </div>
@@ -170,8 +168,8 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                   </div>
                   {renderNav(() => setMobileNavOpen(false))}
                   {renderConsoleUtility(() => setMobileNavOpen(false))}
-                  <div className="px-4 pb-5 pt-2">
-                    <LanguageToggle className="mb-1 w-full" />
+                  <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+                    <LanguageToggle />
                     <ThemeToggle align="edge" />
                   </div>
                 </div>
@@ -214,8 +212,8 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           {renderConsoleUtility()}
 
           {/* Theme Toggle at bottom */}
-          <div className="px-4 pb-5 pt-2">
-            <LanguageToggle className="mb-1 w-full" />
+          <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+            <LanguageToggle />
             <ThemeToggle align="edge" />
           </div>
         </aside>
@@ -229,7 +227,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
               data-app-scroll-container="true"
             >
-              <div className="min-h-full min-w-0">
+              <div className="min-h-full min-w-0 bg-background">
                 <AppScrollContainerContext.Provider value={scrollContainerRef}>
                   {children}
                 </AppScrollContainerContext.Provider>

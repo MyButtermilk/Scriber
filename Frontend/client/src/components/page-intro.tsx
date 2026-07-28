@@ -29,41 +29,37 @@ export function PageIntro({
     <header
       data-page-intro="true"
       className={cn(
-        "transcription-intro mb-6 overflow-clip rounded-[20px] border border-border/65 px-5 pt-5 text-left backdrop-blur-xl md:px-6 md:pt-6",
+        "transcription-intro mb-6 border-b border-border/65 px-1 pb-5 pt-1 text-left md:pb-6",
         sticky ? "sticky top-3 z-20" : "relative z-0",
-        bottomContent ? "pb-0" : "pb-5 md:pb-6",
+        bottomContent && "pb-0 md:pb-0",
         className,
       )}
     >
-      <div className={cn(actions && "flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between sm:gap-6")}>
-        <div className="min-w-0">
-          <div className="mb-3 flex items-center gap-2.5 text-ui-micro font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-            <span className={cn("h-px w-7 shrink-0", accentClassName)} aria-hidden="true" />
-            <span>{eyebrow}</span>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <h1 className="text-balance font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
-              {title}
-            </h1>
-            {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
-          </div>
-
-          <p className="mt-3 max-w-[65ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
-            {description}
-          </p>
+      <div className="min-w-0">
+        <div className="mb-3 flex min-w-0 items-center gap-2.5 pt-1 text-ui-micro font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+          <span className={cn("h-px w-7 shrink-0", accentClassName)} aria-hidden="true" />
+          <span>{eyebrow}</span>
         </div>
 
-        {actions ? (
-          <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end sm:pt-1">{actions}</div>
-        ) : null}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <h1 className="text-balance font-heading text-[36px] font-semibold leading-[0.96] tracking-[-0.045em] text-foreground md:text-[42px]">
+            {title}
+          </h1>
+          {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
+        </div>
+
+        <p className="mt-3 max-w-[72ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+          {description}
+        </p>
       </div>
 
-      {bottomContent ? (
-        <div className="-mx-5 mt-5 border-t border-border/55 bg-background/20 px-5 py-2.5 md:-mx-6 md:px-6">
-          {bottomContent}
+      {actions ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2 md:absolute md:right-1 md:top-1 md:mt-0 md:justify-end">
+          {actions}
         </div>
       ) : null}
+
+      {bottomContent ? <div className="mt-5 border-t border-border/55 py-2.5">{bottomContent}</div> : null}
     </header>
   );
 }

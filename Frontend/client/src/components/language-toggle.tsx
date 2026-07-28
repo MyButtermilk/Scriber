@@ -15,16 +15,10 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
   if (!compact) {
     return (
       <div
-        className={cn(
-          "flex h-10 items-center gap-1 rounded-xl border border-border/60 bg-background/45 p-1 shadow-[inset_0_1px_0_hsl(var(--background)/0.7)]",
-          className,
-        )}
+        className={cn("flex h-10 min-w-0 flex-1 items-center gap-1", className)}
         role="group"
         aria-label={t("Language")}
       >
-        <span className="flex h-8 w-8 shrink-0 items-center justify-center text-muted-foreground" aria-hidden="true">
-          <Languages className="h-4 w-4" />
-        </span>
         {(["de", "en"] as const).map((option) => {
           const selected = locale === option;
           const optionLabel = option === "de" ? "Deutsch" : "English";
@@ -37,10 +31,8 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
               key={option}
               type="button"
               className={cn(
-                "h-8 min-w-0 flex-1 rounded-lg px-2 text-xs font-semibold outline-none transition-[background-color,color,box-shadow] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar motion-reduce:transition-none",
-                selected
-                  ? "bg-background text-foreground shadow-sm ring-1 ring-border/60"
-                  : "text-muted-foreground hover:bg-background/55 hover:text-foreground",
+                "neu-nav-item h-9 min-w-0 flex-1 rounded-[12px] border border-transparent px-2 text-xs font-semibold outline-none transition-[background-color,color,box-shadow,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar motion-reduce:transition-none",
+                selected ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => setLocale(option)}
               aria-label={ariaLabel}

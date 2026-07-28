@@ -5940,16 +5940,18 @@ async def exercise_transcript_detail_actions(
   const round = (value) => Math.round(value * 100) / 100;
   const headerRect = header.getBoundingClientRect();
   const contentRect = content.getBoundingClientRect();
-  const borderRadius = parseFloat(getComputedStyle(header).borderTopLeftRadius) || 0;
+  const headerStyles = getComputedStyle(header);
+  const borderRadius = parseFloat(headerStyles.borderTopLeftRadius) || 0;
   const leftDelta = Math.abs(headerRect.left - contentRect.left);
   const widthDelta = Math.abs(headerRect.width - contentRect.width);
   return {
-    ok: leftDelta <= 2 && widthDelta <= 2 && borderRadius >= 16,
+    ok: leftDelta <= 2 && widthDelta <= 2 && borderRadius <= 1 && headerStyles.boxShadow === 'none',
     headerWidth: round(headerRect.width),
     contentWidth: round(contentRect.width),
     leftDelta: round(leftDelta),
     widthDelta: round(widthDelta),
-    borderRadius: round(borderRadius)
+    borderRadius: round(borderRadius),
+    boxShadow: headerStyles.boxShadow
   };
 })()
 """,
@@ -6318,7 +6320,7 @@ async def exercise_rapid_theme_change(
     initial = await cdp.evaluate(
         r"""
 (() => {
-  const toggle = document.querySelector('button[role="switch"][aria-label^="Switch to"]');
+  const toggle = document.querySelector('button.magic-theme-toggle[role="switch"]');
   if (!toggle) return { ok: false, reason: 'missing theme toggle' };
   window.__scriberSmokeOriginalStartViewTransition = document.startViewTransition;
   Object.defineProperty(document, 'startViewTransition', {
@@ -6335,6 +6337,27 @@ async def exercise_rapid_theme_change(
     )
     if not initial or not initial.get("ok"):
         raise RuntimeError(f"Could not start rapid theme-change smoke: {initial}")
+
+    first_toggle = await wait_for_interaction_state(
+        cdp,
+        label="rapid-theme-change-first-toggle",
+        timeout_sec=timeout_sec,
+        expression=r"""
+(() => {
+  const startedDark = !!window.__scriberSmokeThemeStartedDark;
+  const currentDark = document.documentElement.classList.contains('dark');
+  const storedTheme = window.localStorage.getItem('scriber-theme') || '';
+  const expectedStoredTheme = startedDark ? 'light' : 'dark';
+  return {
+    ok: currentDark !== startedDark && storedTheme === expectedStoredTheme,
+    startedDark,
+    currentDark,
+    storedTheme,
+    expectedStoredTheme
+  };
+})()
+""",
+    )
 
     await cdp.call(
         "Emulation.setEmulatedMedia",
@@ -6354,18 +6377,10 @@ async def exercise_rapid_theme_change(
     node.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: 0 }));
     node.click();
   };
-  const trigger = document.querySelector('button[aria-label="Theme mode options"]');
-  if (!trigger) return { ok: false, reason: 'missing theme options trigger' };
-  if (!window.__scriberSmokeThemeMenuOpened) {
-    window.__scriberSmokeThemeMenuOpened = true;
-    activate(trigger);
-    return { ok: false, waitingForMenu: true };
-  }
-  const target = window.__scriberSmokeThemeStartedDark ? 'Dark' : 'Light';
-  const item = Array.from(document.querySelectorAll('[role="menuitem"]'))
-    .find((node) => (node.textContent || '').includes(target));
-  if (!item) return { ok: false, waitingForItem: target };
-  activate(item);
+  const toggle = document.querySelector('button.magic-theme-toggle[role="switch"]');
+  if (!toggle) return { ok: false, reason: 'missing theme toggle' };
+  const target = window.__scriberSmokeThemeStartedDark ? 'dark' : 'light';
+  activate(toggle);
   return { ok: true, target };
 })()
 """,
@@ -6413,6 +6428,7 @@ async def exercise_rapid_theme_change(
         "name": "rapid-theme-change",
         "ok": True,
         "initial": initial,
+        "firstToggle": first_toggle,
         "selection": selection,
         "final": final_state,
     }
@@ -7259,7 +7275,7 @@ async def exercise_desktop_page_shell_layouts(
     pageIntroRect !== null
     && introLeftDelta <= 2
     && introWidthDelta <= 2
-    && introBorderRadius >= 16
+    && introBorderRadius <= 2
   );
   const computedMaxWidth = parseFloat(style.maxWidth);
   const containerContentRight = containerRect.left + scrollContainer.clientWidth;
@@ -7934,7 +7950,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
                 "introMatchesContent": True,
                 "introLeftDelta": 0 if route != "/debug" else None,
                 "introWidthDelta": 0 if route != "/debug" else None,
-                "introBorderRadius": 20 if route != "/debug" else None,
+                "introBorderRadius": 0 if route != "/debug" else None,
                 "computedMaxWidth": 1320,
                 "maxWidthReached": True,
                 "containerClientWidth": 1768,
