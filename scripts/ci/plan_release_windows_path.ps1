@@ -7,7 +7,10 @@ This is a read-only GitHub probe. The cold path is selected only for a v* tag
 when both immutable products needed by packaging are absent: the exact Tauri
 application binary and the exact frozen backend sidecar (Actions cache and
 durable release fallback). Any probe failure falls back to the established
-single-runner path; it never weakens release validation.
+single-runner path; it never weakens release validation. The two product-hash
+arguments are the authoritative single-file GitHub Actions hashFiles identities
+used by cache restore and durable asset names, not the raw key-file SHA-256
+fingerprints retained for cross-runner parity.
 #>
 
 param(

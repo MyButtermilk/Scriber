@@ -488,9 +488,12 @@ Packaging/build:
   media-copy behavior that is not already represented by a hashed input or
   flag. Logging, timing, and process-parallelism edits must leave it unchanged.
 - GitHub release builds cache `build\rust-audio-sidecar-cache` separately from
-  the Python backend sidecar cache. The audio sidecar cache key normalizes the
-  app package version in Cargo metadata, so patch version bumps do not force a
-  rebuild of `scriber-audio-sidecar.exe` when its Rust inputs are unchanged.
+  the Python backend sidecar cache. Cargo dependency and incremental identities
+  normalize the app package version and remain reusable across patch bumps, but
+  the exact audio-sidecar finished-product key includes the concrete
+  application version because `tauri_build` embeds it in the PE resource. A
+  version-only release must therefore rebuild/relink
+  `scriber-audio-sidecar.exe` while reusing the restored shared Cargo target.
 - GitHub release builds likewise restore
   `build\rust-diarization-sidecar-cache` through a dedicated Actions cache and
   internal release-artifact fallback. The Sherpa static archive has its own
@@ -581,7 +584,12 @@ Packaging/build:
   wheelhouse and a `.venv` requirements-key marker skips pip entirely when a
   restored virtualenv is already current and passes `pip check`. The internal
   `release-cache-python-venv-v1` artifact gives tag builds a durable exact
-  virtualenv restore path when the ref-scoped Actions cache is cold.
+  virtualenv restore path when the ref-scoped Actions cache is cold. Official
+  releases restore this environment even after a finished backend/runtime hit
+  because the downloaded-installer media smoke uses the source test harness;
+  it passes the exact `.venv` interpreter explicitly. A valid restore remains a
+  no-op dependency install, while only a missing or invalid environment falls
+  back to the wheelhouse or pip store.
 - The explicitly keyed pip package store is a final download/build fallback
   from `requirements-base.txt` and `requirements-build.txt`. It is restored only
   when the backend sidecar, `.venv`, and wheelhouse layers all miss; setup-python
@@ -590,20 +598,38 @@ Packaging/build:
   the exact full-backend and Tauri products without provisioning a Windows
   machine. Probe/API/parity failures conservatively select the normal one-runner
   path. Only a genuine tag-release double miss selects the cold split path.
+  The planner probes with the same direct single-file
+  `hashFiles('build/cache-keys/<name>.txt')` identity used by the Windows cache
+  and release-asset expressions. The finalizer's raw key-file SHA-256 outputs
+  remain separate cross-runner parity evidence; producers rematerialize those
+  files and the final parity gate rejects any disagreement.
 - On that cold path, two complete Windows preparation groups now overlap on
-  separate runners. `prepare-tauri-cold` owns Node setup, frontend dependency
-  restore, Rust dependency restore, frontend type checking, and the exact Tauri
-  no-bundle application compile. At the same time,
+  separate runners and with the remaining exact-revision quality gates. They
+  start after the release plan succeeds; they need no quality-gate outputs and
+  can only build, attest, and upload short-lived intermediate artifacts.
+  `prepare-tauri-cold` owns Node setup, frontend dependency restore, Rust
+  dependency restore, frontend type checking, and the exact Tauri no-bundle
+  application compile. At the same time,
   `prepare-backend-cold` owns Python setup, frozen-runtime/venv/wheelhouse
   restore, FFmpeg and Rust audio/diarization component restore/build, and
-  PyInstaller backend composition. Previously, the restores and setup preceding
-  those two heavy producers were serialized in the final Windows job even
-  though the compile and PyInstaller phases later overlapped.
+  PyInstaller backend composition. It restores and prunes the same
+  dependency/toolchain-keyed Cargo state as the Tauri producer, so a
+  version-bound audio miss uses the shared `Frontend\src-tauri\target`;
+  diarization may still run in parallel on its standalone target. Previously,
+  the restores and setup preceding those two heavy producers were serialized
+  in the final Windows job even though the compile and PyInstaller phases later
+  overlapped.
 - The final Windows job downloads the two cold products with one merged artifact
   pattern, validates their commit/key/file attestations, and then performs only
   fresh final assembly, NSIS/updater signing, publication, and release
-  verification. A producer failure, corrupt artifact, or parity mismatch
-  discards the cold products and safely runs the normal warm build instead.
+  verification. The backend upload includes hidden files because the exact
+  attested runtime inventory contains package-template `.gitignore` files and
+  the application-layer `src/assets/.gitkeep`; omitting any of them invalidates
+  the complete product at import. It remains hard-gated on every exact-revision
+  quality gate even when cold preparation finished earlier. A failed quality
+  gate therefore cannot assemble, sign, or publish an installer. A producer
+  failure, corrupt artifact, or parity mismatch discards the cold products and
+  safely runs the normal warm build instead.
 - The common warm path remains a single Windows build runner; it does not pay
   for two Windows setup/restore sequences or artifact transfers. Its only new
   critical-path cost is the small Ubuntu planner, key computation, and exact
@@ -621,7 +647,11 @@ Packaging/build:
   signing. An empty object is not sufficient because Tauri's JSON merge would
   preserve the base resource map. Rust audio then reuses the shared warmed
   Cargo target by default instead of building a second isolated dependency
-  graph. Exact backend and Rust caches remain the main fast path.
+  graph. The cold backend producer likewise restores and prunes that shared
+  dependency state, but enables only parallel diarization inside the sidecar
+  builder; forwarding its broad independent-build switch would move audio back
+  to a cold isolated target. Exact backend and Rust caches remain the main fast
+  path.
 - Splitting work across separate GitHub jobs is useful only for the true cold
   double miss where independent heavy outputs have to be produced again. A
   simple unconditional job split would repeat Windows setup and cache transfers

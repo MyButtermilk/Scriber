@@ -50,22 +50,33 @@ def _runtime_identity_tree_sha256(entries: list[dict[str, object]]) -> str:
 
 
 def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fallback() -> None:
-    workflow = _read(".github/workflows/release-windows.yml")
+    raw = _read(".github/workflows/release-windows.yml")
+    workflow = yaml.safe_load(raw)
+    backend_steps = workflow["jobs"]["prepare-backend-cold"]["steps"]
+    backend_upload = next(step for step in backend_steps if step["name"] == "Upload attested backend product")
 
-    assert "release-plan:" in workflow
-    assert "runs-on: ubuntu-latest" in workflow
-    assert "actions: read\n      contents: read" in workflow
-    assert "prepare-tauri-cold:" in workflow
-    assert "prepare-backend-cold:" in workflow
-    assert "Build and attest exact Tauri binary" in workflow
-    assert "Build and attest backend product" in workflow
-    assert "always() &&" in workflow
-    assert (
-        "Cold products were not requested or did not both validate; using the established single-runner path."
-        in workflow
-    )
-    assert "pattern: scriber-cold-*-product" in workflow
-    assert "merge-multiple: true" in workflow
+    assert "release-plan:" in raw
+    assert "runs-on: ubuntu-latest" in raw
+    assert "actions: read\n      contents: read" in raw
+    assert "prepare-tauri-cold:" in raw
+    assert "prepare-backend-cold:" in raw
+    assert "Build and attest exact Tauri binary" in raw
+    assert "Build and attest backend product" in raw
+    assert "always() &&" in raw
+    assert "Cold products were not requested or did not both validate; using the established single-runner path." in raw
+    assert "pattern: scriber-cold-*-product" in raw
+    assert "merge-multiple: true" in raw
+    assert backend_upload["uses"] == "actions/upload-artifact@v7"
+    assert backend_upload["with"]["include-hidden-files"] is True
+
+
+def test_cold_backend_hidden_files_remain_inside_the_exact_attested_roundtrip() -> None:
+    cold_product = _read("scripts/ci/sync_cold_backend_product.ps1")
+
+    assert (REPO_ROOT / "src/assets/.gitkeep").is_file()
+    assert "Get-ChildItem -LiteralPath $resolvedProductRoot -Recurse -File -Force" in cold_product
+    assert "if ($actualFiles.Count -ne $attestedFiles.Count)" in cold_product
+    assert "-not (Test-FileAttestation -Root $resolvedProductRoot -Entry $entry)" in cold_product
 
 
 def test_release_cache_summary_carries_run_bound_cross_runner_fingerprints() -> None:
@@ -90,7 +101,7 @@ def test_release_cache_summary_carries_run_bound_cross_runner_fingerprints() -> 
     assert "$componentMatches.tauriAppBinary" in script
 
 
-def test_release_quality_suite_is_a_direct_gate_without_breaking_warm_fallback() -> None:
+def test_release_quality_suite_blocks_packaging_but_not_cold_preparation() -> None:
     raw = _read(".github/workflows/release-windows.yml")
     workflow = yaml.safe_load(raw)
     jobs = workflow["jobs"]
@@ -104,12 +115,12 @@ def test_release_quality_suite_is_a_direct_gate_without_breaking_warm_fallback()
     for producer_name in ("prepare-tauri-cold", "prepare-backend-cold"):
         producer = jobs[producer_name]
         condition = " ".join(producer["if"].split())
-        assert set(producer["needs"]) == {"release-plan", "quality-gates"}
+        assert set(producer["needs"]) == {"release-plan"}
         assert condition == (
-            "needs.release-plan.result == 'success' && "
-            "needs.quality-gates.result == 'success' && "
-            "needs.release-plan.outputs.use-cold-path == 'true'"
+            "needs.release-plan.result == 'success' && needs.release-plan.outputs.use-cold-path == 'true'"
         )
+        assert "quality-gates" not in producer["needs"]
+        assert "needs.quality-gates" not in producer["if"]
 
     build = jobs["build-windows"]
     build_condition = " ".join(build["if"].split())
@@ -139,6 +150,150 @@ def test_release_quality_suite_is_a_direct_gate_without_breaking_warm_fallback()
     assert "python -m scripts.ci.publish_github_release" in publish["run"]
     assert '--release-id "${{ steps.uploaded-draft.outputs.release-id }}"' in publish["run"]
     assert "--expected-state-report build\\release-asset-api-roundtrip.json" in publish["run"]
+
+
+@pytest.mark.parametrize(
+    ("plan_result", "use_cold_path", "suite_result", "expected"),
+    [
+        ("success", True, "pending", True),
+        ("success", True, "failure", True),
+        ("success", True, "success", True),
+        ("success", False, "success", False),
+        ("failure", True, "success", False),
+    ],
+)
+def test_release_cold_producer_gate_truth_table(
+    plan_result: str,
+    use_cold_path: bool,
+    suite_result: str,
+    expected: bool,
+) -> None:
+    # The quality suite intentionally does not participate in cold producer
+    # scheduling. The packaging job remains the fail-closed quality boundary.
+    assert suite_result in {"pending", "success", "failure"}
+    actual = plan_result == "success" and use_cold_path
+    assert actual is expected
+
+
+def test_release_planner_probes_exact_restore_and_asset_hashfiles_identities() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    jobs = workflow["jobs"]
+    planner = next(step for step in jobs["release-plan"]["steps"] if step["name"] == "Select adaptive release path")[
+        "run"
+    ]
+    build_steps = jobs["build-windows"]["steps"]
+
+    backend_identity = "${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}"
+    tauri_identity = "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}"
+
+    backend_restore = next(step for step in build_steps if step["name"] == "Restore backend sidecar cache")
+    backend_asset = next(step for step in build_steps if step["name"] == "Restore backend sidecar release artifact")
+    tauri_restore = next(step for step in build_steps if step["name"] == "Restore exact Tauri app binary")
+
+    assert backend_identity in backend_restore["with"]["key"]
+    assert backend_identity in backend_asset["run"]
+    assert tauri_identity in tauri_restore["with"]["key"]
+    assert f'-BackendSidecarHash "{backend_identity}"' in planner
+    assert f'-TauriAppBinaryHash "{tauri_identity}"' in planner
+    assert "steps.cache-keys.outputs.backend-sidecar-hash" not in planner
+    assert "steps.cache-keys.outputs.tauri-app-binary-hash" not in planner
+
+
+def test_official_release_restores_exact_python_environment_for_installer_smoke() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    steps = workflow["jobs"]["build-windows"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+    official_release = "needs.release-plan.outputs.official-release == 'true'"
+
+    for name in (
+        "Restore Python dependency cache",
+        "Restore Python venv release artifact",
+        "Validate restored Python environment",
+        "Restore Python wheelhouse cache",
+        "Restore Python wheelhouse release artifact",
+        "Restore pip package store",
+        "Install Python dependencies",
+    ):
+        assert official_release in by_name[name]["if"]
+
+    venv_restore = by_name["Restore Python dependency cache"]
+    assert venv_restore["with"]["path"] == ".venv"
+    assert venv_restore["with"]["key"] == (
+        "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-"
+        "${{ hashFiles('build/cache-keys/python-dependencies.txt') }}"
+    )
+    assert (
+        "steps.python-venv-cache.outputs.cache-hit != 'true'" in by_name["Restore Python venv release artifact"]["if"]
+    )
+    for name in (
+        "Restore Python wheelhouse cache",
+        "Restore Python wheelhouse release artifact",
+        "Restore pip package store",
+    ):
+        assert "steps.python-venv-validation.outputs.usable != 'true'" in by_name[name]["if"]
+
+    venv_validation = by_name["Validate restored Python environment"]["run"]
+    dependency_install = by_name["Install Python dependencies"]["run"]
+    cache_report = by_name["Report release cache hits"]["run"]
+    assert "& $venvPython -m pip check" in venv_validation
+    assert '& $venvPython -c "import aiohttp"' in venv_validation
+    assert "if ($venvUsable)" in dependency_install
+    assert "Using restored Python venv; requirements key is current." in dependency_install
+    assert (
+        "steps.python-wheelhouse-cache.outputs.cache-hit" in dependency_install
+        and "steps.python-wheelhouse-artifact.outputs.restored" in dependency_install
+    )
+    assert '$officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"' in cache_report
+    assert '$pythonVenvEffective = if ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
+    assert '$pythonWheelhouseEffective = if ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
+    assert "$pythonPipStoreNotNeeded = if ($officialRelease)" in cache_report
+
+    smoke = by_name["Smoke downloaded installer candidate"]["run"]
+    step_names = [step["name"] for step in steps]
+    assert step_names.index("Install Python dependencies") < step_names.index("Smoke downloaded installer candidate")
+    assert '$smokePython = (Resolve-Path -LiteralPath ".\\.venv\\Scripts\\python.exe"' in smoke
+    assert '& $smokePython -c "import aiohttp"' in smoke
+    assert "-PythonExecutable $smokePython" in smoke
+
+
+def test_cold_backend_restores_and_prunes_shared_rust_dependency_cache() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    steps = workflow["jobs"]["prepare-backend-cold"]["steps"]
+    step_names = [step["name"] for step in steps]
+
+    assert "Restore Rust dependency state" in step_names
+    assert "Remove application outputs from Rust dependency state" in step_names
+    restore = next(step for step in steps if step["name"] == "Restore Rust dependency state")
+    prune = next(step for step in steps if step["name"] == "Remove application outputs from Rust dependency state")
+
+    assert restore["uses"] == "actions/cache/restore@v6"
+    assert set(restore["with"]["path"].splitlines()) == {
+        ".cargo/registry/index",
+        ".cargo/registry/cache",
+        ".cargo/git/db",
+        "Frontend/src-tauri/target/release/.fingerprint",
+        "Frontend/src-tauri/target/release/build",
+        "Frontend/src-tauri/target/release/deps",
+        "Frontend/src-tauri/target/release/incremental",
+    }
+    assert restore["with"]["key"] == (
+        "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}"
+    )
+    assert restore["with"]["restore-keys"].strip() == ("scriber-rust-dependencies-v1-${{ runner.os }}-")
+    assert "scripts\\ci\\prune_rust_dependency_cache.ps1" in prune["run"]
+    assert step_names.index(restore["name"]) < step_names.index(prune["name"])
+    assert step_names.index(prune["name"]) < step_names.index("Build and attest backend product")
+
+
+def test_cold_backend_parallelizes_only_independent_diarization_build() -> None:
+    workflow = yaml.safe_load(_read(".github/workflows/release-windows.yml"))
+    steps = workflow["jobs"]["prepare-backend-cold"]["steps"]
+    build = next(step for step in steps if step["name"] == "Build and attest backend product")
+    build_script = build["run"]
+
+    assert "-ParallelizeRustDiarizationBuild" in build_script
+    assert "-ParallelizeIndependentBuilds" not in build_script
+    assert "-RustAudioIsolatedTarget" not in build_script
 
 
 @pytest.mark.parametrize(

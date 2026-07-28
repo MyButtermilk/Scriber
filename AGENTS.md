@@ -235,6 +235,19 @@ Packaging and scripts:
   duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
   diagnostic/local opt-in. NSIS, updater signing, and verification start only
   after every producer succeeds.
+- `.github/workflows/release-windows.yml`: adaptive release DAG. Release
+  planning and exact-revision quality gates start together. On a
+  planner-confirmed cold backend/Tauri double miss, both read-only cold
+  producers start as soon as planning succeeds and may overlap the remaining
+  gates; they may emit only attested short-lived workflow artifacts. Final
+  assembly, signing, and publication remain hard-gated on successful quality
+  gates. The planner must probe with the same direct single-file Actions
+  `hashFiles(...)` expressions used by producers and the final job; keep the
+  finalizer's raw key-file SHA-256 outputs separate for cross-runner parity.
+  The cold backend producer must restore and prune the same
+  dependency/toolchain-keyed Rust state as the Tauri producer, keep a
+  version-bound audio rebuild on the shared `Frontend\src-tauri\target`, and
+  parallelize only the standalone diarization worker inside the sidecar build.
 - `scripts/perf/profiles/installer-size/`, `scripts/perf/installer_size/`, and
   `scripts/run_installer_size_packet.ps1`: isolated installer-size
   AutoResearch profile. It freezes a hermetic Python/Node/Rust/NSIS toolchain,

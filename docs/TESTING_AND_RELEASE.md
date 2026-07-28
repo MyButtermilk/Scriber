@@ -1124,10 +1124,15 @@ remains active.
 
 It:
 
-- runs the same reusable full Python suite before either cold producer or the
-  final installer job may proceed. Release planning can run in parallel, and a
-  skipped or failed cold producer still preserves the established single-runner
-  fallback; a failed full suite cannot produce an installer,
+- starts the exact-revision quality gates and release planning concurrently.
+  On a planner-confirmed cold double miss, both cold producers may start as
+  soon as the release plan succeeds and therefore overlap the still-running
+  quality gates. Those jobs have read-only repository/cache permissions and
+  may only build, attest, and upload short-lived workflow artifacts. The final
+  installer job still waits for successful quality gates and both producer
+  results before assembly, signing, or publication. A skipped or failed cold
+  producer preserves the established single-runner fallback, while a failed
+  quality gate cannot produce or publish an installer,
 - never cancels an in-progress `v*` tag release because a second run starts;
   diagnostic branch dispatches remain cancelable. The complete Windows
   build/sign/publish job for every `v*` tag shares one `queue: max` concurrency
@@ -1154,6 +1159,13 @@ It:
   exact Rust audio worker: `tauri_build` embeds the version from
   `Frontend/package.json` in its PE resource, so its finished-product key must
   change while Cargo dependency/incremental state stays reusable,
+- uses one canonical key-file identity across the planner and Windows jobs.
+  The planner probes finished products through the same direct single-file
+  `hashFiles('build/cache-keys/<name>.txt')` expressions used by the Windows
+  cache and release-asset steps. The raw SHA-256 outputs from
+  `scripts\ci\finalize_release_cache_keys.ps1` remain separate cross-runner
+  parity evidence; every producer and the final job rematerialize the files,
+  and cold-product parity validation rejects any mismatch before reuse,
 - reports entry counts and short SHA-256 fingerprints for each normalized cache
   key file in the GitHub Step Summary. Compare these fingerprints between runs
   before assuming a cache miss means unnecessary dependency rebuilding,
@@ -1199,6 +1211,12 @@ It:
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
+- restores and validates that exact Python environment for every official
+  release even when an exact backend product or frozen runtime was reused. The
+  downloaded-installer media smoke imports the tracked source harness and
+  therefore receives the validated `.venv` interpreter explicitly. Wheelhouse
+  recovery and pip installation run only when the exact virtualenv is missing
+  or invalid; this smoke requirement must not trigger a backend rebuild,
 - restores an explicitly keyed pip download/build store from
   `requirements-base.txt` and `requirements-build.txt` only as a final fallback
   when the prebuilt backend sidecar and both wheelhouse/venv layers miss;
@@ -1209,6 +1227,14 @@ It:
   results are known. The helper uses fixed disjoint destinations and private
   child output files; overlapping Rust/main-target, backend, `.venv`, and
   wheelhouse restores remain serialized,
+- makes the cold backend producer restore the same dependency/toolchain-keyed
+  Cargo registry, fingerprints, build outputs, dependencies, and incremental
+  state as the cold Tauri producer, then runs
+  `scripts\ci\prune_rust_dependency_cache.ps1` before building. A
+  version-bound Rust audio miss must use that restored shared
+  `Frontend\src-tauri\target` instead of a cold isolated target. The standalone
+  diarization worker may still be prepared in parallel because it has a
+  separate target and disjoint output,
 - can import the newest internal Rust/Tauri cache artifact only when Actions
   restore reports no matched key. A partial `cache-matched-key` is retained as
   incremental state instead of downloading and expanding another 1.6 GB,

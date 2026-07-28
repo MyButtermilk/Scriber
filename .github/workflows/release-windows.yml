@@ -138,8 +138,8 @@ jobs:
             -Repo "${{ github.repository }}" `
             -GitRef $env:GITHUB_REF `
             -PythonVersion $env:SCRIBER_RELEASE_PYTHON_VERSION `
-            -BackendSidecarHash "${{ steps.cache-keys.outputs.backend-sidecar-hash }}" `
-            -TauriAppBinaryHash "${{ steps.cache-keys.outputs.tauri-app-binary-hash }}" `
+            -BackendSidecarHash "${{ hashFiles('build/cache-keys/backend-sidecar.txt') }}" `
+            -TauriAppBinaryHash "${{ hashFiles('build/cache-keys/tauri-app-binary.txt') }}" `
             -BackendArtifactTag $env:SCRIBER_BACKEND_SIDECAR_ARTIFACT_TAG `
             -RequireAuthenticodeSignature $env:SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE
 
@@ -164,10 +164,8 @@ jobs:
     name: Prepare Tauri binary (cold path)
     needs:
       - release-plan
-      - quality-gates
     if: >-
       needs.release-plan.result == 'success' &&
-      needs.quality-gates.result == 'success' &&
       needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
@@ -277,10 +275,8 @@ jobs:
     name: Prepare backend product (cold path)
     needs:
       - release-plan
-      - quality-gates
     if: >-
       needs.release-plan.result == 'success' &&
-      needs.quality-gates.result == 'success' &&
       needs.release-plan.outputs.use-cold-path == 'true'
     runs-on: windows-latest
     permissions:
@@ -313,6 +309,26 @@ jobs:
           & .\scripts\ci\finalize_release_cache_keys.ps1 `
             -SourceCommit $env:GITHUB_SHA `
             -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
+
+      - name: Restore Rust dependency state
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            .cargo/registry/index
+            .cargo/registry/cache
+            .cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
+          restore-keys: |
+            scriber-rust-dependencies-v1-${{ runner.os }}-
+
+      - name: Remove application outputs from Rust dependency state
+        shell: pwsh
+        run: |
+          & .\scripts\ci\prune_rust_dependency_cache.ps1
 
       - name: Restore frozen backend runtime cache
         id: cold-backend-runtime-cache
@@ -532,7 +548,7 @@ jobs:
             -RuntimeCacheRoot build\tauri-sidecar-runtime-cache `
             -BundleRustAudioSidecar `
             -BundleRustDiarizationSidecar `
-            -ParallelizeIndependentBuilds `
+            -ParallelizeRustDiarizationBuild `
             -CopyToTauriRelease
           & .\scripts\ci\validate_backend_runtime_cache.ps1 `
             -ExpectedWorkflowFingerprint "${{ hashFiles('build/cache-keys/backend-runtime.txt') }}" `
@@ -559,6 +575,7 @@ jobs:
           name: scriber-cold-backend-product
           path: build/cold-transfer
           if-no-files-found: error
+          include-hidden-files: true
           compression-level: 0
           retention-days: 1
 
@@ -968,7 +985,11 @@ jobs:
 
       - name: Restore Python dependency cache
         id: python-venv-cache
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true'
+        if: >-
+          needs.release-plan.outputs.official-release == 'true' ||
+          (steps.cold-products.outputs.usable != 'true' &&
+           steps.backend-sidecar-validation.outputs.usable != 'true' &&
+           steps.backend-runtime-validation.outputs.usable != 'true')
         uses: actions/cache/restore@v6
         with:
           path: .venv
@@ -976,7 +997,12 @@ jobs:
 
       - name: Restore Python venv release artifact
         id: python-venv-artifact
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true' && steps.python-venv-cache.outputs.cache-hit != 'true'
+        if: >-
+          (needs.release-plan.outputs.official-release == 'true' ||
+           (steps.cold-products.outputs.usable != 'true' &&
+            steps.backend-sidecar-validation.outputs.usable != 'true' &&
+            steps.backend-runtime-validation.outputs.usable != 'true')) &&
+          steps.python-venv-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -989,7 +1015,11 @@ jobs:
 
       - name: Validate restored Python environment
         id: python-venv-validation
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true'
+        if: >-
+          needs.release-plan.outputs.official-release == 'true' ||
+          (steps.cold-products.outputs.usable != 'true' &&
+           steps.backend-sidecar-validation.outputs.usable != 'true' &&
+           steps.backend-runtime-validation.outputs.usable != 'true')
         shell: pwsh
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
@@ -1007,8 +1037,13 @@ jobs:
           if ((Test-Path -LiteralPath $venvPython -PathType Leaf) -and ($trustedRestore -or $markerMatches)) {
             & $venvPython -m pip check
             if ($LASTEXITCODE -eq 0) {
-              $usable = $true
-              $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
+              & $venvPython -c "import aiohttp"
+              if ($LASTEXITCODE -eq 0) {
+                $usable = $true
+                $requirementsKey | Set-Content -LiteralPath $markerPath -Encoding ascii
+              } else {
+                Write-Warning "Restored Python environment cannot import aiohttp; dependency recovery is required."
+              }
             } else {
               Write-Warning "Restored Python environment failed pip check; dependency recovery is required."
             }
@@ -1018,7 +1053,12 @@ jobs:
 
       - name: Restore Python wheelhouse cache
         id: python-wheelhouse-cache
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true' && steps.python-venv-validation.outputs.usable != 'true'
+        if: >-
+          (needs.release-plan.outputs.official-release == 'true' ||
+           (steps.cold-products.outputs.usable != 'true' &&
+            steps.backend-sidecar-validation.outputs.usable != 'true' &&
+            steps.backend-runtime-validation.outputs.usable != 'true')) &&
+          steps.python-venv-validation.outputs.usable != 'true'
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
@@ -1043,7 +1083,13 @@ jobs:
 
       - name: Restore Python wheelhouse release artifact
         id: python-wheelhouse-artifact
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true' && steps.python-venv-validation.outputs.usable != 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
+        if: >-
+          (needs.release-plan.outputs.official-release == 'true' ||
+           (steps.cold-products.outputs.usable != 'true' &&
+            steps.backend-sidecar-validation.outputs.usable != 'true' &&
+            steps.backend-runtime-validation.outputs.usable != 'true')) &&
+          steps.python-venv-validation.outputs.usable != 'true' &&
+          steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -1102,9 +1148,10 @@ jobs:
       - name: Restore pip package store
         id: python-pip-store-cache
         if: >-
-          steps.cold-products.outputs.usable != 'true' &&
-          steps.backend-sidecar-validation.outputs.usable != 'true' &&
-          steps.backend-runtime-validation.outputs.usable != 'true' &&
+          (needs.release-plan.outputs.official-release == 'true' ||
+           (steps.cold-products.outputs.usable != 'true' &&
+            steps.backend-sidecar-validation.outputs.usable != 'true' &&
+            steps.backend-runtime-validation.outputs.usable != 'true')) &&
           steps.python-venv-validation.outputs.usable != 'true' &&
           steps.python-wheelhouse-cache.outputs.cache-hit != 'true' &&
           steps.python-wheelhouse-artifact.outputs.restored != 'true'
@@ -1197,6 +1244,7 @@ jobs:
           $backendRuntimeArtifactRestored = Normalize-CacheOutput "${{ steps.backend-runtime-artifact.outputs.restored }}"
           $backendRuntimeValidated = Normalize-CacheOutput "${{ steps.backend-runtime-validation.outputs.usable }}"
           $backendRuntimeReady = $coldProductsUsed -or $backendSidecarPrebuilt -or $backendRuntimeValidated -eq "true"
+          $officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"
           $rustBuildCacheHit = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-hit }}"
           $rustBuildCacheMatchedKey = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-matched-key }}"
           $rustBuildArtifactRestored = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.restored }}"
@@ -1231,15 +1279,23 @@ jobs:
           $backendSidecarEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarValidated -eq "true") { Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored } else { "invalid-or-miss" }
           $backendRuntimeEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeValidated -eq "true") { Get-EffectiveCacheSource $backendRuntimeCacheHit $backendRuntimeArtifactRestored } else { "miss" }
           $tauriAppEffective = if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $tauriAppBinaryCacheHit "empty" }
-          $pythonVenvEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
-          $pythonWheelhouseEffective = if ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
-          $pythonPipStoreNotNeeded = (
-            $backendSidecarPrebuilt -or
-            $backendRuntimeReady -or
-            $pythonVenvValidated -eq "true" -or
-            $pythonWheelhouseCacheHit -eq "true" -or
-            $pythonWheelhouseArtifactRestored -eq "true"
-          )
+          $pythonVenvEffective = if ($officialRelease -and $pythonVenvValidated -eq "true") { "validated-restored-environment" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
+          $pythonWheelhouseEffective = if ($officialRelease -and $pythonVenvValidated -eq "true") { "not-needed-validated-venv" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
+          $pythonPipStoreNotNeeded = if ($officialRelease) {
+            (
+              $pythonVenvValidated -eq "true" -or
+              $pythonWheelhouseCacheHit -eq "true" -or
+              $pythonWheelhouseArtifactRestored -eq "true"
+            )
+          } else {
+            (
+              $backendSidecarPrebuilt -or
+              $backendRuntimeReady -or
+              $pythonVenvValidated -eq "true" -or
+              $pythonWheelhouseCacheHit -eq "true" -or
+              $pythonWheelhouseArtifactRestored -eq "true"
+            )
+          }
           $pythonPipStoreEffective = if ($pythonPipStoreNotNeeded) { "not-needed-restored-python-product" } elseif ($pythonPipStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($pythonPipStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
           $npmPackageStoreEffective = if ($frontendNodeModulesCacheHit -eq "true") { "not-needed-node_modules" } elseif ($npmPackageStoreCacheHit -eq "true") { "actions-cache-exact" } elseif ($npmPackageStoreCacheHit -eq "false") { "actions-cache-restore-key-or-miss" } else { "miss" }
 
@@ -1375,7 +1431,11 @@ jobs:
 
       - name: Install Python dependencies
         id: python-dependencies
-        if: steps.cold-products.outputs.usable != 'true' && steps.backend-sidecar-validation.outputs.usable != 'true' && steps.backend-runtime-validation.outputs.usable != 'true'
+        if: >-
+          needs.release-plan.outputs.official-release == 'true' ||
+          (steps.cold-products.outputs.usable != 'true' &&
+           steps.backend-sidecar-validation.outputs.usable != 'true' &&
+           steps.backend-runtime-validation.outputs.usable != 'true')
         shell: pwsh
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
@@ -2131,6 +2191,11 @@ jobs:
         if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         run: |
+          $smokePython = (Resolve-Path -LiteralPath ".\.venv\Scripts\python.exe" -ErrorAction Stop).Path
+          & $smokePython -c "import aiohttp"
+          if ($LASTEXITCODE -ne 0) {
+            throw "The exact release Python environment cannot import aiohttp."
+          }
           $downloadRoot = "build\release-api-roundtrip"
           $metadata = Get-Content -LiteralPath (Join-Path $downloadRoot "latest.json") -Raw | ConvertFrom-Json
           $installers = @(
@@ -2141,6 +2206,7 @@ jobs:
             throw "Expected exactly one downloaded Windows installer candidate, found $($installers.Count)."
           }
           & .\scripts\smoke_windows_installer.ps1 `
+            -PythonExecutable $smokePython `
             -InstallerPath (Join-Path $downloadRoot ([string]$installers[0].name)) `
             -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
             -VerifyFrontend `
