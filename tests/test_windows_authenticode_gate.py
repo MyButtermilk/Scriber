@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -123,6 +124,136 @@ def test_release_cache_restore_treats_missing_artifact_as_cache_miss(tmp_path: P
     outputs = github_output.read_text(encoding="utf-8-sig")
     assert "restored=false" in outputs
     assert "source=none" in outputs
+
+
+@pytest.mark.skipif(os.name != "nt", reason="The release cache publisher is Windows-only.")
+def test_release_cache_publisher_preserves_and_verifies_hidden_files(tmp_path: Path) -> None:
+    if shutil.which("tar.exe") is None:
+        pytest.skip("Windows bsdtar is required for the release cache publisher.")
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "visible.txt").write_text("visible", encoding="utf-8")
+    (source / ".dependency-key").write_text("dotfile", encoding="utf-8")
+    dot_dir = source / ".metadata"
+    dot_dir.mkdir()
+    (dot_dir / "inside.txt").write_text("dot-directory", encoding="utf-8")
+    hidden_file = source / "hidden.bin"
+    hidden_file.write_bytes(b"hidden-file")
+    hidden_dir = source / "hidden-directory"
+    hidden_dir.mkdir()
+    (hidden_dir / "inside.bin").write_bytes(b"hidden-directory-file")
+    subprocess.run(["attrib", "+h", str(hidden_file)], check=True, capture_output=True)
+    subprocess.run(["attrib", "+h", str(hidden_dir)], check=True, capture_output=True)
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh.cmd"
+    fake_gh.write_text(
+        "@echo off\r\n"
+        'if /I "%2"=="upload" (\r\n'
+        '  copy /Y "%~4" "%CAPTURE_ARCHIVE_PATH%" >NUL\r\n'
+        "  if errorlevel 1 exit /B 1\r\n"
+        "  exit /B 0\r\n"
+        ")\r\n"
+        'if /I "%2"=="download" (\r\n'
+        '  copy /Y "%SOURCE_ARCHIVE_PATH%" "%~9\\%~7" >NUL\r\n'
+        "  if errorlevel 1 exit /B 1\r\n"
+        "  exit /B 0\r\n"
+        ")\r\n"
+        'echo {"assets":[{"name":"%EXPECTED_ASSET_NAME%","createdAt":"2026-07-28T00:00:00Z",'
+        '"apiUrl":"https://api.github.test/assets/1"}]}\r\n'
+        "exit /B 0\r\n",
+        encoding="utf-8",
+    )
+
+    asset_name = "scriber-python-venv-Windows-3.14.6-test.zip"
+    captured_archive = tmp_path / asset_name
+    github_output = tmp_path / "github-output.txt"
+    result = run_powershell(
+        "-NoProfile",
+        "-File",
+        str(PUBLISH_RELEASE_CACHE_SCRIPT),
+        "-Repo",
+        "MyButtermilk/Scriber",
+        "-Tag",
+        "release-cache-python-venv-v1",
+        "-AssetName",
+        asset_name,
+        "-SourcePath",
+        str(source),
+        "-Title",
+        "Internal test cache",
+        env={
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "CAPTURE_ARCHIVE_PATH": str(captured_archive),
+            "EXPECTED_ASSET_NAME": asset_name,
+            "GITHUB_OUTPUT": str(github_output),
+        },
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert captured_archive.is_file()
+    expected = {path.relative_to(source).as_posix(): path.read_bytes() for path in source.rglob("*") if path.is_file()}
+    with zipfile.ZipFile(captured_archive) as archive:
+        actual = {}
+        for entry in archive.infolist():
+            name = entry.filename.replace("\\", "/")
+            while name.startswith("./"):
+                name = name[2:]
+            if not name or name.endswith("/"):
+                continue
+            actual[name] = archive.read(entry)
+    assert actual == expected
+
+    outputs = github_output.read_text(encoding="utf-8-sig")
+    assert "published=true" in outputs
+    assert "archive-tool=windows-bsdtar" in outputs
+    assert "archive-format=zip-deflate" in outputs
+    assert "archive-verification-ms=" in outputs
+    assert "archiveVerificationMs=" in result.stdout
+
+    restored = tmp_path / "restored"
+    restore_output = tmp_path / "restore-output.txt"
+    restore_result = run_powershell(
+        "-NoProfile",
+        "-File",
+        str(RESTORE_RELEASE_CACHE_SCRIPT),
+        "-Repo",
+        "MyButtermilk/Scriber",
+        "-Tag",
+        "release-cache-python-venv-v1",
+        "-AssetName",
+        asset_name,
+        "-DestinationPath",
+        str(restored),
+        env={
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+            "SOURCE_ARCHIVE_PATH": str(captured_archive),
+            "EXPECTED_ASSET_NAME": asset_name,
+            "GITHUB_OUTPUT": str(restore_output),
+        },
+    )
+    assert restore_result.returncode == 0, restore_result.stdout + restore_result.stderr
+    restored_files = {
+        path.relative_to(restored).as_posix(): path.read_bytes() for path in restored.rglob("*") if path.is_file()
+    }
+    assert restored_files == expected
+    assert "restored=true" in restore_output.read_text(encoding="utf-8-sig")
+
+
+def test_release_cache_publisher_fails_closed_and_validates_native_zip_inventory() -> None:
+    script = PUBLISH_RELEASE_CACHE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "Compress-Archive -Path" not in script
+    assert '$windowsTarPath = Join-Path $env:SystemRoot "System32\\tar.exe"' in script
+    assert '& $windowsTarPath -a -c --options "zip:compression=deflate" -f $assetPath -C $sourceRoot' in script
+    assert "$archiveExitCode = $LASTEXITCODE" in script
+    assert "if ($archiveExitCode -ne 0)" in script
+    assert "[System.IO.Compression.ZipFile]::OpenRead($assetPath)" in script
+    assert "$archiveInventory.Count -ne $sourceInventory.Count" in script
+    assert "ZIP length mismatch" in script
+    assert "ZIP contains an unsafe path" in script
 
 
 @pytest.mark.parametrize(

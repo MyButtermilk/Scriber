@@ -1644,7 +1644,11 @@ Already implemented and should not be regressed:
   both publishers confirm success. That maintenance path retains exactly one
   Actions-cache generation per allowlisted family, removes superseded internal
   cache-release tags, and current cache publishers keep only their replacement
-  asset. After best-effort GC, the maintenance workflow must perform a fresh,
+  asset. Generic durable cache ZIPs must use native Windows bsdtar with standard
+  Deflate, archive from inside the source root so dot/hidden files survive, and
+  verify exact path/count/uncompressed-length inventory parity before upload;
+  keep their current `.zip` names and `Expand-Archive` restore compatibility.
+  After best-effort GC, the maintenance workflow must perform a fresh,
   non-best-effort inventory pass that requires the exact computed Rust
   dependency key to be the sole main-branch Rust generation and rejects any
   remaining allowlisted GC candidate. Publish and verify the app release first,

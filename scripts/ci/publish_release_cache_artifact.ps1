@@ -160,14 +160,91 @@ try {
         Stop-Soft "Cannot publish release cache artifact because source directory contains no files: $SourcePath"
     }
     $sourceBytes = [int64](($sourceFiles | Measure-Object -Property Length -Sum).Sum)
+    $sourceRoot = [System.IO.Path]::GetFullPath((Get-Item -LiteralPath $SourcePath).FullName).TrimEnd([char[]]@("\", "/"))
+    $sourcePrefix = $sourceRoot + [System.IO.Path]::DirectorySeparatorChar
+    $sourceInventory = @{}
+    foreach ($sourceFile in $sourceFiles) {
+        $sourceFullPath = [System.IO.Path]::GetFullPath($sourceFile.FullName)
+        if (-not $sourceFullPath.StartsWith($sourcePrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Release cache source file escaped the requested source directory: $sourceFullPath"
+        }
+        $relativePath = $sourceFullPath.Substring($sourcePrefix.Length).Replace("\", "/")
+        if ([string]::IsNullOrWhiteSpace($relativePath) -or $sourceInventory.ContainsKey($relativePath)) {
+            throw "Release cache source inventory contains an invalid or duplicate path: $relativePath"
+        }
+        $sourceInventory[$relativePath] = [int64]$sourceFile.Length
+    }
+
+    $windowsTarPath = Join-Path $env:SystemRoot "System32\tar.exe"
+    if (-not (Test-Path -LiteralPath $windowsTarPath -PathType Leaf)) {
+        throw "Windows bsdtar is required at the system path '$windowsTarPath' to publish release cache ZIPs."
+    }
     $compressionStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    # Finished binaries and Python runtime files are already largely
-    # compressed. Fastest avoids spending runner minutes chasing negligible
-    # size gains in an internal cache artifact; public installer compression
-    # remains governed by Tauri/NSIS and is unaffected.
-    Compress-Archive -Path (Join-Path $SourcePath "*") -DestinationPath $assetPath -CompressionLevel Fastest -Force
+    # The native Windows bsdtar ZIP writer is dramatically faster for large
+    # virtualenvs than Compress-Archive while still using standard Deflate.
+    # Passing "." from inside the source root also preserves dotfiles and files
+    # with the Windows Hidden attribute, which Compress-Archive omits.
+    & $windowsTarPath -a -c --options "zip:compression=deflate" -f $assetPath -C $sourceRoot "."
+    $archiveExitCode = $LASTEXITCODE
     $compressionStopwatch.Stop()
+    if ($archiveExitCode -ne 0) {
+        throw "Windows bsdtar failed to create release cache artifact '$AssetName' (exit code $archiveExitCode)."
+    }
+    if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
+        throw "Windows bsdtar reported success but did not create release cache artifact '$AssetName'."
+    }
     $archiveBytes = [int64](Get-Item -LiteralPath $assetPath).Length
+    if ($archiveBytes -le 0) {
+        throw "Windows bsdtar created an empty release cache artifact '$AssetName'."
+    }
+
+    $archiveVerificationStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archiveInventory = @{}
+    $archive = [System.IO.Compression.ZipFile]::OpenRead($assetPath)
+    try {
+        foreach ($entry in $archive.Entries) {
+            $entryPath = ([string]$entry.FullName).Replace("\", "/")
+            while ($entryPath.StartsWith("./", [System.StringComparison]::Ordinal)) {
+                $entryPath = $entryPath.Substring(2)
+            }
+            if ([string]::IsNullOrEmpty($entryPath) -or $entryPath.EndsWith("/", [System.StringComparison]::Ordinal)) {
+                continue
+            }
+            $entrySegments = @($entryPath.Split([char]"/"))
+            if (
+                $entryPath.StartsWith("/", [System.StringComparison]::Ordinal) -or
+                $entryPath -match "^[A-Za-z]:" -or
+                $entrySegments -contains ".."
+            ) {
+                throw "Release cache ZIP contains an unsafe path: $entryPath"
+            }
+            if ($archiveInventory.ContainsKey($entryPath)) {
+                throw "Release cache ZIP contains a duplicate file path: $entryPath"
+            }
+            $archiveInventory[$entryPath] = [int64]$entry.Length
+        }
+    } finally {
+        $archive.Dispose()
+    }
+
+    if ($archiveInventory.Count -ne $sourceInventory.Count) {
+        throw "Release cache ZIP file count mismatch: source=$($sourceInventory.Count), archive=$($archiveInventory.Count)."
+    }
+    foreach ($relativePath in $sourceInventory.Keys) {
+        if (-not $archiveInventory.ContainsKey($relativePath)) {
+            throw "Release cache ZIP is missing source file: $relativePath"
+        }
+        if ([int64]$archiveInventory[$relativePath] -ne [int64]$sourceInventory[$relativePath]) {
+            throw "Release cache ZIP length mismatch for '$relativePath': source=$($sourceInventory[$relativePath]), archive=$($archiveInventory[$relativePath])."
+        }
+    }
+    foreach ($entryPath in $archiveInventory.Keys) {
+        if (-not $sourceInventory.ContainsKey($entryPath)) {
+            throw "Release cache ZIP contains an unexpected file: $entryPath"
+        }
+    }
+    $archiveVerificationStopwatch.Stop()
 
     $uploadStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
     $releaseUploadExitCode = Invoke-GhCommand -Arguments @(
@@ -186,15 +263,18 @@ try {
     $prunedAssetCount = Remove-SupersededCacheAssets -ReleaseTag $Tag -KeepAssetName $AssetName
 
     Write-Host "Published release cache artifact '$AssetName' to '$Tag'."
-    Write-Host ("Cache publication metrics: sourceFiles={0}; sourceBytes={1}; archiveBytes={2}; releaseProbeMs={3}; compressionMs={4}; uploadMs={5}; compressionLevel=Fastest; prunedAssets={6}" -f $sourceFiles.Count, $sourceBytes, $archiveBytes, $releaseStopwatch.ElapsedMilliseconds, $compressionStopwatch.ElapsedMilliseconds, $uploadStopwatch.ElapsedMilliseconds, $prunedAssetCount)
+    Write-Host ("Cache publication metrics: sourceFiles={0}; sourceBytes={1}; archiveBytes={2}; releaseProbeMs={3}; compressionMs={4}; archiveVerificationMs={5}; uploadMs={6}; archiveTool=windows-bsdtar; archiveFormat=zip-deflate; prunedAssets={7}" -f $sourceFiles.Count, $sourceBytes, $archiveBytes, $releaseStopwatch.ElapsedMilliseconds, $compressionStopwatch.ElapsedMilliseconds, $archiveVerificationStopwatch.ElapsedMilliseconds, $uploadStopwatch.ElapsedMilliseconds, $prunedAssetCount)
     Write-GitHubOutput -Name "published" -Value "true"
     Write-GitHubOutput -Name "source-file-count" -Value ([string]$sourceFiles.Count)
     Write-GitHubOutput -Name "source-bytes" -Value ([string]$sourceBytes)
     Write-GitHubOutput -Name "archive-bytes" -Value ([string]$archiveBytes)
     Write-GitHubOutput -Name "release-probe-ms" -Value ([string]$releaseStopwatch.ElapsedMilliseconds)
     Write-GitHubOutput -Name "compression-ms" -Value ([string]$compressionStopwatch.ElapsedMilliseconds)
+    Write-GitHubOutput -Name "archive-verification-ms" -Value ([string]$archiveVerificationStopwatch.ElapsedMilliseconds)
     Write-GitHubOutput -Name "upload-ms" -Value ([string]$uploadStopwatch.ElapsedMilliseconds)
-    Write-GitHubOutput -Name "compression-level" -Value "Fastest"
+    Write-GitHubOutput -Name "archive-tool" -Value "windows-bsdtar"
+    Write-GitHubOutput -Name "archive-format" -Value "zip-deflate"
+    Write-GitHubOutput -Name "compression-level" -Value "native-default"
     Write-GitHubOutput -Name "pruned-asset-count" -Value ([string]$prunedAssetCount)
 } finally {
     if (Test-Path -LiteralPath $assetPath -PathType Leaf) {

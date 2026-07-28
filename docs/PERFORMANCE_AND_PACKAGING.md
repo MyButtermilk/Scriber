@@ -562,6 +562,18 @@ Packaging/build:
   Quality Gates, and removes superseded internal cache-release tags. Current
   cache publishers also delete sibling assets after a successful replacement
   upload, so each durable cache release contains at most one current asset.
+- Durable cache-release ZIPs are written by Windows' native bsdtar with normal
+  Deflate instead of `Compress-Archive`. The publisher archives `.` from inside
+  the source root so dotfiles and Windows-hidden files are retained, checks the
+  native exit code, then reopens the ZIP and requires exact relative-path,
+  file-count, and uncompressed-length parity before upload. Asset names, cache
+  keys, and the existing `Expand-Archive` restore format remain unchanged. A
+  2026-07-28 local representative Scriber virtualenv measurement covered
+  34,109 files / 820,847,343 source bytes: native Deflate produced a
+  298,234,311-byte ZIP in 25.0 seconds. Native Store took 23.9 seconds but
+  produced 831,247,931 bytes, so it was rejected because it saved effectively
+  no creation time while substantially increasing upload and release-storage
+  cost.
 - `requirements-build.txt` pins the complete PyInstaller build-tool set so a
   resolver update cannot silently change the frozen backend under an unchanged
   cache contract.

@@ -1406,6 +1406,15 @@ removes superseded internal cache-release tags, and retains only the globally
 newest asset inside each current cache release. Start that maintenance run only
 after the intended change is on `main`:
 
+The durable cache publisher uses Windows' native bsdtar ZIP writer with standard
+Deflate. It archives from inside the source directory so dotfiles and
+Windows-hidden files survive, then fails before upload unless the native command
+succeeds and the resulting ZIP has exact relative-path, file-count, and
+uncompressed-length parity with the source inventory. The `.zip` asset names and
+`Expand-Archive` restore contract are unchanged. Keep the focused Windows
+round-trip regression in `tests/test_windows_authenticode_gate.py` when changing
+this transport.
+
 ```powershell
 gh workflow run release-windows.yml --repo MyButtermilk/Scriber --ref main -f refresh_release_cache_artifacts=true
 ```
