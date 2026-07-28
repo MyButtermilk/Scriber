@@ -838,8 +838,7 @@ def test_cold_tauri_product_attests_every_bundle_binary_needed_before_nsis() -> 
     assert "[int64]$bundleCompanion.length -eq [int64]$bundleCompanionItem.Length" in sync
     assert "[string]$bundleCompanion.sha256 -eq $bundleCompanionSha256" in sync
     assert (
-        "Copy-Item -LiteralPath $cachedBundleCompanionPath "
-        "-Destination $resolvedBundleCompanionPath -Force"
+        "Copy-Item -LiteralPath $cachedBundleCompanionPath -Destination $resolvedBundleCompanionPath -Force"
     ) in sync
     assert '@("scriber-desktop.exe", "minisign-verify.exe")' in build
     assert '@("scriber-desktop.exe", "scriber-audio-sidecar.exe", "minisign-verify.exe")' in build
@@ -850,9 +849,11 @@ def test_cold_tauri_product_attests_every_bundle_binary_needed_before_nsis() -> 
     assert '"build\\cold-transfer\\tauri-app-binary-cache\\minisign-verify.exe"' in read_script(
         ".github/workflows/release-windows.yml"
     )
-    signature_verification = read_script(".github/workflows/release-windows.yml").split(
-        "- name: Cryptographically verify downloaded updater signatures", 1
-    )[1].split("- name: Smoke downloaded installer candidate", 1)[0]
+    signature_verification = (
+        read_script(".github/workflows/release-windows.yml")
+        .split("- name: Cryptographically verify downloaded updater signatures", 1)[1]
+        .split("- name: Smoke downloaded installer candidate", 1)[0]
+    )
     assert "cargo build" not in signature_verification
     assert "The attested Tauri bundle input is missing the release-only Minisign verifier." in signature_verification
 
