@@ -128,7 +128,13 @@ Frontend and shell:
   pinned AEC3 processing, and shared-timeline raw mic/system/clean mic pipes.
   The token-protected Meeting device test must reuse this path, remain explicit
   and local-only, return only bounded level/activity statistics, and always stop
-  its ephemeral sidecar capture without persisting or uploading PCM.
+  its ephemeral sidecar capture without persisting or uploading PCM. Product
+  requests remain capped at five seconds. The installed physical-audio gate may
+  raise the fail-closed cap to exactly 60 seconds before backend launch; it must
+  use real WASAPI, renew the native-audio admission lease, require continuous
+  microphone/system/clean-mic frames, bound full-process-tree CPU and
+  working-set/private-byte growth, create no audio artifacts, and finish with a
+  strict uninstall.
 - `Frontend/src-tauri/src/audio_sidecar_client.rs`: Tauri-side sidecar lookup,
   stdio JSON-lines client, and process lifecycle registry. It only uses
   allowlisted executable names, supports `SCRIBER_AUDIO_SIDECAR_EXE` for local
@@ -178,6 +184,9 @@ Packaging and scripts:
   a variant; microbenchmarks cannot select a product runtime. Stock PyInstaller
   6.20 ignores `PYTHON_JIT` in its isolated embedded interpreter, so O1/C1/T1
   currently fail the frozen runtime policy and are not eligible variants.
+  `scripts/run_python314_o0_full_local_correctness.ps1` measures the selected
+  O0 fallback from a fresh installed tree but is explicitly not promotion
+  evidence because it has no same-source A13 or rebooted AB/BA blocks.
 - `packaging/python-314-upgrade-from-v0.5.47.json`: public v0.5.47 installer
   identity, 33 exact CP313 ABI tombstones, 43 exact CP313/UCRT runtime
   tombstones, and the one known empty runtime directory for the 3.14

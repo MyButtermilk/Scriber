@@ -22,6 +22,18 @@ from src.data.meeting_store import MeetingCreate, MeetingStore
 from src.data.transcript_artifact_store import SourceAssetState, TranscriptArtifactStore
 
 
+def test_meeting_device_test_duration_override_is_bounded_and_fail_closed(monkeypatch):
+    monkeypatch.delenv("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", raising=False)
+    assert web_api._meeting_device_test_max_duration_ms() == 5_000
+
+    monkeypatch.setenv("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", "60000")
+    assert web_api._meeting_device_test_max_duration_ms() == 60_000
+
+    for invalid in ("", "invalid", "4999", "60001", "-1"):
+        monkeypatch.setenv("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", invalid)
+        assert web_api._meeting_device_test_max_duration_ms() == 5_000
+
+
 def test_resume_connects_durable_readers_before_starting_live_stt():
     text = Path(web_api.__file__).read_text(encoding="utf-8")
     start = text.index("    async def _resume_interrupted_meeting_claimed")

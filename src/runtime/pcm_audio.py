@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import audioop
 
 PcmBuffer = bytes | bytearray | memoryview
+
+
+@dataclass(frozen=True, slots=True)
+class Pcm16Metrics:
+    """Bounded metrics for complete little-endian signed-16 PCM samples."""
+
+    sample_count: int
+    rms: int
+    peak: int
 
 
 def _whole_pcm16_frames(pcm: PcmBuffer) -> memoryview:
@@ -12,6 +23,23 @@ def _whole_pcm16_frames(pcm: PcmBuffer) -> memoryview:
 
     view = memoryview(pcm).cast("B")
     return view[: len(view) - (len(view) % 2)]
+
+
+def pcm16le_metrics(pcm: PcmBuffer) -> Pcm16Metrics:
+    """Return sample count, RMS, and absolute peak without a Python sample loop.
+
+    Both numerical operations run in ``audioop``'s C implementation. As with
+    the other PCM16 helpers, one trailing partial sample byte is ignored.
+    """
+
+    complete_frames = _whole_pcm16_frames(pcm)
+    if len(complete_frames) < 2:
+        return Pcm16Metrics(sample_count=0, rms=0, peak=0)
+    return Pcm16Metrics(
+        sample_count=len(complete_frames) // 2,
+        rms=audioop.rms(complete_frames, 2),
+        peak=audioop.max(complete_frames, 2),
+    )
 
 
 def pcm16le_rms(pcm: PcmBuffer) -> int:

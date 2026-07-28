@@ -66,6 +66,12 @@ param(
     [switch]$RunInstallerSupportBundleSmoke,
     [switch]$RunInstallerFrontendSmoke,
     [switch]$RunInstallerMeetingAudioDeviceTestSmoke,
+    [switch]$RunInstallerMeetingAudioSoak,
+    [int]$InstallerMeetingAudioSoakDurationSec = 60,
+    [int]$InstallerMeetingAudioSoakProbeIntervalSec = 5,
+    [double]$InstallerMaxMeetingAudioSoakWorkingSetGrowthMB = 64,
+    [double]$InstallerMaxMeetingAudioSoakPrivateBytesGrowthMB = 64,
+    [double]$InstallerMaxMeetingAudioSoakCpuPercent = 10,
     [switch]$RunInstallerMediaPreparationSmoke,
     [switch]$RunInstallerRealMediaWorkflowSmoke,
     [string]$InstallerRealWorkflowYoutubeUrl = "https://www.youtube.com/watch?v=0wEjbSYNUM8",
@@ -1530,7 +1536,7 @@ try {
 
     }
 
-    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMeetingAudioDeviceTestSmoke -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
+    if ($RunInstallerSmoke -or $RunInstallerCrashSmoke -or $RunInstallerPortConflictSmoke -or $RunInstallerControlledShutdownSmoke -or $RunInstallerExternalBackendSmoke -or $RunInstallerStartupTimeoutSmoke -or $RunInstallerGlobalHotkeyRegistrationSmoke -or $RunInstallerGlobalHotkeySmoke -or $RunInstallerManualGlobalHotkeySmoke -or $RunInstallerSupportBundleSmoke -or $RunInstallerFrontendSmoke -or $RunInstallerMeetingAudioDeviceTestSmoke -or $RunInstallerMeetingAudioSoak -or $RunInstallerMediaPreparationSmoke -or $RunInstallerRealMediaWorkflowSmoke -or $RunInstallerStabilitySmoke -or $RunInstallerLiveRecordingSmoke -or $RunInstallerLegacyDataSmoke -or $RunInstallerUpgradeSmoke -or $RunInstallerUninstallSmoke) {
         Invoke-Checked -Label "Installed package smoke" -Command {
             Push-Location $RepoRoot
             try {
@@ -1585,6 +1591,14 @@ try {
                 }
                 if ($RunInstallerMeetingAudioDeviceTestSmoke) {
                     $installerSmokeArgs += "-VerifyMeetingAudioDeviceTest"
+                }
+                if ($RunInstallerMeetingAudioSoak) {
+                    $installerSmokeArgs += @("-MeetingAudioSoakDurationSec", $InstallerMeetingAudioSoakDurationSec.ToString())
+                    $installerSmokeArgs += @("-MeetingAudioSoakProbeIntervalSec", $InstallerMeetingAudioSoakProbeIntervalSec.ToString())
+                    $installerSmokeArgs += @("-MaxMeetingAudioSoakWorkingSetGrowthMB", $InstallerMaxMeetingAudioSoakWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    $installerSmokeArgs += @("-MaxMeetingAudioSoakPrivateBytesGrowthMB", $InstallerMaxMeetingAudioSoakPrivateBytesGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    $installerSmokeArgs += @("-MaxMeetingAudioSoakCpuPercent", $InstallerMaxMeetingAudioSoakCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+                    $installerSmokeArgs += "-VerifyUninstall"
                 }
                 if ($RunInstallerMediaPreparationSmoke) {
                     $installerSmokeArgs += "-VerifyMediaPreparation"
@@ -1661,7 +1675,7 @@ try {
                 if ($RunInstallerUpgradeSmoke) {
                     $installerSmokeArgs += "-SimulateUpgrade"
                 }
-                if ($RunInstallerUninstallSmoke) {
+                if ($RunInstallerUninstallSmoke -and -not $RunInstallerMeetingAudioSoak) {
                     $installerSmokeArgs += "-VerifyUninstall"
                 }
                 powershell @installerSmokeArgs

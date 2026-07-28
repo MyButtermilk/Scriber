@@ -3163,6 +3163,15 @@ separate research goal.
 
 Free-threaded CPython is intentionally outside this profile: it excludes the
 3.14 JIT and would require a separate complete `cp314t` native-wheel graph.
+
+The installed Meeting hot-path qualification includes an exact 60-second
+physical WASAPI/AEC3 soak. Its Python level probe no longer loops over every
+signed-16 sample with `int.from_bytes`; shared `audioop-lts` PCM metrics perform
+RMS and peak work in C while preserving the existing signed little-endian and
+trailing-partial-byte semantics. The gate additionally reports payload bytes,
+bounded reader-thread teardown, complete process-tree CPU and private-byte
+growth, three-source frame continuity, and zero persisted/provider audio.
+
 ## Meeting Audio Packaging
 
 - `aec3 = 0.2.0` is compiled into the existing crash-isolated Rust audio

@@ -268,6 +268,8 @@ _TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS = (0.0, 0.1, 0.5)
 _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS = 15 * 60
 _SPEAKER_PROFILE_PREVIEW_MAX_GRANTS = 256
 _SPEAKER_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
+_MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS = 5_000
+_MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS = 60 * 1_000
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -276,6 +278,23 @@ _pipeline_runtime_import_lock = threading.Lock()
 _pipeline_cache_state_lock = threading.Lock()
 _pipeline_cache_invalidation_pending = False
 _pipeline_vad_cache_discard_pending = False
+
+
+def _meeting_device_test_max_duration_ms() -> int:
+    """Return the shell-configured, fail-closed local diagnostic duration."""
+
+    raw = str(os.environ.get("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", "")).strip()
+    if not raw:
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    try:
+        configured = int(raw)
+    except ValueError:
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    if not (
+        _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS <= configured <= _MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS
+    ):
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    return configured
 
 
 @dataclass(frozen=True)
@@ -16110,7 +16129,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not isinstance(raw, dict):
             return web.json_response({"message": "Expected JSON object"}, status=400)
         try:
-            duration_ms = max(500, min(5_000, int(raw.get("durationMs", 3_000) or 3_000)))
+            duration_ms = max(
+                500,
+                min(
+                    _meeting_device_test_max_duration_ms(),
+                    int(raw.get("durationMs", 3_000) or 3_000),
+                ),
+            )
         except TypeError, ValueError:
             return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
 
@@ -16134,7 +16159,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     ctl,
                     owner_kind="device_test",
                     owner_id=f"probe-{uuid4().hex}",
-                    heartbeat=False,
+                    heartbeat=duration_ms > _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS,
                 )
             except AudioAdmissionConflict:
                 return web.json_response(

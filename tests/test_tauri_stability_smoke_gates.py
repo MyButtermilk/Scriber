@@ -1752,6 +1752,38 @@ def test_installed_smoke_can_drive_real_synthetic_meeting_audio_pipes() -> None:
     assert '"-VerifyMeetingAudioDeviceTest"' in build
 
 
+def test_installed_smoke_can_gate_exact_one_minute_wasapi_meeting_soak() -> None:
+    desktop = read_script("scripts/smoke_tauri_desktop.ps1")
+    installer = read_script("scripts/smoke_windows_installer.ps1")
+    build = read_script("scripts/build_windows.ps1")
+    backend = (REPO_ROOT / "src" / "web_api.py").read_text(encoding="utf-8")
+
+    assert "[int]$MeetingAudioSoakDurationSec = 0" in desktop
+    assert "function Test-MeetingAudioSoak" in desktop
+    assert '$env:SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS = "60000"' in desktop
+    assert '$env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = "1"' in desktop
+    assert "$env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $null" in desktop
+    assert "Installed Meeting audio soak must run for exactly 60 seconds." in desktop
+    assert "-RequiredPendingTask $requestTask" in desktop
+    assert "$framesPerSecond -lt 80 -or $audioFramesPerSecond -lt 12800" in desktop
+    assert "MaxMeetingAudioSoakPrivateBytesGrowthMB" in desktop
+    assert "audioArtifactCountBefore" in desktop
+    assert "meetingAudioSoak = $meetingAudioSoak" in desktop
+
+    assert "[int]$MeetingAudioSoakDurationSec = 0" in installer
+    assert "Installed Meeting audio soak requires -VerifyUninstall" in installer
+    assert '"-MeetingAudioSoakDurationSec", $MeetingAudioSoakDurationSec.ToString()' in installer
+    assert "meetingAudioSoak = $smoke.meetingAudioSoak" in installer
+
+    assert "[switch]$RunInstallerMeetingAudioSoak" in build
+    assert "[int]$InstallerMeetingAudioSoakDurationSec = 60" in build
+    assert '"-MeetingAudioSoakDurationSec", $InstallerMeetingAudioSoakDurationSec.ToString()' in build
+    assert '$installerSmokeArgs += "-VerifyUninstall"' in build
+
+    assert "_MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS = 60 * 1_000" in backend
+    assert "heartbeat=duration_ms > _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS" in backend
+
+
 def test_installed_smoke_rejects_combined_synthetic_meeting_and_live_mic_evidence() -> None:
     desktop = read_script("scripts/smoke_tauri_desktop.ps1")
 

@@ -355,6 +355,16 @@ score 3.89% slower. Five of the 48 protected provider values regressed, with a
 27.93% worst case. The profile and an independent evaluator recheck therefore
 selected the O0 fallback with `productionPromotionAuthorized=false`.
 
+After candidate rejection, the selected fallback can still be measured from a
+fresh installed tree with
+`scripts/run_python314_o0_full_local_correctness.ps1`. The runner binds the
+installer, commit, source-tree digest and runtime attestation, collects the
+complete FullLocal App-UX/provider packet, validates the exact sample plan, and
+strictly uninstalls. Its output is deliberately correctness-only:
+`promotionEligible=false` and `productionPromotionAuthorized=false`. It cannot
+stand in for the two clean-install/reboot AB/BA blocks or the same-source A13
+anchor required to promote an optimized runtime.
+
 For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
 closed: PyInstaller's isolated embedded-interpreter configuration ignores
 `PYTHON_JIT`, while CPython 3.14.6 exposes no supported post-initialization JIT
@@ -1957,6 +1967,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.
 
 For an installed-package build, add
 `-RunInstallerMeetingAudioDeviceTestSmoke` to `scripts\build_windows.ps1`.
+
+The physical installed Meeting stability gate is deliberately separate from
+that deterministic short test. It runs exactly 60 seconds through the real
+WASAPI microphone + loopback + AEC3 path, keeps the native-audio admission
+lease alive, requires continuous frames from all three pipes, samples the full
+process tree for CPU/working-set/private-bytes growth, plays one bounded
+loopback tone, rejects transport errors or new audio artifacts, and requires a
+strict uninstall:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.5.48_x64-setup.exe `
+  -MeetingAudioSoakDurationSec 60 `
+  -MeetingAudioSoakProbeIntervalSec 5 `
+  -MaxMeetingAudioSoakWorkingSetGrowthMB 64 `
+  -MaxMeetingAudioSoakPrivateBytesGrowthMB 64 `
+  -MaxMeetingAudioSoakCpuPercent 10 `
+  -VerifyUninstall `
+  -OutputPath tmp\installed-meeting-audio-soak-60s.json
+```
+
+The equivalent build switch is `-RunInstallerMeetingAudioSoak`. The managed
+backend normally caps the device-test endpoint at five seconds; only this
+installed gate raises `SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS` to the
+hard 60-second ceiling before process launch. Invalid values fail closed to
+five seconds.
 
 The local speech Meeting E2E goes beyond level statistics: Piper generates a
 bounded German 48 kHz mono PCM fixture, the test-only Rust microphone source

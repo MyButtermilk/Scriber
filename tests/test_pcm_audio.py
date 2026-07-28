@@ -8,7 +8,7 @@ from scripts.benchmark_pcm16_rms import (
     run_benchmark,
 )
 from src.meeting_live_stt import _pcm_has_speech
-from src.runtime.pcm_audio import pcm16le_meets_rms_threshold, pcm16le_rms
+from src.runtime.pcm_audio import pcm16le_meets_rms_threshold, pcm16le_metrics, pcm16le_rms
 
 
 def _pcm(*samples: int) -> bytes:
@@ -30,6 +30,20 @@ def test_pcm16le_rms_ignores_one_trailing_partial_sample_byte() -> None:
         complete + b"\xff",
         threshold=pcm16le_rms(complete),
     )
+
+
+def test_pcm16le_metrics_returns_count_rms_and_absolute_peak() -> None:
+    samples = _pcm(0, 256, -512, -32_768)
+
+    metrics = pcm16le_metrics(memoryview(samples))
+
+    assert metrics.sample_count == 4
+    assert metrics.rms == pcm16le_rms(samples)
+    assert metrics.peak == 32_768
+    assert pcm16le_metrics(bytearray(samples) + b"\xff") == metrics
+    assert pcm16le_metrics(b"\xff").sample_count == 0
+    assert pcm16le_metrics(b"\xff").rms == 0
+    assert pcm16le_metrics(b"\xff").peak == 0
 
 
 def test_pcm16le_threshold_and_meeting_gate_share_boundary_semantics() -> None:
