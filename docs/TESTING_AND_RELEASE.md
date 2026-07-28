@@ -698,6 +698,18 @@ Installed frontend smoke verifies:
 - tokenized `/api/runtime` works,
 - the real WebView reports frontend-ready.
 
+Recording-overlay visual changes also require a native WebView2 pixel check;
+browser screenshots alone cannot expose transparent-window compositor
+promotion. Build or install the release-mode Tauri app, select the affected
+overlay style, capture both the rest and fine-pointer hover states on a
+pure-white desktop surface, and inspect them beside the reference at the same
+visible pill size. Acceptance requires white screenshot corners, a capsule
+whose dark-pixel span narrows continuously at both rounded ends, a shadow that
+also narrows and fades below the capsule, the full-pill gradient, and no opaque
+rectangular Canvas surface. Preserve the screenshots and combined comparison
+in `artifacts/previews/` for visual releases, then repeat the same check against
+the exact downloaded public installer before accepting publication.
+
 Installed package smoke also verifies that the bundled
 `scriber-audio-sidecar.exe` exists at the installed app root. This is a
 packaging gate only; it does not promote Rust audio capture to the default

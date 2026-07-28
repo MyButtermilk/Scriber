@@ -40,3 +40,81 @@ The two contents rails were inspected together in a second comparison input. Bot
 - The clean reload produced no Chrome console warnings or errors. Only the Vite connection debug messages and React development info message remained.
 
 Final result: passed
+
+---
+
+# Design QA — Native recording overlay pill
+
+## Source
+
+- Rest reference:
+  `docs/screenshots/overlay-energy-wave-reference-rest-v0.5.50.png`
+- Hover reference:
+  `docs/screenshots/overlay-energy-wave-reference-hover-v0.5.50.png`
+- Reference state: energy-wave visualizer active, full-width wave beginning at
+  the far-left pill edge, stop control hidden at rest and visible on hover.
+
+## Implementation
+
+- Native rest screenshot:
+  `docs/screenshots/overlay-energy-wave-native-rest-white-v0.5.50.png`
+- Native hover screenshot:
+  `docs/screenshots/overlay-energy-wave-native-hover-white-v0.5.50.png`
+- Native runtime: release-mode Tauri/WebView2 overlay, Windows display scaling
+  130%, 203 × 41 CSS px pill, captured on a pure-white desktop surface.
+- Rest comparison:
+  `docs/screenshots/overlay-energy-wave-comparison-rest-v0.5.50.png`
+- Hover comparison:
+  `docs/screenshots/overlay-energy-wave-comparison-hover-v0.5.50.png`
+- Classic-bars control screenshot:
+  `docs/screenshots/overlay-bars-native-rest-white-v0.5.50.png`
+- Classic-bars hover screenshot:
+  `docs/screenshots/overlay-bars-native-hover-white-v0.5.50.png`
+
+## Combined visual comparison
+
+The source and native screenshots were normalized to the same visible pill
+dimensions and inspected side by side on white. The implementation preserves
+the reference's capsule silhouette, full-width midnight-blue shading, left-edge
+wave origin, fine gold strands, and hover-only stop control. The native
+screenshot uses a quiet RMS sample, so the wave is nearly flat; the active
+multi-strand amplitude and 60 Hz movement remain covered by the browser
+reference, component tests, and renderer timing contract.
+
+The white background makes the native alpha boundary explicit. All four
+screenshot corners are pure white. The dark pill contracts continuously from
+293 physical pixels at its center to 249 pixels at its top edge, rather than
+forming an opaque rectangular canvas layer. The shadow also narrows
+continuously below the capsule and fades to white, confirming that it follows
+the pill silhouette instead of a box.
+
+## Settings variant check
+
+The committed Settings selector exposes exactly two variants: `Bars` and
+`Energy wave`. The native control run applied `bars` through the same persisted
+settings endpoint used by the selector, relaunched the release-mode overlay,
+and captured both pointer states on white. It retained the classic black
+capsule and blue micro-bars, including its always-visible stop control, while
+sharing the corrected rounded alpha boundary and pill-shaped shadow. A separate
+run applied `energy_wave` and produced the source-matched screenshots above.
+The common wrapper therefore remains stable, while the energy-only Canvas fix
+does not alter classic bar geometry or animation.
+
+## Iteration history
+
+1. The installed v0.5.49 overlay exposed WebView2's low-latency Canvas surface
+   as an opaque black 203 × 41 px rectangle, masking the CSS gradient and
+   rounded corners.
+2. The renderer moved back to the standard alpha-composited 2D Canvas path and
+   now paints and clips its own full-pill background before drawing the
+   allocation-bounded strands.
+3. A hybrid touch-and-mouse Windows media-query conflict was removed so a fine
+   pointer reliably keeps the stop control hidden until pill hover or keyboard
+   focus.
+4. The drop shadow moved to an isolated, static rounded sibling behind the
+   clipped pill. Native white-background captures verified its capsule-shaped
+   spread and soft fade without per-frame filters or layout work.
+
+Final result: passed locally in the native release-mode WebView. The published
+installer is rechecked with the same white-background capture before release
+acceptance.

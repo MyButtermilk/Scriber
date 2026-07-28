@@ -20,6 +20,14 @@ const isOverlayWindow =
 const isTrayWindow =
     typeof window !== "undefined" && window.location.search.includes("tray=1");
 
+if (isOverlayWindow) {
+    // Apply the transparent document surface before the lazy overlay bundle
+    // mounts. This prevents the normal app background from becoming the first
+    // committed WebView2 frame in the pre-created native overlay window.
+    document.documentElement.dataset.scriberOverlayWindow = "true";
+    document.body.dataset.scriberOverlayWindow = "true";
+}
+
 if (isTrayWindow) {
     void import("./components/TrayPanel").then(({ default: TrayPanel }) => {
         root.render(<LocaleProvider><TrayPanel /></LocaleProvider>);

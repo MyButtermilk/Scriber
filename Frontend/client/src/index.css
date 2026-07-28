@@ -386,13 +386,6 @@ html:has(body[data-scroll-locked]) {
   }
 }
 
-@media (any-pointer: coarse) {
-  .native-recording-pill[data-visualizer-style="energy_wave"] .native-recording-stop {
-    opacity: 1;
-    pointer-events: auto;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .native-recording-stop {
     transition-duration: 0ms;

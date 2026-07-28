@@ -18,6 +18,7 @@ type MicrophoneEnergyFieldProps = {
   rmsRef: { current: number };
   width: number;
   height: number;
+  background: string;
   plotX: number;
   plotY: number;
   plotWidth: number;
@@ -70,6 +71,7 @@ export default function MicrophoneEnergyField({
   rmsRef,
   width,
   height,
+  background,
   plotX,
   plotY,
   plotWidth,
@@ -80,10 +82,11 @@ export default function MicrophoneEnergyField({
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !active) return;
-    const ctx = canvas.getContext("2d", {
-      alpha: true,
-      desynchronized: true,
-    });
+    // WebView2 may promote the low-latency canvas path into an opaque
+    // compositor surface inside transparent Tauri windows. Keep the normal
+    // alpha-composed 2D path so the pill gradient and rounded transparent
+    // corners survive in the installed overlay.
+    const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) return;
 
     const coordinates = new Float32Array(
@@ -274,6 +277,9 @@ export default function MicrophoneEnergyField({
         width,
         height,
         display: "block",
+        background,
+        borderRadius: height / 2,
+        clipPath: `inset(0 round ${height / 2}px)`,
         pointerEvents: "none",
       }}
     />

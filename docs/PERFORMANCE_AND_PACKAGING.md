@@ -270,13 +270,19 @@ Live mic:
   WebView connects or recovers without blocking the audio reader.
 - The selectable overlay energy wave keeps its blue shading in a static,
   full-pill CSS gradient and draws only the animated strands on a transparent
-  Canvas. Its renderer reuses typed arrays for a fixed 9-by-96 strand/sample
-  field, uses two stroke passes with a one-physical-pixel core, caps DPR at 3,
-  and draws at most 60 FPS in normal operation. Reduced motion keeps its
-  separately throttled, phase-frozen path. The wave spans the full pill from
-  its left edge; on fine-pointer devices the stop control is revealed with a
-  CSS-only opacity transition on pill hover or keyboard focus, without
-  changing Canvas geometry or creating React animation state.
+  Canvas. The installed transparent WebView uses the standard alpha-composited
+  2D context rather than the `desynchronized` hint because WebView2 can promote
+  that low-latency path into an opaque rectangular compositor surface. The
+  Canvas repeats the static pill background and rounded clip, while an isolated
+  static rounded sibling owns the capsule-shaped shadow; neither adds per-frame
+  filters, layout, or allocations. The renderer reuses typed arrays for a fixed
+  9-by-96 strand/sample field, uses two stroke passes with a
+  one-physical-pixel core, caps DPR at 3, and draws at most 60 FPS in normal
+  operation. Reduced motion keeps its separately throttled, phase-frozen path.
+  The wave spans the full pill from its left edge; on fine-pointer devices the
+  stop control is revealed with a CSS-only opacity transition on pill hover or
+  keyboard focus, without changing Canvas geometry or creating React animation
+  state.
 - Overlay and live mic visualizers keep per-frame audio updates out of React
   state; no animation frame is represented by a React render.
 

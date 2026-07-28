@@ -50,9 +50,8 @@ const ENERGY_WAVE_PLOT_X = 0;
 const ENERGY_WAVE_PLOT_Y = (PILL_HEIGHT - WAVEFORM_CANVAS_HEIGHT) / 2;
 const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;
 const OVERLAY_DROP_SHADOW =
-  "0 14px 26px -14px rgba(15, 23, 42, 0.62), 0 6px 14px -12px rgba(15, 23, 42, 0.38)";
+  "0 7px 15px -6px rgba(7, 19, 31, 0.42), 0 15px 28px -15px rgba(7, 19, 31, 0.30)";
 const OVERLAY_INSET_SHADOW = "inset 0 0 0 1px rgba(255, 255, 255, 0.10)";
-const OVERLAY_PILL_SHADOW = `${OVERLAY_DROP_SHADOW}, ${OVERLAY_INSET_SHADOW}`;
 const ENERGY_PILL_BACKGROUND = [
   "radial-gradient(ellipse 72% 175% at 66% 50%, rgba(40, 91, 132, 0.62) 0%, rgba(22, 57, 86, 0.30) 52%, rgba(7, 19, 31, 0) 100%)",
   "linear-gradient(90deg, #07131f 0%, #0a1c2d 28%, #0d263b 62%, #071522 100%)",
@@ -499,16 +498,29 @@ export default function NativeRecordingOverlay() {
   return (
     <div className="flex h-screen w-screen items-center justify-center bg-transparent">
       {visible && (
-        <div className="relative inline-flex">
+        <div className="relative inline-flex" style={{ isolation: "isolate" }}>
+          <div
+            aria-hidden="true"
+            className="native-recording-pill-shadow absolute inset-0"
+            style={{
+              zIndex: 0,
+              borderRadius: PILL_RADIUS,
+              background: "rgba(7, 19, 31, 0.18)",
+              boxShadow: OVERLAY_DROP_SHADOW,
+              transform: "translateY(5px) scaleX(0.96) scaleY(0.86)",
+              pointerEvents: "none",
+            }}
+          />
           <div
             data-testid="native-recording-pill"
             data-visualizer-style={overlayVisualizerStyle}
             className="native-recording-pill relative flex items-center"
             style={{
+              zIndex: 1,
               borderRadius: PILL_RADIUS,
               padding: PILL_PADDING,
               overflow: "hidden",
-              boxShadow: OVERLAY_PILL_SHADOW,
+              boxShadow: OVERLAY_INSET_SHADOW,
               width: PILL_WIDTH,
               height: PILL_HEIGHT,
               background: energyWaveActive ? ENERGY_PILL_BACKGROUND : "#000",
@@ -520,6 +532,7 @@ export default function NativeRecordingOverlay() {
                 rmsRef={rmsRef}
                 width={PILL_WIDTH}
                 height={PILL_HEIGHT}
+                background={ENERGY_PILL_BACKGROUND}
                 plotX={ENERGY_WAVE_PLOT_X}
                 plotY={ENERGY_WAVE_PLOT_Y}
                 plotWidth={ENERGY_WAVE_PLOT_WIDTH}

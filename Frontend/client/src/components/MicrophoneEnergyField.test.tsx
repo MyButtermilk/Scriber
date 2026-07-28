@@ -38,10 +38,12 @@ describe("MicrophoneEnergyField", () => {
   it("renders from the pill's far-left edge and reuses HiDPI drawing resources", () => {
     const animationFrames: FrameRequestCallback[] = [];
     const { context } = createCanvasContext();
+    const getContext = vi
+      .spyOn(HTMLCanvasElement.prototype, "getContext")
+      .mockReturnValue(context);
     let now = 0;
 
     vi.spyOn(performance, "now").mockImplementation(() => now);
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context);
     vi.stubGlobal("devicePixelRatio", 3);
     vi.stubGlobal("matchMedia", vi.fn(() => ({
       matches: false,
@@ -60,6 +62,7 @@ describe("MicrophoneEnergyField", () => {
         rmsRef={{ current: 0.01 }}
         width={203}
         height={41}
+        background="linear-gradient(90deg, #07131f, #0d263b)"
         plotX={0}
         plotY={6}
         plotWidth={203}
@@ -74,8 +77,12 @@ describe("MicrophoneEnergyField", () => {
       inset: "0",
       width: "203px",
       height: "41px",
+      background: "linear-gradient(90deg, #07131f, #0d263b)",
+      borderRadius: "20.5px",
+      clipPath: "inset(0 round 20.5px)",
       pointerEvents: "none",
     });
+    expect(getContext).toHaveBeenCalledWith("2d", { alpha: true });
     expect(context.createLinearGradient).toHaveBeenCalledTimes(1);
     expect(context.createRadialGradient).toHaveBeenCalledTimes(1);
 
