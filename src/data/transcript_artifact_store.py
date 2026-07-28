@@ -199,7 +199,7 @@ def _canonical_json(value: Any) -> str:
 def _json_object(raw: str | None) -> dict[str, Any]:
     try:
         value = json.loads(raw or "{}")
-    except (TypeError, json.JSONDecodeError):
+    except TypeError, json.JSONDecodeError:
         return {}
     return value if isinstance(value, dict) else {}
 
@@ -207,7 +207,7 @@ def _json_object(raw: str | None) -> dict[str, Any]:
 def _json_array(raw: str | None) -> list[Any]:
     try:
         value = json.loads(raw or "[]")
-    except (TypeError, json.JSONDecodeError):
+    except TypeError, json.JSONDecodeError:
         return []
     return value if isinstance(value, list) else []
 

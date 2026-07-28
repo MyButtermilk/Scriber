@@ -45,7 +45,7 @@ def _parse_gladia_object(raw: str, operation: str) -> dict[str, Any]:
     invalid_json = False
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         payload = None
         invalid_json = True
     if invalid_json:

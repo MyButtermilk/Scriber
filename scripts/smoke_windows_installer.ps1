@@ -80,6 +80,11 @@ param(
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
     [double]$MaxIdleCpuPercent = 0,
+    [int]$MeetingAudioSoakDurationSec = 0,
+    [int]$MeetingAudioSoakProbeIntervalSec = 5,
+    [double]$MaxMeetingAudioSoakWorkingSetGrowthMB = 64,
+    [double]$MaxMeetingAudioSoakPrivateBytesGrowthMB = 64,
+    [double]$MaxMeetingAudioSoakCpuPercent = 10,
     [int]$LiveRecordingDurationSec = 0,
     [int]$LiveRecordingProbeIntervalSec = 5,
     [double]$MaxLiveBackendWorkingSetGrowthMB = 0,
@@ -608,6 +613,13 @@ function Invoke-InstalledDesktopSmoke {
             $smokeArgs += @("-MaxIdleCpuPercent", $MaxIdleCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
         }
     }
+    if ($MeetingAudioSoakDurationSec -gt 0) {
+        $smokeArgs += @("-MeetingAudioSoakDurationSec", $MeetingAudioSoakDurationSec.ToString())
+        $smokeArgs += @("-MeetingAudioSoakProbeIntervalSec", $MeetingAudioSoakProbeIntervalSec.ToString())
+        $smokeArgs += @("-MaxMeetingAudioSoakWorkingSetGrowthMB", $MaxMeetingAudioSoakWorkingSetGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        $smokeArgs += @("-MaxMeetingAudioSoakPrivateBytesGrowthMB", $MaxMeetingAudioSoakPrivateBytesGrowthMB.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+        $smokeArgs += @("-MaxMeetingAudioSoakCpuPercent", $MaxMeetingAudioSoakCpuPercent.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
     if ($LiveRecordingDurationSec -gt 0) {
         $smokeArgs += @("-LiveRecordingDurationSec", $LiveRecordingDurationSec.ToString())
         $smokeArgs += @("-LiveRecordingProbeIntervalSec", $LiveRecordingProbeIntervalSec.ToString())
@@ -725,6 +737,12 @@ $PythonExecutable = (Resolve-Path -LiteralPath $PythonExecutable).Path
 if ($VerifyUninstall -and $KeepInstalled) {
     throw "-VerifyUninstall cannot be combined with -KeepInstalled."
 }
+if ($MeetingAudioSoakDurationSec -notin @(0, 60)) {
+    throw "-MeetingAudioSoakDurationSec must be 0 or exactly 60."
+}
+if ($MeetingAudioSoakDurationSec -gt 0 -and (-not $VerifyUninstall -or $KeepInstalled)) {
+    throw "Installed Meeting audio soak requires -VerifyUninstall and cannot keep the installation."
+}
 if (-not $InstallerPath) {
     $versionSource = Get-Content -LiteralPath (Join-Path $RepoRoot "src\version.py") -Raw
     $versionMatch = [regex]::Match($versionSource, '(?m)^__version__\s*=\s*"([^"]+)"')
@@ -812,6 +830,7 @@ try {
             supportBundle = $secondSmoke.supportBundle
             frontend = $secondSmoke.frontend
             meetingAudioDeviceTest = $secondSmoke.meetingAudioDeviceTest
+            meetingAudioSoak = $secondSmoke.meetingAudioSoak
             frontendAssetOwnership = $frontendAssetOwnership
             liveRecording = $secondSmoke.liveRecording
             stability = $secondSmoke.stability
@@ -863,6 +882,7 @@ try {
         supportBundle = $smoke.supportBundle
         frontend = $smoke.frontend
         meetingAudioDeviceTest = $smoke.meetingAudioDeviceTest
+        meetingAudioSoak = $smoke.meetingAudioSoak
         frontendAssetOwnership = $frontendAssetOwnership
         meetingResources = $meetingResources
         realMediaWorkflows = $smoke.realMediaWorkflows

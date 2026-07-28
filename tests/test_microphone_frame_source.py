@@ -17,7 +17,7 @@ from src.runtime.audio_frame_pipe import (
 
 
 class _FakeInputStream:
-    instances: list["_FakeInputStream"] = []
+    instances: list[_FakeInputStream] = []
 
     def __init__(self, **kwargs):
         self.kwargs = kwargs

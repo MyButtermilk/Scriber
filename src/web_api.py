@@ -188,9 +188,11 @@ from src.runtime.provider_replay import (
     PROVIDER_REPLAY_AZURE_REGION,
     PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV,
     PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV,
+    PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS,
     LocalSonioxReplayServer,
     ProviderReplayCapacityError,
     ProviderReplayConflict,
+    ProviderReplayDisabled,
     ProviderReplayError,
     ProviderReplayExecution,
     ProviderReplayNotFound,
@@ -200,6 +202,7 @@ from src.runtime.provider_replay import (
     create_speechmatics_batch_replay_transport,
     prewarm_azure_mai_replay_validation,
     provider_replay_fixture_duration_ms_from_environment,
+    provider_replay_manual_stop_from_environment,
 )
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
@@ -265,6 +268,8 @@ _TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS = (0.0, 0.1, 0.5)
 _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS = 15 * 60
 _SPEAKER_PROFILE_PREVIEW_MAX_GRANTS = 256
 _SPEAKER_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
+_MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS = 5_000
+_MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS = 60 * 1_000
 
 ScriberPipeline: Any | None = None
 _invalidate_mic_device_resolution_cache_impl: Callable[[], None] | None = None
@@ -273,6 +278,23 @@ _pipeline_runtime_import_lock = threading.Lock()
 _pipeline_cache_state_lock = threading.Lock()
 _pipeline_cache_invalidation_pending = False
 _pipeline_vad_cache_discard_pending = False
+
+
+def _meeting_device_test_max_duration_ms() -> int:
+    """Return the shell-configured, fail-closed local diagnostic duration."""
+
+    raw = str(os.environ.get("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", "")).strip()
+    if not raw:
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    try:
+        configured = int(raw)
+    except ValueError:
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    if not (
+        _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS <= configured <= _MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS
+    ):
+        return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
+    return configured
 
 
 @dataclass(frozen=True)
@@ -1945,7 +1967,7 @@ def _resolved_media_duration_seconds(
 
     try:
         probed = float(probed_seconds) if probed_seconds is not None else 0.0
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         probed = 0.0
     if math.isfinite(probed) and probed > 0.0:
         return probed
@@ -2006,7 +2028,7 @@ def _probe_media_duration_seconds(file_path: Path) -> float | None:
 
     try:
         seconds = float(raw.splitlines()[0])
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
 
     if not math.isfinite(seconds) or seconds < 0:
@@ -2232,7 +2254,7 @@ class TranscriptRecord:
             try:
                 created_ts = datetime.fromisoformat(self.created_at.replace("Z", "+00:00"))
                 display_date = _format_date_label(created_ts)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass  # Fall back to stored date if parsing fails
 
         step_value = self.step
@@ -2403,7 +2425,7 @@ def _retry_error_after_provider_result(
         if attempt_id:
             error.provider_result_attempt_id = attempt_id  # type: ignore[attr-defined]
         return error
-    except (AttributeError, TypeError):
+    except AttributeError, TypeError:
         wrapped = ProviderResultReconciliationRequired(provider)
         if attempt_id:
             wrapped.provider_result_attempt_id = attempt_id
@@ -2734,7 +2756,7 @@ def _validated_meeting_native_capture_payload(
     try:
         sample_rate = int(payload.get("sampleRate") or 0)
         frame_duration_ms = int(payload.get("frameDurationMs") or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         sample_rate = 0
         frame_duration_ms = 0
     raw_sources = payload.get("sources")
@@ -2827,7 +2849,7 @@ def _nonnegative_processing_count(value: Any) -> int:
 
     try:
         return min(2_147_483_647, max(0, int(value or 0)))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 
@@ -3086,7 +3108,7 @@ def _meeting_audio_asset_is_present(
         stat = candidate.stat()
         expected_bytes = int(asset.get("byteSize") or 0)
         return candidate.is_file() and stat.st_size > 0 and (expected_bytes <= 0 or stat.st_size == expected_bytes)
-    except (OSError, TypeError, ValueError):
+    except OSError, TypeError, ValueError:
         return False
 
 
@@ -3106,7 +3128,7 @@ def _meeting_playback_asset_is_present(
         return False
     try:
         byte_size = int(asset.get("byteSize") or 0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return False
     digest = str(asset.get("sha256") or "").strip().lower()
     return (
@@ -3134,7 +3156,7 @@ def _lossless_meeting_manifest_durations(
             stream_index = int(item.get("streamIndex"))
             duration_ms = int(item.get("durationMs"))
             sample_count = int(item.get("sampleCount"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return []
         if (
             stream_index < 0
@@ -3339,7 +3361,7 @@ async def _cleanup_meeting_capture_ownership(
                 {"meetingId": meeting_id, "captureId": ownership.capture_id},
                 timeout_seconds=4.0,
             )
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             logger.exception("Meeting native capture setup cleanup failed")
         finally:
             ownership.native_capture_started = False
@@ -3353,7 +3375,7 @@ async def _cleanup_meeting_capture_ownership(
             if getattr(controller, "_meeting_recorders", {}).get(meeting_id) is recorder:
                 controller._meeting_recorders.pop(meeting_id, None)
             ownership.recorder = None
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             # Keep the registry reference when joining the readers failed.  It
             # is safer to retain an owner for a stopped native source than to
             # orphan a still-unwinding recorder thread.
@@ -3369,7 +3391,7 @@ async def _cleanup_meeting_capture_ownership(
             if getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id) is live:
                 controller._meeting_live_transcribers.pop(meeting_id, None)
             ownership.live_transcriber = None
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             logger.exception("Meeting live-transcription setup cleanup failed")
 
     # Producer shutdown may race one final PCM callback after the initial
@@ -3403,7 +3425,7 @@ async def _cleanup_meeting_capture_ownership(
             )
         else:
             failed = current
-    except (Exception, asyncio.CancelledError):
+    except Exception, asyncio.CancelledError:
         logger.exception("Meeting capture setup state cleanup failed")
     finally:
         if ownership.resume_prewarm:
@@ -3416,7 +3438,7 @@ async def _cleanup_meeting_capture_ownership(
     if failed is not None:
         try:
             await controller.broadcast(meeting_state_event(failed))
-        except (Exception, asyncio.CancelledError):
+        except Exception, asyncio.CancelledError:
             logger.exception("Meeting capture setup cleanup broadcast failed")
     return failed
 
@@ -6206,7 +6228,7 @@ class ScriberWebController:
         if created_at:
             try:
                 created_dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 created_dt = datetime.now()
         title = str(payload.get("title", "") or "").strip()
         if not title:
@@ -6770,7 +6792,7 @@ class ScriberWebController:
                 start()
             else:
                 self._loop.call_soon_threadsafe(start)
-        except (RuntimeError, ValueError):
+        except RuntimeError, ValueError:
             return
 
     async def _wait_for_pending_metric_writes(self, timeout_seconds: float = 2.0) -> int:
@@ -7569,7 +7591,7 @@ class ScriberWebController:
                     timeout=_WS_SEND_TIMEOUT_SECONDS,
                 )
             return True
-        except (TimeoutError, ConnectionError, RuntimeError):
+        except TimeoutError, ConnectionError, RuntimeError:
             return False
 
     async def broadcast(self, payload: dict[str, Any]) -> None:
@@ -9142,6 +9164,8 @@ class ScriberWebController:
                 )
             if captions is not None and captions.cues:
                 rec.language = captions.language or rec.language
+                if captions.duration_seconds is not None:
+                    rec.duration = _format_duration(captions.duration_seconds)
                 route = freeze_caption_route(
                     workload="youtube",
                     language=rec.language,
@@ -10644,9 +10668,18 @@ class ScriberWebController:
 
             def on_provider_replay_fixture_consumed() -> None:
                 # The frame reader fires this after consuming the block that
-                # contains the fixture's final byte. Stop immediately so the
-                # synthetic sidecar cannot accumulate more than its bounded
-                # final zero-padding block.
+                # contains the fixture's final byte. The benchmark-only manual
+                # mode holds the real session open for one visible frontend
+                # Stop interaction; its existing timeout remains the
+                # fail-closed cleanup owner.
+                if provider_replay_execution is not None and provider_replay_execution.manual_stop_required:
+                    try:
+                        provider_replay_execution.mark_manual_stop_ready()
+                    except ProviderReplayError:
+                        provider_replay_execution.fail("manual_stop_missing")
+                        schedule_provider_replay_stop(0.0, replace_existing=True)
+                    return
+                # Normal and non-manual replay behavior remains immediate.
                 schedule_provider_replay_stop(0.0, replace_existing=True)
 
             def on_audio_level(rms: float):
@@ -11220,6 +11253,17 @@ class ScriberWebController:
             with contextlib.suppress(ProviderReplayError):
                 replay_execution.marker("stop_requested")
 
+    def _attest_provider_replay_manual_stop_request(self) -> None:
+        """Bind the private UI Stop ingress before scheduling finalization."""
+
+        replay_execution = self._provider_replay_execution
+        if replay_execution is None or not replay_execution.manual_stop_required:
+            return
+        session_id = self._session_id
+        if session_id is None or replay_execution.session_id is None or not self._is_listening or self._is_stopping:
+            raise ProviderReplayConflict("provider replay manual stop session is not active")
+        replay_execution.attest_manual_stop_request(session_id)
+
     def request_async_stop_listening(self) -> dict[str, bool]:
         """Schedule an explicit Live Mic stop without waiting for finalization.
 
@@ -11484,6 +11528,12 @@ class ScriberWebController:
             await self.broadcast(transcribing_payload)
             if provider_replay_execution is not None:
                 provider_replay_execution.marker("recording_state_transcribing_emitted")
+                # The private installed App-UX replay must keep this real
+                # frontend state observable for two independent UIA traversals.
+                # The measured interval ends at the visible frame, so this
+                # post-marker hold cannot improve the measured latency.
+                if provider_replay_execution.manual_stop_required:
+                    await asyncio.sleep(PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS)
 
         stop_error: Exception | None = None
         stop_error_info: ProviderUserError | None = None
@@ -12071,7 +12121,7 @@ class ScriberWebController:
                 )
             try:
                 await _to_thread_cancellation_barrier(self._meeting_store.transition, record.meeting_id, "discarded")
-            except (InvalidMeetingTransition, MeetingConflict):
+            except InvalidMeetingTransition, MeetingConflict:
                 return
         storage_root = data_dir().resolve()
         expected_parent = (storage_root / "meetings").resolve()
@@ -13439,7 +13489,7 @@ class ScriberWebController:
                     return normalized_to_id[norm]
                 try:
                     idx = int(device_id)
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     return None
                 try:
                     import sounddevice as sd  # type: ignore
@@ -13803,7 +13853,7 @@ class ScriberWebController:
             try:
                 count = int(payload["visualizerBarCount"])
                 Config.set_visualizer_bar_count(count)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 pass
 
         api_keys = payload.get("apiKeys")
@@ -14060,7 +14110,7 @@ class ScriberWebController:
                         continue
                     try:
                         hostapi_idx = int(dev.get("hostapi", -1))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         hostapi_idx = None
                     matches.append((rank_hostapi(hostapi_idx, host_priorities), idx, name))
 
@@ -14439,8 +14489,16 @@ async def _tauri_activation_marker_from_request(
 def create_app(controller: ScriberWebController) -> web.Application:
     replay_fixture_duration_ms = provider_replay_fixture_duration_ms_from_environment()
     replay_gate = ProviderReplayRuntimeGate.from_environment()
+    try:
+        replay_manual_stop_enabled = provider_replay_manual_stop_from_environment()
+    except ProviderReplayDisabled as exc:
+        replay_gate = ProviderReplayRuntimeGate.disabled(str(exc))
+        replay_manual_stop_enabled = False
     if replay_fixture_duration_ms == 350:
-        provider_replay = ProviderReplayRegistry(replay_gate)
+        provider_replay = ProviderReplayRegistry(
+            replay_gate,
+            manual_stop_enabled=replay_manual_stop_enabled,
+        )
     else:
         provider_replay = ProviderReplayRegistry(
             replay_gate,
@@ -14449,6 +14507,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 max(60.0, replay_fixture_duration_ms / 1000.0 + 120.0),
             ),
             authoritative_fixture_duration_ms=replay_fixture_duration_ms,
+            manual_stop_enabled=replay_manual_stop_enabled,
         )
 
     @web.middleware
@@ -14760,6 +14819,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             validated = validate_provider_replay_prepare_request_payload(
                 payload,
                 configured_run_id=replay.gate.run_id,
+                manual_stop_enabled=replay.manual_stop_enabled,
             )
             if validated["provider"] == "microsoft":
                 try:
@@ -14775,7 +14835,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         ),
                         capture_block_size_frames=int(getattr(Config, "MIC_BLOCK_SIZE", 512) or 512),
                     )
-                except (RuntimeError, ValueError):
+                except RuntimeError, ValueError:
                     return web.json_response(
                         {"message": ("Provider replay MAI validator is unavailable")},
                         status=503,
@@ -14786,10 +14846,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 expected_audio_preparation_implementation=(
                     _provider_replay_audio_preparation_snapshot(validated["provider"])
                 ),
+                manual_stop_required=validated["manualStopRequired"],
             )
         except RESTContractError as exc:
             return _provider_replay_contract_error(exc)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except json.JSONDecodeError, TypeError, ValueError:
             return web.json_response({"message": "Expected JSON object"}, status=400)
         except ProviderReplayConflict as exc:
             return web.json_response({"message": str(exc)}, status=409)
@@ -14856,6 +14917,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "sampleId": canonical_sample_id,
                 "provider": str(starting["provider"]),
                 "expectedAudioPreparationImplementation": starting.get("audioPreparationImplementationExpected"),
+                "manualStopRequired": bool(starting.get("manualStopRequired")),
                 "activationKind": validated["activationKind"],
                 "guard": guard,
                 "watchdogTask": None,
@@ -14903,7 +14965,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             result = starting
         except RESTContractError as exc:
             return _provider_replay_contract_error(exc)
-        except (json.JSONDecodeError, TypeError, ValueError):
+        except json.JSONDecodeError, TypeError, ValueError:
             return web.json_response({"message": "Expected JSON object"}, status=400)
         except ProviderReplayNotFound:
             return web.json_response({"message": "Not found"}, status=404)
@@ -15020,6 +15082,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 azure_raw_transport=azure_raw_transport,
                 speechmatics_batch_raw_transport=(speechmatics_batch_raw_transport),
                 soniox_server=soniox_server,
+                manual_stop_required=bool(pending.get("manualStopRequired")),
                 authoritative_fixture_duration_ms=(replay.authoritative_fixture_duration_ms),
             )
             activation_qpc = (
@@ -15174,6 +15237,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def request_stop_live(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        replay_execution = ctl._provider_replay_execution
+        try:
+            ctl._attest_provider_replay_manual_stop_request()
+        except ProviderReplayError as exc:
+            if replay_execution is not None:
+                replay_execution.fail("manual_stop_missing")
+            # The rejected benchmark sample must still release microphone and
+            # provider resources; it can never become successful evidence.
+            ctl.request_async_stop_listening()
+            return web.json_response(
+                {"message": str(exc)},
+                status=409,
+            )
         outcome = ctl.request_async_stop_listening()
         payload = {
             "apiVersion": REST_API_VERSION,
@@ -15482,7 +15558,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
                     try:
                         content_length = int(resp.headers.get("Content-Length") or 0)
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         content_length = 0
                     if content_length > _YOUTUBE_THUMBNAIL_MAX_BYTES:
                         return web.json_response({"message": "Thumbnail response is too large"}, status=413)
@@ -15929,7 +16005,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         try:
             disk_usage = await asyncio.to_thread(shutil.disk_usage, data_dir())
             available_free_bytes: int | None = int(disk_usage.free)
-        except (OSError, ValueError):
+        except OSError, ValueError:
             available_free_bytes = None
         finalization_reserve_bytes = 2 * 1024 * 1024 * 1024
         estimated_capture_seconds = (
@@ -16053,8 +16129,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not isinstance(raw, dict):
             return web.json_response({"message": "Expected JSON object"}, status=400)
         try:
-            duration_ms = max(500, min(5_000, int(raw.get("durationMs", 3_000) or 3_000)))
-        except (TypeError, ValueError):
+            duration_ms = max(
+                500,
+                min(
+                    _meeting_device_test_max_duration_ms(),
+                    int(raw.get("durationMs", 3_000) or 3_000),
+                ),
+            )
+        except TypeError, ValueError:
             return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
 
         admission_lock = _audio_admission_lock(ctl)
@@ -16077,7 +16159,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     ctl,
                     owner_kind="device_test",
                     owner_id=f"probe-{uuid4().hex}",
-                    heartbeat=False,
+                    heartbeat=duration_ms > _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS,
                 )
             except AudioAdmissionConflict:
                 return web.json_response(
@@ -16173,7 +16255,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "audioSentToProvider": False,
                 }
             )
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
         except Exception as exc:
             logger.warning("Meeting device test failed: {}", type(exc).__name__)
@@ -17178,7 +17260,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             for task in tasks:
                 try:
                     await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-                except (asyncio.CancelledError, TimeoutError):
+                except asyncio.CancelledError, TimeoutError:
                     pass
                 except Exception:
                     logger.exception("Meeting import task failed while cancellation was draining")
@@ -17617,7 +17699,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     0,
                     round((datetime.now(UTC) - pause_started.astimezone(UTC)).total_seconds() * 1000),
                 )
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 gap_duration_ms = 0
             gap_end_ms = pause_start_ms + gap_duration_ms
             await _to_thread_cancellation_barrier(
@@ -19268,7 +19350,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Choose a valid microphone."}, status=400)
         try:
             duration_ms = max(6_000, min(10_000, int(raw.get("durationMs", 8_000) or 8_000)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             return web.json_response({"message": "Invalid voice sample duration."}, status=400)
 
         admission_lock = _audio_admission_lock(ctl)
@@ -19361,7 +19443,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             try:
                 returned_sample_rate = int(payload.get("sampleRate"))
                 returned_channels = int(payload.get("channels"))
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 returned_sample_rate = 0
                 returned_channels = 0
             returned_sample_format = str(payload.get("sampleFormat") or "")

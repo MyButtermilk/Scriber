@@ -462,7 +462,7 @@ def parse_and_validate_analysis(raw: str, valid_segment_ids: set[str]) -> dict[s
         try:
             start_ms = max(0, int(item.get("startMs", 0)))
             end_ms = max(start_ms, int(item.get("endMs", start_ms)))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if segment_ids and title:
             chapters.append(

@@ -4,6 +4,7 @@ import asyncio
 import html
 import importlib
 import json
+import math
 import re
 import shutil
 import sys
@@ -41,6 +42,7 @@ class YouTubeTranscript:
     language: str
     is_automatic: bool
     cues: tuple[YouTubeCaptionCue, ...] = ()
+    duration_seconds: float | None = None
 
 
 _AUDIO_ONLY_FORMAT = "bestaudio[ext=webm]/bestaudio[ext=m4a]/bestaudio"
@@ -247,7 +249,7 @@ def _caption_milliseconds(value: Any, *, allow_zero: bool) -> int | None:
         return None
     try:
         milliseconds = float(value)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return None
     if not (milliseconds >= 0.0 and milliseconds < float("inf")):
         return None
@@ -316,7 +318,7 @@ def _normalize_caption_cues(
 def _caption_cues_from_json3_bytes(payload: bytes) -> tuple[YouTubeCaptionCue, ...]:
     try:
         data = json.loads(payload.decode("utf-8-sig", errors="replace"))
-    except (json.JSONDecodeError, UnicodeError):
+    except json.JSONDecodeError, UnicodeError:
         return ()
     events = data.get("events") if isinstance(data, dict) else None
     if not isinstance(events, list):
@@ -519,11 +521,23 @@ async def download_youtube_transcript(
             if not cues:
                 return None
             text = "\n".join(cue.text for cue in cues).strip()
+            raw_duration = info.get("duration")
+            duration_seconds = (
+                float(raw_duration)
+                if (
+                    not isinstance(raw_duration, bool)
+                    and isinstance(raw_duration, (int, float))
+                    and math.isfinite(float(raw_duration))
+                    and raw_duration >= 0
+                )
+                else max(cue.end_ms for cue in cues) / 1000.0
+            )
             return YouTubeTranscript(
                 text=text,
                 language=language,
                 is_automatic=automatic,
                 cues=cues,
+                duration_seconds=duration_seconds,
             )
 
     try:
@@ -842,10 +856,14 @@ async def download_youtube_audio(
             shutil.rmtree(library_out_dir, ignore_errors=True)
             raise
 
-    except ImportError:
+    except ImportError as exc:
+        if getattr(sys, "frozen", False):
+            raise YouTubeDownloadError("The frozen yt-dlp runtime is unavailable or incomplete") from exc
         logger.warning("yt-dlp library not available, falling back to subprocess")
 
-    # Fallback to subprocess if library import fails
+    # Source/dev-only fallback if the library import fails. Frozen builds ship
+    # the exact pinned package inside PyInstaller and must never execute a
+    # distlib/PATH launcher whose shebang points at a build-machine Python.
     exe = find_media_tool("yt-dlp")
     exe_cmd = [sys.executable, "-m", "yt_dlp"] if not exe else [exe]
 

@@ -26,7 +26,7 @@ def load_clear_offsets() -> dict[str, dict[str, Any]]:
         if path.stat().st_size > _MAX_CLEAR_STATE_BYTES:
             return {}
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
     files = payload.get("files") if isinstance(payload, dict) else None
@@ -128,7 +128,7 @@ def _path_key(path: Path) -> str:
 def _safe_non_negative_int(value: Any) -> int | None:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     return parsed if parsed >= 0 else None
 

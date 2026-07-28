@@ -36,6 +36,22 @@ def test_stages_only_the_nsis_payload_allowlist(tmp_path: Path) -> None:
     assert not (output / "unrelated.pdb").exists()
 
 
+def test_runtime_experiment_can_include_attestation(tmp_path: Path) -> None:
+    release, notices = _release_fixture(tmp_path)
+    attestation = release / "scriber-autoresearch-runtime-attestation.json"
+    attestation.write_text('{"ok":true}\n', encoding="utf-8")
+    output = tmp_path / "runtime-experiment" / "payload"
+
+    stage_payload(
+        release_root=release,
+        notices=notices,
+        output=output,
+        include_runtime_attestation=True,
+    )
+
+    assert (output / attestation.name).read_bytes() == attestation.read_bytes()
+
+
 def test_refuses_to_overwrite_a_prior_replica(tmp_path: Path) -> None:
     release, notices = _release_fixture(tmp_path)
     output = tmp_path / "payload"

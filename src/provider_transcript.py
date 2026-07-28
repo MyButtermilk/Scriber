@@ -274,7 +274,7 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
     if provider == "deepgram_async":
         try:
             words = payload["results"]["channels"][0]["alternatives"][0]["words"]
-        except (KeyError, IndexError, TypeError):
+        except KeyError, IndexError, TypeError:
             return []
         return group_provider_words(
             _timed_items(words, start_key="start", end_key="end", scale=1_000), source, origin_ms
@@ -314,7 +314,7 @@ def has_speaker_evidence(segments: Iterable[dict[str, Any]]) -> bool:
         try:
             start_ms = int(segment.get("startMs"))
             end_ms = int(segment.get("endMs"))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         if start_ms >= 0 and end_ms > start_ms:
             return True
@@ -365,7 +365,7 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
     elif key == "deepgram_async":
         try:
             source_items = payload["results"]["channels"][0]["alternatives"][0]["words"]
-        except (KeyError, IndexError, TypeError):
+        except KeyError, IndexError, TypeError:
             source_items = []
         words = _timed_items(source_items, start_key="start", end_key="end", scale=1_000)
         alignment_quality = "exact_word"

@@ -69,6 +69,11 @@ param(
     [int]$StabilityProbeIntervalSec = 5,
     [double]$MaxBackendWorkingSetGrowthMB = 0,
     [double]$MaxIdleCpuPercent = 0,
+    [int]$MeetingAudioSoakDurationSec = 0,
+    [int]$MeetingAudioSoakProbeIntervalSec = 5,
+    [double]$MaxMeetingAudioSoakWorkingSetGrowthMB = 64,
+    [double]$MaxMeetingAudioSoakPrivateBytesGrowthMB = 64,
+    [double]$MaxMeetingAudioSoakCpuPercent = 10,
     [int]$LiveRecordingDurationSec = 0,
     [int]$LiveRecordingProbeIntervalSec = 5,
     [double]$MaxLiveBackendWorkingSetGrowthMB = 0,
@@ -112,6 +117,18 @@ param(
     [int]$RealWorkflowFileTimeoutSec = 240,
     [int]$RealWorkflowYoutubeTimeoutSec = 420,
     [int]$RealWorkflowPollSec = 3,
+    [string]$RealWorkflowEvidenceOutputPath = "",
+    [string]$RealWorkflowYoutubeLaneId = "",
+    [ValidateSet("", "primary", "replacement")]
+    [string]$RealWorkflowYoutubeSelectionMarker = "",
+    [string]$RealWorkflowYoutubeExpectedExtractionLane = "",
+    [ValidateSet("", "audio-provider", "captions-first")]
+    [string]$RealWorkflowYoutubeExecutionMode = "",
+    [double]$RealWorkflowYoutubeDurationMinSec = -1,
+    [double]$RealWorkflowYoutubeDurationMaxSec = -1,
+    [string]$RealWorkflowReleaseTag = "",
+    [string]$RealWorkflowInstallerSha256 = "",
+    [string]$RealWorkflowDataRootSha256 = "",
     [switch]$RealWorkflowSkipFile,
     [switch]$RealWorkflowSkipYoutube,
     [switch]$RealWorkflowNoSummary,
@@ -129,6 +146,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 8765
+
+try {
+    Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+} catch {
+    throw "The installed desktop smoke requires the System.Net.Http runtime assembly: $($_.Exception.Message)"
+}
 
 if ($LiveRecordingRustAudioCaptureMode -and $LiveRecordingAudioEngine -ne "rust-wasapi") {
     throw "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-wasapi."
@@ -403,6 +426,155 @@ function Test-MeetingAudioDeviceTest {
         audioPersisted = [bool]$response.audioPersisted
         audioSentToProvider = [bool]$response.audioSentToProvider
         sources = [pscustomobject]$summaries
+    }
+}
+
+function Get-MeetingSoakAudioArtifactCount {
+    param([string]$RuntimeDataDir)
+
+    if (-not (Test-Path -LiteralPath $RuntimeDataDir -PathType Container)) {
+        return 0
+    }
+    return @(
+        Get-ChildItem -LiteralPath $RuntimeDataDir -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -match "^\.(wav|pcm|raw|flac|opus|mp3|m4a|aac|ogg)$" }
+    ).Count
+}
+
+function Test-MeetingAudioSoak {
+    param(
+        [System.Diagnostics.Process]$AppProcess,
+        [int]$BackendPid,
+        [int]$Port,
+        [string]$Token,
+        [string]$ExpectedRuntimeMode,
+        [string]$RuntimeDataDir,
+        [int]$DurationSec,
+        [int]$ProbeIntervalSec,
+        [double]$MaxWorkingSetGrowthMB,
+        [double]$MaxPrivateBytesGrowthMB,
+        [double]$MaxCpuPercent
+    )
+
+    if ($DurationSec -ne 60) {
+        throw "Installed Meeting audio soak must run for exactly 60 seconds."
+    }
+    $headers = @{ "Content-Type" = "application/json" }
+    if ($Token) {
+        $headers["X-Scriber-Token"] = $Token
+    }
+    $body = @{
+        durationMs = 60000
+        aecEnabled = $true
+        playTestTone = $true
+    } | ConvertTo-Json -Compress
+    $audioArtifactCountBefore = Get-MeetingSoakAudioArtifactCount -RuntimeDataDir $RuntimeDataDir
+    $client = [System.Net.Http.HttpClient]::new()
+    $client.Timeout = [TimeSpan]::FromSeconds($DurationSec + 30)
+    $request = [System.Net.Http.HttpRequestMessage]::new(
+        [System.Net.Http.HttpMethod]::Post,
+        "http://127.0.0.1:$Port/api/meetings/device-test"
+    )
+    $request.Content = [System.Net.Http.StringContent]::new(
+        $body,
+        [System.Text.Encoding]::UTF8,
+        "application/json"
+    )
+    if ($Token) {
+        $null = $request.Headers.TryAddWithoutValidation("X-Scriber-Token", $Token)
+    }
+    $watch = [System.Diagnostics.Stopwatch]::StartNew()
+    $requestTask = $client.SendAsync(
+        $request,
+        [System.Net.Http.HttpCompletionOption]::ResponseContentRead
+    )
+    try {
+        $stability = Test-RuntimeStability `
+            -AppProcess $AppProcess `
+            -BackendPid $BackendPid `
+            -Port $Port `
+            -Token $Token `
+            -ExpectedRuntimeMode $ExpectedRuntimeMode `
+            -DurationSec $DurationSec `
+            -ProbeIntervalSec $ProbeIntervalSec `
+            -MaxWorkingSetGrowthMB $MaxWorkingSetGrowthMB `
+            -MaxPrivateBytesGrowthMB $MaxPrivateBytesGrowthMB `
+            -MaxProcessTreeCpuAvgPercent $MaxCpuPercent `
+            -RequiredPendingTask $requestTask `
+            -RequiredPendingUntilSec ($DurationSec - [Math]::Max(2, $ProbeIntervalSec))
+        $httpResponse = $requestTask.GetAwaiter().GetResult()
+        $responseBody = $httpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        if (-not $httpResponse.IsSuccessStatusCode) {
+            throw "Installed Meeting audio soak endpoint returned HTTP $([int]$httpResponse.StatusCode)."
+        }
+        $response = $responseBody | ConvertFrom-Json
+    } finally {
+        $watch.Stop()
+        $request.Dispose()
+        $client.Dispose()
+    }
+
+    if ($watch.Elapsed.TotalSeconds -lt ($DurationSec - 2)) {
+        throw "Installed Meeting audio soak ended before the required 60-second capture window."
+    }
+    if (-not $response.available -or -not $response.aecActive) {
+        throw "Installed Meeting audio soak did not report active AEC capture."
+    }
+    if ([int]$response.durationMs -ne 60000) {
+        throw "Installed Meeting audio soak did not honor the exact 60-second duration."
+    }
+    if (-not $response.testTonePlayed) {
+        throw "Installed Meeting audio soak could not play its bounded loopback test tone."
+    }
+    if ($response.audioPersisted -or $response.audioSentToProvider) {
+        throw "Installed Meeting audio soak persisted audio or sent it to a provider."
+    }
+
+    $summaries = [ordered]@{}
+    foreach ($source in @("microphone", "system", "mic_clean")) {
+        $level = $response.sources.$source
+        if (-not $level -or -not $level.active -or [string]$level.errorCode) {
+            throw "Installed Meeting audio source '$source' was inactive or reported a transport error."
+        }
+        $framesPerSecond = [double]$level.frames / $DurationSec
+        $audioFramesPerSecond = [double]$level.audioFrames / $DurationSec
+        if ($framesPerSecond -lt 80 -or $audioFramesPerSecond -lt 12800) {
+            throw "Installed Meeting audio source '$source' did not remain continuous for the soak."
+        }
+        $summaries[$source] = [pscustomobject]@{
+            frames = [int64]$level.frames
+            audioFrames = [int64]$level.audioFrames
+            framesPerSecond = [Math]::Round($framesPerSecond, 2)
+            audioFramesPerSecond = [Math]::Round($audioFramesPerSecond, 2)
+            payloadBytes = if ($null -ne $level.payloadBytes) { [int64]$level.payloadBytes } else { $null }
+            rms = [Math]::Round([double]$level.rms, 6)
+            peak = [Math]::Round([double]$level.peak, 6)
+            active = [bool]$level.active
+        }
+    }
+    if ([double]$summaries.system.peak -le 0) {
+        throw "Installed Meeting loopback source did not observe the bounded test tone."
+    }
+    $audioArtifactCountAfter = Get-MeetingSoakAudioArtifactCount -RuntimeDataDir $RuntimeDataDir
+    if ($audioArtifactCountAfter -ne $audioArtifactCountBefore) {
+        throw "Installed Meeting audio soak created an unexpected persistent audio artifact."
+    }
+
+    return [pscustomobject]@{
+        verified = $true
+        transport = "tauri-shell-ipc-to-rust-sidecar-frame-pipes"
+        captureMode = "wasapi"
+        durationSec = $DurationSec
+        elapsedSec = [Math]::Round($watch.Elapsed.TotalSeconds, 3)
+        probeIntervalSec = [Math]::Max(1, $ProbeIntervalSec)
+        aecActive = [bool]$response.aecActive
+        testTonePlayed = [bool]$response.testTonePlayed
+        audioPersisted = [bool]$response.audioPersisted
+        audioSentToProvider = [bool]$response.audioSentToProvider
+        audioArtifactCountBefore = $audioArtifactCountBefore
+        audioArtifactCountAfter = $audioArtifactCountAfter
+        sources = [pscustomobject]$summaries
+        stability = $stability
     }
 }
 
@@ -742,6 +914,10 @@ function Test-RuntimeStability {
         [int]$ProbeIntervalSec,
         [double]$MaxWorkingSetGrowthMB = 0,
         [double]$MaxIdleCpuPercent = 0,
+        [double]$MaxPrivateBytesGrowthMB = 0,
+        [double]$MaxProcessTreeCpuAvgPercent = 0,
+        [System.Threading.Tasks.Task]$RequiredPendingTask = $null,
+        [int]$RequiredPendingUntilSec = 0,
         [bool]$CollectAudioDiagnostics = $false
     )
 
@@ -765,6 +941,14 @@ function Test-RuntimeStability {
         $lastCpuTotals[[int]$metric.pid] = [double]$metric.cpuTotalSeconds
     }
     do {
+        $elapsedBeforeProbeSec = ((Get-Date) - $startedAt).TotalSeconds
+        if (
+            $RequiredPendingTask `
+            -and $RequiredPendingTask.IsCompleted `
+            -and $elapsedBeforeProbeSec -lt [Math]::Max(0, $RequiredPendingUntilSec)
+        ) {
+            throw "Required active operation ended after $([Math]::Round($elapsedBeforeProbeSec, 2)) seconds."
+        }
         if ($AppProcess.HasExited) {
             throw "Tauri process exited during stability smoke with code $($AppProcess.ExitCode)."
         }
@@ -840,6 +1024,10 @@ function Test-RuntimeStability {
             [double](($currentProcessMetrics | Measure-Object -Property workingSetMb -Sum).Sum),
             2
         )
+        $totalPrivateBytesMb = [Math]::Round(
+            [double](($currentProcessMetrics | Measure-Object -Property privateBytesMb -Sum).Sum),
+            2
+        )
         $lastCpuSampleAt = $currentCpuSampleAt
         $lastCpuTotals = $currentCpuTotals
 
@@ -854,6 +1042,7 @@ function Test-RuntimeStability {
             combinedCpuPercent = $combinedCpuPercent
             processTreeCpuPercent = $processTreeCpuPercent
             totalWorkingSetMb = $totalWorkingSetMb
+            totalPrivateBytesMb = $totalPrivateBytesMb
             healthMs = $healthProbe.elapsedMs
             stateMs = $stateProbe.elapsedMs
             audioDiagnosticsMs = if ($audioDiagnosticsProbe) { $audioDiagnosticsProbe.elapsedMs } else { $null }
@@ -896,12 +1085,35 @@ function Test-RuntimeStability {
     $totalWorkingSetMax = if ($totalWorkingSetValues.Count) { [double](($totalWorkingSetValues | Measure-Object -Maximum).Maximum) } else { $null }
     $totalWorkingSetGrowth = if ($null -ne $totalWorkingSetStart -and $null -ne $totalWorkingSetEnd) { [Math]::Round($totalWorkingSetEnd - $totalWorkingSetStart, 2) } else { $null }
     $totalWorkingSetPeakGrowth = if ($null -ne $totalWorkingSetStart -and $null -ne $totalWorkingSetMax) { [Math]::Round($totalWorkingSetMax - $totalWorkingSetStart, 2) } else { $null }
+    $totalPrivateBytesValues = @($samples | ForEach-Object { [double]$_.totalPrivateBytesMb })
+    $totalPrivateBytesStart = if ($totalPrivateBytesValues.Count) { [double]$totalPrivateBytesValues[0] } else { $null }
+    $totalPrivateBytesEnd = if ($totalPrivateBytesValues.Count) { [double]$totalPrivateBytesValues[-1] } else { $null }
+    $totalPrivateBytesMax = if ($totalPrivateBytesValues.Count) { [double](($totalPrivateBytesValues | Measure-Object -Maximum).Maximum) } else { $null }
+    $totalPrivateBytesGrowth = if ($null -ne $totalPrivateBytesStart -and $null -ne $totalPrivateBytesEnd) { [Math]::Round($totalPrivateBytesEnd - $totalPrivateBytesStart, 2) } else { $null }
+    $totalPrivateBytesPeakGrowth = if ($null -ne $totalPrivateBytesStart -and $null -ne $totalPrivateBytesMax) { [Math]::Round($totalPrivateBytesMax - $totalPrivateBytesStart, 2) } else { $null }
     $processMetricsSummary = @(Get-ProcessTreeMetricsSummary -Samples $samples)
     if ($MaxIdleCpuPercent -gt 0 -and -not $processTreeCpuValues.Count) {
         throw "Stability smoke could not collect idle CPU samples."
     }
     if ($MaxIdleCpuPercent -gt 0 -and $null -ne $processTreeCpuAvg -and $processTreeCpuAvg -gt $MaxIdleCpuPercent) {
         throw "Stability smoke process-tree average idle CPU ${processTreeCpuAvg}% exceeded ${MaxIdleCpuPercent}%."
+    }
+    if ($MaxProcessTreeCpuAvgPercent -gt 0 -and -not $processTreeCpuValues.Count) {
+        throw "Stability smoke could not collect process-tree CPU samples."
+    }
+    if (
+        $MaxProcessTreeCpuAvgPercent -gt 0 `
+        -and $null -ne $processTreeCpuAvg `
+        -and $processTreeCpuAvg -gt $MaxProcessTreeCpuAvgPercent
+    ) {
+        throw "Stability smoke process-tree average CPU ${processTreeCpuAvg}% exceeded ${MaxProcessTreeCpuAvgPercent}%."
+    }
+    if (
+        $MaxPrivateBytesGrowthMB -gt 0 `
+        -and $null -ne $totalPrivateBytesPeakGrowth `
+        -and $totalPrivateBytesPeakGrowth -gt $MaxPrivateBytesGrowthMB
+    ) {
+        throw "Stability smoke process-tree private-bytes peak growth ${totalPrivateBytesPeakGrowth}MB exceeded ${MaxPrivateBytesGrowthMB}MB."
     }
     return [pscustomobject]@{
         verified = $true
@@ -921,6 +1133,11 @@ function Test-RuntimeStability {
         totalWorkingSetMaxMb = $totalWorkingSetMax
         totalWorkingSetGrowthMb = $totalWorkingSetGrowth
         totalWorkingSetPeakGrowthMb = $totalWorkingSetPeakGrowth
+        totalPrivateBytesStartMb = $totalPrivateBytesStart
+        totalPrivateBytesEndMb = $totalPrivateBytesEnd
+        totalPrivateBytesMaxMb = $totalPrivateBytesMax
+        totalPrivateBytesGrowthMb = $totalPrivateBytesGrowth
+        totalPrivateBytesPeakGrowthMb = $totalPrivateBytesPeakGrowth
         appCpuMaxPercent = $appCpuMax
         backendCpuMaxPercent = $backendCpuMax
         combinedCpuMaxPercent = $combinedCpuMax
@@ -928,6 +1145,8 @@ function Test-RuntimeStability {
         processTreeCpuMaxPercent = $processTreeCpuMax
         processTreeCpuAvgPercent = $processTreeCpuAvg
         maxIdleCpuPercent = if ($MaxIdleCpuPercent -gt 0) { $MaxIdleCpuPercent } else { $null }
+        maxProcessTreeCpuAvgPercent = if ($MaxProcessTreeCpuAvgPercent -gt 0) { $MaxProcessTreeCpuAvgPercent } else { $null }
+        maxPrivateBytesGrowthMb = if ($MaxPrivateBytesGrowthMB -gt 0) { $MaxPrivateBytesGrowthMB } else { $null }
         processMetricsSummary = $processMetricsSummary
         samples = $samples
     }
@@ -1625,7 +1844,17 @@ function Test-RealMediaWorkflows {
         throw "Real media workflow smoke requires a session token."
     }
 
-    $outputPath = Join-Path $RuntimeDataDir "installed-real-media-workflows-smoke.json"
+    $outputPath = if ($RealWorkflowEvidenceOutputPath) {
+        [System.IO.Path]::GetFullPath($RealWorkflowEvidenceOutputPath)
+    } else {
+        Join-Path $RuntimeDataDir "installed-real-media-workflows-smoke.json"
+    }
+    if ($RealWorkflowEvidenceOutputPath) {
+        $allowedOutputRoot = [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "tmp")).TrimEnd("\")
+        if (-not $outputPath.StartsWith($allowedOutputRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Real workflow evidence output must remain below the repository tmp root."
+        }
+    }
     $workflowArgs = @(
         "scripts\smoke_installed_transcription_workflows.py",
         "--base-url",
@@ -1643,6 +1872,33 @@ function Test-RealMediaWorkflows {
         "--poll-sec",
         $RealWorkflowPollSec.ToString()
     )
+    if ($RealWorkflowYoutubeLaneId) {
+        $workflowArgs += @("--youtube-lane-id", $RealWorkflowYoutubeLaneId)
+    }
+    if ($RealWorkflowYoutubeSelectionMarker) {
+        $workflowArgs += @("--youtube-selection-marker", $RealWorkflowYoutubeSelectionMarker)
+    }
+    if ($RealWorkflowYoutubeExpectedExtractionLane) {
+        $workflowArgs += @("--youtube-expected-extraction-lane", $RealWorkflowYoutubeExpectedExtractionLane)
+    }
+    if ($RealWorkflowYoutubeExecutionMode) {
+        $workflowArgs += @("--youtube-execution-mode", $RealWorkflowYoutubeExecutionMode)
+    }
+    if ($RealWorkflowYoutubeDurationMinSec -ge 0) {
+        $workflowArgs += @("--youtube-duration-min", $RealWorkflowYoutubeDurationMinSec.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($RealWorkflowYoutubeDurationMaxSec -ge 0) {
+        $workflowArgs += @("--youtube-duration-max", $RealWorkflowYoutubeDurationMaxSec.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+    }
+    if ($RealWorkflowReleaseTag) {
+        $workflowArgs += @("--release-tag", $RealWorkflowReleaseTag)
+    }
+    if ($RealWorkflowInstallerSha256) {
+        $workflowArgs += @("--installer-sha256", $RealWorkflowInstallerSha256)
+    }
+    if ($RealWorkflowDataRootSha256) {
+        $workflowArgs += @("--expected-data-root-sha256", $RealWorkflowDataRootSha256)
+    }
     if ($RealWorkflowSkipFile) {
         $workflowArgs += "--skip-file"
     }
@@ -1657,7 +1913,7 @@ function Test-RealMediaWorkflows {
     $env:SCRIBER_SMOKE_SESSION_TOKEN = $Token
     Push-Location $RepoRoot
     try {
-        python @workflowArgs
+        & $PythonPath @workflowArgs
         if ($LASTEXITCODE -ne 0) {
             throw "Installed real media workflow smoke failed with exit code $LASTEXITCODE."
         }
@@ -3102,6 +3358,26 @@ if ($LiveRecordingDurationSec -gt 0 -and ($SimulateBackendCrash -or $SimulateBac
 if ($LiveRecordingDurationSec -gt 0 -and ($VerifyGlobalHotkeyRegistration -or $SimulateGlobalHotkey -or $WaitForManualGlobalHotkey)) {
     throw "-LiveRecordingDurationSec cannot be combined with global hotkey smoke options because hotkey smokes override STT settings."
 }
+if ($LiveRecordingDurationSec -gt 0 -and $VerifyMeetingAudioDeviceTest) {
+    throw "-VerifyMeetingAudioDeviceTest cannot be combined with -LiveRecordingDurationSec because the Meeting test forces synthetic capture and would invalidate live microphone evidence."
+}
+if ($MeetingAudioSoakDurationSec -notin @(0, 60)) {
+    throw "-MeetingAudioSoakDurationSec must be 0 or exactly 60."
+}
+if (
+    $MeetingAudioSoakDurationSec -gt 0 `
+    -and (
+        $VerifyMeetingAudioDeviceTest `
+        -or $LiveRecordingDurationSec -gt 0 `
+        -or $StabilityDurationSec -gt 0 `
+        -or $SimulateBackendCrash `
+        -or $SimulateBackendShutdown `
+        -or $SimulateBackendStartupTimeout `
+        -or $AttachExternalBackend
+    )
+) {
+    throw "-MeetingAudioSoakDurationSec cannot be combined with synthetic Meeting, live recording, separate stability, recovery, or external-backend smoke options."
+}
 if (($LiveRecordingEnvFile -or $LiveRecordingDefaultStt -or $LiveRecordingSonioxMode) -and $LiveRecordingDurationSec -le 0) {
     throw "Live recording provider overrides require -LiveRecordingDurationSec."
 }
@@ -3175,6 +3451,7 @@ $oldAudioEngine = $env:SCRIBER_AUDIO_ENGINE
 $oldRustSyntheticCapture = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE
 $oldRustSyntheticSignal = $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL
 $oldRustWasapiCapture = $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE
+$oldMeetingDeviceTestMaxDuration = $env:SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS
 $oldMicAlwaysOn = $env:SCRIBER_MIC_ALWAYS_ON
 $oldScriberAutoSummarize = $env:SCRIBER_AUTO_SUMMARIZE
 $oldAudioSidecarExe = $env:SCRIBER_AUDIO_SIDECAR_EXE
@@ -3272,6 +3549,12 @@ if ($VerifyMeetingAudioDeviceTest) {
     $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = "1"
     $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $null
 }
+if ($MeetingAudioSoakDurationSec -gt 0) {
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $null
+    $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = $null
+    $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = "1"
+    $env:SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS = "60000"
+}
 if ($LiveRecordingMicAlwaysOn) {
     $env:SCRIBER_MIC_ALWAYS_ON = "1"
 }
@@ -3303,6 +3586,7 @@ $audioSidecarCleanup = $null
 $strayAudioSidecar = $null
 $shellMenuSmoke = $null
 $meetingAudioDeviceTest = $null
+$meetingAudioSoak = $null
 try {
     if ($VerifyAudioSidecarCleanup) {
         $audioSidecarProbePath = Resolve-InstalledAudioSidecarExe -InstallRoot $InstallRoot
@@ -3401,6 +3685,20 @@ try {
         $meetingAudioDeviceTest = Test-MeetingAudioDeviceTest `
             -Port ([int]$listener.Port) `
             -Token $SessionToken
+    }
+    if ($MeetingAudioSoakDurationSec -gt 0) {
+        $meetingAudioSoak = Test-MeetingAudioSoak `
+            -AppProcess $app `
+            -BackendPid ([int]$listener.BackendPid) `
+            -Port ([int]$listener.Port) `
+            -Token $SessionToken `
+            -ExpectedRuntimeMode $expectedRuntimeMode `
+            -RuntimeDataDir $DataDir `
+            -DurationSec $MeetingAudioSoakDurationSec `
+            -ProbeIntervalSec $MeetingAudioSoakProbeIntervalSec `
+            -MaxWorkingSetGrowthMB $MaxMeetingAudioSoakWorkingSetGrowthMB `
+            -MaxPrivateBytesGrowthMB $MaxMeetingAudioSoakPrivateBytesGrowthMB `
+            -MaxCpuPercent $MaxMeetingAudioSoakCpuPercent
     }
     $externalAttach = $null
     if ($AttachExternalBackend) {
@@ -3618,6 +3916,7 @@ try {
         legacyDataMigration = $legacyDataMigration
         frontend = $frontend
         meetingAudioDeviceTest = $meetingAudioDeviceTest
+        meetingAudioSoak = $meetingAudioSoak
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
@@ -3667,6 +3966,7 @@ try {
         legacyDataMigration = $legacyDataMigration
         frontend = $frontend
         meetingAudioDeviceTest = $meetingAudioDeviceTest
+        meetingAudioSoak = $meetingAudioSoak
         supportBundle = $supportBundle
         realMediaWorkflows = $realMediaWorkflows
         globalHotkey = $globalHotkey
@@ -3768,6 +4068,7 @@ try {
     $env:SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE = $oldRustSyntheticCapture
     $env:SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL = $oldRustSyntheticSignal
     $env:SCRIBER_RUST_AUDIO_WASAPI_CAPTURE = $oldRustWasapiCapture
+    $env:SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS = $oldMeetingDeviceTestMaxDuration
     $env:SCRIBER_MIC_ALWAYS_ON = $oldMicAlwaysOn
     $env:SCRIBER_AUTO_SUMMARIZE = $oldScriberAutoSummarize
     $env:SCRIBER_AUDIO_SIDECAR_EXE = $oldAudioSidecarExe

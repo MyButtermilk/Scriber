@@ -4,6 +4,7 @@ import hashlib
 import json
 import shutil
 import subprocess
+import time
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,19 @@ def _read(path: str) -> str:
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_bytes_with_retry(path: Path, content: bytes) -> None:
+    last_error: OSError | None = None
+    for attempt in range(8):
+        try:
+            path.write_bytes(content)
+            return
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.025 * (attempt + 1))
+    assert last_error is not None
+    raise last_error
 
 
 def _compact(value: object) -> str:
@@ -372,11 +386,11 @@ def test_backend_cache_keys_ignore_text_checkout_line_endings() -> None:
         )
 
     try:
-        spec_path.write_bytes(normalized_spec.encode("utf-8"))
-        gitkeep_path.write_bytes(normalized_gitkeep.encode("utf-8"))
+        _write_bytes_with_retry(spec_path, normalized_spec.encode("utf-8"))
+        _write_bytes_with_retry(gitkeep_path, normalized_gitkeep.encode("utf-8"))
         write_keys(output_lf)
-        spec_path.write_bytes(normalized_spec.replace("\n", "\r\n").encode("utf-8"))
-        gitkeep_path.write_bytes(normalized_gitkeep.replace("\n", "\r\n").encode("utf-8"))
+        _write_bytes_with_retry(spec_path, normalized_spec.replace("\n", "\r\n").encode("utf-8"))
+        _write_bytes_with_retry(gitkeep_path, normalized_gitkeep.replace("\n", "\r\n").encode("utf-8"))
         write_keys(output_crlf)
 
         lf_manifests = {path.name: path.read_bytes() for path in output_lf.glob("*.txt")}
@@ -387,13 +401,13 @@ def test_backend_cache_keys_ignore_text_checkout_line_endings() -> None:
         assert lf_manifests["backend-runtime.txt"] == crlf_manifests["backend-runtime.txt"]
         assert lf_manifests["backend-sidecar.txt"] == crlf_manifests["backend-sidecar.txt"]
     finally:
-        spec_path.write_bytes(original_spec)
-        gitkeep_path.write_bytes(original_gitkeep)
+        _write_bytes_with_retry(spec_path, original_spec)
+        _write_bytes_with_retry(gitkeep_path, original_gitkeep)
         shutil.rmtree(output_lf, ignore_errors=True)
         shutil.rmtree(output_crlf, ignore_errors=True)
 
 
-def test_numpy_overlay_lock_invalidates_only_backend_product_cache_keys() -> None:
+def test_numpy_overlay_lock_invalidates_only_python_product_cache_keys() -> None:
     if shutil.which("pwsh") is None:
         pytest.skip("PowerShell 7 is required for release-script validation")
 
@@ -426,16 +440,67 @@ def test_numpy_overlay_lock_invalidates_only_backend_product_cache_keys() -> Non
 
         assert before.keys() == after.keys()
         changed = {name for name in before if before[name] != after[name]}
-        assert changed == {"backend-runtime.txt", "backend-sidecar.txt"}
+        assert changed == {
+            "python-dependencies.txt",
+            "backend-runtime.txt",
+            "backend-sidecar.txt",
+        }
         for name in changed:
             manifest = after[name]
             assert b"packaging/wheels/numpy-noblas-wheel-lock-v1.json" in manifest
-            assert b"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl" in manifest
-            assert b"scripts/validate_numpy_noblas_wheel.py" in manifest
+            assert b"packaging/wheels/numpy-2.4.6+scriber.noblas.1-cp314-cp314-win_amd64.whl" in manifest
+        for name in ("backend-runtime.txt", "backend-sidecar.txt"):
+            assert b"scripts/validate_numpy_noblas_wheel.py" in after[name]
     finally:
         lock_path.write_bytes(original)
         shutil.rmtree(output_before, ignore_errors=True)
         shutil.rmtree(output_after, ignore_errors=True)
+
+
+def test_runtime_flavor_and_jit_invalidate_only_python_product_cache_keys() -> None:
+    if shutil.which("pwsh") is None:
+        pytest.skip("PowerShell 7 is required for release-script validation")
+
+    output_official = REPO_ROOT / "build" / f"test-cache-keys-official-{uuid.uuid4().hex}"
+    output_clang_jit = REPO_ROOT / "build" / f"test-cache-keys-clang-jit-{uuid.uuid4().hex}"
+
+    def write_keys(output: Path, flavor: str, jit: str) -> dict[str, bytes]:
+        subprocess.run(
+            [
+                "pwsh",
+                "-NoProfile",
+                "-File",
+                str(REPO_ROOT / "scripts/ci/write_release_cache_keys.ps1"),
+                "-OutputDir",
+                str(output.relative_to(REPO_ROOT)),
+                "-PythonRuntimeFlavor",
+                flavor,
+                "-PythonJitMode",
+                jit,
+            ],
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return {path.name: path.read_bytes() for path in output.glob("*.txt")}
+
+    try:
+        official = write_keys(output_official, "Official", "Disabled")
+        clang_jit = write_keys(output_clang_jit, "ClangPgo", "Enabled")
+
+        assert official.keys() == clang_jit.keys()
+        changed = {name for name in official if official[name] != clang_jit[name]}
+        assert changed == {
+            "python-dependencies.txt",
+            "backend-runtime.txt",
+            "backend-sidecar.txt",
+        }
+        assert b"parameter\tpython-runtime-flavor\tClangPgo" in clang_jit["python-dependencies.txt"]
+        assert b"parameter\tpython-jit-mode\tEnabled" in clang_jit["python-dependencies.txt"]
+    finally:
+        shutil.rmtree(output_official, ignore_errors=True)
+        shutil.rmtree(output_clang_jit, ignore_errors=True)
 
 
 def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
@@ -466,7 +531,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
             "name": "scriber-frozen-python-runtime",
             "revision": RUNTIME_CONTRACT_REVISION,
         },
-        "python": {"version": "3.13.14", "cacheTag": "cpython-313"},
+        "python": {"version": "3.14.6", "cacheTag": "cpython-314"},
     }
     inner_key = hashlib.sha256(_compact(input_manifest).encode()).hexdigest()
     runtime_files = [
@@ -482,7 +547,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
             "name": "scriber-frozen-python-runtime",
             "revision": RUNTIME_CONTRACT_REVISION,
         },
-        "python": {"version": "3.13.14", "cacheTag": "cpython-313"},
+        "python": {"version": "3.14.6", "cacheTag": "cpython-314"},
         "executable": {"sha256": _sha256(executable), "length": executable.stat().st_size},
         "content": {"fileCount": 2, "treeSha256": tree_sha, "files": runtime_files},
     }
@@ -529,7 +594,7 @@ def test_runtime_cache_validator_roundtrip_and_tamper_rejection() -> None:
         assert envelope["workflowFingerprint"] == workflow_fingerprint
         assert envelope["innerCacheKey"] == inner_key
 
-        cache_manifest["inputManifest"]["python"]["version"] = "3.13.15"
+        cache_manifest["inputManifest"]["python"]["version"] = "3.14.7"
         manifest_path.write_text(json.dumps(cache_manifest), encoding="utf-8")
         tampered = subprocess.run(command, cwd=REPO_ROOT, check=False, capture_output=True, text=True)
         assert tampered.returncode != 0

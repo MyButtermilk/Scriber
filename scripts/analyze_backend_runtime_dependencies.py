@@ -123,14 +123,16 @@ COMPONENT_GROUPS: dict[str, dict[str, Any]] = {
             "_internal/lxml",
             "_internal/reportlab",
         ),
-        "requiredPaths": (),
+        "requiredPaths": ("_internal/lxml",),
         "disallowedPaths": (
             "_internal/PIL",
             "_internal/docx",
-            "_internal/lxml",
             "_internal/reportlab",
         ),
-        "reason": "Disallowed legacy PDF/DOCX dependencies; text export is standard-library-only",
+        "reason": (
+            "Text export is standard-library-only; PIL, docx, and reportlab stay "
+            "excluded while minimal lxml.etree qualifies the CP314 native runtime"
+        ),
     },
 }
 

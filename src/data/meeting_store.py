@@ -104,7 +104,7 @@ def _loads(value: str | None, fallback: Any) -> Any:
         return fallback
     try:
         return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
+    except TypeError, json.JSONDecodeError:
         return fallback
 
 
@@ -1084,7 +1084,7 @@ class MeetingStore:
                 try:
                     logical = {str(key): max(0, int(value)) for key, value in raw_logical.items()}
                     scalar_frontier = min(logical.values()) if logical else 0
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     return None
                 valid_segments = True
                 for item in parsed_segments:
@@ -1094,7 +1094,7 @@ class MeetingStore:
                     source = str(item.get("source", ""))
                     try:
                         end_ms = int(item.get("endMs", 0))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         valid_segments = False
                         break
                     frontier = logical.get(source, 0) if source in {"microphone", "system"} else scalar_frontier
@@ -1121,7 +1121,7 @@ class MeetingStore:
                     return None
                 try:
                     total_segment_count = int(parsed.get("totalSegmentCount", -1))
-                except (TypeError, ValueError):
+                except TypeError, ValueError:
                     return None
                 if total_segment_count != int(checkpoint["segment_count"]):
                     return None
@@ -1140,7 +1140,7 @@ class MeetingStore:
                     source = str(item.get("source", ""))
                     try:
                         end_ms = int(item.get("endMs", 0))
-                    except (TypeError, ValueError):
+                    except TypeError, ValueError:
                         return None
                     frontier = logical.get(source, 0) if source in {"microphone", "system"} else scalar_frontier
                     if end_ms > frontier:
@@ -2265,7 +2265,7 @@ class MeetingStore:
                 ):
                     return None
                 return round(reader.getnframes() * 1000 / reader.getframerate())
-        except (EOFError, OSError, wave.Error):
+        except EOFError, OSError, wave.Error:
             return None
 
     @staticmethod
@@ -2386,7 +2386,7 @@ class MeetingStore:
                         expected_sha256=str(row["sha256"]),
                     )
                     result["completed"] += 1
-                except (sqlite3.Error, MeetingStoreError):
+                except sqlite3.Error, MeetingStoreError:
                     result["deferred"] += 1
                 continue
             if partial_valid and not final_exists:
@@ -2399,7 +2399,7 @@ class MeetingStore:
                         expected_sha256=str(row["sha256"]),
                     )
                     result["completed"] += 1
-                except (OSError, sqlite3.Error, MeetingStoreError):
+                except OSError, sqlite3.Error, MeetingStoreError:
                     result["deferred"] += 1
                 continue
             for candidate in (partial_path, final_path):
@@ -2469,7 +2469,7 @@ class MeetingStore:
                     expected_sha256=digest,
                 )
                 result["adopted"] += 1
-            except (sqlite3.Error, MeetingStoreError):
+            except sqlite3.Error, MeetingStoreError:
                 result["deferred"] += 1
         return result
 

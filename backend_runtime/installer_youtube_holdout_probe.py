@@ -1,10 +1,9 @@
 """Bounded YouTube capability probe executed by the frozen backend launcher.
 
-This module is deliberately independent of Scriber application code.  It is
-frozen into ``scriber-backend.exe`` and is used only by installer-size
-AutoResearch.  Requests arrive as one bounded JSON object on stdin; responses
-never include the requested URL, media URLs, player URLs, paths, logs, or raw
-provider errors.
+This module is frozen into ``scriber-backend.exe`` for installer-size
+AutoResearch and the installed five-video preflight. Requests arrive as one
+bounded JSON object on stdin; responses never include the requested URL, media
+URLs, player URLs, paths, logs, or raw provider errors.
 """
 
 from __future__ import annotations
@@ -16,10 +15,10 @@ import re
 import stat
 import sys
 import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any
 from urllib.parse import parse_qs, urlparse
-
 
 PROBE_CONTRACT = "InstallerYoutubeFrozenHoldoutProbeV1"
 SCHEMA_VERSION = 1
@@ -69,9 +68,7 @@ class _BoundedLogger:
 
 def _is_reparse(path: Path) -> bool:
     info = path.lstat()
-    return path.is_symlink() or bool(
-        getattr(info, "st_file_attributes", 0) & REPARSE_POINT
-    )
+    return path.is_symlink() or bool(getattr(info, "st_file_attributes", 0) & REPARSE_POINT)
 
 
 def _plain_file_below(root: Path, raw_path: object, *, runtime_kind: str) -> Path:
@@ -114,7 +111,7 @@ def _load_request(stream: Any) -> dict[str, Any]:
 
 
 def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str, Any]:
-    allowed = {
+    required = {
         "requestContract",
         "schemaVersion",
         "caseId",
@@ -125,7 +122,10 @@ def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str,
         "runtimePath",
         "cacheMode",
     }
-    if set(value) != allowed:
+    format_fields = required | {"formatSelectionProbe"}
+    caption_fields = required | {"captionSelectionProbe"}
+    request_fields = frozenset(value)
+    if request_fields not in {frozenset(required), frozenset(format_fields), frozenset(caption_fields)}:
         raise ProbeBoundaryError("probe request fields are not exact")
     case_id = value.get("caseId")
     family = value.get("family")
@@ -133,6 +133,8 @@ def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str,
     video_id = value.get("expectedVideoId")
     runtime_kind = value.get("runtimeKind")
     cache_mode = value.get("cacheMode")
+    format_selection_probe = value.get("formatSelectionProbe", False)
+    caption_selection_probe = value.get("captionSelectionProbe", False)
     if (
         value.get("requestContract") != PROBE_CONTRACT
         or value.get("schemaVersion") != SCHEMA_VERSION
@@ -144,6 +146,9 @@ def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str,
         or not VIDEO_ID_RE.fullmatch(video_id)
         or runtime_kind not in RUNTIME_NAMES
         or cache_mode not in {"cold", "warm"}
+        or not isinstance(format_selection_probe, bool)
+        or not isinstance(caption_selection_probe, bool)
+        or (format_selection_probe and caption_selection_probe)
     ):
         raise ProbeBoundaryError("probe request identity is invalid")
     if not isinstance(url, str) or len(url) > 2048:
@@ -157,9 +162,7 @@ def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str,
         or parsed.fragment
     ):
         raise ProbeBoundaryError("probe URL is outside the frozen YouTube holdout scope")
-    runtime_path = _plain_file_below(
-        runtime_root, value.get("runtimePath"), runtime_kind=str(runtime_kind)
-    )
+    runtime_path = _plain_file_below(runtime_root, value.get("runtimePath"), runtime_kind=str(runtime_kind))
     cache_root: Path | None = None
     raw_cache = os.environ.get("XDG_CACHE_HOME", "").strip()
     if cache_mode == "warm":
@@ -178,6 +181,8 @@ def _validate_request(value: Mapping[str, Any], runtime_root: Path) -> dict[str,
         "runtimePath": runtime_path,
         "cacheMode": cache_mode,
         "cacheRoot": cache_root,
+        "formatSelectionProbe": format_selection_probe,
+        "captionSelectionProbe": caption_selection_probe,
     }
 
 
@@ -200,9 +205,7 @@ def _failure_code(value: object) -> str:
     return "unknown_failure"
 
 
-def _capabilities(
-    *, request: Mapping[str, Any], info: Mapping[str, Any], debug_log: str
-) -> list[str]:
+def _capabilities(*, request: Mapping[str, Any], info: Mapping[str, Any], debug_log: str) -> list[str]:
     formats = info.get("formats")
     if not isinstance(formats, list):
         formats = []
@@ -306,9 +309,7 @@ def execute_probe(
     cli_args.append(str(request["url"]))
     parsed = parse_options(cli_args)
     options = dict(parsed.ydl_opts)
-    expected_runtime = {
-        str(request["runtimeKind"]): {"path": str(request["runtimePath"])}
-    }
+    expected_runtime = {str(request["runtimeKind"]): {"path": str(request["runtimePath"])}}
     parsed_options = getattr(parsed, "options", None)
     if (
         options.get("js_runtimes") != expected_runtime
@@ -318,9 +319,7 @@ def execute_probe(
         raise ProbeBoundaryError("frozen yt-dlp CLI runtime policy did not parse exactly")
     if request["cacheMode"] == "cold" and options.get("cachedir") is not False:
         raise ProbeBoundaryError("cold yt-dlp cache policy did not parse exactly")
-    if request["cacheMode"] == "warm" and Path(str(options.get("cachedir"))).resolve() != request[
-        "cacheRoot"
-    ]:
+    if request["cacheMode"] == "warm" and Path(str(options.get("cachedir"))).resolve() != request["cacheRoot"]:
         raise ProbeBoundaryError("warm yt-dlp cache policy did not parse exactly")
     options.update(
         {
@@ -346,8 +345,91 @@ def execute_probe(
         if plugin_dirs.value != []:
             raise ProbeBoundaryError("yt-dlp plugin policy is not empty")
         try:
-            with ydl_factory(options) as ydl:
-                info = ydl.extract_info(str(request["url"]), download=False)
+            selected_format: dict[str, Any] | None = None
+            selected_caption: dict[str, Any] | None = None
+            if request["formatSelectionProbe"]:
+                from src.youtube_download import (
+                    _FORMAT_SELECTORS,
+                    _is_format_unavailable_error,
+                )
+
+                last_error: Exception | None = None
+                info = None
+                for selector_index, selector in enumerate(_FORMAT_SELECTORS):
+                    attempt_options = {**options, "format": selector}
+                    try:
+                        with ydl_factory(attempt_options) as ydl:
+                            candidate = ydl.extract_info(str(request["url"]), download=False)
+                        if not isinstance(candidate, dict):
+                            raise ProbeBoundaryError("yt-dlp returned invalid format-selection metadata")
+                        info = candidate
+                        selected_format = {
+                            "routeKind": "audio-format",
+                            "selectorIndex": selector_index + 1,
+                            "selector": selector,
+                            "ext": str(candidate.get("ext") or ""),
+                            "container": str(candidate.get("container") or ""),
+                            "acodec": str(candidate.get("acodec") or ""),
+                            "protocol": str(candidate.get("protocol") or ""),
+                            "formatId": str(candidate.get("format_id") or ""),
+                            "durationSeconds": candidate.get("duration"),
+                        }
+                        break
+                    except ProbeBoundaryError:
+                        raise
+                    except Exception as exc:
+                        if not _is_format_unavailable_error(str(exc)):
+                            raise
+                        last_error = exc
+                if info is None:
+                    raise last_error or ProbeBoundaryError("no production format selector succeeded")
+            elif request["captionSelectionProbe"]:
+                from yt_dlp.networking import Request
+
+                from src.youtube_download import (
+                    _MAX_CAPTION_BYTES,
+                    _parse_caption_payload,
+                    _select_caption_track,
+                )
+
+                with ydl_factory(options) as ydl:
+                    info = ydl.extract_info(str(request["url"]), download=False)
+                    if not isinstance(info, dict):
+                        raise RuntimeError("yt-dlp returned invalid caption metadata")
+                    selected = _select_caption_track(info, preferred_language="auto")
+                    if selected is None:
+                        raise RuntimeError("no supported caption track is available")
+                    language, automatic, caption_format = selected
+                    caption_url = str(caption_format.get("url") or "")
+                    caption_extension = str(caption_format.get("ext") or "").strip().lower()
+                    if not caption_url or caption_extension not in {"json3", "vtt"}:
+                        raise RuntimeError("selected caption track is not parseable")
+                    caption_request = Request(
+                        caption_url,
+                        headers=caption_format.get("http_headers") or info.get("http_headers") or {},
+                    )
+                    with ydl.urlopen(caption_request) as response:
+                        caption_payload = response.read(_MAX_CAPTION_BYTES + 1)
+                if len(caption_payload) > _MAX_CAPTION_BYTES:
+                    raise RuntimeError("caption track exceeds the bounded parser input")
+                cues = _parse_caption_payload(caption_payload, caption_extension)
+                if not cues:
+                    raise RuntimeError("selected caption track has no parseable timed cues")
+                caption_text = "\n".join(cue.text for cue in cues).strip()
+                if not caption_text:
+                    raise RuntimeError("selected caption track has no parsed text")
+                selected_caption = {
+                    "routeKind": "youtube-captions",
+                    "captionKind": "automatic" if automatic else "manual",
+                    "captionFormat": caption_extension,
+                    "language": str(language),
+                    "cueCount": len(cues),
+                    "textChars": len(caption_text),
+                    "durationSeconds": info.get("duration"),
+                }
+            else:
+                with ydl_factory(options) as ydl:
+                    info = ydl.extract_info(str(request["url"]), download=False)
             duration_ns = time.perf_counter_ns() - started
             if not isinstance(info, dict) or info.get("id") != request["expectedVideoId"]:
                 raise ProbeBoundaryError("yt-dlp returned another video identity")
@@ -357,11 +439,13 @@ def execute_probe(
                     "status": "pass",
                     "videoId": request["expectedVideoId"],
                     "durationNs": duration_ns,
-                    "observedCapabilities": _capabilities(
-                        request=request, info=info, debug_log=logger.text
-                    ),
+                    "observedCapabilities": _capabilities(request=request, info=info, debug_log=logger.text),
                 }
             )
+            if selected_format is not None:
+                response["selectedFormat"] = selected_format
+            if selected_caption is not None:
+                response["selectedCaption"] = selected_caption
             return 0, response
         except ProbeBoundaryError:
             raise

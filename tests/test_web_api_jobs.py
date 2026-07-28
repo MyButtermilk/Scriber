@@ -1518,6 +1518,7 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
                     text="Caption text without an audio upload.",
                     language="en-orig",
                     is_automatic=True,
+                    duration_seconds=64.9,
                     cues=(
                         YouTubeCaptionCue(
                             start_ms=0,
@@ -1538,6 +1539,7 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
     assert rec.status == "completed"
     assert rec.content == "[0:00] Caption text without an audio upload."
     assert rec.language == "en-orig"
+    assert rec.duration == "01:04"
     assert rec._youtube_stt_provider_used == ""
     caption_mock.assert_awaited_once()
     audio_mock.assert_not_awaited()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -21,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.perf.evaluator.local_wux import (
+from scripts.perf.evaluator.local_wux import (  # noqa: E402
     PROVIDER_REPLAY_SCENARIO_WEIGHTS,
     SCENARIO_METRICS,
     canonical_provider_replay_evidence_valid,
@@ -75,23 +76,18 @@ APP_UX_LIFECYCLE_SCENARIOS = frozenset(
 )
 APP_UX_ALLOWED_START_SOURCES = {
     "cold_app_launch": frozenset({"windows_create_process"}),
-    "warm_app_activation": frozenset(
-        {"windows_second_instance_launch", "uia_invoke"}
-    ),
+    "warm_app_activation": frozenset({"windows_second_instance_launch", "uia_invoke"}),
     "open_transcript_detail": frozenset({"uia_invoke"}),
     "open_settings": frozenset({"uia_invoke"}),
     "stop_to_transcribing_visible": frozenset({"uia_invoke"}),
-    "provider_result_to_completed_visible": frozenset(
-        {"installed_backend_provider_event"}
-    ),
-    "session_finished_to_history_visible": frozenset(
-        {"installed_backend_session_event"}
-    ),
+    "provider_result_to_completed_visible": frozenset({"installed_backend_provider_event"}),
+    "session_finished_to_history_visible": frozenset({"installed_backend_session_event"}),
     "switch_between_transcripts": frozenset({"uia_invoke"}),
     "return_to_dashboard": frozenset({"uia_invoke"}),
 }
 APP_UX_HARNESS_FILES = (
     "benchmarks/windows/app_ux_collector.py",
+    "benchmarks/windows/app_ux_lifecycle_collector.py",
     "benchmarks/windows/app_ux_lifecycle_import.schema.json",
     "benchmarks/windows/app_action.ps1",
     "benchmarks/windows/app_observer.ps1",
@@ -237,11 +233,7 @@ def summarize_stage_zero_distribution(
     """Return the Issue #18 distribution without inventing failed samples."""
 
     finite = [
-        float(value)
-        for value in values
-        if not isinstance(value, bool)
-        and finite_number(value)
-        and float(value) >= 0
+        float(value) for value in values if not isinstance(value, bool) and finite_number(value) and float(value) >= 0
     ]
     count = len(finite)
     failure_count = max(0, int(attempted) - count)
@@ -276,27 +268,13 @@ def write_provider_replay_audio_fixture(
     """Write one deterministic 48 kHz mono signed-16 PCM benchmark fixture."""
 
     duration_ms = float(duration_ms)
-    if (
-        not math.isfinite(duration_ms)
-        or duration_ms < 100.0
-        or duration_ms > 600_000.0
-    ):
+    if not math.isfinite(duration_ms) or duration_ms < 100.0 or duration_ms > 600_000.0:
         raise ValueError("provider replay fixture duration is out of bounds")
-    frame_count = int(
-        PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
-        * duration_ms
-        / 1000.0
-    )
+    frame_count = int(PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE * duration_ms / 1000.0)
     payload = bytearray()
     for index in range(frame_count):
         # Fixed amplitude/frequency keeps the fixture audible without clipping.
-        sample = int(
-            12_000
-            * math.sin(
-                (2.0 * math.pi * 440.0 * index)
-                / PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
-            )
-        )
+        sample = int(12_000 * math.sin((2.0 * math.pi * 440.0 * index) / PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE))
         payload.extend(sample.to_bytes(2, "little", signed=True))
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
@@ -319,20 +297,14 @@ def attest_provider_replay_audio_fixture(
 ) -> bool:
     """Bind non-speech subtraction to exact generated PCM fixture bytes."""
 
-    if (
-        not path.is_file()
-        or isinstance(expected_duration_ms, bool)
-        or not finite_number(expected_duration_ms)
-    ):
+    if not path.is_file() or isinstance(expected_duration_ms, bool) or not finite_number(expected_duration_ms):
         return False
     duration = float(expected_duration_ms)
     if duration <= 0:
         return False
     expected_frames = int(PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE * duration / 1000.0)
     expected_bytes = (
-        expected_frames
-        * PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS
-        * PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
+        expected_frames * PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS * PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
     )
     expected_sha256 = fixture.get("sha256")
     return bool(
@@ -340,8 +312,7 @@ def attest_provider_replay_audio_fixture(
         and fixture.get("durationMs") == duration
         and fixture.get("sampleRate") == PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE
         and fixture.get("channels") == PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS
-        and fixture.get("sampleWidthBytes")
-        == PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
+        and fixture.get("sampleWidthBytes") == PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
         and fixture.get("frameCount") == expected_frames
         and fixture.get("byteLength") == expected_bytes
         and path.stat().st_size == expected_bytes
@@ -395,11 +366,7 @@ def validate_provider_replay_capture_attestation(
         if isinstance(expected, bool):
             valid = isinstance(actual, bool) and actual is expected
         elif isinstance(expected, int):
-            valid = (
-                isinstance(actual, int)
-                and not isinstance(actual, bool)
-                and actual == expected
-            )
+            valid = isinstance(actual, int) and not isinstance(actual, bool) and actual == expected
         else:
             valid = actual == expected
         if not valid:
@@ -431,10 +398,7 @@ def validate_provider_replay_capture_attestation(
         channels,
         sample_width,
     )
-    if any(
-        isinstance(value, bool) or not isinstance(value, int)
-        for value in numeric_fields
-    ):
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in numeric_fields):
         reasons.append("capture_attestation_frame_shape_invalid")
     else:
         bytes_per_frame = int(channels) * int(sample_width)
@@ -443,22 +407,16 @@ def validate_provider_replay_capture_attestation(
             and int(fixture_bytes) == int(fixture_frames) * bytes_per_frame
             and int(block_size_frames) > 0
             and int(block_size_frames) <= int(sample_rate)
-            and int(expected_zero_tail_frames)
-            == (-int(fixture_frames)) % int(block_size_frames)
+            and int(expected_zero_tail_frames) == (-int(fixture_frames)) % int(block_size_frames)
             and int(zero_tail_frames) == int(expected_zero_tail_frames)
-            and int(audio_frames)
-            == int(fixture_frames) + int(zero_tail_frames)
+            and int(audio_frames) == int(fixture_frames) + int(zero_tail_frames)
             and int(payload_bytes) == int(audio_frames) * bytes_per_frame
         )
         if not shape_ok:
             reasons.append("capture_attestation_frame_shape_mismatch")
         else:
             fixture_path_raw = fixture.get("path")
-            fixture_path = (
-                Path(fixture_path_raw)
-                if isinstance(fixture_path_raw, str) and fixture_path_raw
-                else None
-            )
+            fixture_path = Path(fixture_path_raw) if isinstance(fixture_path_raw, str) and fixture_path_raw else None
             if (
                 fixture_path is None
                 or not fixture_path.is_file()
@@ -501,9 +459,7 @@ def sha256_file(path: Path) -> str:
 
 def _is_sha256(value: Any) -> bool:
     return bool(
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
+        isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)
     )
 
 
@@ -593,8 +549,7 @@ def run_capture(
         text=True,
         encoding="utf-8",
         errors="replace",
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
         timeout=timeout,
     )
@@ -871,10 +826,7 @@ def hot_path_readiness(
     except Exception as exc:
         return {"verified": False, "error": str(exc)}
     candidates = [
-        item
-        for key in ("activeItems", "items")
-        for item in (payload.get(key) or [])
-        if isinstance(item, dict)
+        item for key in ("activeItems", "items") for item in (payload.get(key) or []) if isinstance(item, dict)
     ]
     match = next(
         (item for item in candidates if str(item.get("sessionId") or "") == session_id),
@@ -883,17 +835,13 @@ def hot_path_readiness(
     if match is None:
         return {"verified": False, "sessionIdPresent": bool(session_id)}
     segments = match.get("segments") if isinstance(match.get("segments"), dict) else {}
-    tauri_marker = (
-        match.get("tauriHotkeyReceived")
-        if isinstance(match.get("tauriHotkeyReceived"), dict)
-        else {}
-    )
+    tauri_marker = match.get("tauriHotkeyReceived") if isinstance(match.get("tauriHotkeyReceived"), dict) else {}
     try:
         marker_run_uuid = uuid.UUID(str(tauri_marker.get("runId") or ""))
         marker_sample_uuid = uuid.UUID(str(tauri_marker.get("sampleId") or ""))
         marker_run_id = marker_run_uuid.hex if marker_run_uuid.int else ""
         marker_sample_id = marker_sample_uuid.hex if marker_sample_uuid.int else ""
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         marker_run_id = ""
         marker_sample_id = ""
     try:
@@ -901,19 +849,14 @@ def hot_path_readiness(
         qpc_frequency = int(tauri_marker.get("qpcFrequency") or 0)
         timestamp_ns = int(tauri_marker.get("timestampNs") or 0)
         process_id = int(tauri_marker.get("processId") or 0)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         qpc_ticks = 0
         qpc_frequency = 0
         timestamp_ns = 0
         process_id = 0
-    normalized_ns = (
-        (qpc_ticks * 1_000_000_000) // qpc_frequency
-        if qpc_ticks > 0 and qpc_frequency > 0
-        else 0
-    )
+    normalized_ns = (qpc_ticks * 1_000_000_000) // qpc_frequency if qpc_ticks > 0 and qpc_frequency > 0 else 0
     strict_integer_fields = all(
-        isinstance(tauri_marker.get(field), int)
-        and not isinstance(tauri_marker.get(field), bool)
+        isinstance(tauri_marker.get(field), int) and not isinstance(tauri_marker.get(field), bool)
         for field in (
             "schemaVersion",
             "processId",
@@ -942,16 +885,11 @@ def hot_path_readiness(
     )
     values = {
         "hotkeyToMicReadyMs": segments.get("hotkey_received_to_mic_ready_ms", "unknown"),
-        "hotkeyToFirstAudioFrameMs": segments.get(
-            "hotkey_received_to_first_audio_frame_ms", "unknown"
-        ),
-        "hotkeyToFirstAudibleAudioFrameMs": segments.get(
-            "hotkey_received_to_first_audible_audio_frame_ms", "unknown"
-        ),
+        "hotkeyToFirstAudioFrameMs": segments.get("hotkey_received_to_first_audio_frame_ms", "unknown"),
+        "hotkeyToFirstAudibleAudioFrameMs": segments.get("hotkey_received_to_first_audible_audio_frame_ms", "unknown"),
     }
     return {
-        "verified": finite_number(values["hotkeyToMicReadyMs"])
-        and finite_number(values["hotkeyToFirstAudioFrameMs"]),
+        "verified": finite_number(values["hotkeyToMicReadyMs"]) and finite_number(values["hotkeyToFirstAudioFrameMs"]),
         "sessionId": session_id,
         **values,
         "markerNames": list(match.get("markerNames") or []),
@@ -1129,8 +1067,7 @@ def process_generation_snapshot(
     webviews = [
         identity
         for process_id in sorted(descendants)
-        if str(inventory.get(process_id, {}).get("name") or "").lower()
-        == "msedgewebview2.exe"
+        if str(inventory.get(process_id, {}).get("name") or "").lower() == "msedgewebview2.exe"
         for identity in [_process_identity(process_id, inventory)]
         if identity is not None
     ]
@@ -1147,11 +1084,7 @@ def process_generation_snapshot(
         )
     except Exception as exc:
         frontend_ready = {"error": str(exc)}
-    last_seen = (
-        frontend_ready.get("lastSeen")
-        if isinstance(frontend_ready.get("lastSeen"), dict)
-        else {}
-    )
+    last_seen = frontend_ready.get("lastSeen") if isinstance(frontend_ready.get("lastSeen"), dict) else {}
     reasons: list[str] = []
     if app is None:
         reasons.append("app_generation_unavailable")
@@ -1172,9 +1105,7 @@ def process_generation_snapshot(
         "backendStartedAt": str(health.get("startedAt") or ""),
         "frontendReadyReceivedAt": str(last_seen.get("receivedAt") or ""),
     }
-    fingerprint = sha256_text(
-        json.dumps(identity_payload, sort_keys=True, separators=(",", ":"))
-    )
+    fingerprint = sha256_text(json.dumps(identity_payload, sort_keys=True, separators=(",", ":")))
     return {
         "ok": not reasons,
         "reasons": reasons,
@@ -1196,13 +1127,9 @@ def process_generation_fingerprint(snapshot: dict[str, Any]) -> str:
         "backend": snapshot.get("backend"),
         "webviews": snapshot.get("webViewProcesses"),
         "backendStartedAt": str(snapshot.get("backendStartedAt") or ""),
-        "frontendReadyReceivedAt": str(
-            snapshot.get("frontendReadyReceivedAt") or ""
-        ),
+        "frontendReadyReceivedAt": str(snapshot.get("frontendReadyReceivedAt") or ""),
     }
-    return sha256_text(
-        json.dumps(identity_payload, sort_keys=True, separators=(",", ":"))
-    )
+    return sha256_text(json.dumps(identity_payload, sort_keys=True, separators=(",", ":")))
 
 
 def process_generation_matches(
@@ -1234,10 +1161,7 @@ def process_generation_matches(
     structured = bool(
         baseline.get("generationComparisonContract") == contract
         or observed.get("generationComparisonContract") == contract
-        or (
-            required_fields.issubset(baseline)
-            and required_fields.issubset(observed)
-        )
+        or (required_fields.issubset(baseline) and required_fields.issubset(observed))
     )
     if not structured:
         return bool(
@@ -1272,12 +1196,15 @@ def process_generation_matches(
 
     def structured_identity(
         snapshot: dict[str, Any],
-    ) -> tuple[
-        tuple[int, int, str, int],
-        tuple[int, int, str, int],
-        frozenset[tuple[int, int, str, int]],
-        str,
-    ] | None:
+    ) -> (
+        tuple[
+            tuple[int, int, str, int],
+            tuple[int, int, str, int],
+            frozenset[tuple[int, int, str, int]],
+            str,
+        ]
+        | None
+    ):
         if snapshot.get("ok") is not True:
             return None
         if snapshot.get("generationComparisonContract") not in (None, contract):
@@ -1285,10 +1212,7 @@ def process_generation_matches(
         if not required_fields.issubset(snapshot):
             return None
         fingerprint = snapshot.get("fingerprint")
-        if (
-            not isinstance(fingerprint, str)
-            or fingerprint != process_generation_fingerprint(snapshot)
-        ):
+        if not isinstance(fingerprint, str) or fingerprint != process_generation_fingerprint(snapshot):
             return None
         app = canonical_process_identity(snapshot.get("app"))
         backend = canonical_process_identity(snapshot.get("backend"))
@@ -1321,12 +1245,8 @@ def process_generation_matches(
     observed_identity = structured_identity(observed)
     if baseline_identity is None or observed_identity is None:
         return False
-    baseline_app, baseline_backend, baseline_webviews, baseline_started_at = (
-        baseline_identity
-    )
-    observed_app, observed_backend, observed_webviews, observed_started_at = (
-        observed_identity
-    )
+    baseline_app, baseline_backend, baseline_webviews, baseline_started_at = baseline_identity
+    observed_app, observed_backend, observed_webviews, observed_started_at = observed_identity
     return bool(
         baseline_app == observed_app
         and baseline_backend == observed_backend
@@ -1349,19 +1269,17 @@ def window_process_id(hwnd: int) -> int:
 def overlay_window_snapshot(expected_app_pid: int) -> dict[str, Any]:
     hwnd = find_window("Scriber Recording Overlay")
     process_id = window_process_id(hwnd)
-    valid = bool(
-        hwnd
-        and process_id == expected_app_pid
-        and ctypes.windll.user32.IsWindow(wintypes.HWND(hwnd))
-    ) if os.name == "nt" else False
+    valid = (
+        bool(hwnd and process_id == expected_app_pid and ctypes.windll.user32.IsWindow(wintypes.HWND(hwnd)))
+        if os.name == "nt"
+        else False
+    )
     return {
         "ok": valid,
         "hwnd": hwnd,
         "hwndHash": hwnd_hash(hwnd),
         "pid": process_id,
-        "visible": bool(
-            valid and ctypes.windll.user32.IsWindowVisible(wintypes.HWND(hwnd))
-        ),
+        "visible": bool(valid and ctypes.windll.user32.IsWindowVisible(wintypes.HWND(hwnd))),
     }
 
 
@@ -1392,8 +1310,7 @@ def focus_preserved(before: dict[str, Any], after: dict[str, Any]) -> bool:
         and after.get("ok")
         and before.get("hwnd") == after.get("hwnd")
         and before.get("pid") == after.get("pid")
-        and before.get("processCreationTime100ns")
-        == after.get("processCreationTime100ns")
+        and before.get("processCreationTime100ns") == after.get("processCreationTime100ns")
     )
 
 
@@ -1423,10 +1340,7 @@ def terminal_state_observed(value: dict[str, Any]) -> bool:
 
 
 def successful_terminal_state(value: dict[str, Any]) -> bool:
-    return bool(
-        terminal_state_observed(value)
-        and str(value.get("status") or "").strip().lower() == "stopped"
-    )
+    return bool(terminal_state_observed(value) and str(value.get("status") or "").strip().lower() == "stopped")
 
 
 def _wait_process_exit(
@@ -1453,10 +1367,8 @@ def _terminate_pid(process_id: int, expected_creation_time_100ns: int | None) ->
         or _process_creation_time_100ns(process_id) != expected_creation_time_100ns
     ):
         return
-    try:
+    with contextlib.suppress(OSError):
         os.kill(process_id, signal.SIGTERM)
-    except OSError:
-        pass
 
 
 def terminate_runtime(app_pid: int, backend_pid: int, port: int, token: str) -> dict[str, Any]:
@@ -1518,6 +1430,11 @@ def run_overlay_process_series(
             smoke_path,
             extra=[
                 "-KeepAppOpen",
+                # process_generation_snapshot deliberately binds the WebView
+                # generation to the backend's authenticated frontend-ready
+                # timestamp.  The keep-open smoke must therefore wait for the
+                # real Tauri WebView before this series captures its baseline.
+                "-VerifyFrontend",
                 "-EnableHotkeys",
                 "-VerifyGlobalHotkeyRegistration",
                 "-GlobalHotkeySmokeDefaultStt",
@@ -1577,9 +1494,7 @@ def run_overlay_process_series(
         except Exception as exc:
             audio_diagnostics = {"error": str(exc)}
         microphone_diagnostics = (
-            audio_diagnostics.get("microphone")
-            if isinstance(audio_diagnostics.get("microphone"), dict)
-            else {}
+            audio_diagnostics.get("microphone") if isinstance(audio_diagnostics.get("microphone"), dict) else {}
         )
         mic_always_on_attestation = {
             "ok": microphone_diagnostics.get("micAlwaysOn") is False,
@@ -1711,11 +1626,7 @@ def run_overlay_process_series(
                 observer_exit = wait_process(observer, max(5, timeout_sec + 5))
                 observed = load_json(observer_path)
                 focus_after = foreground_window_snapshot()
-                first_visible = (
-                    observed.get("firstVisible")
-                    if isinstance(observed.get("firstVisible"), dict)
-                    else {}
-                )
+                first_visible = observed.get("firstVisible") if isinstance(observed.get("firstVisible"), dict) else {}
                 visible_ticks = first_visible.get("qpcTicks")
                 observer_frequency = int(observed.get("qpcFrequency") or qpc_frequency())
                 windows_dispatch_duration = duration_ms(
@@ -1738,16 +1649,11 @@ def run_overlay_process_series(
                     else {}
                 )
                 tauri_marker_usable = bool(
-                    tauri_marker
-                    and int(tauri_marker.get("qpcFrequency") or 0) == observer_frequency
+                    tauri_marker and int(tauri_marker.get("qpcFrequency") or 0) == observer_frequency
                 )
                 if tauri_marker_usable:
                     seen_tauri_sample_ids.add(str(tauri_marker["sampleId"]))
-                tauri_start_ticks = (
-                    int(tauri_marker["qpcTicks"])
-                    if tauri_marker_usable
-                    else None
-                )
+                tauri_start_ticks = int(tauri_marker["qpcTicks"]) if tauri_marker_usable else None
                 measured = duration_ms(
                     tauri_start_ticks,
                     visible_ticks,
@@ -1795,8 +1701,7 @@ def run_overlay_process_series(
                 terminal_success = successful_terminal_state(terminal)
                 overlay_after = overlay_window_snapshot(app_pid)
                 overlay_after_matches = bool(
-                    overlay_after.get("ok")
-                    and int(overlay_after.get("hwnd") or 0) == expected_overlay_hwnd
+                    overlay_after.get("ok") and int(overlay_after.get("hwnd") or 0) == expected_overlay_hwnd
                 )
                 generation_after = process_generation_snapshot(
                     app_pid,
@@ -1841,21 +1746,13 @@ def run_overlay_process_series(
                     "micAlwaysOn": False,
                     "durationMs": measured if measured is not None else "unknown",
                     "windowsDispatchToVisibleMs": (
-                        windows_dispatch_duration
-                        if windows_dispatch_duration is not None
-                        else "unknown"
+                        windows_dispatch_duration if windows_dispatch_duration is not None else "unknown"
                     ),
-                    "primaryStartMarker": (
-                        "hotkey_received" if tauri_start_ticks is not None else "unknown"
-                    ),
-                    "tauriMarkerRunIdMatched": bool(
-                        tauri_marker
-                        and tauri_marker.get("runId") == benchmark_run_id
-                    ),
+                    "primaryStartMarker": ("hotkey_received" if tauri_start_ticks is not None else "unknown"),
+                    "tauriMarkerRunIdMatched": bool(tauri_marker and tauri_marker.get("runId") == benchmark_run_id),
                     "tauriMarkerSampleId": tauri_marker.get("sampleId") or None,
                     "tauriMarkerProcessIdMatched": bool(
-                        tauri_marker
-                        and int(tauri_marker.get("processId") or 0) == app_pid
+                        tauri_marker and int(tauri_marker.get("processId") or 0) == app_pid
                     ),
                     "windowsDispatchDiagnosticOnly": True,
                     "metricEligible": not blocked_reasons,
@@ -1903,11 +1800,7 @@ def run_overlay_process_series(
                     if all_samples_eligible
                     else result.get("reason")
                     or next(
-                        (
-                            str(item.get("metricBlockedReason"))
-                            for item in samples
-                            if item.get("metricBlockedReason")
-                        ),
+                        (str(item.get("metricBlockedReason")) for item in samples if item.get("metricBlockedReason")),
                         "insufficient_eligible_overlay_samples",
                     )
                 ),
@@ -1964,28 +1857,12 @@ def run_overlay_hotkey_probes(
                 "events": [],
             }
         series_results.append(result)
-        remaining_warm -= sum(
-            1 for item in result.get("samples", []) if item.get("scenario") == "overlay_warm"
-        )
+        remaining_warm -= sum(1 for item in result.get("samples", []) if item.get("scenario") == "overlay_warm")
 
-    samples = [
-        item
-        for result in series_results
-        for item in result.get("samples", [])
-        if isinstance(item, dict)
-    ]
-    events = [
-        event
-        for result in series_results
-        for event in result.get("events", [])
-        if isinstance(event, dict)
-    ]
-    cold_values = [
-        item.get("durationMs") for item in samples if item.get("scenario") == "overlay_cold"
-    ]
-    warm_values = [
-        item.get("durationMs") for item in samples if item.get("scenario") == "overlay_warm"
-    ]
+    samples = [item for result in series_results for item in result.get("samples", []) if isinstance(item, dict)]
+    events = [event for result in series_results for event in result.get("events", []) if isinstance(event, dict)]
+    cold_values = [item.get("durationMs") for item in samples if item.get("scenario") == "overlay_cold"]
+    warm_values = [item.get("durationMs") for item in samples if item.get("scenario") == "overlay_warm"]
     readiness_samples: dict[str, list[Any]] = {metric: [] for metric in USER_READY_METRICS}
     for item in samples:
         readiness = item.get("readiness") if isinstance(item.get("readiness"), dict) else {}
@@ -2002,14 +1879,10 @@ def run_overlay_hotkey_probes(
     for metric, values in readiness_samples.items():
         metrics[metric] = percentile_ms(values, 95.0)
     counts_ok = (
-        metrics["overlay_cold_sample_count"] >= cold_samples
-        and metrics["overlay_warm_sample_count"] >= warm_samples
+        metrics["overlay_cold_sample_count"] >= cold_samples and metrics["overlay_warm_sample_count"] >= warm_samples
     )
     sample_blocked_reasons = [
-        str(reason)
-        for item in samples
-        for reason in (item.get("metricBlockedReasons") or [])
-        if reason
+        str(reason) for item in samples for reason in (item.get("metricBlockedReasons") or []) if reason
     ]
     if "tauri_hotkey_received_marker_unavailable" in sample_blocked_reasons:
         metric_blocked_reason = "tauri_hotkey_received_marker_unavailable"
@@ -2143,15 +2016,16 @@ def focus_receiver_window(title: str, timeout_sec: float = 2.0) -> dict[str, Any
             target_thread = int(user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), None))
             foreground = int(user32.GetForegroundWindow() or 0)
             foreground_thread = (
-                int(user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground), None))
-                if foreground
-                else 0
+                int(user32.GetWindowThreadProcessId(ctypes.c_void_p(foreground), None)) if foreground else 0
             )
             attached: list[int] = []
             for thread_id in {target_thread, foreground_thread}:
-                if thread_id and thread_id != current_thread:
-                    if user32.AttachThreadInput(current_thread, thread_id, True):
-                        attached.append(thread_id)
+                if (
+                    thread_id
+                    and thread_id != current_thread
+                    and user32.AttachThreadInput(current_thread, thread_id, True)
+                ):
+                    attached.append(thread_id)
             try:
                 user32.ShowWindow(ctypes.c_void_p(hwnd), 9)  # SW_RESTORE
                 user32.BringWindowToTop(ctypes.c_void_p(hwnd))
@@ -2183,7 +2057,7 @@ def focus_receiver_window(title: str, timeout_sec: float = 2.0) -> dict[str, Any
 def _canonical_non_nil_uuid(value: Any) -> str:
     try:
         parsed = uuid.UUID(str(value or ""))
-    except (AttributeError, TypeError, ValueError):
+    except AttributeError, TypeError, ValueError:
         return ""
     return parsed.hex if parsed.int else ""
 
@@ -2194,9 +2068,7 @@ def provider_replay_target_generation_sha256(
 ) -> str:
     if process_id <= 0 or creation_time_100ns <= 0:
         return ""
-    material = (
-        f"provider-replay-target-v1\0{process_id}\0{creation_time_100ns}"
-    ).encode("ascii")
+    material = (f"provider-replay-target-v1\0{process_id}\0{creation_time_100ns}").encode("ascii")
     return hashlib.sha256(material).hexdigest()
 
 
@@ -2204,30 +2076,19 @@ def provider_replay_process_generation_sha256(
     process_snapshot: dict[str, Any],
 ) -> str:
     app = process_snapshot.get("app") if isinstance(process_snapshot.get("app"), dict) else {}
-    backend = (
-        process_snapshot.get("backend")
-        if isinstance(process_snapshot.get("backend"), dict)
-        else {}
-    )
+    backend = process_snapshot.get("backend") if isinstance(process_snapshot.get("backend"), dict) else {}
     try:
         app_pid = int(app.get("pid") or 0)
         app_creation = int(app.get("creationTime100ns") or 0)
         backend_pid = int(backend.get("pid") or 0)
         backend_creation = int(backend.get("creationTime100ns") or 0)
         backend_parent = int(backend.get("parentPid") or 0)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         return ""
-    if (
-        app_pid <= 0
-        or app_creation <= 0
-        or backend_pid <= 0
-        or backend_creation <= 0
-        or backend_parent != app_pid
-    ):
+    if app_pid <= 0 or app_creation <= 0 or backend_pid <= 0 or backend_creation <= 0 or backend_parent != app_pid:
         return ""
     material = (
-        "scriber-provider-replay-process-v1\0"
-        f"{backend_pid}\0{backend_creation}\0{app_pid}\0{app_creation}"
+        f"scriber-provider-replay-process-v1\0{backend_pid}\0{backend_creation}\0{app_pid}\0{app_creation}"
     ).encode("ascii")
     return hashlib.sha256(material).hexdigest()
 
@@ -2247,8 +2108,7 @@ def _provider_replay_target_attestation(
         and receiver_creation is not None
         and foreground.get("ok")
         and int(foreground.get("pid") or 0) == receiver_pid
-        and int(foreground.get("processCreationTime100ns") or 0)
-        == receiver_creation
+        and int(foreground.get("processCreationTime100ns") or 0) == receiver_creation
     )
     return {
         "ok": ok,
@@ -2258,8 +2118,7 @@ def _provider_replay_target_attestation(
         "foregroundGenerationMatches": bool(
             foreground.get("ok")
             and int(foreground.get("pid") or 0) == receiver_pid
-            and int(foreground.get("processCreationTime100ns") or 0)
-            == int(receiver_creation or 0)
+            and int(foreground.get("processCreationTime100ns") or 0) == int(receiver_creation or 0)
         ),
         "windowHwndHash": hwnd_hash(window_hwnd),
         "targetGenerationSha256": provider_replay_target_generation_sha256(
@@ -2306,9 +2165,7 @@ def ensure_provider_replay_target_focus_after_activation(
         receiver_pid=receiver_pid,
     )
     target_matches = bool(
-        target.get("ok")
-        and target.get("targetGenerationSha256")
-        == expected_target_generation_sha256
+        target.get("ok") and target.get("targetGenerationSha256") == expected_target_generation_sha256
     )
     return {
         "ok": bool(focus.get("ok") and target_matches),
@@ -2375,16 +2232,10 @@ def validate_provider_replay_sample(
     fixture_text = prepared.get("fixtureText")
     fixture_sha256 = str(prepared.get("fixtureTextSha256") or "")
     fixture_length = prepared.get("fixtureTextLength")
-    expected_visible_text = provider_replay_expected_visible_text(
-        fixture_text if isinstance(fixture_text, str) else ""
-    )
+    expected_visible_text = provider_replay_expected_visible_text(fixture_text if isinstance(fixture_text, str) else "")
     expected_visible_sha256 = sha256_text(expected_visible_text)
-    expected_visible_utf16_length = (
-        len(expected_visible_text.encode("utf-16-le")) // 2
-    )
-    actual_audio_preparation_implementation = completed.get(
-        "audioPreparationImplementationActual"
-    )
+    expected_visible_utf16_length = len(expected_visible_text.encode("utf-16-le")) // 2
+    actual_audio_preparation_implementation = completed.get("audioPreparationImplementationActual")
 
     if not expected_run:
         reasons.append("run_id_invalid")
@@ -2397,11 +2248,7 @@ def validate_provider_replay_sample(
         fixture_text = ""
     if not _is_sha256(fixture_sha256) or fixture_sha256 != sha256_text(fixture_text):
         reasons.append("fixture_hash_invalid")
-    if (
-        not isinstance(fixture_length, int)
-        or isinstance(fixture_length, bool)
-        or fixture_length != len(fixture_text)
-    ):
+    if not isinstance(fixture_length, int) or isinstance(fixture_length, bool) or fixture_length != len(fixture_text):
         reasons.append("fixture_length_invalid")
 
     normalized_activation = str(activation_kind or "").strip().lower()
@@ -2450,8 +2297,7 @@ def validate_provider_replay_sample(
                 reasons.append(f"{phase}_fixture_duration_mismatch")
                 fixture_duration_attested = False
         if expected_audio_preparation_implementation is not None and (
-            payload.get("audioPreparationImplementationExpected")
-            != expected_audio_preparation_implementation
+            payload.get("audioPreparationImplementationExpected") != expected_audio_preparation_implementation
         ):
             reasons.append(f"{phase}_audio_preparation_expected_mismatch")
 
@@ -2460,10 +2306,7 @@ def validate_provider_replay_sample(
             reasons.append("prepared_audio_preparation_actual_must_be_null")
         if armed.get("audioPreparationImplementationActual") is not None:
             reasons.append("armed_audio_preparation_actual_must_be_null")
-        if (
-            actual_audio_preparation_implementation
-            != expected_audio_preparation_implementation
-        ):
+        if actual_audio_preparation_implementation != expected_audio_preparation_implementation:
             reasons.append("completed_audio_preparation_actual_mismatch")
 
     if prepared.get("sessionId") is not None:
@@ -2486,15 +2329,13 @@ def validate_provider_replay_sample(
 
     capture_fixture_attested = False
     if expected_audio_fixture is not None:
-        capture_fixture_attested, capture_reasons = (
-            validate_provider_replay_capture_attestation(
-                completed.get("captureAttestation"),
-                fixture=expected_audio_fixture,
-                run_id=expected_run,
-                sample_id=sample_id,
-                session_id=session_id,
-                process_generation_fingerprint=expected_process_generation_sha256,
-            )
+        capture_fixture_attested, capture_reasons = validate_provider_replay_capture_attestation(
+            completed.get("captureAttestation"),
+            fixture=expected_audio_fixture,
+            run_id=expected_run,
+            sample_id=sample_id,
+            session_id=session_id,
+            process_generation_fingerprint=expected_process_generation_sha256,
         )
         reasons.extend(capture_reasons)
 
@@ -2567,10 +2408,7 @@ def validate_provider_replay_sample(
         "injection_callback_completed",
         "session_finished_emitted",
     )
-    ordered_ticks = [
-        int(markers.get(name, {}).get("qpcTicks") or 0)
-        for name in ordered_markers
-    ]
+    ordered_ticks = [int(markers.get(name, {}).get("qpcTicks") or 0) for name in ordered_markers]
     if all(ordered_ticks) and ordered_ticks != sorted(ordered_ticks):
         reasons.append("marker_order_invalid")
 
@@ -2640,16 +2478,11 @@ def validate_provider_replay_sample(
         reasons.append("provider_to_visible_duration_invalid")
     if activation_to_observed_ms is None or activation_to_observed_ms <= 0:
         reasons.append("activation_to_visible_duration_invalid")
-    if (
-        native_activation_to_observed_ms is None
-        or native_activation_to_observed_ms <= 0
-    ):
+    if native_activation_to_observed_ms is None or native_activation_to_observed_ms <= 0:
         reasons.append("native_activation_to_visible_duration_invalid")
 
     native_activation = markers.get(activation_marker_name, {})
-    if native_activation.get("qpcTicks") != markers.get(
-        "activation_received", {}
-    ).get("qpcTicks"):
+    if native_activation.get("qpcTicks") != markers.get("activation_received", {}).get("qpcTicks"):
         reasons.append("activation_marker_qpc_mismatch")
     action_frequency = activation_action.get("qpcFrequency")
     action_start_ticks = activation_action.get(
@@ -2673,9 +2506,7 @@ def validate_provider_replay_sample(
     if normalized_activation == "button":
         if activation_action.get("source") != "uia_invoke":
             reasons.append("button_activation_action_source_invalid")
-        if activation_action.get("processId") != activation_action.get(
-            "expectedProcessId"
-        ):
+        if activation_action.get("processId") != activation_action.get("expectedProcessId"):
             reasons.append("button_activation_process_mismatch")
     if stop_to_observed_ms is None or stop_to_observed_ms <= 0:
         reasons.append("stop_to_visible_duration_invalid")
@@ -2699,50 +2530,28 @@ def validate_provider_replay_sample(
         "qpcFrequency": start_frequency,
         "fixtureDurationAttested": fixture_duration_attested,
         "captureFixtureAttested": capture_fixture_attested,
-        "audioPreparationImplementationExpected": (
-            expected_audio_preparation_implementation
-        ),
-        "audioPreparationImplementationActual": (
-            actual_audio_preparation_implementation
-        ),
-        "durationMs": (
-            provider_to_observed_ms
-            if provider_to_observed_ms is not None
-            else "unknown"
-        ),
+        "audioPreparationImplementationExpected": (expected_audio_preparation_implementation),
+        "audioPreparationImplementationActual": (actual_audio_preparation_implementation),
+        "durationMs": (provider_to_observed_ms if provider_to_observed_ms is not None else "unknown"),
         "activationReceivedToFinalTextObservedMs": (
-            activation_to_observed_ms
-            if activation_to_observed_ms is not None
-            else "unknown"
+            activation_to_observed_ms if activation_to_observed_ms is not None else "unknown"
         ),
         "nativeActivationToFinalTextObservedMs": (
-            native_activation_to_observed_ms
-            if native_activation_to_observed_ms is not None
-            else "unknown"
+            native_activation_to_observed_ms if native_activation_to_observed_ms is not None else "unknown"
         ),
-        "stopRequestedToFinalTextObservedMs": (
-            stop_to_observed_ms if stop_to_observed_ms is not None else "unknown"
-        ),
+        "stopRequestedToFinalTextObservedMs": (stop_to_observed_ms if stop_to_observed_ms is not None else "unknown"),
         "canonicalKpis": {
             "activation_received_to_final_text_observed_ms": (
-                activation_to_observed_ms
-                if activation_to_observed_ms is not None
-                else "unknown"
+                activation_to_observed_ms if activation_to_observed_ms is not None else "unknown"
             ),
             f"{activation_marker_name}_to_final_text_observed_ms": (
-                native_activation_to_observed_ms
-                if native_activation_to_observed_ms is not None
-                else "unknown"
+                native_activation_to_observed_ms if native_activation_to_observed_ms is not None else "unknown"
             ),
             "stop_requested_to_final_text_observed_ms": (
-                stop_to_observed_ms
-                if stop_to_observed_ms is not None
-                else "unknown"
+                stop_to_observed_ms if stop_to_observed_ms is not None else "unknown"
             ),
             "provider_final_received_to_final_text_observed_ms": (
-                provider_to_observed_ms
-                if provider_to_observed_ms is not None
-                else "unknown"
+                provider_to_observed_ms if provider_to_observed_ms is not None else "unknown"
             ),
             "stop_requested_to_provider_final_received_ms": (
                 stop_to_provider_ms if stop_to_provider_ms is not None else "unknown"
@@ -2772,39 +2581,27 @@ def run_provider_text_replay(
     requested_iterations = max(1, iterations)
     azure_capture_time_mp3 = (
         "enabled"
-        if os.environ.get("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", "")
-        .strip()
-        .lower()
+        if os.environ.get("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", "").strip().lower()
         not in {"", "0", "false", "no", "off"}
         else "disabled"
     )
     speechmatics_capture_time_wav = (
         "enabled"
-        if os.environ.get("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", "")
-        .strip()
-        .lower()
+        if os.environ.get("SCRIBER_SPEECHMATICS_CAPTURE_TIME_WAV", "").strip().lower()
         not in {"", "0", "false", "no", "off"}
         else "disabled"
     )
     raw_durations = (
-        fixture_durations_ms
-        if fixture_durations_ms is not None
-        else (PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS,)
+        fixture_durations_ms if fixture_durations_ms is not None else (PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS,)
     )
     duration_values = tuple(float(value) for value in raw_durations)
     if (
         not duration_values
         or len(set(duration_values)) != len(duration_values)
-        or any(
-            not math.isfinite(value) or value < 100.0 or value > 600_000.0
-            for value in duration_values
-        )
+        or any(not math.isfinite(value) or value < 100.0 or value > 600_000.0 for value in duration_values)
         or (
             fixture_durations_ms is not None
-            and any(
-                value / 1000.0 not in PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS
-                for value in duration_values
-            )
+            and any(value / 1000.0 not in PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS for value in duration_values)
         )
     ):
         raise ValueError("provider replay duration matrix is invalid")
@@ -2819,35 +2616,21 @@ def run_provider_text_replay(
         provider = str(scenario["provider"])
         expected_audio_preparation_implementation = {
             "microsoft": (
-                "capture_time_ffmpeg_mp3_v1"
-                if azure_capture_time_mp3 == "enabled"
-                else "post_stop_ffmpeg_mp3_v1"
+                "capture_time_ffmpeg_mp3_v1" if azure_capture_time_mp3 == "enabled" else "post_stop_ffmpeg_mp3_v1"
             ),
             "speechmatics": (
-                "wav_pcm16_file_v1"
-                if speechmatics_capture_time_wav == "enabled"
-                else "python_reserved_wav_header_v1"
+                "wav_pcm16_file_v1" if speechmatics_capture_time_wav == "enabled" else "python_reserved_wav_header_v1"
             ),
         }.get(provider)
         base_scenario_name = str(scenario["scenario"])
         fixture_duration_ms = float(scenario["fixtureDurationMs"])
         duration_seconds = fixture_duration_ms / 1000.0
         duration_slug = (
-            f"{int(duration_seconds)}s"
-            if duration_seconds.is_integer()
-            else f"{duration_seconds:g}s".replace(".", "p")
+            f"{int(duration_seconds)}s" if duration_seconds.is_integer() else f"{duration_seconds:g}s".replace(".", "p")
         )
-        scenario_name = (
-            base_scenario_name
-            if fixture_durations_ms is None
-            else f"{base_scenario_name}_{duration_slug}"
-        )
+        scenario_name = base_scenario_name if fixture_durations_ms is None else f"{base_scenario_name}_{duration_slug}"
         start_marker = str(scenario["startMarker"])
-        scenario_dir = (
-            probe_dir / provider
-            if fixture_durations_ms is None
-            else probe_dir / provider / duration_slug
-        )
+        scenario_dir = probe_dir / provider if fixture_durations_ms is None else probe_dir / provider / duration_slug
         scenario_dir.mkdir(parents=True, exist_ok=True)
         audio_fixture_path = probe_dir / (
             "provider-replay-fixture-s16le-48000-mono.pcm"
@@ -2871,9 +2654,7 @@ def run_provider_text_replay(
             "durationBucket": duration_slug,
             "bytesAttested": audio_fixture_attested,
         }
-        if not any(
-            item.get("path") == fixture_record["path"] for item in audio_fixtures
-        ):
+        if not any(item.get("path") == fixture_record["path"] for item in audio_fixtures):
             audio_fixtures.append(fixture_record)
         sample_timeout_sec = max(
             int(timeout_sec),
@@ -2887,16 +2668,10 @@ def run_provider_text_replay(
             {
                 "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID": run_id,
                 "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID": run_id,
-                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS": str(
-                    int(round(fixture_duration_ms))
-                ),
-                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256": str(
-                    audio_fixture["sha256"]
-                ),
+                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS": str(int(round(fixture_duration_ms))),
+                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256": str(audio_fixture["sha256"]),
                 "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL": "1",
-                "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH": str(
-                    audio_fixture_path
-                ),
+                "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH": str(audio_fixture_path),
                 "SCRIBER_MIC_ALWAYS_ON": "0",
                 "SCRIBER_MIC_DEVICE": "default",
                 "SCRIBER_FAVORITE_MIC": "",
@@ -2907,9 +2682,7 @@ def run_provider_text_replay(
                 "SCRIBER_AZURE_MAI_REGION": "northeurope",
                 # The Speechmatics replay must bind the production default
                 # route while its one-shot raw transport prevents network I/O.
-                "SCRIBER_SPEECHMATICS_BATCH_BASE_URL": (
-                    SPEECHMATICS_BATCH_DEFAULT_BASE_URL
-                ),
+                "SCRIBER_SPEECHMATICS_BATCH_BASE_URL": (SPEECHMATICS_BATCH_DEFAULT_BASE_URL),
                 "AZURE_MAI_SPEECH_KEY": "",
                 "SPEECHMATICS_API_KEY": "",
             }
@@ -2957,13 +2730,7 @@ def run_provider_text_replay(
             app_pid = int(smoke.get("appPid") or 0)
             backend_pid = int(smoke.get("backendPid") or 0)
             port = int(smoke.get("backendPort") or 0)
-            if (
-                smoke_result.returncode != 0
-                or not smoke.get("ok")
-                or app_pid <= 0
-                or backend_pid <= 0
-                or port <= 0
-            ):
+            if smoke_result.returncode != 0 or not smoke.get("ok") or app_pid <= 0 or backend_pid <= 0 or port <= 0:
                 series_reason = "runtime_start_failed"
             else:
                 process_baseline = process_generation_snapshot(
@@ -2972,9 +2739,7 @@ def run_provider_text_replay(
                     port,
                     token,
                 )
-                expected_process_fingerprint = (
-                    provider_replay_process_generation_sha256(process_baseline)
-                )
+                expected_process_fingerprint = provider_replay_process_generation_sha256(process_baseline)
                 if not process_baseline.get("ok") or not expected_process_fingerprint:
                     series_reason = "runtime_process_generation_unavailable"
 
@@ -3058,22 +2823,14 @@ def run_provider_text_replay(
                         or not fixture_text
                         or fixture_hash != sha256_text(fixture_text)
                         or prepared.get("fixtureTextLength") != len(fixture_text)
-                        or prepared.get("authoritativeFixtureDurationMs")
-                        != int(round(fixture_duration_ms))
-                        or prepared.get("processGenerationFingerprint")
-                        != expected_process_fingerprint
+                        or prepared.get("authoritativeFixtureDurationMs") != int(round(fixture_duration_ms))
+                        or prepared.get("processGenerationFingerprint") != expected_process_fingerprint
                     ):
                         raise RuntimeError("prepare_contract_invalid")
                     sample_id = _canonical_non_nil_uuid(prepared.get("sampleId"))
-                    expected_visible_text = provider_replay_expected_visible_text(
-                        fixture_text
-                    )
-                    expected_visible_text_sha256 = sha256_text(
-                        expected_visible_text
-                    )
-                    expected_visible_text_length = (
-                        len(expected_visible_text.encode("utf-16-le")) // 2
-                    )
+                    expected_visible_text = provider_replay_expected_visible_text(fixture_text)
+                    expected_visible_text_sha256 = sha256_text(expected_visible_text)
+                    expected_visible_text_length = len(expected_visible_text.encode("utf-16-le")) // 2
 
                     observer = run_process(
                         [
@@ -3120,9 +2877,7 @@ def run_provider_text_replay(
                             "runId": run_id,
                             "activationKind": activation_kind,
                             "targetProcessId": receiver.pid,
-                            "targetCreationTime100ns": int(
-                                target_attestation["creationTime100ns"]
-                            ),
+                            "targetCreationTime100ns": int(target_attestation["creationTime100ns"]),
                         },
                         timeout_sec=10.0,
                     )
@@ -3132,12 +2887,7 @@ def run_provider_text_replay(
                         or armed.get("activationKind") != activation_kind
                     ):
                         raise RuntimeError("native_activation_arm_contract_invalid")
-                    app_creation_time_100ns = int(
-                        (process_baseline.get("app") or {}).get(
-                            "creationTime100ns"
-                        )
-                        or 0
-                    )
+                    app_creation_time_100ns = int((process_baseline.get("app") or {}).get("creationTime100ns") or 0)
                     activation_action = trigger_provider_replay_activation(
                         activation_kind=activation_kind,
                         repo_root=repo_root,
@@ -3147,18 +2897,11 @@ def run_provider_text_replay(
                     )
                     if activation_action.get("ok") is not True:
                         raise RuntimeError("native_activation_dispatch_failed")
-                    target_focus_after_activation = (
-                        ensure_provider_replay_target_focus_after_activation(
-                            activation_kind=activation_kind,
-                            title=title,
-                            receiver_pid=receiver.pid,
-                            expected_target_generation_sha256=str(
-                                target_attestation.get(
-                                    "targetGenerationSha256"
-                                )
-                                or ""
-                            ),
-                        )
+                    target_focus_after_activation = ensure_provider_replay_target_focus_after_activation(
+                        activation_kind=activation_kind,
+                        title=title,
+                        receiver_pid=receiver.pid,
+                        expected_target_generation_sha256=str(target_attestation.get("targetGenerationSha256") or ""),
                     )
                     if target_focus_after_activation.get("ok") is not True:
                         raise RuntimeError("button_target_refocus_failed")
@@ -3202,27 +2945,19 @@ def run_provider_text_replay(
                         observer_ready=observer_ready,
                         observer_exit_code=observer_exit,
                         activation_action=activation_action,
-                        expected_process_generation_sha256=(
-                            expected_process_fingerprint
-                        ),
-                        expected_target_generation_sha256=str(
-                            target_attestation.get("targetGenerationSha256") or ""
-                        ),
+                        expected_process_generation_sha256=(expected_process_fingerprint),
+                        expected_target_generation_sha256=str(target_attestation.get("targetGenerationSha256") or ""),
                         expected_fixture_duration_ms=fixture_duration_ms,
                         expected_audio_fixture=fixture_record,
-                        expected_audio_preparation_implementation=(
-                            expected_audio_preparation_implementation
-                        ),
+                        expected_audio_preparation_implementation=(expected_audio_preparation_implementation),
                     )
                     if not successful_terminal_state(terminal):
                         validation["reasons"].append("runtime_terminal_state_invalid")
                     if not process_generation_matches(process_baseline, generation_after):
                         validation["reasons"].append("runtime_generation_changed")
-                    if (
-                        not target_after.get("ok")
-                        or target_after.get("targetGenerationSha256")
-                        != target_attestation.get("targetGenerationSha256")
-                    ):
+                    if not target_after.get("ok") or target_after.get(
+                        "targetGenerationSha256"
+                    ) != target_attestation.get("targetGenerationSha256"):
                         validation["reasons"].append("receiver_generation_changed")
                     validation["ok"] = not validation["reasons"]
                 except Exception as exc:
@@ -3238,15 +2973,11 @@ def run_provider_text_replay(
 
                 marker_names = set(validation.get("markerNames") or [])
                 clipboard_ok = "clipboard_set" in marker_names
-                paste_ok = bool(
-                    {"paste", "injection_callback_completed"}.issubset(marker_names)
-                )
+                paste_ok = bool({"paste", "injection_callback_completed"}.issubset(marker_names))
                 target_text_observed = bool(
                     observed.get("ok")
-                    and observed.get("observedSha256")
-                    == expected_visible_text_sha256
-                    and observed.get("observedChars")
-                    == expected_visible_text_length
+                    and observed.get("observedSha256") == expected_visible_text_sha256
+                    and observed.get("observedChars") == expected_visible_text_length
                 )
                 if not target_text_observed:
                     text_errors += 1
@@ -3270,15 +3001,11 @@ def run_provider_text_replay(
                 )
                 non_speech_overhead: float | str = "unknown"
                 if capture_fixture_attested and finite_number(activation_measured):
-                    candidate_overhead = (
-                        float(activation_measured) - float(audio_fixture["durationMs"])
-                    )
+                    candidate_overhead = float(activation_measured) - float(audio_fixture["durationMs"])
                     if math.isfinite(candidate_overhead) and candidate_overhead >= 0:
                         non_speech_overhead = round(candidate_overhead, 3)
                     else:
-                        validation.setdefault("reasons", []).append(
-                            "non_speech_overhead_invalid"
-                        )
+                        validation.setdefault("reasons", []).append("non_speech_overhead_invalid")
                         validation["ok"] = False
                 if (
                     finite_number(measured)
@@ -3344,24 +3071,17 @@ def run_provider_text_replay(
                     "inputMethod": "installed_backend_provider_replay",
                     "providerCandidate": {
                         "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
-                        "speechmaticsCaptureTimeWav": (
-                            speechmatics_capture_time_wav
-                        )
+                        "speechmaticsCaptureTimeWav": (speechmatics_capture_time_wav),
                     },
                     "processGenerationFingerprint": expected_process_fingerprint,
-                    "targetGenerationSha256": target_attestation.get(
-                        "targetGenerationSha256"
-                    ),
+                    "targetGenerationSha256": target_attestation.get("targetGenerationSha256"),
                     "markerNames": validation.get("markerNames", []),
                     "canonicalMarkerNames": sorted(
-                        set(validation.get("markerNames", []))
-                        | {"provider_final_received", "final_text_observed"}
+                        set(validation.get("markerNames", [])) | {"provider_final_received", "final_text_observed"}
                     ),
                     "observerReady": observer_ready,
                     "activationAction": activation_action,
-                    "targetFocusAfterActivation": (
-                        target_focus_after_activation
-                    ),
+                    "targetFocusAfterActivation": (target_focus_after_activation),
                     "focus": focus,
                     "targetAttestation": target_attestation,
                     "targetAfter": target_after,
@@ -3378,12 +3098,8 @@ def run_provider_text_replay(
                     "activationReceivedToFinalTextObservedMs": activation_measured,
                     "stopRequestedToFinalTextObservedMs": stop_measured,
                     "captureFixtureAttested": capture_fixture_attested,
-                    "audioPreparationImplementationExpected": (
-                        expected_audio_preparation_implementation
-                    ),
-                    "audioPreparationImplementationActual": validation.get(
-                        "audioPreparationImplementationActual"
-                    ),
+                    "audioPreparationImplementationExpected": (expected_audio_preparation_implementation),
+                    "audioPreparationImplementationActual": validation.get("audioPreparationImplementationActual"),
                     "nonSpeechOverheadMs": non_speech_overhead,
                     "canonicalKpis": {
                         **dict(validation.get("canonicalKpis") or {}),
@@ -3412,23 +3128,15 @@ def run_provider_text_replay(
         metrics[f"{metric_prefix}_p95_ms"] = percentile_ms(durations, 95.0)
         metrics[f"{metric_prefix}_sample_count"] = len(durations)
         provider_samples = [
-            item
-            for item in results
-            if item.get("provider") == provider
-            and item.get("scenario") == scenario_name
+            item for item in results if item.get("provider") == provider and item.get("scenario") == scenario_name
         ]
         series_capture_fixture_attested = bool(
             audio_fixture_attested
             and len(provider_samples) == requested_iterations
-            and all(
-                item.get("captureFixtureAttested") is True
-                for item in provider_samples
-            )
+            and all(item.get("captureFixtureAttested") is True for item in provider_samples)
         )
         stage_zero_distributions = {
-            "activation_received_to_final_text_observed": (
-                activation_durations
-            ),
+            "activation_received_to_final_text_observed": (activation_durations),
             "stop_requested_to_final_text_observed": stop_durations,
             "non_speech_overhead": non_speech_overheads,
         }
@@ -3449,9 +3157,7 @@ def run_provider_text_replay(
                 "activation_received_to_final_text_observed",
                 "stop_requested_to_final_text_observed",
             }:
-                metrics[f"{prefix}_capture_attested"] = int(
-                    series_capture_fixture_attested
-                )
+                metrics[f"{prefix}_capture_attested"] = int(series_capture_fixture_attested)
         series_distributions[scenario_name] = {
             "provider": provider,
             "fixtureDurationMs": fixture_duration_ms,
@@ -3492,17 +3198,14 @@ def run_provider_text_replay(
                 "captureFixtureAttested": series_capture_fixture_attested,
                 "providerCandidate": {
                     "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
-                    "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav
+                    "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav,
                 },
-                "audioPreparationImplementationExpected": (
-                    expected_audio_preparation_implementation
-                ),
+                "audioPreparationImplementationExpected": (expected_audio_preparation_implementation),
                 "audioPreparationImplementationActual": (
                     expected_audio_preparation_implementation
                     if provider_samples
                     and all(
-                        item.get("audioPreparationImplementationActual")
-                        == expected_audio_preparation_implementation
+                        item.get("audioPreparationImplementationActual") == expected_audio_preparation_implementation
                         for item in provider_samples
                     )
                     else None
@@ -3530,7 +3233,7 @@ def run_provider_text_replay(
         "requestedSamplesPerProvider": requested_iterations * len(duration_values),
         "providerCandidate": {
             "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
-            "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav
+            "speechmaticsCaptureTimeWav": speechmatics_capture_time_wav,
         },
         "series": series_results,
         "results": results,
@@ -3545,13 +3248,8 @@ def run_provider_text_replay(
                 "durationsMs": [item["durationMs"] for item in audio_fixtures],
                 "sampleRate": PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_RATE,
                 "channels": PROVIDER_REPLAY_AUDIO_FIXTURE_CHANNELS,
-                "sampleWidthBytes": (
-                    PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES
-                ),
-                "bytesAttested": all(
-                    item.get("bytesAttested") is True
-                    for item in audio_fixtures
-                ),
+                "sampleWidthBytes": (PROVIDER_REPLAY_AUDIO_FIXTURE_SAMPLE_WIDTH_BYTES),
+                "bytesAttested": all(item.get("bytesAttested") is True for item in audio_fixtures),
             }
         ),
         "audioFixtures": audio_fixtures,
@@ -3628,7 +3326,7 @@ def _validate_app_ux_sample(
         if sample_uuid.int == 0:
             raise ValueError("nil UUID")
         sample_id = sample_uuid.hex
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         reasons.append("sample_id_invalid")
         sample_id = ""
     if sample.get("installedExeSha256") != installed_exe_sha256:
@@ -3640,11 +3338,7 @@ def _validate_app_ux_sample(
         reasons.append("process_generation_fingerprint_invalid")
 
     start = sample.get("start") if isinstance(sample.get("start"), dict) else {}
-    stable = (
-        sample.get("stableFrame")
-        if isinstance(sample.get("stableFrame"), dict)
-        else {}
-    )
+    stable = sample.get("stableFrame") if isinstance(sample.get("stableFrame"), dict) else {}
     expected_start_markers = {
         "cold_app_launch": "user_input_received",
         "warm_app_activation": "user_input_received",
@@ -3664,17 +3358,11 @@ def _validate_app_ux_sample(
     start_frequency = start.get("qpcFrequency")
     if not isinstance(start_ticks, int) or isinstance(start_ticks, bool) or start_ticks <= 0:
         reasons.append("start_qpc_invalid")
-    if (
-        not isinstance(start_frequency, int)
-        or isinstance(start_frequency, bool)
-        or start_frequency <= 0
-    ):
+    if not isinstance(start_frequency, int) or isinstance(start_frequency, bool) or start_frequency <= 0:
         reasons.append("start_qpc_frequency_invalid")
     if start.get("processGenerationFingerprint") != generation:
         reasons.append("start_process_generation_mismatch")
-    start_artifact, artifact_reason = _load_bound_json_artifact(
-        start.get("artifact"), artifact_root, hash_cache
-    )
+    start_artifact, artifact_reason = _load_bound_json_artifact(start.get("artifact"), artifact_root, hash_cache)
     if artifact_reason:
         reasons.append(f"start_{artifact_reason}")
     elif not (
@@ -3723,9 +3411,7 @@ def _validate_app_ux_sample(
         or any(not _is_sha256(value) for value in expected_hashes)
     ):
         reasons.append("stable_frame_expected_text_hashes_invalid")
-    stable_artifact, artifact_reason = _load_bound_json_artifact(
-        stable.get("artifact"), artifact_root, hash_cache
-    )
+    stable_artifact, artifact_reason = _load_bound_json_artifact(stable.get("artifact"), artifact_root, hash_cache)
     if artifact_reason:
         reasons.append(f"stable_frame_{artifact_reason}")
     elif not (
@@ -3733,20 +3419,14 @@ def _validate_app_ux_sample(
         and stable_artifact.get("endpoint") == "first_stable_visible_frame"
         and stable_artifact.get("stableQpcTicks") == end_ticks
         and stable_artifact.get("qpcFrequency") == end_frequency
-        and stable_artifact.get("stableSampleCount")
-        == stable.get("stableSampleCount")
+        and stable_artifact.get("stableSampleCount") == stable.get("stableSampleCount")
         and stable_artifact.get("processId") == stable.get("windowProcessId")
-        and stable_artifact.get("processCreationTime100ns")
-        == stable.get("processCreationTime100ns")
+        and stable_artifact.get("processCreationTime100ns") == stable.get("processCreationTime100ns")
         and stable_artifact.get("expectedTextSha256") == expected_hashes
     ):
         reasons.append("stable_frame_artifact_payload_mismatch")
 
-    generation_evidence = (
-        sample.get("processGeneration")
-        if isinstance(sample.get("processGeneration"), dict)
-        else {}
-    )
+    generation_evidence = sample.get("processGeneration") if isinstance(sample.get("processGeneration"), dict) else {}
     if generation_evidence.get("fingerprint") != generation:
         reasons.append("process_generation_evidence_fingerprint_mismatch")
     generation_artifact, artifact_reason = _load_bound_json_artifact(
@@ -3755,15 +3435,9 @@ def _validate_app_ux_sample(
     if artifact_reason:
         reasons.append(f"process_generation_{artifact_reason}")
     else:
-        generation_app = (
-            generation_artifact.get("app")
-            if isinstance(generation_artifact.get("app"), dict)
-            else {}
-        )
+        generation_app = generation_artifact.get("app") if isinstance(generation_artifact.get("app"), dict) else {}
         generation_backend = (
-            generation_artifact.get("backend")
-            if isinstance(generation_artifact.get("backend"), dict)
-            else {}
+            generation_artifact.get("backend") if isinstance(generation_artifact.get("backend"), dict) else {}
         )
         generation_webviews = generation_artifact.get("webViewProcesses")
         if generation_artifact.get("ok") is not True:
@@ -3772,11 +3446,9 @@ def _validate_app_ux_sample(
             reasons.append("process_generation_artifact_fingerprint_mismatch")
         if process_generation_fingerprint(generation_artifact) != generation:
             reasons.append("process_generation_fingerprint_recompute_mismatch")
-        if (
-            generation_app.get("pid") != stable.get("windowProcessId")
-            or generation_app.get("creationTime100ns")
-            != stable.get("processCreationTime100ns")
-        ):
+        if generation_app.get("pid") != stable.get("windowProcessId") or generation_app.get(
+            "creationTime100ns"
+        ) != stable.get("processCreationTime100ns"):
             reasons.append("stable_frame_not_bound_to_app_generation")
         if (
             not isinstance(generation_backend.get("pid"), int)
@@ -3808,15 +3480,17 @@ def _validate_app_ux_sample(
             reasons.append("frontend_generation_ready_at_missing")
 
     if scenario in APP_UX_LIFECYCLE_SCENARIOS:
-        event_evidence = (
-            sample.get("eventEvidence")
-            if isinstance(sample.get("eventEvidence"), dict)
-            else {}
-        )
+        event_evidence = sample.get("eventEvidence") if isinstance(sample.get("eventEvidence"), dict) else {}
         if event_evidence.get("installedRuntime") is not True:
             reasons.append("installed_runtime_event_unproven")
         if event_evidence.get("processGenerationFingerprint") != generation:
             reasons.append("event_process_generation_mismatch")
+        replay_process_generation = event_evidence.get("providerReplayProcessGenerationFingerprint")
+        if not _is_sha256(replay_process_generation):
+            reasons.append("event_replay_process_generation_invalid")
+        expected_replay_process_generation = provider_replay_process_generation_sha256(generation_artifact)
+        if not expected_replay_process_generation or replay_process_generation != expected_replay_process_generation:
+            reasons.append("event_replay_process_generation_mismatch")
         if event_evidence.get("runId") != run_id:
             reasons.append("event_run_id_mismatch")
         if event_evidence.get("sampleId") != sample_id:
@@ -3827,12 +3501,14 @@ def _validate_app_ux_sample(
             if session_uuid.int == 0:
                 raise ValueError("nil UUID")
             session_id = session_uuid.hex
-        except (ValueError, AttributeError):
+        except ValueError, AttributeError:
             reasons.append("event_session_id_invalid")
             session_id = ""
-        if not isinstance(event_evidence.get("apiVersion"), int) or isinstance(
-            event_evidence.get("apiVersion"), bool
-        ) or event_evidence.get("apiVersion", 0) < 1:
+        if (
+            not isinstance(event_evidence.get("apiVersion"), int)
+            or isinstance(event_evidence.get("apiVersion"), bool)
+            or event_evidence.get("apiVersion", 0) < 1
+        ):
             reasons.append("event_api_version_missing")
         expected_event_markers = {
             "stop_to_transcribing_visible": "recording_state_transcribing_emitted",
@@ -3865,24 +3541,86 @@ def _validate_app_ux_sample(
         )
         if artifact_reason:
             reasons.append(f"event_{artifact_reason}")
-        elif not (
-            event_artifact.get("ok") is True
-            and event_artifact.get("source") == event_evidence.get("source")
-            and event_artifact.get("marker") == event_evidence.get("marker")
-            and event_artifact.get("qpcTicks") == event_ticks
-            and event_artifact.get("qpcFrequency") == start_frequency
-            and event_artifact.get("apiVersion") == event_evidence.get("apiVersion")
-            and event_artifact.get("runId") == run_id
-            and event_artifact.get("sampleId") == sample_id
-            and event_artifact.get("sessionId") == session_id
-            and event_artifact.get("processGenerationFingerprint") == generation
-        ):
-            reasons.append("event_artifact_payload_mismatch")
+        else:
+            if not (
+                event_artifact.get("ok") is True
+                and event_artifact.get("source") == event_evidence.get("source")
+                and event_artifact.get("marker") == event_evidence.get("marker")
+                and event_artifact.get("qpcTicks") == event_ticks
+                and event_artifact.get("qpcFrequency") == start_frequency
+                and event_artifact.get("apiVersion") == event_evidence.get("apiVersion")
+                and event_artifact.get("runId") == run_id
+                and event_artifact.get("sampleId") == sample_id
+                and event_artifact.get("sessionId") == session_id
+                and event_artifact.get("processGenerationFingerprint") == generation
+                and event_artifact.get("providerReplayProcessGenerationFingerprint") == replay_process_generation
+            ):
+                reasons.append("event_artifact_payload_mismatch")
+            installed_event = (
+                event_artifact.get("installedEvent") if isinstance(event_artifact.get("installedEvent"), dict) else {}
+            )
+            if not installed_event:
+                reasons.append("installed_event_raw_marker_missing")
+            elif not (
+                installed_event.get("ok") is True
+                and installed_event.get("source") == event_evidence.get("source")
+                and installed_event.get("marker") == event_evidence.get("marker")
+                and installed_event.get("qpcTicks") == event_ticks
+                and installed_event.get("qpcFrequency") == start_frequency
+                and installed_event.get("apiVersion") == event_evidence.get("apiVersion")
+                and installed_event.get("runId") == run_id
+                and installed_event.get("sampleId") == sample_id
+                and installed_event.get("sessionId") == session_id
+                and installed_event.get("processGenerationFingerprint") == replay_process_generation
+            ):
+                reasons.append("installed_event_raw_marker_mismatch")
+            if scenario == "stop_to_transcribing_visible":
+                ready_attestation = (
+                    event_artifact.get("manualStopReadyAttestation")
+                    if isinstance(
+                        event_artifact.get("manualStopReadyAttestation"),
+                        dict,
+                    )
+                    else {}
+                )
+                stop_request = (
+                    event_artifact.get("manualStopRequest")
+                    if isinstance(event_artifact.get("manualStopRequest"), dict)
+                    else {}
+                )
+                manual_bindings = (
+                    (
+                        ready_attestation,
+                        "rust_audio_frame_pipe_fixture_consumed",
+                    ),
+                    (stop_request, "uia_stop_request"),
+                )
+                if any(
+                    not artifact
+                    or artifact.get("source") != expected_source
+                    or artifact.get("runId") != run_id
+                    or artifact.get("sampleId") != sample_id
+                    or artifact.get("sessionId") != session_id
+                    or artifact.get("processGenerationFingerprint") != replay_process_generation
+                    or not isinstance(artifact.get("qpcTicks"), int)
+                    or isinstance(artifact.get("qpcTicks"), bool)
+                    or artifact.get("qpcTicks", 0) <= 0
+                    or artifact.get("qpcFrequency") != start_frequency
+                    for artifact, expected_source in manual_bindings
+                ):
+                    reasons.append("manual_stop_runtime_binding_invalid")
+                else:
+                    ready_ticks = int(ready_attestation["qpcTicks"])
+                    request_ticks = int(stop_request["qpcTicks"])
+                    if (
+                        not isinstance(start_ticks, int)
+                        or not isinstance(event_ticks, int)
+                        or not (ready_ticks <= start_ticks <= request_ticks <= event_ticks)
+                    ):
+                        reasons.append("manual_stop_qpc_order_invalid")
 
     frontend_performance = (
-        sample.get("frontendPerformance")
-        if isinstance(sample.get("frontendPerformance"), dict)
-        else {}
+        sample.get("frontendPerformance") if isinstance(sample.get("frontendPerformance"), dict) else {}
     )
     if frontend_performance.get("observerSupported") is not True:
         reasons.append("long_task_observer_unavailable")
@@ -3891,7 +3629,7 @@ def _validate_app_ux_sample(
         source_uuid = uuid.UUID(source_instance_id)
         if source_uuid.int == 0:
             raise ValueError("nil UUID")
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         reasons.append("long_task_source_instance_invalid")
     for sequence_name in ("queryAfterSequence", "lastSequence"):
         sequence = frontend_performance.get(sequence_name)
@@ -3900,8 +3638,7 @@ def _validate_app_ux_sample(
     if (
         isinstance(frontend_performance.get("queryAfterSequence"), int)
         and isinstance(frontend_performance.get("lastSequence"), int)
-        and frontend_performance["lastSequence"]
-        < frontend_performance["queryAfterSequence"]
+        and frontend_performance["lastSequence"] < frontend_performance["queryAfterSequence"]
     ):
         reasons.append("long_task_sequence_regressed")
     if frontend_performance.get("truncated") is not False:
@@ -3918,13 +3655,9 @@ def _validate_app_ux_sample(
         counter = frontend_performance.get(counter_name)
         if not isinstance(counter, int) or isinstance(counter, bool) or counter < 0:
             reasons.append(f"long_task_{counter_name}_invalid")
-    if frontend_performance.get("droppedEntriesBefore") != frontend_performance.get(
-        "droppedEntriesAfter"
-    ):
+    if frontend_performance.get("droppedEntriesBefore") != frontend_performance.get("droppedEntriesAfter"):
         reasons.append("long_task_entries_dropped")
-    if frontend_performance.get("sequenceGapsBefore") != frontend_performance.get(
-        "sequenceGapsAfter"
-    ):
+    if frontend_performance.get("sequenceGapsBefore") != frontend_performance.get("sequenceGapsAfter"):
         reasons.append("long_task_sequence_gap")
     measurement_end = frontend_performance.get("measurementEndQpcTicks")
     heartbeat_ack = frontend_performance.get("heartbeatAckQpcTicks")
@@ -3977,12 +3710,8 @@ def _validate_app_ux_sample(
     if measured is None:
         reasons.append("duration_unavailable")
     reported_duration = sample.get("durationMs")
-    if (
-        measured is not None
-        and (
-            not finite_number(reported_duration)
-            or abs(float(reported_duration) - measured) > 0.001
-        )
+    if measured is not None and (
+        not finite_number(reported_duration) or abs(float(reported_duration) - measured) > 0.001
     ):
         reasons.append("reported_duration_mismatch")
 
@@ -4027,7 +3756,7 @@ def validate_app_ux_lifecycle_import(
             if parsed.int == 0:
                 raise ValueError("nil UUID")
             return parsed.hex
-        except (ValueError, AttributeError):
+        except ValueError, AttributeError:
             reasons.append(reason)
             return ""
 
@@ -4044,11 +3773,7 @@ def validate_app_ux_lifecycle_import(
     if payload.get("samplesPerScenario") != required_samples_per_scenario:
         reasons.append("samples_per_scenario_contract_mismatch")
     declared_order = payload.get("scenarioOrder")
-    expected_order = [
-        scenario
-        for scenario in APP_UX_SCENARIOS
-        if scenario in APP_UX_LIFECYCLE_SCENARIOS
-    ]
+    expected_order = [scenario for scenario in APP_UX_SCENARIOS if scenario in APP_UX_LIFECYCLE_SCENARIOS]
     if declared_order != expected_order:
         reasons.append("scenario_order_invalid")
 
@@ -4064,9 +3789,7 @@ def validate_app_ux_lifecycle_import(
     counts = {scenario: 0 for scenario in expected_order}
     for index, sample in enumerate(raw_samples):
         if not isinstance(sample, dict) or sample.get("scenario") not in APP_UX_LIFECYCLE_SCENARIOS:
-            invalid_samples.append(
-                {"index": index, "reasons": ["non_lifecycle_scenario_in_import"]}
-            )
+            invalid_samples.append({"index": index, "reasons": ["non_lifecycle_scenario_in_import"]})
             continue
         normalized, sample_reasons = _validate_app_ux_sample(
             sample,
@@ -4108,11 +3831,7 @@ def validate_app_ux_lifecycle_import(
     if invalid_samples:
         reasons.append("invalid_samples")
 
-    resource_evidence = (
-        payload.get("resourceEvidence")
-        if isinstance(payload.get("resourceEvidence"), dict)
-        else {}
-    )
+    resource_evidence = payload.get("resourceEvidence") if isinstance(payload.get("resourceEvidence"), dict) else {}
     resource_values: dict[str, Any] = {
         "idleCpuPercent": "unknown",
         "workingSetMb": "unknown",
@@ -4202,7 +3921,7 @@ def validate_app_ux_evidence(
         if parsed_run_id.int == 0:
             raise ValueError("nil UUID")
         run_id = parsed_run_id.hex
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         reasons.append("run_id_invalid")
         run_id = ""
     installed_exe_sha256 = str(payload.get("installedExeSha256") or "")
@@ -4211,15 +3930,9 @@ def validate_app_ux_evidence(
         reasons.append("installed_exe_sha256_invalid")
     if not _is_sha256(harness_manifest_sha256):
         reasons.append("harness_manifest_sha256_invalid")
-    if (
-        expected_installed_exe_sha256 is not None
-        and installed_exe_sha256 != expected_installed_exe_sha256
-    ):
+    if expected_installed_exe_sha256 is not None and installed_exe_sha256 != expected_installed_exe_sha256:
         reasons.append("installed_exe_sha256_mismatch")
-    if (
-        expected_harness_manifest_sha256 is not None
-        and harness_manifest_sha256 != expected_harness_manifest_sha256
-    ):
+    if expected_harness_manifest_sha256 is not None and harness_manifest_sha256 != expected_harness_manifest_sha256:
         reasons.append("harness_manifest_sha256_mismatch")
     if payload.get("samplesPerScenario") != required_samples_per_scenario:
         reasons.append("samples_per_scenario_contract_mismatch")
@@ -4232,9 +3945,7 @@ def validate_app_ux_evidence(
     invalid_samples: list[dict[str, Any]] = []
     seen_keys: set[tuple[str, int]] = set()
     seen_sample_ids: set[str] = set()
-    scenario_durations: dict[str, list[float]] = {
-        scenario: [] for scenario in APP_UX_SCENARIOS
-    }
+    scenario_durations: dict[str, list[float]] = {scenario: [] for scenario in APP_UX_SCENARIOS}
     for index, sample in enumerate(samples):
         normalized, sample_reasons = _validate_app_ux_sample(
             sample,
@@ -4295,11 +4006,7 @@ def validate_app_ux_evidence(
         long_task_maxima.append(float(performance["maxDurationMs"]))
         long_task_totals.append(float(performance["totalDurationMs"]))
 
-    resource_evidence = (
-        payload.get("resourceEvidence")
-        if isinstance(payload.get("resourceEvidence"), dict)
-        else {}
-    )
+    resource_evidence = payload.get("resourceEvidence") if isinstance(payload.get("resourceEvidence"), dict) else {}
     resource_metrics: dict[str, Any] = {
         "ui_long_tasks_gt_200ms": sum(long_task_counts)
         if len(long_task_counts) == len(normalized_samples)
@@ -4342,12 +4049,8 @@ def validate_app_ux_evidence(
         ):
             reasons.append("resource_artifact_payload_mismatch")
         if not any(reason.startswith("resource_") for reason in reasons):
-            resource_metrics["idle_cpu_pct"] = round(
-                float(resource_evidence["idleCpuPercent"]), 3
-            )
-            resource_metrics["working_set_mb"] = round(
-                float(resource_evidence["workingSetMb"]), 3
-            )
+            resource_metrics["idle_cpu_pct"] = round(float(resource_evidence["idleCpuPercent"]), 3)
+            resource_metrics["working_set_mb"] = round(float(resource_evidence["workingSetMb"]), 3)
 
     required_total = required_samples_per_scenario * len(APP_UX_SCENARIOS)
     matrix_complete = len(normalized_samples) == required_total and not reasons
@@ -4473,9 +4176,7 @@ def run_app_frame_probe(
     smoke = load_json(smoke_path)
     shell_menu = smoke.get("shellMenuSmoke") if isinstance(smoke.get("shellMenuSmoke"), dict) else {}
     frontend_performance = (
-        shell_menu.get("frontendPerformance")
-        if isinstance(shell_menu.get("frontendPerformance"), dict)
-        else {}
+        shell_menu.get("frontendPerformance") if isinstance(shell_menu.get("frontendPerformance"), dict) else {}
     )
     show_window = shell_menu.get("showWindow") if isinstance(shell_menu.get("showWindow"), dict) else {}
     stability = smoke.get("stability") if isinstance(smoke.get("stability"), dict) else {}
@@ -4553,29 +4254,17 @@ def run_app_frame_probe(
     if finite_number(stability.get("totalWorkingSetMaxMb")):
         resource_metrics["working_set_mb"] = round(float(stability["totalWorkingSetMaxMb"]), 3)
     performance_baseline = (
-        frontend_performance.get("baseline")
-        if isinstance(frontend_performance.get("baseline"), dict)
-        else {}
+        frontend_performance.get("baseline") if isinstance(frontend_performance.get("baseline"), dict) else {}
     )
     performance_after_show = (
-        frontend_performance.get("afterShow")
-        if isinstance(frontend_performance.get("afterShow"), dict)
-        else {}
+        frontend_performance.get("afterShow") if isinstance(frontend_performance.get("afterShow"), dict) else {}
     )
-    baseline_window = (
-        performance_baseline.get("window")
-        if isinstance(performance_baseline.get("window"), dict)
-        else {}
-    )
+    baseline_window = performance_baseline.get("window") if isinstance(performance_baseline.get("window"), dict) else {}
     measured_window = (
-        performance_after_show.get("window")
-        if isinstance(performance_after_show.get("window"), dict)
-        else {}
+        performance_after_show.get("window") if isinstance(performance_after_show.get("window"), dict) else {}
     )
     flush_request = (
-        frontend_performance.get("flushRequest")
-        if isinstance(frontend_performance.get("flushRequest"), dict)
-        else {}
+        frontend_performance.get("flushRequest") if isinstance(frontend_performance.get("flushRequest"), dict) else {}
     )
     long_task_window_ms = frontend_performance.get("measurementWindowMs")
     measurement_end_ticks = frontend_performance.get("measurementEndQpcTicks")
@@ -4596,9 +4285,7 @@ def run_app_frame_probe(
     )
     flush_sequence = flush_request.get("heartbeatSequence")
     flush_requested_at = flush_request.get("requestedAtUptimeSeconds")
-    flush_requested_after_frontend = flush_request.get(
-        "requestedAfterFrontendUptimeMs"
-    )
+    flush_requested_after_frontend = flush_request.get("requestedAfterFrontendUptimeMs")
     heartbeat_acknowledged = bool(
         frontend_performance.get("heartbeatAcknowledged") is True
         and isinstance(flush_sequence, int)
@@ -4607,12 +4294,10 @@ def run_app_frame_probe(
         and measured_window.get("heartbeatSequence") == flush_sequence
         and finite_number(flush_requested_at)
         and finite_number(measured_window.get("heartbeatReceivedAtUptimeSeconds"))
-        and float(measured_window["heartbeatReceivedAtUptimeSeconds"])
-        >= float(flush_requested_at)
+        and float(measured_window["heartbeatReceivedAtUptimeSeconds"]) >= float(flush_requested_at)
         and finite_number(measured_window.get("heartbeatObservedAtFrontendUptimeMs"))
         and finite_number(flush_requested_after_frontend)
-        and float(measured_window["heartbeatObservedAtFrontendUptimeMs"])
-        >= float(flush_requested_after_frontend)
+        and float(measured_window["heartbeatObservedAtFrontendUptimeMs"]) >= float(flush_requested_after_frontend)
         and isinstance(measurement_end_ticks, int)
         and not isinstance(measurement_end_ticks, bool)
         and isinstance(heartbeat_ack_ticks, int)
@@ -4625,8 +4310,7 @@ def run_app_frame_probe(
         and performance_baseline.get("observerSupported") is True
         and performance_after_show.get("available")
         and performance_after_show.get("observerSupported") is True
-        and performance_after_show.get("sourceInstanceId")
-        == performance_baseline.get("sourceInstanceId")
+        and performance_after_show.get("sourceInstanceId") == performance_baseline.get("sourceInstanceId")
         and measured_window.get("queryAfterSequence") == baseline_window.get("lastSequence")
         and measured_window.get("truncated") is False
         and dropped_unchanged
@@ -4711,9 +4395,7 @@ def run_app_frame_probe(
             "measured": long_tasks_measured,
             "baseline": performance_baseline,
             "afterShow": performance_after_show,
-            "measurementWindowMs": long_task_window_ms
-            if finite_number(long_task_window_ms)
-            else "unknown",
+            "measurementWindowMs": long_task_window_ms if finite_number(long_task_window_ms) else "unknown",
             "heartbeatAcknowledged": heartbeat_acknowledged,
             "flushRequest": flush_request,
         },
@@ -4796,9 +4478,7 @@ def run_app_frame_probes(
     if long_tasks_measured:
         resource_metrics.update(
             {
-                "ui_long_task_max_ms": round(max(long_task_max_values), 3)
-                if long_task_max_values
-                else 0.0,
+                "ui_long_task_max_ms": round(max(long_task_max_values), 3) if long_task_max_values else 0.0,
                 "ui_long_task_total_ms": round(sum(long_task_total_values), 3),
                 "ui_long_task_window_ms": round(sum(long_task_window_values), 3),
             }
@@ -4806,20 +4486,12 @@ def run_app_frame_probes(
     diagnostic_sample_count = sum(finite_number(value) for value in durations)
     scenario_results = {
         scenario: {
-            "sampleCount": diagnostic_sample_count
-            if scenario == "warm_app_activation"
-            else 0,
+            "sampleCount": diagnostic_sample_count if scenario == "warm_app_activation" else 0,
             "requiredSampleCount": max(1, iterations),
             "metricEligible": False,
-            "p50Ms": percentile_ms(durations, 50.0)
-            if scenario == "warm_app_activation"
-            else "unknown",
-            "p75Ms": percentile_ms(durations, 75.0)
-            if scenario == "warm_app_activation"
-            else "unknown",
-            "p95Ms": percentile_ms(durations, 95.0)
-            if scenario == "warm_app_activation"
-            else "unknown",
+            "p50Ms": percentile_ms(durations, 50.0) if scenario == "warm_app_activation" else "unknown",
+            "p75Ms": percentile_ms(durations, 75.0) if scenario == "warm_app_activation" else "unknown",
+            "p95Ms": percentile_ms(durations, 95.0) if scenario == "warm_app_activation" else "unknown",
         }
         for scenario in APP_UX_SCENARIOS
     }
@@ -4837,9 +4509,7 @@ def run_app_frame_probes(
         "metricEligible": False,
         "metricBlockedReason": "incomplete_app_ux_scenario_matrix",
         "reasons": [
-            f"scenario_sample_count:{scenario}"
-            for scenario in APP_UX_SCENARIOS
-            if scenario != "warm_app_activation"
+            f"scenario_sample_count:{scenario}" for scenario in APP_UX_SCENARIOS if scenario != "warm_app_activation"
         ],
         "requestedSamplesPerScenario": max(1, iterations),
         "requiredScenarioCount": len(APP_UX_SCENARIOS),
@@ -4878,9 +4548,7 @@ def main(argv: list[str] | None = None) -> int:
     install_root = Path(args.install_root).resolve() if args.install_root else repo_root / "Scriber Install"
     output_path = Path(args.output).resolve()
     output_dir = (
-        Path(args.work_dir).resolve()
-        if args.work_dir
-        else repo_root / "tmp" / f"autoresearch-{output_path.stem}"
+        Path(args.work_dir).resolve() if args.work_dir else repo_root / "tmp" / f"autoresearch-{output_path.stem}"
     )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -4927,9 +4595,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.app_ux_evidence:
                 evidence["appFrame"] = load_and_validate_app_ux_evidence(
                     Path(args.app_ux_evidence).resolve(),
-                    required_samples_per_scenario=int(
-                        sample_plan["appUxPerScenario"]
-                    ),
+                    required_samples_per_scenario=int(sample_plan["appUxPerScenario"]),
                     installed_exe_path=install_root / "scriber-desktop.exe",
                     repo_root=repo_root,
                 )
@@ -4963,8 +4629,7 @@ def main(argv: list[str] | None = None) -> int:
             args.timeout_sec,
             int(sample_plan["providerReplay"]),
             fixture_durations_ms=tuple(
-                int(seconds) * 1000
-                for seconds in sample_plan["providerReplayDurationsSeconds"]
+                int(seconds) * 1000 for seconds in sample_plan["providerReplayDurationsSeconds"]
             ),
         )
     except Exception as exc:
@@ -4991,8 +4656,7 @@ def main(argv: list[str] | None = None) -> int:
         "focus_errors": (
             int(evidence["providerReplay"].get("focusErrors", 0) or 0)
             if provider_replay_only
-            else (0 if app_ok else 1)
-            + int(evidence["providerReplay"].get("focusErrors", 0) or 0)
+            else (0 if app_ok else 1) + int(evidence["providerReplay"].get("focusErrors", 0) or 0)
         ),
         "clipboard_errors": evidence["providerReplay"].get("clipboardErrors", "unknown"),
         "overlay_errors": "unknown" if provider_replay_only else (0 if overlay_ok else 1),
@@ -5015,26 +4679,15 @@ def main(argv: list[str] | None = None) -> int:
             metrics[key] = resource_metrics[key]
     provider_ok = bool(evidence["providerReplay"].get("ok"))
     if provider_replay_only:
-        canonical_provider_evidence_valid = canonical_provider_replay_evidence_valid(
-            metrics
-        )
+        canonical_provider_evidence_valid = canonical_provider_replay_evidence_valid(metrics)
         provider_replay_succeeded = bool(
-            provider_ok
-            and evidence["providerReplay"].get("metricEligible")
-            and canonical_provider_evidence_valid
+            provider_ok and evidence["providerReplay"].get("metricEligible") and canonical_provider_evidence_valid
         )
-        status = (
-            "PROVIDER_REPLAY_MEASURED"
-            if provider_replay_succeeded
-            else "BLOCKED"
-        )
+        status = "PROVIDER_REPLAY_MEASURED" if provider_replay_succeeded else "BLOCKED"
         reason = (
             "installed_provider_replay_measured_not_general_promotion_gate"
             if provider_replay_succeeded
-            else str(
-                evidence["providerReplay"].get("reason")
-                or "installed_provider_replay_failed_closed"
-            )
+            else str(evidence["providerReplay"].get("reason") or "installed_provider_replay_failed_closed")
         )
         payload = {
             "schemaVersion": 1,
@@ -5047,9 +4700,7 @@ def main(argv: list[str] | None = None) -> int:
             "promotionEvaluation": {
                 "evaluated": False,
                 "reason": "provider_replay_suite_not_general_promotion_gate",
-                "canonicalProviderReplayEvidenceValid": (
-                    canonical_provider_evidence_valid
-                ),
+                "canonicalProviderReplayEvidenceValid": (canonical_provider_evidence_valid),
                 "providerDurationPoolingAllowed": False,
                 "localWuxEvaluated": False,
             },
@@ -5067,9 +4718,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if provider_replay_succeeded else 2
 
     score_required = [
-        metric_name
-        for scenario_metrics in SCENARIO_METRICS.values()
-        for metric_name in scenario_metrics.values()
+        metric_name for scenario_metrics in SCENARIO_METRICS.values() for metric_name in scenario_metrics.values()
     ]
     guard_required = [
         "hotkey_mic_ready_p95_ms",
@@ -5082,14 +4731,9 @@ def main(argv: list[str] | None = None) -> int:
         "idle_cpu_pct",
         "working_set_mb",
     ]
-    score_complete = all(
-        finite_number(metrics.get(name)) and float(metrics[name]) > 0
-        for name in score_required
-    )
+    score_complete = all(finite_number(metrics.get(name)) and float(metrics[name]) > 0 for name in score_required)
     guards_complete = all(
-        not isinstance(metrics.get(name), bool)
-        and finite_number(metrics.get(name))
-        and float(metrics[name]) >= 0
+        not isinstance(metrics.get(name), bool) and finite_number(metrics.get(name)) and float(metrics[name]) >= 0
         for name in guard_required
     )
     clean_errors = all(
@@ -5103,9 +4747,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     )
     baseline_metrics = load_baseline_metrics(repo_root)
-    canonical_provider_promotion_eligible = (
-        canonical_provider_replay_promotion_eligible(metrics, baseline_metrics)
-    )
+    canonical_provider_promotion_eligible = canonical_provider_replay_promotion_eligible(metrics, baseline_metrics)
     if score_complete and all(
         finite_number(metrics.get(name)) and float(metrics[name]) == 0.0
         for name in ("text_errors", "focus_errors", "clipboard_errors", "overlay_errors")

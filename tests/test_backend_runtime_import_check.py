@@ -26,6 +26,7 @@ from scripts.check_backend_runtime_imports import (
     check_imports,
     check_package_versions,
     check_provider_initialization_matrix,
+    check_python314_native_runtime,
     check_runtime_requirements,
     check_sentence_segmentation,
 )
@@ -179,7 +180,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 5
+    assert RUNTIME_CONTRACT_REVISION == 7
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.worker",
@@ -196,6 +197,24 @@ def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
         "pipecat.turns.user_start",
         "pipecat.turns.user_stop",
     } <= frozen_modules
+    assert {
+        "aiohttp",
+        "comtypes",
+        "compression.zstd",
+        "cryptography.fernet",
+        "grpc",
+        "lxml.etree",
+        "numpy",
+        "onnxruntime",
+        "sounddevice",
+        "sqlite3",
+        "ssl",
+    } <= frozen_modules
+    assert "grpc._channel" not in runtime_import_checks.BLOCKED_FROZEN_UNUSED_PROVIDER_IMPORTS
+
+
+def test_python314_native_runtime_gate_is_functional_in_source() -> None:
+    assert check_python314_native_runtime() == []
 
 
 def test_sidecar_spec_prunes_exact_build_and_test_pyz_prefixes():
@@ -407,10 +426,17 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
         for language in PUNKT_TAB_PRUNED_LANGUAGES
         for filename in punkt_tab_files
     }
+    python314_upgrade_manifest = json.loads(
+        (repo_root / "packaging" / "python-314-upgrade-from-v0.5.47.json").read_text(encoding="utf-8")
+    )
     obsolete_installed_paths = {
-        "backend/tools/ffmpeg/deno.exe",
+        *(f"backend/{path}" for path in python314_upgrade_manifest["obsoleteBundledToolFiles"]),
         *(f"backend/_internal/{path}" for path in obsolete_paths),
     }
+    obsolete_installed_paths.update(f"backend/{path}" for path in python314_upgrade_manifest["obsoletePython313Files"])
+    obsolete_installed_paths.update(
+        f"backend/{path}" for path in python314_upgrade_manifest["obsoletePython313RuntimeFiles"]
+    )
     delete_prefix = '  Delete "$INSTDIR\\'
     deleted_installed_paths = {
         line.removeprefix(delete_prefix).removesuffix('"').replace("\\", "/")
@@ -446,6 +472,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
         "backend/_internal/setuptools/_vendor/jaraco",
         "backend/_internal/setuptools/_vendor",
         "backend/_internal/setuptools",
+        "backend/_internal/websockets",
         "backend/_internal",
         "backend",
     )
@@ -460,6 +487,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     assert hook.count("!macro NSIS_HOOK_POSTINSTALL") == 1
     assert "NSIS_HOOK_PREINSTALL" not in hook
     assert deleted_installed_paths == obsolete_installed_paths
+    assert all("*" not in path and "?" not in path for path in deleted_installed_paths)
     assert hook.count("  Delete ") == len(obsolete_installed_paths)
     assert removed_directories == obsolete_directories
     assert hook.count("  RMDir ") == len(obsolete_directories)
@@ -479,7 +507,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
     assert "*" not in hook
 
 
-def test_nsis_upgrade_hook_tombstones_only_the_exact_obsolete_deno_runtime_file():
+def test_nsis_upgrade_hook_tombstones_only_the_exact_superseded_media_tools():
     hook = (
         Path(__file__).resolve().parents[1] / "Frontend" / "src-tauri" / "windows" / "installer-hooks.nsh"
     ).read_text(encoding="utf-8")
@@ -490,7 +518,7 @@ def test_nsis_upgrade_hook_tombstones_only_the_exact_obsolete_deno_runtime_file(
         if line.startswith(media_tool_prefix)
     )
 
-    assert media_tool_deletes == ("deno.exe",)
+    assert media_tool_deletes == ("deno.exe", "yt-dlp.exe")
     assert 'Delete "$INSTDIR\\backend\\tools\\ffmpeg\\qjs.exe"' not in hook
     assert 'Delete "$INSTDIR\\backend\\tools\\ffmpeg\\qjs-engine.exe"' not in hook
     assert 'RMDir "$INSTDIR\\backend\\tools\\ffmpeg"' not in hook
@@ -946,10 +974,13 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
     assert '"tzdata",' in spec.split("excludes=[", 1)[1]
     assert 'exclude_datas(datas, ("tzdata",))' in spec
     excluded_runtime = spec.split("excludes=[", 1)[1]
-    assert '"lxml",' in excluded_runtime
+    assert '"lxml",' not in excluded_runtime
     assert '"PIL",' not in excluded_runtime
     assert '"docx",' not in excluded_runtime
     assert '"reportlab",' not in excluded_runtime
+    assert (repo_root / "packaging" / "pyinstaller_hooks" / "hook-lxml.py").read_text(encoding="utf-8").splitlines()[
+        -1
+    ] == ('hiddenimports = ["lxml._elementpath", "lxml.etree"]')
     hiddenimports_block = spec.split("hiddenimports += [", 1)[1].split("]", 1)[0]
     assert '"PySide6.QtCore"' not in hiddenimports_block
     assert '"PySide6",' in spec.split("excludes=[", 1)[1]
@@ -973,7 +1004,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
         "function Get-BackendApplicationInputManifest", 1
     )[0]
     assert '"packaging\\quickjs-youtube-runtime-lock-v1.json"' in runtime_manifest_source
-    assert '"packaging\\wheels\\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl"' in runtime_manifest_source
+    assert "Resolve-LockedNumPyWheel -Root $Root" in runtime_manifest_source
+    assert "Get-FileHashEntry -Root $Root -Path $lockedNumPy.WheelPath" in runtime_manifest_source
     assert '"packaging\\wheels\\numpy-noblas-wheel-lock-v1.json"' in runtime_manifest_source
     assert '"scripts\\validate_numpy_noblas_wheel.py"' in runtime_manifest_source
     assert '"scripts\\build_quickjs_youtube_runtime.py"' in runtime_manifest_source
@@ -984,7 +1016,8 @@ def test_sidecar_spec_bundles_silero_vad_runtime_dependency():
         "function Get-BackendRuntimeFileIdentityEntries", 1
     )[0]
     assert "Get-QuickJsYoutubeRuntimeLockedFileMetadata" in sidecar_manifest_source
-    assert 'Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"' in sidecar_manifest_source
+    assert 'Get-ToolMetadataEntry -Path $resolvedYtDlp -Name "yt-dlp"' not in sidecar_manifest_source
+    assert 'Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in sidecar_manifest_source
     assert '$ErrorActionPreference = "Continue"' in build_script
     assert '& $Python -c "import PyInstaller" *> $null' in build_script
     assert "Invoke-QuickJsYoutubeRuntimeBuild" in build_script
@@ -1013,6 +1046,20 @@ def test_backend_media_resolution_supports_fresh_full_and_runtime_cache_hits():
     assert "[string]$manifest.inputManifest.runtimeCacheKey -ne $ExpectedRuntimeCacheKey" in candidate
     assert "Test-BackendMediaFiles" in candidate
     assert "Full-sidecar cache generations disagree" in candidate
+    initializer = build_script.split("function Initialize-BackendRuntimeStableMediaTools", 1)[1].split(
+        "function Test-BackendMediaFiles", 1
+    )[0]
+    assert 'Resolve-PythonInstalledTool -Names @("yt-dlp.exe", "yt-dlp") -Python $Python' not in initializer
+    assert "from yt_dlp.version import __version__; print(__version__)" in initializer
+    assert "& $ytDlp --version" not in initializer
+    assert "Copy-Item -LiteralPath $ytDlp" not in initializer
+    assert 'Resolve-MediaTool -Names @("yt-dlp.exe", "yt-dlp") -SearchDir ""' not in initializer
+
+    copier = build_script.split("function Copy-MediaTools", 1)[1].split("$RepoRoot = (Resolve-Path $RepoRoot).Path", 1)[
+        0
+    ]
+    assert 'Resolve-BackendStableMediaTool -Names @("yt-dlp.exe", "yt-dlp")' not in copier
+    assert "Copy-Item -LiteralPath $ytDlp" not in copier
 
 
 def test_local_stt_services_do_not_override_pipecat_settings_object():

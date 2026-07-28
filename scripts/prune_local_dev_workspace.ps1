@@ -1,6 +1,7 @@
 param(
     [switch]$Execute,
-    [switch]$IncludeUnusedLocalModels
+    [switch]$IncludeUnusedLocalModels,
+    [string[]]$ExactRelativePath = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -242,34 +243,53 @@ $preservedBuildDirectories = @(
 )
 
 $candidatePaths = [System.Collections.Generic.List[string]]::new()
-foreach ($relativePath in @(
-    ".pytest_cache",
-    ".ruff_cache",
-    "Frontend\dist",
-    "Frontend\src-tauri\target\debug",
-    "Frontend\src-tauri\target\release\bundle",
-    "native\scriber-diarization-sidecar\target",
-    "dist\tauri-sidecar",
-    "Scriber Install",
-    "tmp"
-)) {
-    $candidatePaths.Add((Join-Path $repoRoot $relativePath)) | Out-Null
-}
+if ($ExactRelativePath.Count -gt 0) {
+    if ($IncludeUnusedLocalModels) {
+        throw "-IncludeUnusedLocalModels cannot be combined with -ExactRelativePath."
+    }
+    foreach ($relativePath in $ExactRelativePath) {
+        $trimmed = [string]$relativePath
+        if (-not $trimmed -or [System.IO.Path]::IsPathRooted($trimmed)) {
+            throw "Exact prune paths must be non-empty workspace-relative paths: $relativePath"
+        }
+        $segments = @($trimmed -split "[\\/]" | Where-Object { $_ })
+        if ($segments.Count -eq 0 -or $segments -contains "." -or $segments -contains "..") {
+            throw "Exact prune paths cannot contain '.' or '..' segments: $relativePath"
+        }
+        $candidate = Join-Path $repoRoot $trimmed
+        Assert-WorkspaceChild -WorkspaceRoot $repoRoot -Path $candidate | Out-Null
+        $candidatePaths.Add($candidate) | Out-Null
+    }
+} else {
+    foreach ($relativePath in @(
+        ".pytest_cache",
+        ".ruff_cache",
+        "Frontend\dist",
+        "Frontend\src-tauri\target\debug",
+        "Frontend\src-tauri\target\release\bundle",
+        "native\scriber-diarization-sidecar\target",
+        "dist\tauri-sidecar",
+        "Scriber Install",
+        "tmp"
+    )) {
+        $candidatePaths.Add((Join-Path $repoRoot $relativePath)) | Out-Null
+    }
 
-if ($IncludeUnusedLocalModels) {
-    # This exact public Hugging Face snapshot is reproducible at revision
-    # 2a97df7e501bc25c6106a150a3379c5272088c53. Scriber downloads supported
-    # runtime models into its user data directory; no installer or test contract
-    # reads this legacy repository-root copy.
-    $candidatePaths.Add((Join-Path $repoRoot "sherpa-onnx-parakeet-primeline-de-int8")) | Out-Null
-}
+    if ($IncludeUnusedLocalModels) {
+        # This exact public Hugging Face snapshot is reproducible at revision
+        # 2a97df7e501bc25c6106a150a3379c5272088c53. Scriber downloads supported
+        # runtime models into its user data directory; no installer or test contract
+        # reads this legacy repository-root copy.
+        $candidatePaths.Add((Join-Path $repoRoot "sherpa-onnx-parakeet-primeline-de-int8")) | Out-Null
+    }
 
-if (Test-Path -LiteralPath $buildRoot -PathType Container) {
-    # Never enumerate build through a junction/symlink to another tree.
-    Assert-NoReparseAncestor -WorkspaceRoot $repoRoot -Path $buildRoot | Out-Null
-    foreach ($directory in Get-ChildItem -LiteralPath $buildRoot -Force -Directory) {
-        if ($directory.Name -notin $preservedBuildDirectories) {
-            $candidatePaths.Add($directory.FullName) | Out-Null
+    if (Test-Path -LiteralPath $buildRoot -PathType Container) {
+        # Never enumerate build through a junction/symlink to another tree.
+        Assert-NoReparseAncestor -WorkspaceRoot $repoRoot -Path $buildRoot | Out-Null
+        foreach ($directory in Get-ChildItem -LiteralPath $buildRoot -Force -Directory) {
+            if ($directory.Name -notin $preservedBuildDirectories) {
+                $candidatePaths.Add($directory.FullName) | Out-Null
+            }
         }
     }
 }
@@ -317,6 +337,8 @@ $summary = [ordered]@{
     bytesRemoved = $bytesRemoved
     gibRemoved = [Math]::Round($bytesRemoved / 1GB, 3)
     includeUnusedLocalModels = [bool]$IncludeUnusedLocalModels
+    exactMode = $ExactRelativePath.Count -gt 0
+    exactRelativePaths = @($ExactRelativePath)
     preservedBuildDirectories = $preservedBuildDirectories
     targets = $report
 }

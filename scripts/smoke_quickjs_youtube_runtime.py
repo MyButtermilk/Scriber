@@ -481,7 +481,7 @@ def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
             )
             if completed.returncode != 0 and process.poll() is None:
                 process.kill()
-        except (OSError, subprocess.TimeoutExpired):
+        except OSError, subprocess.TimeoutExpired:
             if process.poll() is None:
                 process.kill()
     elif process.poll() is None:
@@ -687,7 +687,7 @@ def _parse_probe_result(
         )
     try:
         payload = json.loads(result.stdout.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except UnicodeDecodeError, json.JSONDecodeError:
         return (
             _failure_row(
                 case,

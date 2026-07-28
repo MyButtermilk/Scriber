@@ -97,7 +97,7 @@ def _response_text(data: Any) -> str:
 def _error_code(raw: str) -> str:
     try:
         payload = json.loads(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return "unknown"
     error = payload.get("error") if isinstance(payload, dict) else None
     code = error.get("code") if isinstance(error, dict) else None
@@ -111,7 +111,7 @@ def _retry_after_seconds(response: Any, attempt: int) -> float:
     raw = str(getattr(response, "headers", {}).get("Retry-After", "") or "").strip()
     try:
         retry_after = float(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         retry_after = 0.75 * (2**attempt)
     if not math.isfinite(retry_after):
         retry_after = 0.75 * (2**attempt)

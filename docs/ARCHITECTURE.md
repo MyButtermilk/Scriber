@@ -89,9 +89,11 @@ YouTube:
    manifest-bound QuickJS-ng engine behind Scriber's bounded file-protocol
    wrapper, and bundled ffmpeg/ffprobe. Frozen resolution accepts only the
    four-file wrapper bundle under `tools/ffmpeg`, never a raw `qjs` from
-   `PATH`. yt-dlp owns current YouTube player-client selection; Scriber does not
-   force stale client names. Every downloaded file must pass ffprobe
-   audio/structure validation before it can reach a provider.
+   `PATH`. yt-dlp is imported from the exact PyInstaller-frozen package; the
+   installer does not carry a path-bound pip/distlib launcher, and a missing
+   frozen package fails closed. yt-dlp owns current YouTube player-client
+   selection; Scriber does not force stale client names. Every downloaded file
+   must pass ffprobe audio/structure validation before it can reach a provider.
 4. Persistent job metadata tracks the caption preference, download, media
    preparation, transcription, summary, retry, resume, cancel, and completion.
 5. Transcript and summary are saved as a `youtube` transcript. A pending summary

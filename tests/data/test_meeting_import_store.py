@@ -255,7 +255,7 @@ def test_cancel_and_worker_transition_are_serialized_without_lost_cancel(tmp_pat
                 MeetingImportStatus.PROBING,
                 expected_status=MeetingImportStatus.RECEIVED,
             ).status
-        except (MeetingImportConflict, InvalidMeetingImportTransition):
+        except MeetingImportConflict, InvalidMeetingImportTransition:
             return None
 
     def cancel():

@@ -149,7 +149,7 @@ def _active_environment_verification(context) -> list[dict[str, Any]]:
             check=False,
             timeout=600,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return [
             finding(
                 "block",
@@ -344,7 +344,7 @@ def _capture_tool_version(
             check=False,
             timeout=60,
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None

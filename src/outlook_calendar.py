@@ -61,7 +61,7 @@ def _normalize_public_client_id(value: Any) -> str:
         return ""
     try:
         parsed = UUID(candidate)
-    except (ValueError, AttributeError):
+    except ValueError, AttributeError:
         return ""
     if parsed.int == 0 or str(parsed).casefold() != candidate.casefold():
         return ""
@@ -882,7 +882,7 @@ class OutlookCalendarService:
     def _load_json(value: Any, fallback: Any) -> Any:
         try:
             return json.loads(value) if value else fallback
-        except (TypeError, json.JSONDecodeError):
+        except TypeError, json.JSONDecodeError:
             return fallback
 
     @classmethod

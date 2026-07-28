@@ -105,6 +105,12 @@ const DISABLE_HOTKEYS_ENV: &str = "SCRIBER_DISABLE_HOTKEYS";
 const TAURI_GLOBAL_HOTKEY_ENV: &str = "SCRIBER_TAURI_GLOBAL_HOTKEY";
 const TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV: &str = "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID";
 const B7_PROVIDER_REPLAY_RUN_ID_ENV: &str = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID";
+const PYTHON_JIT_ENV: &str = "PYTHON_JIT";
+const PYTHON_GIL_ENV: &str = "PYTHON_GIL";
+const PYTHON_TLBC_ENV: &str = "PYTHON_TLBC";
+const PYTHON_RUNTIME_POLICY_ENV: &str = "SCRIBER_PYTHON_RUNTIME_MANIFEST";
+const PYTHON_RUNTIME_LOCK_SHA256_ENV: &str = "SCRIBER_PYTHON_RUNTIME_LOCK_SHA256";
+const PYTHON_RUNTIME_POLICY_MANIFEST: &str = "python-runtime-manifest.json";
 // Development builds intentionally use a separate mutex so installed Scriber
 // can remain open while the current source tree is being tested. Release builds
 // keep the stable product-wide mutex and still enforce exactly one instance.
@@ -4592,6 +4598,137 @@ struct BackendCommandSpec {
     launch_kind: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonRuntimePolicy {
+    schema_version: u8,
+    name: String,
+    python: PythonRuntimeIdentity,
+    runtime_flavor: String,
+    variant_id: String,
+    compiler: String,
+    tail_call_interpreter: bool,
+    jit: PythonJitPolicy,
+    runtime_lock_sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonRuntimeIdentity {
+    version: String,
+    cache_tag: String,
+    dll: PythonRuntimeDllIdentity,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonRuntimeDllIdentity {
+    path: String,
+    length: u64,
+    sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PythonJitPolicy {
+    available: bool,
+    expected: bool,
+    active: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct PythonRuntimeChildEnvironment {
+    jit: &'static str,
+    manifest_path: Option<PathBuf>,
+    runtime_lock_sha256: Option<String>,
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn python_runtime_environment(
+    spec: &BackendCommandSpec,
+) -> Result<PythonRuntimeChildEnvironment, String> {
+    if spec.launch_kind != "sidecar" {
+        return Ok(PythonRuntimeChildEnvironment {
+            jit: "0",
+            manifest_path: None,
+            runtime_lock_sha256: None,
+        });
+    }
+
+    let manifest_path = spec.working_dir.join(PYTHON_RUNTIME_POLICY_MANIFEST);
+    let bytes = fs::read(&manifest_path)
+        .map_err(|_| "Packaged Python runtime policy is missing.".to_string())?;
+    if bytes.len() > 64 * 1024 {
+        return Err("Packaged Python runtime policy is too large.".to_string());
+    }
+    let raw = std::str::from_utf8(&bytes)
+        .map_err(|_| "Packaged Python runtime policy is not UTF-8.".to_string())?
+        .trim_start_matches('\u{feff}');
+    let policy: PythonRuntimePolicy = serde_json::from_str(raw)
+        .map_err(|_| "Packaged Python runtime policy is invalid.".to_string())?;
+    if policy.schema_version != 1 || policy.name != "scriber-python-runtime-policy" {
+        return Err("Packaged Python runtime policy contract is unsupported.".to_string());
+    }
+    if policy.python.version != "3.14.6" || policy.python.cache_tag != "cpython-314" {
+        return Err("Packaged Python runtime must be exactly CPython 3.14.6.".to_string());
+    }
+    let expected_tail = policy.runtime_flavor == "ClangPgoTail";
+    if !matches!(
+        policy.runtime_flavor.as_str(),
+        "Official" | "ClangPgo" | "ClangPgoTail"
+    ) || policy.tail_call_interpreter != expected_tail
+    {
+        return Err("Packaged Python runtime flavor is invalid.".to_string());
+    }
+    let compiler = policy.compiler.to_ascii_lowercase();
+    if (policy.runtime_flavor == "Official" && !compiler.contains("msc"))
+        || (policy.runtime_flavor != "Official" && !compiler.contains("clang"))
+    {
+        return Err("Packaged Python compiler does not match its runtime flavor.".to_string());
+    }
+    if policy.jit.expected != policy.jit.active || (policy.jit.expected && !policy.jit.available) {
+        return Err("Packaged Python JIT policy is internally inconsistent.".to_string());
+    }
+    let expected_variant = match (policy.runtime_flavor.as_str(), policy.jit.expected) {
+        ("Official", false) => "O0",
+        ("Official", true) => "O1",
+        ("ClangPgo", false) => "C0",
+        ("ClangPgo", true) => "C1",
+        ("ClangPgoTail", false) => "T0",
+        ("ClangPgoTail", true) => "T1",
+        _ => "",
+    };
+    if policy.variant_id != expected_variant {
+        return Err("Packaged Python runtime variant is invalid.".to_string());
+    }
+    if policy.python.dll.path != "_internal/python314.dll"
+        || policy.python.dll.length == 0
+        || !is_lower_sha256(&policy.python.dll.sha256)
+        || !is_lower_sha256(&policy.runtime_lock_sha256)
+    {
+        return Err("Packaged Python runtime identity is invalid.".to_string());
+    }
+    let dll_path = spec.working_dir.join("_internal").join("python314.dll");
+    let dll_length = fs::metadata(&dll_path)
+        .map_err(|_| "Packaged python314.dll is missing.".to_string())?
+        .len();
+    if dll_length != policy.python.dll.length {
+        return Err("Packaged python314.dll length does not match its policy.".to_string());
+    }
+
+    Ok(PythonRuntimeChildEnvironment {
+        jit: if policy.jit.expected { "1" } else { "0" },
+        manifest_path: Some(manifest_path),
+        runtime_lock_sha256: Some(policy.runtime_lock_sha256),
+    })
+}
+
 fn spawn_backend(
     port: u16,
     resource_dir: Option<&Path>,
@@ -4600,6 +4737,7 @@ fn spawn_backend(
     shell_ipc_config: Option<&shell_ipc::ShellIpcConfig>,
 ) -> Result<(Child, String), String> {
     let spec = resolve_backend_command(resource_dir)?;
+    let python_runtime = python_runtime_environment(&spec)?;
     let data_dir = scriber_data_dir();
     fs::create_dir_all(&data_dir)
         .map_err(|err| format!("Could not create Scriber data directory: {err}"))?;
@@ -4637,6 +4775,22 @@ fn spawn_backend(
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr));
+    for name in [
+        PYTHON_JIT_ENV,
+        PYTHON_GIL_ENV,
+        PYTHON_TLBC_ENV,
+        PYTHON_RUNTIME_POLICY_ENV,
+        PYTHON_RUNTIME_LOCK_SHA256_ENV,
+    ] {
+        command.env_remove(name);
+    }
+    command.env(PYTHON_JIT_ENV, python_runtime.jit);
+    if let Some(path) = python_runtime.manifest_path.as_ref() {
+        command.env(PYTHON_RUNTIME_POLICY_ENV, path);
+    }
+    if let Some(sha256) = python_runtime.runtime_lock_sha256.as_ref() {
+        command.env(PYTHON_RUNTIME_LOCK_SHA256_ENV, sha256);
+    }
     // Official builds carry the public Entra application ID in the desktop
     // binary. Development builds may inherit a valid process override. Remove
     // the inherited value first so an invalid value never reaches the worker.
@@ -5192,19 +5346,19 @@ mod tests {
         is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
         normalize_benchmark_uuid, normalize_global_shortcut, normalize_hotkey_mode,
         parse_loopback_backend_url, parse_shell_menu_smoke_actions,
-        provider_replay_run_id_for_child, read_backend_response_limited, recent_transcript_label,
-        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
-        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
-        should_attach_benchmark_hotkey_marker, should_hide_window_instead_of_closing,
-        should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
-        should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
-        tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
-        wait_for_child_exit, BackendAccess, BackendStatus, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, AUTOSTART_DEFAULT_ENV,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        provider_replay_run_id_for_child, python_runtime_environment,
+        read_backend_response_limited, recent_transcript_label, recent_transcripts_from_value,
+        request_backend_shutdown, resolve_session_token, sanitize_menu_label, shell_ipc,
+        shell_ipc_env_pairs, shortcut_id_for_hotkey, should_attach_benchmark_hotkey_marker,
+        should_hide_window_instead_of_closing, should_refresh_hotkey_after_backend_ready,
+        should_show_initializing_overlay_for_hotkey, should_show_window_for_tray_click,
+        should_wait_for_hotkey_backend, split_http_response, tray_icon_image, tray_icon_kind,
+        tray_icon_size_for_scale_factor, tray_tooltip, wait_for_child_exit, BackendAccess,
+        BackendCommandSpec, BackendStatus, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
+        RecentTranscriptMenuEntry, ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner,
+        UiLocale, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
+        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -5215,7 +5369,7 @@ mod tests {
         WINDOWS_TITLEBAR_ICON_SIZE,
     };
     use std::{
-        fs,
+        env, fs,
         io::{Read, Write},
         net::TcpListener,
         path::PathBuf,
@@ -5235,6 +5389,92 @@ mod tests {
         );
 
         assert!(health_response_ready(response));
+    }
+
+    fn runtime_policy_fixture(
+        root: &std::path::Path,
+        flavor: &str,
+        tail: bool,
+        jit_available: bool,
+        jit_expected: bool,
+    ) -> BackendCommandSpec {
+        let internal = root.join("_internal");
+        fs::create_dir_all(&internal).expect("create internal runtime");
+        fs::write(internal.join("python314.dll"), b"dll!").expect("write runtime dll");
+        fs::write(
+            root.join("python-runtime-manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "name": "scriber-python-runtime-policy",
+                "python": {
+                    "version": "3.14.6",
+                    "cacheTag": "cpython-314",
+                    "dll": {
+                        "path": "_internal/python314.dll",
+                        "length": 4,
+                        "sha256": "0".repeat(64),
+                    }
+                },
+                "runtimeFlavor": flavor,
+                "variantId": match (flavor, jit_expected) {
+                    ("Official", false) => "O0",
+                    ("Official", true) => "O1",
+                    ("ClangPgo", false) => "C0",
+                    ("ClangPgo", true) => "C1",
+                    ("ClangPgoTail", false) => "T0",
+                    ("ClangPgoTail", true) => "T1",
+                    _ => "invalid",
+                },
+                "compiler": if flavor == "Official" { "MSC v.1944 64 bit (AMD64)" } else { "Clang 19.1.7" },
+                "tailCallInterpreter": tail,
+                "jit": {
+                    "available": jit_available,
+                    "expected": jit_expected,
+                    "active": jit_expected,
+                },
+                "runtimeLockSha256": "1".repeat(64),
+            }))
+            .expect("serialize policy"),
+        )
+        .expect("write runtime policy");
+        BackendCommandSpec {
+            program: root.join("scriber-backend.exe"),
+            args: Vec::new(),
+            working_dir: root.to_path_buf(),
+            launch_kind: "sidecar".to_string(),
+        }
+    }
+
+    #[test]
+    fn python_runtime_policy_selects_explicit_disabled_jit() {
+        let root = env::temp_dir().join(format!(
+            "scriber-python-policy-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let spec = runtime_policy_fixture(&root, "Official", false, true, false);
+        let selected = python_runtime_environment(&spec).expect("valid runtime policy");
+        let expected_manifest = root.join("python-runtime-manifest.json");
+
+        assert_eq!(selected.jit, "0");
+        assert_eq!(
+            selected.manifest_path.as_deref(),
+            Some(expected_manifest.as_path())
+        );
+        assert_eq!(selected.runtime_lock_sha256, Some("1".repeat(64)));
+        fs::remove_dir_all(root).expect("remove runtime fixture");
+    }
+
+    #[test]
+    fn python_runtime_policy_rejects_inconsistent_tail_and_jit() {
+        let root = env::temp_dir().join(format!(
+            "scriber-python-policy-invalid-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let spec = runtime_policy_fixture(&root, "ClangPgo", true, false, true);
+        let error = python_runtime_environment(&spec).expect_err("invalid policy must fail");
+
+        assert!(error.contains("runtime flavor") || error.contains("JIT policy"));
+        fs::remove_dir_all(root).expect("remove runtime fixture");
     }
 
     #[test]

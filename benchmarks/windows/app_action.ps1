@@ -64,6 +64,7 @@ $deadline = (Get-Date).AddSeconds([Math]::Max(0.5, $TimeoutSec))
 $window = $null
 $control = $null
 $matchingControlCount = 0
+$scrolledIntoView = $false
 do {
     $root = [System.Windows.Automation.AutomationElement]::RootElement
     $windowConditions = New-Object System.Windows.Automation.AndCondition(
@@ -125,6 +126,7 @@ do {
             $controlCondition
         )
         $eligibleControls = @()
+        $offscreenControls = @()
         foreach ($candidateControl in $matches) {
             try {
                 $bounds = $candidateControl.Current.BoundingRectangle
@@ -143,12 +145,17 @@ do {
                 if (
                     $nameMatches -and
                     $automationIdMatches -and
-                    -not $candidateControl.Current.IsOffscreen -and
-                    $candidateControl.Current.IsEnabled -and
-                    $bounds.Width -gt 0 -and
-                    $bounds.Height -gt 0
+                    $candidateControl.Current.IsEnabled
                 ) {
-                    $eligibleControls += $candidateControl
+                    if (
+                        -not $candidateControl.Current.IsOffscreen -and
+                        $bounds.Width -gt 0 -and
+                        $bounds.Height -gt 0
+                    ) {
+                        $eligibleControls += $candidateControl
+                    } else {
+                        $offscreenControls += $candidateControl
+                    }
                 }
             } catch {}
         }
@@ -156,6 +163,33 @@ do {
         if ($matchingControlCount -eq 1) {
             $control = $eligibleControls[0]
             break
+        }
+        if ($matchingControlCount -eq 0 -and $offscreenControls.Count -eq 1) {
+            $scrollPattern = $null
+            $offscreenControl = $offscreenControls[0]
+            if (
+                $offscreenControl.TryGetCurrentPattern(
+                    [System.Windows.Automation.ScrollItemPattern]::Pattern,
+                    [ref]$scrollPattern
+                )
+            ) {
+                ([System.Windows.Automation.ScrollItemPattern]$scrollPattern).ScrollIntoView()
+                Start-Sleep -Milliseconds 50
+                try {
+                    $bounds = $offscreenControl.Current.BoundingRectangle
+                    if (
+                        -not $offscreenControl.Current.IsOffscreen -and
+                        $offscreenControl.Current.IsEnabled -and
+                        $bounds.Width -gt 0 -and
+                        $bounds.Height -gt 0
+                    ) {
+                        $control = $offscreenControl
+                        $matchingControlCount = 1
+                        $scrolledIntoView = $true
+                        break
+                    }
+                } catch {}
+            }
         }
     }
     Start-Sleep -Milliseconds 20
@@ -209,6 +243,7 @@ $result = [ordered]@{
     controlNameMatch = $ControlNameMatch
     controlType = [string]$control.Current.ControlType.ProgrammaticName
     actionPattern = $patternName
+    scrolledIntoView = $scrolledIntoView
     qpcTicks = $inputQpcTicks
     inputQpcTicks = $inputQpcTicks
     actionCompletedQpcTicks = $actionCompletedQpcTicks

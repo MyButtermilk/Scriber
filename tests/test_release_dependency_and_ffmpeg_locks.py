@@ -61,15 +61,25 @@ def test_all_direct_release_requirements_are_locked() -> None:
 
 def test_release_workflow_binds_installs_and_caches_to_constraints() -> None:
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
-    dependency_hash = (
+    pip_store_hash = (
         "hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt')"
     )
+    product_dependency_hash = "hashFiles('build/cache-keys/python-dependencies.txt')"
 
-    assert dependency_hash in workflow
+    assert workflow.count(pip_store_hash) == 2
+    assert workflow.count(product_dependency_hash) >= 15
     assert "hashFiles('requirements-base.txt', 'requirements-build.txt')" not in workflow
     assert "pip install --upgrade pip" not in workflow
     assert workflow.count("--constraint requirements-release-constraints.txt") >= 7
     assert "hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json')" in workflow
+    assert (
+        "scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-\n"
+        not in workflow
+    )
+    assert (
+        "scriber-python-wheelhouse-v2-${{ runner.os }}-"
+        "${{ steps.cold-backend-python.outputs.python-version }}-\n" not in workflow
+    )
 
 
 def test_ffmpeg_release_lock_matches_current_release_asset() -> None:

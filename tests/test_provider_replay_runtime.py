@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import io
 import json
 import math
@@ -24,8 +25,10 @@ from src.core.rest_contracts import (
 from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_replay import (
+    PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS,
     LocalSonioxReplayServer,
     ProviderReplayConflict,
+    ProviderReplayDisabled,
     ProviderReplayExecution,
     ProviderReplayNotFound,
     ProviderReplayRegistry,
@@ -35,6 +38,7 @@ from src.runtime.provider_replay import (
     install_soniox_replay_receive_observer,
     prewarm_azure_mai_replay_validation,
     provider_replay_fixture_duration_ms_from_environment,
+    provider_replay_manual_stop_from_environment,
     windows_qpc_snapshot,
 )
 from src.web_api import ScriberWebController
@@ -159,6 +163,7 @@ def test_provider_replay_rest_contracts_reject_payload_and_query_expansion():
         configured_run_id=RUN_ID,
     )
     assert validated["provider"] == "speechmatics"
+    assert validated["manualStopRequired"] is False
 
     with pytest.raises(RESTContractError):
         validate_provider_replay_prepare_request_payload(
@@ -185,6 +190,70 @@ def test_provider_replay_rest_contracts_reject_payload_and_query_expansion():
             {"runId": RUN_ID, "marker": "forged"},
             configured_run_id=RUN_ID,
         )
+
+
+def test_provider_replay_manual_stop_prepare_contract_is_pairwise_gated():
+    with pytest.raises(RESTContractError):
+        validate_provider_replay_prepare_request_payload(
+            {
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+            },
+            configured_run_id=RUN_ID,
+            manual_stop_enabled=True,
+        )
+    with pytest.raises(RESTContractError):
+        validate_provider_replay_prepare_request_payload(
+            {
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+                "manualStopRequired": False,
+            },
+            configured_run_id=RUN_ID,
+            manual_stop_enabled=True,
+        )
+    validated = validate_provider_replay_prepare_request_payload(
+        {
+            "schemaVersion": 1,
+            "runId": RUN_ID,
+            "provider": "soniox",
+            "manualStopRequired": True,
+        },
+        configured_run_id=RUN_ID,
+        manual_stop_enabled=True,
+    )
+    assert validated["manualStopRequired"] is True
+    with pytest.raises(RESTContractError):
+        validate_provider_replay_prepare_request_payload(
+            {
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+                "manualStopRequired": True,
+            },
+            configured_run_id=RUN_ID,
+        )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("", False),
+        ("0", False),
+        ("1", True),
+    ],
+)
+def test_provider_replay_manual_stop_environment_is_exact(monkeypatch, raw, expected):
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", raw)
+    assert provider_replay_manual_stop_from_environment() is expected
+
+
+def test_provider_replay_manual_stop_environment_rejects_other_values(monkeypatch):
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", "true")
+    with pytest.raises(ProviderReplayDisabled, match="manual_stop_mode_invalid"):
+        provider_replay_manual_stop_from_environment()
 
 
 @pytest.mark.parametrize(
@@ -472,6 +541,103 @@ def test_started_replay_completes_only_after_bound_session_finished_marker():
         "provider_response_complete",
         "session_finished_emitted",
     ]
+
+
+def test_manual_stop_is_ready_requested_and_completed_with_bound_attestations():
+    assert 0.5 <= PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS <= 2.0
+    assert "await asyncio.sleep(PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS)" in inspect.getsource(
+        ScriberWebController.stop_listening
+    )
+    ticks = iter((101, 102, 103))
+    registry = ProviderReplayRegistry(
+        enabled_gate(),
+        manual_stop_enabled=True,
+        uuid_factory=lambda: SAMPLE_ID,
+        qpc_clock=lambda: (next(ticks), 10_000_000),
+    )
+    sample = registry.prepare(
+        run_id=RUN_ID,
+        provider="soniox",
+        manual_stop_required=True,
+    )
+    execution = ProviderReplayExecution(
+        registry=registry,
+        run_id=RUN_ID,
+        sample_id=sample["sampleId"],
+        provider="soniox",
+        injection_target_guard=object(),
+        manual_stop_required=True,
+    )
+    execution.mark_manual_stop_ready()
+    execution.bind_session(SESSION_ID)
+
+    ready = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
+    assert ready["manualStopRequired"] is True
+    assert ready["manualStopReady"] is True
+    assert ready["manualStopRequested"] is False
+    assert ready["manualStopCompleted"] is False
+    assert ready["manualStopReadyAttestation"] == {
+        "contractVersion": 1,
+        "source": "rust_audio_frame_pipe_fixture_consumed",
+        "runId": RUN_ID,
+        "sampleId": SAMPLE_ID.hex,
+        "sessionId": SESSION_ID,
+        "processGenerationFingerprint": enabled_gate().process_generation_fingerprint,
+        "qpcTicks": 101,
+        "qpcFrequency": 10_000_000,
+    }
+
+    with pytest.raises(ProviderReplayConflict):
+        execution.attest_manual_stop_request(OTHER_RUN_ID)
+    request = execution.attest_manual_stop_request(SESSION_ID)
+    assert request == {
+        "contractVersion": 1,
+        "source": "uia_stop_request",
+        "runId": RUN_ID,
+        "sampleId": SAMPLE_ID.hex,
+        "sessionId": SESSION_ID,
+        "processGenerationFingerprint": enabled_gate().process_generation_fingerprint,
+        "qpcTicks": 102,
+        "qpcFrequency": 10_000_000,
+    }
+    execution.marker("session_finished_emitted")
+    completed = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
+    assert completed["state"] == "completed"
+    assert completed["manualStopRequested"] is True
+    assert completed["manualStopCompleted"] is True
+    assert completed["manualStopRequest"] == request
+
+
+def test_manual_stop_fails_closed_without_ready_request_or_matching_gate():
+    registry = ProviderReplayRegistry(
+        enabled_gate(),
+        manual_stop_enabled=True,
+        uuid_factory=lambda: SAMPLE_ID,
+        qpc_clock=lambda: (101, 10_000_000),
+    )
+    with pytest.raises(ProviderReplayConflict, match="gate mismatch"):
+        registry.prepare(run_id=RUN_ID, provider="microsoft")
+    sample = registry.prepare(
+        run_id=RUN_ID,
+        provider="microsoft",
+        manual_stop_required=True,
+    )
+    execution = ProviderReplayExecution(
+        registry=registry,
+        run_id=RUN_ID,
+        sample_id=sample["sampleId"],
+        provider="microsoft",
+        injection_target_guard=object(),
+        manual_stop_required=True,
+    )
+    execution.bind_session(SESSION_ID)
+    with pytest.raises(ProviderReplayConflict, match="request binding failed"):
+        execution.attest_manual_stop_request(SESSION_ID)
+    execution.marker("session_finished_emitted")
+    failed = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
+    assert failed["state"] == "failed"
+    assert failed["errorCode"] == "manual_stop_missing"
+    assert failed["manualStopCompleted"] is False
 
 
 def test_capture_attestation_is_bound_and_allowlisted_before_completion():
@@ -1098,6 +1264,175 @@ async def test_disabled_replay_control_plane_is_404_before_token_auth(
 
 
 @pytest.mark.asyncio
+async def test_manual_stop_prepare_requires_matching_environment_and_request(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", "1")
+    gate = enabled_gate()
+    monkeypatch.setattr(
+        web_api.ProviderReplayRuntimeGate,
+        "from_environment",
+        classmethod(lambda cls: gate),
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    headers = {"X-Scriber-Token": "secret"}
+    try:
+        for body in (
+            {"schemaVersion": 1, "runId": RUN_ID, "provider": "soniox"},
+            {
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+                "manualStopRequired": False,
+            },
+        ):
+            rejected = await client.post(
+                "/api/runtime/benchmark/provider-replay/prepare",
+                headers=headers,
+                json=body,
+            )
+            assert rejected.status == 400
+
+        prepared = await client.post(
+            "/api/runtime/benchmark/provider-replay/prepare",
+            headers=headers,
+            json={
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+                "manualStopRequired": True,
+            },
+        )
+        body = await prepared.json()
+        assert prepared.status == 201
+        assert body["manualStopRequired"] is True
+        assert body["manualStopReady"] is False
+        assert body["manualStopRequested"] is False
+        assert body["manualStopCompleted"] is False
+        assert body["manualStopRequest"] is None
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_invalid_manual_stop_environment_hides_private_routes(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", "true")
+    monkeypatch.setattr(
+        web_api.ProviderReplayRuntimeGate,
+        "from_environment",
+        classmethod(lambda cls: enabled_gate()),
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/runtime/benchmark/provider-replay/prepare",
+            headers={"X-Scriber-Token": "secret"},
+            json={
+                "schemaVersion": 1,
+                "runId": RUN_ID,
+                "provider": "soniox",
+                "manualStopRequired": True,
+            },
+        )
+        assert response.status == 404
+        assert await response.json() == {"message": "Not found"}
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_visible_stop_request_attests_ready_manual_replay_before_scheduling(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.delenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", raising=False)
+    registry = ProviderReplayRegistry(
+        enabled_gate(),
+        manual_stop_enabled=True,
+        uuid_factory=lambda: SAMPLE_ID,
+        qpc_clock=lambda: (777, 10_000_000),
+    )
+    sample = registry.prepare(
+        run_id=RUN_ID,
+        provider="soniox",
+        manual_stop_required=True,
+    )
+    execution = ProviderReplayExecution(
+        registry=registry,
+        run_id=RUN_ID,
+        sample_id=sample["sampleId"],
+        provider="soniox",
+        injection_target_guard=object(),
+        manual_stop_required=True,
+    )
+    execution.bind_session(SESSION_ID)
+    execution.mark_manual_stop_ready()
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._provider_replay_execution = execution
+    ctl._session_id = SESSION_ID
+    ctl._is_listening = True
+    stop_calls = 0
+
+    def schedule_stop():
+        nonlocal stop_calls
+        stop_calls += 1
+        status = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
+        assert status["manualStopRequested"] is True
+        return {
+            "stopAccepted": True,
+            "stopScheduled": True,
+            "alreadyFinalizing": False,
+            "alreadyStopped": False,
+        }
+
+    monkeypatch.setattr(ctl, "request_async_stop_listening", schedule_stop)
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/live-mic/stop-request",
+            headers={"X-Scriber-Token": "secret"},
+        )
+        assert response.status == 202
+        assert stop_calls == 1
+        status = registry.status(run_id=RUN_ID, sample_id=sample["sampleId"])
+        assert status["manualStopRequested"] is True
+        assert status["manualStopRequest"]["source"] == "uia_stop_request"
+        assert status["manualStopRequest"]["runId"] == RUN_ID
+        assert status["manualStopRequest"]["sampleId"] == SAMPLE_ID.hex
+        assert status["manualStopRequest"]["sessionId"] == SESSION_ID
+        assert (
+            status["manualStopRequest"]["processGenerationFingerprint"] == enabled_gate().process_generation_fingerprint
+        )
+    finally:
+        ctl._provider_replay_execution = None
+        ctl._is_listening = False
+        await execution.close()
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_enabled_replay_routes_require_native_activation_before_controller_start(
     monkeypatch,
     tmp_path,
@@ -1106,6 +1441,7 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID", RUN_ID)
+    monkeypatch.delenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", raising=False)
     monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256", "a" * 64)
     monkeypatch.setenv(
         "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
@@ -1121,9 +1457,10 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
     monkeypatch.setattr(
         web_api,
         "ProviderReplayRegistry",
-        lambda runtime_gate: ProviderReplayRegistry(
+        lambda runtime_gate, **kwargs: ProviderReplayRegistry(
             runtime_gate,
             uuid_factory=lambda: SAMPLE_ID,
+            **kwargs,
         ),
     )
     ctl = ScriberWebController(asyncio.get_running_loop())

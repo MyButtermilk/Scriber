@@ -23,7 +23,7 @@ class _PipelineStats:
 class _StressFakePipeline:
     """Minimal pipeline stub for lifecycle stress tests."""
 
-    instances: ClassVar[list["_StressFakePipeline"]] = []
+    instances: ClassVar[list[_StressFakePipeline]] = []
     created: ClassVar[int] = 0
 
     def __init__(

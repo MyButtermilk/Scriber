@@ -15,7 +15,7 @@ def env_int(
 ) -> int:
     try:
         value = int(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         value = int(default)
     if minimum is not None:
         value = max(minimum, value)
@@ -33,7 +33,7 @@ def env_float(
 ) -> float:
     try:
         value = float(os.getenv(name, str(default)) or default)
-    except (TypeError, ValueError, OverflowError):
+    except TypeError, ValueError, OverflowError:
         value = float(default)
     if not math.isfinite(value):
         value = float(default)

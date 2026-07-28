@@ -15,7 +15,7 @@ from src.web_api import ScriberWebController, TranscriptRecord
 
 
 class _FakeMicPrewarmManager:
-    instances: list["_FakeMicPrewarmManager"] = []
+    instances: list[_FakeMicPrewarmManager] = []
 
     def __init__(self):
         self.active = False
@@ -87,7 +87,7 @@ class _FakeMicPrewarmManager:
 
 class _FakeRustMicPrewarmManager(_FakeMicPrewarmManager):
     engine = "rust-wasapi"
-    instances: list["_FakeRustMicPrewarmManager"] = []
+    instances: list[_FakeRustMicPrewarmManager] = []
 
 
 def test_startup_prewarm_defaults_follow_mic_always_on(monkeypatch):
@@ -270,7 +270,7 @@ def test_backend_loop_handler_forwards_unrelated_connection_errors(monkeypatch):
 
 class _RecoveringFakeMicPrewarmManager(_FakeMicPrewarmManager):
     engine = "rust-wasapi"
-    instances: list["_RecoveringFakeMicPrewarmManager"] = []
+    instances: list[_RecoveringFakeMicPrewarmManager] = []
 
     def __init__(self):
         super().__init__()
@@ -3362,7 +3362,7 @@ class _SlowStopPipeline:
 
 class _LateReadyPipeline:
     service_name = "openai"
-    instances: list["_LateReadyPipeline"] = []
+    instances: list[_LateReadyPipeline] = []
 
     def __init__(self, *_, on_mic_ready=None, **__):
         self.on_mic_ready = on_mic_ready
@@ -3380,7 +3380,7 @@ class _LateReadyPipeline:
 
 class _PrewarmAwarePipeline:
     service_name = "openai"
-    instances: list["_PrewarmAwarePipeline"] = []
+    instances: list[_PrewarmAwarePipeline] = []
 
     def __init__(self, *_, mic_prewarm_manager=None, **kwargs):
         self.mic_prewarm_manager = mic_prewarm_manager

@@ -106,6 +106,7 @@ $names = @(
     "rust-audio-sidecar.txt",
     "rust-diarization-sidecar.txt",
     "sherpa-onnx-archive.txt",
+    "python-dependencies.txt",
     "backend-runtime.txt",
     "backend-sidecar.txt"
 )

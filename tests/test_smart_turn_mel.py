@@ -23,6 +23,8 @@ def test_onnx_mel_projection_is_byte_exact_and_idempotent() -> None:
     from pipecat.audio.turn.smart_turn import _whisper_features
 
     original = _whisper_features._MEL_FILTERS
+    unaccelerated = original._original if isinstance(original, smart_turn_mel._MelFiltersProxy) else original
+    _whisper_features._MEL_FILTERS = unaccelerated
     rng = np.random.default_rng(20260720)
     audio = rng.standard_normal(128_000).astype(np.float32) * np.float32(0.05)
     try:
@@ -45,7 +47,8 @@ def test_mel_filter_drift_is_rejected_before_install() -> None:
     from pipecat.audio.turn.smart_turn import _whisper_features
 
     original = _whisper_features._MEL_FILTERS
-    drifted = np.array(original, copy=True)
+    unaccelerated = original._original if isinstance(original, smart_turn_mel._MelFiltersProxy) else original
+    drifted = np.array(unaccelerated, copy=True)
     drifted[0, 0] += 1.0
     _whisper_features._MEL_FILTERS = drifted
     try:

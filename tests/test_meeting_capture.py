@@ -9,7 +9,7 @@ import wave
 
 import pytest
 
-from src import database
+from src import database, meeting_capture
 from src.data.meeting_store import MeetingConflict, MeetingCreate, MeetingStore
 from src.meeting_capture import (
     MeetingAudioRecorder,
@@ -195,9 +195,79 @@ def test_meeting_device_probe_reports_levels_without_persisting_audio(tmp_path):
 
     assert snapshot["microphone"]["active"] is True
     assert snapshot["microphone"]["audioFrames"] == 4
+    assert snapshot["microphone"]["payloadBytes"] == len(pcm)
     assert 0.60 < snapshot["microphone"]["rms"] < 0.62
     assert snapshot["microphone"]["peak"] > 0.99
+    assert snapshot["microphone"]["readerAlive"] is False
     assert list(tmp_path.iterdir()) == []
+
+
+def test_meeting_device_probe_uses_shared_pcm_metrics(monkeypatch):
+    pcm = (4_096).to_bytes(2, "little", signed=True) * 160
+    frame = encode_audio_frame(
+        AudioFrameHeader(
+            payload_len=len(pcm),
+            sequence=0,
+            timestamp_micros=0,
+            frame_count=160,
+            channels=1,
+        ),
+        pcm,
+    )
+    calls: list[bytes] = []
+    real_metrics = meeting_capture.pcm16le_metrics
+
+    def record_metrics(payload):
+        calls.append(bytes(payload))
+        return real_metrics(payload)
+
+    monkeypatch.setattr(meeting_capture, "pcm16le_metrics", record_metrics)
+    probe = MeetingDeviceLevelProbe(reader_factory=ReaderFactory({"mic-pipe": frame}))
+    probe.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    deadline = time.monotonic() + 1
+    while probe.snapshot()["microphone"]["frames"] < 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    snapshot = probe.stop()
+
+    assert calls == [pcm]
+    assert snapshot["microphone"]["payloadBytes"] == len(pcm)
+
+
+def test_meeting_device_probe_reports_reader_stop_timeout_and_retains_thread_for_join():
+    read_started = threading.Event()
+    release_read = threading.Event()
+
+    class BlockingReader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            read_started.set()
+            release_read.wait(timeout=2)
+            return b""
+
+    probe = MeetingDeviceLevelProbe(reader_factory=lambda *_args, **_kwargs: BlockingReader())
+    probe.start([{"source": "microphone", "framePipe": "mic-pipe"}])
+    assert read_started.wait(timeout=1)
+    assert probe.snapshot()["microphone"]["readerAlive"] is True
+
+    timed_out = probe.stop(timeout=0.01)
+
+    assert timed_out["microphone"]["readerAlive"] is True
+    assert timed_out["microphone"]["errorCode"] == "reader_stop_timeout"
+    with pytest.raises(RuntimeError, match="reader is still active"):
+        probe.start([{"source": "microphone", "framePipe": "replacement"}])
+
+    release_read.set()
+    deadline = time.monotonic() + 1
+    while probe.snapshot()["microphone"]["readerAlive"] and time.monotonic() < deadline:
+        time.sleep(0.005)
+    joined = probe.stop(timeout=1)
+    assert joined["microphone"]["readerAlive"] is False
 
 
 def test_meeting_device_probe_keeps_frames_valid_when_native_pipe_closes():
@@ -229,6 +299,7 @@ def test_meeting_device_probe_keeps_frames_valid_when_native_pipe_closes():
     assert snapshot["microphone"]["frames"] == 1
     assert snapshot["microphone"]["active"] is True
     assert snapshot["microphone"]["errorCode"] == ""
+    assert snapshot["microphone"]["readerAlive"] is False
 
 
 def test_meeting_recorder_surfaces_disk_full_without_persisting_incomplete_chunk(monkeypatch, tmp_path):

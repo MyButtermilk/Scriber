@@ -6,7 +6,14 @@ param(
     [ValidateSet("Default", "Enabled", "Disabled")]
     [string]$AzureMaiCaptureTimeMp3 = "Default",
     [ValidateSet("Default", "Enabled", "Disabled")]
-    [string]$SpeechmaticsCaptureTimeWav = "Default"
+    [string]$SpeechmaticsCaptureTimeWav = "Default",
+    [string]$AppUxEvidencePath = "",
+    [string]$PythonRuntimeProfileConfigPath = "",
+    [ValidateSet("", "O0", "O1", "C0", "C1", "T0", "T1")]
+    [string]$PythonRuntimeVariant = "",
+    [string]$PythonRuntimeStartupEvidencePath = "",
+    [string]$PythonRuntimeReferencePath = "",
+    [string]$PythonRuntimeDecisionPath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -22,10 +29,64 @@ if (-not $InstallRoot) {
     }
 }
 $InstallRoot = (Resolve-Path -LiteralPath $InstallRoot -ErrorAction Stop).Path
+if ($AppUxEvidencePath) {
+    if ($Suite -notin @("FastLocal", "FullLocal")) {
+        throw "-AppUxEvidencePath is allowed only with FastLocal or FullLocal."
+    }
+    if (-not (Test-Path -LiteralPath $AppUxEvidencePath -PathType Leaf)) {
+        throw "App UX evidence was not found: $AppUxEvidencePath"
+    }
+    $AppUxEvidencePath = (Resolve-Path -LiteralPath $AppUxEvidencePath -ErrorAction Stop).Path
+}
+$pythonRuntimeInputsProvided = [bool](
+    $PythonRuntimeProfileConfigPath -or
+    $PythonRuntimeVariant -or
+    $PythonRuntimeStartupEvidencePath -or
+    $PythonRuntimeReferencePath -or
+    $PythonRuntimeDecisionPath
+)
+if ($pythonRuntimeInputsProvided) {
+    if (-not $PythonRuntimeVariant) {
+        throw "-PythonRuntimeVariant is required when Python-runtime profile inputs are provided."
+    }
+    if ($Suite -ne "FastLocal") {
+        throw "Python-runtime screening is allowed only with FastLocal."
+    }
+    if (-not $PythonRuntimeProfileConfigPath -or -not $PythonRuntimeStartupEvidencePath -or -not $PythonRuntimeReferencePath) {
+        throw "Python-runtime screening requires profile config, startup evidence, and an explicit O0 reference path."
+    }
+    if ($PythonRuntimeVariant -ne "O0" -and -not $PythonRuntimeDecisionPath) {
+        throw "A non-O0 Python-runtime screening run requires an explicit decision output path."
+    }
+    $PythonRuntimeProfileConfigPath = (
+        Resolve-Path -LiteralPath $PythonRuntimeProfileConfigPath -ErrorAction Stop
+    ).Path
+    $PythonRuntimeStartupEvidencePath = (
+        Resolve-Path -LiteralPath $PythonRuntimeStartupEvidencePath -ErrorAction Stop
+    ).Path
+    if ($PythonRuntimeVariant -eq "O0") {
+        $PythonRuntimeReferencePath = [System.IO.Path]::GetFullPath($PythonRuntimeReferencePath)
+    } else {
+        $PythonRuntimeReferencePath = (
+            Resolve-Path -LiteralPath $PythonRuntimeReferencePath -ErrorAction Stop
+        ).Path
+        $PythonRuntimeDecisionPath = [System.IO.Path]::GetFullPath($PythonRuntimeDecisionPath)
+    }
+    $protectedAutoResearchPaths = @(
+        [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "benchmarks\results\baseline.json")),
+        [System.IO.Path]::GetFullPath((Join-Path $RepoRoot "benchmarks\results\champion.json"))
+    )
+    foreach ($runtimeOutputPath in @($PythonRuntimeReferencePath, $PythonRuntimeDecisionPath)) {
+        if ($runtimeOutputPath -and $protectedAutoResearchPaths -contains [System.IO.Path]::GetFullPath($runtimeOutputPath)) {
+            throw "Python-runtime profile output must not overwrite AutoResearch baseline/champion."
+        }
+    }
+}
 if (-not $OutputDir) {
     $OutputDir = Join-Path $RepoRoot "benchmarks\results\raw"
 }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
+$OutputDir = (Resolve-Path -LiteralPath $OutputDir).Path
 
 function Import-DotEnvIntoProcess {
     param([string]$Path)
@@ -167,6 +228,34 @@ $rawProvenance = [ordered]@{
     desktopSha256 = [string]$profile.desktopSha256
     backendSha256 = [string]$profile.backendSha256
     audioSidecarSha256 = [string]$profile.audioSidecarSha256
+    appUxEvidenceProvided = [bool]$AppUxEvidencePath
+    appUxEvidenceSha256 = if ($AppUxEvidencePath) {
+        Get-FileSha256OrEmpty -Path $AppUxEvidencePath
+    } else {
+        ""
+    }
+    appUxEvidencePostSha256 = ""
+    appUxEvidenceDriftDetected = $false
+    pythonRuntimeProfileEnabled = $pythonRuntimeInputsProvided
+    pythonRuntimeVariant = $PythonRuntimeVariant
+    pythonRuntimeProfileConfigSha256 = if ($PythonRuntimeProfileConfigPath) {
+        Get-FileSha256OrEmpty -Path $PythonRuntimeProfileConfigPath
+    } else {
+        ""
+    }
+    pythonRuntimeStartupEvidenceSha256 = if ($PythonRuntimeStartupEvidencePath) {
+        Get-FileSha256OrEmpty -Path $PythonRuntimeStartupEvidencePath
+    } else {
+        ""
+    }
+    pythonRuntimeO0ReferenceSha256 = if (
+        $PythonRuntimeVariant -ne "O0" -and
+        $PythonRuntimeReferencePath
+    ) {
+        Get-FileSha256OrEmpty -Path $PythonRuntimeReferencePath
+    } else {
+        ""
+    }
     providerCandidate = $profile.providerCandidate
 }
 
@@ -646,8 +735,8 @@ if ($existingScriberProcesses.Count -gt 0) {
 }
 
 if ($Suite -eq "Smoke") {
-    $smokePath = Join-Path $OutputDir "desktop-smoke-$stamp.json"
-    $dataDir = Join-Path $OutputDir "desktop-smoke-data-$stamp"
+    $smokePath = Join-Path $RepoRoot "tmp\autoresearch-desktop-smoke-$stamp.json"
+    $dataDir = Join-Path $RepoRoot "tmp\autoresearch-desktop-smoke-data-$stamp"
     $exePath = Join-Path $InstallRoot "scriber-desktop.exe"
     & powershell.exe -NoProfile -ExecutionPolicy Bypass `
         -File (Join-Path $RepoRoot "scripts\smoke_tauri_desktop.ps1") `
@@ -723,14 +812,35 @@ $payload = [pscustomobject]@{
 $endpointProbePath = Join-Path $OutputDir "endpoint-probe-$stamp.json"
 $endpointProbeWorkDir = Join-Path $RepoRoot "tmp\autoresearch-endpoint-probe-$stamp"
 $endpointProbeExit = 0
-& $pythonExecutable (Join-Path $RepoRoot "benchmarks\windows\endpoint_probe.py") `
-    --repo-root $RepoRoot `
-    --install-root $InstallRoot `
-    --output $endpointProbePath `
-    --work-dir $endpointProbeWorkDir `
-    --suite $Suite `
-    --timeout-sec 45 | Out-Null
-$endpointProbeExit = $LASTEXITCODE
+$endpointProbeArgs = @(
+    (Join-Path $RepoRoot "benchmarks\windows\endpoint_probe.py"),
+    "--repo-root", $RepoRoot,
+    "--install-root", $InstallRoot,
+    "--output", $endpointProbePath,
+    "--work-dir", $endpointProbeWorkDir,
+    "--suite", $Suite,
+    "--timeout-sec", "45"
+)
+if ($AppUxEvidencePath) {
+    $endpointProbeArgs += @("--app-ux-evidence", $AppUxEvidencePath)
+}
+$previousAppUxEvidenceEnv = [Environment]::GetEnvironmentVariable(
+    "SCRIBER_B7_APP_UX_EVIDENCE",
+    "Process"
+)
+try {
+    # Evidence selection is an explicit run.ps1 input. A process-global value
+    # must not silently choose a package when -AppUxEvidencePath was omitted.
+    [Environment]::SetEnvironmentVariable("SCRIBER_B7_APP_UX_EVIDENCE", $null, "Process")
+    & $pythonExecutable @endpointProbeArgs | Out-Null
+    $endpointProbeExit = $LASTEXITCODE
+} finally {
+    [Environment]::SetEnvironmentVariable(
+        "SCRIBER_B7_APP_UX_EVIDENCE",
+        $previousAppUxEvidenceEnv,
+        "Process"
+    )
+}
 $endpointPostAttestation = Invoke-RuntimeAttestationVerification
 Set-RawAttestationPhase -Phase "Post" -Verification $endpointPostAttestation
 $endpointPostPayload = $endpointPostAttestation.payload
@@ -744,10 +854,27 @@ $endpointPostMatchesPre = (
 $baselinePostSha256 = Get-FileSha256OrEmpty -Path (Join-Path $RepoRoot "benchmarks\results\baseline.json")
 $rawProvenance["baselinePostSha256"] = $baselinePostSha256
 $baselineDriftDetected = ([string]$profile.baselineSha256 -ne [string]$baselinePostSha256)
-if ((-not $endpointPostMatchesPre) -or $baselineDriftDetected) {
+$appUxEvidencePostSha256 = if ($AppUxEvidencePath) {
+    Get-FileSha256OrEmpty -Path $AppUxEvidencePath
+} else {
+    ""
+}
+$rawProvenance["appUxEvidencePostSha256"] = $appUxEvidencePostSha256
+$appUxEvidenceDriftDetected = (
+    [bool]$AppUxEvidencePath -and
+    [string]$rawProvenance["appUxEvidenceSha256"] -cne [string]$appUxEvidencePostSha256
+)
+$rawProvenance["appUxEvidenceDriftDetected"] = $appUxEvidenceDriftDetected
+if ((-not $endpointPostMatchesPre) -or $baselineDriftDetected -or $appUxEvidenceDriftDetected) {
     $rawProvenance["runtimeAttestationDriftDetected"] = (-not $endpointPostMatchesPre)
     $payload.status = "INVALID_BUILD"
-    $payload.reason = if ($baselineDriftDetected) { "baseline_drift" } else { "runtime_attestation_drift" }
+    $payload.reason = if ($baselineDriftDetected) {
+        "baseline_drift"
+    } elseif ($appUxEvidenceDriftDetected) {
+        "app_ux_evidence_drift"
+    } else {
+        "runtime_attestation_drift"
+    }
     $payload | Add-Member -NotePropertyName endpointProbePath -NotePropertyValue $endpointProbePath -Force
     $payload | Add-Member -NotePropertyName endpointProbeExitCode -NotePropertyValue $endpointProbeExit -Force
     $payload | Add-Member -NotePropertyName runtimeAttestationPostErrors -NotePropertyValue $(
@@ -780,6 +907,32 @@ if ($endpointProbe -and $endpointProbe.metrics) {
 $reason = if ($endpointProbe -and $endpointProbe.reason) { [string]$endpointProbe.reason } else { "missing_real_user_endpoint_evidence" }
 Write-MetricPackage -Metrics $metricMap -Reason $reason
 $localWux = if ($metricMap.ContainsKey("local_wux")) { [string]$metricMap["local_wux"] } else { "unknown" }
+if ($pythonRuntimeInputsProvided) {
+    $runtimeEvaluator = Join-Path $RepoRoot "scripts\perf\python_runtime_ab.py"
+    $runtimeArgs = @(
+        $runtimeEvaluator,
+        "--config", $PythonRuntimeProfileConfigPath,
+        "--startup", $PythonRuntimeStartupEvidencePath
+    )
+    if ($PythonRuntimeVariant -eq "O0") {
+        $runtimeArgs += @(
+            "--create-o0-screening-reference",
+            "--fast-local", $rawPath,
+            "--output", $PythonRuntimeReferencePath
+        )
+    } else {
+        $runtimeArgs += @(
+            "--reference", $PythonRuntimeReferencePath,
+            "--candidate", "$PythonRuntimeVariant=$rawPath",
+            "--output", $PythonRuntimeDecisionPath
+        )
+    }
+    & $pythonExecutable @runtimeArgs
+    if ($LASTEXITCODE -eq 0) {
+        exit 0
+    }
+    exit 2
+}
 if ($Suite -eq "ProviderReplay") {
     $providerReplaySucceeded = (
         $endpointProbe -and

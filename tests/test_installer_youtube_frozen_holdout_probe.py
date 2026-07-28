@@ -137,6 +137,181 @@ def test_frozen_probe_uses_the_pinned_yt_dlp_cli_parser(tmp_path: Path) -> None:
     assert response["policy"]["remoteComponents"] is False
 
 
+def test_frozen_probe_format_selection_mode_uses_production_selectors_in_order(tmp_path: Path) -> None:
+    root, runtime = _runtime_root(tmp_path)
+    observed_selectors: list[str] = []
+
+    class FormatYdl(_FakeYdl):
+        def extract_info(self, url: str, *, download: bool) -> dict[str, object]:
+            selector = str(self.options["format"])
+            observed_selectors.append(selector)
+            if len(observed_selectors) == 1:
+                raise RuntimeError("requested format is not available")
+            return {
+                "id": "abcdefghijk",
+                "extractor_key": "Youtube",
+                "formats": [],
+                "duration": 634,
+                "ext": "webm",
+                "container": "webm_dash",
+                "acodec": "opus",
+                "protocol": "https",
+                "format_id": "251",
+            }
+
+    exit_code, response = probe.execute_probe(
+        _request(runtime, formatSelectionProbe=True),
+        runtime_root=root,
+        ydl_factory=FormatYdl,
+    )
+
+    from src.youtube_download import _FORMAT_SELECTORS
+
+    assert exit_code == 0
+    assert observed_selectors == list(_FORMAT_SELECTORS[:2])
+    assert response["selectedFormat"] == {
+        "routeKind": "audio-format",
+        "selectorIndex": 2,
+        "selector": _FORMAT_SELECTORS[1],
+        "ext": "webm",
+        "container": "webm_dash",
+        "acodec": "opus",
+        "protocol": "https",
+        "formatId": "251",
+        "durationSeconds": 634,
+    }
+    assert "youtube.com/watch" not in json.dumps(response)
+
+
+def test_frozen_probe_caption_mode_requires_real_parseable_timed_cues(tmp_path: Path) -> None:
+    root, runtime = _runtime_root(tmp_path)
+    caption_payload = json.dumps(
+        {
+            "events": [
+                {
+                    "tStartMs": 100,
+                    "dDurationMs": 900,
+                    "segs": [{"utf8": "A real timed caption."}],
+                },
+                {
+                    "tStartMs": 1100,
+                    "dDurationMs": 800,
+                    "segs": [{"utf8": "The parser must see this cue."}],
+                },
+            ]
+        }
+    ).encode()
+
+    class CaptionResponse:
+        def __enter__(self) -> CaptionResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, limit: int) -> bytes:
+            assert limit > len(caption_payload)
+            return caption_payload
+
+    class CaptionYdl(_FakeYdl):
+        def extract_info(self, url: str, *, download: bool) -> dict[str, object]:
+            assert url == "https://www.youtube.com/watch?v=abcdefghijk"
+            assert download is False
+            return {
+                "id": "abcdefghijk",
+                "extractor_key": "Youtube",
+                "duration": 42,
+                "formats": [],
+                "language": "en",
+                "subtitles": {
+                    "en": [
+                        {
+                            "ext": "json3",
+                            "url": "https://captions.example.test/private-token",
+                        }
+                    ]
+                },
+            }
+
+        def urlopen(self, _request: object) -> CaptionResponse:
+            return CaptionResponse()
+
+    exit_code, response = probe.execute_probe(
+        _request(runtime, captionSelectionProbe=True),
+        runtime_root=root,
+        ydl_factory=CaptionYdl,
+    )
+
+    assert exit_code == 0
+    assert response["selectedCaption"] == {
+        "routeKind": "youtube-captions",
+        "captionKind": "manual",
+        "captionFormat": "json3",
+        "language": "en",
+        "cueCount": 2,
+        "textChars": 51,
+        "durationSeconds": 42,
+    }
+    encoded = json.dumps(response)
+    assert "A real timed caption" not in encoded
+    assert "captions.example.test" not in encoded
+    assert "private-token" not in encoded
+
+
+def test_frozen_probe_caption_mode_fails_when_caption_metadata_has_no_parseable_cues(tmp_path: Path) -> None:
+    root, runtime = _runtime_root(tmp_path)
+
+    class EmptyResponse:
+        def __enter__(self) -> EmptyResponse:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"events":[]}'
+
+    class CaptionYdl(_FakeYdl):
+        def extract_info(self, _url: str, *, download: bool) -> dict[str, object]:
+            assert download is False
+            return {
+                "id": "abcdefghijk",
+                "extractor_key": "Youtube",
+                "duration": 42,
+                "formats": [],
+                "automatic_captions": {
+                    "en": [
+                        {
+                            "ext": "json3",
+                            "url": "https://captions.example.test/private-token",
+                        }
+                    ]
+                },
+            }
+
+        def urlopen(self, _request: object) -> EmptyResponse:
+            return EmptyResponse()
+
+    exit_code, response = probe.execute_probe(
+        _request(runtime, captionSelectionProbe=True),
+        runtime_root=root,
+        ydl_factory=CaptionYdl,
+    )
+
+    assert exit_code == 1
+    assert response["status"] == "fail"
+    assert "captions.example.test" not in json.dumps(response)
+
+
+def test_frozen_probe_rejects_conflicting_selection_modes(tmp_path: Path) -> None:
+    root, runtime = _runtime_root(tmp_path)
+    with pytest.raises(probe.ProbeBoundaryError, match="fields"):
+        probe.execute_probe(
+            _request(runtime, formatSelectionProbe=True, captionSelectionProbe=True),
+            runtime_root=root,
+        )
+
+
 def test_frozen_probe_rejects_runtime_outside_backend(tmp_path: Path) -> None:
     root, _runtime = _runtime_root(tmp_path)
     outside = tmp_path / "deno.exe"
@@ -209,12 +384,27 @@ def test_launcher_routes_only_exact_frozen_probe_flag(monkeypatch: pytest.Monkey
     )
     monkeypatch.setattr(
         launcher,
+        "_validate_python_runtime",
+        lambda root, manifest: calls.append(("policy", root)),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_activate_application_layer",
+        lambda root, manifest: calls.append(("application", root)),
+    )
+    monkeypatch.setattr(
+        launcher,
         "run_frozen_probe",
         lambda root: calls.append(("probe", root)) or 17,
     )
 
     assert launcher.main() == 17
-    assert calls == [("validate", runtime_root), ("probe", runtime_root)]
+    assert calls == [
+        ("validate", runtime_root),
+        ("policy", runtime_root),
+        ("application", runtime_root),
+        ("probe", runtime_root),
+    ]
 
 
 def test_launcher_rejects_probe_payload_on_command_line(

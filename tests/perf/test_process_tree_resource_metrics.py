@@ -46,7 +46,9 @@ def test_runtime_stability_aggregates_the_complete_detected_process_tree() -> No
     assert "$processTreeCpuTotal += [double]$metricCpuPercent" in stability
     assert "processTreeCpuPercent = $processTreeCpuPercent" in stability
     assert "Measure-Object -Property workingSetMb -Sum" in stability
+    assert "Measure-Object -Property privateBytesMb -Sum" in stability
     assert "totalWorkingSetMb = $totalWorkingSetMb" in stability
+    assert "totalPrivateBytesMb = $totalPrivateBytesMb" in stability
     assert "processTreeCpuAvgPercent = $processTreeCpuAvg" in stability
     assert "totalWorkingSetMaxMb = $totalWorkingSetMax" in stability
 
@@ -57,6 +59,8 @@ def test_runtime_stability_aggregates_the_complete_detected_process_tree() -> No
     # The generic idle CPU gate now guards the complete Scriber process tree.
     assert "-not $processTreeCpuValues.Count" in stability
     assert "$processTreeCpuAvg -gt $MaxIdleCpuPercent" in stability
+    assert "$processTreeCpuAvg -gt $MaxProcessTreeCpuAvgPercent" in stability
+    assert "$totalPrivateBytesPeakGrowth -gt $MaxPrivateBytesGrowthMB" in stability
 
 
 def test_shell_menu_smoke_captures_a_sequence_bounded_long_task_window() -> None:

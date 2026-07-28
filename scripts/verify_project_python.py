@@ -9,6 +9,8 @@ _PIPECAT_PIN = re.compile(
     r"^\s*pipecat-ai(?:\[[^\]]+\])?==([^\s;]+)",
     flags=re.IGNORECASE,
 )
+_REQUIRED_PYTHON = (3, 14, 6)
+_REQUIRED_CACHE_TAG = "cpython-314"
 
 
 def _required_pipecat_version(requirements_path: Path) -> str:
@@ -20,6 +22,19 @@ def _required_pipecat_version(requirements_path: Path) -> str:
 
 
 def main() -> int:
+    actual_python = sys.version_info[:3]
+    actual_cache_tag = sys.implementation.cache_tag
+    if actual_python != _REQUIRED_PYTHON or actual_cache_tag != _REQUIRED_CACHE_TAG:
+        print(
+            "Scriber project Python is out of date: "
+            "CPython 3.14.6 (cpython-314) is required, but "
+            f"{sys.version.split()[0]} ({actual_cache_tag}) was found. "
+            "Recreate venv with `py -3.14 -m venv venv` before running "
+            "Scriber commands.",
+            file=sys.stderr,
+        )
+        return 5
+
     repo_root = Path(__file__).resolve().parents[1]
     requirements_path = repo_root / "requirements-base.txt"
     expected = _required_pipecat_version(requirements_path)

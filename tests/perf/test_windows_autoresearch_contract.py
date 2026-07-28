@@ -423,6 +423,10 @@ def test_raw_packages_share_complete_provenance_and_endpoint_drift_guards():
         "desktopSha256",
         "backendSha256",
         "audioSidecarSha256",
+        "appUxEvidenceProvided",
+        "appUxEvidenceSha256",
+        "appUxEvidencePostSha256",
+        "appUxEvidenceDriftDetected",
     }
     provenance_block = source.split("$rawProvenance = [ordered]@{", 1)[1].split("function Add-RawProvenance", 1)[0]
     for field in required_fields:
@@ -437,7 +441,10 @@ def test_raw_packages_share_complete_provenance_and_endpoint_drift_guards():
     assert "baseline_drift" in source
     assert "$endpointPostAttestation = Invoke-RuntimeAttestationVerification" in source
     assert "$endpointPostPayload.attestationId -eq [string]$endpointPrePayload.attestationId" in source
-    assert '& $pythonExecutable (Join-Path $RepoRoot "benchmarks\\windows\\endpoint_probe.py")' in source
+    assert "$endpointProbeArgs = @(" in source
+    assert '$endpointProbeArgs += @("--app-ux-evidence", $AppUxEvidencePath)' in source
+    assert '[Environment]::SetEnvironmentVariable("SCRIBER_B7_APP_UX_EVIDENCE", $null, "Process")' in source
+    assert "& $pythonExecutable @endpointProbeArgs" in source
 
 
 def _git(repo_root: Path, *args: str) -> None:
@@ -600,6 +607,9 @@ def test_doctor_process_inventory_uses_native_windows_api_not_inline_powershell(
 def test_fastlocal_staged_build_writes_runtime_attestation_after_build():
     build_script = (REPO_ROOT / "scripts" / "build_windows.ps1").read_text(encoding="utf-8")
     assert 'Invoke-Checked -Label "FastLocal runtime attestation"' in build_script
+    assert build_script.index('Invoke-Checked -Label "FastLocal runtime attestation"') < (
+        build_script.index('Invoke-Checked -Label "Stage exact Python runtime experiment payload"')
+    )
     assert "scripts\\perf\\runtime_attestation.py write" in build_script
     assert "--install-root $targetRelease" in build_script
     assert "if ($LASTEXITCODE -ne 0)" in build_script

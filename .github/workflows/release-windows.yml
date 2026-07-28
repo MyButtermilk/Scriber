@@ -26,7 +26,9 @@ permissions:
   actions: write
 
 env:
-  SCRIBER_RELEASE_PYTHON_VERSION: "3.13.14"
+  SCRIBER_RELEASE_PYTHON_VERSION: "3.14.6"
+  SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR: Official
+  SCRIBER_RELEASE_PYTHON_JIT_MODE: Disabled
   SCRIBER_RELEASE_RUST_TOOLCHAIN: "1.97.0"
   SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_TAG: ffmpeg-profile-b-n7.0-v4
   SCRIBER_FFMPEG_PROFILE_B_ARTIFACT_NAME: scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
@@ -113,7 +115,10 @@ jobs:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
           SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
         run: |
-          & ./scripts/ci/write_release_cache_keys.ps1 -OutputDir "build/cache-keys"
+          & ./scripts/ci/write_release_cache_keys.ps1 `
+            -OutputDir "build/cache-keys" `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
           & ./scripts/ci/finalize_release_cache_keys.ps1 `
             -CacheKeyDir "build/cache-keys" `
             -SourceCommit $env:GITHUB_SHA `
@@ -197,7 +202,9 @@ jobs:
           SCRIBER_TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.SCRIBER_TAURI_UPDATER_PUBLIC_KEY }}
           SCRIBER_TAURI_UPDATER_ENDPOINT: ${{ vars.SCRIBER_TAURI_UPDATER_ENDPOINT }}
         run: |
-          & .\scripts\ci\write_release_cache_keys.ps1
+          & .\scripts\ci\write_release_cache_keys.ps1 `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
           & .\scripts\ci\finalize_release_cache_keys.ps1 `
             -SourceCommit $env:GITHUB_SHA `
             -UpdaterPublicKey $env:SCRIBER_TAURI_UPDATER_PUBLIC_KEY `
@@ -300,7 +307,9 @@ jobs:
       - name: Compute deterministic release cache keys
         shell: pwsh
         run: |
-          & .\scripts\ci\write_release_cache_keys.ps1
+          & .\scripts\ci\write_release_cache_keys.ps1 `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
           & .\scripts\ci\finalize_release_cache_keys.ps1 `
             -SourceCommit $env:GITHUB_SHA `
             -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
@@ -338,7 +347,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Restore Python environment release artifact
         id: cold-python-venv-artifact
@@ -350,7 +359,7 @@ jobs:
           & .\scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -DestinationPath .venv
 
       - name: Validate restored Python environment
@@ -360,7 +369,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $marker = ".\.venv\.scriber-release-python-dependencies-key"
-          $expected = "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
+          $expected = "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('build/cache-keys/python-dependencies.txt') }}"
           $usable = $false
           if ((Test-Path -LiteralPath $venvPython -PathType Leaf) -and (Test-Path -LiteralPath $marker -PathType Leaf) -and ((Get-Content -LiteralPath $marker -Raw).Trim() -eq $expected)) {
             & $venvPython -m pip check
@@ -374,9 +383,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
-          restore-keys: |
-            scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Restore Python wheelhouse release artifact
         id: cold-python-wheelhouse-artifact
@@ -388,7 +395,7 @@ jobs:
           & .\scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.cold-backend-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
 
       - name: Prepare Python build environment
@@ -418,7 +425,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Installing backend build dependencies failed." }
           & $venvPython -m pip check
           if ($LASTEXITCODE -ne 0) { throw "The Python build environment failed pip check." }
-          "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}" | Set-Content -LiteralPath ".\.venv\.scriber-release-python-dependencies-key" -Encoding ascii
+          "${{ runner.os }}|${{ steps.cold-backend-python.outputs.python-version }}|${{ hashFiles('build/cache-keys/python-dependencies.txt') }}" | Set-Content -LiteralPath ".\.venv\.scriber-release-python-dependencies-key" -Encoding ascii
 
       - name: Restore Rust audio sidecar cache
         id: cold-rust-audio-cache
@@ -514,6 +521,8 @@ jobs:
           $pythonPath = if (Test-Path -LiteralPath ".\.venv\Scripts\python.exe" -PathType Leaf) { ".\.venv\Scripts\python.exe" } else { "python" }
           & .\scripts\build_tauri_backend_sidecar.ps1 `
             -PythonPath $pythonPath `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE `
             -SkipFrontendBuild `
             -InstallPyInstaller `
             -BundleMediaTools `
@@ -619,7 +628,9 @@ jobs:
       - name: Compute release cache keys
         shell: pwsh
         run: |
-          & .\scripts\ci\write_release_cache_keys.ps1
+          & .\scripts\ci\write_release_cache_keys.ps1 `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
 
       - name: Report release cache key fingerprints
         shell: pwsh
@@ -632,6 +643,7 @@ jobs:
             "rust-audio-sidecar.txt",
             "rust-diarization-sidecar.txt",
             "sherpa-onnx-archive.txt",
+            "python-dependencies.txt",
             "backend-runtime.txt",
             "backend-sidecar.txt"
           )
@@ -960,7 +972,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Restore Python venv release artifact
         id: python-venv-artifact
@@ -972,7 +984,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -DestinationPath .venv
 
       - name: Validate restored Python environment
@@ -982,7 +994,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
-          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
+          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('build/cache-keys/python-dependencies.txt') }}"
           $trustedRestore = (
             "${{ steps.python-venv-cache.outputs.cache-hit }}" -eq "true" -or
             "${{ steps.python-venv-artifact.outputs.restored }}" -eq "true"
@@ -1010,9 +1022,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
-          restore-keys: |
-            scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Restore frontend dependency cache
         id: frontend-node-modules-cache
@@ -1041,7 +1051,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\restore_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -DestinationPath build\python-wheelhouse
 
       - name: Restore FFmpeg Profile B cache
@@ -1370,7 +1380,7 @@ jobs:
         run: |
           $venvPython = ".\.venv\Scripts\python.exe"
           $wheelhouse = "build\python-wheelhouse"
-          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}"
+          $requirementsKey = "${{ runner.os }}|${{ steps.setup-python.outputs.python-version }}|${{ hashFiles('build/cache-keys/python-dependencies.txt') }}"
           $markerPath = ".\.venv\.scriber-release-python-dependencies-key"
           $venvRebuilt = $false
           $wheelhouseBuilt = $false
@@ -1433,7 +1443,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_VENV_ARTIFACT_TAG `
-            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -SourcePath .venv `
             -Title "Scriber Python Virtualenv Cache v1"
 
@@ -1446,7 +1456,7 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ci\publish_release_cache_artifact.ps1 `
             -Repo "${{ github.repository }}" `
             -Tag $env:SCRIBER_PYTHON_WHEELHOUSE_ARTIFACT_TAG `
-            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}.zip" `
+            -AssetName "scriber-python-wheelhouse-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}.zip" `
             -SourcePath build\python-wheelhouse `
             -Title "Scriber Python Wheelhouse Cache v2"
 
@@ -1455,14 +1465,14 @@ jobs:
         uses: actions/cache/save@v6
         with:
           path: .venv
-          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
+          key: scriber-python-venv-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Save Python wheelhouse cache
         if: env.SCRIBER_SAVE_ACTIONS_CACHES == 'true' && steps.python-dependencies.outputs.wheelhouse-built == 'true' && steps.python-wheelhouse-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: build/python-wheelhouse
-          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('requirements-base.txt', 'requirements-build.txt', 'requirements-release-constraints.txt') }}
+          key: scriber-python-wheelhouse-v2-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('build/cache-keys/python-dependencies.txt') }}
 
       - name: Save pip package store
         if: >-
@@ -1644,6 +1654,10 @@ jobs:
             "Bypass",
             "-File",
             "scripts\build_windows.ps1",
+            "-PythonRuntimeFlavor",
+            $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR,
+            "-PythonJitMode",
+            $env:SCRIBER_RELEASE_PYTHON_JIT_MODE,
             "-SkipPythonTests",
             "-RunRuntimeDependencyFootprint",
             "-MediaToolsDir",

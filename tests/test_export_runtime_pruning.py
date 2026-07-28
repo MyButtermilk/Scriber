@@ -16,7 +16,6 @@ from zipfile import ZipFile
 import pytest
 
 from scripts.check_backend_runtime_imports import (
-    BLOCKED_FROZEN_EXPORT_IMPORTS,
     FROZEN_EXPORT_COMPAT_IMPORTS,
     REQUIRED_FROZEN_EXPORT_IMPORTS,
     check_frozen_text_export_graph,
@@ -92,7 +91,7 @@ def _pdf_text_and_page_count(payload: bytes) -> tuple[str, int]:
                 data = base64.a85decode(data.strip(), adobe=True)
             if b"/FlateDecode" in dictionary:
                 data = zlib.decompress(data)
-        except (ValueError, zlib.error):
+        except ValueError, zlib.error:
             continue
         streams.append(data)
 
@@ -171,22 +170,17 @@ def _meeting_detail(language: str) -> dict[str, object]:
     }
 
 
-def test_frozen_export_graph_requires_stdlib_renderer_and_rejects_legacy_graphs() -> None:
+def test_frozen_export_graph_requires_stdlib_renderer() -> None:
     required = set(REQUIRED_FROZEN_EXPORT_IMPORTS)
-    blocked = set(BLOCKED_FROZEN_EXPORT_IMPORTS)
     compat = set(FROZEN_EXPORT_COMPAT_IMPORTS)
 
     assert required == {"src.export"}
     assert compat == {"PIL", "docx", "reportlab.platypus"}
-    assert blocked == {"lxml"}
-    assert required.isdisjoint(blocked)
 
     imported: list[str] = []
 
     def fake_import(module_name: str) -> object:
         imported.append(module_name)
-        if module_name in blocked:
-            raise ModuleNotFoundError(name=module_name)
         if module_name == "src.export":
             return SimpleNamespace(
                 export_to_pdf=export_to_pdf,
@@ -200,27 +194,33 @@ def test_frozen_export_graph_requires_stdlib_renderer_and_rejects_legacy_graphs(
     assert imported == [
         *REQUIRED_FROZEN_EXPORT_IMPORTS,
         *FROZEN_EXPORT_COMPAT_IMPORTS,
-        *BLOCKED_FROZEN_EXPORT_IMPORTS,
     ]
     assert check_frozen_text_export_graph(frozen=False, import_module=fake_import) == []
 
 
-def test_spec_excludes_the_complete_legacy_export_dependency_graph() -> None:
+def test_spec_keeps_only_the_stdlib_export_shims_and_minimal_lxml_qualification() -> None:
     spec = (REPO_ROOT / "packaging" / "scriber-backend.spec").read_text(encoding="utf-8")
 
     excludes = spec.split("excludes=[", 1)[1].split("],\n    noarchive", 1)[0]
-    for root in ("lxml",):
-        assert f'"{root}",' in excludes
-    for root in ("PIL", "docx", "reportlab"):
+    for root in ("PIL", "docx", "lxml", "reportlab"):
         assert f'"{root}",' not in excludes
     assert ("pathex=[str(numpy_overlay_root), str(stdlib_export_compat_root), str(repo_root)]") in spec
     assert "hookspath=[str(pyinstaller_hook_root)]" in spec
-    for hook in ("hook-PIL.py", "hook-PIL.Image.py", "hook-docx.py", "hook-reportlab.py"):
+    for hook in (
+        "hook-PIL.py",
+        "hook-PIL.Image.py",
+        "hook-docx.py",
+        "hook-lxml.py",
+        "hook-reportlab.py",
+    ):
         assert (REPO_ROOT / "packaging" / "pyinstaller_hooks" / hook).is_file()
     assert "PILLOW_TEXT_EXPORT_MODULES" not in spec
     assert "LXML_TEXT_EXPORT_MODULES" not in spec
     assert 'collect_submodules("PIL")' not in spec
     assert 'collect_submodules("lxml")' not in spec
+    lxml_hook = (REPO_ROOT / "packaging" / "pyinstaller_hooks" / "hook-lxml.py").read_text(encoding="utf-8")
+    assert 'hiddenimports = ["lxml._elementpath", "lxml.etree"]' in lxml_hook
+    assert "collect_submodules" not in lxml_hook
     generic_collection = spec.split("for package in (", 1)[1].split("):", 1)[0]
     assert '"PIL"' not in generic_collection
 

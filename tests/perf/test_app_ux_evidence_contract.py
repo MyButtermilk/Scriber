@@ -4,7 +4,14 @@ import hashlib
 import json
 from pathlib import Path
 
-from benchmarks.windows import app_ux_collector, endpoint_probe, trace_collector
+import pytest
+
+from benchmarks.windows import (
+    app_ux_collector,
+    app_ux_lifecycle_collector,
+    endpoint_probe,
+    trace_collector,
+)
 
 EXPECTED_SCENARIOS = (
     "cold_app_launch",
@@ -130,6 +137,7 @@ def _payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
             }
             generation = endpoint_probe.process_generation_fingerprint(generation_payload)
             generation_payload["fingerprint"] = generation
+            replay_generation = endpoint_probe.provider_replay_process_generation_sha256(generation_payload)
             generation_artifact = _write_artifact(
                 root,
                 f"generation-{scenario}-{iteration}.json",
@@ -181,7 +189,7 @@ def _payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
                     "provider_result_to_completed_visible": "installed_backend_provider_event",
                     "session_finished_to_history_visible": "installed_backend_session_event",
                 }
-                event_ticks = start_ticks + 1 if scenario == "stop_to_transcribing_visible" else start_ticks
+                event_ticks = start_ticks + 2 if scenario == "stop_to_transcribing_visible" else start_ticks
                 event_payload = {
                     "ok": True,
                     "source": event_sources[scenario],
@@ -193,7 +201,32 @@ def _payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
                     "sampleId": sample_id,
                     "sessionId": session_id,
                     "processGenerationFingerprint": generation,
+                    "providerReplayProcessGenerationFingerprint": replay_generation,
                 }
+                raw_event = {
+                    **event_payload,
+                    "processGenerationFingerprint": replay_generation,
+                }
+                event_payload["installedEvent"] = raw_event
+                if scenario == "stop_to_transcribing_visible":
+                    manual_base = {
+                        "contractVersion": 1,
+                        "runId": run_id,
+                        "sampleId": sample_id,
+                        "sessionId": session_id,
+                        "processGenerationFingerprint": replay_generation,
+                        "qpcFrequency": 10_000_000,
+                    }
+                    event_payload["manualStopReadyAttestation"] = {
+                        **manual_base,
+                        "source": "rust_audio_frame_pipe_fixture_consumed",
+                        "qpcTicks": start_ticks - 1,
+                    }
+                    event_payload["manualStopRequest"] = {
+                        **manual_base,
+                        "source": "uia_stop_request",
+                        "qpcTicks": start_ticks + 1,
+                    }
                 event_artifact = _write_artifact(
                     root,
                     f"event-{scenario}-{iteration}.json",
@@ -209,6 +242,7 @@ def _payload(root: Path, samples_per_scenario: int = 2) -> dict[str, object]:
                     "marker": event_markers[scenario],
                     "qpcTicks": event_ticks,
                     "processGenerationFingerprint": generation,
+                    "providerReplayProcessGenerationFingerprint": replay_generation,
                     "artifact": event_artifact,
                 }
             samples.append(sample)
@@ -481,6 +515,43 @@ def test_lifecycle_import_rejects_tampered_installed_event(tmp_path: Path) -> No
     assert any("event_artifact_sha256_mismatch" in invalid["reasons"] for invalid in result["invalidSamples"])
 
 
+def test_lifecycle_import_requires_unchanged_raw_runtime_marker(
+    tmp_path: Path,
+) -> None:
+    payload = _lifecycle_payload(tmp_path)
+    sample = payload["samples"][0]
+    event_path = tmp_path / sample["eventEvidence"]["artifact"]["path"]
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    event.pop("installedEvent")
+    event_path.write_text(json.dumps(event, sort_keys=True), encoding="utf-8")
+    sample["eventEvidence"]["artifact"]["sha256"] = _sha(event_path)
+
+    result = _validate_lifecycle(tmp_path, payload)
+
+    assert result["metricEligible"] is False
+    assert any("installed_event_raw_marker_missing" in invalid["reasons"] for invalid in result["invalidSamples"])
+
+
+def test_lifecycle_import_rejects_runtime_marker_from_another_generation(
+    tmp_path: Path,
+) -> None:
+    payload = _lifecycle_payload(tmp_path)
+    sample = payload["samples"][0]
+    event_path = tmp_path / sample["eventEvidence"]["artifact"]["path"]
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    foreign_replay_generation = "c" * 64
+    sample["eventEvidence"]["providerReplayProcessGenerationFingerprint"] = foreign_replay_generation
+    event["providerReplayProcessGenerationFingerprint"] = foreign_replay_generation
+    event["installedEvent"]["processGenerationFingerprint"] = foreign_replay_generation
+    event_path.write_text(json.dumps(event, sort_keys=True), encoding="utf-8")
+    sample["eventEvidence"]["artifact"]["sha256"] = _sha(event_path)
+
+    result = _validate_lifecycle(tmp_path, payload)
+
+    assert result["metricEligible"] is False
+    assert any("event_replay_process_generation_mismatch" in invalid["reasons"] for invalid in result["invalidSamples"])
+
+
 def test_trace_collector_rejects_generic_app_ux_qpc_events(tmp_path: Path) -> None:
     generic = tmp_path / "generic.json"
     generic.write_text(
@@ -522,9 +593,13 @@ def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
     assert "InvokePattern" in action
     assert "SelectionItemPattern" in action
     assert "LegacyIAccessiblePattern" in action
+    assert "ScrollItemPattern" in action
+    assert "ScrollIntoView()" in action
+    assert "scrolledIntoView = $scrolledIntoView" in action
     assert "$inputQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()" in action
     assert "qpcTicks = $inputQpcTicks" in action
     assert 'source = "uia_invoke"' in action
+    assert action.index("ScrollIntoView()") < action.index("$inputQpcTicks =")
     assert action.index("$inputQpcTicks =") < action.index(").Invoke()")
     assert "SendInput" not in action
     assert "Set-Content" in action  # evidence artifact/observer gate only
@@ -537,6 +612,9 @@ def test_checked_in_uia_driver_is_process_generation_bound_and_real() -> None:
 
 def test_collector_uses_real_uia_and_requires_installed_lifecycle_import() -> None:
     collector = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_collector.py").read_text(encoding="utf-8")
+    lifecycle_collector = (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_lifecycle_collector.py").read_text(
+        encoding="utf-8"
+    )
     schema = json.loads(
         (endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_lifecycle_import.schema.json").read_text(
             encoding="utf-8"
@@ -552,12 +630,119 @@ def test_collector_uses_real_uia_and_requires_installed_lifecycle_import() -> No
     assert "installed_lifecycle_evidence_required" in collector
     assert "Do not synthesize, infer, or relabel provider/session markers." in collector
     assert "SendInput" not in collector
+    assert collector.index('"open_transcript_detail"') < collector.index('"setup-return-from-transcript-detail"')
+    assert collector.index('"setup-return-from-transcript-detail"') < collector.index('"setup-switch-command-palette"')
+    assert "benchmarks/windows/app_ux_lifecycle_collector.py" in endpoint_probe.APP_UX_HARNESS_FILES
+    assert "app_action.ps1" in lifecycle_collector
+    assert "ux._start_observer" in lifecycle_collector
+    assert "manualStopRequired" in lifecycle_collector
+    assert "installedEvent" in lifecycle_collector
+    assert "providerReplayProcessGenerationFingerprint" in lifecycle_collector
+    assert "validate_app_ux_lifecycle_import" in lifecycle_collector
+    assert 'repo_root / "tmp" / "app-ux-lifecycle-smoke"' in lifecycle_collector
+    assert "EXPECTED_VISIBLE_TEXT_KEY" in lifecycle_collector
+    assert app_ux_collector.UI_TEXT["de"]["recent_recordings"] == "Letzte Aufnahmen"
+    assert app_ux_collector.UI_TEXT["de"]["transcribing"] == "Wird transkribiert"
     assert schema["properties"]["contract"]["const"] == endpoint_probe.APP_UX_LIFECYCLE_IMPORT_CONTRACT
     assert schema["properties"]["scenarioOrder"]["const"] == [
         "stop_to_transcribing_visible",
         "provider_result_to_completed_visible",
         "session_finished_to_history_visible",
     ]
+
+
+def test_collector_detects_persisted_ui_locale_with_allowlisted_uia_text(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    observed: list[str] = []
+
+    monkeypatch.setattr(
+        app_ux_collector,
+        "_preferred_ui_locale_order",
+        lambda: ("de", "en"),
+    )
+
+    def fake_start(
+        _repo_root: Path,
+        sample_dir: Path,
+        *,
+        expected_text: str,
+        **_kwargs,
+    ):
+        observed.append(expected_text)
+        output = sample_dir / "stable-frame.json"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        return object(), output
+
+    def fake_wait(_process, _output: Path, sample_dir: Path, _timeout: float):
+        if sample_dir.name == "locale-de":
+            raise RuntimeError("not German")
+        return {"ok": True}
+
+    monkeypatch.setattr(app_ux_collector, "_start_observer", fake_start)
+    monkeypatch.setattr(app_ux_collector, "_wait_observer", fake_wait)
+
+    locale = app_ux_collector._detect_ui_locale(
+        endpoint_probe.REPO_ROOT,
+        tmp_path,
+        process_id=123,
+        process_creation_time_100ns=456,
+        timeout_sec=10,
+    )
+
+    assert locale == "en"
+    assert observed == ["Letzte Aufnahmen", "Recent recordings"]
+    attestation = json.loads((tmp_path / "ui-locale.json").read_text(encoding="utf-8"))
+    assert attestation["locale"] == "en"
+    assert "Recent recordings" not in (tmp_path / "ui-locale.json").read_text(encoding="utf-8")
+
+
+def test_collector_discovers_tauri_owned_runtime_port(monkeypatch) -> None:
+    class AppProcess:
+        pid = 123
+        returncode = None
+
+        @staticmethod
+        def poll():
+            return None
+
+    requests: list[tuple[int, str]] = []
+    monkeypatch.setattr(
+        app_ux_collector,
+        "_runtime_port_candidates",
+        lambda _app_pid, _hinted_port: [54321],
+    )
+
+    def fake_request(port: int, _token: str, path: str, **_kwargs):
+        requests.append((port, path))
+        if path == "/api/health":
+            return {
+                "ok": True,
+                "runtimeMode": "tauri-supervised",
+                "pid": 456,
+            }
+        return {"ready": True, "lastSeen": {"pid": 456}}
+
+    monkeypatch.setattr(app_ux_collector, "_request_json", fake_request)
+
+    backend_pid, health, port = app_ux_collector._wait_runtime(
+        AppProcess(),
+        60000,
+        "token",
+        1,
+    )
+
+    assert (backend_pid, port) == (456, 54321)
+    assert health["runtimeMode"] == "tauri-supervised"
+    assert requests == [
+        (54321, "/api/health"),
+        (54321, "/api/runtime/frontend-ready"),
+    ]
+    assert "SCRIBER_WEB_PORT" not in app_ux_collector._runtime_environment(
+        Path("runtime-data"),
+        "token",
+    )
 
 
 def test_collector_prepare_only_pins_run_binary_harness_and_schema(tmp_path: Path) -> None:
@@ -593,6 +778,94 @@ def test_collector_prepare_only_pins_run_binary_harness_and_schema(tmp_path: Pat
     assert request["requiredImportContract"] == endpoint_probe.APP_UX_LIFECYCLE_IMPORT_CONTRACT
     schema_path = endpoint_probe.REPO_ROOT / request["importSchema"]["path"]
     assert request["importSchema"]["sha256"] == _sha(schema_path)
+    validated = app_ux_lifecycle_collector.load_and_validate_request(
+        output.parent / "app-ux-lifecycle-request.json",
+        repo_root=endpoint_probe.REPO_ROOT,
+        install_root=install_root,
+    )
+    assert validated.run_id == run_id
+    assert validated.installed_exe_sha256 == _sha(executable)
+    assert validated.samples_per_scenario == 2
+
+
+def test_lifecycle_collector_rejects_request_after_harness_drift(
+    tmp_path: Path,
+) -> None:
+    install_root = tmp_path / "installed"
+    install_root.mkdir()
+    executable = install_root / "scriber-desktop.exe"
+    executable.write_bytes(b"installed-production-fixture")
+    request_path = tmp_path / "app-ux-lifecycle-request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "contract": "b7-app-ux-lifecycle-request-v1",
+                "runId": "6b8ae0e6fcb7445ab418d103bc9deab1",
+                "installedExeSha256": _sha(executable),
+                "harnessManifestSha256": "d" * 64,
+                "samplesPerScenario": 1,
+                "scenarioOrder": [
+                    "stop_to_transcribing_visible",
+                    "provider_result_to_completed_visible",
+                    "session_finished_to_history_visible",
+                ],
+                "requiredImportContract": endpoint_probe.APP_UX_LIFECYCLE_IMPORT_CONTRACT,
+                "importSchema": {
+                    "path": "benchmarks/windows/app_ux_lifecycle_import.schema.json",
+                    "sha256": _sha(endpoint_probe.REPO_ROOT / "benchmarks/windows/app_ux_lifecycle_import.schema.json"),
+                },
+                "semanticValidator": ("benchmarks.windows.endpoint_probe.validate_app_ux_lifecycle_import"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="harness hash drifted"):
+        app_ux_lifecycle_collector.load_and_validate_request(
+            request_path,
+            repo_root=endpoint_probe.REPO_ROOT,
+            install_root=install_root,
+        )
+
+
+def test_lifecycle_collector_binds_only_exact_installed_marker(
+    tmp_path: Path,
+) -> None:
+    payload = _payload(tmp_path, samples_per_scenario=1)
+    sample = next(item for item in payload["samples"] if item["scenario"] == "provider_result_to_completed_visible")
+    generation_path = tmp_path / sample["processGeneration"]["artifact"]["path"]
+    generation = json.loads(generation_path.read_text(encoding="utf-8"))
+    event_path = tmp_path / sample["eventEvidence"]["artifact"]["path"]
+    event = json.loads(event_path.read_text(encoding="utf-8"))
+    raw_marker = event["installedEvent"]
+
+    bound = app_ux_lifecycle_collector.bind_installed_event(
+        raw_marker,
+        generation=generation,
+        run_id=str(sample["runId"]),
+        sample_id=str(sample["sampleId"]),
+        scenario=str(sample["scenario"]),
+    )
+
+    assert bound["installedEvent"] == raw_marker
+    assert bound["installedEvent"] is not raw_marker
+    assert bound["providerReplayProcessGenerationFingerprint"] == raw_marker["processGenerationFingerprint"]
+    assert bound["processGenerationFingerprint"] == generation["fingerprint"]
+
+    missing_fingerprint = dict(raw_marker)
+    missing_fingerprint.pop("processGenerationFingerprint")
+    with pytest.raises(
+        RuntimeError,
+        match="replay process fingerprint",
+    ):
+        app_ux_lifecycle_collector.bind_installed_event(
+            missing_fingerprint,
+            generation=generation,
+            run_id=str(sample["runId"]),
+            sample_id=str(sample["sampleId"]),
+            scenario=str(sample["scenario"]),
+        )
 
 
 def test_collector_uia_only_is_diagnostic_and_cannot_fabricate_lifecycle_evidence(tmp_path: Path, monkeypatch) -> None:

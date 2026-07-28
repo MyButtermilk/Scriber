@@ -59,7 +59,13 @@ def _reject_reparse_ancestors(path: Path, *, label: str) -> None:
             raise StagingError(f"{label} contains a reparse-point ancestor")
 
 
-def stage_payload(*, release_root: Path, notices: Path, output: Path) -> None:
+def stage_payload(
+    *,
+    release_root: Path,
+    notices: Path,
+    output: Path,
+    include_runtime_attestation: bool = False,
+) -> None:
     release_root = _resolve_plain(release_root, label="release root", directory=True)
     notices = _resolve_plain(notices, label="THIRD_PARTY_NOTICES.md", directory=False)
     output = Path(output.absolute())
@@ -76,6 +82,9 @@ def stage_payload(*, release_root: Path, notices: Path, output: Path) -> None:
         source = release_root / name
         if not source.is_file() or _is_reparse(source):
             raise StagingError(f"required release payload is missing: {name}")
+    runtime_attestation = release_root / "scriber-autoresearch-runtime-attestation.json"
+    if include_runtime_attestation and (not runtime_attestation.is_file() or _is_reparse(runtime_attestation)):
+        raise StagingError("required runtime attestation is missing")
 
     temporary = Path(tempfile.mkdtemp(prefix=f".{output.name}.", dir=str(output.parent)))
     try:
@@ -83,6 +92,8 @@ def stage_payload(*, release_root: Path, notices: Path, output: Path) -> None:
         shutil.copy2(release_root / "scriber-audio-sidecar.exe", temporary)
         shutil.copy2(notices, temporary / "THIRD_PARTY_NOTICES.md")
         shutil.copytree(release_root / "backend", temporary / "backend")
+        if include_runtime_attestation:
+            shutil.copy2(runtime_attestation, temporary)
         _validate_plain_tree(temporary, label="staged installer payload")
         os.replace(temporary, output)
     finally:
@@ -95,6 +106,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--release-root", type=Path, required=True)
     parser.add_argument("--notices", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--include-runtime-attestation", action="store_true")
     return parser
 
 
@@ -104,6 +116,7 @@ def main() -> int:
         release_root=args.release_root,
         notices=args.notices,
         output=args.output,
+        include_runtime_attestation=args.include_runtime_attestation,
     )
     return 0
 

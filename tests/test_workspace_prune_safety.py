@@ -54,7 +54,7 @@ def _create_directory_reparse_point(link: Path, target: Path) -> None:
     try:
         os.symlink(target, link, target_is_directory=True)
         return
-    except (NotImplementedError, OSError):
+    except NotImplementedError, OSError:
         pass
 
     cmd = shutil.which("cmd.exe")
@@ -150,6 +150,77 @@ def test_unused_repository_local_model_is_explicitly_opt_in(tmp_path: Path) -> N
     assert model.read_bytes() == b"reproducible-model-fixture"
 
 
+def test_exact_mode_selects_only_requested_workspace_roots(tmp_path: Path) -> None:
+    workspace = tmp_path / "Scriber"
+    script = _fake_scriber_workspace(workspace)
+    selected = workspace / "build" / "obsolete-runtime" / "payload.bin"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"selected")
+    neighbor = workspace / "build" / "current-runtime" / "payload.bin"
+    neighbor.parent.mkdir(parents=True)
+    neighbor.write_bytes(b"preserved")
+    tmp_payload = workspace / "tmp" / "must-stay.bin"
+    tmp_payload.parent.mkdir(parents=True)
+    tmp_payload.write_bytes(b"also-preserved")
+
+    result = _run_dry_run(
+        script,
+        "-ExactRelativePath",
+        r"build\obsolete-runtime",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["exactMode"] is True
+    assert report["targetCount"] == 1
+    assert Path(report["targets"][0]["path"]) == selected.parent
+    assert report["targets"][0]["bytes"] == len(b"selected")
+    assert selected.read_bytes() == b"selected"
+    assert neighbor.read_bytes() == b"preserved"
+    assert tmp_payload.read_bytes() == b"also-preserved"
+
+
+@pytest.mark.parametrize("unsafe_path", [r"..\outside", ".", str(Path("C:/outside"))])
+def test_exact_mode_rejects_absolute_and_traversal_paths(
+    tmp_path: Path,
+    unsafe_path: str,
+) -> None:
+    workspace = tmp_path / "Scriber"
+    script = _fake_scriber_workspace(workspace)
+
+    result = _run_dry_run(script, "-ExactRelativePath", unsafe_path)
+
+    assert result.returncode != 0
+    assert "Exact prune paths" in (result.stdout + result.stderr)
+
+
+def test_exact_execute_removes_only_the_selected_root(tmp_path: Path) -> None:
+    workspace = tmp_path / "Scriber"
+    script = _fake_scriber_workspace(workspace)
+    selected = workspace / "build" / "obsolete-runtime" / "payload.bin"
+    selected.parent.mkdir(parents=True)
+    selected.write_bytes(b"selected")
+    neighbor = workspace / "build" / "current-runtime" / "payload.bin"
+    neighbor.parent.mkdir(parents=True)
+    neighbor.write_bytes(b"preserved")
+
+    result = _run_dry_run(
+        script,
+        "-ExactRelativePath",
+        r"build\obsolete-runtime",
+        "-Execute",
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert report["mode"] == "execute"
+    assert report["exactMode"] is True
+    assert report["targetCount"] == 1
+    assert report["bytesRemoved"] == len(b"selected")
+    assert not selected.parent.exists()
+    assert neighbor.read_bytes() == b"preserved"
+
+
 def test_workspace_prune_has_no_recursive_delete_primitive() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
 
@@ -163,3 +234,5 @@ def test_workspace_prune_has_no_recursive_delete_primitive() -> None:
     assert '\n    "dist",' not in source
     assert '"Frontend\\tmp"' not in source
     assert "if ($IncludeUnusedLocalModels)" in source
+    assert "[string[]]$ExactRelativePath = @()" in source
+    assert "if ($ExactRelativePath.Count -gt 0)" in source

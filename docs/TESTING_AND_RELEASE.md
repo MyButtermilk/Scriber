@@ -26,7 +26,7 @@ scripts\project-python.cmd -m mypy src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
-Windows CPython 3.13 graph through `requirements-test-constraints.txt`. The
+Windows CPython 3.14.6 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
 in that complete Windows environment after pytest. The reusable Windows job
@@ -280,16 +280,16 @@ scripts\project-python.cmd scripts\smoke_diarization_worker_resource.py `
 ## Compact NumPy packaging gates
 
 The frozen Windows backend uses the tracked
-`numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl`; the development and
+`numpy-2.4.6+scriber.noblas.1-cp314-cp314-win_amd64.whl`; the development and
 build venv intentionally continue to use public NumPy `2.4.6`. Validate the
 artifact and its extraction contract before investigating PyInstaller:
 
 ```powershell
-venv\Scripts\python.exe scripts\validate_numpy_noblas_wheel.py `
+build\venv-py314\Scripts\python.exe scripts\validate_numpy_noblas_wheel.py `
   --lock packaging\wheels\numpy-noblas-wheel-lock-v1.json `
-  --wheel packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp313-cp313-win_amd64.whl
+  --wheel packaging\wheels\numpy-2.4.6+scriber.noblas.1-cp314-cp314-win_amd64.whl
 
-venv\Scripts\python.exe -m pytest -q `
+build\venv-py314\Scripts\python.exe -m pytest -q `
   tests\test_validate_numpy_noblas_wheel.py `
   tests\test_smart_turn_mel.py `
   tests\test_backend_runtime_import_check.py `
@@ -297,13 +297,15 @@ venv\Scripts\python.exe -m pytest -q `
   tests\test_release_adaptive_cache_workflow.py
 ```
 
-The locked wheel is `6,395,597` bytes with SHA-256
-`e28ee25278e91bbb99153e9e7bcdbb0d8e88d1d4401f76218e0cd71707e0151c`.
-The validator checks every RECORD entry, runtime and metadata versions, wheel
-tags, licenses, the 19 expected PYDs, absence of bundled DLLs, and absence of
-BLAS/LAPACK/GFortran PE imports. Extraction additionally rejects absolute,
-parent-traversing, drive/colon, NUL, duplicate-target, symlink, and non-empty
-destination cases.
+The authoritative byte length and SHA-256 live only in
+`packaging/wheels/numpy-noblas-wheel-lock-v1.json`; do not duplicate or infer
+them from a developer wheel. The validator checks every RECORD entry, runtime
+and metadata versions, exact `cp314-cp314-win_amd64` tags, licenses, expected
+PYDs, absence of bundled DLLs, and absence of BLAS/LAPACK/GFortran PE imports.
+Extraction additionally rejects absolute, parent-traversing, drive/colon, NUL,
+duplicate-target, symlink, and non-empty destination cases. Rebuilding uses
+`scripts/build_numpy_noblas_wheel.ps1`; two independent clean builds must
+produce identical shipping bytes before the lock may change.
 
 After a real sidecar build, run the frozen executable probe rather than relying
 only on the venv tests:
@@ -312,6 +314,84 @@ only on the venv tests:
 Frontend\src-tauri\target\release\backend\scriber-backend.exe `
   --runtime-import-check
 ```
+
+## Python 3.14 runtime selection
+
+The shipping fallback and current production default are the official Windows
+CPython 3.14.6 runtime with JIT disabled (`Official` / `Disabled`). The default
+is compiled into the release build; it is not a `.env` or Settings option.
+The Tauri supervisor removes inherited `PYTHON_JIT`, `PYTHON_GIL`, and
+`PYTHON_TLBC`, sets the manifest-bound `PYTHON_JIT=0`, and the frozen backend
+fails closed if version, cache tag, DLL hash, runtime lock, flavour, tail-call
+state, or JIT expectation differs from the packaged policy.
+
+The separate `python-runtime-ab-v1` research profile may compare A13, O0/O1,
+C0/C1, T0/T1, and the non-release K0 calibration. Build inputs are bound by
+`packaging/cpython-windows-runtime-input-lock-v1.json`; custom builds are
+offline after provisioning and use the unchanged CPython `v3.14.6` source,
+LLVM 19.1.7, ClangCL, ThinLTO, and the upstream PGO job. Run the evaluator
+through `scripts/perf/python_runtime_ab.py`. Never promote JIT, Clang/PGO, or
+the tail-call interpreter from a microbenchmark. A candidate must pass every
+installed FastLocal/FullLocal latency, correctness, CPU, RSS, idle, and UX
+guardrail in the profile. Statistical equality resolves to official before
+custom, JIT off before on, and non-tail before tail; no clear winner means O0.
+
+The final clean AMD screening selected O0. C0's frozen-startup p50 gain was
+3.56% (below the 5% floor), its App UX p50 was 5.69% slower, and 11 of the 48
+canonical provider p50/p95 metrics regressed by more than 3%. All provider
+series contained five capture-attested samples with zero failures, and the
+pre/post runtime and App UX attestations were stable. The ordinary B6
+`benchmarks/results/baseline.json` does not contain the newer canonical
+provider metrics and must not be overwritten for this experiment; use the
+profile-bound O0 reference for runtime comparisons.
+
+The follow-up T0 packet used a clean ClangCL 19.1.7 ThinLTO/PGO/tail-call
+runtime, fresh O0/T0 payloads from the same source content, byte-identical
+desktop/audio binaries, one App UX sample for each of nine scenarios, 5
+warmups plus 30 rotated frozen-startup samples per runtime, and five samples
+for each provider/duration series. T0 improved startup mean/p50/p95 by
+3.95%/4.32%/3.17%, but its App UX p50 was 9.69% slower and its composite App UX
+score 3.89% slower. Five of the 48 protected provider values regressed, with a
+27.93% worst case. The profile and an independent evaluator recheck therefore
+selected the O0 fallback with `productionPromotionAuthorized=false`.
+
+After candidate rejection, the selected fallback can still be measured from a
+fresh installed tree with
+`scripts/run_python314_o0_full_local_correctness.ps1`. The runner binds the
+installer, commit, source-tree digest and runtime attestation, collects the
+complete FullLocal App-UX/provider packet, validates the exact sample plan, and
+strictly uninstalls. Its output is deliberately correctness-only:
+`promotionEligible=false` and `productionPromotionAuthorized=false`. It cannot
+stand in for the two clean-install/reboot AB/BA blocks or the same-source A13
+anchor required to promote an optimized runtime.
+
+For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
+closed: PyInstaller's isolated embedded-interpreter configuration ignores
+`PYTHON_JIT`, while CPython 3.14.6 exposes no supported post-initialization JIT
+setter. Do not weaken isolation by enabling every Python environment variable
+or claim that a source-runtime JIT probe represents the packaged app. The
+JIT-off O0/C0/T0 family remains measurable; use
+`scripts/measure_frozen_backend_import_startup.py` only as AMD screening
+evidence, never as the installed user-latency promotion gate.
+
+Runtime changes invalidate Python venv, wheelhouse, frozen-runtime and composed
+backend caches through the exact Python version, cache tag, runtime lock,
+runtime policy, constraints and NumPy lock. Frontend, FFmpeg, QuickJS, audio,
+diarization, Cargo and other unrelated caches remain reusable. The first tag
+after the transition must take a cold backend path; do not create a warm-up
+release.
+
+The real upgrade source is the public v0.5.47 installer at
+`aa918d3d111dab834e05e5b588c24da503f9176d`. Its release/asset identity, size,
+SHA-256, 33 exact CP313 ABI tombstones, 43 CP313-era UCRT forwarders, and the
+one known empty runtime directory are bound by
+`packaging/python-314-upgrade-from-v0.5.47.json`. Validate it with
+`scripts/validate_python314_upgrade_manifest.py`. Final acceptance installs
+that exact binary, creates a data sentinel, overlays the CP314 candidate,
+compares the resulting program tree byte-for-byte with a clean candidate
+installation, and proves that strict uninstall preserves user data. Wildcard
+or recursive installer deletion is forbidden; directory cleanup is exact and
+non-recursive.
 
 The probe must report the exact custom NumPy version, `blas` and `lapack` as
 `none`, successful numerical probes, and no OpenBLAS file. Also inventory the
@@ -450,6 +530,32 @@ unchanged staged directory: Doctor and the scorer reject missing manifests,
 source changes, or a mismatched desktop, backend, or audio sidecar, even when
 the stale component reports the same semantic version.
 
+Collect the complete installed App-UX package before FastLocal through the
+checked-in orchestrator, using a fresh empty evidence directory:
+
+```powershell
+powershell -NoProfile -File scripts\perf\collect_app_ux.ps1 `
+  -Suite FastLocal `
+  -InstallRoot Frontend\src-tauri\target\release `
+  -OutputDir tmp\app-ux-fastlocal `
+  -PythonExecutable build\venv-py314-offline\Scripts\python.exe
+
+powershell -NoProfile -File scripts\perf\run.ps1 `
+  -Suite FastLocal `
+  -InstallRoot Frontend\src-tauri\target\release `
+  -OutputDir benchmarks\results\raw `
+  -AppUxEvidencePath tmp\app-ux-fastlocal\app-ux-evidence.json
+```
+
+The first command runs the existing collector in `--prepare-only` mode, passes
+that exact request to the installed lifecycle collector, and merges its
+hash-bound import with the six UI Automation scenarios into one eligible
+`b7-app-ux-v1` package. Run ID, installed desktop SHA-256, harness SHA-256,
+schema SHA-256, scenario order, and sample counts must agree at every stage.
+`run.ps1` accepts only the explicit evidence path for FastLocal or FullLocal;
+it clears any inherited `SCRIBER_B7_APP_UX_EVIDENCE` while launching the
+endpoint probe so process-global state cannot silently select another package.
+
 AutoResearch B7 canonical visible-text evidence must use the installed app. The endpoint
 probe launches one isolated Tauri runtime per provider with a UUID-gated replay
 capability, prepares a fixed product-owned fixture, binds `arm` to the focused
@@ -523,6 +629,63 @@ Default real YouTube smoke URL:
 ```text
 https://www.youtube.com/watch?v=0wEjbSYNUM8
 ```
+
+The release-facing installed YouTube gate is the separate five-lane
+`scriber-installed-youtube-video-matrix-v1` contract. It installs one candidate
+once, runs the bundled offline QuickJS/yt-dlp holdouts first, and then runs five
+sequential installed lanes against one isolated data root. The pre-vetting
+producer is Python and is invoked against a staged or temporary installed
+candidate with the project interpreter:
+
+```powershell
+New-Item -ItemType Directory -Force tmp\youtube-matrix-prevet-scratch | Out-Null
+scripts\project-python.cmd scripts\prevet_installed_youtube_video_matrix.py `
+  --fixture scripts\fixtures\installed-youtube-video-matrix-v1.json `
+  --candidate-payload <install-root> `
+  --runtime <install-root>\backend\tools\ffmpeg\qjs.exe `
+  --scratch-root tmp\youtube-matrix-prevet-scratch `
+  --output tmp\youtube-matrix-prevet.json
+```
+
+```powershell
+powershell -NoProfile -File scripts\run_installed_youtube_video_matrix.ps1 `
+  -InstallerPath <Scriber_x64-setup.exe> `
+  -ReleaseTag <vX.Y.Z> `
+  -PreflightEvidencePath tmp\youtube-matrix-prevet.json `
+  -EnvFile .env
+```
+
+The optional env file is scoped to each child smoke and may supply provider
+configuration; its path and values are not evidence. Matrix evidence contains
+only installer/data-root/URL hashes, primary-or-replacement selection, expected
+duration/execution/extraction lane, its bound observed format or parsed-caption
+selection, the exact installed completion event, bounded outcome/timing fields,
+and source/child cleanup results. Each child sets `preferCaptions` explicitly,
+clears the bounded runtime-log window, and accepts only
+`youtube.captions.completed` for captions-first or
+`pipeline.transcription.completed` for audio-provider. Summary generation is
+disabled for this route matrix and remains covered by the general workflow
+gates. A lane retries its
+primary URL exactly once only for
+`external-availability`, then uses its pre-vetted replacement once. Any other
+failure category fails immediately. Five distinct passing URL hashes from the
+same installer, tag, and data root are required.
+
+The tracked candidate fixture is
+`scripts/fixtures/installed-youtube-video-matrix-v1.json`. All candidates remain
+`installedExtractionPreVetted=false` in source: the boolean is documentary and
+never promotes a run. Eligibility comes only from a separately produced
+preflight artifact bound to the exact frozen backend, QuickJS wrapper/engine,
+ffmpeg, runtime manifest, and fixture hash. The frozen probe tries the three
+production selectors from `src.youtube_download` in order for audio lanes. For
+captions-first it runs the production caption selector, fetches the bounded
+selected caption payload, and requires parseable timed cues. Evidence records
+only URL hash, duration and an allowlisted format or caption-route summary
+(including container, cue count, and text-character count), never title,
+caption URL, caption text, or transcript content.
+The matrix runner rejects a missing, stale, mismatched, or lane-incompatible
+artifact after verifying the installed bytes. Public page metadata alone must
+never promote an extraction-lane assumption.
 
 ## Smoke Gate Coverage
 
@@ -987,7 +1150,10 @@ It:
   version-only changes in `package-lock.json` and `src/version.py` do not
   invalidate dependency caches that do not actually depend on the app version.
   Cargo metadata is kept stable, and the release-only Tauri version is injected
-  through a generated config overlay,
+  through a generated config overlay. This normalization does not apply to the
+  exact Rust audio worker: `tauri_build` embeds the version from
+  `Frontend/package.json` in its PE resource, so its finished-product key must
+  change while Cargo dependency/incremental state stays reusable,
 - reports entry counts and short SHA-256 fingerprints for each normalized cache
   key file in the GitHub Step Summary. Compare these fingerprints between runs
   before assuming a cache miss means unnecessary dependency rebuilding,
@@ -1121,7 +1287,10 @@ It:
   `src/version.py` bytes and version manifest. The Rust supervisor still injects
   `SCRIBER_VERSION`, and `tests/test_version_contract.py` protects installed
   version reporting, but application/version changes must never be normalized
-  out of the application or complete-sidecar identity,
+  out of the application or complete-sidecar identity. The exact Tauri app and
+  Rust audio sidecar also carry the concrete version and must miss on a
+  version-only release; Cargo dependency/incremental layers and the standalone
+  diarization worker remain reusable,
 - enables `CARGO_INCREMENTAL=1` for the main Tauri release binary and caches
   `Frontend\src-tauri\target\release\incremental` in both the Actions cache and
   the internal Rust release artifact. This gives version-bump and small
@@ -1192,6 +1361,11 @@ maintenance run; do not infer success only from the earlier cache-save step.
 Only the separately frozen Python runtime cache is version-neutral for
 `src/version.py`; it contains no `src` application code. The application layer
 and full backend sidecar carry the concrete version and exact file inventory.
+The exact Rust audio sidecar is version-bound too: `tauri_build` copies the
+`Frontend/package.json` version into its PE metadata. A version-only release
+must therefore rebuild that exact worker while reusing Cargo dependency and
+incremental layers. The separately built diarization worker remains reusable
+when its own inputs are unchanged.
 The Tauri supervisor still passes the installed app version through
 `SCRIBER_VERSION`, and `src.version.app_version()` reads that environment
 override, but this runtime contract is not permission to normalize the concrete
@@ -1793,6 +1967,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_tauri_desktop.
 
 For an installed-package build, add
 `-RunInstallerMeetingAudioDeviceTestSmoke` to `scripts\build_windows.ps1`.
+
+The physical installed Meeting stability gate is deliberately separate from
+that deterministic short test. It runs exactly 60 seconds through the real
+WASAPI microphone + loopback + AEC3 path, keeps the native-audio admission
+lease alive, requires continuous frames from all three pipes, samples the full
+process tree for CPU/working-set/private-bytes growth, plays one bounded
+loopback tone, rejects transport errors or new audio artifacts, and requires a
+strict uninstall:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\smoke_windows_installer.ps1 `
+  -InstallerPath Frontend\src-tauri\target\release\bundle\nsis\Scriber_0.5.48_x64-setup.exe `
+  -MeetingAudioSoakDurationSec 60 `
+  -MeetingAudioSoakProbeIntervalSec 5 `
+  -MaxMeetingAudioSoakWorkingSetGrowthMB 64 `
+  -MaxMeetingAudioSoakPrivateBytesGrowthMB 64 `
+  -MaxMeetingAudioSoakCpuPercent 10 `
+  -VerifyUninstall `
+  -OutputPath tmp\installed-meeting-audio-soak-60s.json
+```
+
+The equivalent build switch is `-RunInstallerMeetingAudioSoak`. The managed
+backend normally caps the device-test endpoint at five seconds; only this
+installed gate raises `SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS` to the
+hard 60-second ceiling before process launch. Invalid values fail closed to
+five seconds.
 
 The local speech Meeting E2E goes beyond level statistics: Piper generates a
 bounded German 48 kHz mono PCM fixture, the test-only Rust microphone source

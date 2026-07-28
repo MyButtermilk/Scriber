@@ -210,6 +210,63 @@ def test_structured_caption_parser_rejects_malformed_or_untimed_payloads(
 
 
 @pytest.mark.asyncio
+async def test_download_youtube_transcript_preserves_metadata_duration(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return b'{"events":[{"tStartMs":1000,"dDurationMs":2000,"segs":[{"utf8":"Timed text"}]}]}'
+
+    class FakeYoutubeDL:
+        def __init__(self, _options):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is False
+            return {
+                "duration": 64.9,
+                "language": "en",
+                "subtitles": {
+                    "en": [{"ext": "json3", "url": "https://example.test/captions"}],
+                },
+            }
+
+        def urlopen(self, _request):
+            return FakeResponse()
+
+    class FakeRequest:
+        def __init__(self, url, *, headers):
+            self.url = url
+            self.headers = headers
+
+    yt_dlp_module = types.ModuleType("yt_dlp")
+    yt_dlp_module.YoutubeDL = FakeYoutubeDL
+    networking_module = types.ModuleType("yt_dlp.networking")
+    networking_module.Request = FakeRequest
+    monkeypatch.setitem(sys.modules, "yt_dlp", yt_dlp_module)
+    monkeypatch.setitem(sys.modules, "yt_dlp.networking", networking_module)
+    monkeypatch.setattr("src.youtube_download._apply_youtube_only_runtime_policy", lambda: None)
+
+    transcript = await download_youtube_transcript("https://example.test/video")
+
+    assert transcript is not None
+    assert transcript.duration_seconds == 64.9
+    assert transcript.text == "Timed text"
+
+
+@pytest.mark.asyncio
 async def test_download_youtube_transcript_returns_none_for_untimed_caption_track(
     monkeypatch,
 ):
@@ -298,6 +355,38 @@ async def test_download_youtube_audio_requires_yt_dlp(tmp_path: Path):
         pytest.raises(YouTubeDownloadError, match="yt-dlp not installed"),
     ):
         await download_youtube_audio("https://example.com", output_dir=tmp_path)
+
+
+@pytest.mark.asyncio
+async def test_frozen_download_fails_closed_when_embedded_yt_dlp_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "yt_dlp":
+            raise ImportError("embedded yt_dlp not available")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    subprocess_exec = AsyncMock()
+    with (
+        patch("builtins.__import__", side_effect=fake_import),
+        patch("src.youtube_download._require_ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=None),
+        patch(
+            "src.youtube_download.asyncio.create_subprocess_exec",
+            new=subprocess_exec,
+        ),
+        pytest.raises(
+            YouTubeDownloadError,
+            match="frozen yt-dlp runtime is unavailable or incomplete",
+        ),
+    ):
+        await download_youtube_audio("https://example.com", output_dir=tmp_path)
+
+    subprocess_exec.assert_not_awaited()
 
 
 @pytest.mark.asyncio

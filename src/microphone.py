@@ -159,7 +159,7 @@ def _rust_audio_failure_cooldown_seconds() -> float:
         if not math.isfinite(value):
             return 60.0
         return max(0.0, min(3600.0, value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 60.0
 
 
@@ -429,7 +429,7 @@ def _release_invalid_capture_artifact_payload(payload: dict, *, shell_call) -> N
     lease_id = str(payload.get("leaseId") or "").strip().lower()
     try:
         lease_uuid = UUID(lease_id)
-    except (ValueError, TypeError, AttributeError):
+    except ValueError, TypeError, AttributeError:
         return
     if lease_uuid.int == 0 or lease_uuid.hex != lease_id:
         return
@@ -464,7 +464,7 @@ def _provider_replay_capture_fixture_metadata() -> dict | None:
         return None
     try:
         run_id = UUID(raw_run_id)
-    except (ValueError, TypeError, AttributeError):
+    except ValueError, TypeError, AttributeError:
         return None
     if run_id.int == 0:
         return None
@@ -1424,14 +1424,14 @@ def _rust_first_frame_timeout_seconds() -> float:
         if not math.isfinite(value):
             return 0.5
         return max(0.05, min(10.0, value))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.5
 
 
 def _rust_audio_prebuffer_ms() -> int:
     try:
         return max(0, min(2000, int(getattr(Config, "MIC_PREBUFFER_MS", 0) or 0)))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0
 
 

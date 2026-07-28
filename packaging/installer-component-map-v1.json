@@ -46,10 +46,6 @@
     },
     {
       "id": "yt-dlp-ejs",
-      "exactPaths": [
-        "backend/tools/ffmpeg/yt-dlp.exe",
-        "tools/ffmpeg/yt-dlp.exe"
-      ],
       "pathPrefixes": [
         "backend/_internal/yt_dlp/",
         "backend/_internal/yt_dlp-",

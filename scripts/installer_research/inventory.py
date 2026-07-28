@@ -581,7 +581,7 @@ def _console_script_names(entry_points_path: Path) -> frozenset[str]:
         )
         parser.optionxform = str
         parser.read_string(text)
-    except (InventoryError, UnicodeDecodeError, configparser.Error, OSError):
+    except InventoryError, UnicodeDecodeError, configparser.Error, OSError:
         return frozenset()
     if not parser.has_section("console_scripts"):
         return frozenset()
@@ -614,7 +614,7 @@ def _is_canonical_record_sha256(value: str) -> bool:
     encoded = value.removeprefix("sha256=")
     try:
         decoded = base64.urlsafe_b64decode(encoded + "=")
-    except (binascii.Error, ValueError):
+    except binascii.Error, ValueError:
         return False
     return (
         len(decoded) == hashlib.sha256().digest_size
@@ -647,7 +647,7 @@ def _normalize_unbundled_console_launcher_records(
         try:
             decoded_line = raw_line.decode("utf-8")
             rows = list(csv.reader([decoded_line], strict=True))
-        except (UnicodeDecodeError, csv.Error):
+        except UnicodeDecodeError, csv.Error:
             return None
         if len(rows) != 1 or len(rows[0]) != 3:
             return None

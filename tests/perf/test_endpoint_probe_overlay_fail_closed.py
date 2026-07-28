@@ -23,7 +23,8 @@ def test_overlay_series_cleans_failed_keep_open_smoke_and_forces_always_on_off(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_run_capture(*_args, **kwargs):
+    def fake_run_capture(*args, **kwargs):
+        captured["args"] = args[0]
         captured["env"] = kwargs.get("env")
         return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="failed")
 
@@ -62,6 +63,8 @@ def test_overlay_series_cleans_failed_keep_open_smoke_and_forces_always_on_off(
     assert captured["cleanup"] == (101, 202, 8765, True)
     assert captured["env"]["SCRIBER_MIC_ALWAYS_ON"] == "0"
     assert result["micAlwaysOnChildEnv"] == "0"
+    assert "-KeepAppOpen" in captured["args"]
+    assert "-VerifyFrontend" in captured["args"]
 
 
 def test_hot_path_readiness_accepts_only_explicit_tauri_qpc_marker(monkeypatch) -> None:

@@ -30,7 +30,7 @@ def _install_fake_sounddevice(
     if default_hostapi is None and 0 <= default_input < len(devices):
         try:
             default_hostapi = int(devices[default_input].get("hostapi", 0))
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             default_hostapi = 0
     module.default = types.SimpleNamespace(device=(default_input, None), hostapi=default_hostapi)
 

@@ -8,14 +8,16 @@ import importlib.metadata
 import json
 import os
 import sys
+from collections.abc import Callable, Iterable
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from backend_runtime.contract import (
     APPLICATION_DIRECTORY_NAME,
     APPLICATION_ENTRY_POINT,
     APPLICATION_LAYER_SCHEMA_VERSION,
     APPLICATION_MANIFEST_NAME,
+    PYTHON_RUNTIME_POLICY_MANIFEST_NAME,
     REQUIRED_PACKAGE_VERSIONS,
     RUNTIME_CONTRACT_NAME,
     RUNTIME_CONTRACT_REVISION,
@@ -24,6 +26,10 @@ from backend_runtime.contract import (
     RUNTIME_REQUIRED_IMPORTS,
 )
 from backend_runtime.installer_youtube_holdout_probe import run_frozen_probe
+from backend_runtime.runtime_policy import (
+    RuntimePolicyError,
+    validate_packaged_runtime_policy,
+)
 
 
 class LayerValidationError(RuntimeError):
@@ -93,12 +99,7 @@ def validate_runtime_layer(
     if not isinstance(content, dict) or not isinstance(content.get("fileCount"), int):
         raise LayerValidationError("Runtime content identity is missing.")
     files = content.get("files")
-    if (
-        not isinstance(files, list)
-        or not files
-        or len(files) != content["fileCount"]
-        or len(files) > 32768
-    ):
+    if not isinstance(files, list) or not files or len(files) != content["fileCount"] or len(files) > 32768:
         raise LayerValidationError("Runtime file identity list is missing or invalid.")
     seen_runtime_paths: set[str] = set()
     for entry in files:
@@ -194,8 +195,7 @@ def validate_application_layer(
     actual = {
         path.relative_to(app_root).as_posix()
         for path in app_root.rglob("*")
-        if path.is_file()
-        and path.relative_to(app_root).as_posix() != APPLICATION_MANIFEST_NAME
+        if path.is_file() and path.relative_to(app_root).as_posix() != APPLICATION_MANIFEST_NAME
     }
     if actual != seen:
         raise LayerValidationError("Application layer contains unlisted or missing files.")
@@ -261,12 +261,42 @@ def _runtime_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def launch_application(runtime_root: Path | None = None) -> int:
+def _validate_python_runtime(root: Path, runtime_manifest: dict[str, Any]) -> None:
+    policy_path = root / PYTHON_RUNTIME_POLICY_MANIFEST_NAME
+    content = runtime_manifest.get("content")
+    files = content.get("files") if isinstance(content, dict) else None
+    entries = (
+        [
+            entry
+            for entry in files
+            if isinstance(entry, dict) and entry.get("path") == PYTHON_RUNTIME_POLICY_MANIFEST_NAME
+        ]
+        if isinstance(files, list)
+        else []
+    )
+    if (
+        len(entries) != 1
+        or not policy_path.is_file()
+        or entries[0].get("length") != policy_path.stat().st_size
+        or entries[0].get("sha256") != _sha256(policy_path)
+    ):
+        raise LayerValidationError("Python runtime policy does not match the frozen runtime layer.")
+    try:
+        validate_packaged_runtime_policy(
+            root,
+            require_supervisor_environment=(os.getenv("SCRIBER_RUNTIME_MODE") == "tauri-supervised"),
+        )
+    except RuntimePolicyError as exc:
+        raise LayerValidationError(str(exc)) from exc
+
+
+def _activate_application_layer(
+    root: Path,
+    runtime_manifest: dict[str, Any],
+) -> dict[str, Any]:
     # The application layer is an exact, checksummed file set.  Never let a
     # physical source import add unlisted ``__pycache__`` files beside it.
     sys.dont_write_bytecode = True
-    root = (runtime_root or _runtime_root()).resolve()
-    runtime_manifest = validate_runtime_layer(root)
     app_manifest = validate_application_layer(root, runtime_manifest)
     app_root = root / APPLICATION_DIRECTORY_NAME
     app_root_text = os.fspath(app_root)
@@ -276,6 +306,15 @@ def launch_application(runtime_root: Path | None = None) -> int:
     version_module = importlib.import_module("src.version")
     if getattr(version_module, "__version__", None) != app_manifest["applicationVersion"]:
         raise LayerValidationError("Application code version does not match its manifest.")
+    return app_manifest
+
+
+def launch_application(runtime_root: Path | None = None) -> int:
+    root = (runtime_root or _runtime_root()).resolve()
+    runtime_manifest = validate_runtime_layer(root)
+    if getattr(sys, "frozen", False) or (root / PYTHON_RUNTIME_POLICY_MANIFEST_NAME).is_file():
+        _validate_python_runtime(root, runtime_manifest)
+    _activate_application_layer(root, runtime_manifest)
     worker = importlib.import_module("src.backend_worker")
     main = getattr(worker, "main", None)
     if not callable(main):
@@ -289,11 +328,11 @@ def main() -> int:
     try:
         if "--installer-youtube-holdout-probe" in sys.argv:
             if sys.argv != [sys.argv[0], "--installer-youtube-holdout-probe"]:
-                raise LayerValidationError(
-                    "Installer YouTube holdout probe accepts no command-line payload."
-                )
+                raise LayerValidationError("Installer YouTube holdout probe accepts no command-line payload.")
             root = _runtime_root().resolve()
-            validate_runtime_layer(root)
+            runtime_manifest = validate_runtime_layer(root)
+            _validate_python_runtime(root, runtime_manifest)
+            _activate_application_layer(root, runtime_manifest)
             return run_frozen_probe(root)
         return launch_application()
     except LayerValidationError as exc:

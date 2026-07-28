@@ -24,6 +24,7 @@ from src.runtime.audio_frame_pipe import (
     AudioFrameSequenceGuard,
     decode_audio_frame_header,
 )
+from src.runtime.pcm_audio import pcm16le_metrics
 
 
 @dataclass
@@ -39,10 +40,12 @@ class MeetingCaptureStats:
 class MeetingProbeStats:
     frames: int = 0
     audio_frames: int = 0
+    payload_bytes: int = 0
     sample_count: int = 0
-    sum_squares: int = 0
+    weighted_rms_squares: int = 0
     peak: int = 0
     error_code: str = ""
+    reader_alive: bool = False
 
 
 class MeetingDeviceLevelProbe:
@@ -51,34 +54,68 @@ class MeetingDeviceLevelProbe:
     def __init__(self, *, reader_factory: Callable[..., BinaryIO] = open) -> None:
         self.reader_factory = reader_factory
         self._threads: list[threading.Thread] = []
+        self._thread_sources: dict[threading.Thread, str] = {}
+        self._lifecycle_lock = threading.RLock()
         self._stop = threading.Event()
         self._stats: dict[str, MeetingProbeStats] = {}
         self._lock = threading.Lock()
 
     def start(self, sources: list[dict[str, Any]]) -> None:
-        self._stop.clear()
-        for item in sources:
-            source = str(item.get("source", ""))
-            pipe = str(item.get("framePipe", ""))
-            if source not in {"microphone", "system", "mic_clean"} or not pipe:
-                raise ValueError("Native meeting device test omitted a required frame pipe.")
-            with self._lock:
-                self._stats.setdefault(source, MeetingProbeStats())
-            thread = threading.Thread(
-                target=self._consume,
-                args=(source, pipe),
-                name=f"meeting-device-test-{source}",
-                daemon=True,
-            )
-            self._threads.append(thread)
-            thread.start()
+        with self._lifecycle_lock:
+            self._threads = [thread for thread in self._threads if thread.is_alive()]
+            self._thread_sources = {
+                thread: source for thread, source in self._thread_sources.items() if thread in self._threads
+            }
+            if self._threads:
+                raise RuntimeError("Meeting device probe reader is still active.")
+            self._stop.clear()
+            for item in sources:
+                source = str(item.get("source", ""))
+                pipe = str(item.get("framePipe", ""))
+                if source not in {"microphone", "system", "mic_clean"} or not pipe:
+                    raise ValueError("Native meeting device test omitted a required frame pipe.")
+                with self._lock:
+                    stats = self._stats.setdefault(source, MeetingProbeStats())
+                    stats.reader_alive = True
+                thread = threading.Thread(
+                    target=self._consume,
+                    args=(source, pipe),
+                    name=f"meeting-device-test-{source}",
+                    daemon=True,
+                )
+                self._threads.append(thread)
+                self._thread_sources[thread] = source
+                try:
+                    thread.start()
+                except Exception:
+                    with self._lock:
+                        stats.reader_alive = False
+                    self._threads.remove(thread)
+                    self._thread_sources.pop(thread, None)
+                    raise
 
     def stop(self, timeout: float = 3.0) -> dict[str, Any]:
-        self._stop.set()
-        threads, self._threads = self._threads, []
-        for thread in threads:
-            thread.join(timeout=timeout)
-        return self.snapshot()
+        with self._lifecycle_lock:
+            self._stop.set()
+            threads = list(self._threads)
+            deadline = time.monotonic() + max(0.0, float(timeout))
+            for thread in threads:
+                thread.join(timeout=max(0.0, deadline - time.monotonic()))
+            alive = [thread for thread in threads if thread.is_alive()]
+            with self._lock:
+                for thread in alive:
+                    source = self._thread_sources.get(thread)
+                    if not source:
+                        continue
+                    stats = self._stats[source]
+                    stats.reader_alive = True
+                    if not stats.error_code:
+                        stats.error_code = "reader_stop_timeout"
+            self._threads = alive
+            self._thread_sources = {
+                thread: self._thread_sources[thread] for thread in alive if thread in self._thread_sources
+            }
+            return self.snapshot()
 
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
@@ -86,13 +123,15 @@ class MeetingDeviceLevelProbe:
                 source: {
                     "frames": stats.frames,
                     "audioFrames": stats.audio_frames,
+                    "payloadBytes": stats.payload_bytes,
                     "rms": min(
                         1.0,
-                        math.sqrt(stats.sum_squares / max(1, stats.sample_count)) / 32768.0,
+                        math.sqrt(stats.weighted_rms_squares / max(1, stats.sample_count)) / 32768.0,
                     ),
                     "peak": min(1.0, stats.peak / 32768.0),
                     "active": stats.audio_frames > 0 and not stats.error_code,
                     "errorCode": stats.error_code,
+                    "readerAlive": stats.reader_alive,
                 }
                 for source, stats in self._stats.items()
             }
@@ -109,21 +148,15 @@ class MeetingDeviceLevelProbe:
                     header = decode_audio_frame_header(self._read_exact(reader, AUDIO_FRAME_HEADER_LEN))
                     guard.verify_and_advance(header)
                     payload = self._read_exact(reader, header.payload_len)
-                    sample_count = len(payload) // 2
-                    sum_squares = 0
-                    peak = 0
-                    for offset in range(0, sample_count * 2, 2):
-                        sample = int.from_bytes(payload[offset : offset + 2], "little", signed=True)
-                        magnitude = abs(sample)
-                        peak = max(peak, magnitude)
-                        sum_squares += sample * sample
+                    metrics = pcm16le_metrics(payload)
                     with self._lock:
                         stats = self._stats[source]
                         stats.frames += 1
                         stats.audio_frames += header.frame_count
-                        stats.sample_count += sample_count
-                        stats.sum_squares += sum_squares
-                        stats.peak = max(stats.peak, peak)
+                        stats.payload_bytes += len(payload)
+                        stats.sample_count += metrics.sample_count
+                        stats.weighted_rms_squares += metrics.rms * metrics.rms * metrics.sample_count
+                        stats.peak = max(stats.peak, metrics.peak)
                     if header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM:
                         break
         except (EOFError, OSError, BrokenPipeError) as exc:
@@ -132,11 +165,16 @@ class MeetingDeviceLevelProbe:
             # a transport error when the pipe failed before the first frame.
             with self._lock:
                 stats = self._stats[source]
-                if stats.frames == 0:
+                if stats.frames == 0 and not stats.error_code:
                     stats.error_code = type(exc).__name__
         except Exception as exc:
             with self._lock:
-                self._stats[source].error_code = type(exc).__name__
+                stats = self._stats[source]
+                if not stats.error_code:
+                    stats.error_code = type(exc).__name__
+        finally:
+            with self._lock:
+                self._stats[source].reader_alive = False
 
 
 class MeetingAudioRecorder:

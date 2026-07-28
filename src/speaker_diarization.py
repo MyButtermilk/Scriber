@@ -366,7 +366,7 @@ class SherpaOnnxDiarizer:
                 reason=exc.code,
                 worker=worker,
             )
-        except (OSError, ValueError, json.JSONDecodeError):
+        except OSError, ValueError, json.JSONDecodeError:
             self._verified_worker = None
             status = self._base_status(
                 installed=False,
