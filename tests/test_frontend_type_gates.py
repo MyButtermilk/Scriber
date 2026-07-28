@@ -1774,6 +1774,47 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     assert 'window.addEventListener("scroll"' not in renderer
 
 
+def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() -> None:
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    def rule_body(selector: str, start: int = 0) -> str:
+        rule_start = styles.index(selector, start)
+        body_start = styles.index("{", rule_start) + 1
+        return styles[body_start : styles.index("}", body_start)]
+
+    base_shell = rule_body(".transcript-detail-shell {")
+    base_toc = rule_body(".summary-toc {")
+    intro = rule_body('.summary-document[data-summary-format="html"] > section:first-of-type > p:first-of-type {')
+    wide_layout_start = styles.index("@media (min-width: 1280px)")
+    wide_shell = rule_body(".transcript-detail-shell.has-summary-toc {", wide_layout_start)
+    wide_meta = rule_body(
+        ".transcript-detail-shell.has-summary-toc > :not(.transcript-summary-layout) {",
+        wide_layout_start,
+    )
+    wide_grid = rule_body(
+        ".transcript-detail-shell.has-summary-toc .transcript-summary-layout {",
+        wide_layout_start,
+    )
+    wide_toc = rule_body(
+        ".transcript-detail-shell.has-summary-toc .summary-toc {",
+        wide_layout_start,
+    )
+
+    assert "width: 100%;" in base_shell
+    assert "max-width: 960px;" in base_shell
+    assert "margin-inline: auto;" in base_shell
+    assert "display: none;" in base_toc
+    assert "max-width: 62ch;" in intro
+    assert "max-width: 1240px;" in wide_shell
+    assert "width: calc(100% - 280px);" in wide_meta
+    assert "max-width: 960px;" in wide_meta
+    assert "margin-left: 280px;" in wide_meta
+    assert "grid-template-columns: 240px minmax(0, 960px);" in wide_grid
+    assert "column-gap: 40px;" in wide_grid
+    assert "minmax(0, 230px)" not in wide_grid
+    assert "display: block;" in wide_toc
+
+
 def test_responsive_ui_polish_contracts_are_preserved() -> None:
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     language_toggle = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "language-toggle.tsx").read_text(

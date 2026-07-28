@@ -3621,7 +3621,7 @@ html:has(body[data-scroll-locked]) {
 
 .transcript-detail-shell {
   width: 100%;
-  max-width: 720px;
+  max-width: 960px;
   margin-inline: auto;
 }
 
@@ -4046,19 +4046,20 @@ html:has(body[data-scroll-locked]) {
   }
 }
 
-@media (min-width: 1081px) {
+@media (min-width: 1280px) {
   .transcript-detail-shell.has-summary-toc {
-    max-width: 1260px;
+    max-width: 1240px;
   }
 
   .transcript-detail-shell.has-summary-toc > :not(.transcript-summary-layout) {
-    width: min(100%, 720px);
-    margin-left: 270px;
+    width: calc(100% - 280px);
+    max-width: 960px;
+    margin-left: 280px;
   }
 
   .transcript-detail-shell.has-summary-toc .transcript-summary-layout {
     display: grid;
-    grid-template-columns: 230px minmax(0, 720px) minmax(0, 230px);
+    grid-template-columns: 240px minmax(0, 960px);
     column-gap: 40px;
     align-items: start;
   }
