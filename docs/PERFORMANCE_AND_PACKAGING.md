@@ -268,8 +268,17 @@ Live mic:
   visual feedback. WebSocket audio levels remain the primary 60 Hz path; a
   coalesced 20 Hz native event fallback keeps the waveform responsive while the
   WebView connects or recovers without blocking the audio reader.
-- Overlay and live mic visualizers cap drawing to about 30 FPS and keep audio
-  level updates out of React state where practical.
+- The selectable overlay energy wave keeps its blue shading in a static,
+  full-pill CSS gradient and draws only the animated strands on a transparent
+  Canvas. Its renderer reuses typed arrays for a fixed 9-by-96 strand/sample
+  field, uses two stroke passes with a one-physical-pixel core, caps DPR at 3,
+  and draws at most 60 FPS in normal operation. Reduced motion keeps its
+  separately throttled, phase-frozen path. The wave spans the full pill from
+  its left edge; on fine-pointer devices the stop control is revealed with a
+  CSS-only opacity transition on pill hover or keyboard focus, without
+  changing Canvas geometry or creating React animation state.
+- Overlay and live mic visualizers keep per-frame audio updates out of React
+  state; no animation frame is represented by a React render.
 
 Backend/WebSocket:
 

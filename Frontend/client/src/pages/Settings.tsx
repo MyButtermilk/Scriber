@@ -64,6 +64,7 @@ import type {
   MeetingTranscriptionMode,
   OnnxModelInfo,
   OnnxModelsResponse,
+  OverlayVisualizerStyle,
   OutlookCalendarStatus,
   OutlookCalendarSyncResponse,
   SpeakerModelStatus,
@@ -93,9 +94,11 @@ import {
   updateDesktopUpdateSettings,
 } from "@/lib/desktop-updates";
 import {
+  DEFAULT_OVERLAY_VISUALIZER_STYLE,
   DEFAULT_VISUALIZER_BAR_COUNT,
   MAX_VISUALIZER_BAR_COUNT,
   MIN_VISUALIZER_BAR_COUNT,
+  normalizeOverlayVisualizerStyle,
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
 import { localizeOnnxDownloadMessage } from "@/lib/onnx-download-message";
@@ -1401,6 +1404,11 @@ export default function Settings() {
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(
+    DEFAULT_OVERLAY_VISUALIZER_STYLE,
+  );
+  const [overlayVisualizerStyleSaving, setOverlayVisualizerStyleSaving] = useState(false);
+  const overlayVisualizerStyleSavingRef = useRef(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
@@ -2014,6 +2022,9 @@ export default function Settings() {
         const loadedVisualizerBarCount = normalizeVisualizerBarCount(settings.visualizerBarCount);
         setVisualizerBarCount(loadedVisualizerBarCount);
         setSavedVisualizerBarCount(loadedVisualizerBarCount);
+        setOverlayVisualizerStyle(
+          normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle),
+        );
         setMicAlwaysOn(settings.micAlwaysOn === true);
         setSegmentSpeechWithVad(settings.segmentSpeechWithVad === true);
         setFavoriteMic(settings.favoriteMic || "");
@@ -3005,6 +3016,38 @@ export default function Settings() {
     }
   };
 
+  const handleOverlayVisualizerStyleChange = async (value: string) => {
+    const style = normalizeOverlayVisualizerStyle(value);
+    if (overlayVisualizerStyleSavingRef.current || style === overlayVisualizerStyle) {
+      return;
+    }
+    const previousStyle = overlayVisualizerStyle;
+    overlayVisualizerStyleSavingRef.current = true;
+    setOverlayVisualizerStyleSaving(true);
+    setOverlayVisualizerStyle(style);
+    try {
+      const updatedSettings = await updateSettings({ overlayVisualizerStyle: style });
+      setOverlayVisualizerStyle(
+        normalizeOverlayVisualizerStyle(updatedSettings.overlayVisualizerStyle),
+      );
+    } catch (e: any) {
+      setOverlayVisualizerStyle(previousStyle);
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(
+          e,
+          "The requested settings action failed.",
+          locale,
+          t,
+        ),
+        duration: 4000,
+      });
+    } finally {
+      overlayVisualizerStyleSavingRef.current = false;
+      setOverlayVisualizerStyleSaving(false);
+    }
+  };
+
   const handleVisualizerBarCountChange = (value: number[]) => {
     const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
     setVisualizerBarCount(count);
@@ -3934,7 +3977,7 @@ export default function Settings() {
 
             <SettingsSubsection
               title={t("Recording control")}
-              description={t("Configure the main hotkey, trigger mode, and overlay density.")}
+              description={t("Configure the main hotkey, trigger mode, and recording overlay.")}
               icon={Keyboard}
             >
               <div className="divide-y divide-slate-200/80 dark:divide-[var(--workspace-border)]">
@@ -3996,12 +4039,44 @@ export default function Settings() {
                     <Button onClick={handleSaveHotkey}>{t("Save")}</Button>
                   </div>
                 </DialogContent>
-              </Dialog>
-                </SettingLine>
+                </Dialog>
+                  </SettingLine>
+
+                  <SettingLine
+                    label={t("Overlay visualization")}
+                    description={t("Choose how microphone activity appears in the recording overlay.")}
+                  >
+                    <ToggleGroup
+                      type="single"
+                      value={overlayVisualizerStyle}
+                      onValueChange={(value) => value && void handleOverlayVisualizerStyleChange(value)}
+                      disabled={overlayVisualizerStyleSaving}
+                      aria-busy={overlayVisualizerStyleSaving}
+                      aria-label={t("Overlay visualization style")}
+                      className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-[var(--live-well)]"
+                    >
+                      <ToggleGroupItem
+                        value="bars"
+                        className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800"
+                      >
+                        <BarChart3 className="h-4 w-4" />
+                        {t("Bars")}
+                      </ToggleGroupItem>
+                      <ToggleGroupItem
+                        value="energy_wave"
+                        className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800"
+                      >
+                        <Sparkles className="h-4 w-4" />
+                        {t("Energy wave")}
+                      </ToggleGroupItem>
+                    </ToggleGroup>
+                  </SettingLine>
 
                 <SettingLine
                   label={t("Visualizer bars")}
-                  description={t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })}
+                  description={overlayVisualizerStyle === "bars"
+                    ? t("Current count: {{count}}", { count: formatNumber(visualizerBarCount) })
+                    : t("Controls Live Mic and the classic bar overlay.")}
                 >
                   <div className="flex w-full items-center gap-2">
                     <BarChart3 className="h-4 w-4 shrink-0 text-slate-500" />

@@ -13574,6 +13574,7 @@ class ScriberWebController:
             "onnxQuantization": Config.ONNX_QUANTIZATION,
             "onnxUseGpu": bool(Config.ONNX_USE_GPU),
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
+            "overlayVisualizerStyle": Config.OVERLAY_VISUALIZER_STYLE,
             "fileUploadLimits": file_upload_limits,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
@@ -13621,6 +13622,7 @@ class ScriberWebController:
         validated_meeting_final_provider: str | None = None
         validated_onnx_model: str | None = None
         validated_onnx_quantization: str | None = None
+        validated_overlay_visualizer_style: str | None = None
         mic_runtime_changed = False
         mic_route_changed = False
 
@@ -13684,6 +13686,13 @@ class ScriberWebController:
                 validated_onnx_model = selected_model
             if has_onnx_quantization:
                 validated_onnx_quantization = selected_quantization
+        if "overlayVisualizerStyle" in payload:
+            if not isinstance(payload["overlayVisualizerStyle"], str):
+                raise ValueError("Overlay visualizer style must be a string.")
+            candidate_overlay_visualizer_style = payload["overlayVisualizerStyle"].strip().lower()
+            if candidate_overlay_visualizer_style not in {"bars", "energy_wave"}:
+                raise ValueError("Unsupported overlay visualizer style.")
+            validated_overlay_visualizer_style = candidate_overlay_visualizer_style
 
         if "hotkey" in payload and isinstance(payload["hotkey"], str):
             normalized = _normalize_hotkey_for_backend(payload["hotkey"])
@@ -13855,6 +13864,9 @@ class ScriberWebController:
                 Config.set_visualizer_bar_count(count)
             except ValueError, TypeError:
                 pass
+
+        if validated_overlay_visualizer_style is not None:
+            Config.set_overlay_visualizer_style(validated_overlay_visualizer_style)
 
         api_keys = payload.get("apiKeys")
         if isinstance(api_keys, dict):

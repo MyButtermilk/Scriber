@@ -366,6 +366,39 @@ html:has(body[data-scroll-locked]) {
   }
 }
 
+.native-recording-stop {
+  opacity: 1;
+  transition:
+    opacity var(--duration-micro) var(--ease-smooth-out),
+    background-color var(--duration-quick) var(--ease-smooth-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .native-recording-pill[data-visualizer-style="energy_wave"] .native-recording-stop {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .native-recording-pill[data-visualizer-style="energy_wave"]:hover .native-recording-stop,
+  .native-recording-pill[data-visualizer-style="energy_wave"]:focus-within .native-recording-stop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .native-recording-pill[data-visualizer-style="energy_wave"] .native-recording-stop {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .native-recording-stop {
+    transition-duration: 0ms;
+  }
+}
+
 .desktop-titlebar {
   height: 34px;
   min-height: 34px;

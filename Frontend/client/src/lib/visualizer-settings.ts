@@ -1,10 +1,16 @@
-import type { SettingsResponse } from "@/lib/api-types";
+import type { OverlayVisualizerStyle, SettingsResponse } from "@/lib/api-types";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 
 export const DEFAULT_VISUALIZER_BAR_COUNT = 45;
 export const MIN_VISUALIZER_BAR_COUNT = 16;
 export const MAX_VISUALIZER_BAR_COUNT = 128;
+export const DEFAULT_OVERLAY_VISUALIZER_STYLE: OverlayVisualizerStyle = "bars";
+
+export type VisualizerSettings = {
+  barCount: number;
+  overlayStyle: OverlayVisualizerStyle;
+};
 
 export function normalizeVisualizerBarCount(
   value: unknown,
@@ -20,7 +26,11 @@ export function normalizeVisualizerBarCount(
   );
 }
 
-export async function loadVisualizerBarCount(signal?: AbortSignal): Promise<number> {
+export function normalizeOverlayVisualizerStyle(value: unknown): OverlayVisualizerStyle {
+  return value === "energy_wave" ? "energy_wave" : DEFAULT_OVERLAY_VISUALIZER_STYLE;
+}
+
+export async function loadVisualizerSettings(signal?: AbortSignal): Promise<VisualizerSettings> {
   const res = await fetchWithTimeout(
     apiUrl("/api/settings"),
     { credentials: "include", signal },
@@ -30,5 +40,12 @@ export async function loadVisualizerBarCount(signal?: AbortSignal): Promise<numb
     throw new Error(res.statusText || "Failed to load visualizer settings");
   }
   const settings = (await res.json()) as SettingsResponse;
-  return normalizeVisualizerBarCount(settings.visualizerBarCount);
+  return {
+    barCount: normalizeVisualizerBarCount(settings.visualizerBarCount),
+    overlayStyle: normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle),
+  };
+}
+
+export async function loadVisualizerBarCount(signal?: AbortSignal): Promise<number> {
+  return (await loadVisualizerSettings(signal)).barCount;
 }

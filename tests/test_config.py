@@ -69,12 +69,41 @@ def _read_fresh_summary_prompt_config(
     return json.loads(result.stdout.strip())
 
 
+def _read_fresh_overlay_visualizer_style(tmp_path: Path, value: str | None) -> str:
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    if value is None:
+        env.pop("SCRIBER_OVERLAY_VISUALIZER_STYLE", None)
+    else:
+        env["SCRIBER_OVERLAY_VISUALIZER_STYLE"] = value
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from src.config import Config; print(Config.OVERLAY_VISUALIZER_STYLE)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def test_fresh_install_shortcut_defaults(tmp_path):
     assert _read_fresh_shortcut_config(tmp_path) == {
         "live": "ctrl+shift+d",
         "post": "ctrl+shift+f",
         "meeting": "ctrl+shift+m",
     }
+
+
+def test_overlay_visualizer_style_defaults_invalid_values_to_bars(tmp_path):
+    assert _read_fresh_overlay_visualizer_style(tmp_path, None) == "bars"
+    assert _read_fresh_overlay_visualizer_style(tmp_path, "unknown") == "bars"
+    assert _read_fresh_overlay_visualizer_style(tmp_path, " ENERGY_WAVE ") == "energy_wave"
 
 
 def test_existing_dotenv_shortcuts_override_defaults(tmp_path):
@@ -375,6 +404,21 @@ def test_persist_to_env_file_includes_text_injection_disable(monkeypatch, tmp_pa
     Config.persist_to_env_file(str(target))
 
     assert "SCRIBER_DISABLE_TEXT_INJECTION=1" in target.read_text(encoding="utf-8")
+
+
+def test_overlay_visualizer_style_is_validated_and_persisted(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setenv("SCRIBER_OVERLAY_VISUALIZER_STYLE", "bars")
+    monkeypatch.setattr(Config, "OVERLAY_VISUALIZER_STYLE", "bars", raising=False)
+
+    Config.set_overlay_visualizer_style(" ENERGY_WAVE ")
+    Config.persist_to_env_file(str(target))
+
+    assert Config.OVERLAY_VISUALIZER_STYLE == "energy_wave"
+    assert os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] == "energy_wave"
+    assert "SCRIBER_OVERLAY_VISUALIZER_STYLE=energy_wave" in target.read_text(encoding="utf-8")
+    with pytest.raises(ValueError, match="bars.*energy_wave"):
+        Config.set_overlay_visualizer_style("unknown")
 
 
 def test_persist_to_env_file_includes_azure_mai_model(monkeypatch, tmp_path):

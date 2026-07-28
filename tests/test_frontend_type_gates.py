@@ -1141,11 +1141,19 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     helper_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "visualizer-settings.ts").read_text(
         encoding="utf-8"
     )
+    energy_field_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "MicrophoneEnergyField.tsx"
+    ).read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
 
     assert "await updateSettings({ visualizerBarCount: count });" in settings_source
+    assert "await updateSettings({ overlayVisualizerStyle: style });" in settings_source
     assert "export const DEFAULT_VISUALIZER_BAR_COUNT = 45;" in helper_source
     assert "export const MIN_VISUALIZER_BAR_COUNT = 16;" in helper_source
     assert "export const MAX_VISUALIZER_BAR_COUNT = 128;" in helper_source
+    assert 'DEFAULT_OVERLAY_VISUALIZER_STYLE: OverlayVisualizerStyle = "bars"' in helper_source
+    assert 'value === "energy_wave" ? "energy_wave" : DEFAULT_OVERLAY_VISUALIZER_STYLE' in helper_source
+    assert "loadVisualizerSettings" in helper_source
     assert "Number.isFinite(numeric)" in helper_source
     assert "Math.round(numeric)" in helper_source
     assert "MIN_VISUALIZER_BAR_COUNT" in helper_source
@@ -1160,6 +1168,8 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "useState(DEFAULT_VISUALIZER_BAR_COUNT)" in settings_source
     assert "normalizeVisualizerBarCount(settings.visualizerBarCount)" in settings_source
     assert "normalizeVisualizerBarCount(value[0], savedVisualizerBarCount)" in settings_source
+    assert "normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle)" in settings_source
+    assert 'value="energy_wave"' in settings_source
     assert "min={MIN_VISUALIZER_BAR_COUNT}" in settings_source
     assert "max={MAX_VISUALIZER_BAR_COUNT}" in settings_source
     assert "settings.visualizerBarCount || 45" not in settings_source
@@ -1176,7 +1186,14 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     )
     assert "resizeBarBuffer" in overlay_source
     assert "barCount={visualizerBarCount}" in overlay_source
+    assert "MicrophoneEnergyField" in overlay_source
+    assert "ENERGY_PILL_BACKGROUND" in overlay_source
+    assert "width={PILL_WIDTH}" in overlay_source
+    assert "height={PILL_HEIGHT}" in overlay_source
     assert "const BAR_COUNT =" not in overlay_source
+    assert 'export type OverlayVisualizerStyle = "bars" | "energy_wave";' in api_types
+    assert "new Float32Array(" in energy_field_source
+    assert "setState" not in energy_field_source
 
 
 def test_settings_and_youtube_mutations_use_authenticated_backend_access() -> None:
@@ -1837,6 +1854,90 @@ def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
     assert "reconnectTimer = window.setTimeout(connect, 750);" in source
 
 
+def test_native_overlay_energy_wave_is_full_bleed_thin_and_allocation_bounded() -> None:
+    overlay_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx"
+    ).read_text(encoding="utf-8")
+    field_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "MicrophoneEnergyField.tsx").read_text(
+        encoding="utf-8"
+    )
+    math_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "native-overlay-visualizer.ts").read_text(
+        encoding="utf-8"
+    )
+
+    assert "ENERGY_PILL_BACKGROUND" in overlay_source
+    assert "energyWaveActive ? ENERGY_PILL_BACKGROUND" in overlay_source
+    assert "const ENERGY_WAVE_PLOT_X = 0;" in overlay_source
+    assert "const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;" in overlay_source
+    assert "plotX={ENERGY_WAVE_PLOT_X}" in overlay_source
+    assert "plotWidth={ENERGY_WAVE_PLOT_WIDTH}" in overlay_source
+    assert "data-visualizer-style={overlayVisualizerStyle}" in overlay_source
+    assert 'pointerEvents: "none"' in field_source
+    assert "ENERGY_WAVE_SAMPLE_COUNT = 96" in math_source
+    assert "MAX_DEVICE_PIXEL_RATIO = 3" in field_source
+    assert "NORMAL_FRAME_INTERVAL_MS = 1000 / 60" in field_source
+    assert 'data-render-profile="typed-array-60hz-hidpi"' in field_source
+    assert "nextFrameAt += intervalMs" in field_source
+    assert "WAVE_HALO_WIDTH = 1.35" in field_source
+    assert "WAVE_CORE_PHYSICAL_PX = 1" in field_source
+    assert "WAVE_CORE_PHYSICAL_PX / devicePixelRatio" in field_source
+    assert 'window.matchMedia("(prefers-reduced-motion: reduce)")' in field_source
+    assert "new Float32Array(" in field_source
+    draw_start = field_source.index("    const draw = (now: number) => {")
+    draw_end = field_source.index("    motionPreference.addEventListener", draw_start)
+    assert field_source.index("    const coordinates = new Float32Array(") < draw_start
+    assert field_source.index("    const visibilities = new Float32Array(") < draw_start
+    assert "new Float32Array(" not in field_source[draw_start:draw_end]
+    assert "new Path2D" not in field_source
+    assert "createLinearGradient" in field_source
+    assert field_source.count("createLinearGradient") == 1
+    assert "Math.random" not in field_source
+    assert "fillEnergyWaveYCoordinates" in math_source
+    assert "new Array" not in math_source
+
+
+def test_native_overlay_energy_wave_reveals_stop_only_for_safe_hover_or_focus() -> None:
+    overlay_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "NativeRecordingOverlay.tsx"
+    ).read_text(encoding="utf-8")
+    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
+
+    assert 'className="native-recording-pill relative flex items-center"' in overlay_source
+    assert "native-recording-stop relative" in overlay_source
+    assert "@media (hover: hover) and (pointer: fine)" in styles
+    energy_wave_selector = '.native-recording-pill[data-visualizer-style="energy_wave"] .native-recording-stop'
+    assert energy_wave_selector in styles
+    assert f"{energy_wave_selector} {{" in styles
+    assert '.native-recording-pill[data-visualizer-style="energy_wave"]:hover .native-recording-stop' in styles
+    assert '.native-recording-pill[data-visualizer-style="energy_wave"]:focus-within .native-recording-stop' in styles
+    fine_pointer_start = styles.index("@media (hover: hover) and (pointer: fine)")
+    coarse_pointer_start = styles.index("@media (any-pointer: coarse)")
+    reduced_motion_start = styles.index("@media (prefers-reduced-motion: reduce)", coarse_pointer_start)
+    assert coarse_pointer_start > fine_pointer_start
+    fine_pointer_rules = styles[fine_pointer_start:coarse_pointer_start]
+    coarse_pointer_rules = styles[coarse_pointer_start:reduced_motion_start]
+    assert (
+        f"""{energy_wave_selector} {{
+    opacity: 0;
+    pointer-events: none;
+  }}"""
+        in fine_pointer_rules
+    )
+    assert (
+        """opacity: 1;
+    pointer-events: auto;"""
+        in fine_pointer_rules
+    )
+    assert (
+        f"""{energy_wave_selector} {{
+    opacity: 1;
+    pointer-events: auto;
+  }}"""
+        in coarse_pointer_rules
+    )
+    assert "transition-duration: 0ms;" in styles
+
+
 def test_meeting_states_suppress_update_prompts_and_drive_tray_state() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
     websocket_types = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
@@ -2442,6 +2543,7 @@ def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> Non
     client_src = REPO_ROOT / "Frontend" / "client" / "src"
     live_mic = (client_src / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
     overlay = (client_src / "components" / "NativeRecordingOverlay.tsx").read_text(encoding="utf-8")
+    energy_field = (client_src / "components" / "MicrophoneEnergyField.tsx").read_text(encoding="utf-8")
     skeleton = (client_src / "components" / "ui" / "skeleton.tsx").read_text(encoding="utf-8")
     spinner = (client_src / "components" / "ui" / "spinner.tsx").read_text(encoding="utf-8")
     youtube = (client_src / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
@@ -2449,8 +2551,10 @@ def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> Non
 
     assert 'matchMedia?.("(prefers-reduced-motion: reduce)").matches' in live_mic
     assert "now - lastVisualFrame < 33" in live_mic
-    assert "motion-reduce:transition-none" in overlay
-    assert "transition-[opacity,filter]" in overlay
+    assert "transition-[opacity,filter]" not in overlay
+    assert 'window.matchMedia("(prefers-reduced-motion: reduce)")' in energy_field
+    assert "REDUCED_MOTION_PHASE" in energy_field
+    assert "REDUCED_MOTION_FRAME_INTERVAL_MS" in energy_field
     assert "motion-reduce:animate-none" in skeleton
     assert "motion-reduce:animate-none" in spinner
     assert "transcription-thumbnail" in youtube

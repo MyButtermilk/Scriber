@@ -99,6 +99,17 @@ Frontend and shell:
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
+- `Frontend/client/src/components/NativeRecordingOverlay.tsx` owns recording
+  overlay state, settings, and the static full-pill CSS gradient;
+  `MicrophoneEnergyField.tsx` owns the allocation-bounded transparent Canvas
+  renderer. Its normal path is capped at 60 FPS and DPR 3, samples 96 points per
+  strand, and keeps the core stroke one physical pixel wide. The energy wave
+  spans the full pill from its left edge. Its stop control stays in the DOM but
+  is visually hidden only for fine-pointer hover devices, then revealed by
+  pill hover or keyboard focus; coarse pointers keep it visible. Keep this
+  interaction CSS-only, keep per-frame RMS out of React state, and preserve
+  the listener-before-`native_overlay_renderer_ready` handshake described
+  above.
 - `Frontend/client/src/i18n/`: persistent `de`/`en` interface locale,
   translation catalogs, locale-aware formatting, and catalog completeness
   tests. Keep interface locale separate from STT/output language. Every

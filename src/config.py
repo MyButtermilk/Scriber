@@ -511,6 +511,10 @@ ${output}"""
 
     # Visualizer settings (default 60 bars)
     VISUALIZER_BAR_COUNT = _env_int("SCRIBER_VISUALIZER_BAR_COUNT", 60, minimum=16, maximum=128)
+    _overlay_visualizer_style = os.getenv("SCRIBER_OVERLAY_VISUALIZER_STYLE", "bars").strip().lower()
+    OVERLAY_VISUALIZER_STYLE = (
+        _overlay_visualizer_style if _overlay_visualizer_style in {"bars", "energy_wave"} else "bars"
+    )
 
     @classmethod
     def get_api_key(cls, service_name: str) -> str:
@@ -747,6 +751,14 @@ ${output}"""
         os.environ["SCRIBER_VISUALIZER_BAR_COUNT"] = str(cls.VISUALIZER_BAR_COUNT)
 
     @classmethod
+    def set_overlay_visualizer_style(cls, style: str) -> None:
+        normalized = str(style or "").strip().lower()
+        if normalized not in {"bars", "energy_wave"}:
+            raise ValueError("Overlay visualizer style must be 'bars' or 'energy_wave'.")
+        cls.OVERLAY_VISUALIZER_STYLE = normalized
+        os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] = normalized
+
+    @classmethod
     def set_summarization_prompt(cls, prompt: str) -> None:
         """Update the summarization prompt; persistence is batched by the controller."""
         cls.SUMMARIZATION_PROMPT = prompt.strip() if prompt else cls._DEFAULT_SUMMARIZATION_PROMPT
@@ -906,6 +918,7 @@ ${output}"""
         add("SCRIBER_PASTE_PRE_DELAY_MS", str(cls.PASTE_PRE_DELAY_MS))
         add("SCRIBER_PASTE_RESTORE_DELAY_MS", str(cls.PASTE_RESTORE_DELAY_MS))
         add("SCRIBER_VISUALIZER_BAR_COUNT", str(cls.VISUALIZER_BAR_COUNT))
+        add("SCRIBER_OVERLAY_VISUALIZER_STYLE", cls.OVERLAY_VISUALIZER_STYLE)
 
         with _SETTINGS_FILE_LOCK:
             _atomic_write_text(target_path, "\n".join(lines) + "\n")

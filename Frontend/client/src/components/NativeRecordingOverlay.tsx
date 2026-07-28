@@ -10,9 +10,14 @@ import {
   wsUrl,
 } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
+import MicrophoneEnergyField from "@/components/MicrophoneEnergyField";
+import type { OverlayVisualizerStyle } from "@/lib/api-types";
+import { overlayVisualizerLevelFromRms } from "@/lib/native-overlay-visualizer";
 import {
+  DEFAULT_OVERLAY_VISUALIZER_STYLE,
   DEFAULT_VISUALIZER_BAR_COUNT,
-  loadVisualizerBarCount,
+  loadVisualizerSettings,
+  normalizeOverlayVisualizerStyle,
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
 import {
@@ -41,13 +46,19 @@ const OVERLAY_CONTENT_WIDTH = STOP_BUTTON_SIZE + WAVEFORM_CANVAS_WIDTH;
 const PILL_WIDTH = OVERLAY_CONTENT_WIDTH + PILL_PADDING * 2;
 const PILL_HEIGHT = STOP_BUTTON_SIZE + PILL_PADDING * 2;
 const PILL_RADIUS = PILL_HEIGHT / 2;
+const ENERGY_WAVE_PLOT_X = 0;
+const ENERGY_WAVE_PLOT_Y = (PILL_HEIGHT - WAVEFORM_CANVAS_HEIGHT) / 2;
+const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;
 const OVERLAY_DROP_SHADOW =
   "0 14px 26px -14px rgba(15, 23, 42, 0.62), 0 6px 14px -12px rgba(15, 23, 42, 0.38)";
 const OVERLAY_INSET_SHADOW = "inset 0 0 0 1px rgba(255, 255, 255, 0.10)";
 const OVERLAY_PILL_SHADOW = `${OVERLAY_DROP_SHADOW}, ${OVERLAY_INSET_SHADOW}`;
+const ENERGY_PILL_BACKGROUND = [
+  "radial-gradient(ellipse 72% 175% at 66% 50%, rgba(40, 91, 132, 0.62) 0%, rgba(22, 57, 86, 0.30) 52%, rgba(7, 19, 31, 0) 100%)",
+  "linear-gradient(90deg, #07131f 0%, #0a1c2d 28%, #0d263b 62%, #071522 100%)",
+].join(", ");
 const MIDNIGHT_COLORS = ["#93C5FD", "#3B82F6", "#1E3A8A"];
-const OVERLAY_RMS_NOISE_FLOOR = 0.00003;
-const OVERLAY_RMS_DISPLAY_SCALE = 90;
+const NATIVE_RMS_FALLBACK_AFTER_MS = 250;
 
 function normalizeMode(value: unknown): OverlayMode {
   const mode = String(value || "").trim().toLowerCase();
@@ -72,7 +83,19 @@ function devOverlayRmsFromLocation(): number {
   if (typeof window === "undefined") return 0;
   const params = new URLSearchParams(window.location.search);
   const fallback = isTauriRuntime() ? 0 : 0.32;
-  return Math.min(1, Math.max(0, Number(params.get("overlayRms")) || fallback));
+  const configured = params.get("overlayRms");
+  const rms = configured === null ? fallback : Number(configured);
+  return Math.min(1, Math.max(0, Number.isFinite(rms) ? rms : fallback));
+}
+
+function devOverlayStyleOverrideFromLocation(): OverlayVisualizerStyle | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("overlayStyle");
+  return value === "bars" || value === "energy_wave" ? value : null;
+}
+
+function devOverlayStyleFromLocation(): OverlayVisualizerStyle {
+  return devOverlayStyleOverrideFromLocation() ?? DEFAULT_OVERLAY_VISUALIZER_STYLE;
 }
 
 function interpolateColor(colors: string[], factor: number): string {
@@ -97,14 +120,6 @@ function interpolateColor(colors: string[], factor: number): string {
   return `rgb(${r}, ${g}, ${b})`;
 }
 
-function overlayVisualizerLevelFromRms(rms: number): number {
-  const level = Math.min(1, Math.max(0, Number(rms) || 0));
-  if (level <= OVERLAY_RMS_NOISE_FLOOR) {
-    return 0;
-  }
-  return Math.min(1, Math.pow((level - OVERLAY_RMS_NOISE_FLOOR) * OVERLAY_RMS_DISPLAY_SCALE, 0.72));
-}
-
 function resizeBarBuffer(values: number[], count: number, fill: number): number[] {
   if (values.length === count) {
     return values;
@@ -116,7 +131,7 @@ function resizeBarBuffer(values: number[], count: number, fill: number): number[
   return next;
 }
 
-function OverlayWaveform({
+function OverlayBarWaveform({
   active,
   rmsRef,
   barCount,
@@ -258,8 +273,7 @@ function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
 function overlayLayerClass(active: boolean): string {
   return [
     "absolute inset-0 flex items-center",
-    "transition-[opacity,filter] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] motion-reduce:transition-none",
-    active ? "opacity-100 blur-0" : "pointer-events-none opacity-0 blur-[2px]",
+    active ? "opacity-100" : "pointer-events-none opacity-0",
   ].join(" ");
 }
 
@@ -268,27 +282,44 @@ export default function NativeRecordingOverlay() {
   const [backendReady, setBackendReady] = useState(!isTauriRuntime());
   const [mode, setMode] = useState<OverlayMode>(() => devOverlayModeFromLocation());
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
+  const [overlayVisualizerStyle, setOverlayVisualizerStyle] = useState<OverlayVisualizerStyle>(
+    () => devOverlayStyleFromLocation(),
+  );
   const rmsRef = useRef(devOverlayRmsFromLocation());
   const activeSessionIdRef = useRef<string | null>(null);
+  const lastWsRmsAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const visualizerSettingsRequestRef = useRef<AbortController | null>(null);
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
   const visible = mode !== "hidden";
+  const energyWaveActive = mode === "recording" && overlayVisualizerStyle === "energy_wave";
 
-  const refreshVisualizerBarCount = useCallback(async (signal?: AbortSignal) => {
+  const refreshVisualizerSettings = useCallback(async () => {
+    visualizerSettingsRequestRef.current?.abort();
+    const controller = new AbortController();
+    visualizerSettingsRequestRef.current = controller;
     try {
-      const count = await loadVisualizerBarCount(signal);
-      setVisualizerBarCount(count);
-    } catch (e: any) {
-      if (e?.name !== "AbortError") {
-        setVisualizerBarCount(DEFAULT_VISUALIZER_BAR_COUNT);
+      const settings = await loadVisualizerSettings(controller.signal);
+      if (controller.signal.aborted) return;
+      setVisualizerBarCount(settings.barCount);
+      const devOverride = isTauriRuntime() ? null : devOverlayStyleOverrideFromLocation();
+      setOverlayVisualizerStyle(
+        devOverride ?? normalizeOverlayVisualizerStyle(settings.overlayStyle),
+      );
+    } catch (error) {
+      if ((error as { name?: string })?.name === "AbortError") return;
+      // Keep the last known-good renderer choice through transient reconnects.
+    } finally {
+      if (visualizerSettingsRequestRef.current === controller) {
+        visualizerSettingsRequestRef.current = null;
       }
     }
   }, []);
 
   useEffect(() => {
-    const controller = new AbortController();
-    void refreshVisualizerBarCount(controller.signal);
-    return () => controller.abort();
-  }, [refreshVisualizerBarCount]);
+    if (!backendReady || isDevOverlayPreview) return;
+    void refreshVisualizerSettings();
+    return () => visualizerSettingsRequestRef.current?.abort();
+  }, [backendReady, isDevOverlayPreview, refreshVisualizerSettings]);
 
   const applyWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
     const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
@@ -300,6 +331,7 @@ export default function NativeRecordingOverlay() {
     switch (msg.type) {
       case "audio_level":
         rmsRef.current = Math.min(1, Math.max(0, Number(msg.rms) || 0));
+        lastWsRmsAtRef.current = performance.now();
         break;
       case "state":
       case "status":
@@ -335,10 +367,10 @@ export default function NativeRecordingOverlay() {
         }
         break;
       case "settings_updated":
-        void refreshVisualizerBarCount();
+        void refreshVisualizerSettings();
         break;
     }
-  }, [refreshVisualizerBarCount]);
+  }, [refreshVisualizerSettings]);
 
   useEffect(() => {
     document.documentElement.dataset.scriberOverlayWindow = "true";
@@ -368,10 +400,13 @@ export default function NativeRecordingOverlay() {
     let receivedNativeEvent = false;
     void listen<OverlayEventPayload>("scriber-overlay-state", (event) => {
       receivedNativeEvent = true;
-      if (Number.isFinite(event.payload.rms)) {
+      const wsRmsIsStale = performance.now() - lastWsRmsAtRef.current
+        >= NATIVE_RMS_FALLBACK_AFTER_MS;
+      if (wsRmsIsStale && Number.isFinite(event.payload.rms)) {
         rmsRef.current = Math.min(1, Math.max(0, Number(event.payload.rms)));
       }
-      setMode(modeFromNativeOverlayState(event.payload));
+      const nextMode = modeFromNativeOverlayState(event.payload);
+      setMode((currentMode) => currentMode === nextMode ? currentMode : nextMode);
     })
       .then(async (cleanup) => {
         if (disposed) {
@@ -421,6 +456,9 @@ export default function NativeRecordingOverlay() {
     const connect = () => {
       if (disposed) return;
       socket = new WebSocket(wsUrl("/ws"));
+      socket.onopen = () => {
+        void refreshVisualizerSettings();
+      };
       socket.onmessage = (event) => {
         try {
           const data = JSON.parse(String(event.data));
@@ -448,7 +486,7 @@ export default function NativeRecordingOverlay() {
       }
       socket?.close();
     };
-  }, [applyWsMessage, backendReady, isDevOverlayPreview]);
+  }, [applyWsMessage, backendReady, isDevOverlayPreview, refreshVisualizerSettings]);
 
   const handleStop = useCallback(async () => {
     try {
@@ -464,7 +502,8 @@ export default function NativeRecordingOverlay() {
         <div className="relative inline-flex">
           <div
             data-testid="native-recording-pill"
-            className="relative flex items-center bg-black"
+            data-visualizer-style={overlayVisualizerStyle}
+            className="native-recording-pill relative flex items-center"
             style={{
               borderRadius: PILL_RADIUS,
               padding: PILL_PADDING,
@@ -472,10 +511,23 @@ export default function NativeRecordingOverlay() {
               boxShadow: OVERLAY_PILL_SHADOW,
               width: PILL_WIDTH,
               height: PILL_HEIGHT,
+              background: energyWaveActive ? ENERGY_PILL_BACKGROUND : "#000",
             }}
           >
+            {energyWaveActive && (
+              <MicrophoneEnergyField
+                active
+                rmsRef={rmsRef}
+                width={PILL_WIDTH}
+                height={PILL_HEIGHT}
+                plotX={ENERGY_WAVE_PLOT_X}
+                plotY={ENERGY_WAVE_PLOT_Y}
+                plotWidth={ENERGY_WAVE_PLOT_WIDTH}
+                plotHeight={WAVEFORM_CANVAS_HEIGHT}
+              />
+            )}
             <div
-              className="relative overflow-hidden"
+              className="relative z-10 overflow-hidden"
               style={{
                 width: OVERLAY_CONTENT_WIDTH,
                 height: STOP_BUTTON_SIZE,
@@ -490,7 +542,7 @@ export default function NativeRecordingOverlay() {
                   type="button"
                   tabIndex={mode === "recording" ? 0 : -1}
                   onClick={handleStop}
-                  className="flex shrink-0 items-center justify-center border-0 bg-[#e74c3c] text-white transition-colors duration-150 hover:bg-[#f05242]"
+                  className="native-recording-stop relative z-10 flex shrink-0 items-center justify-center border-0 bg-[#e74c3c] text-white hover:bg-[#f05242]"
                   style={{
                     width: STOP_BUTTON_SIZE,
                     height: STOP_BUTTON_SIZE,
@@ -500,11 +552,22 @@ export default function NativeRecordingOverlay() {
                 >
                   <Square className="fill-current" style={{ width: STOP_ICON_SIZE, height: STOP_ICON_SIZE }} />
                 </button>
-                <OverlayWaveform
-                  active={mode === "recording"}
-                  rmsRef={rmsRef}
-                  barCount={visualizerBarCount}
-                />
+                {overlayVisualizerStyle === "bars" ? (
+                  <OverlayBarWaveform
+                    active={mode === "recording"}
+                    rmsRef={rmsRef}
+                    barCount={visualizerBarCount}
+                  />
+                ) : (
+                  <div
+                    data-testid="native-recording-energy-wave-space"
+                    aria-hidden="true"
+                    style={{
+                      width: WAVEFORM_CANVAS_WIDTH,
+                      height: WAVEFORM_CANVAS_HEIGHT,
+                    }}
+                  />
+                )}
               </div>
               <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
                 <StatusContent mode="transcribing" />

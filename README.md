@@ -69,7 +69,8 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
   preserved
 - Rust and WASAPI microphone capture
 - Optional microphone pre-warming for lower startup latency
-- Native recording overlay with live feedback
+- Native recording overlay with selectable classic bars or an audio-reactive
+  energy wave
 - Raw dictation or prompt-driven post-processing
 - Clipboard-aware insertion with bounded clipboard restoration
 - Searchable recent recordings with useful transcript excerpts

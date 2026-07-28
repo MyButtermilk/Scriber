@@ -1005,6 +1005,8 @@ export interface SettingsApiKeys {
   youtubeApiKey?: string;
 }
 
+export type OverlayVisualizerStyle = "bars" | "energy_wave";
+
 export interface SettingsResponse {
   hotkey?: string;
   hotkeyRaw?: string;
@@ -1049,6 +1051,7 @@ export interface SettingsResponse {
   onnxQuantization?: string;
   onnxUseGpu?: boolean;
   visualizerBarCount?: number;
+  overlayVisualizerStyle?: OverlayVisualizerStyle;
   fileUploadLimits?: FileUploadLimits;
   apiKeys?: SettingsApiKeys;
 }
@@ -1091,6 +1094,7 @@ export interface SettingsUpdatePayload {
   onnxQuantization?: string;
   onnxUseGpu?: boolean;
   visualizerBarCount?: number;
+  overlayVisualizerStyle?: OverlayVisualizerStyle;
   apiKeys?: SettingsApiKeys;
 }
 

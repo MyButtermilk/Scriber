@@ -1827,6 +1827,7 @@ class FrontendSmokeBackend:
             "meetingAudioRetentionDays": 0,
             "voiceprintLibraryOptIn": True,
             "visualizerBarCount": 45,
+            "overlayVisualizerStyle": "bars",
             "micAlwaysOn": False,
             "onnxModel": "",
             "apiKeys": {
@@ -3465,6 +3466,7 @@ async def wait_for_settings_patches(
             and any(patch.get("autoSummarize") is True for patch in patches)
             and any(patch.get("language") == "de" for patch in patches)
             and any(patch.get("defaultSttService") == "mistral_async" for patch in patches)
+            and any(patch.get("overlayVisualizerStyle") == "energy_wave" for patch in patches)
             and any(patch.get("customVocab") == "Scriber, Gemini 3.5, Quality Loop" for patch in patches)
             and any(
                 patch.get("summarizationPrompt") == "Bitte fasse Entscheidungen und offene Risiken knapp zusammen."
@@ -4124,6 +4126,8 @@ async def exercise_settings_interactions(
     node.click();
     return true;
   };
+  const findRadioByText = (label) => Array.from(document.querySelectorAll('button[role="radio"]'))
+    .find((node) => (node.textContent || '').trim() === label);
   const findSwitchInSetting = (label) => {
     const labelNode = Array.from(document.querySelectorAll('label'))
       .find((node) => (node.textContent || '').trim() === label);
@@ -4149,6 +4153,7 @@ async def exercise_settings_interactions(
     summarizationModel: !!findChoice('Gemini 3.5 Flash'),
     openRouterSummaryModels: !!findChoice('MiniMax M3 Nitro') && !!findChoice('GLM 5.2 Nitro'),
     autoSummarize: !!findSwitchInSetting('Auto-summarize'),
+    overlayVisualizer: !!findRadioByText('Energy wave'),
     customVocabulary: !!customVocabularyArea,
     summaryPrompt: !!summaryPromptArea,
     geminiKey: !!document.querySelector('[data-credential-id="Gemini"]'),
@@ -4160,12 +4165,15 @@ async def exercise_settings_interactions(
     document.querySelector('input[aria-label="Select German as default transcription language"]')?.click();
     clickChoice('Gemini 3.5 Flash');
     clickSwitchInSetting('Auto-summarize');
+    findRadioByText('Energy wave')?.click();
     return { ok: false, waitingForControlSaves: true, actions };
   }
 
   const text = document.body ? document.body.innerText : '';
+  const energyWaveSelected = findRadioByText('Energy wave')?.getAttribute('aria-checked') === 'true';
   return {
     ok: Object.values(actions).every(Boolean)
+      && energyWaveSelected
       && text.includes('Mistral Batch')
       && text.includes('German')
       && text.includes('Gemini 3.5 Flash')
@@ -4175,7 +4183,8 @@ async def exercise_settings_interactions(
     hasMistralAsync: text.includes('Mistral Batch'),
     hasGerman: text.includes('German'),
     hasGemini35: text.includes('Gemini 3.5 Flash'),
-    hasOpenRouterSummaries: text.includes('MiniMax M3 Nitro') && text.includes('GLM 5.2 Nitro')
+    hasOpenRouterSummaries: text.includes('MiniMax M3 Nitro') && text.includes('GLM 5.2 Nitro'),
+    energyWaveSelected
   };
 })()
 """,
