@@ -147,6 +147,12 @@ param(
 $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 8765
 
+try {
+    Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+} catch {
+    throw "The installed desktop smoke requires the System.Net.Http runtime assembly: $($_.Exception.Message)"
+}
+
 if ($LiveRecordingRustAudioCaptureMode -and $LiveRecordingAudioEngine -ne "rust-wasapi") {
     throw "-LiveRecordingRustAudioCaptureMode requires -LiveRecordingAudioEngine rust-wasapi."
 }
