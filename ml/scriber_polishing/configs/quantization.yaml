@@ -1,0 +1,24 @@
+schema_version: 1
+variants:
+  - bf16
+  - int8
+  - int4_nf4
+  - gguf_q8_0
+  - gguf_q4_k_m
+gguf_requires_verified_gemma3_support: true
+reevaluate_every_variant: true
+length_buckets: [50, 150, 300, 500, 1000]
+percentiles: [50, 95, 99]
+measure:
+  - model_load
+  - cold_start
+  - warm_start
+  - prefill
+  - time_to_first_token
+  - tokens_per_second
+  - end_to_end
+  - peak_vram
+  - peak_ram
+  - cpu
+  - gpu
+  - model_size

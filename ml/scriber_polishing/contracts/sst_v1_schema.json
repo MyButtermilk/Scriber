@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/canonical-polishing-record-v1.schema.json",
+  "title": "Scriber canonical polishing record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "canonical_document_id",
+    "seed_id",
+    "source_plan_batch",
+    "plan_generator_agent",
+    "target_writer_agent",
+    "target_prompt_hash",
+    "semantic_plan_sha256",
+    "source_text",
+    "target_sst",
+    "target_plain_text",
+    "target_markdown",
+    "target_html",
+    "target_ast",
+    "language",
+    "style_profile",
+    "address_mode",
+    "legal_citation_style",
+    "unit_style",
+    "normalize_valid_variants",
+    "protected_spans",
+    "applied_normalizations",
+    "rejected_normalizations",
+    "ambiguity_flags"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "canonical_document_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,119}$"
+    },
+    "seed_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{7,79}$"
+    },
+    "source_plan_batch": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{4,79}$"
+    },
+    "plan_generator_agent": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{4,79}$"
+    },
+    "target_writer_agent": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{4,79}$"
+    },
+    "target_prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "semantic_plan_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "target_sst": {
+      "type": "string",
+      "pattern": "^\\[DOC\\][\\s\\S]*\\[/DOC\\]$",
+      "maxLength": 30000
+    },
+    "target_plain_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "target_markdown": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30000
+    },
+    "target_html": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50000
+    },
+    "target_ast": {
+      "type": "object"
+    },
+    "language": {
+      "enum": [
+        "de-DE",
+        "en",
+        "mixed"
+      ]
+    },
+    "style_profile": {
+      "const": "duden_preferred_business"
+    },
+    "address_mode": {
+      "enum": [
+        "formal_sie",
+        "personal_du_capitalized",
+        "personal_du_lowercase",
+        "neutral_third_person",
+        "quoted_speech",
+        "mixed_correspondence",
+        "ambiguous"
+      ]
+    },
+    "legal_citation_style": {
+      "const": "long"
+    },
+    "unit_style": {
+      "const": "professional_symbols"
+    },
+    "normalize_valid_variants": {
+      "type": "boolean"
+    },
+    "protected_spans": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "applied_normalizations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      }
+    },
+    "rejected_normalizations": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      }
+    },
+    "ambiguity_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      }
+    }
+  }
+}

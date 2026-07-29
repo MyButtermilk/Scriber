@@ -1,0 +1,20 @@
+schema_version: 1
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+method: full_sft
+fallback_method: lora
+fallback_ranks: [16, 32]
+seed: 270011
+minimum_train_examples: 5000
+validation_examples: 500
+test_examples: 500
+challenge_examples: 250
+epochs: 2
+max_sequence_length: 512
+micro_batch_size: 1
+effective_batch_size: 16
+learning_rate_candidates: [0.00002, 0.00005]
+bf16: true
+gradient_checkpointing: true
+optimizer: adamw_8bit_if_stable
+early_stopping: true

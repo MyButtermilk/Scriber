@@ -1,0 +1,36 @@
+schema_version: 1
+seed: 270020
+candidates:
+  - raw_transcript
+  - deterministic_minimal
+  - base_model
+  - pilot
+  - final
+  - final_quantized
+hard_gates:
+  protected_span_restoration_challenge: 1.0
+  critical_amount_changes: 0
+  critical_negation_changes: 0
+  critical_condition_changes: 0
+  critical_modality_changes: 0
+  critical_legal_reference_changes: 0
+  critical_unit_dimension_changes: 0
+  material_additions: 0
+  material_omissions: 0
+  answered_questions: 0
+  summaries: 0
+  output_only_compliance: 1.0
+  invented_headings_critical: 0
+  safe_renderer_rate: 1.0
+minimums:
+  ai_gold_test_acceptable: 0.97
+  ai_gold_challenge_acceptable: 0.95
+  identity_exact_match: 0.98
+  punctuation_f1: 0.95
+  filler_f1: 0.90
+  repetition_cleanup_f1: 0.90
+  value_preservation: 0.99
+  sst_parse_test: 0.999
+  sst_parse_critical: 1.0
+  unit_exact_match: 0.99
+  legal_citation_exact_match: 0.99

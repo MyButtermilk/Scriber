@@ -1,0 +1,24 @@
+schema_version: 1
+model_repository: ${HF_NAMESPACE}/scriber-gemma3-270m-polishing-de-v1
+dataset_repository: ${HF_NAMESPACE}/scriber-transcript-polishing-de-v1
+initial_visibility: private
+public_requires:
+  environment_flag: HF_PUBLIC
+  all_release_gates: true
+  sol_release_judge: pass
+  license_check: pass
+  hub_reload: pass
+github:
+  branch: codex/gemma3-270m-ai-only-polishing
+  draft_pull_request: true
+  ready_only_after_technical_verification: true
+status_values:
+  - AI_DATA_FACTORY_IN_PROGRESS
+  - READY_FOR_TRAINING
+  - TRAINING_IN_PROGRESS
+  - READY_FOR_AI_JUDGING
+  - RELEASED
+  - PRIVATE_CANDIDATE
+  - BLOCKED_BY_INCLUDED_CODEX_LIMIT
+  - BLOCKED_BY_EXTERNAL_PREREQUISITE
+  - FAILED

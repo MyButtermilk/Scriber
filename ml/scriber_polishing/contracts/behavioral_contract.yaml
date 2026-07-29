@@ -1,0 +1,72 @@
+version: "1"
+rule_defaults: &rule_defaults
+  criticality: high
+  positive_examples: ["Die bereinigte Fassung wahrt die Regel."]
+  counterexamples: ["Die bereinigte Fassung verletzt die Regel."]
+  automatic_checks: ["targeted_regression"]
+  ai_judge_criterion: "Die Ausgabe erfüllt die Regel konservativ und ohne Bedeutungsänderung."
+rules:
+  - {<<: *rule_defaults, id: output_only, description: "Gibt nur die bereinigte Fassung aus.", criticality: critical, error_code: BC_OUTPUT_ONLY}
+  - {<<: *rule_defaults, id: preserve_language, description: "Erhält die Ausgangssprache.", criticality: critical, error_code: BC_PRESERVE_LANGUAGE}
+  - {<<: *rule_defaults, id: preserve_meaning, description: "Erhält Bedeutung und Nuancen.", criticality: critical, error_code: BC_PRESERVE_MEANING}
+  - {<<: *rule_defaults, id: preserve_order, description: "Erhält die Reihenfolge der Aussagen.", criticality: critical, error_code: BC_PRESERVE_ORDER}
+  - {<<: *rule_defaults, id: preserve_names, description: "Erhält Eigennamen exakt.", criticality: critical, error_code: BC_PRESERVE_NAMES}
+  - {<<: *rule_defaults, id: preserve_organizations, description: "Erhält Organisationsnamen exakt.", criticality: critical, error_code: BC_PRESERVE_ORGANIZATIONS}
+  - {<<: *rule_defaults, id: preserve_technical_terms, description: "Erhält Fachbegriffe.", criticality: critical, error_code: BC_PRESERVE_TECHNICAL_TERMS}
+  - {<<: *rule_defaults, id: preserve_legal_terms, description: "Erhält juristische Fachbegriffe.", criticality: critical, error_code: BC_PRESERVE_LEGAL_TERMS}
+  - {<<: *rule_defaults, id: preserve_numbers, description: "Erhält Zahlenwerte.", criticality: critical, error_code: BC_PRESERVE_NUMBERS}
+  - {<<: *rule_defaults, id: preserve_amounts, description: "Erhält Geldbeträge.", criticality: critical, error_code: BC_PRESERVE_AMOUNTS}
+  - {<<: *rule_defaults, id: preserve_percentages, description: "Erhält Prozentwerte.", criticality: critical, error_code: BC_PRESERVE_PERCENTAGES}
+  - {<<: *rule_defaults, id: preserve_dates, description: "Erhält Datumswerte.", criticality: critical, error_code: BC_PRESERVE_DATES}
+  - {<<: *rule_defaults, id: preserve_times, description: "Erhält Uhrzeiten.", criticality: critical, error_code: BC_PRESERVE_TIMES}
+  - {<<: *rule_defaults, id: preserve_negations, description: "Erhält Negationen.", criticality: critical, error_code: BC_PRESERVE_NEGATIONS}
+  - {<<: *rule_defaults, id: preserve_conditions, description: "Erhält Bedingungen und Modalitäten.", criticality: critical, error_code: BC_PRESERVE_CONDITIONS}
+  - {<<: *rule_defaults, id: preserve_legal_references, description: "Erhält Rechtsnormen und Aktenzeichen.", criticality: critical, error_code: BC_PRESERVE_LEGAL_REFERENCES}
+  - {<<: *rule_defaults, id: preserve_speaker_labels, description: "Erhält Sprecherbezeichnungen.", criticality: critical, error_code: BC_PRESERVE_SPEAKER_LABELS}
+  - {<<: *rule_defaults, id: preserve_timestamps, description: "Erhält Zeitstempel exakt.", criticality: critical, error_code: BC_PRESERVE_TIMESTAMPS}
+  - {<<: *rule_defaults, id: preserve_quotes, description: "Erhält Zitate.", criticality: critical, error_code: BC_PRESERVE_QUOTES}
+  - {<<: *rule_defaults, id: do_not_answer_questions, description: "Beantwortet keine diktierten Fragen.", criticality: critical, error_code: BC_DO_NOT_ANSWER_QUESTIONS}
+  - {<<: *rule_defaults, id: do_not_summarize, description: "Erstellt keine Zusammenfassung.", criticality: critical, error_code: BC_DO_NOT_SUMMARIZE}
+  - {<<: *rule_defaults, id: do_not_add_content, description: "Fügt keine Inhalte hinzu.", criticality: critical, error_code: BC_DO_NOT_ADD_CONTENT}
+  - {<<: *rule_defaults, id: do_not_omit_content, description: "Lässt keine Inhalte aus.", criticality: critical, error_code: BC_DO_NOT_OMIT_CONTENT}
+  - {<<: *rule_defaults, id: do_not_invent_headings, description: "Erfindet keine Überschriften.", criticality: high, error_code: BC_DO_NOT_INVENT_HEADINGS}
+  - {<<: *rule_defaults, id: do_not_invent_closing, description: "Erfindet keine Grußformel oder Signatur.", criticality: high, error_code: BC_DO_NOT_INVENT_CLOSING}
+  - {<<: *rule_defaults, id: correct_spelling, description: "Korrigiert eindeutige Rechtschreibfehler.", error_code: BC_CORRECT_SPELLING}
+  - {<<: *rule_defaults, id: correct_grammar, description: "Korrigiert eindeutige Grammatikfehler.", error_code: BC_CORRECT_GRAMMAR}
+  - {<<: *rule_defaults, id: correct_word_order, description: "Korrigiert eindeutig falsche Wortstellung.", error_code: BC_CORRECT_WORD_ORDER}
+  - {<<: *rule_defaults, id: restore_punctuation, description: "Stellt natürliche Zeichensetzung her.", error_code: BC_RESTORE_PUNCTUATION}
+  - {<<: *rule_defaults, id: restore_sentence_boundaries, description: "Stellt lesbare Satzgrenzen her.", error_code: BC_RESTORE_SENTENCE_BOUNDARIES}
+  - {<<: *rule_defaults, id: remove_nonsemantic_fillers, description: "Entfernt bedeutungslose Fülllaute und Füllwörter.", error_code: BC_REMOVE_NONSEMANTIC_FILLERS}
+  - {<<: *rule_defaults, id: preserve_semantic_fillers, description: "Erhält bedeutungstragende Füllwörter.", error_code: BC_PRESERVE_SEMANTIC_FILLERS}
+  - {<<: *rule_defaults, id: remove_stutters, description: "Entfernt Stotterer.", error_code: BC_REMOVE_STUTTERS}
+  - {<<: *rule_defaults, id: remove_accidental_repetitions, description: "Entfernt versehentliche Wortwiederholungen.", error_code: BC_REMOVE_ACCIDENTAL_REPETITIONS}
+  - {<<: *rule_defaults, id: remove_unnecessary_immediate_repetition, description: "Führt zweifelsfreie unmittelbare Dopplungen zusammen.", error_code: BC_REMOVE_UNNECESSARY_IMMEDIATE_REPETITION}
+  - {<<: *rule_defaults, id: preserve_intentional_repetition, description: "Erhält beabsichtigte Wiederholungen.", error_code: BC_PRESERVE_INTENTIONAL_REPETITION}
+  - {<<: *rule_defaults, id: resolve_false_starts, description: "Entfernt verworfene Satzanfänge bei Klarheit.", error_code: BC_RESOLVE_FALSE_STARTS}
+  - {<<: *rule_defaults, id: resolve_explicit_self_corrections, description: "Löst eindeutige Selbstkorrekturen auf.", error_code: BC_RESOLVE_EXPLICIT_SELF_CORRECTIONS}
+  - {<<: *rule_defaults, id: interpret_spoken_punctuation, description: "Setzt eindeutig diktierte Satzzeichen um.", error_code: BC_INTERPRET_SPOKEN_PUNCTUATION}
+  - {<<: *rule_defaults, id: interpret_spoken_formatting, description: "Setzt eindeutig diktierte Formatbefehle um.", error_code: BC_INTERPRET_SPOKEN_FORMATTING}
+  - {<<: *rule_defaults, id: create_semantic_paragraphs, description: "Bildet nur thematisch sinnvolle Absätze.", error_code: BC_CREATE_SEMANTIC_PARAGRAPHS}
+  - {<<: *rule_defaults, id: preserve_statement_order, description: "Sortiert Aussagen nicht um.", criticality: critical, error_code: BC_PRESERVE_STATEMENT_ORDER}
+  - {<<: *rule_defaults, id: format_subjects, description: "Formatiert eindeutig diktierte Betreffzeilen.", error_code: BC_FORMAT_SUBJECTS}
+  - {<<: *rule_defaults, id: format_headings, description: "Formatiert nur vorhandene oder diktierte Überschriften.", error_code: BC_FORMAT_HEADINGS}
+  - {<<: *rule_defaults, id: format_greetings, description: "Formatiert Anreden korrekt.", error_code: BC_FORMAT_GREETINGS}
+  - {<<: *rule_defaults, id: format_closings, description: "Formatiert vorhandene Grußformeln korrekt.", error_code: BC_FORMAT_CLOSINGS}
+  - {<<: *rule_defaults, id: format_signatures, description: "Formatiert vorhandene Signaturen korrekt.", error_code: BC_FORMAT_SIGNATURES}
+  - {<<: *rule_defaults, id: create_bullet_lists_only_when_justified, description: "Erstellt Aufzählungen nur bei echten Listen.", error_code: BC_CREATE_BULLET_LISTS_ONLY_WHEN_JUSTIFIED}
+  - {<<: *rule_defaults, id: create_numbered_lists_only_when_justified, description: "Erstellt nummerierte Listen nur bei echten Listen.", error_code: BC_CREATE_NUMBERED_LISTS_ONLY_WHEN_JUSTIFIED}
+  - {<<: *rule_defaults, id: preserve_list_order, description: "Erhält die Reihenfolge von Listenelementen.", criticality: high, error_code: BC_PRESERVE_LIST_ORDER}
+  - {<<: *rule_defaults, id: normalize_german_numbers, description: "Normalisiert eindeutige deutsche Zahlenschreibweisen.", error_code: BC_NORMALIZE_GERMAN_NUMBERS}
+  - {<<: *rule_defaults, id: normalize_dates, description: "Normalisiert eindeutige Datumsangaben.", error_code: BC_NORMALIZE_DATES}
+  - {<<: *rule_defaults, id: normalize_times, description: "Normalisiert eindeutige Uhrzeiten.", error_code: BC_NORMALIZE_TIMES}
+  - {<<: *rule_defaults, id: normalize_money, description: "Normalisiert eindeutige Geldbeträge deutschsprachig.", error_code: BC_NORMALIZE_MONEY}
+  - {<<: *rule_defaults, id: normalize_percentages, description: "Normalisiert eindeutige Prozentangaben.", error_code: BC_NORMALIZE_PERCENTAGES}
+  - {<<: *rule_defaults, id: normalize_units, description: "Normalisiert eindeutige Maßeinheiten professionell.", error_code: BC_NORMALIZE_UNITS}
+  - {<<: *rule_defaults, id: normalize_legal_abbreviations, description: "Kürzt eindeutige Gesetzesnamen korrekt ab.", error_code: BC_NORMALIZE_LEGAL_ABBREVIATIONS}
+  - {<<: *rule_defaults, id: normalize_legal_citations, description: "Strukturiert eindeutig diktierte Gesetzeszitate.", error_code: BC_NORMALIZE_LEGAL_CITATIONS}
+  - {<<: *rule_defaults, id: capitalize_formal_address, description: "Schreibt formelle Anredepronomen groß.", error_code: BC_CAPITALIZE_FORMAL_ADDRESS}
+  - {<<: *rule_defaults, id: capitalize_familiar_address_in_correspondence, description: "Schreibt direkte vertrauliche Anreden in Korrespondenz groß.", error_code: BC_CAPITALIZE_FAMILIAR_ADDRESS_IN_CORRESPONDENCE}
+  - {<<: *rule_defaults, id: preserve_third_person_lowercase, description: "Lässt Pronomen der dritten Person klein.", error_code: BC_PRESERVE_THIRD_PERSON_LOWERCASE}
+  - {<<: *rule_defaults, id: apply_preferred_orthographic_variants, description: "Nutzt bevorzugte Duden-Hausformen.", error_code: BC_APPLY_PREFERRED_ORTHOGRAPHIC_VARIANTS}
+  - {<<: *rule_defaults, id: accept_valid_alternative_spellings, description: "Akzeptiert gültige Alternativschreibungen.", error_code: BC_ACCEPT_VALID_ALTERNATIVE_SPELLINGS}
+  - {<<: *rule_defaults, id: distinguish_context_sensitive_spellings, description: "Unterscheidet kontextabhängige Schreibweisen.", error_code: BC_DISTINGUISH_CONTEXT_SENSITIVE_SPELLINGS}

@@ -1,0 +1,10 @@
+schema_version: 1
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+architecture: gemma3_text
+chat_template: tokenizer_native
+system_role_supported: false
+training_output: sst_v1
+local_cache_policy:
+  outside_git_repository: true
+  default_windows_root: local_app_data

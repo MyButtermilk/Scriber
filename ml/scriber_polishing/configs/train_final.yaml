@@ -1,0 +1,22 @@
+schema_version: 1
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+method: selected_by_pilot
+seed: 270012
+epochs: 3
+max_sequence_length_candidates: [512, 768, 1024]
+micro_batch_size: measured
+effective_batch_size: 32
+learning_rate: selected_by_pilot
+warmup_ratio: 0.03
+weight_decay: 0.01
+max_grad_norm: 1.0
+bf16: true
+gradient_checkpointing: true
+dynamic_padding: true
+length_bucketing: true
+use_cache: false
+sdpa: true
+checkpoint_resume: true
+assistant_output_loss_only: true
+maximum_improvement_rounds: 3

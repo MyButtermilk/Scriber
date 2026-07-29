@@ -1,0 +1,43 @@
+schema_version: 1
+transport: codex_chatgpt_subscription
+generative_api_allowed: false
+human_curation_allowed: false
+roles:
+  orchestrator:
+    model: gpt-5.6-terra
+    reasoning: medium
+  plan_generators:
+    minimum_independent_agents: 4
+    model: gpt-5.6-terra
+    reasoning: medium
+    fresh_context: true
+  target_writers:
+    minimum_independent_agents: 2
+    model: gpt-5.6-terra
+    reasoning: medium
+    must_differ_from_plan_generator: true
+  fact_critics:
+    minimum_independent_agents: 2
+    model: gpt-5.6-terra
+    reasoning: max
+    blinded_to_generator_and_split: true
+  style_critics:
+    minimum_independent_agents: 2
+    model: gpt-5.6-terra
+    reasoning: max
+    blinded_to_generator_and_split: true
+  adversarial_critics:
+    minimum_independent_agents: 2
+    model: gpt-5.6-sol
+    reasoning: max
+    blinded_to_generator_and_split: true
+  release_judge:
+    model: gpt-5.6-sol
+    reasoning: ultra
+    fallback_reasoning: max
+    blinded_to_training_and_candidate_identity: true
+quorum:
+  normal: [deterministic, fact, style]
+  high_risk: [deterministic, fact, style, adversarial]
+  possible_fact_error: reject
+  persistent_disagreement: reject

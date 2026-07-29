@@ -1,0 +1,22 @@
+schema_version: 1
+seed: 270002
+minimum_total: 3000
+target_total: 4000
+splits:
+  train: 1500
+  validation: 750
+  test: 1000
+  challenge: 750
+requirements:
+  semantic_plan_valid: true
+  document_ast_valid: true
+  deterministic_render: true
+  fact_critic: acceptable
+  style_critic: acceptable
+  adversarial_critic: acceptable
+  fact_roundtrip: exact
+  sst_roundtrip: exact
+  protected_spans: exact
+  deduplication: pass
+  split_leakage: pass
+sealed_splits: [test, challenge]
