@@ -1170,11 +1170,11 @@ It:
   maintenance. Ordinary `main` pushes do not build a second installer,
 - runs the tag-only signing preflight immediately after checkout and Outlook
   validation, before computing or restoring any release cache. It rejects
-  missing updater keys unless the explicit unsigned-tag override is `1`,
-  rejects non-HTTPS updater endpoints, verifies a configured private-key path
-  exists, and rejects Authenticode timestamp/publisher settings that would be
-  silently ignored because signature verification is disabled. The preflight
-  logs only configuration state and never key material, passwords, or paths,
+  missing updater keys without an official-release escape hatch, rejects
+  non-HTTPS updater endpoints, verifies a configured private-key path exists,
+  and rejects Authenticode timestamp/publisher settings that would be silently
+  ignored because Authenticode verification is disabled. The preflight logs
+  only configuration state and never key material, passwords, or paths,
 - computes normalized release cache key files before dependency setup so
   version-only changes in `package-lock.json` and `src/version.py` do not
   invalidate dependency caches that do not actually depend on the app version.
@@ -1505,13 +1505,16 @@ while capture is active.
 The Python backend must not run an updater cron or ping. Update publication is
 validated at release time through signed Tauri metadata.
 
-The GitHub release workflow uses Tauri's free updater artifact signing with
-these repository secrets/variables:
+The GitHub release workflow always uses Tauri's free updater artifact signing
+with these repository secrets/variables:
 
 - `SCRIBER_TAURI_UPDATER_PUBLIC_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 - `SCRIBER_TAURI_UPDATER_ENDPOINT`
+
+Authenticode additionally uses these values only when explicitly enabled:
+
 - `SCRIBER_WINDOWS_CERTIFICATE_BASE64`
 - `SCRIBER_WINDOWS_CERTIFICATE_PASSWORD`
 - `SCRIBER_AUTHENTICODE_TIMESTAMP_URL`
@@ -1529,8 +1532,9 @@ copying the checked-in `tauri.conf.json`. An empty
 `latest.json` endpoint. For local signed builds, `scripts\build_windows.ps1` also accepts
 `TAURI_SIGNING_PRIVATE_KEY_PATH` and normalizes it to
 `TAURI_SIGNING_PRIVATE_KEY` before invoking the Tauri CLI.
-`v*` tag release jobs fail when either updater signing or Authenticode signing
-is missing. There is no unsigned official-release escape hatch. The Windows job
+`v*` tag release jobs always fail when updater signing is missing. Authenticode
+is an additional opt-in controlled by
+`SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1`. When enabled, the Windows job
 imports the base64 PFX into its ephemeral CurrentUser certificate store without
 printing certificate material or passwords, exposes only its public thumbprint,
 and configures Tauri with SHA-256 plus the required HTTPS RFC 3161 timestamp
@@ -1581,9 +1585,9 @@ draft rollback cannot be verified, it deletes exactly that release ID and
 requires a confirming HTTP 404. It never resolves a different release by tag
 for rollback or deletion.
 
-Authenticode production signing is wired for an imported RSA code-signing PFX.
-The organization must still provision that certificate and configure the
-repository secrets/variables above. `scripts\sign_windows_binary.ps1` uses
+Authenticode production signing is wired for an imported RSA code-signing PFX
+but remains disabled until the certificate is provisioned and the opt-in
+repository variables above are configured. `scripts\sign_windows_binary.ps1` uses
 SignTool with SHA-256 and an HTTPS RFC 3161 timestamp, then revalidates the
 signature, exact certificate thumbprint, and timestamp. The final build report
 validates both `scriber-desktop.exe` and `backend\scriber-backend.exe` in

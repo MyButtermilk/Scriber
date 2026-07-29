@@ -645,7 +645,7 @@ jobs:
           & .\scripts\ci\validate_tag_release_preflight.ps1
 
       - name: Import Windows code-signing certificate
-        if: needs.release-plan.outputs.official-release == 'true'
+        if: needs.release-plan.outputs.official-release == 'true' && vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE == '1'
         shell: pwsh
         env:
           SCRIBER_WINDOWS_CERTIFICATE_BASE64: ${{ secrets.SCRIBER_WINDOWS_CERTIFICATE_BASE64 }}

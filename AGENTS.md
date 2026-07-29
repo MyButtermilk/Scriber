@@ -256,12 +256,13 @@ Packaging and scripts:
   duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
   diagnostic/local opt-in. NSIS, updater signing, and verification start only
   after every producer succeeds.
-- Official `v*` tags are fail-closed for Authenticode. The workflow must import
-  an RSA code-signing PFX only into the ephemeral runner store, configure Tauri
-  with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate the desktop,
-  backend, NSIS installer, and timestamp/publisher evidence. Unsigned local
-  builds remain valid only for development; never restore an unsigned escape
-  hatch for public releases.
+- Official `v*` tags are always fail-closed for Tauri updater signing.
+  Authenticode is an additional opt-in controlled by
+  `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1`. When enabled, the workflow must
+  import an RSA code-signing PFX only into the ephemeral runner store,
+  configure Tauri with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate
+  the desktop, backend, NSIS installer, and timestamp/publisher evidence.
+  Never call an updater-signed-only installer Authenticode-signed.
 - `.github/workflows/release-windows.yml`: adaptive release DAG. Release
   planning and exact-revision quality gates start together. On a
   planner-confirmed cold backend/Tauri double miss, both read-only cold
@@ -1616,9 +1617,9 @@ Already implemented and should not be regressed:
   `["rlib"]` for Windows desktop releases. Do not restore Tauri mobile
   `staticlib`/`cdylib` outputs unless mobile targets are introduced; they create
   extra release library artifacts that do not help the NSIS updater build.
-- `v*` tag releases require both Tauri updater signing and Authenticode signing.
-  There is no unsigned public-tag escape hatch; use non-tag workflow dispatches
-  for unsigned packaging experiments.
+- `v*` tag releases require Tauri updater signing. Authenticode is optional
+  until `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1` is configured; that switch
+  remains fail-closed for certificate, publisher, and timestamp evidence.
 - Non-tag GitHub cache/warmup builds use `-NsisCompression none` by default to
   reduce packaging time and intentionally ignore `SCRIBER_NSIS_COMPRESSION`.
   Use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for explicit non-tag packaging

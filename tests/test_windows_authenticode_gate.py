@@ -373,6 +373,9 @@ def test_release_workflow_exposes_authenticode_gate_switches() -> None:
     assert "SCRIBER_WINDOWS_CERTIFICATE_PASSWORD" in workflow
     assert "SCRIBER_AUTHENTICODE_TIMESTAMP_URL" in workflow
     assert "import_windows_signing_certificate.ps1" in workflow
+    assert (
+        "needs.release-plan.outputs.official-release == 'true' && vars.SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE == '1'"
+    ) in workflow
     assert "-RequireAuthenticodeSignature" in workflow
     assert "-RequireAuthenticodeTimestamp" in workflow
 
@@ -462,10 +465,10 @@ def test_tag_release_preflight_rejects_unsigned_override() -> None:
     )
 
     assert result.returncode == 1
-    assert "SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1" in result.stderr
+    assert "Official releases require SCRIBER_TAURI_UPDATER_PUBLIC_KEY" in result.stderr
 
 
-def test_tag_release_preflight_rejects_unsigned_official_release() -> None:
+def test_tag_release_preflight_accepts_updater_signed_release_without_authenticode() -> None:
     result = run_powershell(
         "-NoProfile",
         "-ExecutionPolicy",
@@ -478,8 +481,27 @@ def test_tag_release_preflight_rejects_unsigned_official_release() -> None:
         ),
     )
 
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "updater signing and HTTPS publication are configured" in result.stdout
+    assert "Authenticode is not enabled" in result.stdout
+
+
+def test_tag_release_preflight_requires_complete_authenticode_configuration_when_enabled() -> None:
+    result = run_powershell(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(TAG_RELEASE_PREFLIGHT_SCRIPT),
+        env=tag_release_preflight_env(
+            SCRIBER_TAURI_UPDATER_PUBLIC_KEY="PUBLIC_KEY",
+            TAURI_SIGNING_PRIVATE_KEY="PRIVATE_KEY",
+            SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE="1",
+        ),
+    )
+
     assert result.returncode == 1
-    assert "SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1" in result.stderr
+    assert "SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP=1" in result.stderr
 
 
 def test_tag_release_preflight_rejects_non_https_updater_endpoint() -> None:

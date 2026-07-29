@@ -831,9 +831,9 @@ What it does:
   Non-tag GitHub cache/warmup builds default to `none` and intentionally ignore
   `SCRIBER_NSIS_COMPRESSION`; use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for a
   deliberate non-tag packaging experiment.
-- Builds official tag releases only when updater signing and Authenticode
-  signing are both configured. Unsigned packaging experiments must use a
-  non-tag workflow dispatch; public `v*` tags have no unsigned escape hatch.
+- Builds official tag releases only when Tauri updater signing is configured.
+  Authenticode remains an additional fail-closed opt-in; updater-signed-only
+  releases must be reported as `NotSigned` at the Windows PE layer.
 - Runs size and runtime dependency footprint gates.
 - Writes the installed package smoke report into release metadata and uses it
   for the installed-app size section in `size-report.json`.
@@ -1038,12 +1038,12 @@ Release workflow:
   commit starts.
 - It passes the produced media tools into `scripts/build_windows.ps1`.
 - It collects size, media-preparation, runtime dependency, and timing evidence.
-- Official tags require both Tauri updater signing and Authenticode signing.
-  Authenticode still requires the real RSA certificate secrets, but the build
-  now imports them ephemerally, signs the backend before hash-manifest creation,
-  lets Tauri sign the Windows shell/NSIS surfaces, and rejects any unsigned
-  official output. PyInstaller collection also forces `upx=False`; release
-  bytes no longer depend on whether UPX happens to exist on the build host.
+- Official tags require Tauri updater signing. When Authenticode is explicitly
+  enabled, it additionally requires the real RSA certificate secrets, imports
+  them ephemerally, signs the backend before hash-manifest creation, lets Tauri
+  sign the Windows shell/NSIS surfaces, and rejects any unsigned Authenticode
+  target. PyInstaller collection also forces `upx=False`; release bytes no
+  longer depend on whether UPX happens to exist on the build host.
 - The hybrid release-readiness runner can now invoke `scripts\build_windows.ps1`
   with `-RunReleaseBuild`, pass through updater/signature/Profile-B release
   flags, and reuse the build-generated Authenticode validation report before
