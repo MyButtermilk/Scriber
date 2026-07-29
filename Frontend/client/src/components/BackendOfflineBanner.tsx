@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useBackendStatus } from "@/hooks/use-backend-status";
-import { AlertCircle, RefreshCw, Loader2 } from "lucide-react";
+import { AlertCircle, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useI18n } from "@/i18n";
 import type { TranslationValues } from "@/i18n";
 
@@ -82,7 +83,7 @@ export function BackendOfflineBanner() {
         <div className="w-full max-w-[31rem] rounded-[1.75rem] border border-border/60 bg-card/90 p-7 text-card-foreground shadow-[0_24px_80px_-42px_rgba(15,23,42,0.55)] ring-1 ring-white/10 sm:p-8">
           <div className="flex flex-col items-center text-center">
             <div className="relative mb-6 flex h-20 w-20 items-center justify-center">
-              <div className="absolute inset-0 rounded-full bg-primary/10 scriber-startup-pulse" />
+              <div className="absolute inset-0 rounded-full bg-primary/10" />
               <div className="relative flex h-14 w-14 items-center justify-center rounded-full border border-primary/20 bg-card shadow-[inset_0_1px_0_rgba(255,255,255,0.38)]">
                 <img
                   src="/favicon.svg"
@@ -103,11 +104,8 @@ export function BackendOfflineBanner() {
             </p>
 
             <div className="mt-7 w-full max-w-sm">
-              <div className="h-2 overflow-hidden rounded-full bg-muted shadow-[inset_0_1px_3px_rgba(15,23,42,0.18)]">
-                <div className="h-full w-2/5 rounded-full bg-primary/80 scriber-startup-progress" />
-              </div>
-              <div className="mt-4 flex items-center justify-center gap-2 text-xs font-medium text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              <WavePhysicsLoader size="panel" label={t("Starting Scriber")} />
+              <div className="mt-3 text-xs font-medium text-muted-foreground" aria-live="polite">
                 {startupDetail}
               </div>
             </div>
@@ -148,7 +146,7 @@ export function BackendOfflineBanner() {
             <Button variant="outline" onClick={checkNow} disabled={isChecking} className="min-w-[140px]">
               {isChecking ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  <WavePhysicsLoader className="mr-2" size="inline" />
                   {t("Checking...")}
                 </>
               ) : (

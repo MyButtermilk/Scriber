@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Loader2 } from "lucide-react";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
   calculateHistoryGridColumns,
   calculateHistoryRowTranslateY,
@@ -303,7 +303,7 @@ export function VirtualTranscriptHistory<TItem>({
       <div ref={loadMoreRef} className="flex h-12 items-center justify-center" aria-live="polite">
         {isLoadingMore && (
           <>
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+            <WavePhysicsLoader size="inline" />
             <span className="sr-only">{t("Loading more transcripts")}</span>
           </>
         )}

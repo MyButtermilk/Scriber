@@ -1664,7 +1664,7 @@ pub fn run() {
                     "native overlay hidden window precreate skipped: {err}"
                 )),
             }
-            apply_default_desktop_autostart(app.handle());
+            apply_desktop_autostart_preference(app.handle());
             let manager = app.state::<BackendManager>();
             manager.set_app_version(app.package_info().version.to_string());
             manager.set_resource_dir(app.path().resource_dir().ok());
@@ -1742,27 +1742,48 @@ fn should_hide_window_instead_of_closing(label: &str) -> bool {
     label == MAIN_WINDOW_LABEL
 }
 
-fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
+fn apply_desktop_autostart_preference<R: Runtime>(app: &AppHandle<R>) {
+    if cfg!(debug_assertions) {
+        write_shell_log("desktop autostart preference skipped in debug build");
+        return;
+    }
+
+    let Some(choice_path) = desktop_autostart_user_choice_path(app) else {
+        write_shell_log("desktop autostart preference skipped: app data directory unavailable");
+        return;
+    };
+
+    match fs::read_to_string(&choice_path) {
+        Ok(value) => {
+            let Some(enabled) = parse_desktop_autostart_user_choice(&value) else {
+                write_shell_log("desktop autostart preference ignored: invalid persisted value");
+                return;
+            };
+            match set_desktop_autostart_enabled(enabled) {
+                Ok(()) => {
+                    let state = if enabled { "enabled" } else { "disabled" };
+                    write_shell_log(&format!(
+                        "desktop autostart reconciled from persisted preference: {state}"
+                    ));
+                }
+                Err(err) => {
+                    write_shell_log(&format!(
+                        "desktop autostart preference reconciliation failed: {err}"
+                    ));
+                }
+            }
+            return;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => {
+            write_shell_log(&format!("desktop autostart preference read failed: {err}"));
+            return;
+        }
+    }
+
     if !desktop_autostart_default_enabled() {
         write_shell_log("desktop autostart first-run default skipped by environment");
         return;
-    }
-
-    if cfg!(debug_assertions) {
-        write_shell_log("desktop autostart first-run default skipped in debug build");
-        return;
-    }
-
-    match desktop_autostart_user_choice_path(app) {
-        Some(choice_path) if choice_path.exists() => {
-            write_shell_log("desktop autostart default skipped: user preference exists");
-            return;
-        }
-        Some(_) => {}
-        None => {
-            write_shell_log("desktop autostart default skipped: app data directory unavailable");
-            return;
-        }
     }
 
     match set_desktop_autostart_enabled(true) {
@@ -1772,6 +1793,14 @@ fn apply_default_desktop_autostart<R: Runtime>(app: &AppHandle<R>) {
         Err(err) => {
             write_shell_log(&format!("desktop autostart install default skipped: {err}"));
         }
+    }
+}
+
+fn parse_desktop_autostart_user_choice(value: &str) -> Option<bool> {
+    match value.trim() {
+        "enabled" => Some(true),
+        "disabled" => Some(false),
+        _ => None,
     }
 }
 
@@ -5345,20 +5374,21 @@ mod tests {
         find_backend_executable, find_backend_executable_in_dirs, health_response_ready,
         is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
         normalize_benchmark_uuid, normalize_global_shortcut, normalize_hotkey_mode,
-        parse_loopback_backend_url, parse_shell_menu_smoke_actions,
-        provider_replay_run_id_for_child, python_runtime_environment,
-        read_backend_response_limited, recent_transcript_label, recent_transcripts_from_value,
-        request_backend_shutdown, resolve_session_token, sanitize_menu_label, shell_ipc,
-        shell_ipc_env_pairs, shortcut_id_for_hotkey, should_attach_benchmark_hotkey_marker,
-        should_hide_window_instead_of_closing, should_refresh_hotkey_after_backend_ready,
-        should_show_initializing_overlay_for_hotkey, should_show_window_for_tray_click,
-        should_wait_for_hotkey_backend, split_http_response, tray_icon_image, tray_icon_kind,
-        tray_icon_size_for_scale_factor, tray_tooltip, wait_for_child_exit, BackendAccess,
-        BackendCommandSpec, BackendStatus, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
-        RecentTranscriptMenuEntry, ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner,
-        UiLocale, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV,
-        DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
-        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        parse_desktop_autostart_user_choice, parse_loopback_backend_url,
+        parse_shell_menu_smoke_actions, provider_replay_run_id_for_child,
+        python_runtime_environment, read_backend_response_limited, recent_transcript_label,
+        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
+        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
+        should_attach_benchmark_hotkey_marker, should_hide_window_instead_of_closing,
+        should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
+        should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
+        tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
+        wait_for_child_exit, BackendAccess, BackendCommandSpec, BackendStatus, DesktopHotkeyState,
+        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
+        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, AUTOSTART_DEFAULT_ENV,
+        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
+        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
+        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -6074,6 +6104,17 @@ mod tests {
             Some(value) => std::env::set_var(AUTOSTART_DEFAULT_ENV, value),
             None => std::env::remove_var(AUTOSTART_DEFAULT_ENV),
         }
+    }
+
+    #[test]
+    fn persisted_autostart_choice_is_strict_and_whitespace_tolerant() {
+        assert_eq!(parse_desktop_autostart_user_choice("enabled\n"), Some(true));
+        assert_eq!(
+            parse_desktop_autostart_user_choice(" disabled \r\n"),
+            Some(false)
+        );
+        assert_eq!(parse_desktop_autostart_user_choice("true"), None);
+        assert_eq!(parse_desktop_autostart_user_choice(""), None);
     }
 
     #[test]

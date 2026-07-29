@@ -831,10 +831,9 @@ What it does:
   Non-tag GitHub cache/warmup builds default to `none` and intentionally ignore
   `SCRIBER_NSIS_COMPRESSION`; use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for a
   deliberate non-tag packaging experiment.
-- Builds signed updater tag releases only when updater signing is configured.
-  Unsigned `v*` tag builds require the explicit
-  `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` escape hatch and are not the normal
-  update-test path.
+- Builds official tag releases only when updater signing and Authenticode
+  signing are both configured. Unsigned packaging experiments must use a
+  non-tag workflow dispatch; public `v*` tags have no unsigned escape hatch.
 - Runs size and runtime dependency footprint gates.
 - Writes the installed package smoke report into release metadata and uses it
   for the installed-app size section in `size-report.json`.
@@ -1039,8 +1038,12 @@ Release workflow:
   commit starts.
 - It passes the produced media tools into `scripts/build_windows.ps1`.
 - It collects size, media-preparation, runtime dependency, and timing evidence.
-- Authenticode and Tauri updater signing gates are available but require real
-  signing/updater secrets.
+- Official tags require both Tauri updater signing and Authenticode signing.
+  Authenticode still requires the real RSA certificate secrets, but the build
+  now imports them ephemerally, signs the backend before hash-manifest creation,
+  lets Tauri sign the Windows shell/NSIS surfaces, and rejects any unsigned
+  official output. PyInstaller collection also forces `upx=False`; release
+  bytes no longer depend on whether UPX happens to exist on the build host.
 - The hybrid release-readiness runner can now invoke `scripts\build_windows.ps1`
   with `-RunReleaseBuild`, pass through updater/signature/Profile-B release
   flags, and reuse the build-generated Authenticode validation report before

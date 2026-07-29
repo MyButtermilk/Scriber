@@ -1,4 +1,5 @@
-import { Search, Clock, PlayCircle, Youtube as YoutubeIcon, Loader2, ThumbsUp, Eye, RotateCcw, X } from "lucide-react";
+import { Search, Clock, PlayCircle, Youtube as YoutubeIcon, ThumbsUp, Eye, RotateCcw, X } from "lucide-react";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -215,7 +216,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     variant="outline"
                     className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1 shrink-0"
                   >
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <WavePhysicsLoader size="micro" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
                       : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
@@ -240,7 +241,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     }
                   >
                     {isRetryingTranscription ? (
-                      <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                      <WavePhysicsLoader size="micro" />
                     ) : (
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     )}
@@ -305,7 +306,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     variant="outline"
                     className="text-blue-600 border-blue-200 bg-blue-50/90 text-ui-micro flex items-center gap-1"
                   >
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <WavePhysicsLoader size="micro" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
                       : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
@@ -330,7 +331,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     }
                   >
                     {isRetryingTranscription ? (
-                      <Loader2 className="h-3 w-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                      <WavePhysicsLoader size="micro" />
                     ) : (
                       <RotateCcw className="h-3 w-3" aria-hidden="true" />
                     )}
@@ -855,7 +856,7 @@ export default function Youtube() {
               aria-busy={isSearching}
             >
               {isSearching ? (
-                <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />
+                <WavePhysicsLoader size="inline" />
               ) : (
                 <Search className="h-4 w-4 stroke-[1.7px]" aria-hidden="true" />
               )}
@@ -935,20 +936,8 @@ export default function Youtube() {
           )}
 
           {isSearching && (
-            <div className="grid gap-4 xl:grid-cols-2" aria-live="polite" aria-busy="true">
-              {[0, 1].map((item) => (
-                <div key={item} className="youtube-result-card min-h-[116px] animate-pulse rounded-[18px] p-4">
-                  <div className="flex gap-4">
-                    <div className="h-20 w-32 shrink-0 rounded-[10px] bg-foreground/[0.07]" />
-                    <div className="flex-1 space-y-3 py-1">
-                      <div className="h-4 w-3/4 rounded bg-foreground/[0.08]" />
-                      <div className="h-3 w-1/2 rounded bg-foreground/[0.06]" />
-                      <div className="h-3 w-1/3 rounded bg-foreground/[0.05]" />
-                    </div>
-                  </div>
-                </div>
-              ))}
-              <span className="sr-only">{t("Searching YouTube")}</span>
+            <div className="flex min-h-[116px] items-center justify-center" aria-live="polite" aria-busy="true">
+              <WavePhysicsLoader size="panel" label={t("Searching YouTube")} />
             </div>
           )}
 

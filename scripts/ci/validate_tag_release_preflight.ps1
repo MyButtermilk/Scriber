@@ -46,6 +46,31 @@ if ($requireAuthenticodeTimestamp -and -not $requireAuthenticode) {
 if ($authenticodePublisher -and -not $requireAuthenticode) {
     throw "SCRIBER_AUTHENTICODE_PUBLISHER is only valid when SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1."
 }
+if (-not $requireAuthenticode) {
+    throw "Official releases require SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1."
+}
+if (-not $requireAuthenticodeTimestamp) {
+    throw "Official releases require SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP=1."
+}
+if (-not $authenticodePublisher) {
+    throw "Official releases require SCRIBER_AUTHENTICODE_PUBLISHER."
+}
+
+$windowsCertificate = Get-TrimmedEnvironmentValue -Name "SCRIBER_WINDOWS_CERTIFICATE_BASE64"
+$windowsCertificatePassword = Get-TrimmedEnvironmentValue -Name "SCRIBER_WINDOWS_CERTIFICATE_PASSWORD"
+$authenticodeTimestampUrl = Get-TrimmedEnvironmentValue -Name "SCRIBER_AUTHENTICODE_TIMESTAMP_URL"
+if (-not $windowsCertificate -or -not $windowsCertificatePassword) {
+    throw "Official releases require the Windows Authenticode certificate and password secrets."
+}
+$parsedTimestampUrl = $null
+if (
+    -not [Uri]::TryCreate($authenticodeTimestampUrl, [UriKind]::Absolute, [ref]$parsedTimestampUrl) -or
+    $null -eq $parsedTimestampUrl -or
+    $parsedTimestampUrl.Scheme -ine [Uri]::UriSchemeHttps -or
+    [string]::IsNullOrWhiteSpace($parsedTimestampUrl.Host)
+) {
+    throw "SCRIBER_AUTHENTICODE_TIMESTAMP_URL must be an absolute HTTPS URL."
+}
 
 $updaterPublicKey = Get-TrimmedEnvironmentValue -Name "SCRIBER_TAURI_UPDATER_PUBLIC_KEY"
 $updaterPrivateKey = Get-TrimmedEnvironmentValue -Name "TAURI_SIGNING_PRIVATE_KEY"
@@ -79,10 +104,4 @@ if (
     throw "SCRIBER_TAURI_UPDATER_ENDPOINT must be an absolute HTTPS URL."
 }
 
-Write-Host "Tag release preflight passed: updater signing and HTTPS publication endpoint are configured."
-
-if ($requireAuthenticode) {
-    Write-Host "Authenticode verification is required for this tag release."
-} else {
-    Write-Host "Authenticode verification remains optional for this tag release."
-}
+Write-Host "Tag release preflight passed: updater signing, Authenticode signing, timestamping, and HTTPS publication are configured."

@@ -22,6 +22,7 @@ import { Download } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
 import { isBusyForUpdatePrompt, trayRecordingStateFromMessage } from "@/lib/runtime-message-state";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
   checkDesktopUpdateIfDue,
   getCachedDesktopUpdateStatus,
@@ -48,21 +49,8 @@ const NotFound = lazy(() => import("@/pages/not-found"));
 function PageLoader() {
   const { t } = useI18n();
   return (
-    <div
-      className="flex min-h-[300px] items-start justify-center px-6 py-8"
-      role="status"
-      aria-label={t("Loading section")}
-    >
-      <span className="sr-only">{t("Loading section")}</span>
-      <div className="w-full max-w-5xl space-y-4">
-        <div className="h-8 w-44 animate-pulse rounded-lg bg-slate-200/80 dark:bg-slate-800/80" />
-        <div className="grid gap-3 sm:grid-cols-3">
-          <div className="h-24 animate-pulse rounded-xl bg-slate-200/70 dark:bg-slate-800/70" />
-          <div className="h-24 animate-pulse rounded-xl bg-slate-200/60 dark:bg-slate-800/60" />
-          <div className="h-24 animate-pulse rounded-xl bg-slate-200/50 dark:bg-slate-800/50" />
-        </div>
-        <div className="h-40 animate-pulse rounded-xl bg-slate-200/60 dark:bg-slate-800/60" />
-      </div>
+    <div className="flex min-h-[300px] items-start justify-center px-6 py-12">
+      <WavePhysicsLoader size="panel" label={t("Loading section")} />
     </div>
   );
 }

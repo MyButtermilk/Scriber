@@ -1,6 +1,7 @@
-import { AlertTriangle, Check, Loader2 } from "lucide-react";
+import { AlertTriangle, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useI18n } from "@/i18n";
 import type { UseMeetingNotesAutosaveResult } from "./useMeetingNotesAutosave";
 
@@ -45,7 +46,7 @@ export function MeetingNotesEditor({ autosave, rows = 5, textareaClassName }: Me
       ) : (
         <p aria-live="polite" className="flex items-center text-xs text-muted-foreground">
           {status === "saving" ? (
-            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            <WavePhysicsLoader className="mr-2" size="inline" />
           ) : (
             <Check className="mr-2 h-3.5 w-3.5" />
           )}

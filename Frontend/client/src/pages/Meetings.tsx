@@ -17,7 +17,6 @@ import {
   FileText,
   FolderOpen,
   Headphones,
-  Loader2,
   Mail,
   Mic2,
   MonitorSpeaker,
@@ -94,6 +93,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { PageIntro } from "@/components/page-intro";
 import { OutlookMeetingPicker } from "@/components/meeting/OutlookMeetingPicker";
 import { MeetingNotesEditor } from "@/components/meeting/MeetingNotesEditor";
@@ -333,9 +333,9 @@ function MeetingImportInbox({
           className="mt-1 grid gap-1 px-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:grid-cols-1"
           aria-label={t("Loading meeting imports")}
         >
-          {[0, 1].map((item) => (
-            <div key={item} className="h-[76px] animate-pulse rounded-xl bg-muted/60" />
-          ))}
+          <div className="col-span-full flex min-h-[76px] items-center justify-center">
+            <WavePhysicsLoader size="compact" label={t("Loading meeting imports")} />
+          </div>
         </div>
       ) : error ? (
         <div className="mt-1 flex items-center justify-between gap-2 px-2 py-2 text-xs text-destructive" role="alert">
@@ -364,7 +364,7 @@ function MeetingImportInbox({
                     aria-hidden="true"
                   >
                     {active ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+                      <WavePhysicsLoader size="inline" />
                     ) : job.state === "failed" ? (
                       <AlertTriangle className="h-3.5 w-3.5" />
                     ) : (
@@ -423,7 +423,7 @@ function MeetingImportInbox({
                         disabled={retrying}
                         onClick={() => onRetry(job.meetingId!)}
                       >
-                        {retrying && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {retrying && <WavePhysicsLoader className="mr-1.5" size="micro" />}
                         {t("Retry")}
                       </Button>
                     )}
@@ -436,7 +436,7 @@ function MeetingImportInbox({
                         disabled={canceling}
                         onClick={() => onCancel(job.id)}
                       >
-                        {canceling && <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />}
+                        {canceling && <WavePhysicsLoader className="mr-1.5" size="micro" />}
                         {t("Cancel")}
                       </Button>
                     )}
@@ -670,7 +670,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                               cancelEdit();
                             }}
                           >
-                            {savingSegmentId === segment.id && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+                            {savingSegmentId === segment.id && <WavePhysicsLoader className="mr-1.5" size="inline" />}
                             {t("Save correction")}
                           </Button>
                           <Button
@@ -2635,7 +2635,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 disabled={meetingImportBusy || Boolean(activeMeeting)}
                 onClick={() => meetingImportRef.current?.click()}
               >
-                {meetingImportBusy ? <Loader2 className="animate-spin" /> : <FileUp />}
+                {meetingImportBusy ? <WavePhysicsLoader size="inline" /> : <FileUp />}
                 <span className="hidden sm:inline">{t("Import recording")}</span>
                 <span className="sm:hidden">{t("Import")}</span>
               </Button>
@@ -2701,10 +2701,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             ) : null}
           </div>
           <div className="mt-1.5 grid grid-cols-1 gap-1 sm:grid-cols-2 lg:grid-cols-3 min-[1100px]:block min-[1100px]:space-y-1">
-            {meetingsQuery.isLoading &&
-              [0, 1, 2].map((item) => (
-                <div key={item} className="h-[64px] min-w-0 animate-pulse rounded-xl bg-muted/70" />
-              ))}
+            {meetingsQuery.isLoading && (
+              <div className="col-span-full flex min-h-[64px] items-center justify-center">
+                <WavePhysicsLoader size="compact" label={t("Loading…")} />
+              </div>
+            )}
             {meetingsQuery.isError && (
               <p className="px-2 py-5 text-sm text-destructive">{t("Meeting history could not be loaded.")}</p>
             )}
@@ -2758,7 +2759,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 onClick={() => void meetingsQuery.fetchNextPage()}
                 className="mt-1 w-full text-xs min-[1100px]:w-full"
               >
-                {meetingsQuery.isFetchingNextPage && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                {meetingsQuery.isFetchingNextPage && <WavePhysicsLoader className="mr-2" size="inline" />}
                 {t("Load older meetings")}
               </Button>
             )}
@@ -2823,7 +2824,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         onClick={() => startMutation.mutate()}
                         className="w-full min-w-[168px] sm:w-auto"
                       >
-                        {startMutation.isPending ? <Loader2 className="animate-spin" /> : <CirclePlay />}
+                        {startMutation.isPending ? <WavePhysicsLoader size="inline" /> : <CirclePlay />}
                         {startMutation.isPending ? t("Starting…") : t("Start meeting")}
                       </Button>
                       <p
@@ -3009,7 +3010,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           disabled={audioDevicesQuery.isFetching}
                           onClick={() => void audioDevicesQuery.refetch()}
                         >
-                          <RefreshCw className={audioDevicesQuery.isFetching ? "animate-spin" : ""} />
+                          {audioDevicesQuery.isFetching ? <WavePhysicsLoader size="inline" /> : <RefreshCw />}
                           {t("Refresh")}
                         </Button>
                       </div>
@@ -3087,7 +3088,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         }
                         onClick={() => deviceTestMutation.mutate()}
                       >
-                        {deviceTestMutation.isPending ? <Loader2 className="animate-spin" /> : <Waves />}
+                        {deviceTestMutation.isPending ? <WavePhysicsLoader size="inline" /> : <Waves />}
                         {t("Test microphone and playback")}
                       </Button>
                       <p className="mt-2 text-[11px] leading-4 text-muted-foreground">
@@ -3250,9 +3251,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               </div>
             </div>
           ) : detailQuery.isLoading ? (
-            <div className="space-y-4">
-              <div className="h-12 animate-pulse rounded-xl bg-muted" />
-              <div className="h-96 animate-pulse rounded-2xl bg-muted/70" />
+            <div className="flex min-h-96 items-center justify-center">
+              <WavePhysicsLoader size="panel" label={t("Loading…")} />
             </div>
           ) : detailQuery.isError || !detail ? (
             <div className="flex h-full items-center justify-center text-center">
@@ -3304,7 +3304,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <div className="flex flex-wrap gap-2">
                   {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && (
                     <Button type="button" variant="outline" className="h-9" disabled>
-                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      <WavePhysicsLoader className="mr-2" size="inline" />
                       {detail.reprocessing.speakerIdentityRunning ? t("Refreshing speakers…") : t("Processing…")}
                     </Button>
                   )}
@@ -3418,7 +3418,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     </Button>
                   )}
                   {OPEN_STATES.has(detail.state) && controlMutation.isPending && (
-                    <Loader2 className="h-5 w-5 animate-spin self-center text-muted-foreground" />
+                    <WavePhysicsLoader className="self-center" size="compact" />
                   )}
                 </div>
               </header>
@@ -3573,23 +3573,24 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         : t("Processing…")}
                     </span>
                   </div>
-                  <div
-                    className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
-                    role="progressbar"
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-valuenow={meetingProgress ? Math.round(meetingProgress.progress * 100) : undefined}
-                    aria-valuetext={meetingProgress ? undefined : t("Processing…")}
-                  >
-                    {meetingProgress ? (
+                  {meetingProgress ? (
+                    <div
+                      className="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={100}
+                      aria-valuenow={Math.round(meetingProgress.progress * 100)}
+                    >
                       <div
                         className="h-full origin-left rounded-full bg-primary transition-transform duration-200 motion-reduce:transition-none"
                         style={{ transform: `scaleX(${meetingProgress.progress})` }}
                       />
-                    ) : (
-                      <div className="h-full w-1/3 animate-pulse rounded-full bg-primary/65 motion-reduce:animate-none" />
-                    )}
-                  </div>
+                    </div>
+                  ) : (
+                    <div className="mt-2 flex justify-center">
+                      <WavePhysicsLoader size="micro" label={t("Processing…")} />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -3648,7 +3649,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           })
                         }
                       >
-                        {recoveryMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                        {recoveryMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                         {detail.state === "analysis_failed"
                           ? t("Try meeting brief again")
                           : t("Create transcript from saved audio")}
@@ -3689,7 +3690,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       disabled={analysisMutation.isPending || !hasCanonicalTranscript}
                       onClick={generateAnalysis}
                     >
-                      {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                      {analysisMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                       {t("Regenerate brief")}
                     </Button>
                   )}
@@ -3785,7 +3786,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             disabled={!chatQuestion.trim() || chatMutation.isPending}
                             onClick={() => chatMutation.mutate({ id: detail.id, question: chatQuestion })}
                           >
-                            {chatMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            {chatMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                             {t("Ask meeting")}
                           </Button>
                         </div>
@@ -3809,7 +3810,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         <div className="flex min-h-64 items-center justify-center rounded-2xl border border-dashed border-border text-center text-sm text-muted-foreground">
                           <div>
                             {detail.state === "analyzing" ? (
-                              <Loader2 className="mx-auto mb-3 h-6 w-6 animate-spin" />
+                              <WavePhysicsLoader className="mx-auto mb-3" size="compact" />
                             ) : (
                               <AlertTriangle className="mx-auto mb-3 h-6 w-6" />
                             )}
@@ -3827,7 +3828,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                                 disabled={analysisMutation.isPending || !hasCanonicalTranscript}
                                 onClick={generateAnalysis}
                               >
-                                {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                                {analysisMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                                 {t("Create meeting brief")}
                               </Button>
                             )}
@@ -3850,7 +3851,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                                 disabled={analysisMutation.isPending || !hasCanonicalTranscript}
                                 onClick={generateAnalysis}
                               >
-                                {analysisMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                                {analysisMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                                 {t("Regenerate")}
                               </Button>
                             )}
@@ -4037,9 +4038,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                                         }
                                       }}
                                     />
-                                    {renamingProfile && (
-                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />
-                                    )}
+                                    {renamingProfile && <WavePhysicsLoader size="inline" />}
                                     {profile && savedVoicePreviewUrl && (
                                       <button
                                         type="button"
@@ -4275,7 +4274,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             disabled={!webhookUrl.trim() || webhookPreviewMutation.isPending}
                             onClick={() => webhookPreviewMutation.mutate({ id: detail.id, url: webhookUrl.trim() })}
                           >
-                            {webhookPreviewMutation.isPending && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+                            {webhookPreviewMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
                             {t("Preview payload")}
                           </Button>
                         </div>
@@ -4327,7 +4326,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                               }
                             >
                               {webhookDeliveryMutation.isPending && (
-                                <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                                <WavePhysicsLoader className="mr-2" size="inline" />
                               )}
                               {t("Send webhook")}
                             </Button>
@@ -4547,7 +4546,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 });
               }}
             >
-              {meetingImportBusy && <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />}
+              {meetingImportBusy && <WavePhysicsLoader className="mr-2" size="inline" />}
               {meetingImportBusy ? t("Importing…") : t("Import recording")}
             </Button>
           </DialogFooter>
@@ -4565,9 +4564,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             </DialogDescription>
           </DialogHeader>
           {emailPreviewQuery.isLoading ? (
-            <div className="grid gap-3 py-3">
-              <div className="h-12 animate-pulse rounded-xl bg-muted" />
-              <div className="h-40 animate-pulse rounded-xl bg-muted" />
+            <div className="flex min-h-40 items-center justify-center py-3">
+              <WavePhysicsLoader size="panel" label={t("Loading…")} />
             </div>
           ) : emailPreviewQuery.isError || !emailPreviewQuery.data ? (
             <p className="rounded-xl border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">
@@ -4645,7 +4643,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   }}
                 >
                   {exportMutation.isPending ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <Paperclip className="mr-2 h-4 w-4" />
                   )}
@@ -4786,7 +4784,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               }
               onClick={() => detail && reprocessMutation.mutate({ id: detail.id, mode: reprocessMode })}
             >
-              {reprocessMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {reprocessMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
               {reprocessMutation.isPending
                 ? t("Starting…")
                 : reprocessMode === "speaker_identity"
@@ -4818,7 +4816,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               }}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleteMeetingMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {deleteMeetingMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
               {t("Delete meeting")}
             </AlertDialogAction>
           </AlertDialogFooter>

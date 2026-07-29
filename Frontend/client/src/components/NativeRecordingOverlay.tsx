@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, Square } from "lucide-react";
+import { Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState, wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
@@ -17,6 +17,8 @@ import {
 } from "@/lib/visualizer-settings";
 import { isScriberWebSocketMessage, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useI18n } from "@/i18n";
+import { TranscriptionShimmerText } from "@/components/ui/transcription-shimmer-text";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 
 type OverlayMode = "hidden" | "initializing" | "recording" | "transcribing";
 
@@ -253,13 +255,32 @@ function OverlayBarWaveform({
   );
 }
 
-function StatusContent({ mode }: { mode: "initializing" | "transcribing" }) {
+function StatusContent({
+  mode,
+  visualizerStyle,
+}: {
+  mode: "initializing" | "transcribing";
+  visualizerStyle: OverlayVisualizerStyle;
+}) {
   const { t } = useI18n();
   const label = mode === "initializing" ? t("Preparing...") : t("Transcribing...");
-  const color = mode === "initializing" ? "text-blue-300" : "text-blue-400";
+
+  if (mode === "transcribing") {
+    return (
+      <div className="flex h-full w-full items-center justify-center">
+        <TranscriptionShimmerText
+          tone={visualizerStyle === "energy_wave" ? "energy" : "blue"}
+          className="text-[12px] font-medium leading-none"
+        >
+          {label}
+        </TranscriptionShimmerText>
+      </div>
+    );
+  }
+
   return (
-    <div className={`flex h-full w-full items-center justify-center gap-1.5 ${color}`}>
-      <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
+    <div className="flex h-full w-full items-center justify-center gap-1.5 text-blue-300">
+      <WavePhysicsLoader size="inline" theme="dark" />
       <span className="text-[12px] font-medium leading-none">{label}</span>
     </div>
   );
@@ -283,6 +304,7 @@ export default function NativeRecordingOverlay() {
   const visualizerSettingsRequestRef = useRef<AbortController | null>(null);
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
   const visible = mode !== "hidden";
+  const energyWaveSelected = overlayVisualizerStyle === "energy_wave";
   const energyWaveActive = mode === "recording" && overlayVisualizerStyle === "energy_wave";
   const barsActive = mode === "recording" && overlayVisualizerStyle === "bars";
 
@@ -517,7 +539,7 @@ export default function NativeRecordingOverlay() {
               boxShadow: OVERLAY_INSET_SHADOW,
               width: PILL_WIDTH,
               height: PILL_HEIGHT,
-              background: energyWaveActive ? ENERGY_PILL_BACKGROUND : "#000",
+              background: energyWaveSelected ? ENERGY_PILL_BACKGROUND : "#000",
             }}
           >
             {energyWaveActive && (
@@ -550,7 +572,7 @@ export default function NativeRecordingOverlay() {
               }}
             >
               <div className={overlayLayerClass(mode === "initializing")} aria-hidden={mode !== "initializing"}>
-                <StatusContent mode="initializing" />
+                <StatusContent mode="initializing" visualizerStyle={overlayVisualizerStyle} />
               </div>
               <div className={`${overlayLayerClass(mode === "recording")} gap-0`} aria-hidden={mode !== "recording"}>
                 <button
@@ -578,7 +600,7 @@ export default function NativeRecordingOverlay() {
                 />
               </div>
               <div className={overlayLayerClass(mode === "transcribing")} aria-hidden={mode !== "transcribing"}>
-                <StatusContent mode="transcribing" />
+                <StatusContent mode="transcribing" visualizerStyle={overlayVisualizerStyle} />
               </div>
             </div>
           </div>

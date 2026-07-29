@@ -648,7 +648,10 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     strip=False,
-    upx=True,
+    # Keep every shipped PE in its normal compiler/linker layout. Allowing UPX
+    # here makes the output depend on whether UPX happens to be installed on
+    # the build host and materially increases static-AV false positives.
+    upx=False,
     upx_exclude=[],
     name="scriber-backend",
 )

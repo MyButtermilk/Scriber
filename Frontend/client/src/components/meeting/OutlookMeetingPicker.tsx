@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useI18n, type TranslationValues } from "@/i18n";
 import type {
   OutlookCalendarContact,
@@ -196,7 +197,11 @@ export function OutlookMeetingPicker({
         </div>
         {status?.connected && (
           <Button type="button" size="sm" variant="ghost" disabled={refreshing} onClick={onRefresh}>
-            <RefreshCw className={cn("mr-1.5 h-3.5 w-3.5", refreshing && "animate-spin motion-reduce:animate-none")} />
+            {refreshing ? (
+              <WavePhysicsLoader className="mr-1.5" size="inline" />
+            ) : (
+              <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+            )}
             {refreshing ? t("Refreshing") : t("Refresh calendar")}
           </Button>
         )}
@@ -247,9 +252,8 @@ export function OutlookMeetingPicker({
       )}
 
       {statusLoading ? (
-        <div className="grid gap-2 p-4" role="status" aria-label={t("Checking Outlook calendar")}>
-          <div className="h-4 w-40 animate-pulse rounded bg-muted motion-reduce:animate-none" />
-          <div className="h-16 animate-pulse rounded-xl bg-muted/70 motion-reduce:animate-none" />
+        <div className="flex min-h-24 items-center justify-center p-4">
+          <WavePhysicsLoader size="compact" label={t("Checking Outlook calendar")} />
         </div>
       ) : statusError ? (
         <div className="p-4">
@@ -302,10 +306,8 @@ export function OutlookMeetingPicker({
           </Button>
         </div>
       ) : eventsLoading ? (
-        <div className="grid gap-2 p-4" role="status" aria-label={t("Loading today's Outlook meetings")}>
-          {[0, 1].map((item) => (
-            <div key={item} className="h-[70px] animate-pulse rounded-xl bg-muted/70 motion-reduce:animate-none" />
-          ))}
+        <div className="flex min-h-24 items-center justify-center p-4">
+          <WavePhysicsLoader size="compact" label={t("Loading today's Outlook meetings")} />
         </div>
       ) : eventsError && !events ? (
         <div className="p-4" role="alert">

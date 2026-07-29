@@ -1,8 +1,9 @@
 import type { MouseEvent } from "react";
 import { useState } from "react";
-import { Loader2, RotateCcw } from "lucide-react";
+import { RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -83,11 +84,7 @@ export function TranscriptSummaryRetryButton({
       }
       title={isRetrying ? t("Creating a new summary") : t("Summary failed. Try again")}
     >
-      {isRetrying ? (
-        <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-      ) : (
-        <RotateCcw className="h-3 w-3" aria-hidden="true" />
-      )}
+      {isRetrying ? <WavePhysicsLoader size="micro" /> : <RotateCcw className="h-3 w-3" aria-hidden="true" />}
       <span>{isRetrying ? t("Retrying…") : t("Retry summary")}</span>
     </Button>
   );

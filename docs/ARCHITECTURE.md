@@ -982,7 +982,17 @@ configuration.
   unminimizes, focuses, and navigates the main WebView to `/meetings`, then
   dispatches the Meeting detection endpoint. A monotonic pending-navigation
   handshake preserves route requests fired before the WebView listener exists.
-- Own Windows autostart through `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+- Own Windows autostart through
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The app-data preference
+  marker remains authoritative across reinstalls: startup reconciles an
+  `enabled` marker to the current executable path and removes a stale entry for
+  a `disabled` marker. A missing marker alone receives the first-run default.
+- Keep manual NSIS version upgrades on the same non-destructive overlay path as
+  the in-app updater. The reviewed custom installer template skips Tauri's
+  upgrade maintenance prompt because its first choice runs the old uninstaller,
+  intentionally unpins Start-menu/taskbar shortcuts, and removes the autostart
+  registry value. Same-version maintenance, downgrades, required WiX migration,
+  and explicit standalone uninstall retain their upstream behavior.
 - Own tray/menu shell actions: open/focus, restart backend, quit, and tray
   status/icon updates for recording and available desktop updates.
 - Keep the Windows PE/taskbar identity and every tray state on the same

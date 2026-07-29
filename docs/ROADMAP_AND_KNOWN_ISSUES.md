@@ -1239,8 +1239,11 @@ Signing/updater:
   secrets/variables. Each production update still needs the signed installer,
   `.sig`, `latest.json`, and `SHA256SUMS.txt` published to the public GitHub
   Release endpoint, plus publication evidence.
-- Authenticode validation exists, but real signing requires a certificate or
-  cloud-signing provider.
+- Official tag releases now fail closed unless updater signing and RSA
+  Authenticode signing are both configured. The workflow imports an ephemeral
+  PFX, Tauri signs the desktop/NSIS surfaces, and the PyInstaller backend is
+  signed before its runtime manifest is generated. Repository owners still
+  need to provision the public-trust certificate and signing secrets.
 - `run_hybrid_release_readiness.ps1 -RunReleaseBuild` can now run the Windows
   release build as an evidence producer and reuse its Authenticode validation
   report, but it still depends on Authenticode signing when that gate is

@@ -11,7 +11,6 @@ import {
   Copy,
   Download,
   FileAudio,
-  Loader2,
   LogOut,
   Mic,
   MonitorUp,
@@ -39,6 +38,7 @@ import { checkDesktopUpdate, installDesktopUpdate, type DesktopUpdateProgress } 
 import { cn } from "@/lib/utils";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useI18n, type TranslationValues } from "@/i18n";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 
 const DEFAULT_TRAY_STATUS: TrayStatus = {
   recordingActive: false,
@@ -132,7 +132,7 @@ function StatusIndicator({ status }: { status: TrayStatus }) {
   if (status.updateInstalling) {
     return (
       <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_0_4px_rgba(37,99,235,0.12)]">
-        <Loader2 className="h-2.5 w-2.5 animate-spin" aria-hidden="true" />
+        <WavePhysicsLoader size="micro" theme="dark" />
       </span>
     );
   }
@@ -157,6 +157,7 @@ function TrayRow({
   onClick,
   variant = "default",
   disabled = false,
+  loading = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -166,6 +167,7 @@ function TrayRow({
   onClick: () => void;
   variant?: "default" | "primary" | "danger" | "update";
   disabled?: boolean;
+  loading?: boolean;
 }) {
   return (
     <motion.button
@@ -194,13 +196,11 @@ function TrayRow({
           variant === "update" && "bg-white/16 text-white",
         )}
       >
-        <Icon
-          className={cn(
-            "h-[18px] w-[18px]",
-            variant === "danger" && Icon === Square && "fill-current",
-            Icon === Loader2 && "animate-spin",
-          )}
-        />
+        {loading ? (
+          <WavePhysicsLoader size="inline" theme={variant === "update" ? "dark" : "light"} />
+        ) : (
+          <Icon className={cn("h-[18px] w-[18px]", variant === "danger" && Icon === Square && "fill-current")} />
+        )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[14px] font-semibold leading-[18px] tracking-normal">{label}</span>
@@ -615,7 +615,7 @@ export default function TrayPanel() {
             >
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-white/16">
                 {installing || status.updateInstalling ? (
-                  <Loader2 className="h-[18px] w-[18px] animate-spin" aria-hidden="true" />
+                  <WavePhysicsLoader size="inline" theme="dark" />
                 ) : (
                   <Download className="h-[18px] w-[18px]" strokeWidth={2.35} aria-hidden="true" />
                 )}
@@ -668,7 +668,8 @@ export default function TrayPanel() {
 
               <TrayRow icon={Settings} label={t("Settings")} onClick={() => void runAction("open_settings")} />
               <TrayRow
-                icon={checkingUpdates ? Loader2 : RefreshCw}
+                icon={RefreshCw}
+                loading={checkingUpdates}
                 label={status.updateAvailable ? t("Check Again") : t("Check for Updates")}
                 detail={updateCheckDetail}
                 disabled={checkingUpdates || installing}
@@ -710,7 +711,11 @@ export default function TrayPanel() {
                   disabled={recentLoading || !backendReady}
                   aria-label={t("Refresh recent transcripts")}
                 >
-                  <RefreshCw className={cn("h-4 w-4", recentLoading && "animate-spin")} />
+                  {recentLoading ? (
+                    <WavePhysicsLoader size="inline" theme="light" />
+                  ) : (
+                    <RefreshCw className="h-4 w-4" />
+                  )}
                 </button>
               </div>
 
@@ -718,7 +723,8 @@ export default function TrayPanel() {
 
               {recentLoading ? (
                 <TrayRow
-                  icon={Loader2}
+                  icon={RefreshCw}
+                  loading
                   label={t("Loading transcripts")}
                   detail={t("Checking recent history")}
                   disabled

@@ -57,12 +57,17 @@ param(
     [ValidateSet("Disabled", "Enabled")]
     [string]$PythonJitMode = "Disabled",
     [string]$PythonRuntimeLockPath = "packaging\cpython-windows-runtime-input-lock-v1.json",
+    [string]$AuthenticodeCertificateThumbprint = "",
+    [string]$AuthenticodeTimestampUrl = "",
     [switch]$CopyToTauriRelease
 )
 
 $ErrorActionPreference = "Stop"
 if ($DeterministicResearchMetadata -and $InstallPyInstaller) {
     throw "Deterministic research builds require PyInstaller to be preinstalled; network installation is forbidden."
+}
+if ($DeterministicResearchMetadata -and $AuthenticodeCertificateThumbprint) {
+    throw "Deterministic research builds cannot contain nondeterministic Authenticode timestamps."
 }
 $script:BuildTimingStarted = [System.Diagnostics.Stopwatch]::StartNew()
 $script:BuildTimingPhases = [System.Collections.Generic.List[object]]::new()
@@ -895,7 +900,9 @@ function Get-BackendRuntimeInputManifest {
         [string]$Python,
         [bool]$PyInstallerClean,
         [object]$RuntimeSelection,
-        [string]$RuntimeLock
+        [string]$RuntimeLock,
+        [string]$SigningCertificateThumbprint,
+        [string]$SigningTimestampUrl
     )
 
     $pythonVersion = (& $Python -c "import sys; print(sys.version); print(sys.implementation.cache_tag)" 2>$null) -join "`n"
@@ -929,6 +936,11 @@ function Get-BackendRuntimeInputManifest {
         python = $pythonVersion
         flags = [ordered]@{
             pyInstallerClean = $PyInstallerClean
+            authenticodeSigning = [bool]$SigningCertificateThumbprint
+            authenticodeCertificateThumbprint = (
+                ([string]$SigningCertificateThumbprint -replace '\s', '').ToUpperInvariant()
+            )
+            authenticodeTimestampUrl = [string]$SigningTimestampUrl
         }
         runtimePolicy = $RuntimeSelection
         files = $files
@@ -3611,7 +3623,9 @@ Invoke-TimedStep -Label "backend-runtime-cache-key" -Command {
         -Python $PythonPath `
         -PyInstallerClean (-not [bool]$LocalPyInstallerNoClean) `
         -RuntimeSelection $script:PythonRuntimeSelection `
-        -RuntimeLock $PythonRuntimeLockPath
+        -RuntimeLock $PythonRuntimeLockPath `
+        -SigningCertificateThumbprint $AuthenticodeCertificateThumbprint `
+        -SigningTimestampUrl $AuthenticodeTimestampUrl
     $runtimeManifestJson = $script:BackendRuntimeInputManifest | ConvertTo-Json -Depth 10 -Compress
     $script:BackendRuntimeCacheKey = Get-StringSha256 -Value $runtimeManifestJson
     $script:BackendApplicationInputManifest = Get-BackendApplicationInputManifest -Root $RepoRoot
@@ -4058,6 +4072,19 @@ if (-not $cacheHit) {
             Write-PythonRuntimePolicyManifest `
                 -RuntimeDir $cachedRuntimeDir `
                 -Selection $script:PythonRuntimeSelection | Out-Null
+            if ($AuthenticodeCertificateThumbprint) {
+                if (-not $AuthenticodeTimestampUrl) {
+                    throw "AuthenticodeTimestampUrl is required when signing the frozen backend."
+                }
+                powershell -NoProfile -ExecutionPolicy Bypass `
+                    -File (Join-Path $RepoRoot "scripts\sign_windows_binary.ps1") `
+                    -Path $cachedRuntimeExe `
+                    -CertificateThumbprint $AuthenticodeCertificateThumbprint `
+                    -TimestampUrl $AuthenticodeTimestampUrl
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Frozen backend Authenticode signing failed with exit code $LASTEXITCODE."
+                }
+            }
             Write-BackendRuntimeCacheMetadata `
                 -RuntimeDir $cachedRuntimeDir `
                 -RuntimeExe $cachedRuntimeExe `

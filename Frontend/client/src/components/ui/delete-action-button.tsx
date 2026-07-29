@@ -1,7 +1,8 @@
 import type { MouseEvent } from "react";
-import { Loader2, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 
 type DeleteActionButtonProps = {
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -34,11 +35,7 @@ export function DeleteActionButton({
       data-label={t(label)}
       aria-label={ariaLabel}
     >
-      {loading ? (
-        <Loader2 className="delete-pill__spinner animate-spin" />
-      ) : (
-        <Trash2 className="delete-pill__icon" strokeWidth={2.1} />
-      )}
+      {loading ? <WavePhysicsLoader size="micro" /> : <Trash2 className="delete-pill__icon" strokeWidth={2.1} />}
     </button>
   );
 }

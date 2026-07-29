@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -659,7 +660,7 @@ export default function DebugConsole() {
                 onClick={() => setDeleteDialogOpen(true)}
                 disabled={logFileClearLoading || (!logs.length && !sources.length)}
               >
-                <Trash2 className={cn("h-4 w-4", logFileClearLoading && "animate-pulse")} />
+                {logFileClearLoading ? <WavePhysicsLoader size="inline" /> : <Trash2 className="h-4 w-4" />}
                 <span className="debug-console-action-label">{t("Clear logs")}</span>
               </Button>
               <Button
@@ -685,7 +686,7 @@ export default function DebugConsole() {
                 onClick={() => void downloadSupportBundle()}
                 disabled={supportBundleLoading}
               >
-                <Download className={cn("h-4 w-4", supportBundleLoading && "animate-pulse")} />
+                {supportBundleLoading ? <WavePhysicsLoader size="inline" /> : <Download className="h-4 w-4" />}
                 <span className="debug-console-action-label">{t("Support")}</span>
               </Button>
               <Button
@@ -697,7 +698,7 @@ export default function DebugConsole() {
                 onClick={() => void loadLogs()}
                 disabled={loading}
               >
-                <RefreshCw className={cn("h-4 w-4", loading && "animate-spin")} />
+                {loading ? <WavePhysicsLoader size="inline" /> : <RefreshCw className="h-4 w-4" />}
                 <span className="debug-console-action-label">{t("Refresh")}</span>
               </Button>
             </div>

@@ -2,7 +2,8 @@
 
 import React, { useEffect, useRef, useState, memo, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Square, Loader2 } from "lucide-react";
+import { Square } from "lucide-react";
+import { TranscriptionShimmerText } from "@/components/ui/transcription-shimmer-text";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
 import { useToast } from "@/hooks/use-toast";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -160,31 +161,9 @@ function TranscribingText() {
         gap: 10,
       }}
     >
-      <Loader2
-        style={{
-          width: 20,
-          height: 20,
-          color: "#3B82F6",
-          animation: "spin 1s linear infinite",
-        }}
-      />
-      <span
-        style={{
-          color: "#3B82F6",
-          fontSize: 16,
-          fontWeight: 500,
-          fontFamily: "system-ui, -apple-system, sans-serif",
-          letterSpacing: "0.02em",
-        }}
-      >
+      <TranscriptionShimmerText tone="blue" className="text-[16px] font-medium tracking-[0.02em]">
         {t("Transcribing...")}
-      </span>
-      <style>{`
-                @keyframes spin {
-                    from { transform: rotate(0deg); }
-                    to { transform: rotate(360deg); }
-                }
-            `}</style>
+      </TranscriptionShimmerText>
     </motion.div>
   );
 }

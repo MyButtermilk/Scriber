@@ -26,6 +26,8 @@ param(
     [switch]$RequireAuthenticodeSignature,
     [string]$ExpectedAuthenticodePublisher = "",
     [switch]$RequireAuthenticodeTimestamp,
+    [string]$AuthenticodeCertificateThumbprint = $env:SCRIBER_WINDOWS_CERTIFICATE_THUMBPRINT,
+    [string]$AuthenticodeTimestampUrl = $env:SCRIBER_AUTHENTICODE_TIMESTAMP_URL,
     [double]$MaxInstallerSizeMB = 220,
     [double]$InstallerMaxInstalledSizeMB = 0,
     [string]$MediaToolsDir = "",
@@ -668,6 +670,12 @@ function New-SidecarBuildScriptArguments {
         "-BundleRustDiarizationSidecar",
         "-CopyToTauriRelease"
     )
+    if ($AuthenticodeCertificateThumbprint) {
+        $sidecarArgs += @(
+            "-AuthenticodeCertificateThumbprint", $AuthenticodeCertificateThumbprint,
+            "-AuthenticodeTimestampUrl", $AuthenticodeTimestampUrl
+        )
+    }
     if (-not $resolvedResearchBuildRoot) {
         $sidecarArgs += "-InstallPyInstaller"
     }
@@ -1053,6 +1061,14 @@ if ($runFrontendTypeCheck -and -not $ParallelizeIndependentBuilds) {
 }
 
 try {
+    if ($RequireAuthenticodeSignature) {
+        if (-not $AuthenticodeCertificateThumbprint) {
+            throw "RequireAuthenticodeSignature requires an imported SCRIBER_WINDOWS_CERTIFICATE_THUMBPRINT."
+        }
+        if (-not $AuthenticodeTimestampUrl) {
+            throw "RequireAuthenticodeSignature requires SCRIBER_AUTHENTICODE_TIMESTAMP_URL."
+        }
+    }
     if ($EnableTauriUpdater) {
         if (-not $env:TAURI_SIGNING_PRIVATE_KEY -and $env:TAURI_SIGNING_PRIVATE_KEY_PATH) {
             if (-not (Test-Path -LiteralPath $env:TAURI_SIGNING_PRIVATE_KEY_PATH -PathType Leaf)) {
@@ -1080,6 +1096,12 @@ try {
                 )
                 if ($NsisCompression) {
                     $configArgs += @("--nsis-compression", $NsisCompression)
+                }
+                if ($AuthenticodeCertificateThumbprint) {
+                    $configArgs += @(
+                        "--windows-certificate-thumbprint", $AuthenticodeCertificateThumbprint,
+                        "--authenticode-timestamp-url", $AuthenticodeTimestampUrl
+                    )
                 }
                 if ($EnableTauriUpdater -or $ConfigureTauriUpdaterRuntime) {
                     if ($UpdaterEndpoint) {
@@ -1463,6 +1485,10 @@ try {
         $authenticodeTargets = @()
         if (Test-Path -LiteralPath $releaseExe) {
             $authenticodeTargets += $releaseExe
+        }
+        $backendReleaseExe = Join-Path $targetRelease "backend\scriber-backend.exe"
+        if (Test-Path -LiteralPath $backendReleaseExe -PathType Leaf) {
+            $authenticodeTargets += $backendReleaseExe
         }
         foreach ($artifact in $artifacts) {
             $authenticodeTargets += $artifact

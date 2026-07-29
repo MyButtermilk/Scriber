@@ -1,9 +1,10 @@
 import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExternalStore } from "react";
 import { useDropzone } from "react-dropzone";
-import { AlertCircle, UploadCloud, FileAudio, Loader2, XCircle, Square, ArrowRight } from "lucide-react";
+import { AlertCircle, UploadCloud, FileAudio, XCircle, Square, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -163,7 +164,7 @@ const FileCard = memo(function FileCard({
                 ) : historyStatus === "summary_failed" ? (
                   <AlertCircle className="w-5 h-5" />
                 ) : historyStatus === "processing" ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <WavePhysicsLoader size="compact" />
                 ) : historyStatus === "stopped" ? (
                   <Square className="w-5 h-5" />
                 ) : (
@@ -198,7 +199,7 @@ const FileCard = memo(function FileCard({
                   variant="outline"
                   className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
                 >
-                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <WavePhysicsLoader size="micro" />
                   {item.summaryStatus === "pending"
                     ? t("Summarizing…")
                     : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
@@ -256,7 +257,7 @@ const FileCard = memo(function FileCard({
                 ) : historyStatus === "summary_failed" ? (
                   <AlertCircle className="w-6 h-6" />
                 ) : historyStatus === "processing" ? (
-                  <Loader2 className="w-6 h-6 animate-spin" />
+                  <WavePhysicsLoader size="compact" />
                 ) : historyStatus === "stopped" ? (
                   <Square className="w-6 h-6" />
                 ) : (
@@ -269,7 +270,7 @@ const FileCard = memo(function FileCard({
                     variant="outline"
                     className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
                   >
-                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <WavePhysicsLoader size="micro" />
                     {item.summaryStatus === "pending" ? t("Summarizing…") : null}
                   </Badge>
                 ) : historyStatus === "failed" ? (
@@ -668,7 +669,7 @@ export default function FileTranscribe() {
           <input {...getInputProps()} />
           <div className="file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full">
             {isUploading ? (
-              <Loader2 className="h-8 w-8 animate-spin text-primary" />
+              <WavePhysicsLoader size="panel" label={t("Loading…")} />
             ) : (
               <UploadCloud
                 className={`h-8 w-8 stroke-[1.45px] ${isDragActive ? "text-primary" : "text-muted-foreground"}`}
@@ -801,7 +802,7 @@ export default function FileTranscribe() {
                     variant="outline"
                     className="inline-flex h-9 shrink-0 items-center gap-1.5 border-primary/20 bg-primary/[0.06] px-2.5 text-ui-micro leading-none text-primary"
                   >
-                    <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                    <WavePhysicsLoader size="inline" />
                     {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                   <TranscriptStopButton

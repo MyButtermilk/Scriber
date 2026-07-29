@@ -15,7 +15,6 @@ import {
   Keyboard,
   Key,
   Languages,
-  Loader2,
   Mic,
   RefreshCw,
   Save,
@@ -30,6 +29,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
@@ -4160,7 +4160,7 @@ export default function Settings() {
             <div className="space-y-1.5">
               <Progress value={selectedOnnxModel.progress || 0} />
               <p className="flex items-center gap-2 text-[11px] text-slate-500">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <WavePhysicsLoader size="micro" />
                 {localizeOnnxDownloadMessage(selectedOnnxModel.message, t, formatNumber)}
                 <span className="ml-auto">{formatNumber(Math.round(selectedOnnxModel.progress || 0))}%</span>
               </p>
@@ -4960,7 +4960,7 @@ export default function Settings() {
                             onClick={() => void installDiarizationComponent()}
                           >
                             {diarizationComponentPending ? (
-                              <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                              <WavePhysicsLoader className="mr-2" size="inline" />
                             ) : (
                               <Download className="mr-2 h-3.5 w-3.5" />
                             )}
@@ -5219,7 +5219,7 @@ export default function Settings() {
                         onClick={() => speakerModelMutation.mutate()}
                       >
                         {speakerModelMutation.isPending ? (
-                          <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                          <WavePhysicsLoader className="mr-2" size="inline" />
                         ) : (
                           <Download className="mr-2 h-3.5 w-3.5" />
                         )}
@@ -5269,13 +5269,8 @@ export default function Settings() {
                   </div>
                 </div>
                 {speakerProfilesQuery.isLoading && (
-                  <div className="space-y-2" aria-label={t("Loading saved speakers")}>
-                    {[0, 1].map((item) => (
-                      <div
-                        key={item}
-                        className="h-12 animate-pulse rounded-lg bg-slate-100 motion-reduce:animate-none dark:bg-[var(--live-card)]"
-                      />
-                    ))}
+                  <div className="flex min-h-20 items-center justify-center">
+                    <WavePhysicsLoader size="compact" label={t("Loading saved speakers")} />
                   </div>
                 )}
                 {speakerProfilesQuery.isError && (
@@ -5600,12 +5595,11 @@ export default function Settings() {
                       disabled={outlookQuery.isFetching}
                       onClick={() => void outlookQuery.refetch()}
                     >
-                      <RefreshCw
-                        className={cn(
-                          "mr-1.5 h-3.5 w-3.5",
-                          outlookQuery.isFetching && "animate-spin motion-reduce:animate-none",
-                        )}
-                      />
+                      {outlookQuery.isFetching ? (
+                        <WavePhysicsLoader className="mr-1.5" size="inline" />
+                      ) : (
+                        <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                      )}
                       {t("Check again")}
                     </Button>
                   ) : outlookQuery.data?.authorizationPending ? (
@@ -5615,7 +5609,7 @@ export default function Settings() {
                       onClick={() => outlookMutation.mutate("connect")}
                     >
                       {outlookMutation.isPending ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        <WavePhysicsLoader className="mr-1.5" size="inline" />
                       ) : (
                         <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                       )}
@@ -5629,12 +5623,11 @@ export default function Settings() {
                         disabled={outlookMutation.isPending}
                         onClick={() => outlookMutation.mutate("sync")}
                       >
-                        <RefreshCw
-                          className={cn(
-                            "mr-1.5 h-3.5 w-3.5",
-                            outlookMutation.isPending && "animate-spin motion-reduce:animate-none",
-                          )}
-                        />
+                        {outlookMutation.isPending ? (
+                          <WavePhysicsLoader className="mr-1.5" size="inline" />
+                        ) : (
+                          <RefreshCw className="mr-1.5 h-3.5 w-3.5" />
+                        )}
                         {t("Sync now")}
                       </Button>
                       <Button
@@ -5654,7 +5647,7 @@ export default function Settings() {
                       onClick={() => outlookMutation.mutate("connect")}
                     >
                       {outlookMutation.isPending ? (
-                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        <WavePhysicsLoader className="mr-1.5" size="inline" />
                       ) : (
                         <ExternalLink className="mr-1.5 h-3.5 w-3.5" />
                       )}
@@ -6135,7 +6128,7 @@ export default function Settings() {
                   disabled={isCheckingDesktopUpdate || isInstallingDesktopUpdate}
                 >
                   {isCheckingDesktopUpdate ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <RefreshCw className="mr-2 h-4 w-4" />
                   )}
@@ -6147,7 +6140,7 @@ export default function Settings() {
                   disabled={!desktopUpdate.available || isCheckingDesktopUpdate || isInstallingDesktopUpdate}
                 >
                   {isInstallingDesktopUpdate ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <Download className="mr-2 h-4 w-4" />
                   )}
@@ -6388,10 +6381,7 @@ export default function Settings() {
                   className="min-h-4 text-[11px] leading-4 text-muted-foreground"
                 >
                   {voiceEnrollmentDevicesQuery.isLoading ? (
-                    <span
-                      className="inline-block h-3 w-44 animate-pulse rounded bg-slate-200 motion-reduce:animate-none dark:bg-slate-800"
-                      aria-label={t("Looking for microphones")}
-                    />
+                    <WavePhysicsLoader size="inline" label={t("Looking for microphones")} />
                   ) : voiceEnrollmentDevicesQuery.isError ? (
                     <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-amber-700 dark:text-amber-300">
                       {t("Microphone choices could not be loaded. Windows default can still be used.")}
@@ -6493,7 +6483,7 @@ export default function Settings() {
                   onClick={() => voiceEnrollmentMutation.mutate()}
                 >
                   {voiceEnrollmentMutation.isPending ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <Mic className="mr-2 h-4 w-4" />
                   )}
@@ -6571,7 +6561,7 @@ export default function Settings() {
                 outlookMutation.mutate("disconnect");
               }}
             >
-              {outlookMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {outlookMutation.isPending && <WavePhysicsLoader className="mr-2" size="inline" />}
               {t("Disconnect Outlook")}
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -6602,7 +6592,7 @@ export default function Settings() {
                 void handleDeleteVoiceprintLibrary();
               }}
             >
-              {voiceLibraryDeletePending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              {voiceLibraryDeletePending && <WavePhysicsLoader className="mr-2" size="inline" />}
               {t("Delete voice data")}
             </AlertDialogAction>
           </AlertDialogFooter>

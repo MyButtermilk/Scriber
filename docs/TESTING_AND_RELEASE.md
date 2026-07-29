@@ -447,6 +447,18 @@ releases, the sync step must match the `v*` tag; if `src/version.py` still
 contains an older version, the signed release build fails instead of silently
 publishing an installer with the wrong version.
 
+The checked-in `Frontend/src-tauri/windows/installer-template.nsi` is the
+reviewed Tauri CLI 2.11.3 template with one product-specific behavior change:
+an NSIS-to-NSIS manual version upgrade skips the destructive maintenance prompt
+and proceeds as an overlay instead of first uninstalling the existing app. This
+preserves existing Start-menu and taskbar pins plus the HKCU autostart entry,
+matching the in-app updater. Same-version maintenance, downgrades, required WiX
+migration, and the strict standalone uninstaller remain unchanged.
+`tests/test_nsis_upgrade_state_preservation.py` binds the template/configuration
+and both shortcut/autostart guards. When the Tauri CLI changes, rebase the
+custom template from the matching upstream tag and review the Scriber delta
+before updating its provenance header.
+
 Fast local Profile B installer:
 
 ```powershell
@@ -1500,6 +1512,12 @@ these repository secrets/variables:
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 - `SCRIBER_TAURI_UPDATER_ENDPOINT`
+- `SCRIBER_WINDOWS_CERTIFICATE_BASE64`
+- `SCRIBER_WINDOWS_CERTIFICATE_PASSWORD`
+- `SCRIBER_AUTHENTICODE_TIMESTAMP_URL`
+- `SCRIBER_AUTHENTICODE_PUBLISHER`
+- `SCRIBER_REQUIRE_AUTHENTICODE_SIGNATURE=1`
+- `SCRIBER_REQUIRE_AUTHENTICODE_TIMESTAMP=1`
 
 `scripts\prepare_tauri_updater_config.py` prepares the generated release Tauri
 config overlay: it writes only the concrete app version, release-only
@@ -1511,9 +1529,16 @@ copying the checked-in `tauri.conf.json`. An empty
 `latest.json` endpoint. For local signed builds, `scripts\build_windows.ps1` also accepts
 `TAURI_SIGNING_PRIVATE_KEY_PATH` and normalizes it to
 `TAURI_SIGNING_PRIVATE_KEY` before invoking the Tauri CLI.
-`v*` tag release jobs fail when updater signing is missing unless
-`SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` is set deliberately for a one-off
-unsigned tag test build.
+`v*` tag release jobs fail when either updater signing or Authenticode signing
+is missing. There is no unsigned official-release escape hatch. The Windows job
+imports the base64 PFX into its ephemeral CurrentUser certificate store without
+printing certificate material or passwords, exposes only its public thumbprint,
+and configures Tauri with SHA-256 plus the required HTTPS RFC 3161 timestamp
+service. Tauri signs the desktop executable, NSIS installer, and uninstaller.
+The PyInstaller backend is signed before its runtime hash inventory is written,
+so its existing fail-closed layer verification remains authoritative. The
+certificate thumbprint and timestamp URL are part of the backend runtime cache
+identity; an unsigned cache entry cannot satisfy a signed build.
 That decision is validated by
 `scripts\ci\validate_tag_release_preflight.ps1` before cache restores or tool
 setup. The same preflight validates the effective default/custom updater URL as
@@ -1556,8 +1581,13 @@ draft rollback cannot be verified, it deletes exactly that release ID and
 requires a confirming HTTP 404. It never resolves a different release by tag
 for rollback or deletion.
 
-Authenticode validation exists as a gate, but actual signing requires a real
-certificate or cloud-signing provider.
+Authenticode production signing is wired for an imported RSA code-signing PFX.
+The organization must still provision that certificate and configure the
+repository secrets/variables above. `scripts\sign_windows_binary.ps1` uses
+SignTool with SHA-256 and an HTTPS RFC 3161 timestamp, then revalidates the
+signature, exact certificate thumbprint, and timestamp. The final build report
+validates both `scriber-desktop.exe` and `backend\scriber-backend.exe` in
+addition to the distributable installer artifacts.
 
 Unsigned local builds are valid for development and smoke testing, but they do
 not satisfy final external release-readiness.

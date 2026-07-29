@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urlparse
@@ -11,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json"
 DEFAULT_ENDPOINT = "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
 NSIS_COMPRESSIONS = {"lzma", "zlib", "bzip2", "none"}
+WINDOWS_CERTIFICATE_THUMBPRINT_PATTERN = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def parse_endpoint(value: str) -> str:
@@ -70,6 +72,30 @@ def configure_nsis_compression(config: dict, compression: str) -> dict:
     return config
 
 
+def configure_windows_signing(
+    config: dict,
+    *,
+    certificate_thumbprint: str,
+    timestamp_url: str,
+) -> dict:
+    clean_thumbprint = certificate_thumbprint.replace(" ", "").strip()
+    clean_timestamp_url = timestamp_url.strip()
+    if not clean_thumbprint and not clean_timestamp_url:
+        return config
+    if not WINDOWS_CERTIFICATE_THUMBPRINT_PATTERN.fullmatch(clean_thumbprint):
+        raise ValueError("Windows signing certificate thumbprint must be exactly 40 hexadecimal characters.")
+    parsed_timestamp = urlparse(clean_timestamp_url)
+    if parsed_timestamp.scheme != "https" or not parsed_timestamp.netloc:
+        raise ValueError("Authenticode timestamp URL must be an absolute HTTPS URL.")
+
+    bundle = config.setdefault("bundle", {})
+    windows = bundle.setdefault("windows", {})
+    windows["certificateThumbprint"] = clean_thumbprint.upper()
+    windows["digestAlgorithm"] = "sha256"
+    windows["timestampUrl"] = clean_timestamp_url
+    return config
+
+
 def build_release_overlay(
     *,
     version: str,
@@ -79,10 +105,17 @@ def build_release_overlay(
     updater_endpoints: list[str],
     skip_updater_config: bool,
     create_updater_artifacts: bool = True,
+    windows_certificate_thumbprint: str = "",
+    authenticode_timestamp_url: str = "",
 ) -> dict:
     overlay: dict = {}
     configure_app_version(overlay, version)
     configure_nsis_compression(overlay, nsis_compression)
+    configure_windows_signing(
+        overlay,
+        certificate_thumbprint=windows_certificate_thumbprint,
+        timestamp_url=authenticode_timestamp_url,
+    )
     if remove_before_bundle:
         remove_before_bundle_command(overlay)
     if not skip_updater_config:
@@ -145,6 +178,16 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not require TAURI_SIGNING_PRIVATE_KEY or TAURI_SIGNING_PRIVATE_KEY_PATH.",
     )
+    parser.add_argument(
+        "--windows-certificate-thumbprint",
+        default=os.getenv("SCRIBER_WINDOWS_CERTIFICATE_THUMBPRINT", ""),
+        help="SHA-1 thumbprint of the imported Authenticode certificate.",
+    )
+    parser.add_argument(
+        "--authenticode-timestamp-url",
+        default=os.getenv("SCRIBER_AUTHENTICODE_TIMESTAMP_URL", ""),
+        help="HTTPS RFC 3161 timestamp service used for Windows code signing.",
+    )
     args = parser.parse_args(argv)
 
     signing_key = os.getenv("TAURI_SIGNING_PRIVATE_KEY", "").strip()
@@ -169,11 +212,18 @@ def main(argv: list[str] | None = None) -> int:
             updater_endpoints=parsed_endpoints,
             skip_updater_config=args.skip_updater_config,
             create_updater_artifacts=not args.skip_updater_artifacts,
+            windows_certificate_thumbprint=args.windows_certificate_thumbprint,
+            authenticode_timestamp_url=args.authenticode_timestamp_url,
         )
     else:
         config = base_config
         configure_app_version(config, args.version)
         configure_nsis_compression(config, args.nsis_compression)
+        configure_windows_signing(
+            config,
+            certificate_thumbprint=args.windows_certificate_thumbprint,
+            timestamp_url=args.authenticode_timestamp_url,
+        )
         if args.remove_before_bundle_command:
             remove_before_bundle_command(config)
         if not args.skip_updater_config:
@@ -203,6 +253,9 @@ def main(argv: list[str] | None = None) -> int:
                 "nsisCompression": config.get("bundle", {}).get("windows", {}).get("nsis", {}).get("compression", ""),
                 "beforeBundleCommandRemoved": config.get("build", {}).get("beforeBundleCommand") is None,
                 "createUpdaterArtifacts": config.get("bundle", {}).get("createUpdaterArtifacts") is True,
+                "windowsSigningConfigured": bool(
+                    config.get("bundle", {}).get("windows", {}).get("certificateThumbprint")
+                ),
             },
             separators=(",", ":"),
         )

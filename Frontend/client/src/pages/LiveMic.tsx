@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, memo, useMemo, useRef, type CSSProperties } from "react";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
-import { Clock, Globe, Loader2, Mic } from "lucide-react";
+import { Clock, Globe, Mic } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { DeleteActionButton } from "@/components/ui/delete-action-button";
@@ -10,6 +10,7 @@ import { TranscriptionHistoryToolbar } from "@/components/transcription-history-
 import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { EmptyState } from "@/components/ui/empty-state";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useLocation } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 import type { BackendStateResponse } from "@/lib/api-types";
@@ -1143,7 +1144,7 @@ export default function LiveMic() {
                 </div>
                 {(isPreparing || isTranscribing) && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-ui-micro font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
-                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                    <WavePhysicsLoader size="micro" />
                     {stageStatusLabel}
                   </span>
                 )}

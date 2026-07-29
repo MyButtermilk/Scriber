@@ -289,6 +289,55 @@ def test_prepare_tauri_updater_config_writes_release_overlay_without_mutating_so
     }
 
 
+def test_prepare_tauri_updater_config_adds_windows_authenticode_signing(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    output = tmp_path / "tauri.generated.conf.json"
+    config.write_text("{}", encoding="utf-8")
+    thumbprint = "A1" * 20
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--output",
+        str(output),
+        "--version",
+        "0.5.57",
+        "--skip-updater-config",
+        "--windows-certificate-thumbprint",
+        thumbprint,
+        "--authenticode-timestamp-url",
+        "https://timestamp.example.test",
+    )
+
+    assert result.returncode == 0, result.stderr
+    generated = json.loads(output.read_text(encoding="utf-8"))
+    assert generated["bundle"]["windows"] == {
+        "certificateThumbprint": thumbprint,
+        "digestAlgorithm": "sha256",
+        "timestampUrl": "https://timestamp.example.test",
+    }
+
+
+def test_prepare_tauri_updater_config_rejects_insecure_timestamp_url(tmp_path: Path) -> None:
+    config = tmp_path / "tauri.conf.json"
+    config.write_text("{}", encoding="utf-8")
+
+    result = run_script(
+        PREPARE_SCRIPT,
+        "--config",
+        str(config),
+        "--windows-certificate-thumbprint",
+        "A1" * 20,
+        "--authenticode-timestamp-url",
+        "http://timestamp.example.test",
+        "--skip-updater-config",
+    )
+
+    assert result.returncode == 1
+    assert "absolute HTTPS URL" in result.stderr
+
+
 def test_prepare_tauri_updater_config_empty_env_endpoint_uses_default(tmp_path: Path) -> None:
     config = tmp_path / "tauri.conf.json"
     output = tmp_path / "tauri.generated.conf.json"

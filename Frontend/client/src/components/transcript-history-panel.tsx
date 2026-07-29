@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 
 import { QueryErrorState } from "@/components/ui/query-error-state";
-import { SkeletonList } from "@/components/ui/skeleton-card";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
+import { useI18n } from "@/i18n";
 import type { TranscriptHistoryViewMode } from "@/hooks/use-transcript-history-panel-state";
 import { cn } from "@/lib/utils";
 
@@ -32,12 +33,14 @@ export function TranscriptHistoryPanel({
   noMatchesState,
   onRetry,
   searchTerm,
-  viewMode,
 }: TranscriptHistoryPanelProps) {
+  const { t } = useI18n();
   return (
     <div className={cn("min-w-0", className)}>
       {isLoading ? (
-        <SkeletonList count={3} variant={viewMode} />
+        <div className="flex min-h-32 items-center justify-center">
+          <WavePhysicsLoader size="panel" label={t("Loading transcripts")} />
+        </div>
       ) : isError ? (
         <QueryErrorState title={errorTitle} description={errorDescription} onRetry={onRetry} />
       ) : isEmpty ? (

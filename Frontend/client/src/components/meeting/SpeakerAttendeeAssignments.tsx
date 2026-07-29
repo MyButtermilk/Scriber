@@ -1,21 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-  Check,
-  ChevronDown,
-  CirclePlay,
-  GitMerge,
-  Loader2,
-  Mail,
-  ShieldCheck,
-  Sparkles,
-  UserCheck,
-  Users,
-} from "lucide-react";
+import { Check, ChevronDown, CirclePlay, GitMerge, Mail, ShieldCheck, Sparkles, UserCheck, Users } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useI18n, type TranslationValues } from "@/i18n";
 import {
@@ -398,10 +388,8 @@ export function SpeakerAttendeeAssignments({
 
       <div className="border-t border-border/60 p-4">
         {assignmentsQuery.isLoading ? (
-          <div className="grid gap-2" role="status" aria-label={t("Loading speaker assignments")}>
-            {[0, 1].map((item) => (
-              <div key={item} className="h-24 animate-pulse rounded-xl bg-muted motion-reduce:animate-none" />
-            ))}
+          <div className="flex min-h-32 items-center justify-center">
+            <WavePhysicsLoader size="panel" label={t("Loading speaker assignments")} />
           </div>
         ) : assignmentsQuery.isError ? (
           <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-3" role="alert">
@@ -456,7 +444,7 @@ export function SpeakerAttendeeAssignments({
                   onClick={() => suggestMutation.mutate()}
                 >
                   {suggestMutation.isPending ? (
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    <WavePhysicsLoader className="mr-1.5" size="inline" />
                   ) : (
                     <Sparkles className="mr-1.5 h-3.5 w-3.5" />
                   )}
@@ -670,7 +658,7 @@ export function SpeakerAttendeeAssignments({
                         }}
                       >
                         {pendingThisSpeaker ? (
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          <WavePhysicsLoader className="mr-1.5" size="inline" />
                         ) : (
                           <UserCheck className="mr-1.5 h-3.5 w-3.5" />
                         )}
@@ -819,7 +807,7 @@ export function SpeakerAttendeeAssignments({
                 mergeMutation.mutate();
               }}
             >
-              {mergeMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              {mergeMutation.isPending && <WavePhysicsLoader className="mr-1.5" size="inline" />}
               {t("Keep {{speaker}} and merge", { speaker: mergeTarget?.displayName || t("speaker") })}
             </AlertDialogAction>
           </AlertDialogFooter>

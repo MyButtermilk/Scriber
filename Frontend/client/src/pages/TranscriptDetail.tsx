@@ -1,5 +1,6 @@
 import { useParams, Link, useLocation } from "wouter";
-import { ArrowLeft, Download, Copy, Check, Loader2, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
+import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import {
@@ -312,7 +313,7 @@ function SummarizeButton({
 
   return (
     <Button size="sm" variant="outline" onClick={handleSummarize} disabled={isSummarizing || disabled} type="button">
-      {isSummarizing ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Sparkles className="w-3 h-3 mr-1" />}
+      {isSummarizing ? <WavePhysicsLoader className="mr-1" size="micro" /> : <Sparkles className="mr-1 h-3 w-3" />}
       {isSummarizing ? t("Summarizing…") : t(label)}
     </Button>
   );
@@ -733,7 +734,7 @@ export default function TranscriptDetail() {
               <DropdownMenuContent align="end">
                 <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("pdf")}>
                   {isExporting ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <FileText className="w-4 h-4 mr-2" />
                   )}{" "}
@@ -741,7 +742,7 @@ export default function TranscriptDetail() {
                 </DropdownMenuItem>
                 <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("docx")}>
                   {isExporting ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <FileText className="w-4 h-4 mr-2" />
                   )}{" "}
@@ -775,7 +776,7 @@ export default function TranscriptDetail() {
                 )}
                 <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("pdf")}>
                   {isExporting ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <FileText className="w-4 h-4 mr-2" />
                   )}{" "}
@@ -783,7 +784,7 @@ export default function TranscriptDetail() {
                 </DropdownMenuItem>
                 <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("docx")}>
                   {isExporting ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
                     <FileText className="w-4 h-4 mr-2" />
                   )}{" "}
@@ -858,7 +859,7 @@ export default function TranscriptDetail() {
           {/* Processing Status Banner */}
           {transcript.status === "processing" && (
             <div className="neu-status-well p-4 flex items-center gap-3">
-              <Loader2 className="w-5 h-5 animate-spin text-primary shrink-0" />
+              <WavePhysicsLoader size="compact" label={t("Loading…")} />
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-foreground truncate">
                   {localizedProcessingStep(transcript.step, "Processing…", t, formatNumber)}
@@ -921,7 +922,7 @@ export default function TranscriptDetail() {
                     <span className="text-base font-semibold tracking-tight">{t("Summary")}</span>
                     {isSummaryInProgress && (
                       <span className="flex items-center gap-1 text-xs text-muted-foreground ml-2">
-                        <Loader2 className="w-3 h-3 animate-spin" />
+                        <WavePhysicsLoader size="micro" />
                         {localizedProcessingStep(transcript.step, "Summarizing…", t, formatNumber)}
                       </span>
                     )}

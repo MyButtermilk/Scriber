@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-27
+Last verified: 2026-07-29
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -185,6 +185,13 @@ Frontend and shell:
   IPC for opt-in native shell work, including text injection and diagnostics.
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
   resource mapping, before-bundle sidecar command.
+- `Frontend/src-tauri/windows/installer-template.nsi`: reviewed Tauri CLI
+  2.11.3 NSIS template with manual NSIS version upgrades routed directly to the
+  non-destructive overlay path. Do not restore Tauri's destructive maintenance
+  prompt for this case: its uninstall path intentionally removes taskbar pins,
+  Start-menu shortcuts, and the HKCU autostart value. Same-version maintenance,
+  downgrades, WiX migration, and strict standalone uninstall retain upstream
+  behavior.
 
 Packaging and scripts:
 
@@ -232,7 +239,11 @@ Packaging and scripts:
   asset before release producers start; cache maintenance must preserve the
   current QuickJS cache tag.
 - `scripts/build_tauri_backend_sidecar.ps1`: sidecar build, runtime import
-  checks, media-tool bundling, optional cache reuse.
+  checks, media-tool bundling, optional cache reuse. Official signed builds
+  Authenticode-sign `scriber-backend.exe` before the runtime-layer manifest is
+  generated; the signing thumbprint and timestamp URL belong to the runtime
+  cache identity. Keep both PyInstaller `EXE` and `COLLECT` on `upx=False` so
+  shipped PE layout never depends on a build-host UPX installation.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
   releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Python
   sidecar preparation, and the Tauri `--no-bundle` app compile overlap. That
@@ -245,6 +256,12 @@ Packaging and scripts:
   duplicate dependency build. `-RustAudioIsolatedTarget` remains an explicit
   diagnostic/local opt-in. NSIS, updater signing, and verification start only
   after every producer succeeds.
+- Official `v*` tags are fail-closed for Authenticode. The workflow must import
+  an RSA code-signing PFX only into the ephemeral runner store, configure Tauri
+  with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate the desktop,
+  backend, NSIS installer, and timestamp/publisher evidence. Unsigned local
+  builds remain valid only for development; never restore an unsigned escape
+  hatch for public releases.
 - `.github/workflows/release-windows.yml`: adaptive release DAG. Release
   planning and exact-revision quality gates start together. On a
   planner-confirmed cold backend/Tauri double miss, both read-only cold
@@ -365,7 +382,11 @@ Packaging and scripts:
   lane mismatch, duplicate activation, or an unarmed marker fails closed and
   leaves the activation KPI unknown.
 - Rust owns Windows autostart, global hotkey registration, single-instance
-  startup, tray/menu shell actions, and worker crash recovery. The supervisor
+  startup, tray/menu shell actions, and worker crash recovery. A persisted
+  `desktop-autostart-user-choice` value must be reconciled to the current
+  executable path on release startup; `enabled` repairs a missing or stale
+  HKCU Run value and `disabled` removes it. Only a missing preference receives
+  the install default. The supervisor
   must keep the named single-instance restore event: a second launch exits
   before backend/audio side effects but signals the primary instance to show,
   unminimize, and focus its main window. A mutex-only early return is a UX
@@ -1595,9 +1616,9 @@ Already implemented and should not be regressed:
   `["rlib"]` for Windows desktop releases. Do not restore Tauri mobile
   `staticlib`/`cdylib` outputs unless mobile targets are introduced; they create
   extra release library artifacts that do not help the NSIS updater build.
-- `v*` tag releases require Tauri updater signing by default. Use
-  `SCRIBER_ALLOW_UNSIGNED_TAG_RELEASE=1` only for an intentional unsigned tag
-  test build.
+- `v*` tag releases require both Tauri updater signing and Authenticode signing.
+  There is no unsigned public-tag escape hatch; use non-tag workflow dispatches
+  for unsigned packaging experiments.
 - Non-tag GitHub cache/warmup builds use `-NsisCompression none` by default to
   reduce packaging time and intentionally ignore `SCRIBER_NSIS_COMPRESSION`.
   Use `SCRIBER_NON_TAG_NSIS_COMPRESSION` only for explicit non-tag packaging

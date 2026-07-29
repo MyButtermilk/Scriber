@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Loader2, Square } from "lucide-react";
+import { Square } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -53,7 +54,7 @@ export function TranscriptStopButton({
       aria-label={t("Stop")}
     >
       {isStopping ? (
-        <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+        <WavePhysicsLoader size="inline" />
       ) : (
         <Square className="h-3.5 w-3.5 shrink-0 fill-current" aria-hidden="true" />
       )}
