@@ -343,7 +343,10 @@ def test_build_script_wires_authenticode_gate() -> None:
     assert "$authenticodeTargets" in build_script
     assert "scripts\\validate_windows_authenticode.ps1" in build_script
     assert '$authenticodeReportPath = Join-Path $metadataDir "authenticode.json"' in build_script
-    assert '"-OutputPath", $authenticodeReportPath' in build_script
+    assert "Path = [string[]]$authenticodeTargets" in build_script
+    assert "OutputPath = $authenticodeReportPath" in build_script
+    assert "& $authenticodeScript @authenticodeParameters" in build_script
+    assert "powershell @authenticodeArgs" not in build_script
     assert "Authenticode signature validation" in build_script
 
 

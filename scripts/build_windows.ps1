@@ -1501,28 +1501,22 @@ try {
         $authenticodeReportPath = Join-Path $metadataDir "authenticode.json"
 
         Invoke-Checked -Label "Authenticode signature validation" -Command {
-            $authenticodeArgs = @(
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                (Join-Path $RepoRoot "scripts\validate_windows_authenticode.ps1"),
-                "-Path"
-            )
-            foreach ($artifact in $authenticodeTargets) {
-                $authenticodeArgs += $artifact
+            $authenticodeScript = Join-Path $RepoRoot "scripts\validate_windows_authenticode.ps1"
+            $authenticodeParameters = @{
+                Path = [string[]]$authenticodeTargets
+                OutputPath = $authenticodeReportPath
             }
             if ($ExpectedAuthenticodePublisher) {
-                $authenticodeArgs += @("-ExpectedPublisher", $ExpectedAuthenticodePublisher)
+                $authenticodeParameters.ExpectedPublisher = $ExpectedAuthenticodePublisher
             }
             if ($RequireAuthenticodeTimestamp) {
-                $authenticodeArgs += "-RequireTimestamp"
+                $authenticodeParameters.RequireTimestamp = $true
             }
             if (-not $RequireAuthenticodeSignature) {
-                $authenticodeArgs += "-AllowNotSigned"
+                $authenticodeParameters.AllowNotSigned = $true
             }
-            $authenticodeArgs += @("-OutputPath", $authenticodeReportPath)
-            powershell @authenticodeArgs
+            & $authenticodeScript @authenticodeParameters
+            $global:LASTEXITCODE = 0
         }
     }
 
