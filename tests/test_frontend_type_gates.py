@@ -2048,7 +2048,8 @@ def test_native_overlay_energy_wave_is_full_bleed_thin_and_allocation_bounded() 
     )
 
     assert "ENERGY_PILL_BACKGROUND" in overlay_source
-    assert "energyWaveActive ? ENERGY_PILL_BACKGROUND" in overlay_source
+    assert "energyWaveSelected ? ENERGY_PILL_BACKGROUND" in overlay_source
+    assert 'visualizerStyle === "energy_wave" ? "energy" : "blue"' in overlay_source
     assert "const ENERGY_WAVE_PLOT_X = 0;" in overlay_source
     assert "const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;" in overlay_source
     assert "plotX={ENERGY_WAVE_PLOT_X}" in overlay_source
@@ -2219,8 +2220,8 @@ def test_meeting_progress_restores_from_detail_and_never_invents_zero() -> None:
     assert "mergeMeetingProcessingProgress" in source
     assert "applyMeetingProgressEvent" in source
     assert 't("Processing…")' in source
-    assert "aria-valuenow={meetingProgress ?" in source
-    assert ": undefined}" in source
+    assert "{meetingProgress ? (" in source
+    assert "aria-valuenow={Math.round(meetingProgress.progress * 100)}" in source
     assert "meetingProgress?.progress ?? 0" not in source
     assert "processingProgress: MeetingProcessingProgress | null;" in api_types
     assert "export function mergeMeetingProcessingProgress" in cache
@@ -2768,7 +2769,9 @@ def test_frontend_motion_honors_reduced_motion_and_bounds_audio_visuals() -> Non
     assert 'window.matchMedia("(prefers-reduced-motion: reduce)")' in energy_field
     assert "REDUCED_MOTION_PHASE" in energy_field
     assert "REDUCED_MOTION_FRAME_INTERVAL_MS" in energy_field
-    assert ".neu-skeleton," in styles
+    assert ".transcription-shimmer-text {" in styles
+    assert ".transcription-shimmer-text--energy {" in styles
+    assert "animation: transcription-text-shimmer" in styles
     assert "animation: none;" in styles
     assert "transcription-thumbnail" in youtube
     assert "duration-700" not in youtube
