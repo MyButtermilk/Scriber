@@ -2,15 +2,10 @@ import hashlib
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 TAURI_CONFIG = ROOT / "Frontend" / "src-tauri" / "tauri.conf.json"
-NSIS_TEMPLATE = (
-    ROOT / "Frontend" / "src-tauri" / "windows" / "installer-template.nsi"
-)
-UPSTREAM_TEMPLATE_SHA256 = (
-    "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079"
-)
+NSIS_TEMPLATE = ROOT / "Frontend" / "src-tauri" / "windows" / "installer-template.nsi"
+UPSTREAM_TEMPLATE_SHA256 = "20f4ecc730defb71f1342eaeaec4021df13be3d843abba0effe88ea5835fa079"
 SCRIBER_TEMPLATE_HEADER = (
     "; Vendored from tauri-apps/tauri tag tauri-cli-v2.11.3\n"
     "; source commit 6f6ab1207bb3923c2721fbc67d2fdb1c8deb0c7a.\n"
@@ -62,9 +57,7 @@ def test_scriber_template_has_only_the_reviewed_delta_from_tauri():
         "",
         1,
     )
-    assert hashlib.sha256(reconstructed.encode("utf-8")).hexdigest() == (
-        UPSTREAM_TEMPLATE_SHA256
-    )
+    assert hashlib.sha256(reconstructed.encode("utf-8")).hexdigest() == (UPSTREAM_TEMPLATE_SHA256)
 
 
 def test_manual_version_upgrade_uses_non_destructive_overlay_automatically():
@@ -92,9 +85,7 @@ def test_manual_version_upgrade_uses_non_destructive_overlay_automatically():
     Abort
   ${EndIf}"""
     assert overlay_guard in reinstall_page
-    assert reinstall_page.index(overlay_guard) < reinstall_page.index(
-        "; Skip showing the page if passive"
-    )
+    assert reinstall_page.index(overlay_guard) < reinstall_page.index("; Skip showing the page if passive")
     assert (
         """  ${ElseIf} $R0 = 1 ; Upgrading
     ${If} $R1 = 1              ; User chose to uninstall
@@ -128,8 +119,4 @@ def test_overlay_and_updater_paths_preserve_shortcuts_pins_and_autostart():
         "; Delete app data if the checkbox is selected",
     )
     assert "${If} $UpdateMode <> 1" in autostart_guard
-    assert (
-        'DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" '
-        '"${PRODUCTNAME}"'
-        in autostart_guard
-    )
+    assert 'DeleteRegValue HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Run" "${PRODUCTNAME}"' in autostart_guard
