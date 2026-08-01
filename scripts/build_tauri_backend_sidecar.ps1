@@ -4487,8 +4487,14 @@ if ($BundleLocalPolishingRuntime) {
                 throw "Local polishing runtime manifest refresh failed after signing."
             }
         }
-        $versionOutput = (& $serverPath --version 2>&1 | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0) {
+        # llama.cpp writes its successful version banner to stderr. Route both
+        # native streams through cmd.exe so Windows PowerShell 5.1 does not
+        # promote that banner to a terminating NativeCommandError.
+        $quotedServerPath = '"' + $serverPath.Replace('"', '""') + '"'
+        $versionCommand = '{0} --version 2>&1' -f $quotedServerPath
+        $versionOutput = (cmd.exe /d /s /c $versionCommand | Out-String).Trim()
+        $versionExitCode = $LASTEXITCODE
+        if ($versionExitCode -ne 0) {
             throw "Local polishing llama-server version probe failed."
         }
         $runtimeLock = Get-Content -LiteralPath $localPolishingLock -Raw | ConvertFrom-Json
