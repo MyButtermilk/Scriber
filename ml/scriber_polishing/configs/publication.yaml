@@ -50,6 +50,7 @@ artifacts:
       contains_secrets: false
     reload:
       kind: transformers_local
+      device: cuda
       regression:
         file: examples/regression_sample.jsonl
         minimum_cases: 100

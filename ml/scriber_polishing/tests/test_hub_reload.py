@@ -142,9 +142,7 @@ def _variant_release_report() -> dict[str, Any]:
 
 
 def _publication_config() -> dict[str, Any]:
-    return load_publication_config(
-        Path(__file__).parents[1] / "configs" / "publication.yaml"
-    )
+    return load_publication_config(Path(__file__).parents[1] / "configs" / "publication.yaml")
 
 
 def _write_model_artifact(root: Path) -> None:
@@ -182,8 +180,7 @@ def _write_model_artifact(root: Path) -> None:
         "Section 3.2 Use Restrictions\n\n"
         "Gemma Prohibited Use Policy\n\n"
         "Section 4: ADDITIONAL PROVISIONS\n\n"
-        "Appendix\n\nGemma 3\n\n"
-        + ("Fixture agreement body for structural validation.\n" * 120),
+        "Appendix\n\nGemma 3\n\n" + ("Fixture agreement body for structural validation.\n" * 120),
         encoding="utf-8",
     )
     (root / "MODIFICATIONS.md").write_text(
@@ -240,9 +237,7 @@ def _write_model_artifact(root: Path) -> None:
     examples = root / "examples"
     examples.mkdir()
     (examples / "inference.json").write_text("{}\n", encoding="utf-8")
-    categories = _publication_config()["artifacts"]["model"]["reload"][
-        "regression"
-    ]["required_categories"]
+    categories = _publication_config()["artifacts"]["model"]["reload"]["regression"]["required_categories"]
     sources = []
     predictions = []
     for index in range(110):
@@ -253,16 +248,8 @@ def _write_model_artifact(root: Path) -> None:
             {
                 "schema_version": 1,
                 "case_id": case_id,
-                "source_kind": (
-                    "ai_gold_smoke"
-                    if category == "ai_gold_smoke"
-                    else "synthetic_regression"
-                ),
-                "source_partition": (
-                    "ai_gold_validation"
-                    if category == "ai_gold_smoke"
-                    else "synthetic_non_holdout"
-                ),
+                "source_kind": ("ai_gold_smoke" if category == "ai_gold_smoke" else "synthetic_regression"),
+                "source_partition": ("ai_gold_validation" if category == "ai_gold_smoke" else "synthetic_non_holdout"),
                 "category": category,
                 "source_text": f"bitte bestätigen sie {protected}",
                 "protected_spans": [protected],
@@ -273,61 +260,51 @@ def _write_model_artifact(root: Path) -> None:
         predictions.append(
             {
                 "case_id": case_id,
-                "prediction_sst": (
-                    f"[DOC]\n[P]Bitte bestätigen Sie {protected}.[/P]\n[/DOC]"
-                ),
+                "prediction_sst": (f"[DOC]\n[P]Bitte bestätigen Sie {protected}.[/P]\n[/DOC]"),
             }
         )
     source_path = root.parent / f"{root.name}-hub-sources.jsonl"
     prediction_path = root.parent / f"{root.name}-hub-predictions.jsonl"
     source_path.write_text(
-        "".join(
-            json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
-            for item in sources
-        ),
+        "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in sources),
         encoding="utf-8",
     )
     prediction_path.write_text(
-        "".join(
-            json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n"
-            for item in predictions
-        ),
+        "".join(json.dumps(item, ensure_ascii=False, sort_keys=True) + "\n" for item in predictions),
         encoding="utf-8",
     )
     materialize_hub_regression_suite(
         source_path,
         prediction_path,
         examples / "regression_sample.jsonl",
-        policy=_publication_config()["artifacts"]["model"]["reload"][
-            "regression"
-        ],
+        policy=_publication_config()["artifacts"]["model"]["reload"]["regression"],
     )
     source_path.unlink()
     prediction_path.unlink()
 
 
 def _write_selected_checkpoint_publication(path: Path, model_root: Path) -> None:
-    config_hash = "sha256:" + hashlib.sha256(
-        (model_root / "config.json").read_bytes()
-    ).hexdigest()
+    config_hash = "sha256:" + hashlib.sha256((model_root / "config.json").read_bytes()).hexdigest()
     weights = []
     for weight in sorted(model_root.glob("*.safetensors")):
         weights.append(
             {
                 "path": weight.name,
                 "bytes": weight.stat().st_size,
-                "sha256": "sha256:"
-                + hashlib.sha256(weight.read_bytes()).hexdigest(),
+                "sha256": "sha256:" + hashlib.sha256(weight.read_bytes()).hexdigest(),
             }
         )
-    model_hash = "sha256:" + hashlib.sha256(
-        json.dumps(
-            weights,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
+    model_hash = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                weights,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     checkpoint = {
         "candidate_id": "checkpoint-10",
         "checkpoint": "checkpoint-10",
@@ -381,8 +358,7 @@ def _write_selected_checkpoint_publication(path: Path, model_root: Path) -> None
         ],
     }
     path.write_text(
-        json.dumps(publication, ensure_ascii=False, indent=2, sort_keys=True)
-        + "\n",
+        json.dumps(publication, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
 
@@ -706,6 +682,7 @@ def test_checked_in_publication_config_is_fixed_private_buttermilk03_policy() ->
     assert config["visibility"] == "private"
     assert config["token_env"] == "HF_TOKEN"
     assert config["schema_version"] == 4
+    assert config["artifacts"]["model"]["reload"]["device"] == "cuda"
     assert config["artifacts"]["model"]["protection_policy"] == _policy_requirement()
     assert config["artifacts"]["model"]["repo_id"] == ("Buttermilk03/scriber-gemma3-270m-polishing-de-v1")
     assert config["artifacts"]["dataset"]["repo_id"] == ("Buttermilk03/scriber-transcript-polishing-de-v1")
@@ -766,6 +743,7 @@ def test_checked_in_publication_config_is_fixed_private_buttermilk03_policy() ->
         lambda config: config["artifacts"]["model"]["protection_policy"].update(
             {"artifact_sha256": "sha256:" + ("0" * 64)}
         ),
+        lambda config: config["artifacts"]["model"]["reload"].update({"device": "cpu"}),
     ],
 )
 def test_publication_config_rejects_non_private_or_untrusted_targets(mutation: Any) -> None:
@@ -915,14 +893,10 @@ def test_private_candidate_variant_matrix_binds_quality_failure(
                 "bf16": {
                     "stage": "evaluation",
                     "reason_code": "hard_quality_gates_failed",
-                    "evidence_sha256": report["variant_summaries"]["bf16"][
-                        "evaluation_report_sha256"
-                    ],
+                    "evidence_sha256": report["variant_summaries"]["bf16"]["evaluation_report_sha256"],
                 }
             },
-            "reasons": [
-                "bf16:qualification:evaluation:hard_quality_gates_failed"
-            ],
+            "reasons": ["bf16:qualification:evaluation:hard_quality_gates_failed"],
         }
     )
     report_path.write_text(
@@ -966,9 +940,7 @@ def test_manifest_scans_secret_content_beyond_first_16_mib(tmp_path: Path) -> No
     artifact = tmp_path / "model"
     _write_model_artifact(artifact)
     secret = b"hf_" + (b"x" * 32)
-    (artifact / "large-notes.bin").write_bytes(
-        (b"safe-padding\n" * 1_500_000) + secret
-    )
+    (artifact / "large-notes.bin").write_bytes((b"safe-padding\n" * 1_500_000) + secret)
 
     with pytest.raises(PublicationError, match="secret"):
         prepare_publication_manifest(
@@ -1050,9 +1022,7 @@ def test_private_upload_sha_pinning_fresh_download_and_offline_reload(tmp_path: 
     assert report["artifacts"]["dataset"]["revision"] == "b" * 40
     assert report["artifacts"]["model"]["reload"]["status"] == "passed"
     assert report["artifacts"]["dataset"]["reload"]["status"] == "passed"
-    assert report["artifacts"]["model"]["verification_mode"] == (
-        "fresh_exact_revision_download"
-    )
+    assert report["artifacts"]["model"]["verification_mode"] == ("fresh_exact_revision_download")
     assert report["artifacts"]["model"]["exact_revision_downloaded"] is True
     assert report["artifacts"]["dataset"]["expected_split_counts"] == {
         "release": {
@@ -1075,21 +1045,22 @@ def test_private_upload_sha_pinning_fresh_download_and_offline_reload(tmp_path: 
     assert report["bf16_final_model_tree_sha256"] == "sha256:" + ("a" * 64)
     assert report["protection_policy"] == _policy_binding()
     assert report["artifacts"]["model"]["reload"]["protection_policy"] == (_policy_binding())
-    assert report["artifacts"]["model"]["reload"]["regression"][
-        "exact_output_hash_matches"
-    ] == 110
-    assert set(
-        report["artifacts"]["model"]["reload"]["variant_release"]["variants"]
-    ) == {"bf16", "int8", "int4_nf4", "Q8_0", "Q4_K_M"}
-    assert report["artifacts"]["dataset"]["reload"]["split_inventory"] == (
-        report["artifacts"]["dataset"]["expected_split_inventory"]["release"]
+    assert report["artifacts"]["model"]["reload"]["regression"]["exact_output_hash_matches"] == 110
+    assert set(report["artifacts"]["model"]["reload"]["variant_release"]["variants"]) == {
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M",
+    }
+    assert (
+        report["artifacts"]["dataset"]["reload"]["split_inventory"]
+        == (report["artifacts"]["dataset"]["expected_split_inventory"]["release"])
     )
     assert len(report["local_bundle_sha256"]) == 64
     assert len(report["publication_binding_sha256"]) == 64
     assert all(
-        item["remote_size_verified"]
-        and item["remote_identity_verified"]
-        and item["source_sha256_verified"]
+        item["remote_size_verified"] and item["remote_identity_verified"] and item["source_sha256_verified"]
         for artifact in report["artifacts"].values()
         for item in artifact["remote_files"]
     )
@@ -1292,6 +1263,10 @@ def test_offline_model_reload_passes_only_local_paths_to_transformers(
             scriber_protection_policy_sha256=_POLICY_SHA256,
         )
 
+        def to(self, device: str) -> Model:
+            calls.append(("model", "to", {"device": device}))
+            return self
+
         def eval(self) -> None:
             calls.append(("model", "eval", {}))
 
@@ -1311,22 +1286,19 @@ def test_offline_model_reload_passes_only_local_paths_to_transformers(
         definition,
         model_loader=model_loader,
         tokenizer_loader=tokenizer_loader,
-        regression_runner=lambda root, loaded_definition, *_args: (
-            _passing_regression_result(root, loaded_definition)
-        ),
+        regression_runner=lambda root, loaded_definition, *_args: (_passing_regression_result(root, loaded_definition)),
     )
 
     assert result["status"] == "passed"
     assert result["loader"] == "transformers_local"
+    assert result["device"] == "cuda"
     assert result["tokenizer_class"] == "SimpleNamespace"
     assert result["tokenizer_vocab_size"] == 262_144
     assert result["model_type"] == "gemma3_text"
     assert result["parameter_count"] == 270_000_000
     assert result["protection_policy"] == _policy_binding()
     assert result["regression"]["exact_output_hash_matches"] == 110
-    assert result["runtime_reload"]["source_equivalence"] == (
-        "artifact_bytes_equal_executed_package"
-    )
+    assert result["runtime_reload"]["source_equivalence"] == ("artifact_bytes_equal_executed_package")
     assert result["checksums"]["status"] == "verified"
     assert result["legal_files"]["kind"] == "gemma_derived_model"
     assert calls[0] == (
@@ -1339,6 +1311,8 @@ def test_offline_model_reload_passes_only_local_paths_to_transformers(
         str(snapshot.resolve()),
         {"local_files_only": True, "dtype": "auto"},
     )
+    assert calls[2] == ("model", "to", {"device": "cuda"})
+    assert calls[3] == ("model", "eval", {})
 
 
 def test_offline_model_reload_revalidates_policy_against_loaded_tokenizer(
@@ -1369,6 +1343,9 @@ def test_offline_model_reload_revalidates_policy_against_loaded_tokenizer(
             scriber_protection_policy_sha256=_POLICY_SHA256,
         )
 
+        def to(self, _device: str) -> Model:
+            return self
+
         def eval(self) -> None:
             return None
 
@@ -1386,12 +1363,110 @@ def test_offline_model_reload_revalidates_policy_against_loaded_tokenizer(
         definition,
         tokenizer_loader=lambda *_args, **_kwargs: tokenizer,
         model_loader=lambda *_args, **_kwargs: Model(),
-        regression_runner=lambda root, loaded_definition, *_args: (
-            _passing_regression_result(root, loaded_definition)
-        ),
+        regression_runner=lambda root, loaded_definition, *_args: (_passing_regression_result(root, loaded_definition)),
     )
 
     assert verification_tokenizers == [None, tokenizer]
+
+
+def test_offline_model_reload_uses_bound_policy_for_regression(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import scriber_polishing.inference as inference
+
+    snapshot = tmp_path / "model"
+    _write_model_artifact(snapshot)
+    _prepare_fixture_manifest(snapshot, "model")
+    definition = _publication_config()["artifacts"]["model"]
+    captured: dict[str, object] = {}
+
+    class Model:
+        config = SimpleNamespace(
+            model_type="gemma3_text",
+            scriber_protection_policy_id=_POLICY_ID,
+            scriber_protection_policy_sha256=_POLICY_SHA256,
+        )
+
+        def to(self, _device: str) -> Model:
+            return self
+
+        def eval(self) -> None:
+            return None
+
+        def num_parameters(self) -> int:
+            return 270_000_000
+
+    def protector(text: str) -> str:
+        return text
+
+    def fake_policy_span_protector(
+        policy: Mapping[str, object],
+        *,
+        product: bool,
+    ) -> object:
+        captured["policy"] = policy
+        captured["product"] = product
+        return protector
+
+    def fake_generate_prediction(
+        source_text: str,
+        **kwargs: Any,
+    ) -> SimpleNamespace:
+        captured["source_text"] = source_text
+        captured["span_protector"] = kwargs["span_protector"]
+        return SimpleNamespace(
+            prediction_sst="[DOC]\n[P]Test[/P]\n[/DOC]",
+            valid_sst=True,
+            restoration_error=None,
+            generation_seconds=0.0,
+        )
+
+    def fake_regression_suite(
+        _path: Path,
+        _policy: Mapping[str, object],
+        *,
+        predictor: Any,
+    ) -> dict[str, object]:
+        result = predictor({"source_text": "test source"})
+        assert result["valid_sst"] is True
+        return {"status": "passed"}
+
+    monkeypatch.setattr(
+        hub_publication,
+        "verify_frozen_lexical_policy_artifact",
+        lambda *_args, **_kwargs: _policy_binding(),
+    )
+    monkeypatch.setattr(inference, "_policy_span_protector", fake_policy_span_protector)
+    monkeypatch.setattr(
+        inference,
+        "load_inference_protection_policy",
+        lambda **_kwargs: (_policy_binding(), {"source": "test"}),
+    )
+    monkeypatch.setattr(inference, "generate_prediction", fake_generate_prediction)
+    monkeypatch.setattr(
+        hub_publication,
+        "run_hub_regression_suite",
+        fake_regression_suite,
+    )
+
+    result = offline_reload_model(
+        snapshot,
+        definition,
+        tokenizer_loader=lambda *_args, **_kwargs: SimpleNamespace(
+            vocab_size=262_144,
+            pad_token_id=0,
+        ),
+        model_loader=lambda *_args, **_kwargs: Model(),
+    )
+
+    assert result["regression"] == {"status": "passed"}
+    assert captured == {
+        "policy": _policy_binding(),
+        "product": False,
+        "source_text": "test source",
+        "span_protector": protector,
+    }
 
 
 def test_offline_model_reload_rejects_policy_tampering(
@@ -1742,10 +1817,7 @@ def test_isolated_reload_worker_rejects_aliased_duplicate_and_incomplete_roots(
     base_environment = {
         name: value
         for name, value in os.environ.items()
-        if not any(
-            marker in name.upper()
-            for marker in ("TOKEN", "API_KEY", "PASSWORD", "SECRET")
-        )
+        if not any(marker in name.upper() for marker in ("TOKEN", "API_KEY", "PASSWORD", "SECRET"))
     }
     base_environment.update(
         {
@@ -1775,9 +1847,7 @@ def test_isolated_reload_worker_rejects_aliased_duplicate_and_incomplete_roots(
         assert "dependency roots are invalid" in completed.stderr
 
     incomplete_environment = dict(base_environment)
-    incomplete_environment["SCRIBER_HUB_RELOAD_DEPENDENCY_ROOTS_JSON"] = json.dumps(
-        [str(dependency.resolve())]
-    )
+    incomplete_environment["SCRIBER_HUB_RELOAD_DEPENDENCY_ROOTS_JSON"] = json.dumps([str(dependency.resolve())])
     incomplete = subprocess.run(
         [sys.executable, "-I", str(worker)],
         input="{}",

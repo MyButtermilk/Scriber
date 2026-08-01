@@ -63,14 +63,14 @@ def _auth_check_repository_access(
 
     parameters = inspect.signature(auth_check).parameters.values()
     supports_write = any(
-        parameter.name == "write"
-        or parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in parameters
+        parameter.name == "write" or parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters
     )
     kwargs: dict[str, Any] = {"repo_type": repo_type, "token": token}
     if supports_write:
         kwargs["write"] = True
     auth_check(repo_id, **kwargs)
+
+
 _EXPECTED_PRIVACY = {
     "synthetic_ai_only": True,
     "human_curation": False,
@@ -227,11 +227,7 @@ def _validate_report_schema(report: Mapping[str, Any]) -> None:
 
 
 def _validate_local_preparation_schema(report: Mapping[str, Any]) -> None:
-    schema_path = (
-        Path(__file__).resolve().parents[2]
-        / "contracts"
-        / "hub_preparation_schema.json"
-    )
+    schema_path = Path(__file__).resolve().parents[2] / "contracts" / "hub_preparation_schema.json"
     try:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
@@ -242,10 +238,7 @@ def _validate_local_preparation_schema(report: Mapping[str, Any]) -> None:
     )
     if errors:
         location = ".".join(str(part) for part in errors[0].path) or "<root>"
-        raise PublicationError(
-            f"Hub preparation report is invalid at {location}: "
-            f"{errors[0].message}"
-        )
+        raise PublicationError(f"Hub preparation report is invalid at {location}: {errors[0].message}")
 
 
 def _completed_training_binding(path: str | Path) -> dict[str, Any]:
@@ -274,9 +267,7 @@ def _completed_training_binding(path: str | Path) -> dict[str, Any]:
         or report.get("base_model") != _EXPECTED_MODEL_LEGAL["base_model"]
         or report.get("base_revision") != _EXPECTED_MODEL_LEGAL["base_revision"]
     ):
-        raise PublicationError(
-            "completed training evidence is not the finished pinned BF16 final run"
-        )
+        raise PublicationError("completed training evidence is not the finished pinned BF16 final run")
     run_fingerprint = report.get("run_fingerprint")
     final_model = report.get("final_model")
     inventory = final_model.get("inventory") if isinstance(final_model, Mapping) else None
@@ -343,32 +334,24 @@ def _selected_checkpoint_binding(
 ) -> dict[str, Any]:
     publication_path = Path(path).resolve()
     if Path(path).is_symlink() or not publication_path.is_file():
-        raise PublicationError(
-            "selected checkpoint publication must be a regular local file"
-        )
+        raise PublicationError("selected checkpoint publication must be a regular local file")
     try:
         payload = publication_path.read_bytes()
         publication = json.loads(payload)
         schema = json.loads(
             (
-                Path(__file__).resolve().parents[2]
-                / "contracts"
-                / "selected_checkpoint_publication_schema.json"
+                Path(__file__).resolve().parents[2] / "contracts" / "selected_checkpoint_publication_schema.json"
             ).read_text(encoding="utf-8")
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise PublicationError(
-            "selected checkpoint publication is unreadable"
-        ) from error
+        raise PublicationError("selected checkpoint publication is unreadable") from error
     errors = sorted(
         Draft202012Validator(schema).iter_errors(publication),
         key=lambda error: list(error.path),
     )
     if errors:
         location = ".".join(str(part) for part in errors[0].path) or "<root>"
-        raise PublicationError(
-            f"selected checkpoint publication is invalid at {location}"
-        )
+        raise PublicationError(f"selected checkpoint publication is invalid at {location}")
     checkpoint = publication["checkpoint"]
     fresh_reload = publication["fresh_reload"]
     fresh_inventory = publication["fresh_inventory"]
@@ -376,8 +359,7 @@ def _selected_checkpoint_binding(
     if (
         publication["selected_candidate_id"] != checkpoint["candidate_id"]
         or checkpoint["candidate_id"] != checkpoint["checkpoint"]
-        or checkpoint["run_fingerprint"]
-        != training_binding["training_run_fingerprint"]
+        or checkpoint["run_fingerprint"] != training_binding["training_run_fingerprint"]
         or fresh_reload["process_boundary"] != "fresh_subprocess"
         or fresh_reload["configuration_source"] != "saved_artifact"
         or fresh_reload["tokenizer_source"] != "pinned_base_tokenizer"
@@ -395,9 +377,7 @@ def _selected_checkpoint_binding(
             "revision": _EXPECTED_MODEL_LEGAL["base_revision"],
         }
     ):
-        raise PublicationError(
-            "selected checkpoint publication differs from its training or fresh inventory"
-        )
+        raise PublicationError("selected checkpoint publication differs from its training or fresh inventory")
     config_path = _required_file(model_root, "config.json", "published model config")
     config_sha256 = f"sha256:{_sha256_path(config_path)}"
     model_files = [
@@ -417,18 +397,12 @@ def _selected_checkpoint_binding(
         or config_sha256 != checkpoint["config_sha256"]
         or _checkpoint_canonical_sha256(model_files) != checkpoint["model_sha256"]
         or checkpoint["file_count"] != len(model_files) + 1
-        or checkpoint["total_bytes"]
-        != config_path.stat().st_size
-        + sum(int(item["bytes"]) for item in model_files)
+        or checkpoint["total_bytes"] != config_path.stat().st_size + sum(int(item["bytes"]) for item in model_files)
     ):
-        raise PublicationError(
-            "published model bytes differ from the selected checkpoint"
-        )
+        raise PublicationError("published model bytes differ from the selected checkpoint")
     return {
         "schema_version": 1,
-        "selected_checkpoint_publication_sha256": (
-            "sha256:" + hashlib.sha256(payload).hexdigest()
-        ),
+        "selected_checkpoint_publication_sha256": ("sha256:" + hashlib.sha256(payload).hexdigest()),
         "selected_candidate_id": publication["selected_candidate_id"],
         "selected_checkpoint_identity_sha256": checkpoint["identity_sha256"],
         "selected_checkpoint_tree_sha256": checkpoint["tree_sha256"],
@@ -501,15 +475,10 @@ def validate_publication_config(config: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"publication {kind} required_patterns must be unique strings")
         missing_patterns = sorted(_MANDATORY_PATTERNS[kind].difference(patterns))
         if missing_patterns:
-            raise ValueError(
-                f"publication {kind} required_patterns omits mandatory file: "
-                f"{missing_patterns[0]}"
-            )
+            raise ValueError(f"publication {kind} required_patterns omits mandatory file: {missing_patterns[0]}")
         if definition.get("privacy") != _EXPECTED_PRIVACY:
             raise ValueError(f"publication {kind} privacy declaration is not safe")
-        expected_legal = (
-            _EXPECTED_MODEL_LEGAL if kind == "model" else _EXPECTED_DATASET_LEGAL
-        )
+        expected_legal = _EXPECTED_MODEL_LEGAL if kind == "model" else _EXPECTED_DATASET_LEGAL
         if definition.get("legal") != expected_legal:
             raise ValueError(f"publication {kind} legal policy is not the fixed policy")
         if kind == "model":
@@ -528,26 +497,20 @@ def validate_publication_config(config: Mapping[str, Any]) -> dict[str, Any]:
         if reload_definition.get("kind") != expected_loader:
             raise ValueError(f"publication {kind} reload kind must be {expected_loader}")
         if kind == "model":
+            if reload_definition.get("device") != "cuda":
+                raise ValueError("publication model reload device must be cuda")
             regression = reload_definition.get("regression")
             if not isinstance(regression, Mapping):
                 raise ValueError("publication model reload has no regression policy")
             try:
-                reload_definition["regression"] = validate_hub_regression_policy(
-                    regression
-                )
+                reload_definition["regression"] = validate_hub_regression_policy(regression)
             except HubRegressionError as error:
-                raise ValueError(
-                    "publication model reload regression policy is invalid"
-                ) from error
-            if (
-                reload_definition.get("variant_release_report")
-                != VARIANT_RELEASE_REPORT_FILENAME
-            ):
-                raise ValueError(
-                    "publication model reload must bind the complete variant release report"
-                )
+                raise ValueError("publication model reload regression policy is invalid") from error
+            if reload_definition.get("variant_release_report") != VARIANT_RELEASE_REPORT_FILENAME:
+                raise ValueError("publication model reload must bind the complete variant release report")
             if set(reload_definition) != {
                 "kind",
+                "device",
                 "regression",
                 "variant_release_report",
             }:
@@ -613,13 +576,9 @@ def _assert_secret_free(path: Path, relative: str) -> None:
         while chunk := stream.read(1024 * 1024):
             content = overlap + chunk
             if any(pattern.search(content) for pattern in _SECRET_CONTENT):
-                raise PublicationError(
-                    f"artifact contains secret-like content: {relative}"
-                )
+                raise PublicationError(f"artifact contains secret-like content: {relative}")
             if any(pattern.search(content) for pattern in _PRIVATE_CONTENT):
-                raise PublicationError(
-                    f"artifact contains private local-path content: {relative}"
-                )
+                raise PublicationError(f"artifact contains private local-path content: {relative}")
             overlap = content[-512:]
 
 
@@ -642,9 +601,7 @@ def _inventory(
         if not path.is_file():
             continue
         relative = path.relative_to(root).as_posix()
-        if relative in excluded or any(
-            relative.startswith(prefix) for prefix in excluded_prefixes
-        ):
+        if relative in excluded or any(relative.startswith(prefix) for prefix in excluded_prefixes):
             continue
         _assert_secret_free(path, relative)
         size = path.stat().st_size
@@ -681,14 +638,10 @@ def _verify_runtime_sources(root: Path) -> dict[str, Any]:
         )
         source = (package_root / source_relative).resolve()
         if not source.is_file() or source.is_symlink():
-            raise PublicationError(
-                f"executed runtime source is unavailable for {relative}"
-            )
+            raise PublicationError(f"executed runtime source is unavailable for {relative}")
         bundled_bytes = bundled.read_bytes()
         if bundled_bytes != source.read_bytes():
-            raise PublicationError(
-                f"bundled runtime source differs from executed code: {relative}"
-            )
+            raise PublicationError(f"bundled runtime source differs from executed code: {relative}")
         if bundled.suffix == ".py":
             try:
                 compile(
@@ -698,9 +651,7 @@ def _verify_runtime_sources(root: Path) -> dict[str, Any]:
                     dont_inherit=True,
                 )
             except (SyntaxError, ValueError) as error:
-                raise PublicationError(
-                    f"bundled runtime source does not compile: {relative}"
-                ) from error
+                raise PublicationError(f"bundled runtime source does not compile: {relative}") from error
         files.append(
             {
                 "path": relative,
@@ -742,11 +693,7 @@ def _verify_legal_files(
     artifact_kind: str,
 ) -> dict[str, Any]:
     legal = definition.get("legal")
-    expected = (
-        _EXPECTED_MODEL_LEGAL
-        if artifact_kind == "model"
-        else _EXPECTED_DATASET_LEGAL
-    )
+    expected = _EXPECTED_MODEL_LEGAL if artifact_kind == "model" else _EXPECTED_DATASET_LEGAL
     if legal != expected:
         raise PublicationError(f"{artifact_kind} legal policy differs from the fixed policy")
     if artifact_kind == "model":
@@ -755,8 +702,7 @@ def _verify_legal_files(
             str(legal["notice_file"]),
             label="Gemma NOTICE",
             markers=(
-                "Gemma is provided under and subject to the Gemma Terms of "
-                "Use found at ai.google.dev/gemma/terms",
+                "Gemma is provided under and subject to the Gemma Terms of Use found at ai.google.dev/gemma/terms",
                 "Google",
                 "Scriber",
                 "modified",
@@ -780,9 +726,7 @@ def _verify_legal_files(
             ),
         )
         if license_path.stat().st_size < 4096:
-            raise PublicationError(
-                "Gemma license notice is not a complete Agreement copy"
-            )
+            raise PublicationError("Gemma license notice is not a complete Agreement copy")
         modifications, _ = _required_legal_text(
             root,
             str(legal["modifications_file"]),
@@ -857,9 +801,7 @@ def _verify_legal_files(
                 or source.get("private_data") is not False
                 or source.get("license_reviewed") is not True
             ):
-                raise PublicationError(
-                    "dataset license inventory contains an unreviewed source"
-                )
+                raise PublicationError("dataset license inventory contains an unreviewed source")
         paths = (license_path, sources_path, licenses_path)
     return {
         "status": "verified",
@@ -940,11 +882,7 @@ def _variant_release_binding(
     training_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     reload_definition = definition.get("reload")
-    relative = (
-        reload_definition.get("variant_release_report")
-        if isinstance(reload_definition, Mapping)
-        else None
-    )
+    relative = reload_definition.get("variant_release_report") if isinstance(reload_definition, Mapping) else None
     if relative != VARIANT_RELEASE_REPORT_FILENAME:
         raise PublicationError("model publication has no fixed variant release report")
     path = _required_file(root, str(relative), "variant release report")
@@ -961,13 +899,8 @@ def _variant_release_binding(
         VariantReleaseError,
     ) as error:
         raise PublicationError("variant release report is invalid") from error
-    if (
-        training_fingerprint is not None
-        and validated.get("training_fingerprint") != training_fingerprint
-    ):
-        raise PublicationError(
-            "variant release report differs from the completed training run"
-        )
+    if training_fingerprint is not None and validated.get("training_fingerprint") != training_fingerprint:
+        raise PublicationError("variant release report differs from the completed training run")
     if validated.get("protection_policy") != frozen_lexical_policy_binding():
         raise PublicationError("variant release report has another protection policy")
     return {
@@ -978,17 +911,11 @@ def _variant_release_binding(
         "training_fingerprint": validated["training_fingerprint"],
         "tested_variants": list(validated["tested_variants"]),
         "variants": list(validated["variants"]),
-        "ineligible_variants": copy.deepcopy(
-            dict(validated["ineligible_variants"])
-        ),
-        "qualification_failures": copy.deepcopy(
-            dict(validated["qualification_failures"])
-        ),
+        "ineligible_variants": copy.deepcopy(dict(validated["ineligible_variants"])),
+        "qualification_failures": copy.deepcopy(dict(validated["qualification_failures"])),
         "reasons": list(validated["reasons"]),
         "fresh_reload_report_sha256": {
-            variant: validated["variant_summaries"][variant][
-                "reload_report_sha256"
-            ]
+            variant: validated["variant_summaries"][variant]["reload_report_sha256"]
             for variant in validated["variants"]
         },
     }
@@ -1229,13 +1156,8 @@ def prepare_publication_bundle(
         )
         for kind in _ARTIFACT_KINDS
     }
-    if (
-        manifests["model"]["variant_release"]["training_fingerprint"]
-        != training_binding["training_run_fingerprint"]
-    ):
-        raise PublicationError(
-            "model variant release evidence differs from completed training"
-        )
+    if manifests["model"]["variant_release"]["training_fingerprint"] != training_binding["training_run_fingerprint"]:
+        raise PublicationError("model variant release evidence differs from completed training")
     artifacts = {
         kind: {
             "repo_id": manifests[kind]["repo_id"],
@@ -1359,10 +1281,7 @@ def offline_reload_model(
     *,
     model_loader: Callable[..., Any] | None = None,
     tokenizer_loader: Callable[..., Any] | None = None,
-    regression_runner: Callable[
-        [Path, Mapping[str, Any], Any, Any], Mapping[str, Any]
-    ]
-    | None = None,
+    regression_runner: Callable[[Path, Mapping[str, Any], Any, Any], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Reload the exact downloaded model without any network fallback."""
 
@@ -1370,6 +1289,9 @@ def offline_reload_model(
     reload_definition = definition.get("reload")
     if not isinstance(reload_definition, Mapping) or reload_definition.get("kind") != "transformers_local":
         raise PublicationError("model reload definition is not transformers_local")
+    reload_device = reload_definition.get("device")
+    if reload_device != "cuda":
+        raise PublicationError("model reload device is not cuda")
     if not root.is_dir():
         raise PublicationError("downloaded model snapshot is missing")
     try:
@@ -1379,17 +1301,31 @@ def offline_reload_model(
         )
     except PolicyArtifactError as error:
         raise PublicationError(str(error)) from error
-    if model_loader is None or tokenizer_loader is None:
+    default_model_loader = model_loader is None
+    default_tokenizer_loader = tokenizer_loader is None
+    if default_model_loader or default_tokenizer_loader:
+        import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
+        if not torch.cuda.is_available():
+            raise PublicationError("CUDA is unavailable for the exact model reload")
         model_loader = model_loader or AutoModelForCausalLM.from_pretrained
         tokenizer_loader = tokenizer_loader or AutoTokenizer.from_pretrained
     local_path = str(root)
-    tokenizer = tokenizer_loader(
-        local_path,
-        local_files_only=True,
-        fix_mistral_regex=False,
-    )
+    tokenizer_kwargs: dict[str, Any] = {
+        "local_files_only": True,
+        "fix_mistral_regex": False,
+    }
+    if default_tokenizer_loader:
+        tokenizer_kwargs.update(
+            {
+                "revision": None,
+                "trust_remote_code": False,
+            }
+        )
+    tokenizer = tokenizer_loader(local_path, **tokenizer_kwargs)
+    if getattr(tokenizer, "pad_token_id", None) is None and hasattr(tokenizer, "eos_token"):
+        tokenizer.pad_token = tokenizer.eos_token
     vocab_size = getattr(tokenizer, "vocab_size", None)
     if isinstance(vocab_size, bool) or not isinstance(vocab_size, int) or vocab_size <= 0:
         try:
@@ -1408,12 +1344,32 @@ def offline_reload_model(
         raise PublicationError(str(error)) from error
     if runtime_policy != protection_policy:
         raise PublicationError("runtime tokenizer protection policy differs from the downloaded artifact")
-    model = model_loader(
-        local_path,
-        local_files_only=True,
-        dtype="auto",
-    )
+    model_kwargs: dict[str, Any] = {
+        "local_files_only": True,
+        "dtype": "auto",
+    }
+    if default_model_loader:
+        model_kwargs.update(
+            {
+                "revision": None,
+                "trust_remote_code": False,
+                "attn_implementation": "sdpa",
+                "low_cpu_mem_usage": True,
+                "dtype": torch.bfloat16,
+            }
+        )
+    model = model_loader(local_path, **model_kwargs)
+    try:
+        moved_model = model.to(reload_device)
+    except (AttributeError, AssertionError, RuntimeError, TypeError) as error:
+        raise PublicationError("reloaded model could not be moved to CUDA") from error
+    if moved_model is not None:
+        model = moved_model
     model.eval()
+    generation_config = getattr(model, "generation_config", None)
+    if generation_config is not None:
+        generation_config.top_p = None
+        generation_config.top_k = None
     model_type = getattr(getattr(model, "config", None), "model_type", None)
     if not isinstance(model_type, str) or not model_type:
         raise PublicationError("reloaded model has no model_type")
@@ -1434,7 +1390,25 @@ def offline_reload_model(
     if not isinstance(regression_policy, Mapping):
         raise PublicationError("model reload has no regression policy")
     if regression_runner is None:
-        from .inference import generate_prediction
+        from .inference import (
+            _policy_span_protector,
+            generate_prediction,
+            load_inference_protection_policy,
+        )
+
+        inference_policy, _inference_policy_binding = load_inference_protection_policy(
+            model_reference=local_path,
+            tokenizer=tokenizer,
+            model=model,
+            revision=None,
+            local_files_only=True,
+            artifact_path=root / "scriber-protection-policy.json",
+        )
+
+        regression_span_protector = _policy_span_protector(
+            inference_policy,
+            product=False,
+        )
 
         def predictor(case: dict[str, Any]) -> Mapping[str, object]:
             prediction = generate_prediction(
@@ -1442,6 +1416,7 @@ def offline_reload_model(
                 tokenizer=tokenizer,
                 model=model,
                 max_new_tokens=int(regression_policy["max_new_tokens"]),
+                span_protector=regression_span_protector,
             )
             return {
                 "prediction_sst": prediction.prediction_sst,
@@ -1465,6 +1440,7 @@ def offline_reload_model(
     return {
         "status": "passed",
         "loader": "transformers_local",
+        "device": reload_device,
         "tokenizer_class": type(tokenizer).__name__,
         "tokenizer_vocab_size": vocab_size,
         "model_type": model_type,
@@ -1525,13 +1501,8 @@ def offline_reload_dataset(
                         ) from error
                     if not isinstance(record, Mapping) or record.get("split") != split:
                         raise PublicationError(f"dataset {group} split declaration mismatch in {split}")
-                    if (
-                        "private_data" in record
-                        and record.get("private_data") is not False
-                    ):
-                        raise PublicationError(
-                            "dataset record has an unsafe private-data declaration"
-                        )
+                    if "private_data" in record and record.get("private_data") is not False:
+                        raise PublicationError("dataset record has an unsafe private-data declaration")
                     example_id = record.get("example_id")
                     scoped_id = f"{group}\0{example_id}"
                     if not isinstance(example_id, str) or not example_id or scoped_id in seen_ids:
@@ -1575,19 +1546,11 @@ def offline_reload_dataset(
                     if any(record.get(field) in (None, "", {}) for field in required_record_fields):
                         raise PublicationError("dataset record lacks a required semantic or target representation")
                     semantic_plan = record.get("semantic_plan")
-                    entities = (
-                        semantic_plan.get("entities")
-                        if isinstance(semantic_plan, Mapping)
-                        else None
-                    )
+                    entities = semantic_plan.get("entities") if isinstance(semantic_plan, Mapping) else None
                     if isinstance(entities, list) and any(
-                        not isinstance(entity, Mapping)
-                        or entity.get("fictional") is not True
-                        for entity in entities
+                        not isinstance(entity, Mapping) or entity.get("fictional") is not True for entity in entities
                     ):
-                        raise PublicationError(
-                            "dataset semantic plan contains a non-fictional entity"
-                        )
+                        raise PublicationError("dataset semantic plan contains a non-fictional entity")
                     count += 1
             if count <= 0:
                 raise PublicationError(f"dataset {group} split is empty: {split}")
@@ -1780,9 +1743,7 @@ def _sanitized_worker_environment(cache_root: Path) -> dict[str, str]:
                     {
                         str(Path(entry).resolve())
                         for entry in sys.path
-                        if entry
-                        and Path(entry).is_dir()
-                        and Path(entry).name in {"site-packages", "dist-packages"}
+                        if entry and Path(entry).is_dir() and Path(entry).name in {"site-packages", "dist-packages"}
                     }
                 ),
                 ensure_ascii=False,
@@ -1995,13 +1956,8 @@ def publish_private_bundle(
         )
         for kind in _ARTIFACT_KINDS
     }
-    if (
-        manifests["model"]["variant_release"]["training_fingerprint"]
-        != training_binding["training_run_fingerprint"]
-    ):
-        raise PublicationError(
-            "model variant release evidence differs from completed training"
-        )
+    if manifests["model"]["variant_release"]["training_fingerprint"] != training_binding["training_run_fingerprint"]:
+        raise PublicationError("model variant release evidence differs from completed training")
     upload_inventories = {
         kind: _upload_inventory(
             artifact_dirs[kind],
@@ -2160,39 +2116,18 @@ def publish_private_bundle(
         if not isinstance(reload_result, Mapping) or reload_result.get("status") != "passed":
             raise PublicationError(f"{kind} offline reload did not pass")
         if reload_result.get("legal_files") != manifests[kind].get("legal_files"):
-            raise PublicationError(
-                f"downloaded {kind} reload did not verify the legal files"
-            )
+            raise PublicationError(f"downloaded {kind} reload did not verify the legal files")
         if reload_result.get("checksums") != manifests[kind].get("checksums"):
-            raise PublicationError(
-                f"downloaded {kind} reload did not verify checksums.json"
-            )
+            raise PublicationError(f"downloaded {kind} reload did not verify checksums.json")
         if kind == "model":
-            if (
-                reload_result.get("protection_policy")
-                != manifests["model"].get("protection_policy")
-            ):
-                raise PublicationError(
-                    "downloaded model reload did not prove the frozen protection policy"
-                )
-            if (
-                reload_result.get("variant_release")
-                != manifests["model"].get("variant_release")
-            ):
-                raise PublicationError(
-                    "downloaded model reload did not verify quantized fresh-reload evidence"
-                )
-            if (
-                reload_result.get("runtime_reload")
-                != manifests["model"].get("runtime_reload")
-            ):
-                raise PublicationError(
-                    "downloaded parser and renderer sources differ from executed code"
-                )
+            if reload_result.get("protection_policy") != manifests["model"].get("protection_policy"):
+                raise PublicationError("downloaded model reload did not prove the frozen protection policy")
+            if reload_result.get("variant_release") != manifests["model"].get("variant_release"):
+                raise PublicationError("downloaded model reload did not verify quantized fresh-reload evidence")
+            if reload_result.get("runtime_reload") != manifests["model"].get("runtime_reload"):
+                raise PublicationError("downloaded parser and renderer sources differ from executed code")
             regression = reload_result.get("regression")
-            expected_regression = manifests["model"].get(
-                "model_regression_suite"
-            )
+            expected_regression = manifests["model"].get("model_regression_suite")
             if (
                 not isinstance(regression, Mapping)
                 or not isinstance(expected_regression, Mapping)
@@ -2213,14 +2148,10 @@ def publish_private_bundle(
                         "holdout_data",
                     )
                 )
-                or regression.get("exact_output_hash_matches")
-                != expected_regression.get("case_count")
-                or regression.get("sst_round_trip_checks")
-                != expected_regression.get("case_count")
+                or regression.get("exact_output_hash_matches") != expected_regression.get("case_count")
+                or regression.get("sst_round_trip_checks") != expected_regression.get("case_count")
             ):
-                raise PublicationError(
-                    "downloaded model did not pass the exact >=100-case regression suite"
-                )
+                raise PublicationError("downloaded model did not pass the exact >=100-case regression suite")
         if kind == "dataset":
             expected_counts = manifests[kind].get("dataset_split_counts")
             expected_inventory = manifests[kind].get("dataset_split_inventory")
@@ -2230,23 +2161,16 @@ def publish_private_bundle(
                 raise PublicationError("dataset publication manifest has no split inventory")
             if reload_result.get("split_counts") != expected_counts.get("release"):
                 raise PublicationError("downloaded dataset release split counts do not match the upload")
-            if reload_result.get("split_inventory") != expected_inventory.get(
-                "release"
-            ):
-                raise PublicationError(
-                    "downloaded dataset release split hashes do not match the upload"
-                )
+            if reload_result.get("split_inventory") != expected_inventory.get("release"):
+                raise PublicationError("downloaded dataset release split hashes do not match the upload")
             if "ai_gold" in expected_counts and (
                 reload_result.get("ai_gold_split_counts") != expected_counts.get("ai_gold")
             ):
                 raise PublicationError("downloaded dataset AI-Gold split counts do not match the upload")
             if "ai_gold" in expected_inventory and (
-                reload_result.get("ai_gold_split_inventory")
-                != expected_inventory.get("ai_gold")
+                reload_result.get("ai_gold_split_inventory") != expected_inventory.get("ai_gold")
             ):
-                raise PublicationError(
-                    "downloaded dataset AI-Gold split hashes do not match the upload"
-                )
+                raise PublicationError("downloaded dataset AI-Gold split hashes do not match the upload")
         snapshot_by_path = {item["path"]: item for item in snapshot_inventory}
         verified_remote_files = []
         for item in remote_inventories[kind]:
@@ -2273,9 +2197,7 @@ def publish_private_bundle(
         }
         if kind == "dataset":
             artifact_report["expected_split_counts"] = copy.deepcopy(manifests[kind]["dataset_split_counts"])
-            artifact_report["expected_split_inventory"] = copy.deepcopy(
-                manifests[kind]["dataset_split_inventory"]
-            )
+            artifact_report["expected_split_inventory"] = copy.deepcopy(manifests[kind]["dataset_split_inventory"])
         artifact_reports[kind] = artifact_report
 
     publication_binding = {
@@ -2302,16 +2224,10 @@ def publish_private_bundle(
         "training_run_fingerprint": training_binding["training_run_fingerprint"],
         "bf16_final_model_tree_sha256": training_binding["bf16_final_model_tree_sha256"],
         "protection_policy": training_binding["protection_policy"],
-        "selected_checkpoint_publication_sha256": selected_checkpoint[
-            "selected_checkpoint_publication_sha256"
-        ],
+        "selected_checkpoint_publication_sha256": selected_checkpoint["selected_checkpoint_publication_sha256"],
         "selected_candidate_id": selected_checkpoint["selected_candidate_id"],
-        "selected_checkpoint_identity_sha256": selected_checkpoint[
-            "selected_checkpoint_identity_sha256"
-        ],
-        "selected_checkpoint_tree_sha256": selected_checkpoint[
-            "selected_checkpoint_tree_sha256"
-        ],
+        "selected_checkpoint_identity_sha256": selected_checkpoint["selected_checkpoint_identity_sha256"],
+        "selected_checkpoint_tree_sha256": selected_checkpoint["selected_checkpoint_tree_sha256"],
         "selected_model_sha256": selected_checkpoint["selected_model_sha256"],
         "selected_config_sha256": selected_checkpoint["selected_config_sha256"],
         "base_tokenizer": copy.deepcopy(selected_checkpoint["base_tokenizer"]),
