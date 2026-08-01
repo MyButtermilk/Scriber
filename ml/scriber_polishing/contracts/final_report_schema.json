@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/final-report-v1.schema.json",
+  "title": "Scriber evidence-bound final report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_state",
+    "source_evidence",
+    "facts",
+    "confirmations",
+    "missing_required_sources",
+    "missing_required_fields",
+    "integrity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "report_state": {
+      "enum": [
+        "FINAL",
+        "NOT_FINAL"
+      ]
+    },
+    "source_evidence": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/source_evidence"
+      }
+    },
+    "facts": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/fact"
+      }
+    },
+    "confirmations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "no_openai_api_used",
+        "no_other_generative_model_api_used",
+        "no_openai_api_key_used",
+        "no_additional_codex_credits_purchased",
+        "codex_exclusively_via_chatgpt_pro",
+        "all_training_data_ai_or_local_generator_created",
+        "no_human_curation",
+        "no_human_gold_set",
+        "no_manual_example_review_required",
+        "bulk_data_generated_locally",
+        "test_and_challenge_not_trained",
+        "no_private_scriber_data_without_opt_in"
+      ],
+      "properties": {
+        "no_openai_api_used": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_other_generative_model_api_used": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_openai_api_key_used": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_additional_codex_credits_purchased": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "codex_exclusively_via_chatgpt_pro": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "all_training_data_ai_or_local_generator_created": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_human_curation": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_human_gold_set": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_manual_example_review_required": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "bulk_data_generated_locally": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "test_and_challenge_not_trained": {
+          "$ref": "#/$defs/confirmation"
+        },
+        "no_private_scriber_data_without_opt_in": {
+          "$ref": "#/$defs/confirmation"
+        }
+      }
+    },
+    "missing_required_sources": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "missing_required_fields": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonicalization",
+        "input_manifest_sha256",
+        "report_body_sha256"
+      ],
+      "properties": {
+        "canonicalization": {
+          "const": "scriber-canonical-json-sort-v1"
+        },
+        "input_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "report_body_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "schema_version"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "fact": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value",
+            "source",
+            "source_sha256",
+            "binding"
+          ],
+          "properties": {
+            "state": {
+              "const": "evidenced"
+            },
+            "value": true,
+            "source": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source_sha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "binding": {
+              "type": [
+                "string",
+                "object"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "limitation_id",
+            "provenance_sha256"
+          ],
+          "properties": {
+            "state": {
+              "const": "unknown"
+            },
+            "limitation_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "provenance_sha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "confirmation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "source",
+        "source_sha256",
+        "signed_payload_sha256"
+      ],
+      "properties": {
+        "value": {
+          "const": true
+        },
+        "source": {
+          "const": "provenance"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "signed_payload_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "report_state": {
+            "const": "FINAL"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "missing_required_sources": {
+            "maxItems": 0
+          },
+          "missing_required_fields": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

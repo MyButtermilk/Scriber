@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-compact-terra-public-case-v1.schema.json",
+  "title": "Scriber V2 compact Terra anonymous public case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "source_text",
+    "reference_text",
+    "candidate_a",
+    "candidate_b"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "case_id": { "type": "string", "pattern": "^terra_[0-9a-f]{24}$" },
+    "source_text": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "reference_text": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "candidate_a": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "candidate_b": { "type": "string", "minLength": 1, "maxLength": 30000 }
+  }
+}

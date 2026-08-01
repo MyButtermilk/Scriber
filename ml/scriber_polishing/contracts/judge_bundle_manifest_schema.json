@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-bundle-manifest-v2.schema.json",
+  "title": "Anonymous Scriber judge bundle manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_case_schema_version",
+    "reference_sha256",
+    "reference_manifest_sha256",
+    "base_case_count",
+    "public_case_count",
+    "swapped_duplicate_count",
+    "swapped_source_fraction",
+    "bundle_sha256",
+    "private_mapping_sha256",
+    "coverage_policy_sha256",
+    "materialization_plan_sha256",
+    "contains_candidate_identity",
+    "contains_model_or_checkpoint_identity",
+    "contains_training_history",
+    "contains_automatic_aggregate_scores",
+    "hard_deterministic_errors_are_binding"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "bundle_case_schema_version": {
+      "const": 1
+    },
+    "reference_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "reference_manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "base_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "public_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "swapped_duplicate_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "swapped_source_fraction": {
+      "type": "number",
+      "minimum": 0.5,
+      "maximum": 1.0
+    },
+    "bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "private_mapping_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "coverage_policy_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "materialization_plan_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "contains_candidate_identity": {
+      "const": false
+    },
+    "contains_model_or_checkpoint_identity": {
+      "const": false
+    },
+    "contains_training_history": {
+      "const": false
+    },
+    "contains_automatic_aggregate_scores": {
+      "const": false
+    },
+    "hard_deterministic_errors_are_binding": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

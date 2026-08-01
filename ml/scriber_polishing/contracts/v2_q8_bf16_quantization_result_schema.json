@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-q8-bf16-quantization-result-v1.schema.json",
+  "title": "Scriber V2 Q8_0 and BF16 quantization result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "plan_sha256",
+    "evaluation_binding_sha256",
+    "source_model",
+    "output_uri",
+    "variants",
+    "gguf_bundle_manifest",
+    "artifact_inventory_sha256",
+    "artifacts",
+    "toolchain",
+    "network_access",
+    "publication_performed"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_q8_bf16_quantization_result"},
+    "status": {"const": "complete"},
+    "plan_sha256": {"$ref": "#/$defs/hash"},
+    "evaluation_binding_sha256": {"$ref": "#/$defs/hash"},
+    "source_model": {"$ref": "#/$defs/source_model"},
+    "output_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt15/scriber-v2-q8-bf16-release-v1"},
+    "variants": {"const": ["Q8_0", "BF16"]},
+    "gguf_bundle_manifest": {"$ref": "#/$defs/file"},
+    "artifact_inventory_sha256": {"$ref": "#/$defs/hash"},
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["Q8_0", "BF16"],
+      "properties": {
+        "Q8_0": {"$ref": "#/$defs/artifact"},
+        "BF16": {"$ref": "#/$defs/artifact"}
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundle_lock_sha256", "llama_cpp_commit", "source_tree_sha256", "build_identity_sha256"],
+      "properties": {
+        "bundle_lock_sha256": {"$ref": "#/$defs/hash"},
+        "llama_cpp_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_tree_sha256": {"$ref": "#/$defs/hash"},
+        "build_identity_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "network_access": {"const": "disabled_offline"},
+    "publication_performed": {"const": false}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "source_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["remote_uri", "tree_sha256", "run_fingerprint", "weight", "protection_policy_sha256", "postflight_binding_sha256"],
+      "properties": {
+        "remote_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9"},
+        "tree_sha256": {"const": "sha256:4233c0084cacdd3ba88207cece0ce20d1e1f56cfbfa64e71182a2deb2934c743"},
+        "run_fingerprint": {"const": "sha256:7b23f23e70f60df9d58961808e529ff7738032de75a7a4a62c12529bc734a45c"},
+        "weight": {
+          "const": {
+            "path": "model.safetensors",
+            "bytes": 536223056,
+            "sha256": "sha256:fd86d26f70e128fd1e8d4f11e69d4778ae930e628e374aa64595aca5bd0b9bb3"
+          }
+        },
+        "protection_policy_sha256": {"const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"},
+        "postflight_binding_sha256": {"const": "sha256:4e9379d8c26cb81d7261b57ab2e0bf5c8059850c07717debc47c0ce99072a8a5"}
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["variant", "artifact_tree_sha256", "chat_template_sha256", "model", "protection_policy", "variant_manifest"],
+      "properties": {
+        "variant": {"enum": ["Q8_0", "BF16"]},
+        "artifact_tree_sha256": {"$ref": "#/$defs/hash"},
+        "chat_template_sha256": {"$ref": "#/$defs/hash"},
+        "model": {"$ref": "#/$defs/file"},
+        "protection_policy": {"$ref": "#/$defs/file"},
+        "variant_manifest": {"$ref": "#/$defs/file"}
+      }
+    }
+  }
+}

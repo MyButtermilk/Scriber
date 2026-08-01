@@ -1,0 +1,17 @@
+{
+  "accepted_count": 300,
+  "batch_id": "target_writer_coverage_completion_01",
+  "batch_validation": {
+    "record_count": 300,
+    "target_prompt_hash": "sha256:65fe430d1de1696e8efc5891f6b215434bc2ffca28a108afab4ef9891f69d47a",
+    "writer_id": "target_writer_coverage_completion_01"
+  },
+  "canonical_expansion": "7/7 for every target",
+  "protected_occurrences": true,
+  "rejected_count": 0,
+  "renderer_equality": true,
+  "schema_version": 1,
+  "semantic_hashes": true,
+  "targets_sha256": "sha256:72de07ea12ea302f050e9717b2f5e364c0b08ef94a01666aebf6b70e7393227a",
+  "unique_seed_ids": true
+}

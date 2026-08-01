@@ -1,0 +1,79 @@
+{
+  "batch_id": "general_business_batch_01",
+  "diversity": {
+    "address_mode_counts": {
+      "ambiguous": 48,
+      "formal_sie": 51,
+      "mixed_correspondence": 48,
+      "neutral_third_person": 51,
+      "personal_du_capitalized": 51,
+      "personal_du_lowercase": 51
+    },
+    "document_type_counts": {
+      "appointment_confirmation": 20,
+      "banking_instruction": 20,
+      "budget_update": 20,
+      "business_email": 20,
+      "complaint_response": 20,
+      "contract_coordination": 20,
+      "customer_update": 20,
+      "deadline_notice": 20,
+      "formal_letter": 20,
+      "handover_note": 20,
+      "invoice_notice": 20,
+      "offer": 20,
+      "payment_reminder": 20,
+      "project_status": 20,
+      "supplier_request": 20
+    },
+    "fact_count_counts": {
+      "2": 69,
+      "3": 131,
+      "4": 80,
+      "5": 18,
+      "6": 2
+    },
+    "list_kind_counts": {
+      "nested": 75,
+      "none": 75,
+      "ordered": 75,
+      "unordered": 75
+    },
+    "unique_locations": 6,
+    "unique_organizations": 24,
+    "unique_people": 18,
+    "unique_products": 8
+  },
+  "domain": "general_business",
+  "generation": {
+    "contains_critic_verdicts": false,
+    "contains_splits": false,
+    "contains_targets": false,
+    "deterministic": true,
+    "local_only": true
+  },
+  "generator_agent": "generator_general_business_01",
+  "manifest_version": 1,
+  "plans_sha256": "8165883ea89741f4e42098d5f1ee0f3586b7151a18bd33c56ac1cb540ccbda96",
+  "prompt_hash": "sha256:83f8475b20c3e4a91fa6d9548e9544b2d0b12303b0ceb1ea36d1dd8a76ceb843",
+  "quality_checks": {
+    "external_api_calls": 0,
+    "negation_condition_modality_tag_coverage": 0.3333333333333333,
+    "negation_or_condition_or_nonfactual_coverage": 1.0,
+    "private_data_records": 0,
+    "protected_numeric_coverage": 0.5,
+    "unique_seed_ids": true,
+    "unique_seeds": true
+  },
+  "record_count": 300,
+  "schema": "contracts/seed_plan_schema.json",
+  "schema_validation": {
+    "invalid_records": 0,
+    "valid_records": 300,
+    "validator": "jsonschema.Draft202012Validator"
+  },
+  "seed_range": [
+    100000,
+    100299
+  ]
+}

@@ -1,0 +1,847 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-job-manifest-v1.schema.json",
+  "title": "Scriber Hugging Face final-evaluation job manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_git_head",
+    "image",
+    "flavor",
+    "batch_size",
+    "max_new_tokens",
+    "base_model",
+    "final_model",
+    "continuation_evidence",
+    "references",
+    "evaluation",
+    "budget",
+    "training",
+    "output",
+    "publication",
+    "runner_sha256",
+    "packet_tree_sha256",
+    "file_count",
+    "byte_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation"
+    },
+    "source_git_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "image": {
+      "const": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
+    },
+    "flavor": {
+      "enum": [
+        "l4x1",
+        "a10g-small"
+      ]
+    },
+    "batch_size": {
+      "const": 8
+    },
+    "max_new_tokens": {
+      "const": 512
+    },
+    "base_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_id",
+        "revision",
+        "remote_model_uri",
+        "mount_mode",
+        "tree_sha256",
+        "config_sha256",
+        "file_count",
+        "total_bytes",
+        "preprocessing_policy"
+      ],
+      "properties": {
+        "model_id": {
+          "const": "google/gemma-3-270m-it"
+        },
+        "revision": {
+          "const": "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
+        },
+        "remote_model_uri": {
+          "const": "hf://models/google/gemma-3-270m-it@ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
+        },
+        "mount_mode": {
+          "const": "read_only"
+        },
+        "tree_sha256": {
+          "const": "sha256:0d610d30384d641366232e4bd8ad556c6a28470781e68e93757fe9e4ae1a0f57"
+        },
+        "config_sha256": {
+          "const": "sha256:8983343e5bfbf8e336d222a522a1d781443491e9de2d081b8856f8fd26ab6046"
+        },
+        "file_count": {
+          "const": 11
+        },
+        "total_bytes": {
+          "const": 575485707
+        },
+        "preprocessing_policy": {
+          "const": "implicit_legacy_default"
+        }
+      }
+    },
+    "final_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "start_updates",
+        "additional_updates",
+        "cumulative_updates",
+        "replayed_updates",
+        "parent_initialization",
+        "final_model_directory",
+        "final_model_tree_sha256",
+        "final_model_file_count",
+        "final_model_total_bytes",
+        "remote_model_uri",
+        "mount_mode",
+        "continuation_result_sha256",
+        "training_report_sha256",
+        "preprocessing_policy"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_final_evaluation_model_binding"
+        },
+        "start_updates": {
+          "const": 846
+        },
+        "additional_updates": {
+          "const": 254
+        },
+        "cumulative_updates": {
+          "const": 1100
+        },
+        "replayed_updates": {
+          "const": 0
+        },
+        "parent_initialization": {
+          "const": "warm_start_weights_only"
+        },
+        "final_model_directory": {
+          "$ref": "#/$defs/final_directory"
+        },
+        "final_model_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "final_model_file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "final_model_total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "remote_model_uri": {
+          "type": "string",
+          "pattern": "^hf://buckets/Buttermilk03/scriber-polishing-private-runs/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+training/final-[A-Za-z0-9._-]+$"
+        },
+        "mount_mode": {
+          "const": "read_only"
+        },
+        "continuation_result_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "preprocessing_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_sha256",
+            "policy_id",
+            "policy_sha256"
+          ],
+          "properties": {
+            "artifact_sha256": {
+              "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+            },
+            "policy_id": {
+              "const": "gemma_lexical_v1"
+            },
+            "policy_sha256": {
+              "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+            }
+          }
+        }
+      }
+    },
+    "continuation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "job_id",
+        "terminal_status",
+        "owner",
+        "flavor",
+        "timeout_minutes",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "historical_cost_usd",
+        "actual_campaign_cost_usd",
+        "remote_result_uri",
+        "continuation_packet_tree_sha256",
+        "continuation_manifest_sha256",
+        "packet_verification_sha256",
+        "cost_audit_sha256",
+        "continuation_result_sha256",
+        "training_report_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "enum": [
+            "scriber_final_evaluation_continuation_evidence",
+            "scriber_final_evaluation_recovered_continuation_evidence"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "enum": [
+            "COMPLETED",
+            "ERROR"
+          ]
+        },
+        "owner": {
+          "const": "Buttermilk03"
+        },
+        "flavor": {
+          "enum": [
+            "a10g-small",
+            "l4x1"
+          ]
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "enum": [
+            "0.80",
+            "1.00"
+          ]
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "historical_cost_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "actual_campaign_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "remote_result_uri": {
+          "$ref": "#/$defs/private_result_uri"
+        },
+        "continuation_packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "continuation_manifest_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "packet_verification_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "cost_audit_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "continuation_result_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "recovery_chain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "original_source_contract_sha256",
+            "recovery_job_id",
+            "recovery_terminal_status",
+            "recovery_flavor",
+            "recovery_running_seconds",
+            "recovery_billed_minutes",
+            "recovery_hourly_rate_usd",
+            "recovery_job_cost_usd",
+            "recovery_remote_result_uri",
+            "finalization_job_id",
+            "finalization_terminal_status",
+            "finalization_flavor",
+            "finalization_timeout_minutes",
+            "finalization_running_seconds",
+            "finalization_billed_minutes",
+            "finalization_hourly_rate_usd",
+            "finalization_job_cost_usd",
+            "finalization_remote_result_uri",
+            "finalization_packet_tree_sha256",
+            "source_contract_sha256",
+            "source_verification_sha256",
+            "finalization_guard_sha256",
+            "remote_model_uri",
+            "final_model_tree_sha256",
+            "training_steps_executed",
+            "model_copied",
+            "model_reloaded",
+            "validation_reexecuted",
+            "source_validation_reexecuted"
+          ],
+          "properties": {
+            "original_source_contract_sha256": {},
+            "recovery_job_id": {},
+            "recovery_terminal_status": {},
+            "recovery_flavor": {},
+            "recovery_running_seconds": {},
+            "recovery_billed_minutes": {},
+            "recovery_hourly_rate_usd": {},
+            "recovery_job_cost_usd": {},
+            "recovery_remote_result_uri": {},
+            "finalization_job_id": {},
+            "finalization_terminal_status": {},
+            "finalization_flavor": {},
+            "finalization_timeout_minutes": {},
+            "finalization_running_seconds": {},
+            "finalization_billed_minutes": {},
+            "finalization_hourly_rate_usd": {},
+            "finalization_job_cost_usd": {},
+            "finalization_remote_result_uri": {},
+            "finalization_packet_tree_sha256": {},
+            "source_contract_sha256": {},
+            "source_verification_sha256": {},
+            "finalization_guard_sha256": {},
+            "remote_model_uri": {},
+            "final_model_tree_sha256": {},
+            "training_steps_executed": {},
+            "model_copied": {},
+            "model_reloaded": {},
+            "validation_reexecuted": {},
+            "source_validation_reexecuted": {}
+          }
+        }
+      }
+    },
+    "retry_evidence": {
+      "$ref": "#/$defs/retry_evidence"
+    },
+    "references": {
+      "const": {
+        "ai_gold": {
+          "records_filename": "ai_gold_automatic_test_challenge.references.jsonl",
+          "manifest_filename": "ai_gold_automatic_test_challenge.references.manifest.json",
+          "record_count": 1750,
+          "split_counts": {
+            "challenge": 750,
+            "test": 1000
+          },
+          "records_sha256": "e12c672e45fccf8beccc1fc06c36d8a45540c7ee7c0149bbce773a1136c6c664",
+          "manifest_sha256": "20b375a4584ff91468f6482f074004f72cecd3c2b70c7dc140f3dacd25f9248a",
+          "usage": "inference_and_evaluation_only"
+        },
+        "critical_regression": {
+          "records_filename": "critical_regression_as_challenge.references.jsonl",
+          "manifest_filename": "critical_regression_as_challenge.references.manifest.json",
+          "record_count": 500,
+          "split_counts": {
+            "challenge": 500
+          },
+          "records_sha256": "5b5bffe762e718b0f8d2dd0905a732d71f5ff21256c9c8d6cc06bb396ff2fd14",
+          "manifest_sha256": "a980d4d84510c5de3d3cb647322f0af4d36e23b333b33940c7d41c7b399fd52f",
+          "usage": "inference_and_evaluation_only"
+        },
+        "regular_test": {
+          "records_filename": "regular_test_1000.references.jsonl",
+          "manifest_filename": "regular_test_1000.references.manifest.json",
+          "record_count": 1000,
+          "split_counts": {
+            "test": 1000
+          },
+          "records_sha256": "01e92d42516a5356f1b3607e15fc7faee2e47ddf717d0781aca60c2933a276fb",
+          "manifest_sha256": "ee6ee04a72234adfb336d7907a1e5e4143c58ddee3b78dc79a03d2b401af3ca2",
+          "usage": "inference_and_evaluation_only"
+        }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config_filename",
+        "config_sha256",
+        "candidates",
+        "reports_per_candidate"
+      ],
+      "properties": {
+        "config_filename": {
+          "const": "evaluation.yaml"
+        },
+        "config_sha256": {
+          "const": "656558732668b72d1596b4558e651cd99278d97af3dd822b8e947b6f477fa998"
+        },
+        "candidates": {
+          "const": [
+            "final",
+            "base_model"
+          ]
+        },
+        "reports_per_candidate": {
+          "const": 3
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_budget_usd",
+        "historical_cost_usd",
+        "continuation_actual_cost_usd",
+        "actual_before_evaluation_usd",
+        "evaluation_timeout_minutes",
+        "evaluation_maximum_cost_usd",
+        "maximum_total_cost_usd",
+        "remaining_after_reservation_usd",
+        "strictly_below_total_budget"
+      ],
+      "properties": {
+        "total_budget_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "historical_cost_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "continuation_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "failed_evaluation_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "auxiliary_diagnostic_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "actual_before_evaluation_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "evaluation_timeout_minutes": {
+          "const": 120
+        },
+        "evaluation_maximum_cost_usd": {
+          "enum": [
+            "1.600",
+            "2.000"
+          ]
+        },
+        "maximum_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "remaining_after_reservation_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "strictly_below_total_budget": {
+          "const": true
+        }
+      }
+    },
+    "training": {
+      "const": {
+        "training_steps_executed": 0,
+        "reference_usage": "inference_and_evaluation_only",
+        "train_split_allowed": false
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket_root",
+        "relative_path",
+        "container_path",
+        "unique"
+      ],
+      "properties": {
+        "bucket_root": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs"
+        },
+        "relative_path": {
+          "const": "attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "container_path": {
+          "const": "/outputs/attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "unique": {
+          "const": true
+        }
+      }
+    },
+    "publication": {
+      "const": {
+        "allowed": false,
+        "destination_kind": "private_hf_bucket"
+      }
+    },
+    "runner_sha256": {
+      "$ref": "#/$defs/prefixed_sha256"
+    },
+    "packet_tree_sha256": {
+      "$ref": "#/$defs/prefixed_sha256"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "flavor"
+        ],
+        "properties": {
+          "flavor": {
+            "const": "l4x1"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "budget": {
+            "properties": {
+              "evaluation_maximum_cost_usd": {
+                "const": "1.600"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "flavor"
+        ],
+        "properties": {
+          "flavor": {
+            "const": "a10g-small"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "budget": {
+            "properties": {
+              "evaluation_maximum_cost_usd": {
+                "const": "2.000"
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "usd3": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]{3}$"
+    },
+    "usd6": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]{6}$"
+    },
+    "private_result_uri": {
+      "type": "string",
+      "pattern": "^hf://buckets/Buttermilk03/scriber-polishing-private-runs/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "filename": {
+      "type": "string",
+      "pattern": "^[^/\\\\]+$"
+    },
+    "final_directory": {
+      "type": "string",
+      "pattern": "^final-[A-Za-z0-9._-]+$"
+    },
+    "reference_suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "records_filename",
+        "manifest_filename",
+        "record_count",
+        "split_counts",
+        "records_sha256",
+        "manifest_sha256",
+        "usage"
+      ],
+      "properties": {
+        "records_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "manifest_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "split_counts": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": false,
+          "properties": {
+            "test": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "challenge": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "usage": {
+          "const": "inference_and_evaluation_only"
+        }
+      }
+    },
+    "retry_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "failed_evaluations",
+        "auxiliary_diagnostic_jobs",
+        "failed_evaluation_total_cost_usd",
+        "auxiliary_diagnostic_total_cost_usd",
+        "total_prior_job_cost_usd",
+        "campaign_cost_before_next_job_usd"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_retry_evidence"
+        },
+        "failed_evaluations": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/failed_evaluation_job"
+          }
+        },
+        "auxiliary_diagnostic_jobs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/auxiliary_diagnostic_job"
+          }
+        },
+        "failed_evaluation_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "auxiliary_diagnostic_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "total_prior_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "campaign_cost_before_next_job_usd": {
+          "$ref": "#/$defs/usd6"
+        }
+      }
+    },
+    "failed_evaluation_job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "job_id",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "packet_tree_sha256",
+        "failure_stage",
+        "packet_verification_completed",
+        "output_claim_created",
+        "prediction_records_written",
+        "evaluation_reports_written",
+        "remote_output_prefix_empty"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "const": "ERROR"
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "const": "0.80"
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "failure_stage": {
+          "const": "packet_self_verification"
+        },
+        "packet_verification_completed": {
+          "const": false
+        },
+        "output_claim_created": {
+          "const": false
+        },
+        "prediction_records_written": {
+          "const": 0
+        },
+        "evaluation_reports_written": {
+          "const": 0
+        },
+        "remote_output_prefix_empty": {
+          "const": true
+        }
+      }
+    },
+    "auxiliary_diagnostic_job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "job_id",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "packet_tree_sha256",
+        "purpose",
+        "training_steps_executed",
+        "prediction_records_written",
+        "evaluation_reports_written"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "const": "COMPLETED"
+        },
+        "flavor": {
+          "const": "cpu-basic"
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "const": "0.01"
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "purpose": {
+          "const": "packet_mount_inventory"
+        },
+        "training_steps_executed": {
+          "const": 0
+        },
+        "prediction_records_written": {
+          "const": 0
+        },
+        "evaluation_reports_written": {
+          "const": 0
+        }
+      }
+    }
+  }
+}

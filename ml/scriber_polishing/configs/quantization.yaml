@@ -1,0 +1,80 @@
+schema_version: 6
+source_checkpoint:
+  format: transformers_safetensors
+  required_dtype: BF16
+protection_policy:
+  filename: scriber-protection-policy.json
+  artifact_sha256: sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d
+  policy_id: gemma_lexical_v1
+  policy_sha256: sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce
+enabled_variants: [bf16, int8, int4_nf4, Q8_0, Q4_K_M]
+transformers_variants: [int8, int4_nf4]
+gguf_variants: [Q8_0, Q4_K_M]
+gguf_requires_verified_gemma3_text_support: true
+reevaluate_every_variant: true
+quality_delta_budgets:
+  int8:
+    maximum_absolute_metric_drop: 0.005
+    maximum_new_critical_errors: 0
+  int4_nf4:
+    maximum_absolute_metric_drop: 0.01
+    maximum_new_critical_errors: 0
+  Q8_0:
+    maximum_absolute_metric_drop: 0.002
+    maximum_new_critical_errors: 0
+  Q4_K_M:
+    maximum_absolute_metric_drop: 0.01
+    maximum_new_critical_errors: 0
+release_matrix:
+  baseline_variant: bf16
+  require_fresh_reload: true
+  require_full_predictions: true
+  require_full_evaluation: true
+  require_delta_report: true
+  require_benchmark: true
+  require_persistent_warm_runtime: true
+llama_cpp_runtime:
+  protocol: llama_server_http_sse_v1
+  host: 127.0.0.1
+  context_size: 4096
+  parallel_slots: 1
+  startup_timeout_seconds: 180
+  request_timeout_seconds: 900
+  shutdown_timeout_seconds: 10
+  stderr_max_bytes: 65536
+benchmark:
+  expected_hardware:
+    os_family: Windows
+    gpu_name: NVIDIA GeForce RTX 4070 Laptop GPU
+    gpu_total_memory_mib: 8188
+    gpu_driver_version: "591.86"
+    gpu_compute_capability: "8.9"
+    gpu_device_index: 0
+    require_bf16_support: true
+  length_buckets: [50, 150, 300, 500, 1000]
+  bucket_tolerance_tokens: 40
+  cases_per_category_bucket: 1
+  percentiles: [50, 95, 99]
+  cold_repetitions: 3
+  warm_repetitions: 5
+  warmup_repetitions: 1
+  max_new_tokens_by_input_bucket:
+    "50": 128
+    "150": 256
+    "300": 512
+    "500": 768
+    "1000": 1536
+  telemetry_sample_interval_ms: 50
+  required_case_categories:
+    - short_email
+    - long_business_letter
+    - tax_law_letter
+    - multipart_letter
+    - numbered_list
+    - number_heavy
+    - unit_heavy
+    - legal_citations
+    - address_pronouns
+    - rich_text_formatting
+    - identity_text
+    - hard_repetition

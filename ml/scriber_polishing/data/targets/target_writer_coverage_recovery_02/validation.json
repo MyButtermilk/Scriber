@@ -1,0 +1,107 @@
+{
+  "batch_id": "target_writer_coverage_recovery_02",
+  "batch_validator": {
+    "batch_count": 1,
+    "batches": [
+      {
+        "record_count": 40,
+        "target_prompt_hash": "sha256:e35e642f6478bfe5434b1a2b38fe72e38324d313e96d12ba9d2cca2d482a3ac0",
+        "writer_id": "target_writer_coverage_recovery_02"
+      }
+    ],
+    "record_count": 40
+  },
+  "canonical_expander": {
+    "all_seven_variants_validated": true,
+    "double_expansion_byte_identical": true,
+    "expanded_record_count": 280,
+    "expanded_records_sha256": "sha256:975f5d82a0205a05515249480f275b7b814512dca5ee328420029355ea8b9b08",
+    "per_target_expansion_sha256": [
+      "sha256:ac2d44e4243942c6253605730adb3482178c2036681a960eb9a045df0fe54738",
+      "sha256:1afe40156026503bfff7dcdd7013e69a7cfe93fd32249baca448ae97bee8afcc",
+      "sha256:98411e6bd80f461c89a3223ef10c5bb3cbbbb690c67dec6057f96f76d24ca455",
+      "sha256:e96bbfd580b7464c53533472754efe6e75faf94f22a1f0e6f63b448a1bc8753f",
+      "sha256:02c2afdff5d8269307c75d6c143a3191f51828e6c7d01425ad04a5f9ba38928e",
+      "sha256:e1323962c00f03ee7b87c9f10edc52b28054a43ff29bcaa45690a61a7f99e638",
+      "sha256:488be4cde3227f749bb24c1b7f5c721c1a0fbe8d570516956c84648d99c677ad",
+      "sha256:fc70d7ec5d937200465efb82fa89d33d7a8a68c7256ae76f9cce251b85d74d36",
+      "sha256:c9cb8dd6ff259d2ac301eb76eb647a9a905e3fb7d0b83db0928b994d357962e9",
+      "sha256:84065391f1ee88790ae72ce5f49b3a86c104f1383bb8aa1b77a5b0e9fbdea5c0",
+      "sha256:cd9cdcdaf8aad9268354f186e250dc5dc438b56c34a50a3a4253673c175c9dfa",
+      "sha256:6f1331b0fa6212ba5080503784658fe0a22637705049a50e3f61b8dcc3baf435",
+      "sha256:f98f2bc3080a0ce1ea449213a296642f373c68ad48091b78005da9dd63da9731",
+      "sha256:876bb3f5dd126508a4cda2997e2725b08633d2a84a59a158dcdbaab97dba973e",
+      "sha256:cbd47305ad915789541ad44129009bcf6e708a5a0243050d16eaae41f3a470e3",
+      "sha256:300e6e12d8af4e7f6f98366fdef92bf9eb7b9167cdea9c1d386688e705b54418",
+      "sha256:04eba358d967f962f1d5a6b9cd0968271779d0c4bb583097cce592d39063df1f",
+      "sha256:94c39964c3b5dc98969c8675b20b515a4feb37addcd5d22b39223a38c24afdec",
+      "sha256:0010c006ab9e0449232eb70bde8714541275124ef918e2312941ab98eaf69a68",
+      "sha256:900da50d1c8297a9a39cbdc2db5911f1b5fd64eae08aa542b01ffa9567e7357e",
+      "sha256:b8a1c221c65a8384aa06f28d2279f25fd5605f72229f1c38725c5197bb60363b",
+      "sha256:9d0f81a527f67124960ad9cf85ea9d7cc24ff2f1dd912600fedf779527c19b36",
+      "sha256:7bcbdc583e2acc30ea565206d55fd1b4e830c269d9dac3d4aae95ea160f86741",
+      "sha256:98f64b3de5ec326ca45e5f81806e83f3f2aad794f1427e203d7621394ff6815d",
+      "sha256:b3093a2093ad9b6b1be4b149193b7329315a655bee4378b96a9822a38210e3da",
+      "sha256:6f908c197e5ec80584816161dfbbdea63aab9fe4c96c58cb16b58ab86f80c36a",
+      "sha256:cc15dede5be0e72379c25a9e97976fb14cfe0679e77c2bd03dbd586b8e67c889",
+      "sha256:81769beb57657914a95035cdf773583dd1e3d69393cb428c4c429400b599f838",
+      "sha256:5d494942f65cdbbda78c11f80f9727aeda1104e340142e734297d7d7dac0675c",
+      "sha256:76e7588a8d5c064c02fffe448a18e502c52c13406e9eab0fc6e4e7ce446c7851",
+      "sha256:a9c8a9c8c1872e52c151ea109c30c085f04f0e1758c7c30c60117b9ae87e9d0d",
+      "sha256:f5614ba50376ba7fbf92f5f249b4e7815629f6e26583ed1f54427d2da903e3e3",
+      "sha256:633b15c7321eacc58c5cf44c9441ba9ba3757bcc22127abd8a07eff29169a341",
+      "sha256:d37d577c407db8101711d81a1cc95580a360b368ae6e3e2d1c70db95cd4508b3",
+      "sha256:4244ac6298d5ed688a9943a41c54ded3e5217d8392e77ecea1f26d4d041b7fb0",
+      "sha256:14f62facc60c70344f2e1a755b57d55ad244e708ee7178314ef307bd863ed9a8",
+      "sha256:d1a0ae8e66155e5e2e208eb4a424e536facff1134eda7c39ad792106668de6eb",
+      "sha256:cb33fc5ecdbba23f42e50b6e158717b813d5c9eb9f6b661f0ce0393b70846ea7",
+      "sha256:9d8adc819fc69085ef84ff2ef9831b7e8f675e9c9981c73d1a1348d1f2789d01",
+      "sha256:c2bc32feceaaf9e4aca57266f85ad851b3bf1ac2a2cc5230418c093a393daab8"
+    ],
+    "variants_per_target": 7
+  },
+  "canonical_validation": {
+    "all_plain_markdown_html_projections_ast_derived": true,
+    "all_protected_spans_present": true,
+    "fact_order_preserved": true,
+    "html_nonbreaking_unit_spacing": true,
+    "negation_modality_and_condition_preserved_in_semantic_plan": true,
+    "professional_unit_surface": "48 €/m²",
+    "validate_canonical_record_passed": 40
+  },
+  "contract_resolution": {
+    "active_canonical_contract": "contracts/sst_v1_schema.json plus validators.validate_canonical_record",
+    "missing_requested_schema_note": "contracts/canonical_example_schema.json was absent; active SST and canonical validators were used",
+    "requested_canonical_example_schema_present": false
+  },
+  "determinism": {
+    "double_generation_byte_identical": true,
+    "external_or_model_api_calls": 0,
+    "first_targets_sha256": "sha256:1683bb22502f2f1186f2c43850dcd0ff4c047db2c870ff1a607249ec2b9d35c0",
+    "second_targets_sha256": "sha256:1683bb22502f2f1186f2c43850dcd0ff4c047db2c870ff1a607249ec2b9d35c0"
+  },
+  "generation_boundary": {
+    "critic_material_read": false,
+    "external_or_model_api_calls": 0,
+    "human_review": false,
+    "split_data_read": false
+  },
+  "input_sha256": {
+    "contracts/behavioral_contract.yaml": "sha256:c416dcd0617529e754c734baeb73ca63718ac2a8fa12f0cc8014e9fa7fe498fe",
+    "contracts/de_business_style.yaml": "sha256:02f4ee40467c3643ec2447d17c5a44dec54f9fc55495b1c15d52a84162917dfd",
+    "contracts/seed_plan_schema.json": "sha256:ae59eafa61ab6b501b5b09bbccae03b11161cb5850f012050c9e93713507cef3",
+    "contracts/sst_v1_schema.json": "sha256:2eb50bed34137833ebde9ed78e2708329c2a5a909e0066d0b248af140aa49ab9",
+    "data/seeds/generator_coverage_recovery_02/manifest.json": "sha256:364926fd4999e957423fa53da976aa5eb8c678d932c2260f69f29ecd67950c5d",
+    "data/seeds/generator_coverage_recovery_02/plans.jsonl": "sha256:bce116acc85a075bcc135755b5fff24999c13328e015fc4287ea168357631c20"
+  },
+  "output_sha256": {
+    "manifest.json": "sha256:15e362f6bd606f1eabebf9b6ff70fb5e34698a03f339cdccd3e701cdc25a78ea",
+    "target_writer.py": "sha256:a3fd50ed5505cb5085b06604a56d53f4807937b87b2ebac886dbff4651109cb4",
+    "targets.jsonl": "sha256:1683bb22502f2f1186f2c43850dcd0ff4c047db2c870ff1a607249ec2b9d35c0"
+  },
+  "record_count": 40,
+  "schema_version": 1,
+  "target_prompt_hash": "sha256:e35e642f6478bfe5434b1a2b38fe72e38324d313e96d12ba9d2cca2d482a3ac0",
+  "target_writer_agent_sha256": "sha256:0fa5be4fdb8cbc9c1be4228c92f8c22281441e6c8ec5b08099cc14f6993ffb2a",
+  "writer_id": "target_writer_coverage_recovery_02"
+}

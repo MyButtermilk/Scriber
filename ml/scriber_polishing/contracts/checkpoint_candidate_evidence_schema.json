@@ -1,0 +1,252 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/checkpoint-candidate-evidence-v2.schema.json",
+  "title": "Scriber within-run checkpoint candidate evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "completed_training_report_sha256",
+    "selection_config_sha256",
+    "run_fingerprint",
+    "checkpoint_inventory",
+    "checkpoint_identity",
+    "evaluation_manifests",
+    "deterministic_automatic_report",
+    "checkpoint_eval"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^checkpoint-[1-9][0-9]*$"
+    },
+    "completed_training_report_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "selection_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "checkpoint_inventory": {
+      "type": "object"
+    },
+    "checkpoint_identity": {
+      "$ref": "#/$defs/checkpoint_identity"
+    },
+    "evaluation_manifests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_manifest_sha256",
+        "prediction_manifest_sha256"
+      ],
+      "properties": {
+        "reference_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "prediction_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "deterministic_automatic_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "candidate_id",
+        "run_fingerprint",
+        "checkpoint",
+        "global_step",
+        "identity_sha256",
+        "reference_manifest_sha256",
+        "prediction_manifest_sha256",
+        "generator",
+        "status",
+        "provenance",
+        "report_sha256",
+        "hard_safety_gates",
+        "critical_error_count",
+        "generated_safety_content_score",
+        "task_score",
+        "structure_score"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "reference_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "prediction_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "generator": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "const": "complete"
+        },
+        "provenance": {
+          "const": "generated"
+        },
+        "report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "hard_safety_gates": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "critical_error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generated_safety_content_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "task_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "structure_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "checkpoint_eval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "global_step",
+        "trainer_state_sha256",
+        "eval_loss"
+      ],
+      "properties": {
+        "metric": {
+          "const": "eval_loss"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "trainer_state_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "model_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "checkpoint_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "architecture",
+        "model_type",
+        "base_model"
+      ],
+      "properties": {
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "architecture": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_type": {
+          "type": "string",
+          "minLength": 1
+        },
+        "base_model": {
+          "$ref": "#/$defs/model_pin"
+        }
+      }
+    }
+  }
+}

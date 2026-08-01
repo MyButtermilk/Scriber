@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-release-launch-receipt-v1.schema.json",
+  "title": "Scriber HF V2 BF16/Q8_0 single-shot launch receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "claim_repository", "claim_path", "claim_commit", "owner_token", "job_id", "job_inspection", "packet_tree_sha256", "launch_contract_sha256", "remote_result_uri", "submitted_at_utc", "authoritative_snapshot_count", "duplicate_retry_allowed"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_q8_bf16_release_launch_receipt"},
+    "claim_repository": {"const": "Buttermilk03/scriber-polishing-launch-claims"},
+    "claim_path": {"const": "claims/v2-q8-bf16-release/attempt15-scriber-v2-q8-bf16-release-v1.json"},
+    "claim_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "owner_token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "job_inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stage", "exact_identity_verified", "api_cli_identity_sha256", "command_sha256", "url"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+        "stage": {"enum": ["PENDING", "QUEUED", "SCHEDULING", "RUNNING"]},
+        "exact_identity_verified": {"const": true},
+        "api_cli_identity_sha256": {"$ref": "#/$defs/hash"},
+        "command_sha256": {"$ref": "#/$defs/hash"},
+        "url": {"type": "string", "pattern": "^https://huggingface\\.co/jobs/(?:Buttermilk03/)?[0-9a-f]{24}$"}
+      }
+    },
+    "packet_tree_sha256": {"$ref": "#/$defs/hash"},
+    "launch_contract_sha256": {"$ref": "#/$defs/hash"},
+    "remote_result_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt15/scriber-v2-q8-bf16-release-v1/quantization"},
+    "submitted_at_utc": {"type": "string", "format": "date-time"},
+    "authoritative_snapshot_count": {"const": 3},
+    "duplicate_retry_allowed": {"const": false}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

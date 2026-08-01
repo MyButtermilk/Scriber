@@ -1,0 +1,456 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scriber marker repair single-arm acceptance report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "decision",
+    "accepted",
+    "experiment",
+    "inputs",
+    "execution",
+    "parity",
+    "safety",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_marker_repair_acceptance"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "decision": {
+      "enum": [
+        "ACCEPT_REPAIR",
+        "REJECT_REPAIR_KEEP_FROZEN_SHUFFLED"
+      ]
+    },
+    "accepted": {
+      "type": "boolean"
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "experiment_id",
+        "repair_input_sha256",
+        "repair_manifest_sha256",
+        "acceptance_policy_sha256"
+      ],
+      "properties": {
+        "experiment_id": {
+          "const": "pilot-marker-lexical-repair-v1"
+        },
+        "repair_input_sha256": {
+          "$ref": "#/$defs/prefixedSha256"
+        },
+        "repair_manifest_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "acceptance_policy_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "references_sha256",
+        "baseline",
+        "candidate"
+      ],
+      "properties": {
+        "references_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "baseline": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "predictions_sha256",
+            "prediction_manifest_sha256",
+            "evaluation_sha256"
+          ],
+          "properties": {
+            "predictions_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "prediction_manifest_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "evaluation_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            }
+          }
+        },
+        "candidate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "training_report_sha256",
+            "predictions_sha256",
+            "prediction_manifest_sha256",
+            "evaluation_sha256",
+            "cloud_result_sha256"
+          ],
+          "properties": {
+            "training_report_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "predictions_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "prediction_manifest_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "evaluation_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "cloud_result_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            }
+          }
+        }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "actual_completed_steps",
+        "parent_checkpoint_tree_sha256",
+        "effective_order_sha256",
+        "protection_policy"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "actual_completed_steps": {
+          "const": 146
+        },
+        "parent_checkpoint_tree_sha256": {
+          "const": "sha256:f3186be5e03b48dea35063f8ea502b2c4849abc03a9b8c4b41753bdcf7141513"
+        },
+        "effective_order_sha256": {
+          "const": "50daec69ef0ab52c38393d045551122bf339fae33536cd1ca432edf7e8e4e95f"
+        },
+        "protection_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_sha256",
+            "policy_id",
+            "policy_sha256"
+          ],
+          "properties": {
+            "artifact_sha256": {
+              "$ref": "#/$defs/rawSha256"
+            },
+            "policy_id": {
+              "const": "gemma_lexical_v1"
+            },
+            "policy_sha256": {
+              "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+            }
+          }
+        }
+      }
+    },
+    "parity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "reference_count",
+        "baseline_prediction_count",
+        "candidate_prediction_count",
+        "reference_sha256_equal",
+        "case_ids_equal"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "reference_count": {
+          "const": 200
+        },
+        "baseline_prediction_count": {
+          "const": 200
+        },
+        "candidate_prediction_count": {
+          "const": 200
+        },
+        "reference_sha256_equal": {
+          "const": true
+        },
+        "case_ids_equal": {
+          "const": true
+        }
+      }
+    },
+    "safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "restoration_error_count",
+        "valid_sst_count",
+        "raw_sst_parse_rate",
+        "protected_span_exact_rate",
+        "marker_errors",
+        "new_critical_errors",
+        "quality_metrics_noninferior"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "restoration_error_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "valid_sst_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "raw_sst_parse_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "protected_span_exact_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "marker_errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "deletions",
+            "duplications",
+            "malformed",
+            "reordered"
+          ],
+          "properties": {
+            "deletions": {
+              "$ref": "#/$defs/nullableCount"
+            },
+            "duplications": {
+              "$ref": "#/$defs/nullableCount"
+            },
+            "malformed": {
+              "$ref": "#/$defs/nullableCount"
+            },
+            "reordered": {
+              "$ref": "#/$defs/nullableCount"
+            }
+          }
+        },
+        "new_critical_errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "actual",
+            "maximum",
+            "checks",
+            "passed"
+          ],
+          "properties": {
+            "actual": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maximum": {
+              "const": 0
+            },
+            "checks": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/criticalCheck"
+              }
+            },
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "quality_metrics_noninferior": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "passed",
+            "checks"
+          ],
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            },
+            "checks": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "identity_exact_match",
+                "punctuation_f1",
+                "filler_f1",
+                "repetition_cleanup_f1",
+                "normalized_exact_match"
+              ],
+              "properties": {
+                "identity_exact_match": {
+                  "$ref": "#/$defs/noninferiority"
+                },
+                "punctuation_f1": {
+                  "$ref": "#/$defs/noninferiority"
+                },
+                "filler_f1": {
+                  "$ref": "#/$defs/noninferiority"
+                },
+                "repetition_cleanup_f1": {
+                  "$ref": "#/$defs/noninferiority"
+                },
+                "normalized_exact_match": {
+                  "$ref": "#/$defs/noninferiority"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "execution",
+        "parity_references",
+        "prediction_count",
+        "restoration",
+        "valid_sst",
+        "protected_span_integrity",
+        "new_critical_errors",
+        "quality_metrics_noninferior"
+      ],
+      "properties": {
+        "execution": {
+          "type": "boolean"
+        },
+        "parity_references": {
+          "type": "boolean"
+        },
+        "prediction_count": {
+          "type": "boolean"
+        },
+        "restoration": {
+          "type": "boolean"
+        },
+        "valid_sst": {
+          "type": "boolean"
+        },
+        "protected_span_integrity": {
+          "type": "boolean"
+        },
+        "new_critical_errors": {
+          "type": "boolean"
+        },
+        "quality_metrics_noninferior": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rawSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixedSha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "nullableCount": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "criticalCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline",
+        "candidate",
+        "new",
+        "new_case_ids",
+        "new_case_ids_sha256",
+        "passed"
+      ],
+      "properties": {
+        "baseline": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "candidate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_case_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_-]{2,199}$"
+          }
+        },
+        "new_case_ids_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "noninferiority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline",
+        "candidate",
+        "passed"
+      ],
+      "properties": {
+        "baseline": {
+          "$ref": "#/$defs/rate"
+        },
+        "candidate": {
+          "$ref": "#/$defs/rate"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

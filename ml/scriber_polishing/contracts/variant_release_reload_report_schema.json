@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/variant-release-reload-report-v1.schema.json",
+  "title": "Scriber independently materialized variant reload report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "variant",
+    "artifact_tree_sha256",
+    "training_fingerprint",
+    "process_boundary",
+    "configuration_source",
+    "loaded_quantization",
+    "deterministic",
+    "valid_sst",
+    "generated_tokens",
+    "protection_policy",
+    "source_variant_manifest_sha256",
+    "source_reload_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_variant_release_reload_report"
+    },
+    "status": {
+      "const": "passed"
+    },
+    "variant": {
+      "$ref": "#/$defs/variant"
+    },
+    "artifact_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "training_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "process_boundary": {
+      "const": "fresh_subprocess"
+    },
+    "configuration_source": {
+      "const": "saved_artifact"
+    },
+    "loaded_quantization": {
+      "$ref": "#/$defs/variant"
+    },
+    "deterministic": {
+      "const": true
+    },
+    "valid_sst": {
+      "const": true
+    },
+    "generated_tokens": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "protection_policy": {
+      "$ref": "#/$defs/protectionPolicy"
+    },
+    "source_variant_manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "source_reload_sha256": {
+      "$ref": "#/$defs/hash"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "variant": {
+      "enum": [
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "protectionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "artifact_sha256",
+        "policy_id",
+        "policy_sha256",
+        "tokenizer_identity_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "const": "scriber-protection-policy.json"
+        },
+        "artifact_sha256": {
+          "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+        },
+        "policy_id": {
+          "const": "gemma_lexical_v1"
+        },
+        "policy_sha256": {
+          "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+        },
+        "tokenizer_identity_sha256": {
+          "const": "sha256:f2fd01c3ec43ff4adb6f920a5466cbdba96801901b4fa778a029af561f499f20"
+        }
+      }
+    }
+  }
+}

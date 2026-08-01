@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/curriculum-comparison-report-v1.schema.json",
+  "title": "Scriber curriculum comparison report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "decision",
+    "inputs",
+    "policy",
+    "candidates",
+    "hard_safety",
+    "eval_loss",
+    "composite_delta",
+    "bootstrap",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_curriculum_comparison"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "decision": {
+      "enum": [
+        "ADOPT_STAGED",
+        "KEEP_SHUFFLED"
+      ]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "references_sha256",
+        "control_predictions_sha256",
+        "staged_predictions_sha256",
+        "control_training_report_sha256",
+        "staged_training_report_sha256",
+        "case_count"
+      ],
+      "properties": {
+        "references_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "control_predictions_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "staged_predictions_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "control_training_report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "staged_training_report_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "case_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config_sha256",
+        "weights"
+      ],
+      "properties": {
+        "config_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "weights": {
+          "$ref": "#/$defs/components"
+        }
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control",
+        "staged"
+      ],
+      "properties": {
+        "control": {
+          "$ref": "#/$defs/candidate"
+        },
+        "staged": {
+          "$ref": "#/$defs/candidate"
+        }
+      }
+    },
+    "hard_safety": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "critical_error_checks",
+        "metric_checks"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "critical_error_checks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/check"
+          }
+        },
+        "metric_checks": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/check"
+          }
+        }
+      }
+    },
+    "eval_loss": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control",
+        "staged",
+        "ratio",
+        "maximum_ratio",
+        "passed"
+      ],
+      "properties": {
+        "control": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "staged": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_ratio": {
+          "type": "number",
+          "minimum": 1
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "composite_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actual",
+        "minimum",
+        "passed"
+      ],
+      "properties": {
+        "actual": {
+          "type": "number"
+        },
+        "minimum": {
+          "type": "number",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "resamples",
+        "confidence_level",
+        "lower",
+        "median",
+        "upper",
+        "passed"
+      ],
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "resamples": {
+          "type": "integer",
+          "minimum": 100
+        },
+        "confidence_level": {
+          "type": "number",
+          "exclusiveMinimum": 0.5,
+          "exclusiveMaximum": 1
+        },
+        "lower": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "upper": {
+          "type": "number"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "boolean"
+      },
+      "required": [
+        "hard_safety",
+        "eval_loss",
+        "minimum_composite_delta",
+        "bootstrap_lower_bound"
+      ]
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safety_content",
+        "task_quality",
+        "structure",
+        "eval_loss"
+      ],
+      "properties": {
+        "safety_content": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "task_quality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "structure": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eval_loss",
+        "components",
+        "composite",
+        "critical_errors",
+        "safety_metrics",
+        "hard_content_exact_rates"
+      ],
+      "properties": {
+        "eval_loss": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        },
+        "composite": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "critical_errors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "safety_metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sst_parse_rate",
+            "output_only_compliance_rate",
+            "protected_span_exact_rate",
+            "safe_renderer_rate",
+            "renderer_round_trip_rate"
+          ],
+          "properties": {
+            "sst_parse_rate": {
+              "$ref": "#/$defs/rate"
+            },
+            "output_only_compliance_rate": {
+              "$ref": "#/$defs/rate"
+            },
+            "protected_span_exact_rate": {
+              "$ref": "#/$defs/rate"
+            },
+            "safe_renderer_rate": {
+              "$ref": "#/$defs/rate"
+            },
+            "renderer_round_trip_rate": {
+              "$ref": "#/$defs/rate"
+            }
+          }
+        },
+        "hard_content_exact_rates": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/rate"
+          }
+        }
+      }
+    },
+    "rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "control",
+        "staged",
+        "passed"
+      ],
+      "properties": {
+        "control": {
+          "type": "number"
+        },
+        "staged": {
+          "type": "number"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

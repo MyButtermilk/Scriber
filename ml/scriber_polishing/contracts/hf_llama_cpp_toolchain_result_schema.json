@@ -1,0 +1,184 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-llama-cpp-toolchain-result-v1.schema.json",
+  "title": "Scriber Hugging Face llama.cpp b10156 toolchain result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "attempt",
+    "source_git_head",
+    "status",
+    "platform",
+    "image",
+    "flavor",
+    "timeout_minutes",
+    "packet_tree_sha256",
+    "bundle_payload_inventory",
+    "lock_filename",
+    "lock_sha256",
+    "commit",
+    "source_tree_sha256",
+    "build_identity_sha256",
+    "build",
+    "distribution",
+    "native_runtime_tree_sha256",
+    "ldd_closure_sha256",
+    "required_host_driver_sonames",
+    "runtime_library_directories",
+    "tool_sha256",
+    "runtime_closure_verified",
+    "training_steps_executed",
+    "evaluation_reports_written",
+    "prediction_records_written",
+    "publication_allowed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_hf_llama_cpp_toolchain_result"
+    },
+    "attempt": {
+      "const": "v19"
+    },
+    "source_git_head": {
+      "const": "7ecd7e1ed349d1bcadbbb8151b584b766e9746d5"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "platform": {
+      "const": "linux_x86_64_cuda"
+    },
+    "image": {
+      "const": "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be"
+    },
+    "flavor": {
+      "const": "cpu-basic"
+    },
+    "timeout_minutes": {
+      "const": 20
+    },
+    "packet_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "bundle_payload_inventory": {
+      "$ref": "#/$defs/tree_inventory"
+    },
+    "lock_filename": {
+      "const": "llama-cpp-bundle-lock.json"
+    },
+    "lock_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "commit": {
+      "const": "91f8c9c5fb038c086e13e9cd823c29b33b07ba54"
+    },
+    "source_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "build_identity_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "build": {
+      "type": "object"
+    },
+    "distribution": {
+      "type": "object"
+    },
+    "native_runtime_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "ldd_closure_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "required_host_driver_sonames": {
+      "const": [
+        "libcuda.so.1"
+      ]
+    },
+    "runtime_library_directories": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$"
+      }
+    },
+    "tool_sha256": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "convert_hf_to_gguf",
+        "llama_cli",
+        "llama_quantize",
+        "llama_server"
+      ],
+      "properties": {
+        "convert_hf_to_gguf": {
+          "$ref": "#/$defs/hash"
+        },
+        "llama_cli": {
+          "$ref": "#/$defs/hash"
+        },
+        "llama_quantize": {
+          "$ref": "#/$defs/hash"
+        },
+        "llama_server": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "runtime_closure_verified": {
+      "const": true
+    },
+    "training_steps_executed": {
+      "const": 0
+    },
+    "evaluation_reports_written": {
+      "const": 0
+    },
+    "prediction_records_written": {
+      "const": 0
+    },
+    "publication_allowed": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tree_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "tree_sha256",
+        "entry_count",
+        "total_file_bytes"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256-canonical-path-kind-size-content-or-target-v1"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "entry_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_file_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

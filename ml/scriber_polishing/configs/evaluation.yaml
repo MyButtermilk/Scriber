@@ -1,0 +1,230 @@
+schema_version: 2
+seed: 270020
+candidates:
+  - raw_transcript
+  - deterministic_minimal
+  - base_model
+  - pilot
+  - shuffled
+  - staged
+  - final
+  - bf16
+  - int8
+  - int4_nf4
+  - Q8_0
+  - Q4_K_M
+automatic_evaluation:
+  hard_gates:
+    - id: protected_span_restoration_challenge
+      slice: split:challenge
+      metric: protected_span_exact_rate
+      operator: gte
+      threshold: 1.0
+      minimum_cases: 1
+    - id: critical_amount_changes
+      slice: split:challenge
+      metric: critical_errors.changed_amount
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_negation_changes
+      slice: split:challenge
+      metric: critical_errors.changed_negation
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_condition_changes
+      slice: split:challenge
+      metric: critical_errors.changed_condition
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_modality_changes
+      slice: split:challenge
+      metric: critical_errors.changed_modality
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_date_or_time_changes
+      slice: split:challenge
+      metric: critical_errors.changed_date_or_time
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_number_changes
+      slice: split:challenge
+      metric: critical_errors.changed_number
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_legal_reference_changes
+      slice: split:challenge
+      metric: critical_errors.changed_legal_reference
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: critical_unit_dimension_changes
+      slice: split:challenge
+      metric: critical_errors.changed_unit_dimension
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: invented_headings_critical
+      slice: split:challenge
+      metric: critical_errors.invented_heading
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_additions_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_addition
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_omissions_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_omission
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_reorders_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_reorder
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_question_answers_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_question_answer
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_summaries_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_summary
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: semantic_entities_critical
+      slice: all
+      metric: semantic_hard_check_counts.semantic_entity_changed
+      operator: lte
+      threshold: 0
+      minimum_cases: 1
+    - id: output_only_compliance
+      slice: all
+      metric: output_only_compliance_rate
+      operator: gte
+      threshold: 1.0
+      minimum_cases: 1
+    - id: safe_renderer_rate
+      slice: all
+      metric: safe_renderer_rate
+      operator: gte
+      threshold: 1.0
+      minimum_cases: 1
+    - id: renderer_round_trip
+      slice: all
+      metric: renderer_round_trip_rate
+      operator: gte
+      threshold: 1.0
+      minimum_cases: 1
+  minimums:
+    - id: identity_exact_match
+      slice: identity
+      metric: identity_exact_match
+      operator: gte
+      threshold: 0.98
+      minimum_cases: 1
+    - id: punctuation_f1
+      slice: all
+      metric: punctuation_f1
+      operator: gte
+      threshold: 0.95
+      minimum_cases: 1
+    - id: filler_f1
+      slice: all
+      metric: filler_f1
+      operator: gte
+      threshold: 0.90
+      minimum_cases: 1
+    - id: repetition_cleanup_f1
+      slice: all
+      metric: repetition_cleanup_f1
+      operator: gte
+      threshold: 0.90
+      minimum_cases: 1
+    - id: value_preservation
+      slice: all
+      metric: hard_content_exact_rates.numbers
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+    - id: amount_preservation
+      slice: all
+      metric: hard_content_exact_rates.amounts
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+    - id: date_preservation
+      slice: all
+      metric: hard_content_exact_rates.dates
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+    - id: time_preservation
+      slice: all
+      metric: hard_content_exact_rates.times
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+    - id: sst_parse_test
+      slice: split:test
+      metric: sst_parse_rate
+      operator: gte
+      threshold: 0.999
+      minimum_cases: 1
+    - id: sst_parse_critical
+      slice: split:challenge
+      metric: sst_parse_rate
+      operator: gte
+      threshold: 1.0
+      minimum_cases: 1
+    - id: unit_exact_match
+      slice: all
+      metric: hard_content_exact_rates.units
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+    - id: legal_citation_exact_match
+      slice: all
+      metric: hard_content_exact_rates.legal_references
+      operator: gte
+      threshold: 0.99
+      minimum_cases: 1
+paired_significance:
+  baseline_candidate: base_model
+  required_for_release_candidates:
+    - final
+  metric: normalized_exact_match
+  seed: 270020
+  minimum_resamples: 10000
+  confidence_level: 0.95
+  minimum_delta: 0.0
+judge_aggregation:
+  acceptable_rate_minimums:
+    test: 0.97
+    challenge: 0.95
+  rubric_minimums:
+    semantic_fidelity: 4.5
+    no_additions: 4.5
+    no_omissions: 4.5
+    spelling: 4.2
+    grammar: 4.2
+    punctuation: 4.2
+    paragraph_structure: 4.2
+    heading_structure: 4.2
+    numbered_lists: 4.2
+    unit_normalization: 4.2
+    legal_citations: 4.2
+    address_pronouns: 4.2

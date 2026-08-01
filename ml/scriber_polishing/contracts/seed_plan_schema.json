@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/seed-plan-v1.schema.json",
+  "title": "Scriber AI Seed Semantic Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "seed_id",
+    "generator_agent",
+    "batch_id",
+    "prompt_hash",
+    "seed",
+    "language",
+    "domain",
+    "document_type",
+    "style_profile",
+    "address_mode",
+    "legal_citation_style",
+    "unit_style",
+    "semantic_plan",
+    "risk_tags",
+    "source_class",
+    "private_data"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "seed_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{7,79}$"
+    },
+    "generator_agent": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{4,79}$"
+    },
+    "batch_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{4,79}$"
+    },
+    "prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 2147483647
+    },
+    "language": {
+      "enum": [
+        "de-DE",
+        "en",
+        "mixed"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "general_business",
+        "tax_legal",
+        "real_estate_energy",
+        "technical_project",
+        "english_mixed",
+        "hard_negatives"
+      ]
+    },
+    "document_type": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80
+    },
+    "style_profile": {
+      "const": "duden_preferred_business"
+    },
+    "address_mode": {
+      "enum": [
+        "formal_sie",
+        "personal_du_capitalized",
+        "personal_du_lowercase",
+        "neutral_third_person",
+        "quoted_speech",
+        "mixed_correspondence",
+        "ambiguous"
+      ]
+    },
+    "legal_citation_style": {
+      "const": "long"
+    },
+    "unit_style": {
+      "const": "professional_symbols"
+    },
+    "semantic_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "facts",
+        "entities",
+        "structure"
+      ],
+      "properties": {
+        "facts": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 12,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "fact_id",
+              "order",
+              "text",
+              "polarity",
+              "modality",
+              "condition",
+              "protected_values"
+            ],
+            "properties": {
+              "fact_id": {
+                "type": "string",
+                "pattern": "^f[0-9]{1,2}$"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 12
+              },
+              "text": {
+                "type": "string",
+                "minLength": 8,
+                "maxLength": 500
+              },
+              "polarity": {
+                "enum": [
+                  "positive",
+                  "negative",
+                  "double_negative"
+                ]
+              },
+              "modality": {
+                "enum": [
+                  "fact",
+                  "possibility",
+                  "recommendation",
+                  "obligation",
+                  "intention",
+                  "uncertainty"
+                ]
+              },
+              "condition": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "maxLength": 300
+              },
+              "protected_values": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                }
+              }
+            }
+          }
+        },
+        "entities": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "type",
+              "value",
+              "fictional",
+              "protected"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "person",
+                  "organization",
+                  "location",
+                  "product",
+                  "legal_term",
+                  "technical_term"
+                ]
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              "fictional": {
+                "type": "boolean"
+              },
+              "protected": {
+                "const": true
+              }
+            }
+          }
+        },
+        "structure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "has_subject",
+            "has_salutation",
+            "paragraph_topics",
+            "heading_levels",
+            "list_kind",
+            "list_items",
+            "has_closing",
+            "signature_lines"
+          ],
+          "properties": {
+            "has_subject": {
+              "type": "boolean"
+            },
+            "has_salutation": {
+              "type": "boolean"
+            },
+            "paragraph_topics": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 500
+              }
+            },
+            "heading_levels": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "h1",
+                  "h2"
+                ]
+              }
+            },
+            "list_kind": {
+              "enum": [
+                "none",
+                "ordered",
+                "unordered",
+                "nested"
+              ]
+            },
+            "list_items": {
+              "type": "array",
+              "maxItems": 12,
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 240
+              }
+            },
+            "has_closing": {
+              "type": "boolean"
+            },
+            "signature_lines": {
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              }
+            },
+            "has_quote": {
+              "type": "boolean"
+            },
+            "quote_text": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 8,
+              "maxLength": 500
+            },
+            "has_attachments": {
+              "type": "boolean"
+            },
+            "attachment_lines": {
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 200
+              }
+            },
+            "has_post_script": {
+              "type": "boolean"
+            },
+            "post_script_text": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 8,
+              "maxLength": 500
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "has_quote"
+                ],
+                "properties": {
+                  "has_quote": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "quote_text"
+                ],
+                "properties": {
+                  "quote_text": {
+                    "type": "string"
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "has_attachments"
+                ],
+                "properties": {
+                  "has_attachments": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "attachment_lines"
+                ],
+                "properties": {
+                  "attachment_lines": {
+                    "minItems": 1
+                  }
+                }
+              }
+            },
+            {
+              "if": {
+                "required": [
+                  "has_post_script"
+                ],
+                "properties": {
+                  "has_post_script": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "post_script_text"
+                ],
+                "properties": {
+                  "post_script_text": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "risk_tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,59}$"
+      }
+    },
+    "source_class": {
+      "const": "ai_generated"
+    },
+    "private_data": {
+      "const": false
+    }
+  }
+}

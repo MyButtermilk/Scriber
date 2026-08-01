@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/curriculum-comparison-config-v1.schema.json",
+  "title": "Scriber curriculum comparison policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "seed",
+    "bootstrap_resamples",
+    "confidence_level",
+    "minimum_composite_delta",
+    "maximum_eval_loss_ratio",
+    "weights",
+    "require_no_new_critical_errors",
+    "require_metric_non_regression"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bootstrap_resamples": {
+      "type": "integer",
+      "minimum": 100,
+      "maximum": 100000
+    },
+    "confidence_level": {
+      "type": "number",
+      "exclusiveMinimum": 0.5,
+      "exclusiveMaximum": 1
+    },
+    "minimum_composite_delta": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "maximum_eval_loss_ratio": {
+      "type": "number",
+      "minimum": 1,
+      "maximum": 2
+    },
+    "weights": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safety_content",
+        "task_quality",
+        "structure",
+        "eval_loss"
+      ],
+      "properties": {
+        "safety_content": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "task_quality": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "structure": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "require_no_new_critical_errors": {
+      "const": true
+    },
+    "require_metric_non_regression": {
+      "const": true
+    }
+  }
+}

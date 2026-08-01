@@ -1,0 +1,375 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/quantization-config-v6.schema.json",
+  "title": "Scriber local quantization and laptop benchmark policy v6",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_checkpoint",
+    "protection_policy",
+    "enabled_variants",
+    "transformers_variants",
+    "gguf_variants",
+    "gguf_requires_verified_gemma3_text_support",
+    "reevaluate_every_variant",
+    "quality_delta_budgets",
+    "release_matrix",
+    "llama_cpp_runtime",
+    "benchmark"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 6
+    },
+    "source_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "required_dtype"
+      ],
+      "properties": {
+        "format": {
+          "const": "transformers_safetensors"
+        },
+        "required_dtype": {
+          "const": "BF16"
+        }
+      }
+    },
+    "protection_policy": {
+      "$ref": "#/$defs/protection_policy"
+    },
+    "enabled_variants": {
+      "const": [
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "transformers_variants": {
+      "const": [
+        "int8",
+        "int4_nf4"
+      ]
+    },
+    "gguf_variants": {
+      "const": [
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "gguf_requires_verified_gemma3_text_support": {
+      "const": true
+    },
+    "reevaluate_every_variant": {
+      "const": true
+    },
+    "quality_delta_budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ],
+      "properties": {
+        "int8": {
+          "$ref": "#/$defs/delta_budget"
+        },
+        "int4_nf4": {
+          "$ref": "#/$defs/delta_budget"
+        },
+        "Q8_0": {
+          "$ref": "#/$defs/delta_budget"
+        },
+        "Q4_K_M": {
+          "$ref": "#/$defs/delta_budget"
+        }
+      }
+    },
+    "release_matrix": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_variant",
+        "require_fresh_reload",
+        "require_full_predictions",
+        "require_full_evaluation",
+        "require_delta_report",
+        "require_benchmark",
+        "require_persistent_warm_runtime"
+      ],
+      "properties": {
+        "baseline_variant": {
+          "const": "bf16"
+        },
+        "require_fresh_reload": {
+          "const": true
+        },
+        "require_full_predictions": {
+          "const": true
+        },
+        "require_full_evaluation": {
+          "const": true
+        },
+        "require_delta_report": {
+          "const": true
+        },
+        "require_benchmark": {
+          "const": true
+        },
+        "require_persistent_warm_runtime": {
+          "const": true
+        }
+      }
+    },
+    "llama_cpp_runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "host",
+        "context_size",
+        "parallel_slots",
+        "startup_timeout_seconds",
+        "request_timeout_seconds",
+        "shutdown_timeout_seconds",
+        "stderr_max_bytes"
+      ],
+      "properties": {
+        "protocol": {
+          "const": "llama_server_http_sse_v1"
+        },
+        "host": {
+          "const": "127.0.0.1"
+        },
+        "context_size": {
+          "type": "integer",
+          "minimum": 2048,
+          "maximum": 32768
+        },
+        "parallel_slots": {
+          "const": 1
+        },
+        "startup_timeout_seconds": {
+          "type": "integer",
+          "minimum": 10,
+          "maximum": 600
+        },
+        "request_timeout_seconds": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 1800
+        },
+        "shutdown_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60
+        },
+        "stderr_max_bytes": {
+          "type": "integer",
+          "minimum": 16384,
+          "maximum": 1048576
+        }
+      }
+    },
+    "benchmark": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_hardware",
+        "length_buckets",
+        "bucket_tolerance_tokens",
+        "cases_per_category_bucket",
+        "percentiles",
+        "cold_repetitions",
+        "warm_repetitions",
+        "warmup_repetitions",
+        "max_new_tokens_by_input_bucket",
+        "telemetry_sample_interval_ms",
+        "required_case_categories"
+      ],
+      "properties": {
+        "expected_hardware": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os_family",
+            "gpu_name",
+            "gpu_total_memory_mib",
+            "gpu_driver_version",
+            "gpu_compute_capability",
+            "gpu_device_index",
+            "require_bf16_support"
+          ],
+          "properties": {
+            "os_family": {
+              "const": "Windows"
+            },
+            "gpu_name": {
+              "const": "NVIDIA GeForce RTX 4070 Laptop GPU"
+            },
+            "gpu_total_memory_mib": {
+              "const": 8188
+            },
+            "gpu_driver_version": {
+              "const": "591.86"
+            },
+            "gpu_compute_capability": {
+              "const": "8.9"
+            },
+            "gpu_device_index": {
+              "const": 0
+            },
+            "require_bf16_support": {
+              "const": true
+            }
+          }
+        },
+        "length_buckets": {
+          "const": [
+            50,
+            150,
+            300,
+            500,
+            1000
+          ]
+        },
+        "bucket_tolerance_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "cases_per_category_bucket": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        },
+        "percentiles": {
+          "const": [
+            50,
+            95,
+            99
+          ]
+        },
+        "cold_repetitions": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 20
+        },
+        "warm_repetitions": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 100
+        },
+        "warmup_repetitions": {
+          "const": 1
+        },
+        "max_new_tokens_by_input_bucket": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "50",
+            "150",
+            "300",
+            "500",
+            "1000"
+          ],
+          "properties": {
+            "50": {
+              "type": "integer",
+              "minimum": 50
+            },
+            "150": {
+              "type": "integer",
+              "minimum": 150
+            },
+            "300": {
+              "type": "integer",
+              "minimum": 300
+            },
+            "500": {
+              "type": "integer",
+              "minimum": 500
+            },
+            "1000": {
+              "type": "integer",
+              "minimum": 1000
+            }
+          }
+        },
+        "telemetry_sample_interval_ms": {
+          "type": "integer",
+          "minimum": 20,
+          "maximum": 1000
+        },
+        "required_case_categories": {
+          "type": "array",
+          "const": [
+            "short_email",
+            "long_business_letter",
+            "tax_law_letter",
+            "multipart_letter",
+            "numbered_list",
+            "number_heavy",
+            "unit_heavy",
+            "legal_citations",
+            "address_pronouns",
+            "rich_text_formatting",
+            "identity_text",
+            "hard_repetition"
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "protection_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "artifact_sha256",
+        "policy_id",
+        "policy_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "const": "scriber-protection-policy.json"
+        },
+        "artifact_sha256": {
+          "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+        },
+        "policy_id": {
+          "const": "gemma_lexical_v1"
+        },
+        "policy_sha256": {
+          "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+        }
+      }
+    },
+    "delta_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maximum_absolute_metric_drop",
+        "maximum_new_critical_errors"
+      ],
+      "properties": {
+        "maximum_absolute_metric_drop": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.02
+        },
+        "maximum_new_critical_errors": {
+          "const": 0
+        }
+      }
+    }
+  }
+}

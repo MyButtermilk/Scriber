@@ -1,0 +1,190 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-final-evaluation-packet-v1.schema.json",
+  "title": "Scriber V2 final-evaluation packet manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "attempt",
+    "model",
+    "evaluator",
+    "references",
+    "reference_bundle_sha256",
+    "evaluation_scope",
+    "paired_baseline",
+    "runtime",
+    "training",
+    "output",
+    "runner_sha256",
+    "inventory",
+    "side_effects"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_hf_v2_final_evaluation_packet" },
+    "attempt": { "const": "attempt14" },
+    "model": { "$ref": "#/$defs/model" },
+    "evaluator": { "$ref": "#/$defs/evaluator" },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ai_gold", "critical_regression", "regular_test"],
+      "properties": {
+        "ai_gold": { "$ref": "#/$defs/reference" },
+        "critical_regression": { "$ref": "#/$defs/reference" },
+        "regular_test": { "$ref": "#/$defs/reference" }
+      }
+    },
+    "reference_bundle_sha256": { "$ref": "#/$defs/hash" },
+    "evaluation_scope": {
+      "const": {
+        "evidence_class": "compact_smoke_test",
+        "publication_grade": false,
+        "records_per_suite": 100,
+        "total_records": 300,
+        "selection_algorithm": "sha256_case_id_rank_v1",
+        "selection_seed": "scriber-v2-compact-smoke-v1",
+        "v1_prediction_strategy": "reuse_completed_v1_predictions_without_inference"
+      }
+    },
+    "paired_baseline": { "$ref": "#/$defs/baseline" },
+    "runtime": {
+      "const": {
+        "image": "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be",
+        "flavor": "l4x1",
+        "timeout_minutes": 45
+      }
+    },
+    "training": {
+      "const": {
+        "steps_executed": 0,
+        "new_data_generated": false,
+        "reference_usage": "inference_and_evaluation_only"
+      }
+    },
+    "output": {
+      "const": {
+        "remote_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/scriber-v2-hardcase-replay-final-evaluation-v1/final",
+        "container_path": "/outputs/scriber-v2-hardcase-replay-final-evaluation-v1/final",
+        "unique": true,
+        "overwrite_allowed": false
+      }
+    },
+    "runner_sha256": { "$ref": "#/$defs/hash" },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "packet_tree_sha256", "file_count", "byte_count"],
+      "properties": {
+        "path": { "const": "tree-inventory.json" },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "packet_tree_sha256": { "$ref": "#/$defs/hash" },
+        "file_count": { "type": "integer", "minimum": 1 },
+        "byte_count": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "side_effects": {
+      "const": {
+        "external_job_started": false,
+        "external_mutation_performed": false,
+        "publication_allowed": false,
+        "auto_retry_allowed": false
+      }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "type": "string", "pattern": "^[^/\\\\]+\\.safetensors$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remote_uri", "directory", "run_fingerprint", "tree_sha256", "weight_files",
+        "protection_policy_sha256", "inventory_sha256", "reload_verification_sha256",
+        "postflight_binding_path", "postflight_binding_sha256", "source_training_job_id",
+        "source_training_packet_tree_sha256"
+      ],
+      "properties": {
+        "remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9" },
+        "directory": { "const": "final-7b23f23e70f60df9" },
+        "run_fingerprint": { "const": "sha256:7b23f23e70f60df9d58961808e529ff7738032de75a7a4a62c12529bc734a45c" },
+        "tree_sha256": { "const": "sha256:4233c0084cacdd3ba88207cece0ce20d1e1f56cfbfa64e71182a2deb2934c743" },
+        "weight_files": {
+          "const": [
+            {
+              "path": "model.safetensors",
+              "bytes": 536223056,
+              "sha256": "sha256:fd86d26f70e128fd1e8d4f11e69d4778ae930e628e374aa64595aca5bd0b9bb3"
+            }
+          ]
+        },
+        "protection_policy_sha256": { "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d" },
+        "inventory_sha256": { "$ref": "#/$defs/hash" },
+        "reload_verification_sha256": { "$ref": "#/$defs/hash" },
+        "postflight_binding_path": { "const": "inputs/v2-postflight-model-binding.json" },
+        "postflight_binding_sha256": { "$ref": "#/$defs/hash" },
+        "source_training_job_id": { "const": "6a6e05bf6b79c09949c1e5fd" },
+        "source_training_packet_tree_sha256": { "const": "sha256:3d11fbc9441ee4e563b46a87bf354a34fd9ff59d04a784325c725375f67ec5b6" }
+      }
+    },
+    "evaluator": {
+      "const": {
+        "source": "completed_v1_full_model_final_evaluation_packet",
+        "source_packet_manifest_sha256": "sha256:3270d2c3507cfbc128f96001488cef60d9b22d463df8016fe6b3aedf4abb7b9a",
+        "source_runner_sha256": "sha256:8320fd92e0e561a073bc20f837cd1460522167c6888b96f2da475c56284e8a60",
+        "snapshot_tree_sha256": "sha256:75877a883963cdee4fef5d07f2ef92100d9ed843e29e48fc40b8aad74cb3960e",
+        "snapshot_file_count": 167,
+        "snapshot_bytes": 2840121,
+        "evaluation_config_sha256": "sha256:656558732668b72d1596b4558e651cd99278d97af3dd822b8e947b6f477fa998",
+        "batch_size": 8,
+        "max_new_tokens": 512
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["records_filename", "manifest_filename", "source_record_count", "selected_record_count", "split_counts", "records_sha256", "manifest_sha256", "usage", "records_path", "manifest_path"],
+      "properties": {
+        "records_filename": { "type": "string" },
+        "manifest_filename": { "type": "string" },
+        "source_record_count": { "type": "integer", "minimum": 100 },
+        "selected_record_count": { "const": 100 },
+        "split_counts": { "type": "object" },
+        "records_sha256": { "$ref": "#/$defs/hash" },
+        "manifest_sha256": { "$ref": "#/$defs/hash" },
+        "usage": { "const": "inference_and_evaluation_only" },
+        "records_path": { "type": "string", "pattern": "^references/[^/]+$" },
+        "manifest_path": { "type": "string", "pattern": "^references/[^/]+$" }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "model_tree_sha256", "completed_result_path", "completed_result_sha256", "remote_result_uri", "reports", "rerun_required", "prediction_source", "predictions_remote_uri", "inference_reused", "subset_evaluation_recomputed"],
+      "properties": {
+        "candidate": { "const": "v1_full_model" },
+        "model_tree_sha256": { "const": "sha256:5f6caf237fc3e1c3092363d6c17d405463f1cf99a84b0bbbec1720cf125fe3e2" },
+        "completed_result_path": { "const": "baseline/v1-final-evaluation-result.json" },
+        "completed_result_sha256": { "const": "sha256:c6a05af6b2076c69c93c802f1b65c1079d1841d51c0cfc08609ee7283effea79" },
+        "remote_result_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-full-120k-v2-final-evaluation-v1" },
+        "reports": { "type": "object", "minProperties": 3, "maxProperties": 3 },
+        "rerun_required": { "const": false },
+        "prediction_source": { "const": "completed_v1_final_candidate_lanes" },
+        "predictions_remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-full-120k-v2-final-evaluation-v1" },
+        "inference_reused": { "const": true },
+        "subset_evaluation_recomputed": { "const": true }
+      }
+    }
+  }
+}

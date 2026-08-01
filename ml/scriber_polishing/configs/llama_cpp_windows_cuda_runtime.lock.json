@@ -1,0 +1,51 @@
+{
+  "assets": [
+    {
+      "bytes": 246673617,
+      "filename": "llama-b10158-bin-win-cuda-12.4-x64.zip",
+      "role": "runtime",
+      "sha256": "sha256:1bea4eb06ee7f34f9f22f48ed540fe5eae833714d31f18b81e15a6695e805f7c",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10158/llama-b10158-bin-win-cuda-12.4-x64.zip"
+    },
+    {
+      "bytes": 391443627,
+      "filename": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "role": "cuda_runtime",
+      "sha256": "sha256:8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10158/cudart-llama-bin-win-cuda-12.4-x64.zip"
+    }
+  ],
+  "conversion_compatibility": {
+    "commit": "91f8c9c5fb038c086e13e9cd823c29b33b07ba54",
+    "policy": "newer_same_upstream_runtime_with_fresh_gguf_reload",
+    "tag": "b10156"
+  },
+  "kind": "scriber_windows_llama_cpp_cuda_distribution",
+  "maximum_extracted_bytes": 2000000000,
+  "platform": {
+    "architecture": "amd64",
+    "backend": "cuda",
+    "cuda_major_minor": "12.4",
+    "os": "windows"
+  },
+  "release": {
+    "commit": "f87067841bac583bc089a225382248d857791ca8",
+    "published_at_utc": "2026-07-28T08:54:30Z",
+    "tag": "b10158"
+  },
+  "required_files": [
+    "cublas64_12.dll",
+    "cublasLt64_12.dll",
+    "cudart64_12.dll",
+    "ggml-base.dll",
+    "ggml-cuda.dll",
+    "ggml.dll",
+    "llama-cli.exe",
+    "llama-quantize.exe",
+    "llama-server.exe",
+    "llama.dll"
+  ],
+  "schema_version": 1,
+  "status": "locked",
+  "upstream_repository": "https://github.com/ggml-org/llama.cpp"
+}

@@ -1,0 +1,1312 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-actual-cost-evidence-v3.schema.json",
+  "title": "Scriber Hugging Face actual-cost evidence v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "currency",
+    "billing_quantum_seconds",
+    "pricing_source",
+    "retrieved_at_utc",
+    "cost_anchor",
+    "cost_anchor_sha256",
+    "attempt_sequence_complete",
+    "no_other_campaign_jobs_running",
+    "final_evaluation_attempts",
+    "auxiliary_jobs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "kind": {
+      "const": "scriber_hf_actual_cost_evidence"
+    },
+    "currency": {
+      "const": "USD"
+    },
+    "billing_quantum_seconds": {
+      "const": 60
+    },
+    "pricing_source": {
+      "const": "https://huggingface.co/docs/hub/jobs-pricing"
+    },
+    "retrieved_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "cost_anchor": {
+      "$ref": "#/$defs/cost_anchor"
+    },
+    "cost_anchor_sha256": {
+      "$ref": "#/$defs/prefixed_sha256"
+    },
+    "attempt_sequence_complete": {
+      "const": true
+    },
+    "no_other_campaign_jobs_running": {
+      "const": true
+    },
+    "final_evaluation_attempts": {
+      "type": "array",
+      "minItems": 5,
+      "prefixItems": [
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/final_evaluation_attempt"
+            },
+            {
+              "properties": {
+                "job_id": {
+                  "const": "6a6ba10023ed89c748ec83f1"
+                },
+                "terminal_status": {
+                  "const": "ERROR"
+                },
+                "running_seconds": {
+                  "const": 63
+                },
+                "packet_tree_sha256": {
+                  "const": "sha256:9f239bdbaa6b21292863d63dbb525cc13dcd085d625d4dd839a1a5170081be93"
+                },
+                "result_sha256": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/final_evaluation_attempt"
+            },
+            {
+              "properties": {
+                "job_id": {
+                  "const": "6a6ba85b23ed89c748ec8491"
+                },
+                "terminal_status": {
+                  "const": "ERROR"
+                },
+                "running_seconds": {
+                  "const": 45
+                },
+                "packet_tree_sha256": {
+                  "const": "sha256:1160f561994f0f430f9f2f2ef87bee7c16236017ff972455fa83c14a960a2749"
+                },
+                "result_sha256": {
+                  "type": "null"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/final_evaluation_attempt"
+            },
+            {
+              "properties": {
+                "job_id": {
+                  "const": "6a6baf33b36a6516e96a3210"
+                },
+                "terminal_status": {
+                  "const": "CANCELED"
+                },
+                "packet_tree_sha256": {
+                  "const": "sha256:4d52adac816ea8cd2899c9690be2aaba78f06f07ecf5f3acd2ea5f78964786df"
+                }
+              }
+            }
+          ]
+        },
+        {
+          "allOf": [
+            {
+              "$ref": "#/$defs/final_evaluation_attempt"
+            },
+            {
+              "properties": {
+                "job_id": {
+                  "const": "6a6bc2edb36a6516e96a3347"
+                },
+                "terminal_status": {
+                  "const": "ERROR"
+                },
+                "running_seconds": {
+                  "const": 78
+                },
+                "packet_tree_sha256": {
+                  "const": "sha256:432835f59848555349fdf921a33b56a6c35d6beccf91b6f89c53e289ac4cd365"
+                }
+              }
+            }
+          ]
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/final_evaluation_attempt"
+      },
+      "contains": {
+        "properties": {
+          "terminal_status": {
+            "const": "COMPLETED"
+          }
+        },
+        "required": [
+          "terminal_status"
+        ]
+      },
+      "minContains": 1
+    },
+    "auxiliary_jobs": {
+      "type": "array",
+      "minItems": 3,
+      "prefixItems": [
+        {
+          "$ref": "#/$defs/known_auxiliary_job_1"
+        },
+        {
+          "$ref": "#/$defs/known_auxiliary_job_2"
+        },
+        {
+          "$ref": "#/$defs/known_auxiliary_job_3"
+        }
+      ],
+      "items": {
+        "$ref": "#/$defs/auxiliary_job"
+      }
+    }
+  },
+  "$defs": {
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "usd6": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]{6}$"
+    },
+    "cost_anchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "historical_cost_usd",
+        "continuation_result_sha256",
+        "chain_jobs",
+        "actual_before_first_final_evaluation_usd",
+        "first_final_evaluation_packet_tree_sha256",
+        "first_final_evaluation_budget_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_cost_anchor_before_final_evaluation"
+        },
+        "historical_cost_usd": {
+          "const": "0.593"
+        },
+        "continuation_result_sha256": {
+          "const": "sha256:9e2755ac5411317da0bc70ddfb79716ef9b6704fbf923522f66421c26f343e7d"
+        },
+        "chain_jobs": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "prefixItems": [
+            {
+              "$ref": "#/$defs/training_job"
+            },
+            {
+              "$ref": "#/$defs/recovery_job"
+            },
+            {
+              "$ref": "#/$defs/finalization_job"
+            }
+          ],
+          "items": false
+        },
+        "actual_before_first_final_evaluation_usd": {
+          "const": "0.893167"
+        },
+        "first_final_evaluation_packet_tree_sha256": {
+          "const": "sha256:9f239bdbaa6b21292863d63dbb525cc13dcd085d625d4dd839a1a5170081be93"
+        },
+        "first_final_evaluation_budget_sha256": {
+          "const": "sha256:1bb8c91c0669cd86f58e0f6add1ace1cee85f32226667fd792206082d48ab1c9"
+        }
+      }
+    },
+    "anchored_job_base": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "job_id",
+        "owner",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_cost_usd",
+        "packet_tree_sha256"
+      ],
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "owner": {
+          "const": "Buttermilk03"
+        },
+        "terminal_status": {
+          "enum": [
+            "ERROR",
+            "COMPLETED"
+          ]
+        },
+        "flavor": {
+          "enum": [
+            "a10g-small",
+            "cpu-basic"
+          ]
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "type": "string"
+        },
+        "actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        }
+      }
+    },
+    "training_job": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/anchored_job_base"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "training_continuation"
+            },
+            "job_id": {
+              "const": "6a6b8a78b36a6516e96a2fb1"
+            },
+            "terminal_status": {
+              "const": "ERROR"
+            },
+            "flavor": {
+              "const": "a10g-small"
+            },
+            "running_seconds": {
+              "const": 912
+            },
+            "billed_minutes": {
+              "const": 16
+            },
+            "hourly_rate_usd": {
+              "const": "1.00"
+            },
+            "actual_cost_usd": {
+              "const": "0.266667"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:fbf4c0f0eaac705ec6539540be5380d6404c49dbfd36d476a9b4648ec1143bb2"
+            }
+          }
+        }
+      ]
+    },
+    "recovery_job": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/anchored_job_base"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "continuation_recovery"
+            },
+            "job_id": {
+              "const": "6a6b94e6b36a6516e96a307c"
+            },
+            "terminal_status": {
+              "const": "ERROR"
+            },
+            "flavor": {
+              "const": "a10g-small"
+            },
+            "running_seconds": {
+              "const": 93
+            },
+            "billed_minutes": {
+              "const": 2
+            },
+            "hourly_rate_usd": {
+              "const": "1.00"
+            },
+            "actual_cost_usd": {
+              "const": "0.033333"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:8f37fcfdf1ee7b542c2f078eee7dd57b2f9ea5a2573d265890d5c0d7d6ae31ea"
+            }
+          }
+        }
+      ]
+    },
+    "finalization_job": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/anchored_job_base"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "continuation_finalization"
+            },
+            "job_id": {
+              "const": "6a6b9ee723ed89c748ec83a1"
+            },
+            "terminal_status": {
+              "const": "COMPLETED"
+            },
+            "flavor": {
+              "const": "cpu-basic"
+            },
+            "running_seconds": {
+              "const": 20
+            },
+            "billed_minutes": {
+              "const": 1
+            },
+            "hourly_rate_usd": {
+              "const": "0.01"
+            },
+            "actual_cost_usd": {
+              "const": "0.000167"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:2db2a308dcfe5807209100fd823453619428435dbeff5b4679d5dc25dabd80a5"
+            }
+          }
+        }
+      ]
+    },
+    "final_evaluation_attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "job_id",
+        "owner",
+        "terminal_status",
+        "flavor",
+        "timeout_minutes",
+        "terminal_duration_available",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_cost_usd",
+        "cost_basis",
+        "reserved_minutes",
+        "reserved_cost_usd",
+        "accounted_cost_usd",
+        "last_pre_terminal_running_seconds",
+        "packet_tree_sha256",
+        "result_sha256"
+      ],
+      "properties": {
+        "role": {
+          "const": "final_evaluation"
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "owner": {
+          "const": "Buttermilk03"
+        },
+        "terminal_status": {
+          "enum": [
+            "ERROR",
+            "COMPLETED",
+            "CANCELED"
+          ]
+        },
+        "flavor": {
+          "enum": [
+            "l4x1",
+            "l40sx1"
+          ]
+        },
+        "timeout_minutes": {
+          "enum": [
+            120,
+            180
+          ]
+        },
+        "terminal_duration_available": {
+          "type": "boolean"
+        },
+        "running_seconds": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10800
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "billed_minutes": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 180
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hourly_rate_usd": {
+          "enum": [
+            "0.800",
+            "1.800"
+          ]
+        },
+        "actual_cost_usd": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/usd6"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "cost_basis": {
+          "enum": [
+            "observed_minute_billing",
+            "full_timeout_reservation"
+          ]
+        },
+        "reserved_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 180
+        },
+        "reserved_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "accounted_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "last_pre_terminal_running_seconds": {
+          "oneOf": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "result_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/prefixed_sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "terminal_status": {
+                "const": "COMPLETED"
+              }
+            },
+            "required": [
+              "terminal_status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "result_sha256": {
+                "$ref": "#/$defs/prefixed_sha256"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "result_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "cost_basis": {
+                "const": "full_timeout_reservation"
+              }
+            },
+            "required": [
+              "cost_basis"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "CANCELED"
+              },
+              "terminal_duration_available": {
+                "const": false
+              },
+              "running_seconds": {
+                "type": "null"
+              },
+              "billed_minutes": {
+                "type": "null"
+              },
+              "actual_cost_usd": {
+                "type": "null"
+              },
+              "reserved_minutes": {
+                "minimum": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "terminal_duration_available": {
+                "const": true
+              },
+              "running_seconds": {
+                "type": "integer"
+              },
+              "billed_minutes": {
+                "type": "integer"
+              },
+              "actual_cost_usd": {
+                "$ref": "#/$defs/usd6"
+              },
+              "reserved_minutes": {
+                "const": 0
+              },
+              "reserved_cost_usd": {
+                "const": "0.000000"
+              },
+              "last_pre_terminal_running_seconds": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "job_id": {
+                    "const": "6a6ba10023ed89c748ec83f1"
+                  }
+                },
+                "required": [
+                  "job_id"
+                ]
+              },
+              {
+                "properties": {
+                  "packet_tree_sha256": {
+                    "const": "sha256:9f239bdbaa6b21292863d63dbb525cc13dcd085d625d4dd839a1a5170081be93"
+                  }
+                },
+                "required": [
+                  "packet_tree_sha256"
+                ]
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "job_id": {
+                "const": "6a6ba10023ed89c748ec83f1"
+              },
+              "terminal_status": {
+                "const": "ERROR"
+              },
+              "timeout_minutes": {
+                "const": 120
+              },
+              "terminal_duration_available": {
+                "const": true
+              },
+              "running_seconds": {
+                "const": 63
+              },
+              "billed_minutes": {
+                "const": 2
+              },
+              "actual_cost_usd": {
+                "const": "0.026667"
+              },
+              "cost_basis": {
+                "const": "observed_minute_billing"
+              },
+              "accounted_cost_usd": {
+                "const": "0.026667"
+              },
+              "packet_tree_sha256": {
+                "const": "sha256:9f239bdbaa6b21292863d63dbb525cc13dcd085d625d4dd839a1a5170081be93"
+              },
+              "result_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "job_id": {
+                "const": "6a6ba85b23ed89c748ec8491"
+              }
+            },
+            "required": [
+              "job_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "ERROR"
+              },
+              "timeout_minutes": {
+                "const": 120
+              },
+              "terminal_duration_available": {
+                "const": true
+              },
+              "running_seconds": {
+                "const": 45
+              },
+              "billed_minutes": {
+                "const": 1
+              },
+              "actual_cost_usd": {
+                "const": "0.013333"
+              },
+              "cost_basis": {
+                "const": "observed_minute_billing"
+              },
+              "accounted_cost_usd": {
+                "const": "0.013333"
+              },
+              "packet_tree_sha256": {
+                "const": "sha256:1160f561994f0f430f9f2f2ef87bee7c16236017ff972455fa83c14a960a2749"
+              },
+              "result_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "job_id": {
+                "const": "6a6baf33b36a6516e96a3210"
+              }
+            },
+            "required": [
+              "job_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "CANCELED"
+              },
+              "timeout_minutes": {
+                "const": 120
+              },
+              "terminal_duration_available": {
+                "const": false
+              },
+              "running_seconds": {
+                "type": "null"
+              },
+              "billed_minutes": {
+                "type": "null"
+              },
+              "actual_cost_usd": {
+                "type": "null"
+              },
+              "cost_basis": {
+                "const": "full_timeout_reservation"
+              },
+              "reserved_minutes": {
+                "const": 120
+              },
+              "reserved_cost_usd": {
+                "const": "1.600000"
+              },
+              "accounted_cost_usd": {
+                "const": "1.600000"
+              },
+              "last_pre_terminal_running_seconds": {
+                "const": 2810
+              },
+              "packet_tree_sha256": {
+                "const": "sha256:4d52adac816ea8cd2899c9690be2aaba78f06f07ecf5f3acd2ea5f78964786df"
+              },
+              "result_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "job_id": {
+                "const": "6a6bc2edb36a6516e96a3347"
+              }
+            },
+            "required": [
+              "job_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "ERROR"
+              },
+              "timeout_minutes": {
+                "const": 180
+              },
+              "terminal_duration_available": {
+                "const": true
+              },
+              "running_seconds": {
+                "const": 78
+              },
+              "billed_minutes": {
+                "const": 2
+              },
+              "actual_cost_usd": {
+                "const": "0.026667"
+              },
+              "cost_basis": {
+                "const": "observed_minute_billing"
+              },
+              "accounted_cost_usd": {
+                "const": "0.026667"
+              },
+              "packet_tree_sha256": {
+                "const": "sha256:432835f59848555349fdf921a33b56a6c35d6beccf91b6f89c53e289ac4cd365"
+              },
+              "result_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "auxiliary_job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "job_id",
+        "owner",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_cost_usd",
+        "packet_tree_sha256",
+        "observed_inventory_tree_sha256",
+        "training_steps_executed",
+        "evaluation_reports_written",
+        "prediction_records_written"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "packet_mount_inventory",
+            "packet_cross_platform_self_verify",
+            "toolchain_git_status_probe",
+            "toolchain_cuda_library_probe",
+            "toolchain_materialization",
+            "full_training"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "owner": {
+          "const": "Buttermilk03"
+        },
+        "terminal_status": {
+          "enum": [
+            "ERROR",
+            "COMPLETED",
+            "CANCELED"
+          ]
+        },
+        "flavor": {
+          "enum": [
+            "cpu-basic",
+            "l4x1",
+            "a10g-small",
+            "l40sx1"
+          ]
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 21600
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 360
+        },
+        "hourly_rate_usd": {
+          "enum": [
+            "0.010",
+            "0.800",
+            "1.000",
+            "1.800"
+          ]
+        },
+        "actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "observed_inventory_tree_sha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/prefixed_sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "training_steps_executed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7500
+        },
+        "evaluation_reports_written": {
+          "const": 0
+        },
+        "prediction_records_written": {
+          "const": 0
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "enum": [
+                  "packet_mount_inventory",
+                  "packet_cross_platform_self_verify"
+                ]
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "COMPLETED"
+              },
+              "flavor": {
+                "const": "cpu-basic"
+              },
+              "running_seconds": {
+                "minimum": 1,
+                "maximum": 600
+              },
+              "billed_minutes": {
+                "minimum": 1,
+                "maximum": 10
+              },
+              "hourly_rate_usd": {
+                "const": "0.010"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "toolchain_cuda_library_probe"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "const": "COMPLETED"
+              },
+              "flavor": {
+                "const": "cpu-basic"
+              },
+              "running_seconds": {
+                "minimum": 0,
+                "maximum": 300
+              },
+              "billed_minutes": {
+                "minimum": 0,
+                "maximum": 5
+              },
+              "hourly_rate_usd": {
+                "const": "0.010"
+              },
+              "observed_inventory_tree_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "toolchain_git_status_probe"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "enum": [
+                  "ERROR",
+                  "COMPLETED"
+                ]
+              },
+              "flavor": {
+                "const": "cpu-basic"
+              },
+              "running_seconds": {
+                "minimum": 1,
+                "maximum": 300
+              },
+              "billed_minutes": {
+                "minimum": 1,
+                "maximum": 5
+              },
+              "hourly_rate_usd": {
+                "const": "0.010"
+              },
+              "observed_inventory_tree_sha256": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "toolchain_materialization"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "enum": [
+                  "ERROR",
+                  "COMPLETED",
+                  "CANCELED"
+                ]
+              },
+              "flavor": {
+                "enum": [
+                  "cpu-basic",
+                  "l4x1",
+                  "a10g-small"
+                ]
+              },
+              "running_seconds": {
+                "minimum": 0,
+                "maximum": 1800
+              },
+              "billed_minutes": {
+                "minimum": 0,
+                "maximum": 30
+              },
+              "hourly_rate_usd": {
+                "enum": [
+                  "0.010",
+                  "0.800",
+                  "1.000"
+                ]
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "terminal_status": {
+                      "const": "COMPLETED"
+                    }
+                  },
+                  "required": [
+                    "terminal_status"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "observed_inventory_tree_sha256": {
+                      "$ref": "#/$defs/prefixed_sha256"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "observed_inventory_tree_sha256": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "role": {
+                "const": "full_training"
+              }
+            },
+            "required": [
+              "role"
+            ]
+          },
+          "then": {
+            "properties": {
+              "terminal_status": {
+                "enum": [
+                  "CANCELED",
+                  "COMPLETED"
+                ]
+              },
+              "flavor": {
+                "const": "l40sx1"
+              },
+              "running_seconds": {
+                "minimum": 1,
+                "maximum": 21600
+              },
+              "billed_minutes": {
+                "minimum": 1,
+                "maximum": 360
+              },
+              "hourly_rate_usd": {
+                "const": "1.800"
+              },
+              "training_steps_executed": {
+                "minimum": 1
+              },
+              "evaluation_reports_written": {
+                "const": 0
+              },
+              "prediction_records_written": {
+                "const": 0
+              }
+            },
+            "allOf": [
+              {
+                "if": {
+                  "properties": {
+                    "terminal_status": {
+                      "const": "COMPLETED"
+                    }
+                  },
+                  "required": [
+                    "terminal_status"
+                  ]
+                },
+                "then": {
+                  "properties": {
+                    "observed_inventory_tree_sha256": {
+                      "$ref": "#/$defs/prefixed_sha256"
+                    }
+                  }
+                },
+                "else": {
+                  "properties": {
+                    "observed_inventory_tree_sha256": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "known_auxiliary_job_1": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/auxiliary_job"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "packet_mount_inventory"
+            },
+            "job_id": {
+              "const": "6a6ba991b36a6516e96a31bc"
+            },
+            "running_seconds": {
+              "const": 23
+            },
+            "billed_minutes": {
+              "const": 1
+            },
+            "actual_cost_usd": {
+              "const": "0.000167"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:1160f561994f0f430f9f2f2ef87bee7c16236017ff972455fa83c14a960a2749"
+            },
+            "observed_inventory_tree_sha256": {
+              "const": "sha256:da912da24b0861de5ebf0ea4a8040f583351966d5af8846a7df049120629113b"
+            }
+          }
+        }
+      ]
+    },
+    "known_auxiliary_job_2": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/auxiliary_job"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "packet_mount_inventory"
+            },
+            "job_id": {
+              "const": "6a6ba9d8b36a6516e96a31be"
+            },
+            "running_seconds": {
+              "const": 24
+            },
+            "billed_minutes": {
+              "const": 1
+            },
+            "actual_cost_usd": {
+              "const": "0.000167"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:1160f561994f0f430f9f2f2ef87bee7c16236017ff972455fa83c14a960a2749"
+            },
+            "observed_inventory_tree_sha256": {
+              "const": "sha256:da912da24b0861de5ebf0ea4a8040f583351966d5af8846a7df049120629113b"
+            }
+          }
+        }
+      ]
+    },
+    "known_auxiliary_job_3": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/auxiliary_job"
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "packet_mount_inventory"
+            },
+            "job_id": {
+              "const": "6a6bae3cb36a6516e96a320c"
+            },
+            "running_seconds": {
+              "const": 44
+            },
+            "billed_minutes": {
+              "const": 1
+            },
+            "actual_cost_usd": {
+              "const": "0.000167"
+            },
+            "packet_tree_sha256": {
+              "const": "sha256:bc396bdcf45b57d8d12ed9d31a407f9862f96c33eca0f971984ccf2c192ca8ba"
+            },
+            "observed_inventory_tree_sha256": {
+              "type": "null"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

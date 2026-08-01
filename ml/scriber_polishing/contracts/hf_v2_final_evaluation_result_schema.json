@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-final-evaluation-result-v1.schema.json",
+  "title": "Scriber V2 compact final-evaluation result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "status", "model", "evaluator", "reference_bundle_sha256",
+    "evaluation_scope", "selection_evidence", "reports", "compact_comparison_gate",
+    "terra_judge_source", "paired_baseline",
+    "training_steps_executed", "publication_grade", "external_mutation_performed_by_verifier"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_hf_v2_final_evaluation_result" },
+    "status": { "const": "complete" },
+    "model": { "$ref": "#/$defs/model" },
+    "evaluator": { "$ref": "#/$defs/evaluator" },
+    "reference_bundle_sha256": { "$ref": "#/$defs/hash" },
+    "evaluation_scope": {
+      "const": {
+        "evidence_class": "compact_smoke_test",
+        "publication_grade": false,
+        "records_per_suite": 100,
+        "total_records": 300,
+        "selection_algorithm": "sha256_case_id_rank_v1",
+        "selection_seed": "scriber-v2-compact-smoke-v1",
+        "v1_prediction_strategy": "reuse_completed_v1_predictions_without_inference"
+      }
+    },
+    "selection_evidence": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/selection" }
+    },
+    "reports": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/report" }
+    },
+    "compact_comparison_gate": { "$ref": "#/$defs/compact_gate" },
+    "terra_judge_source": { "$ref": "#/$defs/terra_source" },
+    "paired_baseline": { "$ref": "#/$defs/baseline" },
+    "training_steps_executed": { "const": 0 },
+    "publication_grade": { "const": false },
+    "external_mutation_performed_by_verifier": { "const": false }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remote_uri", "directory", "run_fingerprint", "tree_sha256", "weight_files",
+        "protection_policy_sha256", "inventory_sha256", "reload_verification_sha256",
+        "postflight_binding_path", "postflight_binding_sha256", "source_training_job_id",
+        "source_training_packet_tree_sha256"
+      ],
+      "properties": {
+        "remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9" },
+        "directory": { "const": "final-7b23f23e70f60df9" },
+        "run_fingerprint": { "const": "sha256:7b23f23e70f60df9d58961808e529ff7738032de75a7a4a62c12529bc734a45c" },
+        "tree_sha256": { "const": "sha256:4233c0084cacdd3ba88207cece0ce20d1e1f56cfbfa64e71182a2deb2934c743" },
+        "weight_files": {
+          "const": [
+            {
+              "path": "model.safetensors",
+              "bytes": 536223056,
+              "sha256": "sha256:fd86d26f70e128fd1e8d4f11e69d4778ae930e628e374aa64595aca5bd0b9bb3"
+            }
+          ]
+        },
+        "protection_policy_sha256": { "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d" },
+        "inventory_sha256": { "$ref": "#/$defs/hash" },
+        "reload_verification_sha256": { "$ref": "#/$defs/hash" },
+        "postflight_binding_path": { "const": "inputs/v2-postflight-model-binding.json" },
+        "postflight_binding_sha256": { "$ref": "#/$defs/hash" },
+        "source_training_job_id": { "const": "6a6e05bf6b79c09949c1e5fd" },
+        "source_training_packet_tree_sha256": { "const": "sha256:3d11fbc9441ee4e563b46a87bf354a34fd9ff59d04a784325c725375f67ec5b6" }
+      }
+    },
+    "evaluator": {
+      "const": {
+        "source": "completed_v1_full_model_final_evaluation_packet",
+        "source_packet_manifest_sha256": "sha256:3270d2c3507cfbc128f96001488cef60d9b22d463df8016fe6b3aedf4abb7b9a",
+        "source_runner_sha256": "sha256:8320fd92e0e561a073bc20f837cd1460522167c6888b96f2da475c56284e8a60",
+        "snapshot_tree_sha256": "sha256:75877a883963cdee4fef5d07f2ef92100d9ed843e29e48fc40b8aad74cb3960e",
+        "snapshot_file_count": 167,
+        "snapshot_bytes": 2840121,
+        "evaluation_config_sha256": "sha256:656558732668b72d1596b4558e651cd99278d97af3dd822b8e947b6f477fa998",
+        "batch_size": 8,
+        "max_new_tokens": 512
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "kind", "algorithm", "seed", "suite", "source_record_count",
+        "selected_record_count", "case_ids_sha256", "reference_subset_sha256",
+        "v1_prediction_subset_sha256", "case_ids_exposed", "path", "sha256"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "kind": { "const": "scriber_v2_compact_evaluation_selection" },
+        "algorithm": { "const": "sha256_case_id_rank_v1" },
+        "seed": { "const": "scriber-v2-compact-smoke-v1" },
+        "suite": { "enum": ["ai_gold", "critical_regression", "regular_test"] },
+        "source_record_count": { "enum": [500, 1000, 1750] },
+        "selected_record_count": { "const": 100 },
+        "case_ids_sha256": { "$ref": "#/$defs/hash" },
+        "reference_subset_sha256": { "$ref": "#/$defs/hash" },
+        "v1_prediction_subset_sha256": { "$ref": "#/$defs/hash" },
+        "case_ids_exposed": { "const": false },
+        "path": { "pattern": "^(?:ai_gold|critical_regression|regular_test)\\.selection\\.json$" },
+        "sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["candidate", "suite", "path", "bytes", "sha256", "evaluation_exit", "record_count"],
+      "properties": {
+        "candidate": { "enum": ["v1_reused", "v2"] },
+        "suite": { "enum": ["ai_gold", "critical_regression", "regular_test", "combined"] },
+        "path": { "pattern": "^(?:v1_reused|v2)/(?:ai_gold|critical_regression|regular_test|combined)/evaluation\\.json$" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "evaluation_exit": { "enum": [0, 2] },
+        "record_count": { "enum": [100, 300] }
+      }
+    },
+    "compact_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind", "source_report_suite", "record_count", "coverage", "normalized_exact_match",
+        "deterministic_critical_error_count", "decision", "publication_grade", "requires_terra"
+      ],
+      "properties": {
+        "kind": { "const": "scriber_v2_compact_comparison_gate" },
+        "source_report_suite": { "const": "combined" },
+        "record_count": { "const": 300 },
+        "coverage": {
+          "const": { "v1_reused": 300, "v2": 300, "exact": true }
+        },
+        "normalized_exact_match": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["v1_reused", "v2", "v2_gte_v1"],
+          "properties": {
+            "v1_reused": { "type": "number", "minimum": 0, "maximum": 1 },
+            "v2": { "type": "number", "minimum": 0, "maximum": 1 },
+            "v2_gte_v1": { "type": "boolean" }
+          }
+        },
+        "deterministic_critical_error_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["v1_reused", "v2", "v2_lte_v1"],
+          "properties": {
+            "v1_reused": { "type": "integer", "minimum": 0 },
+            "v2": { "type": "integer", "minimum": 0 },
+            "v2_lte_v1": { "type": "boolean" }
+          }
+        },
+        "decision": { "enum": ["passed", "failed"] },
+        "publication_grade": { "const": false },
+        "requires_terra": { "const": true }
+      }
+    },
+    "terra_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path", "bytes", "sha256", "record_count", "suite_counts", "schema_path",
+        "contains_candidate_identity", "judge_public"
+      ],
+      "properties": {
+        "path": { "const": "terra-source-cases.jsonl" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "record_count": { "const": 300 },
+        "suite_counts": {
+          "const": {
+            "ai_gold": 100,
+            "critical_regression": 100,
+            "regular_test": 100
+          }
+        },
+        "schema_path": { "const": "contracts/v2_compact_terra_source_case_schema.json" },
+        "contains_candidate_identity": { "const": true },
+        "judge_public": { "const": false }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate", "model_tree_sha256", "completed_result_path", "completed_result_sha256",
+        "remote_result_uri", "reports", "rerun_required", "prediction_source",
+        "predictions_remote_uri", "inference_reused", "subset_evaluation_recomputed"
+      ],
+      "properties": {
+        "candidate": { "const": "v1_full_model" },
+        "model_tree_sha256": { "const": "sha256:5f6caf237fc3e1c3092363d6c17d405463f1cf99a84b0bbbec1720cf125fe3e2" },
+        "completed_result_path": { "const": "baseline/v1-final-evaluation-result.json" },
+        "completed_result_sha256": { "const": "sha256:c6a05af6b2076c69c93c802f1b65c1079d1841d51c0cfc08609ee7283effea79" },
+        "remote_result_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-full-120k-v2-final-evaluation-v1" },
+        "reports": { "type": "object", "minProperties": 3, "maxProperties": 3 },
+        "rerun_required": { "const": false },
+        "prediction_source": { "const": "completed_v1_final_candidate_lanes" },
+        "predictions_remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-full-120k-v2-final-evaluation-v1" },
+        "inference_reused": { "const": true },
+        "subset_evaluation_recomputed": { "const": true }
+      }
+    }
+  }
+}

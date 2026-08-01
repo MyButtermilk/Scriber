@@ -1,0 +1,382 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/protected_span_diagnostic_report_schema.json",
+  "title": "Scriber protected-span diagnostic report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "candidate",
+    "inputs",
+    "counts",
+    "failure_modes",
+    "lengths",
+    "tokenization",
+    "training_exposure",
+    "maskability_by_split",
+    "by_family",
+    "by_span_category",
+    "cases",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_protected_span_diagnostic"},
+    "candidate": {"type": "string", "minLength": 1},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "references",
+        "predictions",
+        "prediction_manifest",
+        "evaluation_report",
+        "training_data",
+        "validation_data"
+      ],
+      "properties": {
+        "references": {"$ref": "#/$defs/recordInput"},
+        "predictions": {"$ref": "#/$defs/recordInput"},
+        "prediction_manifest": {"$ref": "#/$defs/fileInput"},
+        "evaluation_report": {"$ref": "#/$defs/fileInput"},
+        "training_data": {"$ref": "#/$defs/recordInput"},
+        "validation_data": {"$ref": "#/$defs/recordInput"}
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evaluation_cases",
+        "cases_with_automatic_spans",
+        "protected_metric_failures",
+        "inferred_restoration_failures",
+        "non_restoration_protected_failures",
+        "manifest_restoration_errors",
+        "manifest_reconciled"
+      ],
+      "properties": {
+        "evaluation_cases": {"type": "integer", "minimum": 1},
+        "cases_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "protected_metric_failures": {"type": "integer", "minimum": 0},
+        "inferred_restoration_failures": {"type": "integer", "minimum": 0},
+        "non_restoration_protected_failures": {"type": "integer", "minimum": 0},
+        "manifest_restoration_errors": {"type": "integer", "minimum": 0},
+        "manifest_reconciled": {"const": true}
+      }
+    },
+    "failure_modes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_counts", "span_counts"],
+      "properties": {
+        "case_counts": {"$ref": "#/$defs/countMap"},
+        "span_counts": {"$ref": "#/$defs/countMap"}
+      }
+    },
+    "lengths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protected_prompt_tokens_all_automatic_cases",
+        "protected_prompt_tokens_restoration_failures",
+        "raw_prompt_tokens_restoration_failures",
+        "placeholder_token_delta_restoration_failures"
+      ],
+      "properties": {
+        "protected_prompt_tokens_all_automatic_cases": {"$ref": "#/$defs/distribution"},
+        "protected_prompt_tokens_restoration_failures": {"$ref": "#/$defs/distribution"},
+        "raw_prompt_tokens_restoration_failures": {"$ref": "#/$defs/distribution"},
+        "placeholder_token_delta_restoration_failures": {"$ref": "#/$defs/distribution"}
+      }
+    },
+    "tokenization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_marker",
+        "canonical_marker_token_count",
+        "canonical_marker_token_ids",
+        "canonical_marker_tokens",
+        "unused_token_probe"
+      ],
+      "properties": {
+        "canonical_marker": {"const": "⟦SCRIBER_PROTECTED_0000⟧"},
+        "canonical_marker_token_count": {"type": "integer", "minimum": 1},
+        "canonical_marker_token_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "integer", "minimum": 0}
+        },
+        "canonical_marker_tokens": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string"}
+        },
+        "unused_token_probe": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "probe",
+            "token_ids",
+            "token_count",
+            "decoded_skip_special_tokens",
+            "is_special_token",
+            "numeric_unused_token_count",
+            "contiguous_numeric_unused_from_zero",
+            "literal_probe_collision_records"
+          ],
+          "properties": {
+            "probe": {"const": "<unused0>"},
+            "token_ids": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"type": "integer", "minimum": 0}
+            },
+            "token_count": {"type": "integer", "minimum": 1},
+            "decoded_skip_special_tokens": {"type": "string"},
+            "is_special_token": {"type": "boolean"},
+            "numeric_unused_token_count": {"type": "integer", "minimum": 0},
+            "contiguous_numeric_unused_from_zero": {"type": "integer", "minimum": 0},
+            "literal_probe_collision_records": {"type": "integer", "minimum": 0}
+          }
+        }
+      }
+    },
+    "training_exposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_count",
+        "records_with_automatic_spans",
+        "automatic_span_count",
+        "literal_marker_record_count",
+        "paired_placeholder_eligible_record_count",
+        "maximum_automatic_spans_per_record"
+      ],
+      "properties": {
+        "record_count": {"type": "integer", "minimum": 1},
+        "records_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "automatic_span_count": {"type": "integer", "minimum": 0},
+        "literal_marker_record_count": {"type": "integer", "minimum": 0},
+        "paired_placeholder_eligible_record_count": {"type": "integer", "minimum": 0},
+        "maximum_automatic_spans_per_record": {"type": "integer", "minimum": 0}
+      }
+    },
+    "maskability_by_split": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"$ref": "#/$defs/maskability"},
+        "validation": {"$ref": "#/$defs/maskability"}
+      }
+    },
+    "by_family": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/rateRowFamily"}
+    },
+    "by_span_category": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/rateRowCategory"}
+    },
+    "cases": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/case"}
+    },
+    "limitations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "fileInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256"],
+      "properties": {
+        "filename": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "recordInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "sha256", "record_count"],
+      "properties": {
+        "filename": {"type": "string", "minLength": 1},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "record_count": {"type": "integer", "minimum": 1}
+      }
+    },
+    "maskability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_count",
+        "automatic_span_count",
+        "automatic_span_records",
+        "no_automatic_span_records",
+        "uniquely_maskable_records",
+        "ambiguous_records",
+        "ambiguous_repeated_value_records",
+        "ambiguous_extra_target_occurrence_records",
+        "unmaskable_records",
+        "exact_count_preserving_records"
+      ],
+      "properties": {
+        "record_count": {"type": "integer", "minimum": 1},
+        "automatic_span_count": {"type": "integer", "minimum": 0},
+        "automatic_span_records": {"type": "integer", "minimum": 0},
+        "no_automatic_span_records": {"type": "integer", "minimum": 0},
+        "uniquely_maskable_records": {"type": "integer", "minimum": 0},
+        "ambiguous_records": {"type": "integer", "minimum": 0},
+        "ambiguous_repeated_value_records": {"type": "integer", "minimum": 0},
+        "ambiguous_extra_target_occurrence_records": {"type": "integer", "minimum": 0},
+        "unmaskable_records": {"type": "integer", "minimum": 0},
+        "exact_count_preserving_records": {"type": "integer", "minimum": 0}
+      }
+    },
+    "countMap": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "distribution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["count", "minimum", "p50", "p95", "maximum", "mean"],
+      "properties": {
+        "count": {"type": "integer", "minimum": 0},
+        "minimum": {"type": ["integer", "null"]},
+        "p50": {"type": ["integer", "null"]},
+        "p95": {"type": ["integer", "null"]},
+        "maximum": {"type": ["integer", "null"]},
+        "mean": {"type": ["number", "null"]}
+      }
+    },
+    "rateBase": {
+      "type": "object",
+      "required": [
+        "reference_cases_with_automatic_spans",
+        "restoration_failure_cases",
+        "restoration_failure_rate"
+      ],
+      "properties": {
+        "reference_cases_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "restoration_failure_cases": {"type": "integer", "minimum": 0},
+        "restoration_failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "records": {"type": "integer", "minimum": 0},
+        "records_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "records_with_category": {"type": "integer", "minimum": 0},
+        "automatic_span_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rateRowFamily": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "family",
+        "reference_cases_with_automatic_spans",
+        "restoration_failure_cases",
+        "restoration_failure_rate"
+      ],
+      "properties": {
+        "family": {"type": "string", "minLength": 1},
+        "reference_cases_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "restoration_failure_cases": {"type": "integer", "minimum": 0},
+        "restoration_failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "records": {"type": "integer", "minimum": 0},
+        "records_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "automatic_span_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "rateRowCategory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "category",
+        "reference_cases_with_automatic_spans",
+        "restoration_failure_cases",
+        "restoration_failure_rate"
+      ],
+      "properties": {
+        "category": {"type": "string", "minLength": 1},
+        "reference_cases_with_automatic_spans": {"type": "integer", "minimum": 0},
+        "restoration_failure_cases": {"type": "integer", "minimum": 0},
+        "restoration_failure_rate": {"type": ["number", "null"], "minimum": 0, "maximum": 1},
+        "records_with_category": {"type": "integer", "minimum": 0},
+        "automatic_span_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "category",
+        "value_sha256",
+        "exact_placeholder_count",
+        "marker_core_count",
+        "status"
+      ],
+      "properties": {
+        "index": {"type": "integer", "minimum": 0},
+        "category": {"type": "string", "minLength": 1},
+        "value_sha256": {"$ref": "#/$defs/sha256"},
+        "exact_placeholder_count": {"type": "integer", "minimum": 0},
+        "marker_core_count": {"type": "integer", "minimum": 0},
+        "status": {
+          "enum": ["exact", "deleted", "duplicated", "malformed_delimiters"]
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "family",
+        "domain",
+        "profile",
+        "source_characters",
+        "raw_prompt_tokens",
+        "protected_prompt_tokens",
+        "expected_placeholder_count",
+        "failure_modes",
+        "unknown_marker_indices",
+        "spans"
+      ],
+      "properties": {
+        "case_id": {"type": "string", "minLength": 1},
+        "family": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
+        "profile": {"type": "string", "minLength": 1},
+        "source_characters": {"type": "integer", "minimum": 0},
+        "raw_prompt_tokens": {"type": "integer", "minimum": 1},
+        "protected_prompt_tokens": {"type": "integer", "minimum": 1},
+        "expected_placeholder_count": {"type": "integer", "minimum": 1},
+        "failure_modes": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "uniqueItems": true
+        },
+        "unknown_marker_indices": {
+          "type": "array",
+          "items": {"type": "string", "pattern": "^[0-9]{4}$"},
+          "uniqueItems": true
+        },
+        "spans": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/span"}
+        }
+      }
+    }
+  }
+}

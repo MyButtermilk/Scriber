@@ -1,13 +1,14 @@
-"""Frozen Hugging Face Hub surface used by Scriber's local ONNX models.
+"""Frozen Hugging Face Hub surface used by Scriber's local model downloads.
 
-The desktop runtime only downloads and inspects public model repositories.  In
-particular it never uploads, serves inference requests, runs the Hub CLI, or
-serializes framework checkpoints.  Keeping the required lazy imports explicit
+The desktop runtime downloads and inspects public model repositories. Local
+polishing is pinned to one public, non-gated revision and explicitly disables
+cached or environment-provided Hugging Face credentials. It never logs in,
+uploads, serves inference requests, runs the Hub CLI, executes remote code, or
+serializes framework checkpoints. Keeping the required lazy imports explicit
 avoids freezing every optional Hub surface and its native ``hf_xet`` helper.
 """
 
 from __future__ import annotations
-
 
 HUGGINGFACE_HUB_REQUIRED_HIDDEN_IMPORTS: tuple[str, ...] = (
     "huggingface_hub._snapshot_download",

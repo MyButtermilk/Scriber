@@ -1,0 +1,95 @@
+{
+  "batch_id": "technical_project_batch_01",
+  "diversity": {
+    "address_mode_counts": {
+      "ambiguous": 60,
+      "formal_sie": 60,
+      "mixed_correspondence": 60,
+      "neutral_third_person": 60,
+      "quoted_speech": 60
+    },
+    "document_type_counts": {
+      "Anforderungsnotiz": 25,
+      "Architekturentscheidung": 25,
+      "Betriebshinweis": 25,
+      "Incident-Nachbereitung": 25,
+      "Lieferantenabstimmung": 25,
+      "Lieferplan": 25,
+      "Migrationshinweis": 25,
+      "Projektstatusbericht": 25,
+      "Release-Freigabe": 25,
+      "Sicherheitsprüfung": 25,
+      "Testbericht": 25,
+      "Änderungsantrag": 25
+    },
+    "fact_count_counts": {
+      "3": 75,
+      "4": 175,
+      "5": 50
+    },
+    "list_kind_counts": {
+      "nested": 40,
+      "none": 140,
+      "ordered": 80,
+      "unordered": 40
+    },
+    "scenario_family_counts": {
+      "architecture_decision": 25,
+      "change_request": 25,
+      "delivery_plan": 25,
+      "fictional_technical_entities": 225
+    },
+    "technical_ambiguity_hard_negative_plans": 75,
+    "unique_fictional_organizations": 18,
+    "unique_fictional_people": 18,
+    "unique_products": 15
+  },
+  "domain": "technical_project",
+  "generation": {
+    "contains_critic_verdicts": false,
+    "contains_splits": false,
+    "contains_targets": false,
+    "deterministic": true,
+    "external_generative_api_used": false,
+    "local_only": true
+  },
+  "generator_agent": "generator_technical_project_01",
+  "generator_sha256": "de48fa4016347620846738d1726f317afee8becf0aabcf637a270500f3afe97f",
+  "manifest_version": 1,
+  "plans_sha256": "5ff7743f9d26e9ba1342aa43d0b509e1ac5fff3c5329189b24f75a7a0229f8f6",
+  "prompt_hash": "sha256:83f8475b20c3e4a91fa6d9548e9544b2d0b12303b0ceb1ea36d1dd8a76ceb843",
+  "protected_technical_values": {
+    "code_paths": 8,
+    "product_names": 15,
+    "technical_terms": 14,
+    "technical_units": 12,
+    "ticket_ids": 8,
+    "urls": 4,
+    "versions": 6
+  },
+  "quality_checks": {
+    "critic_verdicts_present": false,
+    "english_technical_german_plans": 150,
+    "english_technical_german_ratio": 0.5,
+    "external_generative_api_calls": 0,
+    "negation_condition_modality_plans": 300,
+    "negation_condition_modality_ratio": 1.0,
+    "private_data_records": 0,
+    "splits_present": false,
+    "targets_present": false,
+    "unique_seed_ids": true,
+    "unique_seeds": true
+  },
+  "record_count": 300,
+  "schema": "contracts/seed_plan_schema.json",
+  "schema_sha256": "ae59eafa61ab6b501b5b09bbccae03b11161cb5850f012050c9e93713507cef3",
+  "schema_validation": {
+    "invalid_records": 0,
+    "valid_records": 300,
+    "validator": "jsonschema.Draft202012Validator"
+  },
+  "seed_range": [
+    400000,
+    400299
+  ]
+}

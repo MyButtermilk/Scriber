@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/evaluation-config-v2.schema.json",
+  "title": "Scriber transcript-polishing evaluation gate configuration v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "seed",
+    "candidates",
+    "automatic_evaluation",
+    "judge_aggregation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+      }
+    },
+    "automatic_evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "hard_gates",
+        "minimums"
+      ],
+      "properties": {
+        "hard_gates": {
+          "$ref": "#/$defs/checks"
+        },
+        "minimums": {
+          "$ref": "#/$defs/checks"
+        }
+      }
+    },
+    "paired_significance": {
+      "$ref": "#/$defs/paired_significance"
+    },
+    "judge_aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptable_rate_minimums",
+        "rubric_minimums"
+      ],
+      "properties": {
+        "acceptable_rate_minimums": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "test",
+            "challenge"
+          ],
+          "properties": {
+            "test": {
+              "type": "number",
+              "minimum": 0.97,
+              "maximum": 1
+            },
+            "challenge": {
+              "type": "number",
+              "minimum": 0.95,
+              "maximum": 1
+            }
+          }
+        },
+        "rubric_minimums": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "semantic_fidelity",
+            "no_additions",
+            "no_omissions",
+            "spelling",
+            "grammar",
+            "punctuation",
+            "paragraph_structure",
+            "heading_structure",
+            "numbered_lists",
+            "unit_normalization",
+            "legal_citations",
+            "address_pronouns"
+          ],
+          "properties": {
+            "semantic_fidelity": {
+              "$ref": "#/$defs/fidelity_score"
+            },
+            "no_additions": {
+              "$ref": "#/$defs/fidelity_score"
+            },
+            "no_omissions": {
+              "$ref": "#/$defs/fidelity_score"
+            },
+            "spelling": {
+              "$ref": "#/$defs/score"
+            },
+            "grammar": {
+              "$ref": "#/$defs/score"
+            },
+            "punctuation": {
+              "$ref": "#/$defs/score"
+            },
+            "paragraph_structure": {
+              "$ref": "#/$defs/score"
+            },
+            "heading_structure": {
+              "$ref": "#/$defs/score"
+            },
+            "numbered_lists": {
+              "$ref": "#/$defs/score"
+            },
+            "unit_normalization": {
+              "$ref": "#/$defs/score"
+            },
+            "legal_citations": {
+              "$ref": "#/$defs/score"
+            },
+            "address_pronouns": {
+              "$ref": "#/$defs/score"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "slice",
+        "metric",
+        "operator",
+        "threshold",
+        "minimum_cases"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{2,79}$"
+        },
+        "slice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "metric": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_.]{1,119}$"
+        },
+        "operator": {
+          "enum": [
+            "gte",
+            "lte",
+            "eq"
+          ]
+        },
+        "threshold": {
+          "type": "number"
+        },
+        "minimum_cases": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/check"
+      }
+    },
+    "paired_significance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "baseline_candidate",
+        "required_for_release_candidates",
+        "metric",
+        "seed",
+        "minimum_resamples",
+        "confidence_level",
+        "minimum_delta"
+      ],
+      "properties": {
+        "baseline_candidate": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+        },
+        "required_for_release_candidates": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+          }
+        },
+        "metric": {
+          "enum": [
+            "sst_valid",
+            "output_only_compliant",
+            "strict_exact_match",
+            "normalized_exact_match",
+            "protected_spans_exact",
+            "ast_exact_match",
+            "renderer_round_trip",
+            "safe_renderer",
+            "block_sequence_exact"
+          ]
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "minimum_resamples": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "confidence_level": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "exclusiveMaximum": 1
+        },
+        "minimum_delta": {
+          "type": "number"
+        }
+      }
+    },
+    "score": {
+      "type": "number",
+      "minimum": 4.2,
+      "maximum": 5
+    },
+    "fidelity_score": {
+      "type": "number",
+      "minimum": 4.5,
+      "maximum": 5
+    }
+  }
+}

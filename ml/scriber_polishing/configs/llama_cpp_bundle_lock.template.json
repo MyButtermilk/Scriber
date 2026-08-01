@@ -1,0 +1,5 @@
+{
+  "materialization_required": "Extract the reviewed linux/amd64 layers from one exact official ghcr.io/ggml-org/llama.cpp full-cuda12 image manifest into a new bundle, retain the complete native .so and symlink graph, and run scripts/materialize_llama_cpp_bundle_lock.py against that bundle plus a clean source checkout at the image revision. The command binds the OCI index, manifest, config and selected layer digests, the immutable PyTorch runtime-image digest, complete source and native-runtime byte inventories, ELF64 x86-64 identities, actual version-probe bytes, and the host-driver-aware ldd closure. A CPU materialization may bind only exact libcuda.so.1 as an unresolved host-driver requirement; every other missing library fails closed, and later GPU use must prove a live CUDA driver and a fully resolved closure. This template authorizes no bundle until all values are materialized.",
+  "schema_version": 3,
+  "status": "UNMATERIALIZED"
+}

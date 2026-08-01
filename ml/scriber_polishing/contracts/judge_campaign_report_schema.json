@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-campaign-report-v1.schema.json",
+  "title": "Scriber dual-comparison judge campaign report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "release_candidate",
+    "release_candidate_prediction_sha256",
+    "reference_sha256",
+    "reference_manifest_sha256",
+    "coverage_policy_sha256",
+    "evaluation_config_sha256",
+    "required_comparison_kinds",
+    "observed_comparison_kinds",
+    "missing_comparison_kinds",
+    "comparisons",
+    "independent_sessions",
+    "zero_critical_requirements_passed",
+    "release_gate_passed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "complete",
+        "blocked"
+      ]
+    },
+    "release_candidate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "release_candidate_prediction_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "reference_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "reference_manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "coverage_policy_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "evaluation_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "required_comparison_kinds": {
+      "$ref": "#/$defs/comparison_set"
+    },
+    "observed_comparison_kinds": {
+      "$ref": "#/$defs/comparison_set"
+    },
+    "missing_comparison_kinds": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/comparison_kind"
+      }
+    },
+    "comparisons": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fine_tune_vs_base",
+        "fine_tune_vs_rule_baseline"
+      ],
+      "properties": {
+        "fine_tune_vs_base": {
+          "$ref": "#/$defs/comparison"
+        },
+        "fine_tune_vs_rule_baseline": {
+          "$ref": "#/$defs/comparison"
+        }
+      }
+    },
+    "independent_sessions": {
+      "type": "boolean"
+    },
+    "zero_critical_requirements_passed": {
+      "type": "boolean"
+    },
+    "release_gate_passed": {
+      "type": "boolean"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "missing_comparison_kinds": {
+            "maxItems": 0
+          },
+          "independent_sessions": {
+            "const": true
+          },
+          "zero_critical_requirements_passed": {
+            "const": true
+          },
+          "release_gate_passed": {
+            "const": true
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "comparison_kind": {
+      "enum": [
+        "fine_tune_vs_base",
+        "fine_tune_vs_rule_baseline"
+      ]
+    },
+    "comparison_set": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/comparison_kind"
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "aggregation_sha256",
+        "bundle_sha256",
+        "materialization_plan_sha256",
+        "status",
+        "exact_required_stage_coverage",
+        "comparison_gate_passed",
+        "release_gate_passed",
+        "deterministic_critical_case_count",
+        "judge_critical_case_count",
+        "opponent_role",
+        "opponent_prediction_sha256",
+        "judge_session_ids"
+      ],
+      "properties": {
+        "aggregation_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "bundle_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "materialization_plan_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "status": {
+          "const": "complete"
+        },
+        "exact_required_stage_coverage": {
+          "type": "boolean"
+        },
+        "comparison_gate_passed": {
+          "type": "boolean"
+        },
+        "release_gate_passed": {
+          "const": false
+        },
+        "deterministic_critical_case_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "judge_critical_case_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "opponent_role": {
+          "enum": [
+            "base_model",
+            "rule_baseline"
+          ]
+        },
+        "opponent_prediction_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "judge_session_ids": {
+          "type": "object",
+          "minProperties": 2,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+          }
+        }
+      }
+    }
+  }
+}

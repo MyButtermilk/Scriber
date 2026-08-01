@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-training-packet-manifest-v1.schema.json",
+  "title": "Scriber HF V2 hard-case replay training packet manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "attempt", "source", "dataset", "policy", "parent", "training", "runtime", "output", "inventory", "side_effects"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_training_job_packet"},
+    "attempt": {"const": "attempt13"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["git_head", "git_tree", "scope", "dirty_worktree_included"],
+      "properties": {
+        "git_head": {"$ref": "#/$defs/git"},
+        "git_tree": {"$ref": "#/$defs/git"},
+        "scope": {"const": "complete_tracked_HEAD_tree"},
+        "dirty_worktree_included": {"const": false}
+      }
+    },
+    "dataset": {
+      "type": "object",
+      "required": ["kind", "training_ready", "manifest_sha256", "split_counts", "critic_evidence", "test_or_challenge_artifacts"],
+      "properties": {
+        "kind": {"const": "scriber_v2_training_mix"},
+        "training_ready": {"const": true},
+        "manifest_sha256": {"$ref": "#/$defs/hash"},
+        "split_counts": {"const": {"train": 20480, "validation": 1280}},
+        "test_or_challenge_artifacts": {"const": false}
+      }
+    },
+    "policy": {"const": {"path": "inputs/training-policy.json", "sha256": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"}},
+    "parent": {
+      "type": "object",
+      "required": ["remote_uri", "variant_tree_sha256", "checkpoint_tree_sha256", "copy_mode", "files", "ignored_remote_metadata"],
+      "properties": {
+        "remote_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt11/scriber-full-120k-v2/training/final-84458762af7b00ac"},
+        "variant_tree_sha256": {"const": "sha256:5f6caf237fc3e1c3092363d6c17d405463f1cf99a84b0bbbec1720cf125fe3e2"},
+        "checkpoint_tree_sha256": {"const": "sha256:4cf99b2768c5af9c992ee8f6390822a548d6b546ad354368a8d6cfb8ae288ca4"},
+        "copy_mode": {"const": "exact_12_file_allowlist"},
+        "files": {"type": "array", "minItems": 12, "maxItems": 12},
+        "ignored_remote_metadata": {"const": ["checkpoint-inventory.json", "variant-artifact-manifest.json"]}
+      }
+    },
+    "training": {"const": {"epochs": 1, "learning_rate": 0.000005, "bf16": true, "save_final": true}},
+    "runtime": {"const": {"image": "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be", "flavor": "l4x1", "timeout_minutes": 240}},
+    "output": {
+      "const": {
+        "remote_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1",
+        "container_path": "/outputs/scriber-v2-hardcase-replay-v1",
+        "unique": true,
+        "overwrite_allowed": false,
+        "resume_policy": "same_launch_owner_output_only"
+      }
+    },
+    "inventory": {"type": "object"},
+    "side_effects": {"const": {"publication_allowed": false, "auto_retry_allowed": false, "secrets_required": []}}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+  }
+}

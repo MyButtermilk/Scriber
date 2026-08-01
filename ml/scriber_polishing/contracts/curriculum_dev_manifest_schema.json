@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/curriculum-dev-manifest-v1.schema.json",
+  "title": "Scriber curriculum development reference manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "purpose",
+    "algorithm",
+    "phase_rules_version",
+    "seed",
+    "per_phase",
+    "source",
+    "ai_gold_train",
+    "exclusions",
+    "phase_counts",
+    "selected_example_ids",
+    "selected_example_ids_sha256",
+    "references",
+    "parent_split_leakage",
+    "synthetic_only",
+    "human_curation",
+    "generative_api",
+    "holdout_inputs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_curriculum_development_references"
+    },
+    "purpose": {
+      "enum": [
+        "curriculum",
+        "checkpoint_selection"
+      ]
+    },
+    "algorithm": {
+      "const": "phase_stratified_seeded_sha256_bottom_k_v1"
+    },
+    "phase_rules_version": {
+      "const": "scriber_curriculum_phase_v1"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "per_phase": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "split": {
+          "const": "validation"
+        }
+      }
+    },
+    "ai_gold_train": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "matched_source_records"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "matched_source_records": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "exclusions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "example_ids_sha256"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "example_ids_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "phase_counts": {
+      "$ref": "#/$defs/phase_counts"
+    },
+    "selected_example_ids": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/example_id"
+      }
+    },
+    "selected_example_ids_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "split": {
+          "const": "regression"
+        }
+      }
+    },
+    "parent_split_leakage": {
+      "const": false
+    },
+    "synthetic_only": {
+      "const": true
+    },
+    "human_curation": {
+      "const": false
+    },
+    "generative_api": {
+      "const": false
+    },
+    "holdout_inputs": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "example_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 300,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]+$"
+    },
+    "phase_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "properties": {
+        "1": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "2": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "3": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "4": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "5": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

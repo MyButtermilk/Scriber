@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-compact-terra-source-case-v1.schema.json",
+  "title": "Scriber V2 compact Terra source case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "suite",
+    "source_text",
+    "reference_text",
+    "v1_output",
+    "v2_output"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "case_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,199}$" },
+    "suite": { "enum": ["ai_gold", "critical_regression", "regular_test"] },
+    "source_text": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "reference_text": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "v1_output": { "type": "string", "minLength": 1, "maxLength": 30000 },
+    "v2_output": { "type": "string", "minLength": 1, "maxLength": 30000 }
+  }
+}

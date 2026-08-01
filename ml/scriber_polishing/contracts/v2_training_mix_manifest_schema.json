@@ -1,0 +1,256 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-training-mix-manifest-v1.schema.json",
+  "title": "Scriber V2 reviewed hard-case plus V1 replay training mix manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "training_ready",
+    "seed",
+    "selection_algorithm",
+    "manifest_schema_sha256",
+    "sources",
+    "split_files",
+    "split_sha256",
+    "split_counts",
+    "source_counts",
+    "mixed_order",
+    "quality_gates",
+    "provenance_policy",
+    "synthetic_only",
+    "human_curation",
+    "generative_api",
+    "split_leakage",
+    "contains_test_or_challenge_split",
+    "direct_test_or_challenge_reuse",
+    "artifact_tree_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_training_mix"},
+    "training_ready": {"const": true},
+    "seed": {"type": "integer", "minimum": 0},
+    "selection_algorithm": {
+      "const": "v1_split_unique_pair_sha256_bottom_k_then_source_sha256_interleave_v2"
+    },
+    "manifest_schema_sha256": {"$ref": "#/$defs/sha256"},
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v1_replay", "v2_hardcase"],
+      "properties": {
+        "v1_replay": {"$ref": "#/$defs/v1Source"},
+        "v2_hardcase": {"$ref": "#/$defs/v2Source"}
+      }
+    },
+    "split_files": {"$ref": "#/$defs/outputSplitFiles"},
+    "split_sha256": {"$ref": "#/$defs/splitHashes"},
+    "split_counts": {"$ref": "#/$defs/splitCounts"},
+    "source_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"$ref": "#/$defs/sourceCount"},
+        "validation": {"$ref": "#/$defs/sourceCount"}
+      }
+    },
+    "mixed_order": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["example_ids_sha256", "source_assignment_sha256"],
+      "properties": {
+        "example_ids_sha256": {"$ref": "#/$defs/splitHashes"},
+        "source_assignment_sha256": {"$ref": "#/$defs/splitHashes"}
+      }
+    },
+    "quality_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_splits_only",
+        "duplicate_example_id_count",
+        "duplicate_pair_count",
+        "normalized_nfc",
+        "parent_split_leakage_count",
+        "schema_validated_pair_count",
+        "source_provenance_binding"
+      ],
+      "properties": {
+        "allowed_splits_only": {"const": true},
+        "duplicate_example_id_count": {"const": 0},
+        "duplicate_pair_count": {"const": 0},
+        "normalized_nfc": {"const": true},
+        "parent_split_leakage_count": {"const": 0},
+        "schema_validated_pair_count": {"type": "integer", "minimum": 1},
+        "source_provenance_binding": {"const": true}
+      }
+    },
+    "provenance_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_source_splits",
+        "test_or_challenge_opened",
+        "row_provenance_preserved",
+        "v1_rows_modified",
+        "v2_rows_modified",
+        "v2_critic_evidence_required"
+      ],
+      "properties": {
+        "allowed_source_splits": {
+          "const": ["train", "validation"]
+        },
+        "test_or_challenge_opened": {"const": false},
+        "row_provenance_preserved": {"const": true},
+        "v1_rows_modified": {"const": false},
+        "v2_rows_modified": {"const": false},
+        "v2_critic_evidence_required": {"const": true}
+      }
+    },
+    "synthetic_only": {"const": true},
+    "human_curation": {"const": false},
+    "generative_api": {"const": false},
+    "split_leakage": {"const": false},
+    "contains_test_or_challenge_split": {"const": false},
+    "direct_test_or_challenge_reuse": {"const": false},
+    "artifact_tree_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "splitHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"$ref": "#/$defs/sha256"},
+        "validation": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "splitCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"type": "integer", "minimum": 1},
+        "validation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "sourceCount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v1_replay", "v2_hardcase"],
+      "properties": {
+        "v1_replay": {"type": "integer", "minimum": 1},
+        "v2_hardcase": {"type": "integer", "minimum": 1}
+      }
+    },
+    "outputSplitFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"const": "train.jsonl"},
+        "validation": {"const": "validation.jsonl"}
+      }
+    },
+    "sourceSplitFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"type": "string", "minLength": 5, "maxLength": 80},
+        "validation": {"type": "string", "minLength": 5, "maxLength": 80}
+      }
+    },
+    "v1Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "manifest_file",
+        "manifest_sha256",
+        "source_split_files",
+        "source_split_sha256",
+        "source_split_counts",
+        "selected_counts",
+        "selected_example_ids_sha256",
+        "parent_split_group",
+        "sealed_splits"
+      ],
+      "properties": {
+        "kind": {"const": "scriber_v1_frozen_replay"},
+        "manifest_file": {"const": "dataset_manifest.json"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "source_split_files": {
+          "const": {"train": "splits/train.jsonl", "validation": "splits/validation.jsonl"}
+        },
+        "source_split_sha256": {"$ref": "#/$defs/splitHashes"},
+        "source_split_counts": {"$ref": "#/$defs/splitCounts"},
+        "selected_counts": {"$ref": "#/$defs/splitCounts"},
+        "selected_example_ids_sha256": {"$ref": "#/$defs/splitHashes"},
+        "parent_split_group": {"const": "parent_canonical_document_id"},
+        "sealed_splits": {"const": ["test", "challenge"]}
+      }
+    },
+    "v2Source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "training_ready",
+        "manifest_file",
+        "manifest_sha256",
+        "artifact_tree_sha256",
+        "source_split_files",
+        "source_split_sha256",
+        "source_split_counts",
+        "selected_counts",
+        "selected_example_ids_sha256",
+        "review_package_sha256",
+        "review_candidate_sha256",
+        "review_contract_sha256",
+        "review_evidence_sha256",
+        "review_evidence_tree_sha256",
+        "role_counts",
+        "reviewer_ids"
+      ],
+      "properties": {
+        "kind": {"const": "scriber_v2_reviewed_hardcase_dataset"},
+        "training_ready": {"const": true},
+        "manifest_file": {"const": "manifest.json"},
+        "manifest_sha256": {"$ref": "#/$defs/sha256"},
+        "artifact_tree_sha256": {"$ref": "#/$defs/sha256"},
+        "source_split_files": {"const": {"train": "train.jsonl", "validation": "validation.jsonl"}},
+        "source_split_sha256": {"$ref": "#/$defs/splitHashes"},
+        "source_split_counts": {"$ref": "#/$defs/splitCounts"},
+        "selected_counts": {"$ref": "#/$defs/splitCounts"},
+        "selected_example_ids_sha256": {"$ref": "#/$defs/splitHashes"},
+        "review_package_sha256": {"$ref": "#/$defs/sha256"},
+        "review_candidate_sha256": {"$ref": "#/$defs/sha256"},
+        "review_contract_sha256": {"$ref": "#/$defs/sha256"},
+        "review_evidence_sha256": {"$ref": "#/$defs/sha256"},
+        "review_evidence_tree_sha256": {"$ref": "#/$defs/sha256"},
+        "role_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fact", "style", "adversarial"],
+          "properties": {
+            "fact": {"const": 1},
+            "style": {"const": 1},
+            "adversarial": {"const": 2}
+          }
+        },
+        "reviewer_ids": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 8, "maxLength": 80}
+        }
+      }
+    }
+  }
+}

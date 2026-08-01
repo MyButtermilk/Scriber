@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/full_model_final_evaluation_result_schema.json",
+  "title": "Scriber full-model final-evaluation result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "model_tree_sha256",
+    "training_steps_executed",
+    "reports"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_full_model_final_evaluation_result"
+    },
+    "model_tree_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "training_steps_executed": {
+      "const": 0
+    },
+    "reports": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "bytes",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "enum": [
+              "base_model/ai_gold/evaluation.json",
+              "base_model/critical_regression/evaluation.json",
+              "base_model/regular_test/evaluation.json",
+              "final/ai_gold/evaluation.json",
+              "final/critical_regression/evaluation.json",
+              "final/regular_test/evaluation.json"
+            ]
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    }
+  }
+}

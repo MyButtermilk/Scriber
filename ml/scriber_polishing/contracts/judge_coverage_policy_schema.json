@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-coverage-policy-v1.schema.json",
+  "title": "Scriber judge coverage policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "selection_seed",
+    "regular_test_minimum",
+    "ai_gold_test_expected_count",
+    "ai_gold_challenge_expected_count",
+    "critical_regression_expected_count",
+    "terra_accepted_sample_fraction",
+    "generator_family_tag_prefix",
+    "required_generator_families",
+    "required_comparison_kinds",
+    "category_quotas"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "selection_seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "regular_test_minimum": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ai_gold_test_expected_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "ai_gold_challenge_expected_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "critical_regression_expected_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "terra_accepted_sample_fraction": {
+      "const": 0.25
+    },
+    "generator_family_tag_prefix": {
+      "type": "string",
+      "pattern": "^generator_family:$"
+    },
+    "required_generator_families": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^generator_family:[a-z0-9][a-z0-9_-]{1,63}$"
+      }
+    },
+    "required_comparison_kinds": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "fine_tune_vs_base",
+          "fine_tune_vs_rule_baseline"
+        ]
+      }
+    },
+    "category_quotas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "minimum",
+          "any_slice_tags"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          },
+          "minimum": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "any_slice_tags": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_:-]{1,79}$"
+            }
+          },
+          "is_identity": {
+            "type": "boolean"
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "any_slice_tags": {
+                "minItems": 1
+              }
+            }
+          },
+          {
+            "required": [
+              "is_identity"
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

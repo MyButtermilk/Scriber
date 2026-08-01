@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/sol-followup-artifact-manifest-v1.schema.json",
+  "title": "Scriber diagnostic Sol follow-up artifact manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "diagnostic_only",
+    "selection_namespace",
+    "selection_seed",
+    "diagnostic_report_sha256",
+    "packages",
+    "contains_verdicts"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_sol_followup_artifact_manifest" },
+    "diagnostic_only": { "const": true },
+    "selection_namespace": { "const": "sol_followup_v1" },
+    "selection_seed": { "const": 270036 },
+    "diagnostic_report_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/package" }
+    },
+    "contains_verdicts": { "const": false }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "comparison_kind": { "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"] },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparison_kind",
+        "selection_manifest_sha256",
+        "packet_sha256",
+        "packet_manifest_sha256"
+      ],
+      "properties": {
+        "comparison_kind": { "$ref": "#/$defs/comparison_kind" },
+        "selection_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "packet_sha256": { "$ref": "#/$defs/hash" },
+        "packet_manifest_sha256": { "$ref": "#/$defs/hash" }
+      }
+    }
+  }
+}

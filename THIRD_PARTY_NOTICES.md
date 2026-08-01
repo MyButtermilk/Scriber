@@ -20,6 +20,36 @@ Copyright (c) 2023-2026 Saúl Ibarra Corretgé
 The complete byte-locked MIT text is bundled beside the QuickJS engine in
 every installer and updater payload.
 
+## llama.cpp b10158
+
+- Project: `ggml-org/llama.cpp`
+- Source: https://github.com/ggml-org/llama.cpp/tree/f87067841bac583bc089a225382248d857791ca8
+- Use in Scriber: local GGUF transcript polishing through a loopback-only
+  `llama-server`; Vulkan is preferred and the same package provides CPU fallback
+- License: MIT
+- Installed license: `backend/tools/local-polishing/LICENSE.llama.cpp.txt`
+
+The complete byte-locked MIT text is bundled beside the locked llama.cpp
+runtime in every installer and updater payload. Polishing model repositories
+are data-only download channels and never provide this executable runtime.
+
+## Optional Scriber Gemma 3 270M transcript-polishing model
+
+- Model: `Buttermilk03/scriber-gemma3-270m-polishing-de-v1`
+- Source: https://huggingface.co/Buttermilk03/scriber-gemma3-270m-polishing-de-v1
+- Base model: `google/gemma-3-270m-it`
+- Base revision: `ac82b4e820549b854eebf28ce6dedaf9fdfa17b3`
+- Terms: Gemma Terms of Use and Gemma Prohibited Use Policy
+- Use in Scriber: optional public Q8_0 or BF16 GGUF download for local
+  live-microphone transcript polishing
+
+The model is not embedded in the standard installer. Scriber downloads a
+commit-pinned, checksum-verified variant anonymously after explicit user action;
+no Hugging Face account is required. The model repository must publish the
+applicable Gemma terms, prohibited-use policy, model notice, and modification
+notice beside the model artifacts. Use and redistribution remain subject to
+those terms.
+
 ## aec3 0.2.0
 
 - Project: `aec3-rs`

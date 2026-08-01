@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/terra-interim-artifact-manifest-v1.schema.json",
+  "title": "Scriber Terra interim audit artifact manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "input_provenance_sha256",
+    "audit_report_sha256",
+    "remediation_backlog_sha256",
+    "markdown_report_sha256"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_terra_interim_artifact_manifest" },
+    "input_provenance_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "audit_report_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "remediation_backlog_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "markdown_report_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

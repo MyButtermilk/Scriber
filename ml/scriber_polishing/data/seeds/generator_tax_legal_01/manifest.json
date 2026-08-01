@@ -1,0 +1,65 @@
+{
+  "batch_id": "tax_legal_batch_01",
+  "diversity": {
+    "address_mode_counts": {
+      "formal_sie": 240,
+      "neutral_third_person": 60
+    },
+    "document_type_counts": {
+      "assessment_note": 30,
+      "audit_response": 30,
+      "corporate_tax_note": 30,
+      "deadline_notice": 30,
+      "objection_letter": 30,
+      "payment_query": 30,
+      "record_request": 30,
+      "tax_office_request": 30,
+      "trade_tax_memo": 30,
+      "vat_correspondence": 30
+    },
+    "legal_or_hard_negative_count": 300,
+    "legal_or_hard_negative_ratio": 1.0,
+    "list_kind_counts": {
+      "nested": 75,
+      "none": 75,
+      "ordered": 75,
+      "unordered": 75
+    },
+    "unique_fact_texts": 208
+  },
+  "generator_agent": "generator_tax_legal_01",
+  "generator_sha256": "2836534d5a59f23808a34bd885d431dc2738e4daabc1b6a3923c0e4fe99bcca1",
+  "generator_version": "1.0.1",
+  "manifest_version": 1,
+  "norm_distribution": {
+    "Artikel 3 Absatz 1 GG": 8,
+    "§ 7 Absatz 4 EStG": 38,
+    "§ 7 Absatz 4 Satz 2 EStG": 38,
+    "§ 8 Nummer 1 Buchstabe a GewStG": 37,
+    "§ 8 Nummer 1 GewStG": 7,
+    "§ 8c Absatz 1 Satz 1 KStG": 8,
+    "§ 8d Absatz 1 KStG": 7,
+    "§§ 8c und 8d KStG": 37
+  },
+  "official_law_abbreviations": [
+    "EStG",
+    "KStG",
+    "GewStG",
+    "GG"
+  ],
+  "plan_count": 300,
+  "plans_sha256": "0cda54733a9bd6251bb33a3bd014e8a0d58b2c6d27793cc87a052bb2106827b7",
+  "private_data": false,
+  "prompt_hash": "sha256:f53aa099b5c5112446d9dd6a2220215f5d551c307446319047f96daf3b08cb98",
+  "record_count": 300,
+  "schema_validation": {
+    "status": "passed",
+    "validated_count": 300,
+    "validator": "scriber_polishing.schemas.validate_seed_plan"
+  },
+  "seed_range": [
+    200000,
+    200299
+  ],
+  "source_class": "ai_generated"
+}

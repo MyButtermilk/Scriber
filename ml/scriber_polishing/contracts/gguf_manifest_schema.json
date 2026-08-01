@@ -1,0 +1,354 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/gguf-bundle-manifest-v4.schema.json",
+  "title": "Scriber commit-bound llama.cpp GGUF bundle manifest v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "backend",
+    "source_id",
+    "source_tree_sha256",
+    "training_fingerprint",
+    "protection_policy",
+    "variants",
+    "artifact_tree_sha256",
+    "file_count",
+    "total_bytes",
+    "files",
+    "tools",
+    "toolchain",
+    "gemma3_text_support",
+    "bf16_reload_self_test",
+    "variant_manifests",
+    "network_access"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4
+    },
+    "backend": {
+      "const": "llama_cpp"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "training_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "protection_policy": {
+      "$ref": "#/$defs/protection_policy"
+    },
+    "variants": {
+      "oneOf": [
+        {"const": ["bf16", "Q8_0"]},
+        {"const": ["bf16", "Q8_0", "Q4_K_M"]}
+      ]
+    },
+    "artifact_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 8
+    },
+    "total_bytes": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "files": {
+      "type": "array",
+      "minItems": 8,
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    },
+    "tools": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "convert_hf_to_gguf",
+        "llama_quantize",
+        "llama_cli",
+        "llama_server"
+      ],
+      "properties": {
+        "convert_hf_to_gguf": {
+          "$ref": "#/$defs/tool"
+        },
+        "llama_quantize": {
+          "$ref": "#/$defs/tool"
+        },
+        "llama_cli": {
+          "$ref": "#/$defs/versioned_tool"
+        },
+        "llama_server": {
+          "$ref": "#/$defs/versioned_tool"
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bundle_lock_sha256",
+        "llama_cpp_commit",
+        "source_tree_sha256",
+        "build_identity_sha256"
+      ],
+      "properties": {
+        "bundle_lock_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "llama_cpp_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "source_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "build_identity_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "gemma3_text_support": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported_models_probe",
+        "supported_model",
+        "supported_models_output_sha256",
+        "actual_bf16_conversion",
+        "bf16_runtime_self_test"
+      ],
+      "properties": {
+        "supported_models_probe": {
+          "const": true
+        },
+        "supported_model": {
+          "const": "Gemma3ForCausalLM"
+        },
+        "supported_models_output_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "actual_bf16_conversion": {
+          "const": true
+        },
+        "bf16_runtime_self_test": {
+          "const": true
+        }
+      }
+    },
+    "bf16_reload_self_test": {
+      "$ref": "#/$defs/reload"
+    },
+    "variant_manifests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bf16", "Q8_0"],
+      "minProperties": 2,
+      "maxProperties": 3,
+      "properties": {
+        "bf16": {
+          "$ref": "#/$defs/variant_manifest"
+        },
+        "Q8_0": {
+          "$ref": "#/$defs/variant_manifest"
+        },
+        "Q4_K_M": {
+          "$ref": "#/$defs/variant_manifest"
+        }
+      }
+    },
+    "network_access": {
+      "const": "disabled_offline"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "versioned_tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "version",
+        "version_output_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "version_output_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "reload": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "process_boundary",
+        "configuration_source",
+        "deterministic",
+        "valid_sst",
+        "generated_tokens",
+        "invocations",
+        "no_conversation",
+        "prompt_sha256",
+        "chat_template_sha256",
+        "output_sha256"
+        ,"protection_policy"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "process_boundary": {
+          "const": "fresh_subprocess"
+        },
+        "configuration_source": {
+          "const": "saved_artifact"
+        },
+        "deterministic": {
+          "const": true
+        },
+        "valid_sst": {
+          "const": true
+        },
+        "generated_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "invocations": {
+          "const": 2
+        },
+        "no_conversation": {
+          "const": true
+        },
+        "prompt_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "chat_template_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "output_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "protection_policy": {
+          "$ref": "#/$defs/protection_policy"
+        }
+      }
+    },
+    "protection_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "artifact_sha256",
+        "policy_id",
+        "policy_sha256",
+        "tokenizer_identity_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "const": "scriber-protection-policy.json"
+        },
+        "artifact_sha256": {
+          "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+        },
+        "policy_id": {
+          "const": "gemma_lexical_v1"
+        },
+        "policy_sha256": {
+          "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+        },
+        "tokenizer_identity_sha256": {
+          "const": "sha256:f2fd01c3ec43ff4adb6f920a5466cbdba96801901b4fa778a029af561f499f20"
+        }
+      }
+    },
+    "variant_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "artifact_tree_sha256",
+        "reload_self_test"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(bf16|Q8_0|Q4_K_M)/variant-artifact-manifest\\.json$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "artifact_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "reload_self_test": {
+          "$ref": "#/$defs/reload"
+        }
+      }
+    }
+  }
+}

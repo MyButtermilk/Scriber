@@ -1,0 +1,59 @@
+# Intentionally non-executable. Replace every REPLACE_* value only after the
+# pilot-selection report, gemma_unused_v1 policy, and exact Pilot train/validation
+# artifacts are frozen. The builder rejects placeholders and never opens test,
+# challenge, or AI-Gold holdouts.
+schema_version: 1
+experiment_id: REPLACE_WITH_STABLE_EXPERIMENT_ID
+inputs:
+  pilot_manifest_path: REPLACE_WITH_PILOT_MANIFEST
+  pilot_manifest_sha256: REPLACE_WITH_RAW_FILE_SHA256
+  train_path: REPLACE_WITH_PILOT_TRAIN_JSONL
+  train_sha256: REPLACE_WITH_PILOT_TRAIN_SHA256
+  validation_path: REPLACE_WITH_PILOT_VALIDATION_JSONL
+  validation_sha256: REPLACE_WITH_PILOT_VALIDATION_SHA256
+  protection_policy_path: REPLACE_WITH_GEMMA_UNUSED_POLICY
+  protection_policy_artifact_sha256: REPLACE_WITH_RAW_POLICY_FILE_SHA256
+  parent:
+    mode: pilot_selection_report
+    report_path: REPLACE_WITH_PILOT_SELECTION_REPORT
+    report_sha256: REPLACE_WITH_RAW_REPORT_FILE_SHA256
+  # Explicit fallback (replace the parent block above, never combine modes):
+  # parent:
+  #   mode: explicit_remediation_parent
+  #   candidate_id: REPLACE_WITH_PARENT_CANDIDATE_ID
+  #   learning_rate: REPLACE_WITH_PARENT_LEARNING_RATE
+  #   checkpoint_path: REPLACE_WITH_PILOT_FINAL_MODEL
+  #   checkpoint_tree_sha256: REPLACE_WITH_PREFIXED_RUNTIME_TREE_SHA256
+  #   training_report_sha256: REPLACE_WITH_PREFIXED_REPORT_SHA256
+  #   external_failure_signature_sha256: REPLACE_WITH_PREFIXED_FAILURE_SHA256
+  #   scope: remediation_only_not_release
+  #   selection_basis: composite_then_loss_tie_breaks
+  #   release_eligible: false
+training:
+  seed: REPLACE_WITH_RECORDED_SEED
+  epochs: 1
+  max_updates: 300
+  max_train_examples: 4800
+  max_sequence_length: REPLACE_WITH_REVIEWED_LENGTH
+  micro_batch_size: REPLACE_WITH_MEASURED_BATCH
+  gradient_accumulation_steps: REPLACE_WITH_MATCHED_ACCUMULATION
+  effective_batch_size: 16
+  learning_rate: REPLACE_WITH_REMEDIATION_RATE
+  optimizer: adamw_torch_fused
+  scheduler: linear
+  eval_steps: REPLACE_WITH_SELECTED_INTERVAL
+  save_steps: REPLACE_WITH_SELECTED_INTERVAL
+  save_total_limit: REPLACE_WITH_SELECTED_LIMIT
+  warmup_ratio: REPLACE_WITH_SELECTED_RATIO
+  weight_decay: REPLACE_WITH_SELECTED_DECAY
+  max_grad_norm: REPLACE_WITH_SELECTED_NORM
+  bf16: true
+  gradient_checkpointing: true
+  assistant_output_loss_only: true
+  early_stopping: false
+parity_dev:
+  seed: REPLACE_WITH_RECORDED_DEV_SEED
+  per_phase: REPLACE_WITH_REVIEWED_VALIDATION_QUOTA
+adoption_policy:
+  comparison_config_path: configs/curriculum_experiment.yaml
+  comparison_config_sha256: REPLACE_WITH_RAW_COMPARISON_CONFIG_SHA256

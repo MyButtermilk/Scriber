@@ -1,0 +1,11 @@
+version: "1"
+language: de-DE
+orthography_profile: duden_preferred_business
+normalize_valid_variants: true
+formal_address_style: sie_capitalized
+informal_address_style: du_capitalized_in_correspondence
+legal_citation_style: long
+unit_style: professional_symbols
+currency_style: german_euro
+plain_text_space_style: ordinary_space
+rich_text_space_style: nonbreaking_where_required

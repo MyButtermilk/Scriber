@@ -1,0 +1,295 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-q8-bf16-release-plan-v1.schema.json",
+  "title": "Scriber V2 Q8_0 and BF16 release plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "source_git_head",
+    "variants",
+    "source_model",
+    "evaluation_gate",
+    "launch",
+    "conversion",
+    "publication",
+    "fallback"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_q8_bf16_release_plan"},
+    "status": {"const": "ready_after_accepted_evaluation"},
+    "source_git_head": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "variants": {"const": ["Q8_0", "BF16"]},
+    "source_model": {"$ref": "#/$defs/source_model"},
+    "evaluation_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "binding_sha256",
+        "result_uri",
+        "result_sha256",
+        "inventory_sha256",
+        "reports",
+        "compact_comparison_gate",
+        "terra_judge",
+        "evidence_scope",
+        "training_steps_executed"
+      ],
+      "properties": {
+        "binding_sha256": {"$ref": "#/$defs/hash"},
+        "result_uri": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/scriber-v2-hardcase-replay-final-evaluation-v1/final"
+        },
+        "result_sha256": {"$ref": "#/$defs/hash"},
+        "inventory_sha256": {"$ref": "#/$defs/hash"},
+        "reports": {"$ref": "#/$defs/reports"},
+        "compact_comparison_gate": {"$ref": "#/$defs/compact_comparison_gate"},
+        "terra_judge": {"$ref": "#/$defs/terra_judge"},
+        "evidence_scope": {"$ref": "#/$defs/evidence_scope"},
+        "training_steps_executed": {"const": 0}
+      }
+    },
+    "launch": {
+      "const": {
+        "attempt": "attempt15",
+        "job_name": "scriber-v2-q8-bf16-release-v1",
+        "claim_repository": "Buttermilk03/scriber-polishing-launch-claims",
+        "claim_path": "claims/v2-q8-bf16-release/attempt15-scriber-v2-q8-bf16-release-v1.json",
+        "output_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt15/scriber-v2-q8-bf16-release-v1",
+        "external_job_started": false,
+        "auto_retry_allowed": false
+      }
+    },
+    "conversion": {
+      "const": {
+        "execution_order": ["BF16", "Q8_0"],
+        "gguf_quantizations": ["Q8_0"],
+        "toolchain_remote_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/toolchains/llama-cpp-b10156-linux-cuda-v1/v19/final",
+        "toolchain_attempt": "v19",
+        "toolchain_result_verifier": "scriber_polishing.hf_llama_cpp_toolchain.verify_hf_llama_cpp_toolchain_result",
+        "bundle_verifier": "scriber_polishing.llama_cpp_bundle.load_verified_llama_cpp_bundle",
+        "requires_gemma3_text_capability_probe": true,
+        "network_access": "disabled_offline"
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository_id",
+        "visibility",
+        "requires_token",
+        "evidence_label",
+        "full_release_study_claim_allowed",
+        "allowlisted_paths",
+        "exact_inventory_required",
+        "immutable_commit_required",
+        "anonymous_verification"
+      ],
+      "properties": {
+        "repository_id": {"const": "Buttermilk03/scriber-gemma3-270m-polishing-de-v2"},
+        "visibility": {"const": "public"},
+        "requires_token": {"const": false},
+        "evidence_label": {"const": "user_authorized_compact_smoke_test"},
+        "full_release_study_claim_allowed": {"const": false},
+        "allowlisted_paths": {
+          "const": [
+            "GEMMA_LICENSE.md",
+            "MODIFICATIONS.md",
+            "NOTICE",
+            "README.md",
+            "gguf/bf16/model-BF16.gguf",
+            "gguf/bf16/scriber-protection-policy.json",
+            "gguf/bf16/variant-artifact-manifest.json",
+            "gguf/q8_0/model-Q8_0.gguf",
+            "gguf/q8_0/scriber-protection-policy.json",
+            "gguf/q8_0/variant-artifact-manifest.json",
+            "v2-public-release-inventory.json"
+          ]
+        },
+        "exact_inventory_required": {"const": true},
+        "immutable_commit_required": {"const": true},
+        "anonymous_verification": {
+          "const": {
+            "authorization_header_allowed": false,
+            "head_required": true,
+            "range_get_required": true,
+            "range": "bytes=0-0",
+            "full_model_redownload_allowed": false
+          }
+        }
+      }
+    },
+    "fallback": {
+      "const": {
+        "repository_id": "Buttermilk03/scriber-gemma3-270m-polishing-de-v1",
+        "revision": "65bae06a655fc209058d60064c65fe3e891e4a43",
+        "remains_active_until": "v2_public_release_verified",
+        "automatic_switch_allowed": false
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "source_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remote_uri",
+        "tree_sha256",
+        "run_fingerprint",
+        "weight",
+        "protection_policy_sha256",
+        "postflight_binding_sha256"
+      ],
+      "properties": {
+        "remote_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9"},
+        "tree_sha256": {"const": "sha256:4233c0084cacdd3ba88207cece0ce20d1e1f56cfbfa64e71182a2deb2934c743"},
+        "run_fingerprint": {"const": "sha256:7b23f23e70f60df9d58961808e529ff7738032de75a7a4a62c12529bc734a45c"},
+        "weight": {
+          "const": {
+            "path": "model.safetensors",
+            "bytes": 536223056,
+            "sha256": "sha256:fd86d26f70e128fd1e8d4f11e69d4778ae930e628e374aa64595aca5bd0b9bb3"
+          }
+        },
+        "protection_policy_sha256": {"const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"},
+        "postflight_binding_sha256": {"const": "sha256:4e9379d8c26cb81d7261b57ab2e0bf5c8059850c07717debc47c0ce99072a8a5"}
+      }
+    },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluation_sha256", "evaluation_exit", "integrity_verified", "quality_gate_claimed"],
+      "properties": {
+        "evaluation_sha256": {"$ref": "#/$defs/hash"},
+        "evaluation_exit": {"enum": [0, 2]},
+        "integrity_verified": {"const": true},
+        "quality_gate_claimed": {"const": false}
+      }
+    },
+    "reports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ai_gold", "critical_regression", "regular_test"],
+      "properties": {
+        "ai_gold": {"$ref": "#/$defs/report"},
+        "critical_regression": {"$ref": "#/$defs/report"},
+        "regular_test": {"$ref": "#/$defs/report"}
+      }
+    },
+    "evidence_scope": {
+      "const": {
+        "kind": "compact_smoke_test",
+        "publication_grade": false,
+        "user_authorized_promotion": true,
+        "automatic_case_count": 300,
+        "automatic_cases_per_suite": {
+          "ai_gold": 100,
+          "critical_regression": 100,
+          "regular_test": 100
+        },
+        "blind_judges": {
+          "terra_pair_count": 100,
+          "sol_pair_count": 0
+        }
+      }
+    },
+    "compact_comparison_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "source_report_suite", "record_count", "coverage", "normalized_exact_match", "deterministic_critical_error_count", "decision", "publication_grade", "requires_terra"],
+      "properties": {
+        "kind": {"const": "scriber_v2_compact_comparison_gate"},
+        "source_report_suite": {"const": "combined"},
+        "record_count": {"const": 300},
+        "coverage": {"const": {"v1_reused": 300, "v2": 300, "exact": true}},
+        "normalized_exact_match": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["v1_reused", "v2", "v2_gte_v1"],
+          "properties": {
+            "v1_reused": {"type": "number", "minimum": 0, "maximum": 1},
+            "v2": {"type": "number", "minimum": 0, "maximum": 1},
+            "v2_gte_v1": {"const": true}
+          }
+        },
+        "deterministic_critical_error_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["v1_reused", "v2", "v2_lte_v1"],
+          "properties": {
+            "v1_reused": {"type": "integer", "minimum": 0},
+            "v2": {"type": "integer", "minimum": 0},
+            "v2_lte_v1": {"const": true}
+          }
+        },
+        "decision": {"const": "passed"},
+        "publication_grade": {"const": false},
+        "requires_terra": {"const": true}
+      }
+    },
+    "terra_judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_class", "publication_grade", "aggregate", "verdicts", "judge", "selection", "gate"],
+      "properties": {
+        "evidence_class": {"const": "compact_smoke_test"},
+        "publication_grade": {"const": false},
+        "aggregate": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["uri", "sha256"],
+          "properties": {
+            "uri": {"type": "string", "pattern": "^hf://buckets/Buttermilk03/.+"},
+            "sha256": {"$ref": "#/$defs/hash"}
+          }
+        },
+        "verdicts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["uri", "sha256", "count"],
+          "properties": {
+            "uri": {"type": "string", "pattern": "^hf://buckets/Buttermilk03/.+"},
+            "sha256": {"$ref": "#/$defs/hash"},
+            "count": {"const": 100}
+          }
+        },
+        "judge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["model_family", "session_id", "session_sha256", "prompt_version", "prompt_sha256"],
+          "properties": {
+            "model_family": {"const": "gpt-5.6-terra"},
+            "session_id": {"type": "string", "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"},
+            "session_sha256": {"$ref": "#/$defs/hash"},
+            "prompt_version": {"const": "v1"},
+            "prompt_sha256": {"$ref": "#/$defs/hash"}
+          }
+        },
+        "selection": {
+          "const": {
+            "source_count": 300,
+            "selected_count": 100,
+            "quotas": {
+              "ai_gold": 34,
+              "critical_regression": 33,
+              "regular_test": 33
+            }
+          }
+        },
+        "gate": {
+          "const": {
+            "kind": "compact_promotion",
+            "decision": "passed",
+            "v2_wins_gte_v1_wins": true,
+            "v2_critical_lte_v1_critical": true
+          }
+        }
+      }
+    }
+  }
+}

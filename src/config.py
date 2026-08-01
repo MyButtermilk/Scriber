@@ -430,6 +430,20 @@ ${output}"""
     POST_PROCESSING_ENABLED = str(
         _json_settings.get("postProcessingEnabled", os.getenv("SCRIBER_POST_PROCESSING_ENABLED", "1"))
     ).strip().lower() in {"1", "true", "yes", "on"}
+    POST_PROCESSING_ENGINE = (
+        str(_json_settings.get("postProcessingEngine") or os.getenv("SCRIBER_POST_PROCESSING_ENGINE") or "cloud")
+        .strip()
+        .lower()
+    )
+    if POST_PROCESSING_ENGINE not in {"cloud", "local"}:
+        POST_PROCESSING_ENGINE = "cloud"
+    LOCAL_POLISHING_VARIANT = (
+        str(_json_settings.get("localPolishingVariant") or os.getenv("SCRIBER_LOCAL_POLISHING_VARIANT") or "q8_0")
+        .strip()
+        .lower()
+    )
+    if LOCAL_POLISHING_VARIANT not in {"q8_0", "bf16"}:
+        LOCAL_POLISHING_VARIANT = "q8_0"
     POST_PROCESSING_HOTKEY = (
         os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
         or _json_settings.get("postProcessingHotkey")
@@ -794,6 +808,26 @@ ${output}"""
         _json_settings["postProcessingEnabled"] = cls.POST_PROCESSING_ENABLED
 
     @classmethod
+    def set_post_processing_engine(cls, engine: str) -> None:
+        normalized = str(engine or "").strip().lower()
+        if normalized not in {"cloud", "local"}:
+            raise ValueError("Unsupported post-processing engine.")
+        cls.POST_PROCESSING_ENGINE = normalized
+        os.environ["SCRIBER_POST_PROCESSING_ENGINE"] = normalized
+        global _json_settings
+        _json_settings["postProcessingEngine"] = normalized
+
+    @classmethod
+    def set_local_polishing_variant(cls, variant: str) -> None:
+        normalized = str(variant or "").strip().lower()
+        if normalized not in {"q8_0", "bf16"}:
+            raise ValueError("Unsupported local polishing variant.")
+        cls.LOCAL_POLISHING_VARIANT = normalized
+        os.environ["SCRIBER_LOCAL_POLISHING_VARIANT"] = normalized
+        global _json_settings
+        _json_settings["localPolishingVariant"] = normalized
+
+    @classmethod
     def set_post_processing_prompt(cls, prompt: str) -> None:
         cls.POST_PROCESSING_PROMPT = prompt.strip() if prompt else cls._DEFAULT_POST_PROCESSING_PROMPT
         global _json_settings
@@ -888,6 +922,8 @@ ${output}"""
         add("SCRIBER_YOUTUBE_PREFER_CAPTIONS", "1" if cls.YOUTUBE_PREFER_CAPTIONS else "0")
         add("SCRIBER_VOICEPRINT_LIBRARY_OPT_IN", "1" if cls.VOICEPRINT_LIBRARY_OPT_IN else "0")
         add("SCRIBER_POST_PROCESSING_ENABLED", "1" if cls.POST_PROCESSING_ENABLED else "0")
+        add("SCRIBER_POST_PROCESSING_ENGINE", cls.POST_PROCESSING_ENGINE)
+        add("SCRIBER_LOCAL_POLISHING_VARIANT", cls.LOCAL_POLISHING_VARIANT)
         add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.DEFAULT_POST_PROCESSING_MODEL)
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)

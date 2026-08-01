@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-07-27
+Last verified: 2026-08-01
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -60,9 +60,11 @@ Live mic:
 5. Pipecat/provider pipeline processes audio.
 6. Transcript text is injected into the active app and saved to SQLite. When a
    session was started through the post-processing hotkey, pipeline raw-text
-   injection is suppressed, the completed live transcript is sent through the
-   configured LLM prompt using `${output}`, and the processed result is pasted
-   after provider finalization. File and YouTube jobs do not use this path.
+   injection is suppressed and the completed live transcript follows the
+   selected polishing engine. Cloud keeps the configured `${output}` prompt;
+   local uses the verified Q8_0 or BF16 GGUF and the bundled llama.cpp runtime.
+   A local failure returns the original transcript and never falls through to
+   cloud. File and YouTube jobs do not use this path.
 7. Frontend receives versioned WebSocket state, audio, transcript, and history
    events.
 8. On stop, Always-on capture hands the endpoint back to a replacement idle
@@ -864,6 +866,9 @@ Key modules:
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
 - `src/runtime/provider_http.py`: app-owned, event-loop-bound aiohttp provider
   pool and privacy-safe connection/request timing.
+- `src/local_polishing/`: immutable public-artifact catalog, anonymous model
+  downloader, verified model lifecycle, conservative transcript-output safety
+  checks, and the loopback-only bundled llama.cpp adapter.
 - `src/core/`: REST/WebSocket contracts, state machine, circuit breaker, retry
   and provider support types, hot-path tracing, logging helpers.
 - `src/native_overlay.py`: backend facade for the Tauri-owned recording overlay
@@ -928,7 +933,8 @@ Settings model selectors are credential-gated in the UI: cloud STT,
 summarization, and live post-processing choices require the matching provider
 API key or credential path before selection. Missing-credential prompts open the
 matching API-key dialog directly instead of forcing users to scroll.
-Local transcription models remain selectable without credentials.
+Local transcription models and public local-polishing GGUF downloads remain
+selectable without credentials or a Hugging Face account.
 Desktop update checks are frontend/Tauri-owned rather than Python-backend
 work. Installed builds check the configured Tauri updater endpoint in the
 background after startup and then about once per week, cache the result in
@@ -1245,6 +1251,19 @@ Desktop runtime stores writable data under `SCRIBER_DATA_DIR`:
 - `support-bundles\`
 
 The installed app must not rely on writing to the install directory.
+
+Local transcript polishing has two intentionally separate artifact boundaries:
+
+- The installer contains one checksum-locked llama.cpp b10158 Windows runtime
+  under `backend\tools\local-polishing`. Its Vulkan backend is preferred and
+  the same distribution contains CPU fallback libraries. No inference
+  executable is accepted from Hugging Face.
+- Settings downloads only the public, commit-pinned Q8_0 or BF16 GGUF bundle
+  into `SCRIBER_DATA_DIR\models`. The download is anonymous, resumable, bounded,
+  and promoted only after exact size/SHA-256 plus policy/manifest validation.
+  Q8_0 is the normal desktop/laptop choice; BF16 is an optional larger
+  reference. The feature uses GGUF rather than ONNX, so there is no second
+  conversion/runtime path to maintain.
 
 Post-processing diagnostics are intentionally metadata-only. The backend records
 bounded recent attempts with status, configured model, prompt/output character

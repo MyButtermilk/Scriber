@@ -1,0 +1,831 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-retry-job-manifest-v3.schema.json",
+  "title": "Scriber Hugging Face final-evaluation retry job manifest v3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_git_head",
+    "image",
+    "flavor",
+    "timeout_minutes",
+    "batch_size",
+    "max_new_tokens",
+    "primary_packet",
+    "amendment_packet",
+    "terminal_primary",
+    "terminal_primary_sha256",
+    "failed_amendment",
+    "failed_amendment_sha256",
+    "no_active_jobs",
+    "no_active_jobs_sha256",
+    "stale_writer_lock",
+    "stale_writer_lock_sha256",
+    "authorization",
+    "authorization_sha256",
+    "output",
+    "budget",
+    "durability_patch",
+    "writer_recovery",
+    "training",
+    "publication",
+    "runner_sha256",
+    "packet_tree_sha256",
+    "file_count",
+    "byte_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 3
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation_retry"
+    },
+    "source_git_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "image": {
+      "const": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
+    },
+    "flavor": {
+      "const": "l4x1"
+    },
+    "timeout_minutes": {
+      "const": 180
+    },
+    "batch_size": {
+      "const": 8
+    },
+    "max_new_tokens": {
+      "const": 512
+    },
+    "primary_packet": {
+      "$ref": "#/$defs/primaryPacket"
+    },
+    "amendment_packet": {
+      "$ref": "#/$defs/amendmentPacket"
+    },
+    "terminal_primary": {
+      "$ref": "#/$defs/terminalPrimary"
+    },
+    "terminal_primary_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "failed_amendment": {
+      "$ref": "#/$defs/failedAmendment"
+    },
+    "failed_amendment_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "no_active_jobs": {
+      "$ref": "#/$defs/noActiveJobs"
+    },
+    "no_active_jobs_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stale_writer_lock": {
+      "$ref": "#/$defs/staleWriterLock"
+    },
+    "stale_writer_lock_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "authorization": {
+      "$ref": "#/$defs/authorization"
+    },
+    "authorization_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "output": {
+      "$ref": "#/$defs/output"
+    },
+    "budget": {
+      "$ref": "#/$defs/budget"
+    },
+    "durability_patch": {
+      "$ref": "#/$defs/durabilityPatch"
+    },
+    "writer_recovery": {
+      "$ref": "#/$defs/writerRecovery"
+    },
+    "training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "training_steps_executed",
+        "reference_usage",
+        "train_split_allowed"
+      ],
+      "properties": {
+        "training_steps_executed": {
+          "const": 0
+        },
+        "reference_usage": {
+          "const": "inference_and_evaluation_only"
+        },
+        "train_split_allowed": {
+          "const": false
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "destination_kind"
+      ],
+      "properties": {
+        "allowed": {
+          "const": false
+        },
+        "destination_kind": {
+          "const": "private_hf_bucket"
+        }
+      }
+    },
+    "runner_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "packet_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "jobId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{24}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3,6})?Z$"
+    },
+    "primaryPacket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "job_manifest_sha256",
+        "core_manifest_sha256",
+        "runner_sha256"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "job_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "core_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "amendmentPacket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "job_manifest_sha256",
+        "runner_sha256"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "job_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "terminalPrimary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "job_id",
+        "terminal_status",
+        "termination_reason",
+        "flavor",
+        "timeout_minutes",
+        "terminal_running_seconds",
+        "terminal_duration_available",
+        "last_running_observation",
+        "actual_cost_status",
+        "budget_accounting",
+        "packet_tree_sha256",
+        "remote_output_uri"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_terminal_predecessor"
+        },
+        "job_id": {
+          "const": "6a6baf33b36a6516e96a3210"
+        },
+        "terminal_status": {
+          "const": "CANCELED"
+        },
+        "termination_reason": {
+          "const": "operator_performance_recovery"
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_minutes": {
+          "const": 120
+        },
+        "terminal_running_seconds": {
+          "type": "null"
+        },
+        "terminal_duration_available": {
+          "const": false
+        },
+        "last_running_observation": {
+          "type": "object"
+        },
+        "actual_cost_status": {
+          "const": "unknown"
+        },
+        "budget_accounting": {
+          "const": "full_timeout_reservation"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "remote_output_uri": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt8/scriber-1100-final-evaluation-v1"
+        }
+      }
+    },
+    "failedAmendment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "source",
+        "endpoint_path",
+        "namespace",
+        "observed_at_utc",
+        "job_id",
+        "created_at_utc",
+        "started_at_utc",
+        "finished_at_utc",
+        "terminal_status",
+        "failure_stage",
+        "failure_reason",
+        "flavor",
+        "timeout_seconds",
+        "image",
+        "command_packet_tree_sha256",
+        "durations",
+        "billing",
+        "actual_cost_status",
+        "model_load_started",
+        "prediction_records_written",
+        "output_mutation_performed",
+        "training_steps_executed"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_failed_amendment_terminal_evidence"
+        },
+        "source": {
+          "const": "hugging_face_jobs_rest_api"
+        },
+        "endpoint_path": {
+          "const": "/api/jobs/{namespace}/{job_id}"
+        },
+        "namespace": {
+          "const": "Buttermilk03"
+        },
+        "observed_at_utc": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "job_id": {
+          "const": "6a6bc2edb36a6516e96a3347"
+        },
+        "created_at_utc": {
+          "const": "2026-07-30T21:32:29.296000Z"
+        },
+        "started_at_utc": {
+          "const": "2026-07-30T21:32:37.482Z"
+        },
+        "finished_at_utc": {
+          "const": "2026-07-30T21:33:55.695Z"
+        },
+        "terminal_status": {
+          "const": "ERROR"
+        },
+        "failure_stage": {
+          "const": "writer_claim"
+        },
+        "failure_reason": {
+          "const": "active_writer"
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_seconds": {
+          "const": 10800
+        },
+        "image": {
+          "const": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
+        },
+        "command_packet_tree_sha256": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "primary",
+            "amendment"
+          ],
+          "properties": {
+            "primary": {
+              "$ref": "#/$defs/hash"
+            },
+            "amendment": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        },
+        "durations": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheduling_seconds",
+            "running_seconds",
+            "total_seconds"
+          ],
+          "properties": {
+            "scheduling_seconds": {
+              "const": 8
+            },
+            "running_seconds": {
+              "const": 78
+            },
+            "total_seconds": {
+              "const": 86
+            }
+          }
+        },
+        "billing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hourly_rate_usd",
+            "billing_unit_seconds",
+            "billed_minutes",
+            "actual_cost_usd",
+            "rounding"
+          ],
+          "properties": {
+            "hourly_rate_usd": {
+              "const": "0.800"
+            },
+            "billing_unit_seconds": {
+              "const": 60
+            },
+            "billed_minutes": {
+              "const": 2
+            },
+            "actual_cost_usd": {
+              "const": "0.026667"
+            },
+            "rounding": {
+              "const": "ceil_to_6_decimal_places"
+            }
+          }
+        },
+        "actual_cost_status": {
+          "const": "known_from_canonical_terminal_duration"
+        },
+        "model_load_started": {
+          "const": false
+        },
+        "prediction_records_written": {
+          "const": 0
+        },
+        "output_mutation_performed": {
+          "const": false
+        },
+        "training_steps_executed": {
+          "const": 0
+        }
+      }
+    },
+    "noActiveJobs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "source",
+        "namespace",
+        "observed_at_utc",
+        "active_job_ids",
+        "active_job_count"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_no_active_jobs_observation"
+        },
+        "source": {
+          "const": "hf_jobs_ps"
+        },
+        "namespace": {
+          "const": "Buttermilk03"
+        },
+        "observed_at_utc": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "active_job_ids": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "active_job_count": {
+          "const": 0
+        }
+      }
+    },
+    "staleWriterLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "observed_at_utc",
+        "remote_lock_relative_path",
+        "owner_file_bytes",
+        "owner_file_sha256",
+        "owner",
+        "owner_job_id",
+        "owner_job_terminal_status",
+        "primary_terminal_evidence_sha256",
+        "failed_amendment_evidence_sha256",
+        "no_active_jobs_evidence_sha256",
+        "output_snapshot_tree_sha256",
+        "v2_ledger_expected_absent",
+        "v2_runtime_completion_expected_absent"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_stale_writer_lock_observation"
+        },
+        "observed_at_utc": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "remote_lock_relative_path": {
+          "const": "attempt8/.scriber-1100-final-evaluation-v1.writer-lock/owner.json"
+        },
+        "owner_file_bytes": {
+          "const": 167
+        },
+        "owner_file_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "owner": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "kind",
+            "launch_id",
+            "owner_token_present",
+            "owner_token_length",
+            "owner_token_redacted"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 1
+            },
+            "kind": {
+              "const": "scriber_hf_final_evaluation_writer_owner"
+            },
+            "launch_id": {
+              "const": "5a44257acc6c0db3298bcd23e42228c0"
+            },
+            "owner_token_present": {
+              "const": true
+            },
+            "owner_token_length": {
+              "const": 32
+            },
+            "owner_token_redacted": {
+              "const": true
+            }
+          }
+        },
+        "owner_job_id": {
+          "const": "6a6baf33b36a6516e96a3210"
+        },
+        "owner_job_terminal_status": {
+          "const": "CANCELED"
+        },
+        "primary_terminal_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "failed_amendment_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "no_active_jobs_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "output_snapshot_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "v2_ledger_expected_absent": {
+          "const": true
+        },
+        "v2_runtime_completion_expected_absent": {
+          "const": true
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "authorized",
+        "authorizer",
+        "scope",
+        "maximum_replacement_jobs",
+        "flavor",
+        "timeout_minutes",
+        "maximum_replacement_cost_usd",
+        "maximum_total_cost_usd",
+        "budget_increase_used",
+        "training_steps_allowed",
+        "publication_allowed",
+        "source_statement_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_retry_authorization"
+        },
+        "authorized": {
+          "const": true
+        },
+        "authorizer": {
+          "const": "user"
+        },
+        "scope": {
+          "const": "one_replacement_after_exact_pre_prediction_writer_claim_failure"
+        },
+        "maximum_replacement_jobs": {
+          "const": 1
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_minutes": {
+          "const": 180
+        },
+        "maximum_replacement_cost_usd": {
+          "const": "2.400"
+        },
+        "maximum_total_cost_usd": {
+          "const": "5.000"
+        },
+        "budget_increase_used": {
+          "const": false
+        },
+        "training_steps_allowed": {
+          "const": 0
+        },
+        "publication_allowed": {
+          "const": false
+        },
+        "source_statement_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket_root",
+        "relative_path",
+        "container_path",
+        "remote_result_uri",
+        "primary_launch_ledger_v1_sha256",
+        "v2_ledger_sibling",
+        "v2_runtime_completion_sibling",
+        "v3_ledger_sibling",
+        "v3_runtime_completion_sibling",
+        "snapshot"
+      ],
+      "properties": {
+        "bucket_root": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs"
+        },
+        "relative_path": {
+          "const": "attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "container_path": {
+          "const": "/outputs/attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "remote_result_uri": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "primary_launch_ledger_v1_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "v2_ledger_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.launch-ledger-v2.json"
+        },
+        "v2_runtime_completion_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.runtime-completion-v2.json"
+        },
+        "v3_ledger_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.launch-ledger-v3.json"
+        },
+        "v3_runtime_completion_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.runtime-completion-v3.json"
+        },
+        "snapshot": {
+          "type": "object"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_budget_usd",
+        "actual_before_evaluation_usd",
+        "primary_cost_status",
+        "primary_budget_accounting",
+        "primary_timeout_minutes",
+        "primary_reserved_cost_usd",
+        "failed_amendment_cost_status",
+        "failed_amendment_running_seconds",
+        "failed_amendment_billed_minutes",
+        "failed_amendment_actual_cost_usd",
+        "retry_timeout_minutes",
+        "retry_reserved_cost_usd",
+        "maximum_total_cost_usd",
+        "remaining_after_reservations_usd",
+        "strictly_below_total_budget",
+        "budget_increase_used"
+      ],
+      "properties": {
+        "total_budget_usd": {
+          "const": "5.000"
+        },
+        "actual_before_evaluation_usd": {
+          "const": "0.933668"
+        },
+        "primary_cost_status": {
+          "const": "unknown"
+        },
+        "primary_budget_accounting": {
+          "const": "full_timeout_reservation"
+        },
+        "primary_timeout_minutes": {
+          "const": 120
+        },
+        "primary_reserved_cost_usd": {
+          "const": "1.600"
+        },
+        "failed_amendment_cost_status": {
+          "const": "known_from_canonical_terminal_duration"
+        },
+        "failed_amendment_running_seconds": {
+          "const": 78
+        },
+        "failed_amendment_billed_minutes": {
+          "const": 2
+        },
+        "failed_amendment_actual_cost_usd": {
+          "const": "0.026667"
+        },
+        "retry_timeout_minutes": {
+          "const": 180
+        },
+        "retry_reserved_cost_usd": {
+          "const": "2.400"
+        },
+        "maximum_total_cost_usd": {
+          "const": "4.960335"
+        },
+        "remaining_after_reservations_usd": {
+          "const": "0.039665"
+        },
+        "strictly_below_total_budget": {
+          "const": true
+        },
+        "budget_increase_used": {
+          "const": false
+        }
+      }
+    },
+    "durabilityPatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "inference_module_sha256",
+        "journal_commit_granularity",
+        "maximum_replayed_records_after_interruption",
+        "legacy_per_record_journal_compatible",
+        "progress_after_durable_commit"
+      ],
+      "properties": {
+        "kind": {
+          "const": "scriber_batch_durable_resume_v1"
+        },
+        "inference_module_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "journal_commit_granularity": {
+          "const": 8
+        },
+        "maximum_replayed_records_after_interruption": {
+          "const": 8
+        },
+        "legacy_per_record_journal_compatible": {
+          "const": true
+        },
+        "progress_after_durable_commit": {
+          "const": true
+        }
+      }
+    },
+    "writerRecovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "owner_file_sha256",
+        "owner_launch_id",
+        "owner_token_packaged",
+        "snapshot_required_equal_before_and_after",
+        "recursive_delete_allowed",
+        "new_claim_after_recovery_only"
+      ],
+      "properties": {
+        "method": {
+          "const": "exact_owner_release_then_atomic_new_claim"
+        },
+        "owner_file_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "owner_launch_id": {
+          "const": "5a44257acc6c0db3298bcd23e42228c0"
+        },
+        "owner_token_packaged": {
+          "const": false
+        },
+        "snapshot_required_equal_before_and_after": {
+          "const": true
+        },
+        "recursive_delete_allowed": {
+          "const": false
+        },
+        "new_claim_after_recovery_only": {
+          "const": true
+        }
+      }
+    }
+  }
+}

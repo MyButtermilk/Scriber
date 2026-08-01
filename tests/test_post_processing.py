@@ -1,6 +1,7 @@
 import pytest
 
 import src.post_processing as post_processing
+from src.local_polishing import PolishOutcome
 from src.post_processing import (
     build_post_processing_prompt,
     clean_post_processing_output,
@@ -79,6 +80,7 @@ async def test_post_process_live_transcript_uses_cerebras_gemma_default(monkeypa
 
     monkeypatch.setattr(post_processing.Config, "POST_PROCESSING_MODEL", "", raising=False)
     monkeypatch.setattr(post_processing.Config, "DEFAULT_POST_PROCESSING_MODEL", "cerebras/gemma-4-31b", raising=False)
+    monkeypatch.setattr(post_processing.Config, "POST_PROCESSING_ENGINE", "cloud", raising=False)
     monkeypatch.setattr(post_processing, "generate_text_with_model", fake_generate_text_with_model)
 
     out = await post_process_live_transcript("rohtext")
@@ -97,6 +99,7 @@ async def test_post_process_live_transcript_populates_redacted_diagnostics(monke
         return "Cleaned text: cleaned output"
 
     monkeypatch.setattr(post_processing, "generate_text_with_model", fake_generate_text_with_model)
+    monkeypatch.setattr(post_processing.Config, "POST_PROCESSING_ENGINE", "cloud", raising=False)
     diagnostics = {}
 
     out = await post_process_live_transcript(
@@ -115,3 +118,38 @@ async def test_post_process_live_transcript_populates_redacted_diagnostics(monke
     assert diagnostics["cleanedChars"] == len("cleaned output")
     assert diagnostics["outputChanged"] is True
     assert "private dictated text" not in str(diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_local_post_processing_failure_returns_raw_without_cloud_fallback(monkeypatch):
+    class RejectingLocalPolisher:
+        async def polish(self, transcript, variant):
+            assert transcript == "unveränderter Rohtext"
+            assert variant == "q8_0"
+            return PolishOutcome(
+                text="Dieser abgelehnte Text darf nicht verwendet werden.",
+                variant="q8_0",
+                status="original_fallback",
+                reason_codes=("content_validation_failed",),
+                duration_ms=12.5,
+                runtime_backend="cpu",
+            )
+
+    async def cloud_must_not_run(*_args, **_kwargs):
+        raise AssertionError("local failures must never fall through to a cloud provider")
+
+    monkeypatch.setattr(post_processing, "generate_text_with_model", cloud_must_not_run)
+    diagnostics = {}
+
+    result = await post_process_live_transcript(
+        "unveränderter Rohtext",
+        engine="local",
+        local_polisher=RejectingLocalPolisher(),
+        local_variant="q8_0",
+        diagnostics=diagnostics,
+    )
+
+    assert result == "unveränderter Rohtext"
+    assert diagnostics["status"] == "original_fallback"
+    assert diagnostics["fallbackToRaw"] is True
+    assert diagnostics["reasonCodes"] == ["content_validation_failed"]

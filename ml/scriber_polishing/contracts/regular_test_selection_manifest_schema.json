@@ -1,0 +1,237 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/regular-test-selection-manifest-v1.schema.json",
+  "title": "Scriber regular synthetic test selection manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "selection_algorithm",
+    "seed",
+    "target_count",
+    "source",
+    "exclusion",
+    "output",
+    "coverage",
+    "validation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_regular_test_selection"
+    },
+    "selection_algorithm": {
+      "const": "domain_profile_parent_round_robin_sha256_v1"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "target_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "records_sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "split": {
+          "const": "test"
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ai_gold_test_filename",
+        "ai_gold_test_records_sha256",
+        "ai_gold_test_count",
+        "ai_gold_ids_matched_in_source_count",
+        "ai_gold_parent_group_count",
+        "eligible_after_id_exclusion",
+        "eligible_after_parent_exclusion",
+        "parent_exclusion_mode",
+        "selected_ai_gold_id_overlap_count",
+        "selected_ai_gold_parent_overlap_count"
+      ],
+      "properties": {
+        "ai_gold_test_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "ai_gold_test_records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "ai_gold_test_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ai_gold_ids_matched_in_source_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ai_gold_parent_group_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eligible_after_id_exclusion": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eligible_after_parent_exclusion": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "parent_exclusion_mode": {
+          "enum": [
+            "full",
+            "best_effort"
+          ]
+        },
+        "selected_ai_gold_id_overlap_count": {
+          "const": 0
+        },
+        "selected_ai_gold_parent_overlap_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "records_sha256",
+        "case_ids_sha256",
+        "record_count",
+        "split_counts"
+      ],
+      "properties": {
+        "filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "case_ids_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "split_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "test"
+          ],
+          "properties": {
+            "test": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "unique_parent_count",
+        "domain_counts",
+        "corruption_profile_counts",
+        "domain_profile_counts",
+        "operation_counts",
+        "domain_balance_delta",
+        "corruption_profile_balance_delta"
+      ],
+      "properties": {
+        "unique_parent_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "domain_counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "corruption_profile_counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "domain_profile_counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "operation_counts": {
+          "$ref": "#/$defs/counts"
+        },
+        "domain_balance_delta": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "corruption_profile_balance_delta": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_validator",
+        "validated_record_count"
+      ],
+      "properties": {
+        "reference_validator": {
+          "const": "scriber_polishing.evaluation_io.validate_evaluation_reference"
+        },
+        "validated_record_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "counts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    }
+  }
+}

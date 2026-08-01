@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/final-report-input-v1.schema.json",
+  "title": "Scriber final-report source binding input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "sources",
+    "fact_bindings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "sources": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "fact_bindings": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/fact_binding"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "schema_version"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "contract": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contract_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "dependentRequired": {
+        "contract_sha256": [
+          "contract"
+        ]
+      }
+    },
+    "fact_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pointer": {
+          "type": "string",
+          "pattern": "^(?:|/.*)$"
+        },
+        "select": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^(?:|/.*)$"
+          }
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "pointer"
+          ]
+        },
+        {
+          "required": [
+            "select"
+          ]
+        }
+      ]
+    }
+  }
+}

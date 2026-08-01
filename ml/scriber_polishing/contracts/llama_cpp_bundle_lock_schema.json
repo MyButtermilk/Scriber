@@ -1,0 +1,597 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/llama-cpp-bundle-lock-v3.schema.json",
+  "title": "Scriber OCI-bound llama.cpp CUDA runtime bundle lock v3",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "status",
+        "materialization_required"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "status": {
+          "const": "UNMATERIALIZED"
+        },
+        "materialization_required": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "status",
+        "upstream_repository",
+        "commit",
+        "distribution",
+        "source",
+        "required_subtrees",
+        "tools",
+        "build",
+        "build_identity_sha256",
+        "native_runtime"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 3
+        },
+        "status": {
+          "const": "materialized"
+        },
+        "upstream_repository": {
+          "const": "https://github.com/ggml-org/llama.cpp"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "distribution": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "repository",
+            "tag",
+            "index_digest",
+            "manifest_digest",
+            "config_digest",
+            "revision",
+            "platform",
+            "layers",
+            "runtime_image"
+          ],
+          "properties": {
+            "kind": {
+              "const": "oci_image_layers"
+            },
+            "repository": {
+              "const": "ghcr.io/ggml-org/llama.cpp"
+            },
+            "tag": {
+              "type": "string",
+              "pattern": "^full-cuda12-b[0-9]+$"
+            },
+            "index_digest": {
+              "$ref": "#/$defs/hash"
+            },
+            "manifest_digest": {
+              "$ref": "#/$defs/hash"
+            },
+            "config_digest": {
+              "$ref": "#/$defs/hash"
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "platform": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "os",
+                "architecture"
+              ],
+              "properties": {
+                "os": {
+                  "const": "linux"
+                },
+                "architecture": {
+                  "const": "amd64"
+                }
+              }
+            },
+            "layers": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "digest",
+                  "compressed_bytes",
+                  "media_type",
+                  "purpose"
+                ],
+                "properties": {
+                  "digest": {
+                    "$ref": "#/$defs/hash"
+                  },
+                  "compressed_bytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "media_type": {
+                    "const": "application/vnd.oci.image.layer.v1.tar+gzip"
+                  },
+                  "purpose": {
+                    "enum": [
+                      "native_libraries",
+                      "tools_and_conversion"
+                    ]
+                  }
+                }
+              }
+            },
+            "runtime_image": {
+              "type": "string",
+              "pattern": "^pytorch/pytorch@sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        "source": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/inventory"
+            },
+            {
+              "type": "object",
+              "required": [
+                "root"
+              ],
+              "properties": {
+                "root": {
+                  "const": "source"
+                }
+              }
+            }
+          ]
+        },
+        "required_subtrees": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "conversion",
+            "gguf_py"
+          ],
+          "properties": {
+            "conversion": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/inventory"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "root"
+                  ],
+                  "properties": {
+                    "root": {
+                      "const": "source/conversion"
+                    }
+                  }
+                }
+              ]
+            },
+            "gguf_py": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/inventory"
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "root"
+                  ],
+                  "properties": {
+                    "root": {
+                      "const": "source/gguf-py"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "convert_hf_to_gguf",
+            "llama_quantize",
+            "llama_cli",
+            "llama_server"
+          ],
+          "properties": {
+            "convert_hf_to_gguf": {
+              "$ref": "#/$defs/file"
+            },
+            "llama_quantize": {
+              "$ref": "#/$defs/file"
+            },
+            "llama_cli": {
+              "$ref": "#/$defs/file"
+            },
+            "llama_server": {
+              "$ref": "#/$defs/file"
+            }
+          }
+        },
+        "build": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "llama_cpp_version",
+            "llama_quantize_version_output_sha256",
+            "llama_cli_version_output_sha256",
+            "llama_server_version_output_sha256",
+            "compiler",
+            "cuda",
+            "generator",
+            "configuration",
+            "flags"
+          ],
+          "properties": {
+            "llama_cpp_version": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "llama_cli_version_output_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "llama_quantize_version_output_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "llama_server_version_output_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "compiler": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "version"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "cuda": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "enabled",
+                "version"
+              ],
+              "properties": {
+                "enabled": {
+                  "const": true
+                },
+                "version": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "generator": {
+              "type": "string",
+              "minLength": 1
+            },
+            "configuration": {
+              "type": "string",
+              "minLength": 1
+            },
+            "flags": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "build_identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "native_runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "root",
+            "algorithm",
+            "tree_sha256",
+            "entry_count",
+            "total_file_bytes",
+            "entries",
+            "library_directories",
+            "ldd_closure"
+          ],
+          "properties": {
+            "root": {
+              "type": "string",
+              "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+            },
+            "algorithm": {
+              "const": "sha256-path-kind-size-content-or-target-v1"
+            },
+            "tree_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "entry_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "total_file_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "entries": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "kind",
+                      "bytes",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                      },
+                      "kind": {
+                        "const": "file"
+                      },
+                      "bytes": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "sha256": {
+                        "$ref": "#/$defs/hash"
+                      }
+                    },
+                    "allOf": [
+                      {
+                        "if": {
+                          "properties": {
+                            "bytes": {
+                              "const": 0
+                            }
+                          },
+                          "required": [
+                            "bytes"
+                          ]
+                        },
+                        "then": {
+                          "properties": {
+                            "path": {
+                              "const": "runtime/app/gguf-py/gguf/py.typed"
+                            },
+                            "sha256": {
+                              "const": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+                            }
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "kind",
+                      "target",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                      },
+                      "kind": {
+                        "const": "symlink"
+                      },
+                      "target": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "$ref": "#/$defs/hash"
+                      }
+                    }
+                  }
+                ]
+              }
+            },
+            "library_directories": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+              }
+            },
+            "ldd_closure": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "algorithm",
+                "required_host_driver_sonames",
+                "entries"
+              ],
+              "properties": {
+                "algorithm": {
+                  "const": "ldd-contract-v2-host-driver"
+                },
+                "required_host_driver_sonames": {
+                  "type": "array",
+                  "uniqueItems": true,
+                  "maxItems": 1,
+                  "items": {
+                    "const": "libcuda.so.1"
+                  }
+                },
+                "entries": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "path",
+                      "output_sha256",
+                      "dependencies"
+                    ],
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+                      },
+                      "output_sha256": {
+                        "$ref": "#/$defs/hash"
+                      },
+                      "dependencies": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "soname",
+                            "path",
+                            "provider"
+                          ],
+                          "properties": {
+                            "soname": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "path": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "provider": {
+                              "enum": [
+                                "bundle",
+                                "runtime_image",
+                                "nvidia_driver",
+                                "nvidia_driver_required",
+                                "kernel"
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$)).+$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "algorithm",
+        "tree_sha256",
+        "file_count",
+        "total_bytes",
+        "files"
+      ],
+      "properties": {
+        "root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "algorithm": {
+          "const": "sha256-path-size-content-v1"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/file"
+          }
+        }
+      }
+    }
+  }
+}

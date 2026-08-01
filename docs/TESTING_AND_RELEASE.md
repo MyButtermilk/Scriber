@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-07-27
+Last verified: 2026-08-01
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -203,6 +203,50 @@ Performance/packaging:
 - `tests/perf/test_frontend_vendor_chunk_config.py`
 - `tests/test_tauri_security_gates.py`
 - `tests/test_tauri_stability_smoke_gates.py`
+- `tests/test_local_polishing_runtime_packaging.py`
+
+Local polishing focused gates:
+
+```powershell
+scripts\project-python.cmd -m pytest tests\test_local_polishing.py `
+  tests\test_local_polishing_runtime_packaging.py -q
+
+cd Frontend
+npx tsx --test client/src/lib/local-polishing.test.ts
+npx vitest run --config vitest.components.config.ts `
+  client/src/components/settings/LocalPolishingSettings.test.tsx
+```
+
+The optional V2 research path has separate focused, fail-closed gates. Run
+them from `ml\scriber_polishing`; they do not start a Hugging Face job or
+publish a model:
+
+```powershell
+uv run pytest tests/test_hf_v2_training_postflight.py `
+  tests/test_hf_v2_final_evaluation.py `
+  tests/test_hf_v2_final_evaluation_launch.py `
+  tests/test_launch_hf_v2_final_evaluation_script.py `
+  tests/test_v2_local_compact_evaluation.py `
+  tests/test_compact_terra_judge.py `
+  tests/test_hf_v2_release_job.py `
+  tests/test_hf_v2_release_launch.py `
+  tests/test_v2_q8_bf16_release.py -q
+uv run ruff check src/scriber_polishing scripts tests
+```
+
+A V2 candidate may enter conversion/publication only when both the exact
+300-case automatic comparison and the independent Terra-100 gate pass. A
+failed or non-publication-grade result leaves V1 active and forbids the V2
+claim, conversion job, public upload, and catalog switch. The 2026-08-01 V2
+candidate failed both gates, so no attempt-15 job was started.
+
+The packaging gate must cover unsafe-archive rejection, exact staged-file
+membership, full manifest re-verification, and corruption rejection. Before a
+release, the model catalog must also be materialized to one full public Hugging
+Face commit, both anonymous Q8_0/BF16 downloads must return without a token,
+and the downloaded bytes must match the catalog's exact sizes and SHA-256.
+Never satisfy this gate from an authenticated developer cache.
+
 - Tauri bundle resources include the Python `backend/` resource tree. The Rust
   audio sidecar is bundled once as Tauri's install-root
   `scriber-audio-sidecar.exe` and is the standard live-mic capture/prewarm
@@ -219,6 +263,21 @@ Performance/packaging:
   smoke; installer smoke repeats it against the installed resource tree. Both
   reject digest/size drift, incompatible `--version` or `--self-test`, dynamic
   Sherpa/ONNX/MSVC-runtime imports, and optional model files in the base app.
+- Backend preparation also stages the locked llama.cpp b10158 Vulkan runtime
+  plus CPU libraries under `backend\tools\local-polishing`. Verify its complete
+  runtime manifest and `llama-server.exe --version`; confirm that neither Q8_0
+  nor BF16 model weights are present in the installer tree.
+
+```powershell
+scripts\project-python.cmd scripts\smoke_local_polishing_runtime.py `
+  --root Frontend\src-tauri\target\release\backend `
+  --output tmp\local-polishing-runtime-smoke.json
+```
+
+The Windows build runs this gate against the staged backend, and installer
+smoke repeats it against the installed resource tree. Both runs verify every
+manifest-bound byte, the b10158 version identity, Vulkan plus CPU fallback, and
+the absence of bundled `.gguf` weights.
 
 Focused worker resource checks:
 
@@ -726,6 +785,11 @@ Installed package smoke also verifies that the bundled
 `scriber-audio-sidecar.exe` exists at the installed app root. This is a
 packaging gate only; it does not promote Rust audio capture to the default
 engine.
+
+For local polishing, installed-package smoke must additionally verify the
+bundled `backend\tools\local-polishing\runtime-manifest.json`, every declared
+runtime file, the pinned b10158 version, Vulkan availability with CPU fallback,
+and absence of GGUF weights before the user explicitly downloads a model.
 
 Rust audio prewarm sidecar smoke verifies the prewarm lifecycle:
 

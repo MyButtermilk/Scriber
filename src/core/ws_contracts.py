@@ -159,6 +159,34 @@ def transcribing_event(*, session_id: str | None = None) -> dict[str, Any]:
     return _optional_session({"type": "transcribing"}, session_id)
 
 
+def local_polishing_model_progress_event(model: dict[str, Any]) -> dict[str, Any]:
+    """Publish bounded local-model lifecycle state without paths or credentials."""
+
+    payload: dict[str, Any] = {
+        "type": "local_polishing_model_progress",
+        "variant": str(model.get("variant", "")),
+        "status": str(model.get("status", "")),
+    }
+    optional_strings = ("operationId", "message", "errorCode", "runtimeError")
+    for field in optional_strings:
+        value = model.get(field)
+        if isinstance(value, str) and value:
+            payload[field] = value
+    optional_numbers = ("bytesReceived", "bytesTotal", "etaSeconds")
+    for field in optional_numbers:
+        value = model.get(field)
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            payload[field] = max(0, value)
+    progress = model.get("progress")
+    if isinstance(progress, int | float) and not isinstance(progress, bool):
+        payload["progress"] = max(0.0, min(100.0, float(progress)))
+    for field in ("installed", "active", "runtimeReady"):
+        value = model.get(field)
+        if isinstance(value, bool):
+            payload[field] = value
+    return version_event_payload(payload)
+
+
 def session_started_event(session: dict[str, Any], *, session_id: str | None = None) -> dict[str, Any]:
     return _optional_session({"type": "session_started", "session": dict(session)}, session_id)
 
@@ -351,6 +379,37 @@ def _validate_model_progress(payload: dict[str, Any], event_type: str) -> None:
         raise WSContractError(f"{event_type} event requires string 'message' when present")
 
 
+def _validate_local_polishing_progress(payload: dict[str, Any], event_type: str) -> None:
+    _require_string(payload, "variant", event_type)
+    if payload["variant"] not in {"q8_0", "bf16"}:
+        raise WSContractError(f"{event_type} event has unsupported variant")
+    _require_string(payload, "status", event_type)
+    if payload["status"] not in {
+        "not_installed",
+        "downloading",
+        "verifying",
+        "cancelling",
+        "cancelled",
+        "ready",
+        "unavailable",
+        "error",
+    }:
+        raise WSContractError(f"{event_type} event has unsupported status")
+    for field in ("operationId", "message", "errorCode", "runtimeError"):
+        if field in payload and not isinstance(payload.get(field), str):
+            raise WSContractError(f"{event_type} event requires string '{field}' when present")
+    for field in ("progress", "bytesReceived", "bytesTotal", "etaSeconds"):
+        if field in payload:
+            _require_number(payload, field, event_type)
+            if payload[field] < 0:
+                raise WSContractError(f"{event_type} event requires non-negative '{field}'")
+    for field in ("installed", "active", "runtimeReady"):
+        if field in payload and not isinstance(payload[field], bool):
+            raise WSContractError(f"{event_type} event requires bool '{field}' when present")
+    if "progress" in payload and payload["progress"] > 100:
+        raise WSContractError(f"{event_type} event progress exceeds 100")
+
+
 def validate_event_payload(payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise WSContractError("WebSocket payload must be a dict")
@@ -426,6 +485,8 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _validate_model_progress(payload, event_type)
     elif event_type == "onnx_models_updated":
         _require_string(payload, "modelId", event_type)
+    elif event_type == "local_polishing_model_progress":
+        _validate_local_polishing_progress(payload, event_type)
     elif event_type == "meeting_state":
         meeting = payload.get("meeting")
         if not isinstance(meeting, dict):

@@ -1,0 +1,29 @@
+schema_version: 1
+seed: 270001
+status: READY_FOR_TRAINING
+minimum_ai_seed_documents: 1500
+target_ai_seed_documents: 2400
+minimum_canonical_documents: 12000
+target_canonical_documents: 20000
+minimum_train_pairs: 80000
+target_train_pairs: 120000
+minimum_validation_pairs: 4000
+minimum_test_pairs: 4000
+minimum_challenge_pairs: 2000
+minimum_critical_regressions: 500
+split_before_variants: true
+split_group: parent_canonical_document_id
+severity_mix:
+  identity: 0.20
+  light: 0.20
+  medium: 0.30
+  heavy: 0.20
+  challenge: 0.10
+domains:
+  - general_business
+  - tax_legal
+  - real_estate_energy
+  - technical_project
+  - english_mixed
+  - hard_negatives
+release_requires_coverage_contract: true

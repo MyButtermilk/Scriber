@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-compact-terra-aggregate-v1.schema.json",
+  "title": "Scriber V2 compact Terra aggregate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "evidence_class",
+    "publication_grade",
+    "release_grade_claimed",
+    "judge",
+    "coverage",
+    "artifacts",
+    "results",
+    "orientation_bias",
+    "gate"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_v2_compact_terra_aggregate" },
+    "status": { "const": "complete" },
+    "evidence_class": { "const": "compact_smoke_test" },
+    "publication_grade": { "const": false },
+    "release_grade_claimed": { "const": false },
+    "judge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_family",
+        "session_id",
+        "session_sha256",
+        "prompt_version",
+        "prompt_sha256"
+      ],
+      "properties": {
+        "model_family": { "const": "gpt-5.6-terra" },
+        "session_id": { "type": "string", "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$" },
+        "session_sha256": { "$ref": "#/$defs/hash" },
+        "prompt_version": { "const": "v1" },
+        "prompt_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "coverage": {
+      "const": {
+        "source_case_count": 300,
+        "public_case_count": 100,
+        "verdict_count": 100,
+        "quotas": {
+          "ai_gold": 34,
+          "critical_regression": 33,
+          "regular_test": 33
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["public_cases_sha256", "private_mapping_sha256", "verdicts_sha256"],
+      "properties": {
+        "public_cases_sha256": { "$ref": "#/$defs/hash" },
+        "private_mapping_sha256": { "$ref": "#/$defs/hash" },
+        "verdicts_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "results": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["v2_wins", "v1_wins", "ties", "v2_critical", "v1_critical"],
+      "properties": {
+        "v2_wins": { "$ref": "#/$defs/count" },
+        "v1_wins": { "$ref": "#/$defs/count" },
+        "ties": { "$ref": "#/$defs/count" },
+        "v2_critical": { "$ref": "#/$defs/count" },
+        "v1_critical": { "$ref": "#/$defs/count" }
+      }
+    },
+    "orientation_bias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "v2_as_a",
+        "v2_as_b",
+        "a_wins",
+        "b_wins",
+        "ties",
+        "a_minus_b_wins",
+        "absolute_a_b_win_gap"
+      ],
+      "properties": {
+        "v2_as_a": { "const": 50 },
+        "v2_as_b": { "const": 50 },
+        "a_wins": { "$ref": "#/$defs/count" },
+        "b_wins": { "$ref": "#/$defs/count" },
+        "ties": { "$ref": "#/$defs/count" },
+        "a_minus_b_wins": { "type": "integer", "minimum": -100, "maximum": 100 },
+        "absolute_a_b_win_gap": { "$ref": "#/$defs/count" }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "decision", "v2_wins_gte_v1_wins", "v2_critical_lte_v1_critical"],
+      "properties": {
+        "kind": { "const": "compact_promotion" },
+        "decision": { "enum": ["passed", "failed"] },
+        "v2_wins_gte_v1_wins": { "type": "boolean" },
+        "v2_critical_lte_v1_critical": { "type": "boolean" }
+      }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "count": { "type": "integer", "minimum": 0, "maximum": 100 }
+  }
+}

@@ -352,6 +352,25 @@ function Test-InstalledMeetingResources {
     }
 }
 
+function Test-InstalledLocalPolishingRuntime {
+    param([string]$Root)
+
+    $runtimeSmokeScript = Join-Path $RepoRoot "scripts\smoke_local_polishing_runtime.py"
+    $runtimeSmokeJson = & $PythonExecutable $runtimeSmokeScript --root $Root
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installed local-polishing runtime smoke failed."
+    }
+    try {
+        $runtimeSmoke = ($runtimeSmokeJson | Out-String).Trim() | ConvertFrom-Json
+    } catch {
+        throw "Installed local-polishing runtime smoke returned invalid JSON."
+    }
+    if (-not $runtimeSmoke.ok) {
+        throw "Installed local-polishing runtime smoke did not report ok=true."
+    }
+    return $runtimeSmoke
+}
+
 function Convert-ToRelativePath {
     param(
         [string]$Root,
@@ -790,6 +809,7 @@ $mediaPreparation = $null
 $audioSidecarExe = $null
 $frontendAssetOwnership = $null
 $meetingResources = $null
+$localPolishingRuntime = $null
 $cleanupCompleted = $false
 try {
     Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer"
@@ -797,6 +817,7 @@ try {
     $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
     $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
     $meetingResources = Test-InstalledMeetingResources -Root $InstallDir
+    $localPolishingRuntime = Test-InstalledLocalPolishingRuntime -Root $InstallDir
     $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
@@ -810,6 +831,7 @@ try {
         $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
         $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
         $meetingResources = Test-InstalledMeetingResources -Root $InstallDir
+        $localPolishingRuntime = Test-InstalledLocalPolishingRuntime -Root $InstallDir
         $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
@@ -836,6 +858,7 @@ try {
             stability = $secondSmoke.stability
             legacyDataMigration = $secondSmoke.legacyDataMigration
             installSize = $installSize
+            localPolishingRuntime = $localPolishingRuntime
         }
         $smoke = $secondSmoke
     }
@@ -885,6 +908,7 @@ try {
         meetingAudioSoak = $smoke.meetingAudioSoak
         frontendAssetOwnership = $frontendAssetOwnership
         meetingResources = $meetingResources
+        localPolishingRuntime = $localPolishingRuntime
         realMediaWorkflows = $smoke.realMediaWorkflows
         mediaPreparation = $mediaPreparation
         liveRecording = $smoke.liveRecording

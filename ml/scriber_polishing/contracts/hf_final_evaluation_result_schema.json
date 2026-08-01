@@ -1,0 +1,866 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-result-v1.schema.json",
+  "title": "Scriber Hugging Face final-evaluation result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "training_steps_executed",
+    "packet",
+    "final_model",
+    "base_model",
+    "continuation_evidence",
+    "budget",
+    "launch_ledger",
+    "publication",
+    "reports",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation_result"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "training_steps_executed": {
+      "const": 0
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "runner_sha256",
+        "source_git_head"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "source_git_head": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "final_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "start_updates",
+        "additional_updates",
+        "cumulative_updates",
+        "replayed_updates",
+        "parent_initialization",
+        "final_model_directory",
+        "final_model_tree_sha256",
+        "final_model_file_count",
+        "final_model_total_bytes",
+        "remote_model_uri",
+        "mount_mode",
+        "continuation_result_sha256",
+        "training_report_sha256",
+        "preprocessing_policy"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_final_evaluation_model_binding"
+        },
+        "start_updates": {
+          "const": 846
+        },
+        "additional_updates": {
+          "const": 254
+        },
+        "cumulative_updates": {
+          "const": 1100
+        },
+        "replayed_updates": {
+          "const": 0
+        },
+        "parent_initialization": {
+          "const": "warm_start_weights_only"
+        },
+        "final_model_directory": {
+          "$ref": "#/$defs/final_directory"
+        },
+        "final_model_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "final_model_file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "final_model_total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "remote_model_uri": {
+          "type": "string",
+          "pattern": "^hf://buckets/Buttermilk03/scriber-polishing-private-runs/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+training/final-[A-Za-z0-9._-]+$"
+        },
+        "mount_mode": {
+          "const": "read_only"
+        },
+        "continuation_result_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "preprocessing_policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "artifact_sha256",
+            "policy_id",
+            "policy_sha256"
+          ],
+          "properties": {
+            "artifact_sha256": {
+              "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+            },
+            "policy_id": {
+              "const": "gemma_lexical_v1"
+            },
+            "policy_sha256": {
+              "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+            }
+          }
+        }
+      }
+    },
+    "base_model": {
+      "const": {
+        "model_id": "google/gemma-3-270m-it",
+        "revision": "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3",
+        "remote_model_uri": "hf://models/google/gemma-3-270m-it@ac82b4e820549b854eebf28ce6dedaf9fdfa17b3",
+        "mount_mode": "read_only",
+        "tree_sha256": "sha256:0d610d30384d641366232e4bd8ad556c6a28470781e68e93757fe9e4ae1a0f57",
+        "config_sha256": "sha256:8983343e5bfbf8e336d222a522a1d781443491e9de2d081b8856f8fd26ab6046",
+        "file_count": 11,
+        "total_bytes": 575485707,
+        "preprocessing_policy": "implicit_legacy_default"
+      }
+    },
+    "continuation_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "job_id",
+        "terminal_status",
+        "owner",
+        "flavor",
+        "timeout_minutes",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "historical_cost_usd",
+        "actual_campaign_cost_usd",
+        "remote_result_uri",
+        "continuation_packet_tree_sha256",
+        "continuation_manifest_sha256",
+        "packet_verification_sha256",
+        "cost_audit_sha256",
+        "continuation_result_sha256",
+        "training_report_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "enum": [
+            "scriber_final_evaluation_continuation_evidence",
+            "scriber_final_evaluation_recovered_continuation_evidence"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "enum": [
+            "COMPLETED",
+            "ERROR"
+          ]
+        },
+        "owner": {
+          "const": "Buttermilk03"
+        },
+        "flavor": {
+          "enum": [
+            "a10g-small",
+            "l4x1"
+          ]
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "enum": [
+            "0.80",
+            "1.00"
+          ]
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "historical_cost_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "actual_campaign_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "remote_result_uri": {
+          "$ref": "#/$defs/private_result_uri"
+        },
+        "continuation_packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "continuation_manifest_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "packet_verification_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "cost_audit_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "continuation_result_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "recovery_chain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "original_source_contract_sha256",
+            "recovery_job_id",
+            "recovery_terminal_status",
+            "recovery_flavor",
+            "recovery_running_seconds",
+            "recovery_billed_minutes",
+            "recovery_hourly_rate_usd",
+            "recovery_job_cost_usd",
+            "recovery_remote_result_uri",
+            "finalization_job_id",
+            "finalization_terminal_status",
+            "finalization_flavor",
+            "finalization_timeout_minutes",
+            "finalization_running_seconds",
+            "finalization_billed_minutes",
+            "finalization_hourly_rate_usd",
+            "finalization_job_cost_usd",
+            "finalization_remote_result_uri",
+            "finalization_packet_tree_sha256",
+            "source_contract_sha256",
+            "source_verification_sha256",
+            "finalization_guard_sha256",
+            "remote_model_uri",
+            "final_model_tree_sha256",
+            "training_steps_executed",
+            "model_copied",
+            "model_reloaded",
+            "validation_reexecuted",
+            "source_validation_reexecuted"
+          ],
+          "properties": {
+            "original_source_contract_sha256": {},
+            "recovery_job_id": {},
+            "recovery_terminal_status": {},
+            "recovery_flavor": {},
+            "recovery_running_seconds": {},
+            "recovery_billed_minutes": {},
+            "recovery_hourly_rate_usd": {},
+            "recovery_job_cost_usd": {},
+            "recovery_remote_result_uri": {},
+            "finalization_job_id": {},
+            "finalization_terminal_status": {},
+            "finalization_flavor": {},
+            "finalization_timeout_minutes": {},
+            "finalization_running_seconds": {},
+            "finalization_billed_minutes": {},
+            "finalization_hourly_rate_usd": {},
+            "finalization_job_cost_usd": {},
+            "finalization_remote_result_uri": {},
+            "finalization_packet_tree_sha256": {},
+            "source_contract_sha256": {},
+            "source_verification_sha256": {},
+            "finalization_guard_sha256": {},
+            "remote_model_uri": {},
+            "final_model_tree_sha256": {},
+            "training_steps_executed": {},
+            "model_copied": {},
+            "model_reloaded": {},
+            "validation_reexecuted": {},
+            "source_validation_reexecuted": {}
+          }
+        }
+      }
+    },
+    "retry_evidence": {
+      "$ref": "#/$defs/retry_evidence"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_budget_usd",
+        "historical_cost_usd",
+        "continuation_actual_cost_usd",
+        "actual_before_evaluation_usd",
+        "evaluation_timeout_minutes",
+        "evaluation_maximum_cost_usd",
+        "maximum_total_cost_usd",
+        "remaining_after_reservation_usd",
+        "strictly_below_total_budget"
+      ],
+      "properties": {
+        "total_budget_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "historical_cost_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "continuation_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "failed_evaluation_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "auxiliary_diagnostic_actual_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "actual_before_evaluation_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "evaluation_timeout_minutes": {
+          "const": 120
+        },
+        "evaluation_maximum_cost_usd": {
+          "enum": [
+            "1.600",
+            "2.000"
+          ]
+        },
+        "maximum_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "remaining_after_reservation_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "strictly_below_total_budget": {
+          "const": true
+        }
+      }
+    },
+    "launch_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "total_budget_usd",
+        "continuation_evidence_sha256",
+        "actual_before_evaluation_usd",
+        "evaluation_maximum_cost_per_launch_usd",
+        "evaluation_launch_count",
+        "evaluation_launches",
+        "maximum_total_cost_usd",
+        "strictly_below_total_budget"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_launch_ledger"
+        },
+        "total_budget_usd": {
+          "$ref": "#/$defs/usd3"
+        },
+        "continuation_evidence_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "actual_before_evaluation_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "evaluation_maximum_cost_per_launch_usd": {
+          "enum": [
+            "1.600",
+            "2.000"
+          ]
+        },
+        "evaluation_launch_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "evaluation_launches": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sequence",
+              "launch_id",
+              "maximum_cost_usd"
+            ],
+            "properties": {
+              "sequence": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "launch_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{32}$"
+              },
+              "maximum_cost_usd": {
+                "enum": [
+                  "1.600",
+                  "2.000"
+                ]
+              }
+            }
+          }
+        },
+        "maximum_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "strictly_below_total_budget": {
+          "const": true
+        }
+      }
+    },
+    "publication": {
+      "const": {
+        "allowed": false,
+        "destination_kind": "private_hf_bucket"
+      }
+    },
+    "reports": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final",
+        "base_model"
+      ],
+      "properties": {
+        "final": {
+          "$ref": "#/$defs/candidate_reports"
+        },
+        "base_model": {
+          "$ref": "#/$defs/candidate_reports"
+        }
+      }
+    },
+    "files": {
+      "type": "object",
+      "minProperties": 36,
+      "maxProperties": 37,
+      "propertyNames": {
+        "enum": [
+          "base_model/ai_gold/evaluation-exit.json",
+          "base_model/ai_gold/evaluation.json",
+          "base_model/ai_gold/predictions.jsonl",
+          "base_model/ai_gold/predictions.manifest.json",
+          "base_model/critical_regression/evaluation-exit.json",
+          "base_model/critical_regression/evaluation.json",
+          "base_model/critical_regression/predictions.jsonl",
+          "base_model/critical_regression/predictions.manifest.json",
+          "base_model/regular_test/evaluation-exit.json",
+          "base_model/regular_test/evaluation.json",
+          "base_model/regular_test/predictions.jsonl",
+          "base_model/regular_test/predictions.manifest.json",
+          "continuation-manifest.json",
+          "continuation-packet-verification.json",
+          "continuation-result.json",
+          "attempt9-finalization-source-contract.json",
+          "attempt9-finalization-verification.json",
+          "finalization-launch-guard.json",
+          "final-evaluation-launch-ledger.json",
+          "final-evaluation-manifest.json",
+          "final/ai_gold/evaluation-exit.json",
+          "final/ai_gold/evaluation.json",
+          "final/ai_gold/predictions.jsonl",
+          "final/ai_gold/predictions.manifest.json",
+          "final/critical_regression/evaluation-exit.json",
+          "final/critical_regression/evaluation.json",
+          "final/critical_regression/predictions.jsonl",
+          "final/critical_regression/predictions.manifest.json",
+          "final/regular_test/evaluation-exit.json",
+          "final/regular_test/evaluation.json",
+          "final/regular_test/predictions.jsonl",
+          "final/regular_test/predictions.manifest.json",
+          "hf-cost-audit.json",
+          "job-manifest.json",
+          "preflight-base-local.json",
+          "preflight-base-remote.json",
+          "preflight-local.json",
+          "preflight-remote.json",
+          "training-report.json"
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixed_sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "usd3": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]{3}$"
+    },
+    "usd6": {
+      "type": "string",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.[0-9]{6}$"
+    },
+    "private_result_uri": {
+      "type": "string",
+      "pattern": "^hf://buckets/Buttermilk03/scriber-polishing-private-runs/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "final_directory": {
+      "type": "string",
+      "pattern": "^final-[A-Za-z0-9._-]+$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "retry_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "failed_evaluations",
+        "auxiliary_diagnostic_jobs",
+        "failed_evaluation_total_cost_usd",
+        "auxiliary_diagnostic_total_cost_usd",
+        "total_prior_job_cost_usd",
+        "campaign_cost_before_next_job_usd"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_retry_evidence"
+        },
+        "failed_evaluations": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/failed_evaluation_job"
+          }
+        },
+        "auxiliary_diagnostic_jobs": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/auxiliary_diagnostic_job"
+          }
+        },
+        "failed_evaluation_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "auxiliary_diagnostic_total_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "total_prior_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "campaign_cost_before_next_job_usd": {
+          "$ref": "#/$defs/usd6"
+        }
+      }
+    },
+    "failed_evaluation_job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "job_id",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "packet_tree_sha256",
+        "failure_stage",
+        "packet_verification_completed",
+        "output_claim_created",
+        "prediction_records_written",
+        "evaluation_reports_written",
+        "remote_output_prefix_empty"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "const": "ERROR"
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "const": "0.80"
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "failure_stage": {
+          "const": "packet_self_verification"
+        },
+        "packet_verification_completed": {
+          "const": false
+        },
+        "output_claim_created": {
+          "const": false
+        },
+        "prediction_records_written": {
+          "const": 0
+        },
+        "evaluation_reports_written": {
+          "const": 0
+        },
+        "remote_output_prefix_empty": {
+          "const": true
+        }
+      }
+    },
+    "auxiliary_diagnostic_job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "job_id",
+        "terminal_status",
+        "flavor",
+        "running_seconds",
+        "billed_minutes",
+        "hourly_rate_usd",
+        "actual_job_cost_usd",
+        "packet_tree_sha256",
+        "purpose",
+        "training_steps_executed",
+        "prediction_records_written",
+        "evaluation_reports_written"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "const": "COMPLETED"
+        },
+        "flavor": {
+          "const": "cpu-basic"
+        },
+        "running_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7200
+        },
+        "billed_minutes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "hourly_rate_usd": {
+          "const": "0.01"
+        },
+        "actual_job_cost_usd": {
+          "$ref": "#/$defs/usd6"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/prefixed_sha256"
+        },
+        "purpose": {
+          "const": "packet_mount_inventory"
+        },
+        "training_steps_executed": {
+          "const": 0
+        },
+        "prediction_records_written": {
+          "const": 0
+        },
+        "evaluation_reports_written": {
+          "const": 0
+        }
+      }
+    },
+    "candidate_reports": {
+      "type": "object",
+      "minProperties": 3,
+      "maxProperties": 3,
+      "additionalProperties": false,
+      "required": [
+        "ai_gold",
+        "critical_regression",
+        "regular_test"
+      ],
+      "properties": {
+        "ai_gold": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/suite_report"
+            },
+            {
+              "properties": {
+                "record_count": {
+                  "const": 1750
+                }
+              }
+            }
+          ]
+        },
+        "critical_regression": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/suite_report"
+            },
+            {
+              "properties": {
+                "record_count": {
+                  "const": 500
+                }
+              }
+            }
+          ]
+        },
+        "regular_test": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/suite_report"
+            },
+            {
+              "properties": {
+                "record_count": {
+                  "const": 1000
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "suite_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_count",
+        "prediction_sha256",
+        "prediction_manifest_sha256",
+        "evaluation_sha256",
+        "evaluation_exit",
+        "gate_status",
+        "gate_passed"
+      ],
+      "properties": {
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prediction_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "prediction_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluation_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "evaluation_exit": {
+          "enum": [
+            0,
+            2
+          ]
+        },
+        "gate_status": {
+          "enum": [
+            "passed",
+            "failed"
+          ]
+        },
+        "gate_passed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

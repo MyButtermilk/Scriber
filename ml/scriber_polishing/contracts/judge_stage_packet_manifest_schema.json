@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-stage-packet-manifest-v1.schema.json",
+  "title": "Anonymous Scriber judge stage packet manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "judge_stage",
+    "model_family",
+    "reasoning_effort",
+    "prompt_hash",
+    "reviewed_bundle_sha256",
+    "stage_assignment_sha256",
+    "stage_assignment_case_ids_sha256",
+    "case_ids_sha256",
+    "stage_bundle_sha256",
+    "source_public_case_count",
+    "stage_assignment_public_case_count",
+    "assigned_public_case_count",
+    "contains_candidate_identity",
+    "contains_model_or_checkpoint_identity",
+    "contains_training_history",
+    "contains_automatic_aggregate_scores",
+    "hard_deterministic_errors_are_binding"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "judge_stage": {
+      "enum": [
+        "terra_prejudge",
+        "sol_release",
+        "sol_tiebreak"
+      ]
+    },
+    "model_family": {
+      "enum": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ]
+    },
+    "reasoning_effort": {
+      "enum": [
+        "max",
+        "ultra"
+      ]
+    },
+    "prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reviewed_bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_assignment_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_assignment_case_ids_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "case_ids_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "source_public_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "stage_assignment_public_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "assigned_public_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "contains_candidate_identity": {
+      "const": false
+    },
+    "contains_model_or_checkpoint_identity": {
+      "const": false
+    },
+    "contains_training_history": {
+      "const": false
+    },
+    "contains_automatic_aggregate_scores": {
+      "const": false
+    },
+    "hard_deterministic_errors_are_binding": {
+      "const": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "terra_prejudge"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-terra"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_release"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_tiebreak"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "ultra"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

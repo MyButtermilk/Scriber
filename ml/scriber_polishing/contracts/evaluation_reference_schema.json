@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/evaluation-reference-v1.schema.json",
+  "title": "Frozen Scriber polishing evaluation reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "split",
+    "source_text",
+    "target_sst",
+    "target_plain_text",
+    "target_ast",
+    "semantic_plan",
+    "protected_spans",
+    "slice_tags",
+    "is_identity"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{2,199}$"
+    },
+    "split": {
+      "enum": [
+        "test",
+        "challenge",
+        "ai_gold_test",
+        "ai_gold_challenge",
+        "regression"
+      ]
+    },
+    "source_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30000
+    },
+    "target_sst": {
+      "type": "string",
+      "pattern": "^\\[DOC\\]\\n[\\s\\S]*\\n\\[/DOC\\]$",
+      "maxLength": 30000
+    },
+    "target_plain_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "target_ast": {
+      "type": "object"
+    },
+    "semantic_plan": {
+      "type": "object"
+    },
+    "address_mode": {
+      "enum": [
+        "formal_sie",
+        "personal_du_capitalized",
+        "personal_du_lowercase",
+        "neutral_third_person",
+        "quoted_speech",
+        "mixed_correspondence",
+        "ambiguous"
+      ]
+    },
+    "protected_spans": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 300
+      }
+    },
+    "slice_tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_:-]{1,79}$"
+      }
+    },
+    "is_identity": {
+      "type": "boolean"
+    }
+  }
+}

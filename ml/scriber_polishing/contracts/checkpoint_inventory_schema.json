@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/checkpoint-inventory-v1.schema.json",
+  "title": "Scriber all-BF16 Transformers checkpoint inventory v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "variant",
+    "format",
+    "source_id",
+    "model_type",
+    "declared_dtype",
+    "weight_dtype_counts",
+    "file_count",
+    "total_bytes",
+    "tree_sha256",
+    "files"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "variant": {
+      "const": "bf16"
+    },
+    "format": {
+      "const": "transformers_safetensors"
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model_type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "declared_dtype": {
+      "enum": [
+        "bfloat16",
+        "bf16"
+      ]
+    },
+    "weight_dtype_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "BF16"
+      ],
+      "properties": {
+        "BF16": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "total_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

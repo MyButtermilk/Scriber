@@ -1,0 +1,390 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/batch-inference-resume-journal-v1.schema.json",
+  "title": "Scriber atomic batch-inference resume journal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "binding_sha256",
+    "binding",
+    "entries"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_batch_inference_resume_journal"
+    },
+    "status": {
+      "const": "in_progress"
+    },
+    "binding_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "binding": {
+      "$ref": "#/$defs/binding"
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "candidate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{2,199}$"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "model_reference",
+        "resolved_path",
+        "requested_revision",
+        "resolved_revision",
+        "tree_sha256",
+        "config_sha256",
+        "file_count",
+        "total_bytes",
+        "identity_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "local_tree",
+            "hub_revision"
+          ]
+        },
+        "model_reference": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolved_path": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "requested_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "resolved_revision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "tree_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        },
+        "config_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        },
+        "file_count": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "local_tree"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "resolved_path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolved_revision": {
+                "type": "null"
+              },
+              "tree_sha256": {
+                "$ref": "#/$defs/hash"
+              },
+              "config_sha256": {
+                "$ref": "#/$defs/hash"
+              },
+              "file_count": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "total_bytes": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "resolved_path": {
+                "type": "null"
+              },
+              "resolved_revision": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$"
+              },
+              "tree_sha256": {
+                "type": "null"
+              },
+              "config_sha256": {
+                "type": "null"
+              },
+              "file_count": {
+                "type": "null"
+              },
+              "total_bytes": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "protectionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "policy_sha256",
+        "evidence_sha256",
+        "source",
+        "artifact_sha256"
+      ],
+      "properties": {
+        "policy_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_sha256",
+        "reference_case_ids_sha256",
+        "reference_count",
+        "candidate",
+        "model",
+        "quantization",
+        "device",
+        "max_new_tokens",
+        "batch_size",
+        "protection_policy",
+        "predictions_output_path",
+        "manifest_output_path"
+      ],
+      "properties": {
+        "reference_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "reference_case_ids_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "reference_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "model": {
+          "$ref": "#/$defs/model"
+        },
+        "quantization": {
+          "enum": [
+            "none",
+            "int8",
+            "int4_nf4"
+          ]
+        },
+        "device": {
+          "enum": [
+            "cuda",
+            "cpu"
+          ]
+        },
+        "max_new_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protection_policy": {
+          "$ref": "#/$defs/protectionPolicy"
+        },
+        "predictions_output_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifest_output_path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "prediction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "case_id",
+        "prediction_sst"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "case_id": {
+          "$ref": "#/$defs/caseId"
+        },
+        "prediction_sst": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 30000
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "valid_sst",
+        "restoration_error",
+        "generation_seconds",
+        "input_tokens",
+        "output_tokens"
+      ],
+      "properties": {
+        "case_id": {
+          "$ref": "#/$defs/caseId"
+        },
+        "valid_sst": {
+          "type": "boolean"
+        },
+        "restoration_error": {
+          "type": "boolean"
+        },
+        "generation_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "index",
+        "case_id",
+        "prediction",
+        "evidence",
+        "entry_sha256"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "case_id": {
+          "$ref": "#/$defs/caseId"
+        },
+        "prediction": {
+          "$ref": "#/$defs/prediction"
+        },
+        "evidence": {
+          "$ref": "#/$defs/evidence"
+        },
+        "entry_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/completed-final-training-report-v2.schema.json",
+  "title": "Scriber completed final-training report selection subset v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "base_model",
+    "base_revision",
+    "run_kind",
+    "run_fingerprint",
+    "bf16",
+    "max_steps",
+    "early_stopping",
+    "save_total_limit",
+    "checkpoint_state",
+    "training_completed"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "base_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "base_revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "run_kind": {
+      "type": "string",
+      "minLength": 1
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "bf16": {
+      "type": "boolean"
+    },
+    "max_steps": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "early_stopping": {
+      "type": "boolean"
+    },
+    "save_total_limit": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "checkpoint_state": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "global_step",
+        "best_metric",
+        "best_model_checkpoint",
+        "last_checkpoint",
+        "surviving_checkpoints"
+      ],
+      "properties": {
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "best_metric": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "best_model_checkpoint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "last_checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "surviving_checkpoints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/surviving_checkpoint"
+          }
+        }
+      }
+    },
+    "training_completed": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "surviving_checkpoint": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "trainer_state_sha256"
+      ],
+      "properties": {
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "trainer_state_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

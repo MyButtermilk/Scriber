@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/checkpoint-selection-handoff-v2.schema.json",
+  "title": "Scriber selected checkpoint handoff v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "selection_config_sha256",
+    "completed_training_report_sha256",
+    "selection_report_sha256",
+    "run_fingerprint",
+    "selected_checkpoint",
+    "base_tokenizer"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "const": "selected"
+    },
+    "selection_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "completed_training_report_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "selection_report_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "selected_checkpoint": {
+      "$ref": "#/$defs/selected_checkpoint"
+    },
+    "base_tokenizer": {
+      "$ref": "#/$defs/model_pin"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "model_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "selected_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "file_count",
+        "total_bytes",
+        "candidate_evidence_sha256",
+        "deterministic_automatic_report_sha256",
+        "eval_loss"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "deterministic_automatic_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

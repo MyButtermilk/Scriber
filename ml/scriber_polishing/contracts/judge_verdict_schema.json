@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-verdict-v2.schema.json",
+  "title": "Blinded Scriber pairwise judge verdict v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "judge_id",
+    "judge_session_id",
+    "judge_stage",
+    "model_family",
+    "reasoning_effort",
+    "prompt_hash",
+    "reviewed_bundle_sha256",
+    "stage_assignment_sha256",
+    "candidate",
+    "acceptable",
+    "critical_error",
+    "scores",
+    "flags",
+    "brief_reason"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^judge_[0-9a-f]{24}$"
+    },
+    "judge_id": {
+      "type": "string",
+      "pattern": "^judge_[a-z0-9_]{7,79}$"
+    },
+    "judge_session_id": {
+      "type": "string",
+      "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+    },
+    "judge_stage": {
+      "enum": [
+        "terra_prejudge",
+        "sol_release",
+        "sol_tiebreak"
+      ]
+    },
+    "model_family": {
+      "enum": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ]
+    },
+    "reasoning_effort": {
+      "enum": [
+        "max",
+        "ultra"
+      ]
+    },
+    "prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reviewed_bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stage_assignment_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "candidate": {
+      "enum": [
+        "A",
+        "B"
+      ]
+    },
+    "acceptable": {
+      "type": "boolean"
+    },
+    "critical_error": {
+      "type": "boolean"
+    },
+    "scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_fidelity",
+        "no_additions",
+        "no_omissions",
+        "spelling",
+        "grammar",
+        "punctuation",
+        "paragraph_structure",
+        "heading_structure",
+        "numbered_lists",
+        "disfluency_cleanup",
+        "unit_normalization",
+        "legal_citations",
+        "address_pronouns",
+        "formatting",
+        "style_preservation"
+      ],
+      "properties": {
+        "semantic_fidelity": { "$ref": "#/$defs/score" },
+        "no_additions": { "$ref": "#/$defs/score" },
+        "no_omissions": { "$ref": "#/$defs/score" },
+        "spelling": { "$ref": "#/$defs/score" },
+        "grammar": { "$ref": "#/$defs/score" },
+        "punctuation": { "$ref": "#/$defs/score" },
+        "paragraph_structure": { "$ref": "#/$defs/score" },
+        "heading_structure": { "$ref": "#/$defs/score" },
+        "numbered_lists": { "$ref": "#/$defs/score" },
+        "disfluency_cleanup": { "$ref": "#/$defs/score" },
+        "unit_normalization": { "$ref": "#/$defs/score" },
+        "legal_citations": { "$ref": "#/$defs/score" },
+        "address_pronouns": { "$ref": "#/$defs/score" },
+        "formatting": { "$ref": "#/$defs/score" },
+        "style_preservation": { "$ref": "#/$defs/score" }
+      }
+    },
+    "flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "changed_fact",
+          "changed_negation",
+          "changed_condition",
+          "changed_modality",
+          "changed_number",
+          "changed_amount",
+          "changed_percentage",
+          "changed_date_or_time",
+          "changed_unit_dimension",
+          "changed_name",
+          "changed_company_name",
+          "changed_technical_term",
+          "changed_case_identifier",
+          "changed_contact_detail",
+          "changed_language",
+          "changed_speaker_label",
+          "changed_timestamp",
+          "changed_legal_reference",
+          "changed_legal_hierarchy",
+          "invented_law_abbreviation",
+          "omitted_content",
+          "added_content",
+          "answered_question",
+          "summarized_content",
+          "reordered_content",
+          "damaged_protected_span",
+          "invalid_sst",
+          "invented_heading",
+          "missed_heading",
+          "wrong_heading_level",
+          "wrong_heading_style",
+          "false_subject",
+          "missed_subject",
+          "paragraph_oversegmentation",
+          "paragraph_undersegmentation",
+          "missing_blank_line",
+          "excessive_blank_lines",
+          "salutation_layout_error",
+          "closing_layout_error",
+          "signature_layout_error",
+          "wrong_list_type",
+          "malformed_numbered_list",
+          "wrong_list_nesting",
+          "formatting_command_leaked",
+          "formatting_command_misinterpreted",
+          "false_unit_normalization",
+          "wrong_address_pronoun",
+          "false_variant_correction",
+          "output_not_clean_text",
+          "unsafe_renderer_output"
+        ]
+      }
+    },
+    "brief_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "critical_error": {
+            "const": true
+          }
+        },
+        "required": [
+          "critical_error"
+        ]
+      },
+      "then": {
+        "properties": {
+          "acceptable": {
+            "const": false
+          },
+          "flags": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "flags": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "terra_prejudge"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-terra"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_release"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_tiebreak"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "ultra"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    }
+  }
+}

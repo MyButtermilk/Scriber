@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/quantization-failure-evidence-v1.schema.json",
+  "title": "Scriber quantization failure evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "stage",
+    "variant",
+    "reason_code",
+    "source_id",
+    "source_tree_sha256",
+    "training_fingerprint",
+    "quantization_config_sha256",
+    "error_type",
+    "diagnostic_sha256",
+    "artifact_published",
+    "fresh_process_required"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_quantization_failure_evidence"
+    },
+    "status": {
+      "const": "failed"
+    },
+    "stage": {
+      "const": "reload"
+    },
+    "variant": {
+      "enum": [
+        "int8",
+        "int4_nf4"
+      ]
+    },
+    "reason_code": {
+      "enum": [
+        "invalid_sst",
+        "empty_completion",
+        "materialization_failed"
+      ]
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "training_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "quantization_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "error_type": {
+      "type": "string",
+      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+    },
+    "diagnostic_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "artifact_published": {
+      "const": false
+    },
+    "fresh_process_required": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

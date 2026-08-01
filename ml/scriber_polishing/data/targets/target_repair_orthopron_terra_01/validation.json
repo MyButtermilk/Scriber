@@ -1,0 +1,31 @@
+{
+  "ast_sst_ast_round_trip_count": 300,
+  "canonical_expansion_target_count": 300,
+  "canonical_expansion_variant_count": 2100,
+  "canonical_record_validation_count": 300,
+  "renderer_consistency_count": 300,
+  "repair_class_proof": {
+    "omitted_condition": {
+      "repaired_seed_count": 68,
+      "reviewed_seed_count": 68
+    },
+    "pronoun_referent_error": {
+      "repaired_seed_count": 141,
+      "reviewed_seed_count": 141
+    },
+    "redundant_subject_heading": {
+      "repaired_seed_count": 28,
+      "reviewed_seed_count": 28
+    }
+  },
+  "reviewed_baseline_targets_changed": 196,
+  "reviewed_baseline_targets_unchanged": 0,
+  "target_batch_validator": {
+    "record_count": 300,
+    "writer_id": "target_repair_orthopron_terra_01"
+  },
+  "targets_sha256": "sha256:98aa005cedb566e102661130b1e74736d2d4cf900b70d4c4577a9f25f20cb947",
+  "unreviewed_baseline_targets_unchanged": 104,
+  "validation_version": 1,
+  "zero_rejects": true
+}

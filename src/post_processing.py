@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any
+from typing import Any, Protocol
 
 from loguru import logger
 
@@ -12,6 +12,10 @@ from src.summarization import generate_text_with_model
 
 _OUTPUT_PLACEHOLDER = "${output}"
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+class LocalTranscriptPolisher(Protocol):
+    async def polish(self, transcript: str, variant: str) -> Any: ...
 
 
 def build_post_processing_prompt(raw_text: str, prompt_template: str | None = None) -> str:
@@ -65,6 +69,9 @@ async def post_process_live_transcript(
     raw_text: str,
     *,
     model: str | None = None,
+    engine: str | None = None,
+    local_polisher: LocalTranscriptPolisher | None = None,
+    local_variant: str | None = None,
     diagnostics: dict[str, Any] | None = None,
 ) -> str:
     """Clean live-mic transcript text before insertion into the active app."""
@@ -80,6 +87,46 @@ async def post_process_live_transcript(
                 }
             )
         return ""
+    selected_engine = (engine or Config.POST_PROCESSING_ENGINE or "cloud").strip().lower()
+    if selected_engine == "local":
+        if local_polisher is None:
+            raise RuntimeError("Local post-processing is not available.")
+        variant = (local_variant or Config.LOCAL_POLISHING_VARIANT or "q8_0").strip().lower()
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "status": "started",
+                    "engine": "local",
+                    "model": f"local:{variant}",
+                    "rawChars": len(transcript),
+                    "rawWords": len(transcript.split()),
+                }
+            )
+        outcome = await local_polisher.polish(transcript, variant)
+        processed = str(getattr(outcome, "text", "") or "")
+        accepted = getattr(outcome, "status", None) == "accepted"
+        reason_codes = tuple(str(value) for value in (getattr(outcome, "reason_codes", ()) or ()))
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "status": "completed" if accepted else "original_fallback",
+                    "engine": "local",
+                    "model": f"local:{variant}",
+                    "durationMs": float(getattr(outcome, "duration_ms", 0.0) or 0.0),
+                    "runtimeBackend": getattr(outcome, "runtime_backend", None),
+                    "reasonCodes": list(reason_codes),
+                    "fallbackToRaw": not accepted,
+                    "cleanedChars": len(processed),
+                    "outputChanged": accepted and processed != transcript,
+                }
+            )
+        # The local boundary is deliberately fail-closed: a rejected or failed
+        # generation returns the original transcript and never falls through to
+        # a cloud provider.
+        return processed if accepted and processed.strip() else transcript
+    if selected_engine != "cloud":
+        raise RuntimeError("Unsupported post-processing engine.")
+
     selected_model = model or Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
     prompt = build_post_processing_prompt(transcript)
     max_output_tokens = post_processing_output_token_budget(transcript)
@@ -87,6 +134,7 @@ async def post_process_live_transcript(
         diagnostics.update(
             {
                 "status": "started",
+                "engine": "cloud",
                 "model": selected_model,
                 "rawChars": len(transcript),
                 "rawWords": len(transcript.split()),
@@ -112,6 +160,7 @@ async def post_process_live_transcript(
         diagnostics.update(
             {
                 "status": "completed" if cleaned else "empty_output",
+                "engine": "cloud",
                 "providerResponseChars": len(processed or ""),
                 "cleanedChars": len(cleaned or ""),
                 "outputChanged": cleaned != transcript,

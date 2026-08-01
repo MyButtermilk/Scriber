@@ -1,0 +1,758 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/pilot-selection-report-v1.schema.json",
+  "title": "Scriber immutable two-run pilot learning-rate selection report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "score_policy_sha256",
+    "score_policy",
+    "inputs",
+    "fairness",
+    "candidates",
+    "release_winner",
+    "release_safety_assertion",
+    "remediation_evidence",
+    "remediation_parent"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_pilot_learning_rate_selection"
+    },
+    "status": {
+      "enum": [
+        "release_winner_selected",
+        "no_release_winner"
+      ]
+    },
+    "score_policy_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "score_policy": {
+      "$ref": "#/$defs/scorePolicy"
+    },
+    "inputs": {
+      "$ref": "#/$defs/inputs"
+    },
+    "fairness": {
+      "$ref": "#/$defs/fairness"
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/candidate"
+      }
+    },
+    "release_winner": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/parent"
+        }
+      ]
+    },
+    "release_safety_assertion": {
+      "type": "boolean"
+    },
+    "remediation_evidence": {
+      "$ref": "#/$defs/remediationEvidence"
+    },
+    "remediation_parent": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/remediationParent"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "candidateId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "modelTree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "directory",
+        "tree_sha256",
+        "inventory_sha256",
+        "file_count",
+        "total_bytes"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "directory": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "inventory_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "inputCandidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "training_report_sha256",
+        "model_tree",
+        "prediction_manifest_sha256",
+        "prediction_part_manifest_sha256",
+        "evaluation_report_sha256",
+        "protected_span_diagnostic_sha256",
+        "diagnostic_evaluation_report_sha256"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_tree": {
+          "$ref": "#/$defs/modelTree"
+        },
+        "prediction_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "prediction_part_manifest_sha256": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/hash"
+          }
+        },
+        "evaluation_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "protected_span_diagnostic_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        },
+        "diagnostic_evaluation_report_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reference_manifest_sha256",
+        "reference_records_sha256",
+        "evaluation_config_sha256",
+        "candidates"
+      ],
+      "properties": {
+        "reference_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "reference_records_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "evaluation_config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "candidates": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/inputCandidate"
+          }
+        }
+      }
+    },
+    "candidateOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "learning_rate",
+        "configured_max_steps",
+        "actual_global_step",
+        "early_stopping_triggered",
+        "best_checkpoint",
+        "best_checkpoint_step",
+        "best_eval_loss",
+        "last_checkpoint",
+        "model_tree_sha256"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "configured_max_steps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "actual_global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "early_stopping_triggered": {
+          "type": "boolean"
+        },
+        "best_checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "best_checkpoint_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "best_eval_loss": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "last_checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "model_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "fairness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "only_allowed_difference",
+        "shared_training_binding_sha256",
+        "shared_training_binding",
+        "shared_inference_binding_sha256",
+        "shared_inference_binding",
+        "candidate_outcomes"
+      ],
+      "properties": {
+        "passed": {
+          "const": true
+        },
+        "only_allowed_difference": {
+          "const": "learning_rate"
+        },
+        "shared_training_binding_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "shared_training_binding": {
+          "type": "object"
+        },
+        "shared_inference_binding_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "shared_inference_binding": {
+          "type": "object"
+        },
+        "candidate_outcomes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": {
+            "$ref": "#/$defs/candidateOutcome"
+          }
+        }
+      }
+    },
+    "scoreValues": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/rate"
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "score",
+        "values"
+      ],
+      "properties": {
+        "score": {
+          "$ref": "#/$defs/rate"
+        },
+        "values": {
+          "$ref": "#/$defs/scoreValues"
+        }
+      }
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safety_content",
+        "task",
+        "structure"
+      ],
+      "properties": {
+        "safety_content": {
+          "$ref": "#/$defs/component"
+        },
+        "task": {
+          "$ref": "#/$defs/component"
+        },
+        "structure": {
+          "$ref": "#/$defs/component"
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "learning_rate",
+        "hard_gates",
+        "hard_gates_passed",
+        "failed_hard_gates",
+        "components",
+        "eval_loss",
+        "normalized_eval_loss",
+        "composite_score",
+        "release_eligible",
+        "rank"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "hard_gates": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "hard_gates_passed": {
+          "type": "boolean"
+        },
+        "failed_hard_gates": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        },
+        "eval_loss": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "normalized_eval_loss": {
+          "$ref": "#/$defs/rate"
+        },
+        "composite_score": {
+          "$ref": "#/$defs/rate"
+        },
+        "release_eligible": {
+          "type": "boolean"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        }
+      }
+    },
+    "parent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "learning_rate",
+        "training_report_sha256",
+        "model_tree",
+        "release_eligible"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_tree": {
+          "$ref": "#/$defs/modelTree"
+        },
+        "release_eligible": {
+          "const": true
+        }
+      }
+    },
+    "remediationParent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "learning_rate",
+        "training_report_sha256",
+        "model_tree",
+        "release_eligible",
+        "scope",
+        "selection_basis",
+        "external_failure_signature_sha256"
+      ],
+      "properties": {
+        "candidate_id": {
+          "$ref": "#/$defs/candidateId"
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "training_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_tree": {
+          "$ref": "#/$defs/modelTree"
+        },
+        "release_eligible": {
+          "const": false
+        },
+        "scope": {
+          "const": "remediation_only_not_release"
+        },
+        "selection_basis": {
+          "const": "composite_then_loss_tie_breaks"
+        },
+        "external_failure_signature_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "remediationEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "external_failure_signature_sha256",
+        "diagnostic_sha256",
+        "assertion"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "not_applicable_safe_winner",
+            "not_provided",
+            "shared_external_failure_not_proven",
+            "shared_external_failure_proven"
+          ]
+        },
+        "external_failure_signature_sha256": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/hash"
+            }
+          ]
+        },
+        "diagnostic_sha256": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/hash"
+          }
+        },
+        "assertion": {
+          "const": "This evidence may justify only a remediation parent; it never changes failed hard gates or release eligibility."
+        }
+      }
+    },
+    "scorePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "weights",
+        "component_definitions",
+        "hard_first",
+        "both_hard_fail_policy",
+        "tie_breakers"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "weights": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "safety_content",
+            "task",
+            "structure",
+            "normalized_eval_loss"
+          ],
+          "properties": {
+            "safety_content": {
+              "const": 0.6
+            },
+            "task": {
+              "const": 0.25
+            },
+            "structure": {
+              "const": 0.1
+            },
+            "normalized_eval_loss": {
+              "const": 0.05
+            }
+          }
+        },
+        "component_definitions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "safety_content",
+            "task",
+            "structure",
+            "normalized_eval_loss"
+          ],
+          "properties": {
+            "safety_content": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "aggregation",
+                "direct_rate_metrics",
+                "derived_metrics"
+              ],
+              "properties": {
+                "aggregation": {
+                  "const": "arithmetic_mean"
+                },
+                "direct_rate_metrics": {
+                  "const": [
+                    "protected_span_exact_rate",
+                    "output_only_compliance_rate",
+                    "safe_renderer_rate",
+                    "renderer_round_trip_rate"
+                  ]
+                },
+                "derived_metrics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "hard_content_mean",
+                    "critical_integrity",
+                    "semantic_integrity"
+                  ],
+                  "properties": {
+                    "hard_content_mean": {
+                      "const": "arithmetic mean of every path-sorted hard_content_exact_rates value"
+                    },
+                    "critical_integrity": {
+                      "const": "clip(1 - sum(critical_errors values) / metrics.total, 0, 1)"
+                    },
+                    "semantic_integrity": {
+                      "const": "clip(1 - sum(semantic_hard_check_counts values) / metrics.total, 0, 1)"
+                    }
+                  }
+                }
+              }
+            },
+            "task": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "aggregation",
+                "direct_rate_metrics",
+                "complement_metrics"
+              ],
+              "properties": {
+                "aggregation": {
+                  "const": "arithmetic_mean"
+                },
+                "direct_rate_metrics": {
+                  "const": [
+                    "normalized_exact_match",
+                    "chrfpp_f2",
+                    "punctuation_f1",
+                    "filler_f1",
+                    "repetition_cleanup_f1",
+                    "capitalization_accuracy",
+                    "spelling_recovery_accuracy",
+                    "grammar_recovery_accuracy",
+                    "self_correction_recovery_accuracy",
+                    "sentence_boundary_f1"
+                  ]
+                },
+                "complement_metrics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "cer",
+                    "wer"
+                  ],
+                  "properties": {
+                    "cer": {
+                      "const": "clip(1 - cer, 0, 1)"
+                    },
+                    "wer": {
+                      "const": "clip(1 - wer, 0, 1)"
+                    }
+                  }
+                }
+              }
+            },
+            "structure": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "aggregation",
+                "direct_rate_metrics"
+              ],
+              "properties": {
+                "aggregation": {
+                  "const": "arithmetic_mean"
+                },
+                "direct_rate_metrics": {
+                  "const": [
+                    "sst_parse_rate",
+                    "ast_exact_match_rate",
+                    "block_sequence_exact_rate",
+                    "block_type_accuracy",
+                    "format_command_recovery_accuracy"
+                  ]
+                }
+              }
+            },
+            "normalized_eval_loss": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "formula",
+                "domain"
+              ],
+              "properties": {
+                "formula": {
+                  "const": "minimum_candidate_eval_loss / candidate_eval_loss"
+                },
+                "domain": {
+                  "const": "strictly_positive_finite"
+                }
+              }
+            }
+          }
+        },
+        "hard_first": {
+          "const": true
+        },
+        "both_hard_fail_policy": {
+          "const": "NO_RELEASE_WINNER"
+        },
+        "tie_breakers": {
+          "const": [
+            {
+              "field": "hard_gates_passed",
+              "direction": "desc"
+            },
+            {
+              "field": "composite_score",
+              "direction": "desc"
+            },
+            {
+              "field": "safety_content_score",
+              "direction": "desc"
+            },
+            {
+              "field": "task_score",
+              "direction": "desc"
+            },
+            {
+              "field": "structure_score",
+              "direction": "desc"
+            },
+            {
+              "field": "normalized_eval_loss",
+              "direction": "desc"
+            },
+            {
+              "field": "eval_loss",
+              "direction": "asc"
+            },
+            {
+              "field": "learning_rate",
+              "direction": "asc"
+            },
+            {
+              "field": "candidate_id",
+              "direction": "asc"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

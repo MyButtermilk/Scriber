@@ -585,6 +585,8 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     monkeypatch.setattr(config_module, "_json_settings_migration_pending", True)
 
     Config.set_post_processing_enabled(False)
+    Config.set_post_processing_engine("local")
+    Config.set_local_polishing_variant("bf16")
     Config.set_post_processing_model("test/model")
     Config.set_segment_speech_with_vad(True)
     Config.set_youtube_prefer_captions(False)
@@ -596,7 +598,16 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     assert Config.json_settings_migration_pending() is False
     assert writes[0][0] == target
     assert '"postProcessingModel": "test/model"' in writes[0][1]
+    assert '"postProcessingEngine": "local"' in writes[0][1]
+    assert '"localPolishingVariant": "bf16"' in writes[0][1]
     assert '"youtubePreferCaptions": false' in writes[0][1]
+
+
+def test_local_polishing_settings_reject_unknown_values():
+    with pytest.raises(ValueError, match="post-processing engine"):
+        Config.set_post_processing_engine("automatic")
+    with pytest.raises(ValueError, match="local polishing variant"):
+        Config.set_local_polishing_variant("q4_k_m")
 
 
 def test_atomic_write_cleans_unique_temporary_file_after_replace_failure(monkeypatch, tmp_path):

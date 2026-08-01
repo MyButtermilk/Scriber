@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/selected-checkpoint-publication-evidence-v2.schema.json",
+  "title": "Scriber selected checkpoint publication evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "run_fingerprint",
+    "checkpoint_identity",
+    "base_tokenizer",
+    "fresh_reload",
+    "fresh_inventory"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "candidate_id": {
+      "type": "string",
+      "pattern": "^checkpoint-[1-9][0-9]*$"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "checkpoint_identity": {
+      "$ref": "#/$defs/checkpoint_identity"
+    },
+    "base_tokenizer": {
+      "$ref": "#/$defs/model_pin"
+    },
+    "fresh_reload": {
+      "$ref": "#/$defs/fresh_reload"
+    },
+    "fresh_inventory": {
+      "$ref": "#/$defs/fresh_inventory"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "model_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "checkpoint_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "architecture",
+        "model_type",
+        "base_model"
+      ],
+      "properties": {
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "architecture": {
+          "const": "Gemma3ForCausalLM"
+        },
+        "model_type": {
+          "const": "gemma3_text"
+        },
+        "base_model": {
+          "$ref": "#/$defs/model_pin"
+        }
+      }
+    },
+    "fresh_reload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "process_boundary",
+        "configuration_source",
+        "tokenizer_source",
+        "model_tree_sha256",
+        "model_config_sha256",
+        "model_sha256",
+        "generated_tokens"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "process_boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configuration_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tokenizer_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "generated_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "fresh_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "file_count",
+        "total_bytes"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

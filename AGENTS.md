@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-07-29
+Last verified: 2026-08-01
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -87,6 +87,12 @@ Backend and runtime:
   transport, bounded DNS/connection pooling, and privacy-safe request timing.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
+- `src/local_polishing/`: public, immutable Hugging Face GGUF catalog,
+  resumable/hash-verified model installation, conservative output safety gate,
+  and loopback-only llama.cpp lifecycle for optional local live-mic polishing.
+  Q8_0 is the product default and BF16 is the larger reference option. This
+  path is anonymous and must not depend on a Hugging Face account, token, or
+  credential manager.
 - `src/main.py`: compatibility notice for the removed Python desktop UI; use
   Tauri for desktop runs.
 
@@ -244,6 +250,12 @@ Packaging and scripts:
   generated; the signing thumbprint and timestamp URL belong to the runtime
   cache identity. Keep both PyInstaller `EXE` and `COLLECT` on `upx=False` so
   shipped PE layout never depends on a build-host UPX installation.
+- `packaging/llama-cpp-polishing-runtime-lock-v1.json` and
+  `scripts/prepare_local_polishing_runtime.py`: exact llama.cpp b10158 Windows
+  Vulkan runtime, CPU fallback libraries, MIT notice, safe archive extraction,
+  and complete staged-file verification. Bundle this one runtime under
+  `backend/tools/local-polishing`; model repos may provide only catalog-pinned
+  data artifacts and never executable code.
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
   releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Python
   sidecar preparation, and the Tauri `--no-bundle` app compile overlap. That
@@ -1092,10 +1104,12 @@ Packaging and scripts:
   longer than that provider timeout so its ErrorFrame and cleanup complete.
 - Live microphone post-processing is opt-in per session through the second
   hotkey. When active, suppress pipeline raw-text injection, wait for final STT
-  text after stop, run the configured LLM prompt with the `${output}` raw text
-  placeholder, and paste the processed output. If post-processing fails, retain
-  and insert the raw transcript. Do not route File or YouTube jobs through this
-  path.
+  text after stop, then route it to the explicitly selected cloud provider or
+  local GGUF engine. The cloud path keeps the configured `${output}` prompt.
+  The local path uses only the pinned conservative product prompt/policy,
+  defaults to Q8_0, optionally supports BF16, and must never fall through to a
+  cloud provider after a local failure. In every failure case retain and insert
+  the raw transcript. Do not route File or YouTube jobs through this path.
 - Azure MAI defaults to `mai-transcribe-1.5`.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.
@@ -1460,6 +1474,16 @@ Packaging and scripts:
 - Post-processing diagnostics are redacted runtime metadata only. They may
   include model, prompt/output sizes, duration, status, and sanitized error type
   or message, but must never include raw transcript text or processed output.
+- Local polishing model downloads use the public, ungated Hugging Face repo at
+  one full commit SHA and an exact allowlist of GGUF/policy/manifest files. Use
+  anonymous downloads explicitly, disable ambient Hugging Face credentials,
+  reject returned paths outside the allowlisted cache boundary, verify byte
+  length and SHA-256 before atomic promotion under `SCRIBER_DATA_DIR/models`,
+  and never execute remote code. Downloading or updating a model must not
+  silently activate it; only a fully verified model may be selected.
+  Cancellation must prevent verification/activation and keep only the bounded
+  resumable staging state; a later explicit retry may reuse it. Shutdown must
+  stop the local inference runtime and leave no active model process.
 - Backend logs: `logs\tauri-backend.log`.
 - Shell logs: `logs\tauri-shell.log`.
 - Crash metadata: `logs\backend-crash-metadata.jsonl`.

@@ -38,6 +38,8 @@ param(
     [string]$RuntimeCacheRoot = "",
     [switch]$BundleRustAudioSidecar,
     [switch]$BundleRustDiarizationSidecar,
+    [switch]$BundleLocalPolishingRuntime,
+    [string]$LocalPolishingRuntimeCacheRoot = "",
     [string]$RustDiarizationSidecarCacheRoot = "",
     [string]$SherpaOnnxArchiveCacheRoot = "",
     [string]$RustDiarizationTargetRoot = "",
@@ -833,6 +835,7 @@ function Get-SidecarFlagState {
         validateSlimMediaTools = [bool]$ValidateSlimMediaTools
         bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
         bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
+        bundleLocalPolishingRuntime = [bool]$BundleLocalPolishingRuntime
         pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
         rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
         pythonRuntimeFlavor = [string]$PythonRuntimeFlavor
@@ -2343,6 +2346,51 @@ function Copy-RustDiarizationSidecarToBackend {
     }
 }
 
+function Test-LocalPolishingRuntime {
+    param(
+        [string]$BackendDir,
+        [object]$ExpectedIdentity
+    )
+
+    if ($null -eq $ExpectedIdentity) {
+        return $false
+    }
+    $runtimeDir = Join-Path $BackendDir "tools\local-polishing"
+    $manifestPath = Join-Path $runtimeDir "runtime-manifest.json"
+    $serverPath = Join-Path $runtimeDir "llama-server.exe"
+    $lockPath = Join-Path $RepoRoot "packaging\llama-cpp-polishing-runtime-lock-v1.json"
+    $preparePath = Join-Path $RepoRoot "scripts\prepare_local_polishing_runtime.py"
+    foreach ($requiredPath in @($manifestPath, $serverPath, $lockPath, $preparePath)) {
+        if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+            return $false
+        }
+    }
+
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $verifyOutput = & $PythonPath $preparePath `
+            --lock $lockPath `
+            --output $runtimeDir `
+            --verify 2>$null
+        $verifyExitCode = $LASTEXITCODE
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($verifyExitCode -ne 0 -or -not (($verifyOutput | Out-String).Trim())) {
+        return $false
+    }
+
+    return (
+        [string](Get-ObjectPropertyValue -Object $ExpectedIdentity -Name "manifestSha256") -eq (Get-Sha256Hex -Path $manifestPath) -and
+        [int64](Get-ObjectPropertyValue -Object $ExpectedIdentity -Name "manifestLength") -eq [int64](Get-Item -LiteralPath $manifestPath).Length -and
+        [string](Get-ObjectPropertyValue -Object $ExpectedIdentity -Name "serverSha256") -eq (Get-Sha256Hex -Path $serverPath) -and
+        [int64](Get-ObjectPropertyValue -Object $ExpectedIdentity -Name "serverLength") -eq [int64](Get-Item -LiteralPath $serverPath).Length
+    )
+}
+
 function Test-SidecarTargetCurrent {
     param(
         [string]$TargetDir,
@@ -2419,6 +2467,12 @@ function Test-SidecarTargetCurrent {
             [string]$actualValue -eq [string]$expectedValue
         }
         if (-not $matches) {
+            return $false
+        }
+    }
+    if ($BundleLocalPolishingRuntime) {
+        $localPolishingIdentity = Get-ObjectPropertyValue -Object $metadata -Name "localPolishingRuntimePrepared"
+        if (-not (Test-LocalPolishingRuntime -BackendDir $TargetDir -ExpectedIdentity $localPolishingIdentity)) {
             return $false
         }
     }
@@ -2602,6 +2656,7 @@ function Write-SidecarBuildMetadata {
         [object[]]$MediaToolsCopied,
         [object]$RustAudioSidecarCopied,
         [object]$RustDiarizationSidecarCopied,
+        [object]$LocalPolishingRuntimePrepared,
         [string]$CopiedTo,
         [bool]$TargetCurrent = $false
     )
@@ -2633,6 +2688,9 @@ function Write-SidecarBuildMetadata {
     $metadataMediaToolsCopied = $MediaToolsCopied
     $metadataRustAudioSidecarCopied = $RustAudioSidecarCopied
     $metadataRustDiarizationSidecarCopied = $RustDiarizationSidecarCopied
+    $metadataLocalPolishingRuntimePrepared = Get-DeterministicResearchSidecarIdentity `
+        -Value $LocalPolishingRuntimePrepared `
+        -Fields @("manifestSha256", "manifestLength", "serverSha256", "serverLength", "version")
     $metadataTotalDurationMs = [int64]$script:BuildTimingStarted.ElapsedMilliseconds
     $metadataPhases = @($script:BuildTimingPhases)
     if ($DeterministicResearchMetadata) {
@@ -2701,6 +2759,7 @@ function Write-SidecarBuildMetadata {
             validateSlimMediaTools = [bool]$ValidateSlimMediaTools
             bundleRustAudioSidecar = [bool]$BundleRustAudioSidecar
             bundleRustDiarizationSidecar = [bool]$BundleRustDiarizationSidecar
+            bundleLocalPolishingRuntime = [bool]$BundleLocalPolishingRuntime
             pyInstallerClean = -not [bool]$LocalPyInstallerNoClean
             rustAudioIsolatedTarget = [bool]$RustAudioIsolatedTarget
             pythonRuntimeFlavor = [string]$PythonRuntimeFlavor
@@ -2710,6 +2769,7 @@ function Write-SidecarBuildMetadata {
         mediaToolsCopied = $metadataMediaToolsCopied
         rustAudioSidecarCopied = $metadataRustAudioSidecarCopied
         rustDiarizationSidecarCopied = $metadataRustDiarizationSidecarCopied
+        localPolishingRuntimePrepared = $metadataLocalPolishingRuntimePrepared
         totalDurationMs = $metadataTotalDurationMs
         phases = $metadataPhases
     }
@@ -3351,6 +3411,9 @@ if (-not $SherpaOnnxArchiveCacheRoot) {
 if (-not $RustDiarizationTargetRoot) {
     $RustDiarizationTargetRoot = Join-Path $RepoRoot "build\rust-diarization-sidecar-target"
 }
+if (-not $LocalPolishingRuntimeCacheRoot) {
+    $LocalPolishingRuntimeCacheRoot = Join-Path $RepoRoot "build\llama-cpp-polishing-runtime-cache"
+}
 $DistRoot = Convert-ToFullPath -Path $DistRoot
 $WorkRoot = Convert-ToFullPath -Path $WorkRoot
 $SidecarCacheRoot = Convert-ToFullPath -Path $SidecarCacheRoot
@@ -3358,6 +3421,7 @@ $RuntimeCacheRoot = Convert-ToFullPath -Path $RuntimeCacheRoot
 $RustDiarizationSidecarCacheRoot = Convert-ToFullPath -Path $RustDiarizationSidecarCacheRoot
 $SherpaOnnxArchiveCacheRoot = Convert-ToFullPath -Path $SherpaOnnxArchiveCacheRoot
 $RustDiarizationTargetRoot = Convert-ToFullPath -Path $RustDiarizationTargetRoot
+$LocalPolishingRuntimeCacheRoot = Convert-ToFullPath -Path $LocalPolishingRuntimeCacheRoot
 if ($MediaToolsDir) {
     $MediaToolsDir = (Resolve-Path $MediaToolsDir).Path
 }
@@ -3370,6 +3434,7 @@ Assert-UnderRoot -Root $RepoRoot -Path $RuntimeCacheRoot -Label "RuntimeCacheRoo
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationSidecarCacheRoot -Label "RustDiarizationSidecarCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $SherpaOnnxArchiveCacheRoot -Label "SherpaOnnxArchiveCacheRoot"
 Assert-UnderRoot -Root $RepoRoot -Path $RustDiarizationTargetRoot -Label "RustDiarizationTargetRoot"
+Assert-UnderRoot -Root $RepoRoot -Path $LocalPolishingRuntimeCacheRoot -Label "LocalPolishingRuntimeCacheRoot"
 
 if (-not $RustAudioOnly -and -not $RustAudioStageFromCacheOnly -and -not $RustDiarizationPrestageOnly) {
     $runtimeLockCandidate = if ([System.IO.Path]::IsPathRooted($PythonRuntimeLockPath)) {
@@ -3748,6 +3813,7 @@ if ($cacheEnabled) {
                 -MediaToolsCopied $mediaToolsCopied `
                 -RustAudioSidecarCopied $targetMetadata.rustAudioSidecarCopied `
                 -RustDiarizationSidecarCopied $targetMetadata.rustDiarizationSidecarCopied `
+                -LocalPolishingRuntimePrepared $targetMetadata.localPolishingRuntimePrepared `
                 -CopiedTo $targetDir `
                 -TargetCurrent $true
 
@@ -4372,6 +4438,86 @@ if ($BundleRustDiarizationSidecar) {
     $rustDiarizationSidecarCopied = $script:RustDiarizationSidecarCopied
 }
 
+$localPolishingRuntimePrepared = $null
+if ($BundleLocalPolishingRuntime) {
+    Invoke-TimedStep -Label "local-polishing-llama-runtime" -Command {
+        $localPolishingBackendDir = if ($script:CopiedToTauriRelease) { $script:CopiedToTauriRelease } else { $sidecarDir }
+        $localPolishingTarget = Join-Path $localPolishingBackendDir "tools\local-polishing"
+        $localPolishingLock = Join-Path $RepoRoot "packaging\llama-cpp-polishing-runtime-lock-v1.json"
+        $localPolishingPrepare = Join-Path $RepoRoot "scripts\prepare_local_polishing_runtime.py"
+        foreach ($requiredPath in @($localPolishingLock, $localPolishingPrepare)) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+                throw "Missing local polishing runtime input: $requiredPath"
+            }
+        }
+        New-Item -ItemType Directory -Force -Path $LocalPolishingRuntimeCacheRoot | Out-Null
+        $prepareOutput = & $PythonPath $localPolishingPrepare `
+            --lock $localPolishingLock `
+            --cache $LocalPolishingRuntimeCacheRoot `
+            --output $localPolishingTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Local polishing llama.cpp runtime preparation failed with exit code $LASTEXITCODE."
+        }
+        $prepareJson = ($prepareOutput | Out-String).Trim()
+        if (-not $prepareJson) {
+            throw "Local polishing llama.cpp runtime preparation returned no result."
+        }
+        $prepared = $prepareJson | ConvertFrom-Json
+        if (-not $prepared.ok) {
+            throw "Local polishing llama.cpp runtime preparation did not report ok=true."
+        }
+        $serverPath = Join-Path $localPolishingTarget "llama-server.exe"
+        if ($AuthenticodeCertificateThumbprint) {
+            if (-not $AuthenticodeTimestampUrl) {
+                throw "AuthenticodeTimestampUrl is required when signing the local polishing runtime."
+            }
+            powershell -NoProfile -ExecutionPolicy Bypass `
+                -File (Join-Path $RepoRoot "scripts\sign_windows_binary.ps1") `
+                -Path $serverPath `
+                -CertificateThumbprint $AuthenticodeCertificateThumbprint `
+                -TimestampUrl $AuthenticodeTimestampUrl
+            if ($LASTEXITCODE -ne 0) {
+                throw "Local polishing llama-server Authenticode signing failed with exit code $LASTEXITCODE."
+            }
+            $refreshOutput = & $PythonPath $localPolishingPrepare `
+                --lock $localPolishingLock `
+                --output $localPolishingTarget `
+                --refresh-manifest
+            if ($LASTEXITCODE -ne 0 -or -not (($refreshOutput | Out-String).Trim())) {
+                throw "Local polishing runtime manifest refresh failed after signing."
+            }
+        }
+        $versionOutput = (& $serverPath --version 2>&1 | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) {
+            throw "Local polishing llama-server version probe failed."
+        }
+        $runtimeLock = Get-Content -LiteralPath $localPolishingLock -Raw | ConvertFrom-Json
+        foreach ($expectedVersionPart in @($runtimeLock.release.versionOutputContains)) {
+            if (-not $versionOutput.Contains([string]$expectedVersionPart)) {
+                throw "Local polishing llama-server version differs from the lock."
+            }
+        }
+        $manifestPath = Join-Path $localPolishingTarget "runtime-manifest.json"
+        $verifyOutput = & $PythonPath $localPolishingPrepare `
+            --lock $localPolishingLock `
+            --output $localPolishingTarget `
+            --verify
+        if ($LASTEXITCODE -ne 0 -or -not (($verifyOutput | Out-String).Trim())) {
+            throw "Local polishing runtime verification failed after staging."
+        }
+        $script:LocalPolishingRuntimePrepared = [ordered]@{
+            targetDir = $localPolishingTarget
+            manifestPath = $manifestPath
+            manifestSha256 = Get-Sha256Hex -Path $manifestPath
+            manifestLength = [int64](Get-Item -LiteralPath $manifestPath).Length
+            serverSha256 = Get-Sha256Hex -Path $serverPath
+            serverLength = [int64](Get-Item -LiteralPath $serverPath).Length
+            version = ($versionOutput -split "`r?`n")[0]
+        }
+    }
+    $localPolishingRuntimePrepared = $script:LocalPolishingRuntimePrepared
+}
+
 if ($CopyToTauriRelease) {
     $metadataPath = Write-SidecarBuildMetadata `
         -SidecarDir $sidecarDir `
@@ -4386,6 +4532,7 @@ if ($CopyToTauriRelease) {
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
+        -LocalPolishingRuntimePrepared $localPolishingRuntimePrepared `
         -CopiedTo $copiedTo
     if (Test-Path -LiteralPath $copiedTo -PathType Container) {
         Copy-Item -LiteralPath $metadataPath -Destination (Join-Path $copiedTo "sidecar-build-metadata.json") -Force
@@ -4404,6 +4551,7 @@ if ($CopyToTauriRelease) {
         -MediaToolsCopied $mediaToolsCopied `
         -RustAudioSidecarCopied $rustAudioSidecarCopied `
         -RustDiarizationSidecarCopied $rustDiarizationSidecarCopied `
+        -LocalPolishingRuntimePrepared $localPolishingRuntimePrepared `
         -CopiedTo $copiedTo
 }
 
@@ -4420,6 +4568,7 @@ if ($CopyToTauriRelease) {
     mediaToolsCopied = $mediaToolsCopied
     rustAudioSidecarCopied = $rustAudioSidecarCopied
     rustDiarizationSidecarCopied = $rustDiarizationSidecarCopied
+    localPolishingRuntimePrepared = $localPolishingRuntimePrepared
     sidecarBuildMetadata = $metadataPath
     copiedToTauriRelease = $copiedTo
 } | ConvertTo-Json -Compress

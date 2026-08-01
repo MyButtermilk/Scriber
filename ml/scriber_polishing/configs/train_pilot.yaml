@@ -1,0 +1,26 @@
+schema_version: 1
+run_kind: pilot
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+method: full_sft
+seed: 270011
+minimum_train_examples: 5000
+minimum_validation_examples: 500
+epochs: 2
+max_sequence_length: 512
+max_sequence_length_candidates: [512, 768, 1024]
+micro_batch_size: 2
+gradient_accumulation_steps: 8
+learning_rate: 0.00002
+learning_rate_candidates: [0.00002, 0.00005]
+bf16: true
+gradient_checkpointing: true
+optimizer: adamw_torch_fused
+early_stopping: true
+early_stopping_patience: 3
+eval_steps: 50
+save_steps: 50
+warmup_ratio: 0.03
+weight_decay: 0.01
+max_grad_norm: 1.0
+assistant_output_loss_only: true

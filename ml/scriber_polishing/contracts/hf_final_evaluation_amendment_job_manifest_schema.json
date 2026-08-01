@@ -1,0 +1,552 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-amendment-job-manifest-v2.schema.json",
+  "title": "Scriber Hugging Face final-evaluation amendment job manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_git_head",
+    "image",
+    "flavor",
+    "timeout_minutes",
+    "batch_size",
+    "max_new_tokens",
+    "primary_packet",
+    "terminal_predecessor",
+    "terminal_predecessor_sha256",
+    "authorization",
+    "authorization_sha256",
+    "output",
+    "budget",
+    "durability_patch",
+    "training",
+    "publication",
+    "runner_sha256",
+    "packet_tree_sha256",
+    "file_count",
+    "byte_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation_amendment"
+    },
+    "source_git_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "image": {
+      "const": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
+    },
+    "flavor": {
+      "const": "l4x1"
+    },
+    "timeout_minutes": {
+      "const": 180
+    },
+    "batch_size": {
+      "const": 8
+    },
+    "max_new_tokens": {
+      "const": 512
+    },
+    "primary_packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "job_manifest_sha256",
+        "core_manifest_sha256",
+        "runner_sha256"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "job_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "core_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "terminal_predecessor": {
+      "$ref": "#/$defs/predecessor"
+    },
+    "terminal_predecessor_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "authorization": {
+      "$ref": "#/$defs/authorization"
+    },
+    "authorization_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bucket_root",
+        "relative_path",
+        "container_path",
+        "primary_launch_ledger_v1_sha256",
+        "amendment_ledger_v2_sibling",
+        "runtime_completion_v2_sibling",
+        "snapshot"
+      ],
+      "properties": {
+        "bucket_root": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs"
+        },
+        "relative_path": {
+          "const": "attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "container_path": {
+          "const": "/outputs/attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "primary_launch_ledger_v1_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "amendment_ledger_v2_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.launch-ledger-v2.json"
+        },
+        "runtime_completion_v2_sibling": {
+          "const": ".scriber-1100-final-evaluation-v1.runtime-completion-v2.json"
+        },
+        "snapshot": {
+          "$ref": "#/$defs/snapshot"
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_budget_usd",
+        "actual_before_evaluation_usd",
+        "primary_timeout_minutes",
+        "primary_maximum_cost_usd",
+        "amendment_timeout_minutes",
+        "amendment_maximum_cost_usd",
+        "maximum_total_cost_usd",
+        "remaining_after_reservations_usd",
+        "strictly_below_total_budget",
+        "budget_increase_required"
+      ],
+      "properties": {
+        "total_budget_usd": {
+          "const": "5.000"
+        },
+        "actual_before_evaluation_usd": {
+          "const": "0.933668"
+        },
+        "primary_timeout_minutes": {
+          "const": 120
+        },
+        "primary_maximum_cost_usd": {
+          "const": "1.600"
+        },
+        "amendment_timeout_minutes": {
+          "const": 180
+        },
+        "amendment_maximum_cost_usd": {
+          "const": "2.400"
+        },
+        "maximum_total_cost_usd": {
+          "const": "4.933668"
+        },
+        "remaining_after_reservations_usd": {
+          "const": "0.066332"
+        },
+        "strictly_below_total_budget": {
+          "const": true
+        },
+        "budget_increase_required": {
+          "const": false
+        }
+      }
+    },
+    "durability_patch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "inference_module_sha256",
+        "journal_commit_granularity",
+        "maximum_replayed_records_after_interruption",
+        "legacy_per_record_journal_compatible",
+        "progress_after_durable_commit"
+      ],
+      "properties": {
+        "kind": {
+          "const": "scriber_batch_durable_resume_v1"
+        },
+        "inference_module_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "journal_commit_granularity": {
+          "const": 8
+        },
+        "maximum_replayed_records_after_interruption": {
+          "const": 8
+        },
+        "legacy_per_record_journal_compatible": {
+          "const": true
+        },
+        "progress_after_durable_commit": {
+          "const": true
+        }
+      }
+    },
+    "training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "training_steps_executed",
+        "reference_usage",
+        "train_split_allowed"
+      ],
+      "properties": {
+        "training_steps_executed": {
+          "const": 0
+        },
+        "reference_usage": {
+          "const": "inference_and_evaluation_only"
+        },
+        "train_split_allowed": {
+          "const": false
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "destination_kind"
+      ],
+      "properties": {
+        "allowed": {
+          "const": false
+        },
+        "destination_kind": {
+          "const": "private_hf_bucket"
+        }
+      }
+    },
+    "runner_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "packet_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "jobId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{24}$"
+    },
+    "predecessor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "job_id",
+        "terminal_status",
+        "termination_reason",
+        "flavor",
+        "timeout_minutes",
+        "terminal_running_seconds",
+        "terminal_duration_available",
+        "last_running_observation",
+        "actual_cost_status",
+        "budget_accounting",
+        "packet_tree_sha256",
+        "remote_output_uri"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_terminal_predecessor"
+        },
+        "job_id": {
+          "$ref": "#/$defs/jobId"
+        },
+        "terminal_status": {
+          "const": "CANCELED"
+        },
+        "termination_reason": {
+          "const": "operator_performance_recovery"
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_minutes": {
+          "const": 120
+        },
+        "terminal_running_seconds": {
+          "type": "null"
+        },
+        "terminal_duration_available": {
+          "const": false
+        },
+        "last_running_observation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "running_seconds",
+            "relationship",
+            "source"
+          ],
+          "properties": {
+            "running_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 7200
+            },
+            "relationship": {
+              "const": "strictly_before_cancel_acceptance"
+            },
+            "source": {
+              "const": "hf_jobs_inspect"
+            }
+          }
+        },
+        "actual_cost_status": {
+          "const": "unknown"
+        },
+        "budget_accounting": {
+          "const": "full_timeout_reservation"
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "remote_output_uri": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt8/scriber-1100-final-evaluation-v1"
+        }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "kind",
+        "authorized",
+        "authorizer",
+        "scope",
+        "maximum_additional_jobs",
+        "flavor",
+        "timeout_minutes",
+        "maximum_additional_cost_usd",
+        "maximum_total_cost_usd",
+        "budget_increase_required",
+        "training_steps_allowed",
+        "publication_allowed",
+        "source_statement_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "kind": {
+          "const": "scriber_hf_final_evaluation_amendment_authorization"
+        },
+        "authorized": {
+          "const": true
+        },
+        "authorizer": {
+          "const": "user"
+        },
+        "scope": {
+          "const": "one_job_resume_existing_final_evaluation_only"
+        },
+        "maximum_additional_jobs": {
+          "const": 1
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_minutes": {
+          "const": 180
+        },
+        "maximum_additional_cost_usd": {
+          "const": "2.400"
+        },
+        "maximum_total_cost_usd": {
+          "const": "5.000"
+        },
+        "budget_increase_required": {
+          "const": false
+        },
+        "training_steps_allowed": {
+          "const": 0
+        },
+        "publication_allowed": {
+          "const": false
+        },
+        "source_statement_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "inventoryFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\\\]+$"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "lane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "candidate",
+        "suite",
+        "state",
+        "durable_prediction_records"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6
+        },
+        "candidate": {
+          "enum": [
+            "final",
+            "base_model"
+          ]
+        },
+        "suite": {
+          "enum": [
+            "ai_gold",
+            "critical_regression",
+            "regular_test"
+          ]
+        },
+        "state": {
+          "enum": [
+            "empty",
+            "journal",
+            "predictions_unbound",
+            "predictions_bound",
+            "evaluated_pending_exit",
+            "complete"
+          ]
+        },
+        "durable_prediction_records": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1750
+        }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "files",
+        "directories",
+        "file_count",
+        "byte_count",
+        "tree_sha256",
+        "lanes",
+        "durable_prediction_records",
+        "all_lanes_complete",
+        "writer_lock_absent",
+        "final_result_absent"
+      ],
+      "properties": {
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/inventoryFile"
+          }
+        },
+        "directories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\\\]+$"
+          }
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "lanes": {
+          "type": "array",
+          "minItems": 6,
+          "maxItems": 6,
+          "items": {
+            "$ref": "#/$defs/lane"
+          }
+        },
+        "durable_prediction_records": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 6500
+        },
+        "all_lanes_complete": {
+          "const": false
+        },
+        "writer_lock_absent": {
+          "const": true
+        },
+        "final_result_absent": {
+          "const": true
+        }
+      }
+    }
+  }
+}

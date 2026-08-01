@@ -1,0 +1,31 @@
+# Review-only V2 hard-case configuration. It is retained for reproducibility,
+# but production launches must use train_v2_hardcase_mixed.yaml so the frozen
+# V1 replay examples protect the already learned behavior.
+schema_version: 1
+run_kind: final
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+method: full_sft
+seed: 270022
+epochs: 1
+train_examples: 10240
+validation_examples: 640
+max_sequence_length: 1024
+micro_batch_size: 4
+gradient_accumulation_steps: 8
+learning_rate: 5.0e-6
+optimizer: adamw_torch_fused
+eval_steps: 100
+save_steps: 200
+save_total_limit: 3
+warmup_ratio: 0.03
+weight_decay: 0.01
+max_grad_norm: 1.0
+bf16: true
+gradient_checkpointing: true
+assistant_output_loss_only: true
+early_stopping: false
+protection_policy_path: training-policy.json
+protection_policy_sha256: 8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d
+parent_checkpoint_path: parent-v1-checkpoint
+parent_checkpoint_tree_sha256: 4cf99b2768c5af9c992ee8f6390822a548d6b546ad354368a8d6cfb8ae288ca4

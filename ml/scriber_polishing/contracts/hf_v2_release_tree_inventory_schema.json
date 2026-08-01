@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-release-tree-inventory-v1.schema.json",
+  "title": "Scriber HF V2 BF16/Q8_0 packet tree inventory v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "algorithm", "files", "file_count", "byte_count", "packet_tree_sha256"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_q8_bf16_release_tree_inventory"},
+    "algorithm": {"const": "sha256-canonical-file-records-v1"},
+    "files": {
+      "type": "array",
+      "minItems": 7,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "bytes", "sha256"],
+        "properties": {
+          "path": {"type": "string", "minLength": 1},
+          "bytes": {"type": "integer", "minimum": 0},
+          "sha256": {"$ref": "#/$defs/hash"},
+          "git_mode": {"enum": ["100644", "100755"]},
+          "git_blob_sha1": {"type": "string", "pattern": "^[0-9a-f]{40}$"}
+        }
+      }
+    },
+    "file_count": {"type": "integer", "minimum": 7},
+    "byte_count": {"type": "integer", "minimum": 1},
+    "packet_tree_sha256": {"$ref": "#/$defs/hash"}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

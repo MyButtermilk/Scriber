@@ -1,0 +1,123 @@
+{
+  "categories": [
+    {
+      "aggregate_signals": [
+        {"flag": "damaged_protected_span", "sol_count": 167, "terra_count": 1135},
+        {"flag": "changed_number", "sol_count": 89, "terra_count": 496},
+        {"flag": "changed_unit_dimension", "sol_count": 68, "terra_count": 436},
+        {"flag": "false_unit_normalization", "sol_count": 68, "terra_count": 435}
+      ],
+      "id": "protected_numeric_unit",
+      "parent_quota": 175,
+      "risk_tags": ["protected_span", "number", "unit", "close_numbers"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "changed_legal_reference", "sol_count": 53, "terra_count": 269},
+        {"flag": "changed_legal_hierarchy", "sol_count": 1, "terra_count": 0}
+      ],
+      "id": "protected_legal_reference",
+      "parent_quota": 100,
+      "risk_tags": ["protected_span", "legal_reference", "legal_hierarchy"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "changed_amount", "sol_count": 43, "terra_count": 263},
+        {"flag": "changed_date_or_time", "sol_count": 29, "terra_count": 155},
+        {"flag": "changed_percentage", "sol_count": 22, "terra_count": 92}
+      ],
+      "id": "protected_datetime_amount",
+      "parent_quota": 75,
+      "risk_tags": ["protected_span", "amount", "date", "time", "percentage"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "changed_negation", "sol_count": 16, "terra_count": 129},
+        {"flag": "changed_modality", "sol_count": 15, "terra_count": 71},
+        {"flag": "changed_condition", "sol_count": 6, "terra_count": 46}
+      ],
+      "id": "polarity_modality_condition",
+      "parent_quota": 75,
+      "risk_tags": ["negation", "modality", "condition", "double_negation"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "wrong_list_type", "sol_count": 82, "terra_count": 609},
+        {"flag": "malformed_numbered_list", "sol_count": 90, "terra_count": 565},
+        {"flag": "wrong_list_nesting", "sol_count": 27, "terra_count": 146}
+      ],
+      "id": "list_structure",
+      "parent_quota": 145,
+      "risk_tags": ["list_structure", "ordered_list", "nested_list", "spoken_formatting"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "missed_heading", "sol_count": 27, "terra_count": 223},
+        {"flag": "wrong_heading_level", "sol_count": 8, "terra_count": 94},
+        {"flag": "invented_heading", "sol_count": 4, "terra_count": 6}
+      ],
+      "id": "heading_structure",
+      "parent_quota": 60,
+      "risk_tags": ["heading_structure", "heading_level", "do_not_invent_format"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "output_not_clean_text", "sol_count": 90, "terra_count": 601},
+        {"flag": "invalid_sst", "sol_count": 90, "terra_count": 598},
+        {"flag": "formatting_command_misinterpreted", "sol_count": 11, "terra_count": 2}
+      ],
+      "id": "clean_text_format_command",
+      "parent_quota": 55,
+      "risk_tags": ["clean_text", "sst_validity", "format_word_ordinary", "spoken_formatting"]
+    },
+    {
+      "aggregate_signals": [
+        {"flag": "omitted_content", "sol_count": 32, "terra_count": 226},
+        {"flag": "added_content", "sol_count": 10, "terra_count": 6},
+        {"flag": "closing_layout_error", "sol_count": 7, "terra_count": 5},
+        {"flag": "signature_layout_error", "sol_count": 4, "terra_count": 5}
+      ],
+      "id": "content_completeness_layout",
+      "parent_quota": 35,
+      "risk_tags": ["content_completeness", "do_not_add", "closing", "signature"]
+    }
+  ],
+  "generation": {
+    "canonical_siblings_per_parent": 2,
+    "parent_document_count": 720,
+    "serialization": "canonical_jsonl_utf8_lf",
+    "train_fraction": 0.9,
+    "train_pairs_per_canonical": 8,
+    "unicode_normalization": "NFC",
+    "validation_pairs_per_canonical": 4
+  },
+  "kind": "scriber_v2_synthetic_hardcase_plan",
+  "policy": {
+    "allowed_splits": ["train", "validation"],
+    "direct_test_or_challenge_reuse": false,
+    "generative_api": false,
+    "raw_case_content_allowed": false,
+    "split_group": "parent_canonical_document_id",
+    "synthetic_only": true
+  },
+  "schema_version": 1,
+  "seed": 270021,
+  "sources": [
+    {
+      "aggregate_only": true,
+      "id": "sol_remediation_v2_aggregate",
+      "kind": "aggregate_diagnostic_summary",
+      "path": "artifacts/judges/full_model_v1/sol_followup_v1/sol-remediation-v2/sol-remediation-summary.json",
+      "sha256": "sha256:10da4dd51186fba24ca66dc0c700daca707ed79f5b5555a3e5f271c61547d187",
+      "unique_error_case_count": 336
+    },
+    {
+      "aggregate_only": true,
+      "id": "terra_interim_audit_v2_aggregate",
+      "kind": "aggregate_diagnostic_summary",
+      "path": "artifacts/judges/full_model_v1/terra_interim_audit_v2/terra-interim-audit.json",
+      "sha256": "sha256:dab81df8bc3d00a6d5a80eebbaadf5e852cb7fac635b4b1c5775e927123b9a22",
+      "unique_error_case_count": 1907
+    }
+  ]
+}
