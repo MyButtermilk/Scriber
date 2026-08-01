@@ -3924,15 +3924,6 @@ export default function Settings() {
       }
       if (msg.type === "local_polishing_model_progress") {
         setLocalPolishingCatalog((current) => mergeLocalPolishingProgress(current, msg));
-        if (
-          msg.status === "ready" ||
-          msg.status === "error" ||
-          msg.status === "cancelled" ||
-          msg.status === "unavailable" ||
-          msg.status === "not_installed"
-        ) {
-          void loadLocalPolishingModels();
-        }
       }
       if (
         msg.type === "meeting_state" &&
@@ -3941,7 +3932,7 @@ export default function Settings() {
         void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       }
     },
-    [loadLocalPolishingModels, loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast],
+    [loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast],
   );
 
   useSharedWebSocket(handleWsMessage);

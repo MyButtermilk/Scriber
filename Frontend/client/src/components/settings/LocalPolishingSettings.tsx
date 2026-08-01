@@ -266,11 +266,11 @@ export function LocalPolishingSettings({
                         {model.name ? t(model.name) : modelLabel(variant)}
                       </h4>
                       {variant === "q8_0" ? (
-                        <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
+                        <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-ui-micro font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
                           {t("Recommended")}
                         </span>
                       ) : (
-                        <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                        <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-ui-micro font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
                           {t("Optional")}
                         </span>
                       )}
@@ -289,7 +289,7 @@ export function LocalPolishingSettings({
                 </div>
 
                 {size ? (
-                  <p className="mt-2 flex items-center gap-1.5 text-[10.5px] font-medium text-slate-500 dark:text-slate-400">
+                  <p className="mt-2 flex items-center gap-1.5 text-ui-micro font-medium text-slate-500 dark:text-slate-400">
                     <HardDrive className="h-3.5 w-3.5" aria-hidden="true" />
                     {size}
                   </p>
@@ -301,7 +301,7 @@ export function LocalPolishingSettings({
                       value={progress}
                       aria-label={t("{{model}} download progress", { model: modelLabel(variant) })}
                     />
-                    <div className="flex min-w-0 items-center gap-1.5 text-[10.5px] text-slate-500 dark:text-slate-400">
+                    <div className="flex min-w-0 items-center gap-1.5 text-ui-micro text-slate-500 dark:text-slate-400">
                       <WavePhysicsLoader size="micro" />
                       <span className="min-w-0 truncate">
                         {model.message ||
@@ -314,7 +314,7 @@ export function LocalPolishingSettings({
                       <span className="ml-auto shrink-0 font-mono">{formatNumber(Math.round(progress))}%</span>
                     </div>
                     {model.etaSeconds !== undefined ? (
-                      <p className="text-right text-[10px] text-slate-500 dark:text-slate-400">
+                      <p className="text-right text-ui-micro text-slate-500 dark:text-slate-400">
                         {t("About {{minutes}} min remaining", {
                           minutes: formatNumber(Math.max(1, Math.ceil(model.etaSeconds / 60))),
                         })}

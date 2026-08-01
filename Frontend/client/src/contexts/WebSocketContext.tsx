@@ -6,7 +6,8 @@ import {
   reportFrontendReady,
   wsUrl,
 } from "@/lib/backend";
-import type { LocalPolishingModelStatus, LocalPolishingVariant, MicrophoneDevice } from "@/lib/api-types";
+import type { MicrophoneDevice } from "@/lib/api-types";
+import type { LocalPolishingModelStatus, LocalPolishingVariant } from "@/lib/api-types";
 import type { MeetingNote, MeetingSegment, MeetingSummary, MeetingTranscriptCheckpoint } from "@/lib/api-types";
 
 type BaseWsMessage = {
