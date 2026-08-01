@@ -230,7 +230,7 @@
               "items": {
                 "type": "string",
                 "minLength": 3,
-                "maxLength": 120
+                "maxLength": 500
               }
             },
             "heading_levels": {

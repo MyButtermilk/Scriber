@@ -453,7 +453,18 @@ def _document_parts(
             ListItem(1, f"Freigabe durch {person} dokumentieren"),
         )
         list_type = BlockType.ORDERED_LIST if list_mode in {0, 2} else BlockType.UNORDERED_LIST
-        text_1 = f"Die Arbeitsschritte für {project} sind in der angegebenen Reihenfolge auszuführen."
+        if list_mode == 1:
+            text_1 = (
+                f"Die Arbeitsschritte für {project} sind vollständig zu dokumentieren; "
+                "ihre Reihenfolge ist nicht festgelegt."
+            )
+        elif list_mode == 2:
+            text_1 = (
+                f"Die Arbeitsschritte für {project} sind in der angegebenen Reihenfolge auszuführen. "
+                "Die Bestätigung der Grenze ist dem ersten Schritt als Unterpunkt zugeordnet."
+            )
+        else:
+            text_1 = f"Die Arbeitsschritte für {project} sind in der angegebenen Reihenfolge auszuführen."
         text_2 = f"{org} darf keinen zusätzlichen Schritt ergänzen."
         document = Document(
             (
@@ -493,7 +504,7 @@ def _document_parts(
         facts = [fact(1, text_1, [ticket], polarity="negative"), fact(2, text_2, [person, project])]
         domain, document_type = "hard_negatives", "wortlautnotiz"
     elif category == "content_completeness_layout":
-        text_1 = f"{person} bestätigt für {org} genau zwei Punkte zum Projekt {project}."
+        text_1 = f"{person} bestätigt für {org} genau zwei Punkte zu {project}."
         text_2 = f"Weitere Inhalte oder ein anderer Betreff dürfen zu {ticket} nicht ergänzt werden."
         document = Document(
             (
@@ -517,9 +528,29 @@ def _document_parts(
     else:  # pragma: no cover - guarded by the closed spec validator
         raise HardCaseDatasetError(f"unsupported category: {category}")
 
+    plain_text = render_plain_text(document)
+    controlled_literals = (
+        org,
+        person,
+        project,
+        unit,
+        second_unit,
+        legal,
+        ticket,
+        date,
+        time,
+        amount,
+        percent,
+    )
     protected = list(
         dict.fromkeys(
-            value for item in facts for value in item["protected_values"] if value in render_plain_text(document)
+            value
+            for value in (
+                *(value for item in facts for value in item["protected_values"]),
+                *(str(entity["value"]) for entity in entities if entity["protected"]),
+                *controlled_literals,
+            )
+            if value in plain_text
         )
     )
     return document, facts, entities, domain, document_type, protected
@@ -546,7 +577,7 @@ def _structure_from_document(document: Document) -> dict[str, Any]:
     return {
         "has_subject": BlockType.SUBJECT in block_types,
         "has_salutation": BlockType.SALUTATION in block_types,
-        "paragraph_topics": [block.text[:120] for block in document.blocks if block.type is BlockType.PARAGRAPH],
+        "paragraph_topics": [block.text for block in document.blocks if block.type is BlockType.PARAGRAPH],
         "heading_levels": list(
             dict.fromkeys(
                 "h1" if block.type is BlockType.HEADING_1 else "h2"
@@ -571,6 +602,37 @@ def _semantic_hash(plan: Mapping[str, Any]) -> str:
     return _sha256_bytes(_canonical_json(plan).encode("utf-8"))
 
 
+def _validate_document_semantics(
+    document: Document,
+    facts: Sequence[Mapping[str, Any]],
+    entities: Sequence[Mapping[str, Any]],
+    protected: Sequence[str],
+) -> None:
+    plain_text = render_plain_text(document)
+    required = {
+        str(value)
+        for fact in facts
+        for value in fact["protected_values"]
+        if str(value) in plain_text
+    }
+    required.update(
+        str(entity["value"])
+        for entity in entities
+        if entity["protected"] and str(entity["value"]) in plain_text
+    )
+    required.update(re.findall(r"VHC-\d{5}", plain_text))
+    required.update(value for value in _UNITS if value in plain_text)
+    missing = sorted(required - set(protected))
+    if missing:
+        raise HardCaseDatasetError(f"generated canonical has unprotected critical literal: {missing[0]}")
+
+    list_kind = str(_structure_from_document(document)["list_kind"])
+    if list_kind == "unordered" and "in der angegebenen Reihenfolge" in plain_text:
+        raise HardCaseDatasetError("generated unordered list contradicts its sequence semantics")
+    if list_kind == "nested" and "Unterpunkt" not in plain_text:
+        raise HardCaseDatasetError("generated nested list lacks an explicit hierarchy signal")
+
+
 def _canonical_record(
     spec: Mapping[str, Any],
     *,
@@ -582,6 +644,7 @@ def _canonical_record(
     document, facts, entities, domain, document_type, protected = _document_parts(
         str(category["id"]), parent_index, sibling
     )
+    _validate_document_semantics(document, facts, entities, protected)
     parent_id = f"v2hc_parent_{parent_index:06d}"
     canonical_id = f"{parent_id}_sibling_{sibling:02d}"
     seed_id = f"v2hc_seed_{parent_index:06d}_{sibling:02d}"

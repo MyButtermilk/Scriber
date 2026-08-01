@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from pathlib import Path
 
 import pytest
 
+from scriber_polishing.document_ast import BlockType
+from scriber_polishing.target_renderer import render_plain_text
 from scriber_polishing.training_integrity import (
     TrainingIntegrityError,
     bind_training_dataset,
@@ -14,6 +17,8 @@ from scriber_polishing.training_integrity import (
 from scriber_polishing.v2_hardcase_dataset import (
     DEFAULT_V2_HARDCASE_SPEC_PATH,
     HardCaseDatasetError,
+    _document_parts,
+    _structure_from_document,
     build_v2_hardcase_review_candidate,
     finalize_v2_hardcase_review,
     load_v2_hardcase_spec,
@@ -240,3 +245,84 @@ def test_category_quota_and_training_config_counts_match_plan(tmp_path: Path) ->
     assert config.values["parent_checkpoint_tree_sha256"] == (
         "4cf99b2768c5af9c992ee8f6390822a548d6b546ad354368a8d6cfb8ae288ca4"
     )
+
+
+@pytest.mark.parametrize(
+    "category",
+    sorted(
+        {
+            "protected_numeric_unit",
+            "protected_legal_reference",
+            "protected_datetime_amount",
+            "polarity_modality_condition",
+            "list_structure",
+            "heading_structure",
+            "clean_text_format_command",
+            "content_completeness_layout",
+        }
+    ),
+)
+def test_document_parts_protect_every_declared_entity_identifier_and_unit(category: str) -> None:
+    for parent_index in range(1, 25):
+        for sibling in (1, 2):
+            document, facts, entities, _domain, _document_type, protected = _document_parts(
+                category,
+                parent_index,
+                sibling,
+            )
+            plain_text = render_plain_text(document)
+            required = {
+                str(value)
+                for fact in facts
+                for value in fact["protected_values"]
+                if str(value) in plain_text
+            }
+            required.update(
+                str(entity["value"])
+                for entity in entities
+                if entity["protected"] and str(entity["value"]) in plain_text
+            )
+            required.update(re.findall(r"VHC-\d{5}", plain_text))
+            required.update(
+                match.group(1)
+                for match in re.finditer(r"Grenze (.+?) best(?:ä|ae)tigen", plain_text, flags=re.IGNORECASE)
+            )
+
+            assert required <= set(protected), (
+                category,
+                parent_index,
+                sibling,
+                sorted(required - set(protected)),
+            )
+
+
+def test_list_structure_text_supports_list_type_and_nesting() -> None:
+    observed_kinds: set[str] = set()
+    for parent_index in range(1, 7):
+        for sibling in (1, 2):
+            document, *_rest = _document_parts("list_structure", parent_index, sibling)
+            plain_text = render_plain_text(document)
+            kind = str(_structure_from_document(document)["list_kind"])
+            observed_kinds.add(kind)
+            if kind == "unordered":
+                assert "in der angegebenen Reihenfolge" not in plain_text
+                assert "Reihenfolge ist nicht festgelegt" in plain_text
+            elif kind == "nested":
+                assert "Unterpunkt" in plain_text
+
+    assert observed_kinds == {"nested", "ordered", "unordered"}
+
+
+def test_semantic_plan_keeps_complete_paragraph_topics() -> None:
+    document, *_rest = _document_parts("protected_legal_reference", 2, 2)
+    expected = [block.text for block in document.blocks if block.type is BlockType.PARAGRAPH]
+
+    assert any(len(text) > 120 for text in expected)
+    assert _structure_from_document(document)["paragraph_topics"] == expected
+
+
+def test_content_completeness_avoids_project_word_duplication() -> None:
+    for parent_index in range(1, 25):
+        for sibling in (1, 2):
+            document, *_rest = _document_parts("content_completeness_layout", parent_index, sibling)
+            assert "zum Projekt Projekt" not in render_plain_text(document)
