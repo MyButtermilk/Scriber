@@ -227,7 +227,8 @@ def verify_training_mix(dataset_root: str | Path) -> dict[str, object]:
         or manifest.get("kind") != "scriber_v2_training_mix"
         or manifest.get("training_ready") is not True
         or manifest.get("seed") != V2_MIX_SEED
-        or manifest.get("selection_algorithm") != "v1_split_sha256_bottom_k_then_source_sha256_interleave_v1"
+        or manifest.get("selection_algorithm")
+        != "v1_split_unique_pair_sha256_bottom_k_then_source_sha256_interleave_v2"
         or manifest.get("manifest_schema_sha256") != _sha256(schema_payload)
     ):
         raise V2TrainingJobError("training mix is not training-ready")

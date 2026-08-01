@@ -42,6 +42,7 @@ _V1_TRAIN_SHA256 = "sha256:8a9087e4124013a075953eddeaa56bc6535d9ffcef1adf03e5adc
 _V1_VALIDATION_SHA256 = "sha256:78240307231b0fd72eaffe8a61400f65ee46edb1ad13f6b209d4e89016a2913f"
 _V1_TRAIN_SOURCE_COUNT = 120_000
 _V1_VALIDATION_SOURCE_COUNT = 10_010
+_SELECTION_ALGORITHM = "v1_split_unique_pair_sha256_bottom_k_then_source_sha256_interleave_v2"
 _FORBIDDEN_PATH_PARTS = frozenset({"test", "challenge"})
 _SHA256_PATTERN = "sha256:" + "0" * 64
 
@@ -288,6 +289,10 @@ def _selection_rank(seed: int, split: str, example_id: str) -> int:
     )
 
 
+def _pair_signature(row: Mapping[str, Any]) -> str:
+    return _sha256_bytes(f"{row['source_text']}\0{row['target_sst']}".encode())
+
+
 def _stream_select_v1(
     path: Path,
     *,
@@ -296,12 +301,27 @@ def _stream_select_v1(
     seed: int,
     seen_ids: set[str],
     parents: set[str],
-) -> tuple[list[dict[str, Any]], int]:
+    blocked_pair_signatures: set[str],
+) -> tuple[list[dict[str, Any]], int, set[str]]:
     if count <= 0:
         raise V2TrainingMixError("V1 replay count must be positive")
-    heap: list[tuple[int, str, dict[str, Any]]] = []
+    heap: list[tuple[int, str, str, dict[str, Any]]] = []
+    selected: dict[str, tuple[int, str, dict[str, Any]]] = {}
     seen_ranks: set[int] = set()
     total = 0
+
+    def push(signature: str, rank: int, example_id: str, row: dict[str, Any]) -> None:
+        selected[signature] = (rank, example_id, row)
+        heapq.heappush(heap, (-rank, example_id, signature, row))
+
+    def purge_stale() -> None:
+        while heap:
+            negative_rank, example_id, signature, _row = heap[0]
+            current = selected.get(signature)
+            if current is not None and current[:2] == (-negative_rank, example_id):
+                return
+            heapq.heappop(heap)
+
     try:
         with path.open("rb") as stream:
             before = os.fstat(stream.fileno())
@@ -328,16 +348,33 @@ def _stream_select_v1(
                 parents.add(parent)
                 _required_text(row, "source_text", f"V1 {split} line {line_number}")
                 _required_text(row, "target_sst", f"V1 {split} line {line_number}")
+                signature = _pair_signature(row)
                 rank = _selection_rank(seed, split, example_id)
                 if rank in seen_ranks:
                     raise V2TrainingMixError("V1 replay selection rank collision")
                 seen_ranks.add(rank)
-                entry = (-rank, example_id, row)
-                if len(heap) < count:
-                    heapq.heappush(heap, entry)
-                elif entry[0] > heap[0][0]:
-                    heapq.heapreplace(heap, entry)
                 total += 1
+                if signature in blocked_pair_signatures:
+                    continue
+                current = selected.get(signature)
+                if current is not None:
+                    if (rank, example_id) < current[:2]:
+                        push(signature, rank, example_id, row)
+                    continue
+                if len(selected) < count:
+                    push(signature, rank, example_id, row)
+                    continue
+                purge_stale()
+                worst_rank = -heap[0][0]
+                worst_example_id = heap[0][1]
+                if (rank, example_id) >= (worst_rank, worst_example_id):
+                    continue
+                _negative_rank, removed_id, removed_signature, _removed_row = heapq.heappop(heap)
+                removed = selected.get(removed_signature)
+                if removed is None or removed[1] != removed_id:
+                    raise V2TrainingMixError("V1 replay selection heap lost its deterministic owner")
+                del selected[removed_signature]
+                push(signature, rank, example_id, row)
             after = os.fstat(stream.fileno())
     except OSError as error:
         raise V2TrainingMixError(f"cannot read V1 {split} source: {error}") from error
@@ -349,7 +386,12 @@ def _stream_select_v1(
         raise V2TrainingMixError(f"V1 {split} source changed while it was selected")
     if total < count:
         raise V2TrainingMixError(f"V1 {split} source has only {total} rows; {count} are required")
-    return sorted((entry[2] for entry in heap), key=lambda row: str(row["example_id"])), total
+    if len(selected) != count:
+        raise V2TrainingMixError(
+            f"V1 {split} source has only {len(selected)} eligible distinct source/target pairs; {count} are required"
+        )
+    rows = sorted((entry[2] for entry in selected.values()), key=lambda row: str(row["example_id"]))
+    return rows, total, set(selected)
 
 
 def _read_v2_split(
@@ -461,7 +503,7 @@ def _validate_rows(
             ids.add(example_id)
             parent = str(row["parent_canonical_document_id"])
             parent_splits.setdefault(parent, set()).add(expected_split)
-            signature = _sha256_bytes(f"{row['source_text']}\0{row['target_sst']}".encode())
+            signature = _pair_signature(row)
             if signature in pair_signatures:
                 raise V2TrainingMixError("mixed dataset contains a duplicate source/target pair")
             pair_signatures.add(signature)
@@ -512,7 +554,7 @@ def _compose_manifest(
         "kind": "scriber_v2_training_mix",
         "training_ready": True,
         "seed": contract.seed,
-        "selection_algorithm": "v1_split_sha256_bottom_k_then_source_sha256_interleave_v1",
+        "selection_algorithm": _SELECTION_ALGORITHM,
         "manifest_schema_sha256": _sha256_file(_MANIFEST_SCHEMA_PATH),
         "sources": {
             "v1_replay": {
@@ -652,30 +694,6 @@ def _prepare_mix(
     v1_bound, v1_manifest = _bind_v1_source(paths, contract)
     v2_bound, v2_manifest = _verify_reviewed_v2_source(paths, contract)
 
-    v1_seen_ids: set[str] = set()
-    v1_train_parents: set[str] = set()
-    v1_validation_parents: set[str] = set()
-    v1_train, v1_train_total = _stream_select_v1(
-        paths["v1_train"],
-        split="train",
-        count=contract.v1_train_replay_count,
-        seed=contract.seed,
-        seen_ids=v1_seen_ids,
-        parents=v1_train_parents,
-    )
-    v1_validation, v1_validation_total = _stream_select_v1(
-        paths["v1_validation"],
-        split="validation",
-        count=contract.v1_validation_replay_count,
-        seed=contract.seed,
-        seen_ids=v1_seen_ids,
-        parents=v1_validation_parents,
-    )
-    if v1_train_total != contract.v1_train_source_count or v1_validation_total != contract.v1_validation_source_count:
-        raise V2TrainingMixError("V1 replay selection observed unexpected source counts")
-    if v1_train_parents & v1_validation_parents:
-        raise V2TrainingMixError("V1 replay source contains parent split leakage")
-
     v2_seen_ids: set[str] = set()
     v2_train_parents: set[str] = set()
     v2_validation_parents: set[str] = set()
@@ -695,6 +713,34 @@ def _prepare_mix(
     )
     if v2_train_parents & v2_validation_parents:
         raise V2TrainingMixError("V2 hard-case source contains parent split leakage")
+
+    blocked_pair_signatures = {_pair_signature(row) for row in (*v2_train, *v2_validation)}
+    v1_seen_ids: set[str] = set()
+    v1_train_parents: set[str] = set()
+    v1_validation_parents: set[str] = set()
+    v1_train, v1_train_total, v1_train_signatures = _stream_select_v1(
+        paths["v1_train"],
+        split="train",
+        count=contract.v1_train_replay_count,
+        seed=contract.seed,
+        seen_ids=v1_seen_ids,
+        parents=v1_train_parents,
+        blocked_pair_signatures=blocked_pair_signatures,
+    )
+    blocked_pair_signatures.update(v1_train_signatures)
+    v1_validation, v1_validation_total, _v1_validation_signatures = _stream_select_v1(
+        paths["v1_validation"],
+        split="validation",
+        count=contract.v1_validation_replay_count,
+        seed=contract.seed,
+        seen_ids=v1_seen_ids,
+        parents=v1_validation_parents,
+        blocked_pair_signatures=blocked_pair_signatures,
+    )
+    if v1_train_total != contract.v1_train_source_count or v1_validation_total != contract.v1_validation_source_count:
+        raise V2TrainingMixError("V1 replay selection observed unexpected source counts")
+    if v1_train_parents & v1_validation_parents:
+        raise V2TrainingMixError("V1 replay source contains parent split leakage")
 
     mixed_train = _stable_mix(
         split="train",

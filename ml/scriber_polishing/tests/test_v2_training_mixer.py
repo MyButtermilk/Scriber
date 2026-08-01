@@ -100,6 +100,7 @@ def _fixture_sources(
     *,
     leaked_v1_parent: bool = False,
     duplicate_v1_pairs: bool = False,
+    duplicate_selected_v1_pair: bool = False,
 ) -> tuple[Path, Path, mixer._MixContract]:
     v1_root = tmp_path / "v1-source"
     v1_train_rows = [_pair("v1", index, "train") for index in range(6)]
@@ -110,6 +111,20 @@ def _fixture_sources(
         for row in v1_train_rows:
             row["source_text"] = "Doppelter Rohtext."
             row["target_sst"] = "[DOC][P]Doppeltes Ziel.[/P][/DOC]"
+    elif duplicate_selected_v1_pair:
+        ranked = sorted(
+            v1_train_rows,
+            key=lambda row: mixer._selection_rank(270023, "train", str(row["example_id"])),
+        )
+        for field in (
+            "source_text",
+            "target_sst",
+            "target_plain_text",
+            "target_markdown",
+            "target_html",
+            "target_ast",
+        ):
+            ranked[1][field] = ranked[0][field]
     v1_train_sha, v1_train_count = _jsonl(v1_root / "splits" / "train.jsonl", v1_train_rows)
     v1_validation_sha, v1_validation_count = _jsonl(v1_root / "splits" / "validation.jsonl", v1_validation_rows)
     v1_manifest = {
@@ -252,8 +267,30 @@ def test_mix_rejects_parent_leakage(tmp_path: Path, monkeypatch: pytest.MonkeyPa
 
 def test_mix_rejects_duplicate_selected_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     v1_root, v2_root, contract = _fixture_sources(tmp_path, monkeypatch, duplicate_v1_pairs=True)
-    with pytest.raises(V2TrainingMixError, match="duplicate source/target pair"):
+    with pytest.raises(V2TrainingMixError, match="eligible distinct source/target pairs"):
         mixer._build_v2_training_mix(v1_root, v2_root, tmp_path / "mix", contract=contract)
+
+
+def test_mix_replaces_duplicate_ranked_v1_pair_with_next_unique_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    v1_root, v2_root, contract = _fixture_sources(
+        tmp_path,
+        monkeypatch,
+        duplicate_selected_v1_pair=True,
+    )
+    ranked_ids = sorted(
+        (f"v1_example_train_{index:04d}" for index in range(6)),
+        key=lambda example_id: mixer._selection_rank(270023, "train", example_id),
+    )
+
+    result = mixer._build_v2_training_mix(v1_root, v2_root, tmp_path / "mix", contract=contract)
+    mixed_ids = {json.loads(line)["example_id"] for line in result.train_path.read_text(encoding="utf-8").splitlines()}
+
+    assert ranked_ids[0] in mixed_ids
+    assert ranked_ids[1] not in mixed_ids
+    assert len([example_id for example_id in mixed_ids if str(example_id).startswith("v1_")]) == 3
 
 
 def test_mix_rejects_prohibited_source_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

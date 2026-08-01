@@ -32,7 +32,9 @@
     "kind": {"const": "scriber_v2_training_mix"},
     "training_ready": {"const": true},
     "seed": {"type": "integer", "minimum": 0},
-    "selection_algorithm": {"const": "v1_split_sha256_bottom_k_then_source_sha256_interleave_v1"},
+    "selection_algorithm": {
+      "const": "v1_split_unique_pair_sha256_bottom_k_then_source_sha256_interleave_v2"
+    },
     "manifest_schema_sha256": {"$ref": "#/$defs/sha256"},
     "sources": {
       "type": "object",

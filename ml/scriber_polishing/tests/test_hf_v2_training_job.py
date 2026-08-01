@@ -61,7 +61,7 @@ def _write_mix(root: Path) -> dict[str, object]:
         "kind": "scriber_v2_training_mix",
         "training_ready": True,
         "seed": 270_023,
-        "selection_algorithm": "v1_split_sha256_bottom_k_then_source_sha256_interleave_v1",
+        "selection_algorithm": "v1_split_unique_pair_sha256_bottom_k_then_source_sha256_interleave_v2",
         "manifest_schema_sha256": _sha256(V2_MIX_SCHEMA_PATH.read_bytes()),
         "split_files": {"train": "train.jsonl", "validation": "validation.jsonl"},
         "split_counts": {"train": 20_480, "validation": 1_280},
