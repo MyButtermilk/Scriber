@@ -12,10 +12,12 @@ from typing import Protocol
 
 from .hf_launch_gate import HfLaunchGateError, require_no_active_hf_jobs
 from .hf_v2_training_job import (
+    V2_ATTEMPT,
     V2_JOB_FLAVOR,
     V2_JOB_IMAGE,
     V2_JOB_NAME,
     V2_LAUNCH_CLAIM_PLACEHOLDER,
+    V2_OUTPUT_LABEL,
     V2_OUTPUT_REMOTE_URI,
     V2_PACKET_REMOTE_URI,
     V2TrainingJobError,
@@ -28,9 +30,9 @@ from .hf_v2_training_job import (
 
 V2_CLAIM_REPOSITORY_ID = "Buttermilk03/scriber-polishing-launch-claims"
 V2_CLAIM_REPOSITORY_TYPE = "dataset"
-V2_CLAIM_PATH = "claims/v2-hardcase-replay/attempt12-scriber-v2-hardcase-replay-v1.json"
+V2_CLAIM_PATH = f"claims/v2-hardcase-replay/{V2_ATTEMPT}-{V2_JOB_NAME}.json"
 V2_CONTRACT_HASH_PLACEHOLDER = "__CONTRACT_SHA256_BOUND_BY_LAUNCHER__"
-V2_PACKET_REMOTE_RELATIVE = "attempt12/packets/scriber-v2-hardcase-replay-v1"
+V2_PACKET_REMOTE_RELATIVE = f"{V2_ATTEMPT}/packets/{V2_JOB_NAME}"
 
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OWNER = re.compile(r"^[0-9a-f]{64}$")
@@ -133,7 +135,7 @@ def require_no_prior_v2_job(rows: Sequence[Mapping[str, object]]) -> None:
             row.get("name") == V2_JOB_NAME
             or labels.get("campaign") == "v2-hardcase-replay"
             or labels.get("role") == "v2-training"
-            or labels.get("output-prefix") == "attempt12/scriber-v2-hardcase-replay-v1"
+            or labels.get("output-prefix") == V2_OUTPUT_LABEL
         ):
             raise V2LaunchError("an authoritative HF snapshot already contains this V2 job")
 
@@ -183,7 +185,7 @@ def build_v2_launch_claim(
         "schema_version": 1,
         "kind": "scriber_hf_v2_training_launch_claim",
         "campaign": "v2-hardcase-replay",
-        "attempt": "attempt12",
+        "attempt": V2_ATTEMPT,
         "source_git_head": checked["source_git_head"],
         "packet_remote_uri": V2_PACKET_REMOTE_URI,
         "packet_tree_sha256": checked["packet_tree_sha256"],

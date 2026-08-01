@@ -30,14 +30,16 @@ PARENT_REMOTE_URI = (
 V2_JOB_IMAGE = "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be"
 V2_JOB_FLAVOR = "l4x1"
 V2_JOB_TIMEOUT_MINUTES = 240
+V2_ATTEMPT = "attempt13"
 V2_JOB_NAME = "scriber-v2-hardcase-replay-v1"
 V2_PACKET_REMOTE_URI = (
-    "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/packets/scriber-v2-hardcase-replay-v1"
+    f"hf://buckets/Buttermilk03/scriber-polishing-private-runs/{V2_ATTEMPT}/packets/{V2_JOB_NAME}"
 )
-V2_OUTPUT_MOUNT_URI = "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12"
+V2_OUTPUT_MOUNT_URI = f"hf://buckets/Buttermilk03/scriber-polishing-private-runs/{V2_ATTEMPT}"
 V2_OUTPUT_RELATIVE = "scriber-v2-hardcase-replay-v1"
 V2_OUTPUT_ROOT = f"/outputs/{V2_OUTPUT_RELATIVE}"
 V2_OUTPUT_REMOTE_URI = f"{V2_OUTPUT_MOUNT_URI}/{V2_OUTPUT_RELATIVE}"
+V2_OUTPUT_LABEL = f"{V2_ATTEMPT}-{V2_OUTPUT_RELATIVE}"
 V2_LAUNCH_CLAIM_PLACEHOLDER = "__SCRIBER_V2_LAUNCH_CLAIM_OWNER__"
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -110,6 +112,7 @@ PARENT_FILES: tuple[dict[str, object], ...] = (
 )
 
 _HASH = re.compile(r"^sha256:[0-9a-f]{64}$")
+_HF_JOB_LABEL_COMPONENT = re.compile(r"^[a-zA-Z0-9._-]+$")
 _REVIEW_ROLES = {"adversarial": 2, "fact": 1, "style": 1}
 
 
@@ -132,6 +135,19 @@ def _canonical_bytes(value: object) -> bytes:
         )
         + "\n"
     ).encode("utf-8")
+
+
+def _require_hf_job_label_syntax(argv: list[str]) -> None:
+    """Reject labels that the Hugging Face Jobs API would reject."""
+
+    for index, item in enumerate(argv):
+        if item != "--label":
+            continue
+        if index + 1 >= len(argv) or "=" not in argv[index + 1]:
+            raise V2TrainingJobError("HF job label binding is malformed")
+        key, value = argv[index + 1].split("=", 1)
+        if _HF_JOB_LABEL_COMPONENT.fullmatch(key) is None or _HF_JOB_LABEL_COMPONENT.fullmatch(value) is None:
+            raise V2TrainingJobError(f"HF job label is not accepted by the Jobs API: {key or '<empty>'}")
 
 
 def _regular_bytes(path: Path, label: str) -> bytes:
@@ -633,11 +649,11 @@ def _launch_contract(
         "--label",
         "campaign=v2-hardcase-replay",
         "--label",
-        "attempt=attempt12",
+        f"attempt={V2_ATTEMPT}",
         "--label",
         "role=v2-training",
         "--label",
-        f"output-prefix=attempt12/{V2_OUTPUT_RELATIVE}",
+        f"output-prefix={V2_OUTPUT_LABEL}",
         "--label",
         f"launch-claim={V2_LAUNCH_CLAIM_PLACEHOLDER}",
         "-v",
@@ -657,10 +673,11 @@ def _launch_contract(
         inventory_sha256,
         V2_LAUNCH_CLAIM_PLACEHOLDER,
     ]
+    _require_hf_job_label_syntax(argv)
     return {
         "schema_version": 1,
         "kind": "scriber_hf_v2_training_launch_contract",
-        "attempt": "attempt12",
+        "attempt": V2_ATTEMPT,
         "source_git_head": source_git_head,
         "image": V2_JOB_IMAGE,
         "flavor": V2_JOB_FLAVOR,
@@ -769,7 +786,7 @@ def package_v2_training_job(
         manifest = {
             "schema_version": 1,
             "kind": "scriber_hf_v2_training_job_packet",
-            "attempt": "attempt12",
+            "attempt": V2_ATTEMPT,
             "source": {
                 "git_head": source_head,
                 "git_tree": source_tree,

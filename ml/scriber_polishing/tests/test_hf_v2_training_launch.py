@@ -147,6 +147,8 @@ def test_single_shot_launcher_checks_twice_claims_once_and_submits_once(
     assert control.submitted_argv is not None and control.submitted_argv[:4] == ["hf", "jobs", "run", "--detach"]
     assert "--name" not in control.submitted_argv
     assert "name=scriber-v2-hardcase-replay-v1" in control.submitted_argv
+    assert "attempt=attempt13" in control.submitted_argv
+    assert "output-prefix=attempt13-scriber-v2-hardcase-replay-v1" in control.submitted_argv
     schema = json.loads(
         (Path(__file__).parents[1] / "contracts" / "hf_v2_training_launch_receipt_schema.json").read_text(
             encoding="utf-8"

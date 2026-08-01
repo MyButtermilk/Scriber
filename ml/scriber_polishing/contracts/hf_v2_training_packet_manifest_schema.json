@@ -8,7 +8,7 @@
   "properties": {
     "schema_version": {"const": 1},
     "kind": {"const": "scriber_hf_v2_training_job_packet"},
-    "attempt": {"const": "attempt12"},
+    "attempt": {"const": "attempt13"},
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -48,7 +48,7 @@
     "runtime": {"const": {"image": "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be", "flavor": "l4x1", "timeout_minutes": 240}},
     "output": {
       "const": {
-        "remote_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-v2-hardcase-replay-v1",
+        "remote_uri": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1",
         "container_path": "/outputs/scriber-v2-hardcase-replay-v1",
         "unique": true,
         "overwrite_allowed": false,

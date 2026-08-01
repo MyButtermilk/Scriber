@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -19,7 +20,9 @@ from scriber_polishing.hf_v2_training_job import (
     V2_MIX_SCHEMA_PATH,
     V2_POLICY_PATH,
     V2TrainingJobError,
+    _launch_contract,
     _reconstruct_git_head,
+    _require_hf_job_label_syntax,
     build_train_sft_argv,
     copy_allowlisted_parent,
     package_v2_training_job,
@@ -29,6 +32,31 @@ from scriber_polishing.hf_v2_training_job import (
 )
 
 PRODUCTION_POLICY_PATH = V2_POLICY_PATH
+
+
+def test_launch_contract_labels_follow_hf_jobs_api_pattern() -> None:
+    contract = _launch_contract(
+        source_git_head="1" * 40,
+        packet_tree_sha256="sha256:" + "2" * 64,
+        manifest_sha256="sha256:" + "3" * 64,
+        inventory_sha256="sha256:" + "4" * 64,
+    )
+    argv = contract["argv"]
+    assert isinstance(argv, list)
+    labels = [argv[index + 1] for index, item in enumerate(argv[:-1]) if item == "--label"]
+    invalid = [
+        label
+        for label in labels
+        if "=" not in label
+        or any(re.fullmatch(r"[a-zA-Z0-9._-]+", component) is None for component in label.split("=", 1))
+    ]
+
+    assert invalid == []
+
+
+def test_hf_job_label_gate_rejects_a_path_before_submission() -> None:
+    with pytest.raises(V2TrainingJobError, match="output-prefix"):
+        _require_hf_job_label_syntax(["--label", "output-prefix=attempt13/scriber-v2-hardcase-replay-v1"])
 
 
 def _sha256(payload: bytes) -> str:
