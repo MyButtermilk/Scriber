@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-public-release-verification-v1.schema.json",
+  "title": "Scriber anonymous V2 public release verification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "repository_id",
+    "public_commit",
+    "visibility",
+    "requires_token",
+    "plan_sha256",
+    "inventory_sha256",
+    "file_inventory_sha256",
+    "upload_operation_sha256",
+    "evidence_scope",
+    "anonymous_head_count",
+    "anonymous_range_count",
+    "range_bytes_received",
+    "range_request",
+    "authorization_header_used",
+    "full_model_redownload_performed",
+    "files",
+    "catalog_candidate",
+    "catalog_transition"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_public_release_verification"},
+    "status": {"const": "passed"},
+    "repository_id": {"const": "Buttermilk03/scriber-gemma3-270m-polishing-de-v2"},
+    "public_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "visibility": {"const": "public"},
+    "requires_token": {"const": false},
+    "plan_sha256": {"$ref": "#/$defs/hash"},
+    "inventory_sha256": {"$ref": "#/$defs/hash"},
+    "file_inventory_sha256": {"$ref": "#/$defs/hash"},
+    "upload_operation_sha256": {"$ref": "#/$defs/hash"},
+    "evidence_scope": {"$ref": "#/$defs/evidence_scope"},
+    "anonymous_head_count": {"const": 11},
+    "anonymous_range_count": {"const": 11},
+    "range_bytes_received": {"const": 11},
+    "range_request": {"const": "bytes=0-0"},
+    "authorization_header_used": {"const": false},
+    "full_model_redownload_performed": {"const": false},
+    "files": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/probe"},
+      "minItems": 11,
+      "maxItems": 11
+    },
+    "catalog_candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository_id", "revision", "requires_token", "variants"],
+      "properties": {
+        "repository_id": {"const": "Buttermilk03/scriber-gemma3-270m-polishing-de-v2"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "requires_token": {"const": false},
+        "variants": {"const": ["Q8_0", "BF16"]}
+      }
+    },
+    "catalog_transition": {
+      "const": {
+        "v2_activation_eligible": true,
+        "catalog_changed": false,
+        "v1_fallback_remains_active": true,
+        "v1_retirement_allowed_only_after_catalog_update": true
+      }
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256", "head_status", "range_status", "range_bytes_received"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/hash"},
+        "head_status": {"const": 200},
+        "range_status": {"const": 206},
+        "range_bytes_received": {"const": 1}
+      }
+    },
+    "evidence_scope": {
+      "const": {
+        "kind": "compact_smoke_test",
+        "publication_grade": false,
+        "user_authorized_promotion": true,
+        "automatic_case_count": 300,
+        "automatic_cases_per_suite": {
+          "ai_gold": 100,
+          "critical_regression": 100,
+          "regular_test": 100
+        },
+        "blind_judges": {
+          "terra_pair_count": 100,
+          "sol_pair_count": 0
+        }
+      }
+    }
+  }
+}

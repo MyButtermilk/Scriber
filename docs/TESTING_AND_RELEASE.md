@@ -217,6 +217,29 @@ npx vitest run --config vitest.components.config.ts `
   client/src/components/settings/LocalPolishingSettings.test.tsx
 ```
 
+The optional V2 research path has separate focused, fail-closed gates. Run
+them from `ml\scriber_polishing`; they do not start a Hugging Face job or
+publish a model:
+
+```powershell
+uv run pytest tests/test_hf_v2_training_postflight.py `
+  tests/test_hf_v2_final_evaluation.py `
+  tests/test_hf_v2_final_evaluation_launch.py `
+  tests/test_launch_hf_v2_final_evaluation_script.py `
+  tests/test_v2_local_compact_evaluation.py `
+  tests/test_compact_terra_judge.py `
+  tests/test_hf_v2_release_job.py `
+  tests/test_hf_v2_release_launch.py `
+  tests/test_v2_q8_bf16_release.py -q
+uv run ruff check src/scriber_polishing scripts tests
+```
+
+A V2 candidate may enter conversion/publication only when both the exact
+300-case automatic comparison and the independent Terra-100 gate pass. A
+failed or non-publication-grade result leaves V1 active and forbids the V2
+claim, conversion job, public upload, and catalog switch. The 2026-08-01 V2
+candidate failed both gates, so no attempt-15 job was started.
+
 The packaging gate must cover unsafe-archive rejection, exact staged-file
 membership, full manifest re-verification, and corruption rejection. Before a
 release, the model catalog must also be materialized to one full public Hugging

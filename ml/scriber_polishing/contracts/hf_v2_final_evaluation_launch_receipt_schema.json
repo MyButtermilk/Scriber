@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-final-evaluation-launch-receipt-v1.schema.json",
+  "title": "Scriber V2 compact evaluation single-shot launch receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "claim_repository", "claim_path", "claim_commit", "owner_token",
+    "job_id", "job_inspection", "packet_tree_sha256", "manifest_sha256",
+    "launch_contract_sha256", "packet_upload", "output_prefix_uri", "remote_result_uri",
+    "submitted_at_utc", "authoritative_snapshot_count", "duplicate_retry_allowed"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_final_evaluation_launch_receipt"},
+    "claim_repository": {"const": "Buttermilk03/scriber-polishing-launch-claims"},
+    "claim_path": {"const": "claims/v2-final-evaluation/attempt14-scriber-v2-hardcase-replay-final-evaluation-v1.json"},
+    "claim_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "owner_token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "job_inspection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "stage", "exact_identity_verified", "api_cli_identity_sha256", "command_sha256", "url"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+        "stage": {"enum": ["PENDING", "QUEUED", "SCHEDULING", "RUNNING"]},
+        "exact_identity_verified": {"const": true},
+        "api_cli_identity_sha256": {"$ref": "#/$defs/hash"},
+        "command_sha256": {"$ref": "#/$defs/hash"},
+        "url": {"type": "string", "pattern": "^https://huggingface\\.co/jobs/(?:Buttermilk03/)?[0-9a-f]{24}$"}
+      }
+    },
+    "packet_tree_sha256": {"$ref": "#/$defs/hash"},
+    "manifest_sha256": {"$ref": "#/$defs/hash"},
+    "launch_contract_sha256": {"$ref": "#/$defs/hash"},
+    "packet_upload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["performed", "remote_uri", "exact_xet_hashes_verified", "downloaded_for_verification"],
+      "properties": {
+        "performed": {"type": "boolean"},
+        "remote_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/packets/scriber-v2-hardcase-replay-final-evaluation-v1"},
+        "exact_xet_hashes_verified": {"const": true},
+        "downloaded_for_verification": {"const": false}
+      }
+    },
+    "output_prefix_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/scriber-v2-hardcase-replay-final-evaluation-v1"},
+    "remote_result_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/scriber-v2-hardcase-replay-final-evaluation-v1/final"},
+    "submitted_at_utc": {"type": "string", "format": "date-time"},
+    "authoritative_snapshot_count": {"const": 3},
+    "duplicate_retry_allowed": {"const": false}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}

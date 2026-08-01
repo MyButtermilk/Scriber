@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-07-27
+Last verified: 2026-08-01
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -102,6 +102,25 @@ Reliability and data:
 - Settings updates validate persisted text sizes before mutation; invalid numeric
   tuning values fall back safely instead of crashing provider or runtime paths.
 - Unicode export filenames use a safe ASCII fallback plus RFC 5987 UTF-8 metadata.
+
+Local transcript polishing:
+
+- The public V1 Gemma 3 270M GGUF release remains the product model. Settings
+  downloads its commit-pinned Q8_0 or BF16 variant anonymously, verifies exact
+  bytes, and runs it through the bundled llama.cpp runtime. Q8_0 remains the
+  recommended desktop/laptop choice; BF16 remains the larger reference option.
+- A 640-step V2 hard-case continuation completed successfully, but its compact
+  promotion evidence failed closed. Across 300 sealed automatic cases, V1/V2
+  normalized exact match was `0.546667`/`0.530000`, deterministic critical
+  errors were `400`/`407`, and structured-output parse rate was `0.88`/`0.85`.
+  In a separate 100-pair blinded Terra session, V2 won 21, V1 won 15, 64 tied,
+  and critical markings were 24 for V2 versus 21 for V1. The evidence is a
+  `compact_smoke_test`, not publication-grade evidence.
+- V2 is intentionally not quantized, published, or activated. Its ignored,
+  hash-bound local verdict and evaluation artifacts document the failure cases
+  for a later synthetic hard-case round. Future training must derive only new
+  synthetic siblings from aggregate signals and must never reuse sealed test,
+  challenge, prediction, or judge content directly.
 
 Meetings:
 

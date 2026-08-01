@@ -573,6 +573,44 @@ def test_gguf_pipeline_uses_bundle_capability_probe_real_conversion_and_determin
     )
 
 
+def test_gguf_pipeline_can_materialize_only_bf16_and_q8_for_v2(
+    tmp_path: Path,
+) -> None:
+    checkpoint = _checkpoint(tmp_path / "checkpoint")
+    bundle_root, bundle_lock = _llama_bundle(tmp_path / "llama-bundle")
+    runner = FakeCommandRunner()
+
+    manifest = build_gguf_variants(
+        checkpoint,
+        tmp_path / "gguf",
+        source_id="v2-final-bf16",
+        training_fingerprint=_TRAINING_FINGERPRINT,
+        bundle_root=bundle_root,
+        bundle_lock=bundle_lock,
+        python_executable=Path("python.exe"),
+        runner=runner,
+        prompt_renderer=lambda _source: RenderedPrompt(
+            prompt="<start_of_turn>user\nTest<end_of_turn>\n<start_of_turn>model\n",
+            chat_template_sha256="sha256:" + "c" * 64,
+        ),
+        quantizations=("Q8_0",),
+    )
+
+    assert manifest["variants"] == ["bf16", "Q8_0"]
+    assert set(manifest["variant_manifests"]) == {"bf16", "Q8_0"}
+    assert {path.relative_to(tmp_path / "gguf").as_posix() for path in (tmp_path / "gguf").rglob("*.gguf")} == {
+        "bf16/model-BF16.gguf",
+        "Q8_0/model-Q8_0.gguf",
+    }
+    quantize_calls = [
+        call
+        for call, _environment in runner.calls
+        if "quantize" in Path(call[0]).name.lower() and "--help" not in call
+    ]
+    assert len(quantize_calls) == 1
+    assert quantize_calls[0][-1] == "Q8_0"
+
+
 def test_gguf_pipeline_refuses_unmaterialized_or_unsupported_bundle_before_conversion(
     tmp_path: Path,
 ) -> None:

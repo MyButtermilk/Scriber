@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-compact-terra-private-mapping-v1.schema.json",
+  "title": "Scriber V2 compact Terra private mapping v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "evidence_class",
+    "publication_grade",
+    "judge_model_family",
+    "prompt_version",
+    "prompt_sha256",
+    "evaluation_result_sha256",
+    "evaluation_source",
+    "source_cases_sha256",
+    "public_cases_sha256",
+    "source_case_count",
+    "selected_case_count",
+    "required_verdict_count",
+    "quotas",
+    "selection_seed",
+    "blinding_seed",
+    "mappings"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_v2_compact_terra_private_mapping" },
+    "evidence_class": { "const": "compact_smoke_test" },
+    "publication_grade": { "const": false },
+    "judge_model_family": { "const": "gpt-5.6-terra" },
+    "prompt_version": { "const": "v1" },
+    "prompt_sha256": { "$ref": "#/$defs/hash" },
+    "evaluation_result_sha256": { "$ref": "#/$defs/hash" },
+    "evaluation_source": { "$ref": "#/$defs/evaluationSource" },
+    "source_cases_sha256": { "$ref": "#/$defs/hash" },
+    "public_cases_sha256": { "$ref": "#/$defs/hash" },
+    "source_case_count": { "const": 300 },
+    "selected_case_count": { "const": 100 },
+    "required_verdict_count": { "const": 100 },
+    "quotas": {
+      "const": {
+        "ai_gold": 34,
+        "critical_regression": 33,
+        "regular_test": 33
+      }
+    },
+    "selection_seed": { "const": "scriber-v2-compact-terra-selection-v1" },
+    "blinding_seed": { "const": "scriber-v2-compact-terra-blinding-v1" },
+    "mappings": {
+      "type": "array",
+      "minItems": 100,
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/mapping" }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "evaluationSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256",
+        "record_count",
+        "suite_counts",
+        "schema_path",
+        "contains_candidate_identity",
+        "judge_public"
+      ],
+      "properties": {
+        "path": { "const": "terra-source-cases.jsonl" },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/$defs/hash" },
+        "record_count": { "const": 300 },
+        "suite_counts": {
+          "const": {
+            "ai_gold": 100,
+            "critical_regression": 100,
+            "regular_test": 100
+          }
+        },
+        "schema_path": { "const": "contracts/v2_compact_terra_source_case_schema.json" },
+        "contains_candidate_identity": { "const": true },
+        "judge_public": { "const": false }
+      }
+    },
+    "mapping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["case_id", "source_case_id", "suite", "candidate_a", "candidate_b"],
+      "properties": {
+        "case_id": { "type": "string", "pattern": "^terra_[0-9a-f]{24}$" },
+        "source_case_id": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{2,199}$" },
+        "suite": { "enum": ["ai_gold", "critical_regression", "regular_test"] },
+        "candidate_a": { "enum": ["v1", "v2"] },
+        "candidate_b": { "enum": ["v1", "v2"] }
+      }
+    }
+  }
+}

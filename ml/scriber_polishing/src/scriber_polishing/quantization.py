@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cache
 from importlib.metadata import PackageNotFoundError, version
@@ -873,9 +873,15 @@ def build_gguf_variants(
     python_executable: Path,
     runner: CommandRunner | None = None,
     prompt_renderer: Callable[[Path], RenderedPrompt] = render_gguf_self_test_prompt,
+    quantizations: Sequence[str] = ("Q8_0", "Q4_K_M"),
 ) -> dict[str, object]:
     """Build GGUF variants only through one complete, commit-bound llama.cpp bundle."""
 
+    requested_quantizations = tuple(quantizations)
+    if requested_quantizations not in {("Q8_0",), ("Q8_0", "Q4_K_M")}:
+        raise QuantizationError(
+            "GGUF quantizations must be exactly Q8_0 or the reviewed Q8_0/Q4_K_M pair"
+        )
     source = Path(checkpoint).resolve()
     output = Path(destination).resolve()
     source_inventory = inventory_bf16_checkpoint(source, source_id=source_id)
@@ -1002,7 +1008,7 @@ def build_gguf_variants(
                 f"llama-quantize help probe failed with unexpected exit code {quantize_help.returncode}"
             )
         help_text = f"{quantize_help.stdout}\n{quantize_help.stderr}"
-        for quantization in ("Q8_0", "Q4_K_M"):
+        for quantization in requested_quantizations:
             if quantization not in help_text:
                 raise QuantizationError(f"llama-quantize help does not advertise required {quantization}")
         cli_version = _run_checked(
@@ -1106,7 +1112,7 @@ def build_gguf_variants(
                 "reload_self_test": bf16_reload,
             }
         }
-        for quantization in ("Q8_0", "Q4_K_M"):
+        for quantization in requested_quantizations:
             variant_root = temporary / quantization
             variant_root.mkdir()
             quantized = variant_root / f"model-{quantization}.gguf"
@@ -1163,7 +1169,7 @@ def build_gguf_variants(
             "source_tree_sha256": source_inventory["tree_sha256"],
             "training_fingerprint": training_fingerprint,
             "protection_policy": source_policy,
-            "variants": ["bf16", "Q8_0", "Q4_K_M"],
+            "variants": ["bf16", *requested_quantizations],
             "artifact_tree_sha256": _tree_hash(files),
             "file_count": len(files),
             "total_bytes": sum(int(item["bytes"]) for item in files),
@@ -1209,7 +1215,7 @@ def build_gguf_variants(
         _validate(_GGUF_MANIFEST_SCHEMA, manifest, "GGUF manifest")
         _write_json(temporary / "gguf-bundle-manifest.json", manifest)
         os.replace(temporary, output)
-        for quantization in ("bf16", "Q8_0", "Q4_K_M"):
+        for quantization in ("bf16", *requested_quantizations):
             verify_variant_artifact_manifest(output / quantization)
         return manifest
     except QuantizationError:

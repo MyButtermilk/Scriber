@@ -95,6 +95,110 @@ matching one-epoch continuation configuration. The supplement-only
 `configs/train_v2_hardcase.yaml` remains diagnostic and is not the mixed V2
 training configuration.
 
+### Attempt-13 training postflight
+
+The completed V2 run is accepted only through its metadata-only postflight.
+The verifier binds HF job `6a6e05bf6b79c09949c1e5fd`, the immutable packet
+and V1 parent trees, 640/640 steps, CUDA BF16, learning rate `5e-6`, the final
+run fingerprint, BF16 model tree, weight SHA-256, protection policy, and the
+in-job fresh-reload result. It reads only bounded JSON metadata and the
+authoritative bucket file listing; it never reads or downloads model bytes:
+
+```powershell
+python scripts/verify_hf_v2_training_postflight.py `
+  --launch-receipt path/to/launch-receipt.json `
+  --job-inspect path/to/job-inspect.json `
+  --training-report path/to/training-report.json `
+  --training-result path/to/v2-training-result.json `
+  --runtime-verification path/to/runtime-verification.json `
+  --packet-verification path/to/packet-verification.json `
+  --parent-binding path/to/parent-binding.json `
+  --final-inventory path/to/final-checkpoint-inventory.json `
+  --reload-verification path/to/final-reload-verification.json `
+  --bucket-inventory path/to/bucket-inventory.json `
+  --report path/to/new-completion-model-binding.json
+```
+
+The output conforms to
+`contracts/hf_v2_training_completion_model_binding_schema.json`. Any changed
+job identity, step count, runtime, fingerprint, tree, weight, policy, reload
+evidence, or required remote file fails before a completion report is written.
+
+### Attempt-14 compact evaluation outcome
+
+The completed attempt-13 model was compared with the released V1 model in a
+short, non-publication-grade smoke test. The local Windows fallback reused the
+sealed attempt-14 packet after the Hugging Face evaluator had completed all 300
+predictions but exposed a duplicate cross-suite case identifier. The repair
+namespaced identifiers only in the combined and Terra handoff; the three
+100-case selections and all predictions remained byte-identical. The recovery
+path also verifies a before/after SHA-256 tree and never reruns inference.
+
+The verified automatic result covered 100 AI-gold, 100 critical-regression,
+and 100 regular-test cases:
+
+- V1 normalized exact match: `0.546667`; V2: `0.530000`.
+- V1 deterministic critical errors: `400`; V2: `407`.
+- V1 structured-output parse rate: `0.88`; V2: `0.85`.
+- Automatic compact gate: `failed`.
+
+One separate `gpt-5.6-terra` session then judged 100 blinded A/B pairs with an
+exact 34/33/33 suite split and V2 assigned to A and B 50 times each. V2 won 21
+pairs, V1 won 15, and 64 were ties. Terra marked V2 critical in 24 pairs and V1
+critical in 21, so the conservative Terra gate also `failed`. This evidence is
+labelled `compact_smoke_test` and `publication_grade=false`.
+
+The ignored local evidence remains hash-bound for a future synthetic hard-case
+round without committing test or challenge content:
+
+- evaluation result: `sha256:af63f66037498f77562d87b570ba93d8ca3d7dcee36d603738cddeb6584079e9`
+- 300-case Terra source: `sha256:1acbcd92bc49a6413aa2da50799dbe06dbcb63119a69768c26ef251f94d51c24`
+- canonical Terra verdicts: `sha256:8713b1a16d991c07ee40ec63d95eb3afc11fe65fdddd542c5eb6c378c436cbe6`
+- Terra session: `sha256:4df090665d6d9e5d8e6d4b9af2146fdfa16b51474b57381d878aab27b9f1c2e3`
+
+V2 is therefore a rejected improvement candidate: it is not quantized,
+published, or selected by Scriber. The public V1 Q8_0 and BF16 artifacts remain
+the application default and fallback. Future data work may use only aggregate
+failure signals or independently generated synthetic siblings; it must not
+train on these sealed test, challenge, prediction, or judge records.
+
+### Gated attempt-15 BF16/Q8_0 conversion
+
+Attempt 15 is admitted only after the compact 300-case V2-versus-V1 automatic
+gate and the separate blind Terra-100 gate have both passed. Build the release
+plan first, then package the cloud conversion job. Attempt 14 failed both
+admission gates, so attempt 15 was not packaged, claimed, launched, quantized,
+or published. The commands below document the dormant fail-closed path for a
+future candidate that passes both gates:
+
+```powershell
+python scripts/package_hf_v2_release_job.py `
+  --plan path/to/v2-release-plan.json `
+  --evaluation-binding path/to/v2-evaluation-binding.json `
+  --output path/to/attempt15-packet
+```
+
+The packet contains the exact tracked source and accepted evidence, but no
+model weights. The completed attempt-13 model and verified llama.cpp v19 bundle
+are mounted read-only inside Hugging Face; only BF16 and Q8_0 are produced.
+Packaging and verification are local-only. After the immutable packet has been
+uploaded to its contract URI, the mutating launch remains a separate explicit
+step:
+
+```powershell
+python scripts/launch_hf_v2_release_job.py `
+  --packet path/to/attempt15-packet `
+  --receipt path/to/attempt15-launch-receipt.json
+```
+
+The launcher reconciles API and CLI job inventories three times, refuses any
+active or prior attempt-15 identity, requires an empty output prefix, acquires
+one permanent compare-and-swap claim, and makes exactly one detached submit
+call. An ambiguous response retains the claim and forbids an automatic retry.
+It does not publish the resulting files. Public staging, commit binding, and
+anonymous HEAD plus one-byte Range verification remain separate release gates;
+V1 stays the application fallback until those gates pass.
+
 ## Deterministic automatic evaluation
 
 Frozen references can produce two no-model baselines: `raw_transcript` emits

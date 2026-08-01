@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-publication-receipt-v1.schema.json",
+  "title": "Scriber V2 public upload receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "repository_id",
+    "visibility",
+    "requires_token",
+    "public_commit",
+    "upload_operation_sha256",
+    "plan_sha256",
+    "inventory_sha256",
+    "payload_tree_sha256",
+    "files",
+    "file_inventory_sha256",
+    "allowlisted_paths",
+    "upload_performed",
+    "anonymous_verification_performed"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_publication_receipt"},
+    "status": {"const": "uploaded_unverified"},
+    "repository_id": {"const": "Buttermilk03/scriber-gemma3-270m-polishing-de-v2"},
+    "visibility": {"const": "public"},
+    "requires_token": {"const": false},
+    "public_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "upload_operation_sha256": {"$ref": "#/$defs/hash"},
+    "plan_sha256": {"$ref": "#/$defs/hash"},
+    "inventory_sha256": {"$ref": "#/$defs/hash"},
+    "payload_tree_sha256": {"$ref": "#/$defs/hash"},
+    "files": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/file"},
+      "minItems": 11,
+      "maxItems": 11
+    },
+    "file_inventory_sha256": {"$ref": "#/$defs/hash"},
+    "allowlisted_paths": {"$ref": "#/$defs/allowlist"},
+    "upload_performed": {"const": true},
+    "anonymous_verification_performed": {"const": false}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "allowlist": {
+      "const": [
+        "GEMMA_LICENSE.md",
+        "MODIFICATIONS.md",
+        "NOTICE",
+        "README.md",
+        "gguf/bf16/model-BF16.gguf",
+        "gguf/bf16/scriber-protection-policy.json",
+        "gguf/bf16/variant-artifact-manifest.json",
+        "gguf/q8_0/model-Q8_0.gguf",
+        "gguf/q8_0/scriber-protection-policy.json",
+        "gguf/q8_0/variant-artifact-manifest.json",
+        "v2-public-release-inventory.json"
+      ]
+    }
+  }
+}

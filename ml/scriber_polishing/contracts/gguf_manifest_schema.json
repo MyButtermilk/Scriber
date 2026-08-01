@@ -44,10 +44,9 @@
       "$ref": "#/$defs/protection_policy"
     },
     "variants": {
-      "const": [
-        "bf16",
-        "Q8_0",
-        "Q4_K_M"
+      "oneOf": [
+        {"const": ["bf16", "Q8_0"]},
+        {"const": ["bf16", "Q8_0", "Q4_K_M"]}
       ]
     },
     "artifact_tree_sha256": {
@@ -151,11 +150,9 @@
     "variant_manifests": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "bf16",
-        "Q8_0",
-        "Q4_K_M"
-      ],
+      "required": ["bf16", "Q8_0"],
+      "minProperties": 2,
+      "maxProperties": 3,
       "properties": {
         "bf16": {
           "$ref": "#/$defs/variant_manifest"

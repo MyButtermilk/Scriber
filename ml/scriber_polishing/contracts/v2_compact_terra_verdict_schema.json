@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-compact-terra-verdict-v1.schema.json",
+  "title": "Scriber V2 compact Terra verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "model_family",
+    "judge_session_id",
+    "prompt_sha256",
+    "winner",
+    "critical_candidates",
+    "brief_reason"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "case_id": { "type": "string", "pattern": "^terra_[0-9a-f]{24}$" },
+    "model_family": { "const": "gpt-5.6-terra" },
+    "judge_session_id": { "type": "string", "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$" },
+    "prompt_sha256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "winner": { "enum": ["A", "B", "tie"] },
+    "critical_candidates": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 2,
+      "items": { "enum": ["A", "B"] }
+    },
+    "brief_reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+  }
+}

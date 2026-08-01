@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-training-completion-model-binding-v1.schema.json",
+  "title": "Scriber HF V2 Attempt-13 training completion and final-model binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "status", "job", "source", "training", "model", "runtime", "evidence", "verification"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_training_completion_model_binding"},
+    "status": {"const": "complete"},
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "terminal_status", "remote_result_uri"],
+      "properties": {
+        "id": {"const": "6a6e05bf6b79c09949c1e5fd"},
+        "terminal_status": {"const": "COMPLETED"},
+        "remote_result_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1"}
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_git_head", "packet_tree_sha256", "parent_checkpoint_tree_sha256", "launch_contract_sha256"],
+      "properties": {
+        "source_git_head": {"$ref": "#/$defs/git"},
+        "packet_tree_sha256": {"const": "sha256:3d11fbc9441ee4e563b46a87bf354a34fd9ff59d04a784325c725375f67ec5b6"},
+        "parent_checkpoint_tree_sha256": {"const": "sha256:4cf99b2768c5af9c992ee8f6390822a548d6b546ad354368a8d6cfb8ae288ca4"},
+        "launch_contract_sha256": {"const": "sha256:ecb13e460f230f9ee5e265923df82fa8be3975033eddad9cf4e8356104a7a1f9"}
+      }
+    },
+    "training": {
+      "const": {"completed_steps": 640, "max_steps": 640, "learning_rate": 0.000005, "bf16": true}
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_fingerprint", "directory", "remote_uri", "tree_sha256", "weight_files", "protection_policy_sha256", "reload_status", "inventory_sha256", "reload_verification_sha256"],
+      "properties": {
+        "run_fingerprint": {"const": "sha256:7b23f23e70f60df9d58961808e529ff7738032de75a7a4a62c12529bc734a45c"},
+        "directory": {"const": "final-7b23f23e70f60df9"},
+        "remote_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9"},
+        "tree_sha256": {"const": "sha256:4233c0084cacdd3ba88207cece0ce20d1e1f56cfbfa64e71182a2deb2934c743"},
+        "weight_files": {
+          "const": [
+            {
+              "path": "model.safetensors",
+              "bytes": 536223056,
+              "sha256": "sha256:fd86d26f70e128fd1e8d4f11e69d4778ae930e628e374aa64595aca5bd0b9bb3"
+            }
+          ]
+        },
+        "protection_policy_sha256": {"const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"},
+        "reload_status": {"const": "passed"},
+        "inventory_sha256": {"$ref": "#/$defs/hash"},
+        "reload_verification_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cuda_available", "bf16_supported", "device_count", "gpu", "torch_version", "cuda_runtime", "verification_sha256"],
+      "properties": {
+        "cuda_available": {"const": true},
+        "bf16_supported": {"const": true},
+        "device_count": {"const": 1},
+        "gpu": {"type": "string", "minLength": 1},
+        "torch_version": {"type": "string", "minLength": 1},
+        "cuda_runtime": {"type": "string", "minLength": 1},
+        "verification_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["launch_receipt_sha256", "terminal_job_sha256", "training_report_sha256", "training_result_sha256", "packet_verification_sha256", "parent_binding_sha256", "remote_inventory_sha256"],
+      "properties": {
+        "launch_receipt_sha256": {"$ref": "#/$defs/hash"},
+        "terminal_job_sha256": {"$ref": "#/$defs/hash"},
+        "training_report_sha256": {"$ref": "#/$defs/hash"},
+        "training_result_sha256": {"$ref": "#/$defs/hash"},
+        "packet_verification_sha256": {"$ref": "#/$defs/hash"},
+        "parent_binding_sha256": {"$ref": "#/$defs/hash"},
+        "remote_inventory_sha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "verification": {
+      "const": {"metadata_only": true, "model_downloaded": false, "external_mutation_performed": false}
+    }
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "git": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\).+\\.safetensors$"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "sha256": {"$ref": "#/$defs/hash"}
+      }
+    }
+  }
+}

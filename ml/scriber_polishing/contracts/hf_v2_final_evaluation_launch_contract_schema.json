@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-final-evaluation-launch-contract-v1.schema.json",
+  "title": "Scriber V2 final-evaluation launch contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version", "kind", "attempt", "job_name", "image", "flavor", "timeout_minutes",
+    "packet_remote_uri", "model_remote_uri", "output_mount_uri", "remote_result_uri",
+    "packet_tree_sha256", "manifest_sha256", "inventory_sha256", "packet_volume", "model_volume",
+    "v1_evaluation_volume", "output_volume", "identity_labels", "preconditions", "launch_contract_hash_argument",
+    "external_job_started", "external_mutation_performed", "auto_retry_allowed", "argv_template"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_hf_v2_final_evaluation_launch_contract" },
+    "attempt": { "const": "attempt14" },
+    "job_name": { "const": "scriber-v2-hardcase-replay-final-evaluation-v1" },
+    "image": { "const": "pytorch/pytorch@sha256:eee11b3b3872a8c838e35ef48f08b2d5def2080902c7f666831310ca1a0ef2be" },
+    "flavor": { "const": "l4x1" },
+    "timeout_minutes": { "const": 45 },
+    "packet_remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/packets/scriber-v2-hardcase-replay-final-evaluation-v1" },
+    "model_remote_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt13/scriber-v2-hardcase-replay-v1/training/final-7b23f23e70f60df9" },
+    "output_mount_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14" },
+    "remote_result_uri": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt14/scriber-v2-hardcase-replay-final-evaluation-v1/final" },
+    "packet_tree_sha256": { "$ref": "#/$defs/hash" },
+    "manifest_sha256": { "$ref": "#/$defs/hash" },
+    "inventory_sha256": { "$ref": "#/$defs/hash" },
+    "packet_volume": { "type": "string" },
+    "model_volume": { "type": "string" },
+    "v1_evaluation_volume": { "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-full-120k-v2-final-evaluation-v1:/input/v1-evaluation:ro" },
+    "output_volume": { "type": "string" },
+    "identity_labels": {
+      "const": {
+        "attempt": "attempt14",
+        "campaign": "v2-final-evaluation",
+        "name": "scriber-v2-hardcase-replay-final-evaluation-v1",
+        "output-prefix": "attempt14-scriber-v2-hardcase-replay-final-evaluation-v1",
+        "project": "scriber-polishing",
+        "role": "v2-final-evaluation"
+      }
+    },
+    "preconditions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["no_prior_exact_job", "empty_remote_output", "exact_remote_packet", "permanent_claim"],
+      "properties": {
+        "no_prior_exact_job": { "$ref": "#/$defs/fresh" },
+        "empty_remote_output": { "$ref": "#/$defs/target" },
+        "exact_remote_packet": { "$ref": "#/$defs/target" },
+        "permanent_claim": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["required_before_submission", "repository_id", "repository_type", "path"],
+          "properties": {
+            "required_before_submission": { "const": true },
+            "repository_id": { "const": "Buttermilk03/scriber-polishing-launch-claims" },
+            "repository_type": { "const": "dataset" },
+            "path": { "const": "claims/v2-final-evaluation/attempt14-scriber-v2-hardcase-replay-final-evaluation-v1.json" }
+          }
+        }
+      }
+    },
+    "launch_contract_hash_argument": { "const": "replace_placeholder_with_raw_launch_contract_sha256" },
+    "external_job_started": { "const": false },
+    "external_mutation_performed": { "const": false },
+    "auto_retry_allowed": { "const": false },
+    "argv_template": {
+      "type": "array",
+      "minItems": 20,
+      "items": { "type": "string", "minLength": 1 },
+      "contains": { "const": "__LAUNCH_CONTRACT_SHA256__" },
+      "minContains": 1,
+      "maxContains": 1
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "fresh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "scope", "minimum_fresh_snapshots", "maximum_age_seconds"],
+      "properties": {
+        "required": { "const": true },
+        "scope": { "const": "all_historical_and_active_namespace_jobs" },
+        "minimum_fresh_snapshots": { "const": 1 },
+        "maximum_age_seconds": { "const": 120 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "target_remote_uri", "maximum_age_seconds"],
+      "properties": {
+        "required": { "const": true },
+        "target_remote_uri": { "type": "string", "pattern": "^hf://buckets/Buttermilk03/" },
+        "maximum_age_seconds": { "const": 120 }
+      }
+    }
+  }
+}
