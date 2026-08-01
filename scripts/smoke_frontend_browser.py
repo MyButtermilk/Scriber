@@ -57,7 +57,6 @@ ROUTE_EXPECTATIONS: dict[str, list[str]] = {
     "/transcript/youtube-processing-smoke": [
         "Synthetic YouTube Processing",
         "Synthetic completed summary after YouTube processing.",
-        "Open on YouTube",
         "Transcript",
     ],
     "/transcript/mic-no-summary-smoke": [
@@ -5787,13 +5786,26 @@ async def exercise_transcript_processing_refresh(cdp: CdpClient, *, timeout_sec:
         expression=r"""
 (() => {
   const text = document.body ? document.body.innerText : '';
+  const youtubeLink = document.querySelector('a[data-testid="youtube-source-link"]');
+  const youtubeLinkStyle = youtubeLink ? getComputedStyle(youtubeLink) : null;
+  const youtubeLinkRect = youtubeLink ? youtubeLink.getBoundingClientRect() : null;
+  const youtubeLinkVisible = !!youtubeLink
+    && youtubeLinkStyle?.display !== 'none'
+    && youtubeLinkStyle?.visibility !== 'hidden'
+    && Number(youtubeLinkRect?.width || 0) > 0
+    && Number(youtubeLinkRect?.height || 0) > 0;
+  const youtubeLinkLabel = youtubeLink?.getAttribute('aria-label') || '';
   return {
     ok: text.includes('Synthetic completed summary after YouTube processing.')
       && !text.includes('Download complete')
-      && !text.includes('Elapsed:'),
+      && !text.includes('Elapsed:')
+      && youtubeLinkVisible
+      && youtubeLinkLabel === 'Open on YouTube',
     hasCompletedSummary: text.includes('Synthetic completed summary after YouTube processing.'),
     hasStaleDownloadStep: text.includes('Download complete'),
     hasProcessingElapsed: text.includes('Elapsed:'),
+    youtubeLinkVisible,
+    youtubeLinkLabel,
     route: window.location.pathname
   };
 })()
