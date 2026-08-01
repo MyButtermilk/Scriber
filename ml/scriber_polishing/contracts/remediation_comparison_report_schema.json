@@ -1,0 +1,744 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/remediation-comparison-report-v1.schema.json",
+  "title": "Scriber completed remediation A/B comparison report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "decision",
+    "adoption",
+    "experiment",
+    "inputs",
+    "matched_execution",
+    "policy",
+    "candidates",
+    "hard_gates",
+    "eval_loss",
+    "composite_delta",
+    "bootstrap",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_remediation_comparison"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "decision": {
+      "enum": [
+        "ADOPT_STAGED",
+        "KEEP_SHUFFLED"
+      ]
+    },
+    "adoption": {
+      "enum": [
+        "STAGED",
+        "NO_ADOPTION"
+      ]
+    },
+    "experiment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "experiment_id",
+        "comparison_pair_sha256",
+        "bundle_manifest_sha256",
+        "evaluation_scope"
+      ],
+      "properties": {
+        "experiment_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "comparison_pair_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "bundle_manifest_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "evaluation_scope": {
+          "const": "validation_only_parity_dev"
+        }
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parity_dev_manifest_sha256",
+        "references_sha256",
+        "case_ids_sha256",
+        "case_count",
+        "comparison_config_sha256",
+        "arms"
+      ],
+      "properties": {
+        "parity_dev_manifest_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "references_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "case_ids_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "case_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "comparison_config_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "arms": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "shuffled",
+            "staged"
+          ],
+          "properties": {
+            "shuffled": {
+              "$ref": "#/$defs/armInputs"
+            },
+            "staged": {
+              "$ref": "#/$defs/armInputs"
+            }
+          }
+        }
+      }
+    },
+    "matched_execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "assertions"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "assertions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "accepted_training_ids_equal",
+            "rejected_training_ids_equal",
+            "training_contract_equal",
+            "parent_checkpoint_equal",
+            "protection_policy_equal",
+            "parity_dev_case_ids_equal",
+            "evaluation_config_equal"
+          ],
+          "properties": {
+            "accepted_training_ids_equal": {
+              "type": "boolean"
+            },
+            "rejected_training_ids_equal": {
+              "type": "boolean"
+            },
+            "training_contract_equal": {
+              "type": "boolean"
+            },
+            "parent_checkpoint_equal": {
+              "type": "boolean"
+            },
+            "protection_policy_equal": {
+              "type": "boolean"
+            },
+            "parity_dev_case_ids_equal": {
+              "type": "boolean"
+            },
+            "evaluation_config_equal": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "weights",
+        "bootstrap_resamples",
+        "confidence_level",
+        "minimum_composite_delta",
+        "maximum_eval_loss_ratio",
+        "required_bootstrap_lower_bound"
+      ],
+      "properties": {
+        "weights": {
+          "$ref": "#/$defs/components"
+        },
+        "bootstrap_resamples": {
+          "const": 10000
+        },
+        "confidence_level": {
+          "const": 0.95
+        },
+        "minimum_composite_delta": {
+          "const": 0.005
+        },
+        "maximum_eval_loss_ratio": {
+          "const": 1.02
+        },
+        "required_bootstrap_lower_bound": {
+          "const": 0
+        }
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shuffled",
+        "staged"
+      ],
+      "properties": {
+        "shuffled": {
+          "$ref": "#/$defs/candidate"
+        },
+        "staged": {
+          "$ref": "#/$defs/candidate"
+        }
+      }
+    },
+    "hard_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "passed",
+        "protected_span_integrity",
+        "new_critical_errors",
+        "sst_parse_rate_noninferior",
+        "quality_metrics_noninferior"
+      ],
+      "properties": {
+        "passed": {
+          "type": "boolean"
+        },
+        "protected_span_integrity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "passed",
+            "shuffled",
+            "staged"
+          ],
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            },
+            "shuffled": {
+              "$ref": "#/$defs/protectedIntegrity"
+            },
+            "staged": {
+              "$ref": "#/$defs/protectedIntegrity"
+            }
+          }
+        },
+        "new_critical_errors": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "actual",
+            "maximum",
+            "checks",
+            "passed"
+          ],
+          "properties": {
+            "actual": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "maximum": {
+              "const": 0
+            },
+            "checks": {
+              "type": "object",
+              "additionalProperties": {
+                "$ref": "#/$defs/criticalCheck"
+              }
+            },
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "sst_parse_rate_noninferior": {
+          "$ref": "#/$defs/noninferiorityCheck"
+        },
+        "quality_metrics_noninferior": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "passed",
+            "checks"
+          ],
+          "properties": {
+            "passed": {
+              "type": "boolean"
+            },
+            "checks": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "identity_exact_match",
+                "punctuation_f1",
+                "filler_f1",
+                "repetition_cleanup_f1",
+                "normalized_exact_match"
+              ],
+              "properties": {
+                "identity_exact_match": {
+                  "$ref": "#/$defs/noninferiorityCheck"
+                },
+                "punctuation_f1": {
+                  "$ref": "#/$defs/noninferiorityCheck"
+                },
+                "filler_f1": {
+                  "$ref": "#/$defs/noninferiorityCheck"
+                },
+                "repetition_cleanup_f1": {
+                  "$ref": "#/$defs/noninferiorityCheck"
+                },
+                "normalized_exact_match": {
+                  "$ref": "#/$defs/noninferiorityCheck"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "eval_loss": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shuffled",
+        "staged",
+        "ratio",
+        "maximum_ratio",
+        "passed"
+      ],
+      "properties": {
+        "shuffled": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "staged": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "maximum_ratio": {
+          "const": 1.02
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "composite_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actual",
+        "minimum",
+        "passed"
+      ],
+      "properties": {
+        "actual": {
+          "type": "number"
+        },
+        "minimum": {
+          "const": 0.005
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed",
+        "resamples",
+        "confidence_level",
+        "lower",
+        "median",
+        "upper",
+        "passed"
+      ],
+      "properties": {
+        "seed": {
+          "const": 270014
+        },
+        "resamples": {
+          "const": 10000
+        },
+        "confidence_level": {
+          "const": 0.95
+        },
+        "lower": {
+          "type": "number"
+        },
+        "median": {
+          "type": "number"
+        },
+        "upper": {
+          "type": "number"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "matched_execution",
+        "hard_gates",
+        "eval_loss",
+        "minimum_composite_delta",
+        "bootstrap_lower_bound"
+      ],
+      "properties": {
+        "matched_execution": {
+          "type": "boolean"
+        },
+        "hard_gates": {
+          "type": "boolean"
+        },
+        "eval_loss": {
+          "type": "boolean"
+        },
+        "minimum_composite_delta": {
+          "type": "boolean"
+        },
+        "bootstrap_lower_bound": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "rawSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixedSha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,299}$"
+    },
+    "rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "components": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safety_content",
+        "task_quality",
+        "structure",
+        "eval_loss"
+      ],
+      "properties": {
+        "safety_content": {
+          "$ref": "#/$defs/rate"
+        },
+        "task_quality": {
+          "$ref": "#/$defs/rate"
+        },
+        "structure": {
+          "$ref": "#/$defs/rate"
+        },
+        "eval_loss": {
+          "$ref": "#/$defs/rate"
+        }
+      }
+    },
+    "armInputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "training_report_sha256",
+        "predictions_sha256",
+        "prediction_manifest_sha256",
+        "evaluation_report_sha256",
+        "evaluation_config_sha256"
+      ],
+      "properties": {
+        "training_report_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "predictions_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "prediction_manifest_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "evaluation_report_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "evaluation_config_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        }
+      }
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sst_parse_rate",
+        "output_only_compliance_rate",
+        "normalized_exact_match",
+        "identity_exact_match",
+        "protected_span_exact_rate",
+        "ast_exact_match_rate",
+        "renderer_round_trip_rate",
+        "safe_renderer_rate",
+        "block_sequence_exact_rate",
+        "block_type_f1",
+        "punctuation_f1",
+        "filler_f1",
+        "repetition_cleanup_f1",
+        "hard_content_exact_rates",
+        "critical_errors"
+      ],
+      "properties": {
+        "sst_parse_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "output_only_compliance_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "normalized_exact_match": {
+          "$ref": "#/$defs/rate"
+        },
+        "identity_exact_match": {
+          "$ref": "#/$defs/rate"
+        },
+        "protected_span_exact_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "ast_exact_match_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "renderer_round_trip_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "safe_renderer_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "block_sequence_exact_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "block_type_f1": {
+          "$ref": "#/$defs/rate"
+        },
+        "punctuation_f1": {
+          "$ref": "#/$defs/rate"
+        },
+        "filler_f1": {
+          "$ref": "#/$defs/rate"
+        },
+        "repetition_cleanup_f1": {
+          "$ref": "#/$defs/rate"
+        },
+        "hard_content_exact_rates": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/rate"
+          }
+        },
+        "critical_errors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_fingerprint",
+        "final_model_tree_sha256",
+        "actual_completed_steps",
+        "eval_loss",
+        "valid_sst_count",
+        "aggregate",
+        "components",
+        "composite"
+      ],
+      "properties": {
+        "run_fingerprint": {
+          "$ref": "#/$defs/prefixedSha256"
+        },
+        "final_model_tree_sha256": {
+          "$ref": "#/$defs/prefixedSha256"
+        },
+        "actual_completed_steps": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "eval_loss": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "valid_sst_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "aggregate": {
+          "$ref": "#/$defs/aggregate"
+        },
+        "components": {
+          "$ref": "#/$defs/components"
+        },
+        "composite": {
+          "$ref": "#/$defs/rate"
+        }
+      }
+    },
+    "nullableCount": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protectedIntegrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "successful_restoration_attempt_rate",
+        "restoration_error_count",
+        "protected_span_exact_rate",
+        "deletions",
+        "duplications",
+        "malformed",
+        "reordered",
+        "classification",
+        "passed"
+      ],
+      "properties": {
+        "successful_restoration_attempt_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "restoration_error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "protected_span_exact_rate": {
+          "$ref": "#/$defs/rate"
+        },
+        "deletions": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "duplications": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "malformed": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "reordered": {
+          "$ref": "#/$defs/nullableCount"
+        },
+        "classification": {
+          "enum": [
+            "proven_zero",
+            "unclassified_failure_no_zero_claim"
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "criticalCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shuffled",
+        "staged",
+        "new",
+        "new_case_ids",
+        "new_case_ids_sha256",
+        "passed"
+      ],
+      "properties": {
+        "shuffled": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "staged": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "new_case_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "new_case_ids_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "noninferiorityCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "shuffled",
+        "staged",
+        "passed"
+      ],
+      "properties": {
+        "shuffled": {
+          "$ref": "#/$defs/rate"
+        },
+        "staged": {
+          "$ref": "#/$defs/rate"
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

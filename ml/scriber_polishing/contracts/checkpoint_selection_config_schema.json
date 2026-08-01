@@ -1,0 +1,226 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/checkpoint-selection-config-v2.schema.json",
+  "title": "Scriber within-run final checkpoint selection policy v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "training_report",
+    "checkpoint",
+    "generated_metrics",
+    "tie_breakers",
+    "publication"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "training_report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "run_kind",
+        "require_bf16",
+        "require_training_completed",
+        "best_checkpoint_metric",
+        "recent_tail_count"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 2
+        },
+        "run_kind": {
+          "const": "final"
+        },
+        "require_bf16": {
+          "const": true
+        },
+        "require_training_completed": {
+          "const": true
+        },
+        "best_checkpoint_metric": {
+          "const": "eval_loss"
+        },
+        "recent_tail_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 20
+        }
+      }
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/checkpoint"
+    },
+    "generated_metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generator",
+        "required_hard_safety_gates",
+        "composite"
+      ],
+      "properties": {
+        "generator": {
+          "const": "deterministic_automatic_v1"
+        },
+        "required_hard_safety_gates": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          }
+        },
+        "composite": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "items": {
+            "$ref": "#/$defs/composite_component"
+          }
+        }
+      }
+    },
+    "tie_breakers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/tie_breaker"
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_tokenizer",
+        "required_reload"
+      ],
+      "properties": {
+        "base_tokenizer": {
+          "$ref": "#/$defs/model_pin"
+        },
+        "required_reload": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "process_boundary",
+            "configuration_source",
+            "tokenizer_source"
+          ],
+          "properties": {
+            "process_boundary": {
+              "const": "fresh_subprocess"
+            },
+            "configuration_source": {
+              "const": "saved_artifact"
+            },
+            "tokenizer_source": {
+              "const": "pinned_base_tokenizer"
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "format",
+        "variant",
+        "architecture",
+        "model_type",
+        "base_model"
+      ],
+      "properties": {
+        "format": {
+          "const": "transformers_safetensors"
+        },
+        "variant": {
+          "const": "bf16"
+        },
+        "architecture": {
+          "const": "Gemma3ForCausalLM"
+        },
+        "model_type": {
+          "const": "gemma3_text"
+        },
+        "base_model": {
+          "$ref": "#/$defs/model_pin"
+        }
+      }
+    },
+    "model_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "composite_component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metric",
+        "weight"
+      ],
+      "properties": {
+        "metric": {
+          "enum": [
+            "generated_safety_content",
+            "task",
+            "structure",
+            "normalized_eval_loss"
+          ]
+        },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "tie_breaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "direction"
+      ],
+      "properties": {
+        "field": {
+          "enum": [
+            "hard_safety_passed",
+            "composite_score",
+            "critical_error_count",
+            "generated_subtotal",
+            "eval_loss",
+            "global_step"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      }
+    }
+  }
+}

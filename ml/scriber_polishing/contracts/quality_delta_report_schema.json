@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/quality-delta-report-v1.schema.json",
+  "title": "Scriber quantized quality delta report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "baseline_variant",
+    "candidate_variant",
+    "baseline_evaluation_sha256",
+    "candidate_evaluation_sha256",
+    "maximum_absolute_metric_drop",
+    "new_critical_errors",
+    "new_critical_error_instances",
+    "metric_deltas"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "complete"
+    },
+    "baseline_variant": {
+      "const": "bf16"
+    },
+    "candidate_variant": {
+      "enum": [
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "baseline_evaluation_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "candidate_evaluation_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "maximum_absolute_metric_drop": {
+      "type": "number",
+      "minimum": 0
+    },
+    "new_critical_errors": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "new_critical_error_instances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "case_id",
+          "error"
+        ],
+        "properties": {
+          "case_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "error": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "metric_deltas": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "metric",
+          "baseline",
+          "candidate",
+          "drop"
+        ],
+        "properties": {
+          "metric": {
+            "type": "string",
+            "minLength": 1
+          },
+          "baseline": {
+            "type": "number"
+          },
+          "candidate": {
+            "type": "number"
+          },
+          "drop": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    }
+  }
+}

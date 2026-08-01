@@ -36,7 +36,21 @@ def _ngrams(text: str, size: int = 3) -> frozenset[str]:
 
 def _similar(left: str, right: str) -> float:
     left_grams, right_grams = _ngrams(left), _ngrams(right)
-    return len(left_grams & right_grams) / len(left_grams | right_grams)
+    return _similar_ngrams(left_grams, right_grams)
+
+
+def _similar_ngrams(left_grams: frozenset[str], right_grams: frozenset[str]) -> float:
+    intersection = len(left_grams & right_grams)
+    return intersection / (len(left_grams) + len(right_grams) - intersection)
+
+
+def _can_reach_similarity(
+    left_grams: frozenset[str],
+    right_grams: frozenset[str],
+    threshold: float,
+) -> bool:
+    shorter, longer = sorted((len(left_grams), len(right_grams)))
+    return shorter / longer >= threshold
 
 
 def _groups(values: Mapping[str, str]) -> tuple[tuple[str, ...], ...]:
@@ -82,12 +96,21 @@ def audit_deduplication(
     ids = tuple(sorted(examples))
     texts = {example_id: examples[example_id][1] for example_id in ids}
     normalized = {example_id: _normalized(text) for example_id, text in texts.items()}
+    normalized_ngrams = {
+        example_id: _ngrams(text) for example_id, text in normalized.items()
+    }
     exact_groups = _groups(texts)
     normalized_groups = tuple(group for group in _groups(normalized) if group not in exact_groups)
     near_pairs = (
         (left, right)
         for left, right in combinations(ids, 2)
-        if _similar(normalized[left], normalized[right]) >= near_duplicate_threshold
+        if _can_reach_similarity(
+            normalized_ngrams[left],
+            normalized_ngrams[right],
+            near_duplicate_threshold,
+        )
+        if _similar_ngrams(normalized_ngrams[left], normalized_ngrams[right])
+        >= near_duplicate_threshold
     )
     near_groups = _connected_groups(ids, near_pairs)
     family_leakage = tuple(

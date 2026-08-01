@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-stage-output-manifest-v1.schema.json",
+  "title": "Scriber judge stage output manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "judge_stage",
+    "judge_id",
+    "judge_session_id",
+    "model_family",
+    "reasoning_effort",
+    "prompt_hash",
+    "reviewed_bundle_sha256",
+    "stage_assignment_sha256",
+    "case_ids_sha256",
+    "verdict_output_sha256",
+    "verdict_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "judge_stage": {
+      "enum": [
+        "terra_prejudge",
+        "sol_release",
+        "sol_tiebreak"
+      ]
+    },
+    "judge_id": {
+      "type": "string",
+      "pattern": "^judge_[a-z0-9_]{7,79}$"
+    },
+    "judge_session_id": {
+      "type": "string",
+      "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+    },
+    "model_family": {
+      "enum": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ]
+    },
+    "reasoning_effort": {
+      "enum": [
+        "max",
+        "ultra"
+      ]
+    },
+    "prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reviewed_bundle_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stage_assignment_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "case_ids_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verdict_output_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "verdict_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "terra_prejudge"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-terra"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_release"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "max"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "judge_stage": {
+            "const": "sol_tiebreak"
+          }
+        },
+        "required": [
+          "judge_stage"
+        ]
+      },
+      "then": {
+        "properties": {
+          "model_family": {
+            "const": "gpt-5.6-sol"
+          },
+          "reasoning_effort": {
+            "const": "ultra"
+          }
+        }
+      }
+    }
+  ]
+}

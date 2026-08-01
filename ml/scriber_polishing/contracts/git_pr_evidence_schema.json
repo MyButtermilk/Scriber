@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/git-pr-evidence-v1.schema.json",
+  "title": "Scriber Git push and pull-request evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "branch",
+    "commit",
+    "remote",
+    "push",
+    "pull_request"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "const": "verified"
+    },
+    "branch": {
+      "const": "codex/gemma3-270m-ai-only-polishing"
+    },
+    "commit": {
+      "$ref": "#/$defs/git_sha"
+    },
+    "remote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "url"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "enum": [
+            "https://github.com/MyButtermilk/Scriber.git",
+            "git@github.com:MyButtermilk/Scriber.git"
+          ]
+        }
+      }
+    },
+    "push": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified",
+        "remote_branch",
+        "remote_head_sha",
+        "verified_at_utc"
+      ],
+      "properties": {
+        "verified": {
+          "const": true
+        },
+        "remote_branch": {
+          "const": "codex/gemma3-270m-ai-only-polishing"
+        },
+        "remote_head_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "verified_at_utc": {
+          "$ref": "#/$defs/utc_timestamp"
+        }
+      }
+    },
+    "pull_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verified",
+        "id",
+        "url",
+        "state",
+        "draft",
+        "base_branch",
+        "head_branch",
+        "head_sha",
+        "verified_at_utc"
+      ],
+      "properties": {
+        "verified": {
+          "const": true
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/MyButtermilk/Scriber/pull/[1-9][0-9]*$"
+        },
+        "state": {
+          "enum": [
+            "OPEN",
+            "MERGED",
+            "CLOSED"
+          ]
+        },
+        "draft": {
+          "type": "boolean"
+        },
+        "base_branch": {
+          "const": "main"
+        },
+        "head_branch": {
+          "const": "codex/gemma3-270m-ai-only-polishing"
+        },
+        "head_sha": {
+          "$ref": "#/$defs/git_sha"
+        },
+        "verified_at_utc": {
+          "$ref": "#/$defs/utc_timestamp"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "git_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "utc_timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    }
+  }
+}

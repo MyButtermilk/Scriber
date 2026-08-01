@@ -1,0 +1,52 @@
+schema_version: 2
+training_report:
+  schema_version: 2
+  run_kind: final
+  require_bf16: true
+  require_training_completed: true
+  best_checkpoint_metric: eval_loss
+  recent_tail_count: 3
+checkpoint:
+  format: transformers_safetensors
+  variant: bf16
+  architecture: Gemma3ForCausalLM
+  model_type: gemma3_text
+  base_model:
+    id: google/gemma-3-270m-it
+    revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+generated_metrics:
+  generator: deterministic_automatic_v1
+  required_hard_safety_gates:
+    - protected_spans_exact
+    - critical_errors_zero
+    - deterministic_sst_valid
+  composite:
+    - metric: generated_safety_content
+      weight: 0.6
+    - metric: task
+      weight: 0.25
+    - metric: structure
+      weight: 0.1
+    - metric: normalized_eval_loss
+      weight: 0.05
+tie_breakers:
+  - field: hard_safety_passed
+    direction: desc
+  - field: composite_score
+    direction: desc
+  - field: critical_error_count
+    direction: asc
+  - field: generated_subtotal
+    direction: desc
+  - field: eval_loss
+    direction: asc
+  - field: global_step
+    direction: asc
+publication:
+  base_tokenizer:
+    id: google/gemma-3-270m-it
+    revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+  required_reload:
+    process_boundary: fresh_subprocess
+    configuration_source: saved_artifact
+    tokenizer_source: pinned_base_tokenizer

@@ -6,6 +6,8 @@ import pytest
 
 from scriber_polishing.ast_codec import document_to_dict
 from scriber_polishing.document_ast import Block, BlockType, Document
+from scriber_polishing.sst_renderer import render_sst
+from scriber_polishing.target_renderer import render_html, render_markdown, render_plain_text
 from scriber_polishing.validators import validate_canonical_record
 
 
@@ -70,4 +72,60 @@ def test_canonical_record_rejects_cross_representation_or_protection_drift(
     malformed[field] = value
 
     with pytest.raises(ValueError, match=message):
+        validate_canonical_record(malformed)
+
+
+def test_canonical_record_rejects_unsupported_metalinguistic_pronoun_commentary() -> None:
+    document = Document(
+        blocks=(
+            Block(
+                BlockType.PARAGRAPH,
+                text=(
+                    "Jonas Falk hält die Reihenfolge fest. "
+                    "Das Pronomen „sie“ bezieht sich dabei auf Jonas Falk."
+                ),
+            ),
+        )
+    )
+    malformed = _canonical_record()
+    malformed.update(
+        {
+            "source_text": render_plain_text(document),
+            "target_ast": document_to_dict(document),
+            "target_sst": render_sst(document),
+            "target_plain_text": render_plain_text(document),
+            "target_markdown": render_markdown(document),
+            "target_html": render_html(document),
+        }
+    )
+
+    with pytest.raises(ValueError, match="unsupported pronoun commentary"):
+        validate_canonical_record(malformed)
+
+
+def test_canonical_record_rejects_redundant_condition_template_commentary() -> None:
+    document = Document(
+        blocks=(
+            Block(
+                BlockType.PARAGRAPH,
+                text=(
+                    "Falls die Prüfung fehlschlägt, bleibt der Vorgang gesperrt. "
+                    "Die Regelung gilt unter folgender Bedingung: Die Prüfung schlägt fehl."
+                ),
+            ),
+        )
+    )
+    malformed = _canonical_record()
+    malformed.update(
+        {
+            "source_text": render_plain_text(document),
+            "target_ast": document_to_dict(document),
+            "target_sst": render_sst(document),
+            "target_plain_text": render_plain_text(document),
+            "target_markdown": render_markdown(document),
+            "target_html": render_html(document),
+        }
+    )
+
+    with pytest.raises(ValueError, match="redundant condition commentary"):
         validate_canonical_record(malformed)

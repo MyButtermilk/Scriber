@@ -43,11 +43,11 @@ def assign_document_splits(
     document_splits: dict[str, Split] = {}
     for document_id in sorted({item.canonical_document_id for item in materialized}):
         bucket = _document_bucket(document_id, seed)
-        if bucket < 0.88:
+        if bucket < 0.70:
             split = Split.TRAIN
-        elif bucket < 0.92:
+        elif bucket < 0.80:
             split = Split.VALIDATION
-        elif bucket < 0.96:
+        elif bucket < 0.90:
             split = Split.TEST
         else:
             split = Split.CHALLENGE

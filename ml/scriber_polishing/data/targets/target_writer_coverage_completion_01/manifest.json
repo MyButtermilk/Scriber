@@ -1,0 +1,15 @@
+{
+  "assigned_input_batches": [
+    {
+      "path": "data/seeds/generator_coverage_completion_01/plans.jsonl",
+      "sha256": "sha256:ff78e43f076b383b32fd8edfe66b090d67638a85e7e4fa74fe183f8c2bd9acd5"
+    }
+  ],
+  "record_count": 300,
+  "schema_version": 1,
+  "target_prompt_hash": "sha256:65fe430d1de1696e8efc5891f6b215434bc2ffca28a108afab4ef9891f69d47a",
+  "targets_sha256": "sha256:72de07ea12ea302f050e9717b2f5e364c0b08ef94a01666aebf6b70e7393227a",
+  "unique_canonical_document_id_count": 300,
+  "unique_seed_id_count": 300,
+  "writer_id": "target_writer_coverage_completion_01"
+}

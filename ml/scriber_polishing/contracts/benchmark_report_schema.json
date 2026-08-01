@@ -1,0 +1,814 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/benchmark-report-v4.schema.json",
+  "title": "Scriber local laptop benchmark report v4",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "variant",
+    "backend",
+    "config_sha256",
+    "cases_sha256",
+    "artifact_manifest_sha256",
+    "artifact_tree_sha256",
+    "training_fingerprint",
+    "artifact_identity",
+    "runtime_identity",
+    "runtime_execution",
+    "artifact_size_bytes",
+    "model_size_bytes",
+    "measurement_definitions",
+    "adapter_load_seconds",
+    "warm_adapter_load_seconds",
+    "warmup_seconds",
+    "cold_start_seconds",
+    "warm_start_seconds",
+    "sample_count",
+    "cold_sample_count",
+    "warm_sample_count",
+    "runtime_protocol",
+    "latency",
+    "throughput_tokens_per_second",
+    "by_token_bucket",
+    "by_case_category",
+    "resources",
+    "samples"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4
+    },
+    "status": {
+      "const": "complete"
+    },
+    "variant": {
+      "enum": [
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "backend": {
+      "type": "string",
+      "minLength": 1
+    },
+    "config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "cases_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "artifact_manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "artifact_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "training_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "artifact_size_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "model_size_bytes": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "artifact_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant",
+        "backend",
+        "quantization_config",
+        "quantization_config_sha256",
+        "toolchain_sha256"
+      ],
+      "properties": {
+        "variant": {
+          "enum": [
+            "bf16",
+            "int8",
+            "int4_nf4",
+            "Q8_0",
+            "Q4_K_M"
+          ]
+        },
+        "backend": {
+          "enum": [
+            "transformers",
+            "transformers_bitsandbytes",
+            "llama_cpp"
+          ]
+        },
+        "quantization_config": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "quantization_config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "toolchain_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "runtime_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "platform",
+        "details",
+        "identity_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "platform": {
+          "enum": [
+            "windows_x86_64",
+            "linux_x86_64"
+          ]
+        },
+        "details": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "runtime_execution": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "status",
+        "backend",
+        "device",
+        "loaded_variant",
+        "full_model_on_gpu",
+        "evidence_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "status": {
+          "const": "verified"
+        },
+        "backend": {
+          "enum": [
+            "transformers_cuda",
+            "llama_cpp_cuda"
+          ]
+        },
+        "device": {
+          "const": "cuda"
+        },
+        "loaded_variant": {
+          "enum": [
+            "bf16",
+            "int8",
+            "int4_nf4",
+            "Q8_0",
+            "Q4_K_M"
+          ]
+        },
+        "full_model_on_gpu": {
+          "const": true
+        },
+        "evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "measurement_definitions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_load",
+        "cold_start",
+        "warm_start",
+        "prefill",
+        "time_to_first_token",
+        "tokens_per_second",
+        "end_to_end",
+        "percentiles",
+        "resources",
+        "size"
+      ],
+      "properties": {
+        "model_load": {
+          "const": "adapter_factory wall time through successful runtime health"
+        },
+        "cold_start": {
+          "const": "fresh model load plus first end-to-end generation on that runtime"
+        },
+        "warm_start": {
+          "const": "end-to-end generation after one excluded warmup on the same persistent runtime"
+        },
+        "prefill": {
+          "const": "model-reported prompt evaluation time excluding tokenization"
+        },
+        "time_to_first_token": {
+          "const": "tokenization plus request wall time through first non-empty completion token"
+        },
+        "tokens_per_second": {
+          "const": "model-reported decoded completion tokens per decode second"
+        },
+        "end_to_end": {
+          "const": "tokenization plus complete local generation wall time"
+        },
+        "percentiles": {
+          "const": "nearest-rank p50/p95/p99 over warm measured samples unless named cold"
+        },
+        "resources": {
+          "const": "peak process-tree RAM and physical-device VRAM plus sampled CPU/GPU utilization"
+        },
+        "size": {
+          "const": "model_size_bytes is loaded weight file/tree; artifact_size_bytes is manifest-bound package bytes"
+        }
+      }
+    },
+    "adapter_load_seconds": {
+      "$ref": "#/$defs/percentiles"
+    },
+    "warm_adapter_load_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "warmup_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "cold_start_seconds": {
+      "$ref": "#/$defs/percentiles"
+    },
+    "warm_start_seconds": {
+      "$ref": "#/$defs/percentiles"
+    },
+    "sample_count": {
+      "type": "integer",
+      "minimum": 2
+    },
+    "cold_sample_count": {
+      "type": "integer",
+      "minimum": 3
+    },
+    "warm_sample_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "runtime_protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cold_loads",
+        "warm_runtime"
+      ],
+      "properties": {
+        "cold_loads": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "adapter_instances",
+            "repetitions",
+            "case_id"
+          ],
+          "properties": {
+            "adapter_instances": {
+              "type": "integer",
+              "minimum": 3
+            },
+            "repetitions": {
+              "type": "integer",
+              "minimum": 3
+            },
+            "case_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "warm_runtime": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "adapter_instances",
+            "persistent_model_process",
+            "repetitions_per_case",
+            "warmup_repetitions",
+            "health_before_warmup",
+            "health_after_measurement",
+            "instance_identity_stable",
+            "runtime_protocol",
+            "runtime_executable_sha256"
+          ],
+          "properties": {
+            "adapter_instances": {
+              "const": 1
+            },
+            "persistent_model_process": {
+              "type": "boolean"
+            },
+            "repetitions_per_case": {
+              "type": "integer",
+              "minimum": 3
+            },
+            "warmup_repetitions": {
+              "const": 1
+            },
+            "health_before_warmup": {
+              "const": true
+            },
+            "health_after_measurement": {
+              "const": true
+            },
+            "instance_identity_stable": {
+              "const": true
+            },
+            "runtime_protocol": {
+              "enum": [
+                "in_process_transformers_v1",
+                "llama_server_http_sse_v1"
+              ]
+            },
+            "runtime_executable_sha256": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        }
+      }
+    },
+    "latency": {
+      "$ref": "#/$defs/latency"
+    },
+    "throughput_tokens_per_second": {
+      "$ref": "#/$defs/percentiles"
+    },
+    "by_token_bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "50",
+        "150",
+        "300",
+        "500",
+        "1000"
+      ],
+      "properties": {
+        "50": {
+          "$ref": "#/$defs/bucket"
+        },
+        "150": {
+          "$ref": "#/$defs/bucket"
+        },
+        "300": {
+          "$ref": "#/$defs/bucket"
+        },
+        "500": {
+          "$ref": "#/$defs/bucket"
+        },
+        "1000": {
+          "$ref": "#/$defs/bucket"
+        }
+      }
+    },
+    "by_case_category": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "short_email",
+        "long_business_letter",
+        "tax_law_letter",
+        "multipart_letter",
+        "numbered_list",
+        "number_heavy",
+        "unit_heavy",
+        "legal_citations",
+        "address_pronouns",
+        "rich_text_formatting",
+        "identity_text",
+        "hard_repetition"
+      ],
+      "properties": {
+        "short_email": {
+          "$ref": "#/$defs/bucket"
+        },
+        "long_business_letter": {
+          "$ref": "#/$defs/bucket"
+        },
+        "tax_law_letter": {
+          "$ref": "#/$defs/bucket"
+        },
+        "multipart_letter": {
+          "$ref": "#/$defs/bucket"
+        },
+        "numbered_list": {
+          "$ref": "#/$defs/bucket"
+        },
+        "number_heavy": {
+          "$ref": "#/$defs/bucket"
+        },
+        "unit_heavy": {
+          "$ref": "#/$defs/bucket"
+        },
+        "legal_citations": {
+          "$ref": "#/$defs/bucket"
+        },
+        "address_pronouns": {
+          "$ref": "#/$defs/bucket"
+        },
+        "rich_text_formatting": {
+          "$ref": "#/$defs/bucket"
+        },
+        "identity_text": {
+          "$ref": "#/$defs/bucket"
+        },
+        "hard_repetition": {
+          "$ref": "#/$defs/bucket"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "telemetry_sample_count",
+        "peak_ram_bytes",
+        "peak_vram_bytes",
+        "baseline_vram_bytes",
+        "peak_vram_delta_bytes",
+        "peak_process_count",
+        "cpu_percent",
+        "gpu_percent",
+        "telemetry_scope",
+        "hardware"
+        ,"hardware_matches_expected",
+        "hardware_checks"
+      ],
+      "properties": {
+        "telemetry_sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "peak_ram_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_vram_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "baseline_vram_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "peak_vram_delta_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "peak_process_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cpu_percent": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "gpu_percent": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "telemetry_scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cpu_memory",
+            "gpu"
+          ],
+          "properties": {
+            "cpu_memory": {
+              "const": "root_process_tree"
+            },
+            "gpu": {
+              "enum": [
+                "physical_device",
+                "unavailable"
+              ]
+            }
+          }
+        },
+        "hardware": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os",
+            "python",
+            "cpu_name",
+            "logical_cpu_count",
+            "physical_cpu_count",
+            "total_ram_bytes",
+            "gpu_name",
+            "gpu_uuid",
+            "gpu_driver_version",
+            "gpu_total_memory_bytes"
+            ,"gpu_compute_capability",
+            "torch_bf16_supported"
+          ],
+          "properties": {
+            "os": {
+              "type": "string",
+              "minLength": 1
+            },
+            "python": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cpu_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "logical_cpu_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "physical_cpu_count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "total_ram_bytes": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "gpu_name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gpu_uuid": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gpu_driver_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "gpu_total_memory_bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "gpu_compute_capability": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^[0-9]+\\.[0-9]+$"
+            },
+            "torch_bf16_supported": {
+              "type": "boolean"
+            }
+          }
+        },
+        "hardware_matches_expected": {
+          "const": true
+        },
+        "hardware_checks": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "os_family",
+            "gpu_name",
+            "gpu_total_memory",
+            "gpu_driver_version",
+            "gpu_compute_capability",
+            "bf16_support",
+            "gpu_activity",
+            "vram_growth"
+          ],
+          "properties": {
+            "os_family": {
+              "const": true
+            },
+            "gpu_name": {
+              "const": true
+            },
+            "gpu_total_memory": {
+              "const": true
+            },
+            "gpu_driver_version": {
+              "const": true
+            },
+            "gpu_compute_capability": {
+              "const": true
+            },
+            "bf16_support": {
+              "const": true
+            },
+            "gpu_activity": {
+              "const": true
+            },
+            "vram_growth": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    "samples": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "$ref": "#/$defs/sample"
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "percentiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "p50",
+        "p95",
+        "p99"
+      ],
+      "properties": {
+        "p50": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p99": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokenization_seconds",
+        "model_load_seconds",
+        "prefill_seconds",
+        "time_to_first_token_seconds",
+        "decode_seconds",
+        "end_to_end_seconds"
+      ],
+      "properties": {
+        "tokenization_seconds": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "model_load_seconds": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "prefill_seconds": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "time_to_first_token_seconds": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "decode_seconds": {
+          "$ref": "#/$defs/percentiles"
+        },
+        "end_to_end_seconds": {
+          "$ref": "#/$defs/percentiles"
+        }
+      }
+    },
+    "bucket": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sample_count",
+        "latency",
+        "throughput_tokens_per_second"
+      ],
+      "properties": {
+        "sample_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "latency": {
+          "$ref": "#/$defs/latency"
+        },
+        "throughput_tokens_per_second": {
+          "$ref": "#/$defs/percentiles"
+        }
+      }
+    },
+    "sample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "category",
+        "token_bucket",
+        "repetition",
+        "cold_start",
+        "phase",
+        "adapter_load_seconds",
+        "input_tokens",
+        "output_tokens",
+        "tokenization_seconds",
+        "model_load_seconds",
+        "prefill_seconds",
+        "time_to_first_token_seconds",
+        "decode_seconds",
+        "end_to_end_seconds",
+        "tokens_per_second"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "token_bucket": {
+          "enum": [
+            50,
+            150,
+            300,
+            500,
+            1000
+          ]
+        },
+        "repetition": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cold_start": {
+          "type": "boolean"
+        },
+        "phase": {
+          "enum": [
+            "cold_load",
+            "warm_runtime"
+          ]
+        },
+        "adapter_load_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tokenization_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "model_load_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "prefill_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "time_to_first_token_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "decode_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_to_end_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tokens_per_second": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    }
+  }
+}

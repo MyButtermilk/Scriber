@@ -1,0 +1,32 @@
+# Intentionally non-executable template. Replace every REPLACE_* value only
+# after the pilot selection and policy materialization evidence are frozen.
+schema_version: 1
+run_kind: improvement
+base_model: google/gemma-3-270m-it
+base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+method: full_sft
+seed: REPLACE_WITH_RECORDED_SEED
+epochs: REPLACE_WITH_MATCHED_EPOCHS
+minimum_train_examples: REPLACE_WITH_REVIEWED_MINIMUM
+minimum_validation_examples: REPLACE_WITH_REVIEWED_MINIMUM
+max_sequence_length: REPLACE_WITH_SELECTED_LENGTH
+micro_batch_size: REPLACE_WITH_MEASURED_BATCH
+gradient_accumulation_steps: REPLACE_WITH_SELECTED_ACCUMULATION
+learning_rate: REPLACE_WITH_SELECTED_RATE
+optimizer: adamw_torch_fused
+eval_steps: REPLACE_WITH_SELECTED_INTERVAL
+save_steps: REPLACE_WITH_SELECTED_INTERVAL
+save_total_limit: REPLACE_WITH_SELECTED_LIMIT
+warmup_ratio: REPLACE_WITH_SELECTED_RATIO
+weight_decay: REPLACE_WITH_SELECTED_DECAY
+max_grad_norm: REPLACE_WITH_SELECTED_NORM
+bf16: true
+gradient_checkpointing: true
+assistant_output_loss_only: true
+protection_policy_path: REPLACE_WITH_POLICY_ARTIFACT
+protection_policy_sha256: REPLACE_WITH_POLICY_FILE_SHA256
+parent_checkpoint_path: REPLACE_WITH_PILOT_FINAL_MODEL
+parent_checkpoint_tree_sha256: REPLACE_WITH_PARENT_TREE_SHA256
+training_order_mode: REPLACE_WITH_SHUFFLED_OR_STAGED
+training_order_plan_path: REPLACE_WITH_REMEDIATION_ORDER_PLAN
+training_order_plan_sha256: REPLACE_WITH_REMEDIATION_ORDER_PLAN_SHA256

@@ -1,0 +1,218 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/evaluation-bundle-manifest-v1.schema.json",
+  "title": "Scriber evaluation JSONL bundle manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "output_filename",
+    "record_count",
+    "records_sha256",
+    "case_ids_sha256",
+    "inputs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "enum": [
+        "scriber_evaluation_reference_bundle",
+        "scriber_evaluation_prediction_bundle"
+      ]
+    },
+    "output_filename": {
+      "$ref": "#/$defs/filename"
+    },
+    "candidate": {
+      "$ref": "#/$defs/candidate"
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "records_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "prediction_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "case_ids_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "split_counts": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "propertyNames": {
+        "enum": [
+          "test",
+          "challenge",
+          "ai_gold_test",
+          "ai_gold_challenge",
+          "regression"
+        ]
+      }
+    },
+    "reference": {
+      "$ref": "#/$defs/reference"
+    },
+    "exact_case_coverage": {
+      "const": true
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/input"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "scriber_evaluation_reference_bundle"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "split_counts"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "candidate"
+              ]
+            },
+            {
+              "required": [
+                "prediction_sha256"
+              ]
+            },
+            {
+              "required": [
+                "reference"
+              ]
+            },
+            {
+              "required": [
+                "exact_case_coverage"
+              ]
+            }
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "candidate",
+          "prediction_sha256",
+          "reference",
+          "exact_case_coverage"
+        ],
+        "not": {
+          "required": [
+            "split_counts"
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "candidate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+    },
+    "filename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "records_filename",
+        "records_sha256",
+        "record_count",
+        "case_ids_sha256",
+        "manifest_filename",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "position": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "records_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "case_ids_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "records_filename",
+        "records_sha256",
+        "record_count",
+        "case_ids_sha256",
+        "manifest_filename",
+        "manifest_sha256"
+      ],
+      "properties": {
+        "records_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "case_ids_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_filename": {
+          "$ref": "#/$defs/filename"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

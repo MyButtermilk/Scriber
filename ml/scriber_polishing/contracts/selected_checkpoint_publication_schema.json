@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/selected-checkpoint-publication-v2.schema.json",
+  "title": "Scriber selected checkpoint publication handoff v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "selection_handoff_sha256",
+    "selected_candidate_id",
+    "checkpoint",
+    "base_tokenizer",
+    "fresh_reload",
+    "fresh_inventory",
+    "integration_hooks"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "const": "ready_for_publication"
+    },
+    "selection_handoff_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "selected_candidate_id": {
+      "type": "string",
+      "pattern": "^checkpoint-[1-9][0-9]*$"
+    },
+    "checkpoint": {
+      "$ref": "#/$defs/selected_checkpoint"
+    },
+    "base_tokenizer": {
+      "$ref": "#/$defs/model_pin"
+    },
+    "fresh_reload": {
+      "$ref": "#/$defs/fresh_reload"
+    },
+    "fresh_inventory": {
+      "$ref": "#/$defs/fresh_inventory"
+    },
+    "integration_hooks": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "model_pin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "selected_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "file_count",
+        "total_bytes",
+        "candidate_evidence_sha256",
+        "deterministic_automatic_report_sha256",
+        "eval_loss"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "deterministic_automatic_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "fresh_reload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "process_boundary",
+        "configuration_source",
+        "tokenizer_source",
+        "model_tree_sha256",
+        "model_config_sha256",
+        "model_sha256",
+        "generated_tokens"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "process_boundary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "configuration_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tokenizer_source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "generated_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "fresh_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "file_count",
+        "total_bytes"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

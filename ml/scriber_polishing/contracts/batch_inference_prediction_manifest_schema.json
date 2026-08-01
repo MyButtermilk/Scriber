@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/batch-inference-prediction-manifest-v1.schema.json",
+  "title": "Scriber batch-inference prediction manifest v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "candidate",
+    "record_count",
+    "valid_sst_count",
+    "restoration_error_count",
+    "prediction_sha256",
+    "total_generation_seconds",
+    "total_input_tokens",
+    "total_output_tokens",
+    "batch_size"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "candidate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"
+    },
+    "record_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "valid_sst_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "restoration_error_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "prediction_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "total_generation_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "total_input_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total_output_tokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "batch_size": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "runtime_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "variant",
+        "suite",
+        "model_sha256",
+        "llama_server_sha256",
+        "reference_sha256",
+        "prediction_sha256",
+        "offload",
+        "binding_sha256"
+      ],
+      "properties": {
+        "variant": {
+          "enum": [
+            "Q8_0",
+            "Q4_K_M"
+          ]
+        },
+        "suite": {
+          "enum": [
+            "ai_gold",
+            "critical_regression",
+            "regular_test"
+          ]
+        },
+        "model_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "llama_server_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reference_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "prediction_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "offload": {
+          "type": "object"
+        },
+        "binding_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

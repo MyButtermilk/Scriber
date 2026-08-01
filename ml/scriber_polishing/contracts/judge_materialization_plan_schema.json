@@ -1,0 +1,419 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-materialization-plan-v1.schema.json",
+  "title": "Hash-bound Scriber judge materialization plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "bundle_sha256",
+    "coverage_policy_sha256",
+    "coverage_requirements",
+    "selection_seed",
+    "base_case_count",
+    "public_case_count",
+    "coverage_passed",
+    "coverage",
+    "base_case_metadata",
+    "primary_stage_by_base_case",
+    "stage_assignments",
+    "sol_release_dynamic_policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "coverage_policy_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "coverage_requirements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "regular_test_minimum",
+        "ai_gold_test_expected_count",
+        "ai_gold_challenge_expected_count",
+        "critical_regression_expected_count",
+        "generator_family_tag_prefix",
+        "required_generator_families",
+        "category_quotas"
+      ],
+      "properties": {
+        "regular_test_minimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ai_gold_test_expected_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "ai_gold_challenge_expected_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "critical_regression_expected_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "generator_family_tag_prefix": {
+          "type": "string",
+          "pattern": "^generator_family:$"
+        },
+        "required_generator_families": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^generator_family:[a-z0-9][a-z0-9_-]{1,63}$"
+          }
+        },
+        "category_quotas": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/category_quota"
+          }
+        }
+      }
+    },
+    "selection_seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "base_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "public_case_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "coverage_passed": {
+      "type": "boolean"
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "strata",
+        "generator_families",
+        "category_quotas",
+        "deficits"
+      ],
+      "properties": {
+        "strata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "regular_test",
+            "ai_gold_test",
+            "ai_gold_challenge",
+            "critical_regression",
+            "identity",
+            "automatic_suspicious",
+            "deterministic_warning"
+          ],
+          "properties": {
+            "regular_test": {
+              "$ref": "#/$defs/coverage"
+            },
+            "ai_gold_test": {
+              "$ref": "#/$defs/coverage"
+            },
+            "ai_gold_challenge": {
+              "$ref": "#/$defs/coverage"
+            },
+            "critical_regression": {
+              "$ref": "#/$defs/coverage"
+            },
+            "identity": {
+              "$ref": "#/$defs/coverage"
+            },
+            "automatic_suspicious": {
+              "$ref": "#/$defs/coverage"
+            },
+            "deterministic_warning": {
+              "$ref": "#/$defs/coverage"
+            }
+          }
+        },
+        "generator_families": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "required",
+            "observed",
+            "missing",
+            "counts",
+            "passed"
+          ],
+          "properties": {
+            "required": {
+              "$ref": "#/$defs/string_set"
+            },
+            "observed": {
+              "$ref": "#/$defs/string_set"
+            },
+            "missing": {
+              "$ref": "#/$defs/string_set"
+            },
+            "counts": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "passed": {
+              "type": "boolean"
+            }
+          }
+        },
+        "category_quotas": {
+          "type": "object",
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/coverage"
+          }
+        },
+        "deficits": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300
+          }
+        }
+      }
+    },
+    "base_case_metadata": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "split",
+          "slice_tags",
+          "is_identity",
+          "deterministic_critical_flags",
+          "automatic_suspicious",
+          "deterministic_warning",
+          "possible_critical_fact_error",
+          "conflicting_automatic_metrics",
+          "generator_families",
+          "coverage_categories"
+        ],
+        "properties": {
+          "split": {
+            "enum": [
+              "test",
+              "challenge",
+              "ai_gold_test",
+              "ai_gold_challenge",
+              "regression"
+            ]
+          },
+          "slice_tags": {
+            "$ref": "#/$defs/string_set"
+          },
+          "is_identity": {
+            "type": "boolean"
+          },
+          "deterministic_critical_flags": {
+            "$ref": "#/$defs/string_set"
+          },
+          "automatic_suspicious": {
+            "type": "boolean"
+          },
+          "deterministic_warning": {
+            "type": "boolean"
+          },
+          "possible_critical_fact_error": {
+            "type": "boolean"
+          },
+          "conflicting_automatic_metrics": {
+            "type": "boolean"
+          },
+          "generator_families": {
+            "$ref": "#/$defs/string_set"
+          },
+          "coverage_categories": {
+            "$ref": "#/$defs/string_set"
+          }
+        }
+      }
+    },
+    "primary_stage_by_base_case": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "enum": [
+          "terra_prejudge",
+          "sol_release"
+        ]
+      }
+    },
+    "stage_assignments": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terra_prejudge",
+        "sol_release_static",
+        "sol_tiebreak_static"
+      ],
+      "properties": {
+        "terra_prejudge": {
+          "$ref": "#/$defs/stage_assignment"
+        },
+        "sol_release_static": {
+          "$ref": "#/$defs/stage_assignment"
+        },
+        "sol_tiebreak_static": {
+          "$ref": "#/$defs/stage_assignment"
+        }
+      }
+    },
+    "sol_release_dynamic_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terra_accepted_sample_fraction",
+        "selection_namespace",
+        "include_all_terra_objections"
+      ],
+      "properties": {
+        "terra_accepted_sample_fraction": {
+          "const": 0.25
+        },
+        "selection_namespace": {
+          "const": "sol_release_terra_accepted_sample_v1"
+        },
+        "include_all_terra_objections": {
+          "const": true
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "string_set": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "required",
+        "selected",
+        "coverage_mode",
+        "passed"
+      ],
+      "properties": {
+        "available": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "required": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selected": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "coverage_mode": {
+          "enum": [
+            "all",
+            "minimum",
+            "exact"
+          ]
+        },
+        "passed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "stage_assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_case_ids",
+        "public_case_ids",
+        "assignment_sha256"
+      ],
+      "properties": {
+        "base_case_ids": {
+          "$ref": "#/$defs/string_set"
+        },
+        "public_case_ids": {
+          "$ref": "#/$defs/string_set"
+        },
+        "assignment_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "category_quota": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "minimum",
+        "any_slice_tags"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{2,79}$"
+        },
+        "minimum": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "any_slice_tags": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_:-]{1,79}$"
+          }
+        },
+        "is_identity": {
+          "type": "boolean"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "any_slice_tags": {
+              "minItems": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "is_identity"
+          ]
+        }
+      ]
+    }
+  }
+}

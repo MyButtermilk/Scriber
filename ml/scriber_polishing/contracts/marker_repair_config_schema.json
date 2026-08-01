@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Scriber marker repair bundle config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "experiment_id",
+    "inputs",
+    "baseline"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,299}$"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_experiment_manifest",
+        "source_shuffled_run_identity",
+        "source_shuffled_training_report",
+        "selection_policy",
+        "training_policy",
+        "parent_checkpoint"
+      ],
+      "properties": {
+        "source_experiment_manifest": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "source_shuffled_run_identity": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "source_shuffled_training_report": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "selection_policy": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "training_policy": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "parent_checkpoint": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "tree_sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "tree_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prediction_manifest",
+        "predictions",
+        "evaluation",
+        "comparison"
+      ],
+      "properties": {
+        "prediction_manifest": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "predictions": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "evaluation": {
+          "$ref": "#/$defs/file_binding"
+        },
+        "comparison": {
+          "$ref": "#/$defs/file_binding"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "file_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

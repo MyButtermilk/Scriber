@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hub-preparation-v2.schema.json",
+  "title": "Scriber private Hub local preparation evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "namespace",
+    "visibility",
+    "completed_training_report_sha256",
+    "training_run_fingerprint",
+    "bf16_final_model_tree_sha256",
+    "protection_policy",
+    "selected_checkpoint_publication_sha256",
+    "selected_candidate_id",
+    "selected_checkpoint_identity_sha256",
+    "selected_checkpoint_tree_sha256",
+    "selected_model_sha256",
+    "selected_config_sha256",
+    "base_tokenizer",
+    "artifacts",
+    "bundle_sha256"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "const": "prepared_private"
+    },
+    "namespace": {
+      "const": "Buttermilk03"
+    },
+    "visibility": {
+      "const": "private"
+    },
+    "completed_training_report_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "training_run_fingerprint": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "bf16_final_model_tree_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "protection_policy": {
+      "type": "object"
+    },
+    "selected_checkpoint_publication_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "selected_candidate_id": {
+      "type": "string",
+      "pattern": "^checkpoint-[1-9][0-9]*$"
+    },
+    "selected_checkpoint_identity_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "selected_checkpoint_tree_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "selected_model_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "selected_config_sha256": {
+      "$ref": "#/$defs/prefixed_hash"
+    },
+    "base_tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "const": "google/gemma-3-270m-it"
+        },
+        "revision": {
+          "const": "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model",
+        "dataset"
+      ],
+      "properties": {
+        "model": {
+          "$ref": "#/$defs/artifact"
+        },
+        "dataset": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    },
+    "bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixed_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repo_id",
+        "manifest_sha256",
+        "payload_tree_sha256",
+        "file_count",
+        "total_size_bytes"
+      ],
+      "properties": {
+        "repo_id": {
+          "type": "string",
+          "minLength": 3
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "payload_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_size_bytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

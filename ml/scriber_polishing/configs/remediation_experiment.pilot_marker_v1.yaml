@@ -1,0 +1,43 @@
+schema_version: 1
+experiment_id: pilot-marker-remediation-v1
+inputs:
+  pilot_manifest_path: ../artifacts/pilot_data_v1/manifest.json
+  pilot_manifest_sha256: 9617b7259e1da716fc252c9f29970792abab4cdf58ab2c83c5fd68db861eeb0a
+  train_path: ../artifacts/pilot_data_v1/train.jsonl
+  train_sha256: 55005c6c4dbaa682c71955e4d6064a144af43ef8ac1af7a0c18c5150377e2481
+  validation_path: ../artifacts/pilot_data_v1/validation.jsonl
+  validation_sha256: 90b5f35abf3b0de34b998f64d97b885314ab9d3dda1526cbd6d497457c44a3d1
+  protection_policy_path: ../artifacts/protection/gemma_unused_v1.json
+  protection_policy_artifact_sha256: 7059d8554d06372b455906a28718e5986bdd9252fc19969e1012b244212073a1
+  parent:
+    mode: pilot_selection_report
+    report_path: ../artifacts/evaluation/pilot_compare_v1/selection/pilot_learning_rate.config656558.v1.json
+    report_sha256: 66e8e376b36957087990054bf265180613930ec9485b753c1b550f44dfc5e59e
+training:
+  seed: 270013
+  epochs: 1
+  max_updates: 300
+  max_train_examples: 4800
+  max_sequence_length: 768
+  micro_batch_size: 2
+  gradient_accumulation_steps: 8
+  effective_batch_size: 16
+  learning_rate: 0.00001
+  optimizer: adamw_torch_fused
+  scheduler: linear
+  eval_steps: 25
+  save_steps: 25
+  save_total_limit: 4
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  bf16: true
+  gradient_checkpointing: true
+  assistant_output_loss_only: true
+  early_stopping: false
+parity_dev:
+  seed: 270014
+  per_phase: 40
+adoption_policy:
+  comparison_config_path: curriculum_experiment.yaml
+  comparison_config_sha256: b2aae8c49b8db7332f3b082a71c6d8ce0ba1541578f7dfe8e7f90aabd81bc55d

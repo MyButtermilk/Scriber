@@ -33,3 +33,18 @@ def test_split_leakage_reports_the_document_and_conflicting_splits() -> None:
     }
 
     assert validate_no_split_leakage(examples, assignments) == ("doc-a: test, train",)
+
+
+def test_default_split_reserves_ten_percent_each_for_validation_test_and_challenge() -> None:
+    examples = [
+        DatasetExample(example_id=f"doc-{index}", canonical_document_id=f"doc-{index}")
+        for index in range(10_000)
+    ]
+
+    assignments = assign_document_splits(examples, seed=270_001)
+    counts = {split: sum(value is split for value in assignments.values()) for split in Split}
+
+    assert 6_800 <= counts[Split.TRAIN] <= 7_200
+    assert 850 <= counts[Split.VALIDATION] <= 1_150
+    assert 850 <= counts[Split.TEST] <= 1_150
+    assert 850 <= counts[Split.CHALLENGE] <= 1_150

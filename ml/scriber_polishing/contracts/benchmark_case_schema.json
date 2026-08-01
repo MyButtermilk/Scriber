@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/benchmark-case-v1.schema.json",
+  "title": "Scriber laptop benchmark case v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "category",
+    "token_bucket",
+    "text"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,79}$"
+    },
+    "category": {
+      "enum": [
+        "short_email",
+        "long_business_letter",
+        "tax_law_letter",
+        "multipart_letter",
+        "numbered_list",
+        "number_heavy",
+        "unit_heavy",
+        "legal_citations",
+        "address_pronouns",
+        "rich_text_formatting",
+        "identity_text",
+        "hard_repetition"
+      ]
+    },
+    "token_bucket": {
+      "enum": [
+        50,
+        150,
+        300,
+        500,
+        1000
+      ]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100000
+    }
+  }
+}

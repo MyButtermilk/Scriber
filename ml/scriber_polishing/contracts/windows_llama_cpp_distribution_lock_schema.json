@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/windows-llama-cpp-distribution-lock-v1.schema.json",
+  "title": "Scriber pinned native Windows llama.cpp CUDA distribution v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "upstream_repository",
+    "release",
+    "conversion_compatibility",
+    "platform",
+    "assets",
+    "required_files",
+    "maximum_extracted_bytes"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_windows_llama_cpp_cuda_distribution"
+    },
+    "status": {
+      "const": "locked"
+    },
+    "upstream_repository": {
+      "const": "https://github.com/ggml-org/llama.cpp"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "commit",
+        "published_at_utc"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^b[0-9]+$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "published_at_utc": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "conversion_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tag",
+        "commit",
+        "policy"
+      ],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "pattern": "^b[0-9]+$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "policy": {
+          "const": "newer_same_upstream_runtime_with_fresh_gguf_reload"
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "os",
+        "architecture",
+        "backend",
+        "cuda_major_minor"
+      ],
+      "properties": {
+        "os": {
+          "const": "windows"
+        },
+        "architecture": {
+          "const": "amd64"
+        },
+        "backend": {
+          "const": "cuda"
+        },
+        "cuda_major_minor": {
+          "const": "12.4"
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "filename",
+          "bytes",
+          "sha256",
+          "url"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "runtime",
+              "cuda_runtime"
+            ]
+          },
+          "filename": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+\\.zip$"
+          },
+          "bytes": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "sha256": {
+            "$ref": "#/$defs/hash"
+          },
+          "url": {
+            "type": "string",
+            "pattern": "^https://github\\.com/ggml-org/llama\\.cpp/releases/download/b[0-9]+/[A-Za-z0-9._-]+\\.zip$"
+          }
+        }
+      }
+    },
+    "required_files": {
+      "type": "array",
+      "minItems": 9,
+      "uniqueItems": true,
+      "contains": {
+        "const": "llama-server.exe"
+      },
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._-]+$"
+      }
+    },
+    "maximum_extracted_bytes": {
+      "type": "integer",
+      "minimum": 1000000,
+      "maximum": 4000000000
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

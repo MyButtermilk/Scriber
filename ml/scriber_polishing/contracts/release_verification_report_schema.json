@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/release-verification-report-v2.schema.json",
+  "title": "Scriber externally visible release verification report v2",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "candidate",
+    "evaluation_config_sha256",
+    "status",
+    "passed",
+    "components",
+    "failed_components",
+    "evaluation_slice_reports",
+    "status_basis"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "candidate": {
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluation_config_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "status": {
+      "enum": [
+        "AI_DATA_FACTORY_IN_PROGRESS",
+        "READY_FOR_TRAINING",
+        "TRAINING_IN_PROGRESS",
+        "READY_FOR_AI_JUDGING",
+        "RELEASED",
+        "PRIVATE_CANDIDATE",
+        "BLOCKED_BY_INCLUDED_CODEX_LIMIT",
+        "BLOCKED_BY_EXTERNAL_PREREQUISITE",
+        "FAILED"
+      ]
+    },
+    "passed": {
+      "type": "boolean"
+    },
+    "components": {
+      "type": "object"
+    },
+    "failed_components": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "evaluation_slice_reports": {
+      "type": "object"
+    },
+    "status_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed_final_training_verified",
+        "private_hub_upload_and_reload_verified",
+        "ai_judging_pending",
+        "all_release_components_passed"
+      ],
+      "properties": {
+        "completed_final_training_verified": {
+          "type": "boolean"
+        },
+        "private_hub_upload_and_reload_verified": {
+          "type": "boolean"
+        },
+        "ai_judging_pending": {
+          "type": "boolean"
+        },
+        "all_release_components_passed": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

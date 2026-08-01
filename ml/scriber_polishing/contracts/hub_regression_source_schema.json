@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hub-regression-source-v1.schema.json",
+  "title": "Scriber private Hub non-holdout regression source v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "source_kind",
+    "source_partition",
+    "category",
+    "source_text",
+    "protected_spans",
+    "private_data",
+    "holdout"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$"
+    },
+    "source_kind": {
+      "enum": [
+        "synthetic_regression",
+        "ai_gold_smoke"
+      ]
+    },
+    "source_partition": {
+      "enum": [
+        "synthetic_non_holdout",
+        "ai_gold_train",
+        "ai_gold_validation"
+      ]
+    },
+    "category": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,63}$"
+    },
+    "source_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "protected_spans": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 512
+      }
+    },
+    "private_data": {
+      "const": false
+    },
+    "holdout": {
+      "const": false
+    }
+  }
+}

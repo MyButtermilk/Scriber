@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/remediation-parity-dev-v1.schema.json",
+  "title": "Scriber remediation validation-only parity development set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "algorithm",
+    "phase_rules_version",
+    "seed",
+    "per_phase",
+    "source",
+    "protection_filter",
+    "phase_counts",
+    "selected_example_ids",
+    "selected_example_ids_sha256",
+    "references",
+    "parent_split",
+    "holdout_inputs",
+    "synthetic_only",
+    "human_curation",
+    "generative_api"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_remediation_parity_dev"
+    },
+    "algorithm": {
+      "const": "phase_stratified_safe_validation_sha256_bottom_k_v1"
+    },
+    "phase_rules_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "per_phase": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "protection_filter": {
+      "$ref": "#/$defs/protectionFilter"
+    },
+    "phase_counts": {
+      "$ref": "#/$defs/phaseCounts"
+    },
+    "selected_example_ids": {
+      "type": "array",
+      "minItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/identifier"
+      }
+    },
+    "selected_example_ids_sha256": {
+      "$ref": "#/$defs/rawSha256"
+    },
+    "references": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "$ref": "#/$defs/basename"
+        },
+        "sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "split": {
+          "const": "regression"
+        }
+      }
+    },
+    "parent_split": {
+      "const": "validation"
+    },
+    "holdout_inputs": {
+      "const": false
+    },
+    "synthetic_only": {
+      "const": true
+    },
+    "human_curation": {
+      "const": false
+    },
+    "generative_api": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "rawSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixedSha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{2,299}$"
+    },
+    "basename": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[^/\\\\]+$"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "$ref": "#/$defs/basename"
+        },
+        "sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "split": {
+          "const": "validation"
+        }
+      }
+    },
+    "protectionFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "policy_sha256",
+        "accepted_record_count",
+        "rejected_record_count",
+        "rejected_example_ids_sha256",
+        "url_overlap_rejected_example_ids",
+        "url_overlap_rejected_example_ids_sha256"
+      ],
+      "properties": {
+        "policy_id": {
+          "const": "gemma_unused_v1"
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/prefixedSha256"
+        },
+        "accepted_record_count": {
+          "type": "integer",
+          "minimum": 5
+        },
+        "rejected_record_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "rejected_example_ids_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        },
+        "url_overlap_rejected_example_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "url_overlap_rejected_example_ids_sha256": {
+          "$ref": "#/$defs/rawSha256"
+        }
+      }
+    },
+    "phaseCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "properties": {
+        "1": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "2": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "3": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "4": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "5": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

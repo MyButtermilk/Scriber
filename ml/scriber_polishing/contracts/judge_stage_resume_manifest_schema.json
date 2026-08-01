@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/judge-stage-resume-manifest-v1.schema.json",
+  "title": "Scriber judge stage resume manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "judge_stage",
+    "judge_id",
+    "judge_session_id",
+    "model_family",
+    "reasoning_effort",
+    "prompt_hash",
+    "reviewed_bundle_sha256",
+    "stage_assignment_sha256",
+    "stage_packet_sha256",
+    "stage_packet_manifest_sha256",
+    "expected_count",
+    "completed_count",
+    "missing_count",
+    "missing_case_ids",
+    "merged_verdict_output_sha256",
+    "output_manifest_sha256",
+    "hard_deterministic_errors_are_binding"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "status": {
+      "enum": [
+        "in_progress",
+        "complete"
+      ]
+    },
+    "judge_stage": {
+      "enum": [
+        "terra_prejudge",
+        "sol_release",
+        "sol_tiebreak"
+      ]
+    },
+    "judge_id": {
+      "type": "string",
+      "pattern": "^judge_[a-z0-9_]{7,79}$"
+    },
+    "judge_session_id": {
+      "type": "string",
+      "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+    },
+    "model_family": {
+      "enum": [
+        "gpt-5.6-terra",
+        "gpt-5.6-sol"
+      ]
+    },
+    "reasoning_effort": {
+      "enum": [
+        "max",
+        "ultra"
+      ]
+    },
+    "prompt_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "reviewed_bundle_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_assignment_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_packet_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "stage_packet_manifest_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "expected_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "completed_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "missing_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "missing_case_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^judge_[0-9a-f]{24}$"
+      }
+    },
+    "merged_verdict_output_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "output_manifest_sha256": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/hash"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "hard_deterministic_errors_are_binding": {
+      "const": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "complete"
+          }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "missing_count": {
+            "const": 0
+          },
+          "missing_case_ids": {
+            "maxItems": 0
+          },
+          "output_manifest_sha256": {
+            "$ref": "#/$defs/hash"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "missing_count": {
+            "minimum": 1
+          },
+          "missing_case_ids": {
+            "minItems": 1
+          },
+          "output_manifest_sha256": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

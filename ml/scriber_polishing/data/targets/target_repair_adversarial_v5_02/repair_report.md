@@ -1,0 +1,27 @@
+# Adversarial plan/target repair v5.02
+
+- Selected valid plans and targets: 2625
+- Repaired plans: 498
+- Targets changed: 1844
+- Original critic rejections: 1859
+- Rejections changed in this layer: 1844
+- Rejections already resolved by the source layer: 15
+- Genuine critic rejections remaining: 0
+- Integrated condition-template seeds: 484
+- Integrated condition occurrences: 1079
+- Previously source-resolved condition seeds: 65
+- Feedback-position role repairs: 206
+- Obligation deadline bindings: 200
+- Unconfirmed-date list repairs: 20
+- Closed redundant-condition removals: 11
+- Naturalized technical compounds: 21
+- Paragraphized one-item lists: 150
+- Restored lexical fictionality seeds: 1500
+- Restored lexical fictionality markers: 3665
+- Fully localized de-DE structures: 105
+- Explicit-name actor-promotion seeds: 33
+- Actor-promotion fact changes: 72
+- Displaced pronoun protected values removed: 66
+- Validated canonical variants: 18375
+- Plans SHA-256: `sha256:4ac5e6e40a7f5d40918455170333c5a6e3330bc63afddecca59e27f517cd2c66`
+- Targets SHA-256: `sha256:42030d8400b8d0aac658e2ef9318d2dbde021ee82ed6b845b1612c708f2e7d79`

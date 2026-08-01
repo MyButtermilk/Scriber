@@ -1,0 +1,97 @@
+# Deterministic target-repair report
+
+- Source plans processed: 2100
+- Repaired canonical targets: 2025
+- Explicit seed rejects: 75 (nested_list_without_possible_child: 75)
+- Exact signature-line repairs from v1: 827
+- Approved style-repair review coverage: 612 core seeds
+- Approved style-review package SHA-256: `sha256:f94987cd85b0ed98720489e8276d725f795cd02effd1342eabd7a733251f978a`
+- Approved style-review critical-flag counts: adjective_declension_error: 50, article_gender_error: 155, comma_punctuation_error: 50, conditional_clause_fragment: 84, missing_determiner_technical_term: 50, plural_verb_agreement: 37, postscript_marker_missing: 120, terminal_punctuation_defect: 129
+- Canonical expansion gate: 2025 targets × 7 variants = 14175 validated variants
+- Target JSONL SHA-256: `sha256:3b5ef73f318f329f804d600f4a4ea20d2165fc8fce978a51aae96257959f8353`
+- Reject JSONL SHA-256: `sha256:39b82b20cf430672f2c6980d6701fc453d78cab0e3c7234d294bb048ecb75b37`
+- Repair implementation SHA-256: `sha256:564d183e504d97c8489c88e284d371a608618c152d92d8540c8a9805c8b2dd46`
+
+The repair builds the closed AST first and derives SST, plain text, Markdown, and safe HTML solely through the repository renderers. It removes non-semantic fictional provenance labels from ordinary prose, preserves plan-owned signature lines verbatim, repairs deterministic German case/article failures, avoids fabricated headings when heading levels are empty, realizes every viable nested list with an actual child level, and preserves protected values exactly. One-item nested-list plans are rejected because they cannot contain both a root and a child without inventing content.
+
+Closed validation covers schema validity, AST/SST/AST round trips, renderer equivalence, protected-span preservation, exact signature lines, declared structure, fact order, conditions, address mode, the identified mechanical-label/template and case/article regressions, and seven canonical-expander variants for every accepted target. The implementation is local, deterministic, and makes no network or generative API calls.
+
+## Approved style-repair reviewed seed IDs
+
+- english_mixed_600005, english_mixed_600007, english_mixed_600009, english_mixed_600011, english_mixed_600012, english_mixed_600014, english_mixed_600016, english_mixed_600023
+- english_mixed_600025, english_mixed_600027, english_mixed_600029, english_mixed_600034, english_mixed_600036, english_mixed_600041, english_mixed_600043, english_mixed_600045
+- english_mixed_600047, english_mixed_600050, english_mixed_600052, english_mixed_600059, english_mixed_600061, english_mixed_600063, english_mixed_600065, english_mixed_600070
+- english_mixed_600072, english_mixed_600074, english_mixed_600077, english_mixed_600079, english_mixed_600081, english_mixed_600083, english_mixed_600088, english_mixed_600095
+- english_mixed_600096, english_mixed_600097, english_mixed_600099, english_mixed_600101, english_mixed_600106, english_mixed_600110, english_mixed_600113, english_mixed_600115
+- english_mixed_600117, english_mixed_600119, english_mixed_600124, english_mixed_600131, english_mixed_600132, english_mixed_600133, english_mixed_600134, english_mixed_600135
+- english_mixed_600137, english_mixed_600142, english_mixed_600149, english_mixed_600151, english_mixed_600153, english_mixed_600155, english_mixed_600156, english_mixed_600160
+- english_mixed_600167, english_mixed_600169, english_mixed_600170, english_mixed_600171, english_mixed_600173, english_mixed_600178, english_mixed_600185, english_mixed_600187
+- english_mixed_600189, english_mixed_600191, english_mixed_600192, english_mixed_600194, english_mixed_600196, english_mixed_600203, english_mixed_600205, english_mixed_600207
+- english_mixed_600209, english_mixed_600214, english_mixed_600216, english_mixed_600221, english_mixed_600223, english_mixed_600225, english_mixed_600227, english_mixed_600230
+- english_mixed_600232, english_mixed_600239, english_mixed_600241, english_mixed_600243, english_mixed_600245, english_mixed_600250, english_mixed_600252, english_mixed_600254
+- english_mixed_600257, english_mixed_600259, english_mixed_600261, english_mixed_600263, english_mixed_600268, english_mixed_600275, english_mixed_600276, english_mixed_600277
+- english_mixed_600279, english_mixed_600281, english_mixed_600286, english_mixed_600290, english_mixed_600293, english_mixed_600295, english_mixed_600297, english_mixed_600299
+- formatplan_700000, formatplan_700001, formatplan_700002, formatplan_700003, formatplan_700004, formatplan_700005, formatplan_700006, formatplan_700007
+- formatplan_700008, formatplan_700009, formatplan_700010, formatplan_700011, formatplan_700012, formatplan_700013, formatplan_700014, formatplan_700015
+- formatplan_700016, formatplan_700017, formatplan_700018, formatplan_700019, formatplan_700020, formatplan_700021, formatplan_700022, formatplan_700023
+- formatplan_700024, formatplan_700025, formatplan_700026, formatplan_700027, formatplan_700028, formatplan_700029, formatplan_700030, formatplan_700031
+- formatplan_700032, formatplan_700033, formatplan_700034, formatplan_700035, formatplan_700036, formatplan_700037, formatplan_700038, formatplan_700039
+- formatplan_700040, formatplan_700041, formatplan_700042, formatplan_700043, formatplan_700044, formatplan_700045, formatplan_700046, formatplan_700047
+- formatplan_700048, formatplan_700049, formatplan_700050, formatplan_700051, formatplan_700052, formatplan_700053, formatplan_700054, formatplan_700055
+- formatplan_700056, formatplan_700057, formatplan_700058, formatplan_700059, formatplan_700060, formatplan_700061, formatplan_700062, formatplan_700063
+- formatplan_700064, formatplan_700065, formatplan_700066, formatplan_700067, formatplan_700068, formatplan_700069, formatplan_700070, formatplan_700071
+- formatplan_700072, formatplan_700073, formatplan_700074, formatplan_700075, formatplan_700076, formatplan_700077, formatplan_700078, formatplan_700079
+- formatplan_700080, formatplan_700081, formatplan_700082, formatplan_700083, formatplan_700084, formatplan_700085, formatplan_700086, formatplan_700087
+- formatplan_700088, formatplan_700089, formatplan_700090, formatplan_700091, formatplan_700092, formatplan_700093, formatplan_700094, formatplan_700095
+- formatplan_700096, formatplan_700097, formatplan_700098, formatplan_700099, formatplan_700100, formatplan_700101, formatplan_700102, formatplan_700103
+- formatplan_700104, formatplan_700105, formatplan_700106, formatplan_700107, formatplan_700108, formatplan_700109, formatplan_700110, formatplan_700111
+- formatplan_700112, formatplan_700113, formatplan_700114, formatplan_700115, formatplan_700116, formatplan_700117, formatplan_700118, formatplan_700119
+- hardneg_500002, hardneg_500004, hardneg_500012, hardneg_500017, hardneg_500032, hardneg_500034, hardneg_500042, hardneg_500049
+- hardneg_500057, hardneg_500062, hardneg_500064, hardneg_500072, hardneg_500077, hardneg_500092, hardneg_500094, hardneg_500102
+- hardneg_500109, hardneg_500117, hardneg_500122, hardneg_500124, hardneg_500132, hardneg_500137, hardneg_500152, hardneg_500154
+- hardneg_500162, hardneg_500169, hardneg_500177, hardneg_500182, hardneg_500184, hardneg_500192, hardneg_500197, hardneg_500212
+- hardneg_500214, hardneg_500222, hardneg_500229, hardneg_500237, hardneg_500242, hardneg_500244, hardneg_500252, hardneg_500257
+- hardneg_500272, hardneg_500274, hardneg_500282, hardneg_500289, hardneg_500297, realestate_energy_300003, realestate_energy_300004, realestate_energy_300005
+- realestate_energy_300007, realestate_energy_300010, realestate_energy_300011, realestate_energy_300012, realestate_energy_300014, realestate_energy_300016, realestate_energy_300017, realestate_energy_300021
+- realestate_energy_300022, realestate_energy_300023, realestate_energy_300024, realestate_energy_300028, realestate_energy_300029, realestate_energy_300034, realestate_energy_300035, realestate_energy_300036
+- realestate_energy_300037, realestate_energy_300040, realestate_energy_300041, realestate_energy_300042, realestate_energy_300043, realestate_energy_300046, realestate_energy_300047, realestate_energy_300048
+- realestate_energy_300049, realestate_energy_300052, realestate_energy_300053, realestate_energy_300056, realestate_energy_300057, realestate_energy_300058, realestate_energy_300059, realestate_energy_300063
+- realestate_energy_300064, realestate_energy_300065, realestate_energy_300070, realestate_energy_300071, realestate_energy_300072, realestate_energy_300076, realestate_energy_300077, realestate_energy_300082
+- realestate_energy_300083, realestate_energy_300084, realestate_energy_300088, realestate_energy_300089, realestate_energy_300091, realestate_energy_300094, realestate_energy_300095, realestate_energy_300096
+- realestate_energy_300097, realestate_energy_300098, realestate_energy_300100, realestate_energy_300101, realestate_energy_300103, realestate_energy_300106, realestate_energy_300107, realestate_energy_300108
+- realestate_energy_300112, realestate_energy_300113, realestate_energy_300117, realestate_energy_300118, realestate_energy_300119, realestate_energy_300123, realestate_energy_300124, realestate_energy_300125
+- realestate_energy_300126, realestate_energy_300130, realestate_energy_300131, realestate_energy_300132, realestate_energy_300133, realestate_energy_300136, realestate_energy_300137, realestate_energy_300142
+- realestate_energy_300143, realestate_energy_300144, realestate_energy_300147, realestate_energy_300148, realestate_energy_300149, realestate_energy_300154, realestate_energy_300155, realestate_energy_300156
+- realestate_energy_300157, realestate_energy_300160, realestate_energy_300161, realestate_energy_300163, realestate_energy_300166, realestate_energy_300167, realestate_energy_300168, realestate_energy_300172
+- realestate_energy_300173, realestate_energy_300177, realestate_energy_300178, realestate_energy_300179, realestate_energy_300182, realestate_energy_300183, realestate_energy_300184, realestate_energy_300185
+- realestate_energy_300189, realestate_energy_300190, realestate_energy_300191, realestate_energy_300192, realestate_energy_300196, realestate_energy_300197, realestate_energy_300202, realestate_energy_300203
+- realestate_energy_300204, realestate_energy_300208, realestate_energy_300209, realestate_energy_300214, realestate_energy_300215, realestate_energy_300216, realestate_energy_300217, realestate_energy_300220
+- realestate_energy_300221, realestate_energy_300223, realestate_energy_300224, realestate_energy_300226, realestate_energy_300227, realestate_energy_300228, realestate_energy_300231, realestate_energy_300232
+- realestate_energy_300233, realestate_energy_300237, realestate_energy_300238, realestate_energy_300239, realestate_energy_300243, realestate_energy_300244, realestate_energy_300245, realestate_energy_300250
+- realestate_energy_300251, realestate_energy_300252, realestate_energy_300256, realestate_energy_300257, realestate_energy_300259, realestate_energy_300262, realestate_energy_300263, realestate_energy_300264
+- realestate_energy_300266, realestate_energy_300268, realestate_energy_300269, realestate_energy_300273, realestate_energy_300274, realestate_energy_300275, realestate_energy_300276, realestate_energy_300277
+- realestate_energy_300280, realestate_energy_300281, realestate_energy_300283, realestate_energy_300286, realestate_energy_300287, realestate_energy_300288, realestate_energy_300292, realestate_energy_300293
+- realestate_energy_300294, realestate_energy_300297, realestate_energy_300298, realestate_energy_300299, tax_legal_200004, tax_legal_200010, tax_legal_200012, tax_legal_200016
+- tax_legal_200020, tax_legal_200022, tax_legal_200028, tax_legal_200034, tax_legal_200036, tax_legal_200040, tax_legal_200044, tax_legal_200046
+- tax_legal_200052, tax_legal_200058, tax_legal_200060, tax_legal_200064, tax_legal_200068, tax_legal_200070, tax_legal_200076, tax_legal_200082
+- tax_legal_200084, tax_legal_200088, tax_legal_200092, tax_legal_200094, tax_legal_200100, tax_legal_200106, tax_legal_200108, tax_legal_200112
+- tax_legal_200116, tax_legal_200118, tax_legal_200124, tax_legal_200130, tax_legal_200132, tax_legal_200136, tax_legal_200140, tax_legal_200142
+- tax_legal_200148, tax_legal_200154, tax_legal_200156, tax_legal_200160, tax_legal_200164, tax_legal_200166, tax_legal_200172, tax_legal_200178
+- tax_legal_200180, tax_legal_200184, tax_legal_200188, tax_legal_200190, tax_legal_200196, tax_legal_200202, tax_legal_200204, tax_legal_200208
+- tax_legal_200212, tax_legal_200214, tax_legal_200220, tax_legal_200226, tax_legal_200228, tax_legal_200232, tax_legal_200236, tax_legal_200238
+- tax_legal_200244, tax_legal_200250, tax_legal_200252, tax_legal_200256, tax_legal_200260, tax_legal_200262, tax_legal_200268, tax_legal_200274
+- tax_legal_200276, tax_legal_200280, tax_legal_200284, tax_legal_200286, tax_legal_200292, tax_legal_200298, technical_project_400003, technical_project_400004
+- technical_project_400005, technical_project_400009, technical_project_400011, technical_project_400017, technical_project_400021, technical_project_400023, technical_project_400028, technical_project_400029
+- technical_project_400033, technical_project_400035, technical_project_400040, technical_project_400041, technical_project_400045, technical_project_400046, technical_project_400047, technical_project_400052
+- technical_project_400053, technical_project_400057, technical_project_400059, technical_project_400060, technical_project_400064, technical_project_400065, technical_project_400069, technical_project_400071
+- technical_project_400072, technical_project_400076, technical_project_400077, technical_project_400081, technical_project_400083, technical_project_400087, technical_project_400088, technical_project_400089
+- technical_project_400093, technical_project_400095, technical_project_400101, technical_project_400105, technical_project_400107, technical_project_400112, technical_project_400113, technical_project_400117
+- technical_project_400119, technical_project_400124, technical_project_400125, technical_project_400129, technical_project_400130, technical_project_400131, technical_project_400136, technical_project_400137
+- technical_project_400141, technical_project_400143, technical_project_400144, technical_project_400148, technical_project_400149, technical_project_400153, technical_project_400155, technical_project_400156
+- technical_project_400160, technical_project_400161, technical_project_400165, technical_project_400167, technical_project_400171, technical_project_400172, technical_project_400173, technical_project_400177
+- technical_project_400179, technical_project_400185, technical_project_400189, technical_project_400191, technical_project_400196, technical_project_400197, technical_project_400201, technical_project_400203
+- technical_project_400208, technical_project_400209, technical_project_400213, technical_project_400214, technical_project_400215, technical_project_400220, technical_project_400221, technical_project_400225
+- technical_project_400227, technical_project_400228, technical_project_400232, technical_project_400233, technical_project_400237, technical_project_400239, technical_project_400240, technical_project_400244
+- technical_project_400245, technical_project_400249, technical_project_400251, technical_project_400255, technical_project_400256, technical_project_400257, technical_project_400261, technical_project_400263
+- technical_project_400269, technical_project_400273, technical_project_400275, technical_project_400280, technical_project_400281, technical_project_400285, technical_project_400287, technical_project_400292
+- technical_project_400293, technical_project_400297, technical_project_400298, technical_project_400299

@@ -1,24 +1,121 @@
-schema_version: 1
-model_repository: ${HF_NAMESPACE}/scriber-gemma3-270m-polishing-de-v1
-dataset_repository: ${HF_NAMESPACE}/scriber-transcript-polishing-de-v1
-initial_visibility: private
-public_requires:
-  environment_flag: HF_PUBLIC
-  all_release_gates: true
-  sol_release_judge: pass
-  license_check: pass
-  hub_reload: pass
-github:
-  branch: codex/gemma3-270m-ai-only-polishing
-  draft_pull_request: true
-  ready_only_after_technical_verification: true
-status_values:
-  - AI_DATA_FACTORY_IN_PROGRESS
-  - READY_FOR_TRAINING
-  - TRAINING_IN_PROGRESS
-  - READY_FOR_AI_JUDGING
-  - RELEASED
-  - PRIVATE_CANDIDATE
-  - BLOCKED_BY_INCLUDED_CODEX_LIMIT
-  - BLOCKED_BY_EXTERNAL_PREREQUISITE
-  - FAILED
+schema_version: 4
+namespace: Buttermilk03
+visibility: private
+token_env: HF_TOKEN
+manifest_filename: scriber-publication-manifest.json
+artifacts:
+  model:
+    repo_id: Buttermilk03/scriber-gemma3-270m-polishing-de-v1
+    repo_type: model
+    required_patterns:
+      - README.md
+      - NOTICE
+      - GEMMA_LICENSE.md
+      - MODIFICATIONS.md
+      - config.json
+      - scriber-protection-policy.json
+      - generation_config.json
+      - "*.safetensors"
+      - tokenizer.json
+      - tokenizer_config.json
+      - sst_v1_schema.json
+      - runtime/inference.py
+      - runtime/sst_parser.py
+      - runtime/renderers.py
+      - MODEL_CARD.md
+      - training_config.yaml
+      - package_versions.json
+      - reports/data_quality_report.json
+      - reports/ai_data_factory_report.json
+      - reports/ai_gold_report.json
+      - reports/evaluation_report.json
+      - reports/terra_judge_report.json
+      - reports/sol_judge_report.json
+      - reports/benchmark_report.json
+      - reports/variant_release_matrix_report.json
+      - reports/completed_final_training_binding.json
+      - reports/selected_checkpoint_binding.json
+      - checksums.json
+      - examples/inference.json
+      - examples/regression_sample.jsonl
+    protection_policy:
+      filename: scriber-protection-policy.json
+      artifact_sha256: sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d
+      policy_id: gemma_lexical_v1
+      policy_sha256: sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce
+    privacy:
+      synthetic_ai_only: true
+      human_curation: false
+      contains_private_scriber_data: false
+      contains_secrets: false
+    reload:
+      kind: transformers_local
+      regression:
+        file: examples/regression_sample.jsonl
+        minimum_cases: 100
+        ai_gold_smoke_minimum: 10
+        required_categories:
+          - ai_gold_smoke
+          - protected_span
+          - business_post
+          - tax_law
+          - paragraphs
+          - headings
+          - lists
+          - units
+          - legal_citations
+          - address_pronouns
+          - identity
+        max_new_tokens: 1536
+      variant_release_report: reports/variant_release_matrix_report.json
+    legal:
+      kind: gemma_derived_model
+      notice_file: NOTICE
+      license_file: GEMMA_LICENSE.md
+      modifications_file: MODIFICATIONS.md
+      base_model: google/gemma-3-270m-it
+      base_revision: ac82b4e820549b854eebf28ce6dedaf9fdfa17b3
+  dataset:
+    repo_id: Buttermilk03/scriber-transcript-polishing-de-v1
+    repo_type: dataset
+    required_patterns:
+      - README.md
+      - data/train.jsonl
+      - data/validation.jsonl
+      - data/test.jsonl
+      - data/challenge.jsonl
+      - ai_gold/train.jsonl
+      - ai_gold/validation.jsonl
+      - ai_gold/test.jsonl
+      - ai_gold/challenge.jsonl
+      - DATASET_CARD.md
+      - LICENSE
+      - DATASET_SOURCES.md
+      - DATA_LICENSES.json
+      - reports/data_quality_report.json
+      - reports/ai_data_factory_report.json
+      - reports/ai_gold_report.json
+      - checksums.json
+    privacy:
+      synthetic_ai_only: true
+      human_curation: false
+      contains_private_scriber_data: false
+      contains_secrets: false
+    reload:
+      kind: jsonl_splits
+      split_files:
+        train: data/train.jsonl
+        validation: data/validation.jsonl
+        test: data/test.jsonl
+        challenge: data/challenge.jsonl
+      ai_gold_split_files:
+        train: ai_gold/train.jsonl
+        validation: ai_gold/validation.jsonl
+        test: ai_gold/test.jsonl
+        challenge: ai_gold/challenge.jsonl
+    legal:
+      kind: synthetic_dataset
+      license_id: Apache-2.0
+      license_file: LICENSE
+      sources_file: DATASET_SOURCES.md
+      licenses_file: DATA_LICENSES.json

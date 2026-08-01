@@ -1,0 +1,225 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-amendment-completion-v2.schema.json",
+  "title": "Scriber final-evaluation amendment terminal completion v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "training_steps_executed",
+    "publication_performed",
+    "primary_packet",
+    "amendment_packet",
+    "jobs",
+    "budget",
+    "output",
+    "writer_lock_absent"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation_amendment_terminal_completion"
+    },
+    "status": {
+      "const": "complete"
+    },
+    "training_steps_executed": {
+      "const": 0
+    },
+    "publication_performed": {
+      "const": false
+    },
+    "primary_packet": {
+      "$ref": "#/$defs/packet"
+    },
+    "amendment_packet": {
+      "$ref": "#/$defs/packet"
+    },
+    "jobs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/job"
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actual_before_evaluation_usd",
+        "primary_actual_cost_status",
+        "amendment_actual_cost_status",
+        "budget_accounting",
+        "primary_maximum_cost_usd",
+        "amendment_maximum_cost_usd",
+        "reserved_maximum_total_cost_usd",
+        "remaining_after_reservations_usd",
+        "total_budget_usd",
+        "reserved_strictly_below_total_budget"
+      ],
+      "properties": {
+        "actual_before_evaluation_usd": {
+          "const": "0.933668"
+        },
+        "primary_actual_cost_status": {
+          "const": "unknown"
+        },
+        "amendment_actual_cost_status": {
+          "const": "unknown"
+        },
+        "budget_accounting": {
+          "const": "full_timeout_reservations"
+        },
+        "primary_maximum_cost_usd": {
+          "const": "1.600"
+        },
+        "amendment_maximum_cost_usd": {
+          "const": "2.400"
+        },
+        "reserved_maximum_total_cost_usd": {
+          "const": "4.933668"
+        },
+        "remaining_after_reservations_usd": {
+          "const": "0.066332"
+        },
+        "total_budget_usd": {
+          "const": "5.000"
+        },
+        "reserved_strictly_below_total_budget": {
+          "const": true
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "remote_result_uri",
+        "inventory_tree_sha256",
+        "file_count",
+        "byte_count",
+        "primary_result_sha256",
+        "primary_launch_ledger_v1_sha256",
+        "amendment_launch_ledger_v2_sha256",
+        "runtime_completion_v2_sha256"
+      ],
+      "properties": {
+        "remote_result_uri": {
+          "const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt8/scriber-1100-final-evaluation-v1"
+        },
+        "inventory_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "byte_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "primary_result_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "primary_launch_ledger_v1_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "amendment_launch_ledger_v2_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runtime_completion_v2_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "writer_lock_absent": {
+      "const": true
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "runner_sha256"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sequence",
+        "role",
+        "job_id",
+        "terminal_status",
+        "termination_reason",
+        "flavor",
+        "timeout_minutes",
+        "packet_tree_sha256",
+        "terminal_evidence_sha256"
+      ],
+      "properties": {
+        "sequence": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2
+        },
+        "role": {
+          "enum": [
+            "primary",
+            "amendment"
+          ]
+        },
+        "job_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{24}$"
+        },
+        "terminal_status": {
+          "enum": [
+            "CANCELED",
+            "COMPLETED"
+          ]
+        },
+        "termination_reason": {
+          "enum": [
+            "operator_performance_recovery",
+            "completed"
+          ]
+        },
+        "flavor": {
+          "const": "l4x1"
+        },
+        "timeout_minutes": {
+          "enum": [
+            120,
+            180
+          ]
+        },
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "terminal_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

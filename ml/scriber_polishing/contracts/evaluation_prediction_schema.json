@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/evaluation-prediction-v1.schema.json",
+  "title": "Scriber polishing candidate prediction v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "case_id",
+    "prediction_sst"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "case_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{2,199}$"
+    },
+    "prediction_sst": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30000
+    }
+  }
+}

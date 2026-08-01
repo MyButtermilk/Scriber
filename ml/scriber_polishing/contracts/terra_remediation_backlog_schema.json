@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/terra-remediation-backlog-v1.schema.json",
+  "title": "Leakage-safe Scriber Terra remediation candidate backlog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "comparison_kind",
+    "remediation_case_key",
+    "failure_signals",
+    "severity",
+    "error_flags",
+    "public_position_variants",
+    "fine_tune_selected_count",
+    "fine_tune_rejected_count",
+    "fine_tune_critical_count",
+    "pairwise_loss_count",
+    "score_observation_count",
+    "minimum_selected_fine_tune_scores",
+    "future_training_policy",
+    "direct_test_case_training_use_allowed",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "comparison_kind": {
+      "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"]
+    },
+    "remediation_case_key": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "failure_signals": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "pairwise_preference_loss",
+          "selected_fine_tune_unacceptable",
+          "selected_fine_tune_critical",
+          "deterministic_fine_tune_error"
+        ]
+      }
+    },
+    "severity": {
+      "enum": ["critical", "high"]
+    },
+    "error_flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      }
+    },
+    "public_position_variants": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "fine_tune_selected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fine_tune_rejected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "fine_tune_critical_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "pairwise_loss_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "score_observation_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "minimum_selected_fine_tune_scores": {
+      "oneOf": [
+        {
+          "type": "object",
+          "maxProperties": 0
+        },
+        { "$ref": "#/$defs/score_map" }
+      ]
+    },
+    "future_training_policy": {
+      "const": "generate_novel_sibling_cases_only"
+    },
+    "direct_test_case_training_use_allowed": {
+      "const": false
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "severity": { "const": "critical" }
+        },
+        "required": ["severity"]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "failure_signals": {
+                "contains": { "const": "selected_fine_tune_critical" }
+              }
+            }
+          },
+          {
+            "properties": {
+              "failure_signals": {
+                "contains": { "const": "deterministic_fine_tune_error" }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "score": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "score_map": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_fidelity",
+        "no_additions",
+        "no_omissions",
+        "spelling",
+        "grammar",
+        "punctuation",
+        "paragraph_structure",
+        "heading_structure",
+        "numbered_lists",
+        "disfluency_cleanup",
+        "unit_normalization",
+        "legal_citations",
+        "address_pronouns",
+        "formatting",
+        "style_preservation"
+      ],
+      "properties": {
+        "semantic_fidelity": { "$ref": "#/$defs/score" },
+        "no_additions": { "$ref": "#/$defs/score" },
+        "no_omissions": { "$ref": "#/$defs/score" },
+        "spelling": { "$ref": "#/$defs/score" },
+        "grammar": { "$ref": "#/$defs/score" },
+        "punctuation": { "$ref": "#/$defs/score" },
+        "paragraph_structure": { "$ref": "#/$defs/score" },
+        "heading_structure": { "$ref": "#/$defs/score" },
+        "numbered_lists": { "$ref": "#/$defs/score" },
+        "disfluency_cleanup": { "$ref": "#/$defs/score" },
+        "unit_normalization": { "$ref": "#/$defs/score" },
+        "legal_citations": { "$ref": "#/$defs/score" },
+        "address_pronouns": { "$ref": "#/$defs/score" },
+        "formatting": { "$ref": "#/$defs/score" },
+        "style_preservation": { "$ref": "#/$defs/score" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparison_kind",
+        "judge_stage",
+        "judge_id",
+        "judge_session_id",
+        "model_family",
+        "reasoning_effort",
+        "prompt_hash",
+        "stage_assignment_sha256",
+        "verdict_output_sha256",
+        "stage_packet_sha256",
+        "stage_packet_manifest_sha256",
+        "bundle_sha256",
+        "bundle_manifest_sha256",
+        "private_mapping_sha256"
+      ],
+      "properties": {
+        "comparison_kind": {
+          "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"]
+        },
+        "judge_stage": { "const": "terra_prejudge" },
+        "judge_id": {
+          "type": "string",
+          "pattern": "^judge_[a-z0-9_]{7,79}$"
+        },
+        "judge_session_id": {
+          "type": "string",
+          "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+        },
+        "model_family": { "const": "gpt-5.6-terra" },
+        "reasoning_effort": { "const": "max" },
+        "prompt_hash": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "stage_assignment_sha256": { "$ref": "#/$defs/hash" },
+        "verdict_output_sha256": { "$ref": "#/$defs/hash" },
+        "stage_packet_sha256": { "$ref": "#/$defs/hash" },
+        "stage_packet_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "private_mapping_sha256": { "$ref": "#/$defs/hash" }
+      }
+    }
+  }
+}

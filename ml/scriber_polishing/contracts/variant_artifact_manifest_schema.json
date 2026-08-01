@@ -1,0 +1,349 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/variant-artifact-manifest-v2.schema.json",
+  "title": "Scriber local model variant artifact manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "variant",
+    "backend",
+    "architecture",
+    "base_model",
+    "training_fingerprint",
+    "source",
+    "artifact",
+    "tokenizer",
+    "protection_policy",
+    "quantization",
+    "toolchain",
+    "reload",
+    "network_access"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "variant": {
+      "enum": [
+        "bf16",
+        "int8",
+        "int4_nf4",
+        "Q8_0",
+        "Q4_K_M"
+      ]
+    },
+    "backend": {
+      "enum": [
+        "transformers",
+        "transformers_bitsandbytes",
+        "llama_cpp"
+      ]
+    },
+    "architecture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transformers_class",
+        "model_type"
+      ],
+      "properties": {
+        "transformers_class": {
+          "const": "Gemma3ForCausalLM"
+        },
+        "model_type": {
+          "const": "gemma3_text"
+        }
+      }
+    },
+    "base_model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "revision"
+      ],
+      "properties": {
+        "id": {
+          "const": "google/gemma-3-270m-it"
+        },
+        "revision": {
+          "const": "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
+        }
+      }
+    },
+    "training_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "tree_sha256"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "artifact": {
+      "$ref": "#/$defs/inventory"
+    },
+    "tokenizer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chat_template_sha256",
+        "tree_sha256",
+        "file_count",
+        "files"
+      ],
+      "properties": {
+        "chat_template_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 2
+        },
+        "files": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/file"
+          }
+        }
+      }
+    },
+    "quantization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "config",
+        "config_sha256"
+      ],
+      "properties": {
+        "config": {
+          "type": "object",
+          "minProperties": 1
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "protection_policy": {
+      "$ref": "#/$defs/protection_policy"
+    },
+    "toolchain": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "packages"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "transformers_training",
+                "transformers_bitsandbytes"
+              ]
+            },
+            "packages": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required": [
+                "torch",
+                "transformers"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bundle_lock_sha256",
+            "llama_cpp_commit",
+            "source_tree_sha256",
+            "build_identity_sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "llama_cpp_bundle"
+            },
+            "bundle_lock_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "llama_cpp_commit": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$"
+            },
+            "source_tree_sha256": {
+              "$ref": "#/$defs/hash"
+            },
+            "build_identity_sha256": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        }
+      ]
+    },
+    "reload": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "status",
+        "process_boundary",
+        "configuration_source",
+        "loaded_quantization",
+        "deterministic",
+        "valid_sst",
+        "generated_tokens"
+        ,"protection_policy"
+      ],
+      "properties": {
+        "status": {
+          "const": "passed"
+        },
+        "process_boundary": {
+          "const": "fresh_subprocess"
+        },
+        "configuration_source": {
+          "const": "saved_artifact"
+        },
+        "loaded_quantization": {
+          "enum": [
+            "bf16",
+            "int8",
+            "int4_nf4",
+            "Q8_0",
+            "Q4_K_M"
+          ]
+        },
+        "deterministic": {
+          "const": true
+        },
+        "valid_sst": {
+          "const": true
+        },
+        "generated_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "protection_policy": {
+          "$ref": "#/$defs/protection_policy"
+        }
+      }
+    },
+    "network_access": {
+      "const": "disabled_offline"
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "protection_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "artifact_sha256",
+        "policy_id",
+        "policy_sha256",
+        "tokenizer_identity_sha256"
+      ],
+      "properties": {
+        "filename": {
+          "const": "scriber-protection-policy.json"
+        },
+        "artifact_sha256": {
+          "const": "sha256:8872354f8aba8258c688186b03a17df2637ee2f126b388239addc4a540b2c10d"
+        },
+        "policy_id": {
+          "const": "gemma_lexical_v1"
+        },
+        "policy_sha256": {
+          "const": "sha256:9f10947282aad273fbc0af8f08f0c2bd9444eb6a8d10a54d9274fa0eebd133ce"
+        },
+        "tokenizer_identity_sha256": {
+          "const": "sha256:f2fd01c3ec43ff4adb6f920a5466cbdba96801901b4fa778a029af561f499f20"
+        }
+      }
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "tree_sha256",
+        "file_count",
+        "total_bytes",
+        "files"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256-path-size-content-v1"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/file"
+          }
+        }
+      }
+    }
+  }
+}

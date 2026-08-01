@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/product-inference-diagnostics-v1.schema.json",
+  "title": "Scriber product inference diagnostics v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_sha256",
+    "source_characters",
+    "chunk_count",
+    "status",
+    "issues",
+    "active_learning",
+    "requested_format",
+    "actual_format",
+    "warmup"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "source_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_characters": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "chunk_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "accepted",
+        "repaired_sst",
+        "plain_text_fallback",
+        "original_fallback"
+      ]
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage",
+          "code",
+          "severity"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "high"
+            ]
+          }
+        }
+      }
+    },
+    "active_learning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prioritized",
+        "priority",
+        "reason_codes"
+      ],
+      "properties": {
+        "prioritized": {
+          "type": "boolean"
+        },
+        "priority": {
+          "enum": [
+            "none",
+            "high",
+            "critical"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          }
+        }
+      }
+    },
+    "requested_format": {
+      "enum": [
+        "plain",
+        "sst",
+        "markdown",
+        "html"
+      ]
+    },
+    "actual_format": {
+      "enum": [
+        "plain",
+        "sst",
+        "markdown",
+        "html"
+      ]
+    },
+    "warmup": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "requested"
+          ],
+          "properties": {
+            "requested": {
+              "const": false
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "success",
+            "valid_sst",
+            "error_code"
+          ],
+          "properties": {
+            "schema_version": {
+              "const": 1
+            },
+            "success": {
+              "type": "boolean"
+            },
+            "valid_sst": {
+              "type": "boolean"
+            },
+            "error_code": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

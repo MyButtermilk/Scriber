@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/curriculum-plan-v1.schema.json",
+  "title": "Scriber curriculum order plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "algorithm",
+    "phase_rules_version",
+    "mode",
+    "seed",
+    "epochs",
+    "source",
+    "ai_gold_train",
+    "phase_counts",
+    "assignments",
+    "epoch_orders",
+    "synthetic_only",
+    "human_curation",
+    "generative_api",
+    "holdout_inputs"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "scriber_curriculum_order_plan"
+    },
+    "algorithm": {
+      "const": "phase_grouped_seeded_sha256_v1"
+    },
+    "phase_rules_version": {
+      "const": "scriber_curriculum_phase_v1"
+    },
+    "mode": {
+      "enum": [
+        "shuffled",
+        "staged"
+      ]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "epochs": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "ai_gold_train": {
+      "$ref": "#/$defs/ai_gold"
+    },
+    "phase_counts": {
+      "$ref": "#/$defs/phase_counts"
+    },
+    "assignments": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "example_id",
+          "phase"
+        ],
+        "properties": {
+          "example_id": {
+            "$ref": "#/$defs/example_id"
+          },
+          "phase": {
+            "$ref": "#/$defs/phase"
+          }
+        }
+      }
+    },
+    "epoch_orders": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 10,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "epoch",
+          "example_ids",
+          "example_ids_sha256"
+        ],
+        "properties": {
+          "epoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9
+          },
+          "example_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/example_id"
+            }
+          },
+          "example_ids_sha256": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "synthetic_only": {
+      "const": true
+    },
+    "human_curation": {
+      "const": false
+    },
+    "generative_api": {
+      "const": false
+    },
+    "holdout_inputs": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "example_id": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 300,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]+$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "phase": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 5
+    },
+    "phase_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5"
+      ],
+      "properties": {
+        "1": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "2": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "3": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "4": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "5": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "split"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "split": {
+          "const": "train"
+        }
+      }
+    },
+    "ai_gold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "filename",
+        "sha256",
+        "record_count",
+        "matched_source_records"
+      ],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "matched_source_records": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

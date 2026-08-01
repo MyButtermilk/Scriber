@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/sol-followup-selection-manifest-v1.schema.json",
+  "title": "Scriber diagnostic Sol follow-up selection manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "diagnostic_only",
+    "selection_namespace",
+    "selection_seed",
+    "comparison_kind",
+    "source",
+    "selection",
+    "sol_release",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_sol_followup_selection_manifest" },
+    "diagnostic_only": { "const": true },
+    "selection_namespace": { "const": "sol_followup_v1" },
+    "selection_seed": { "const": 270036 },
+    "comparison_kind": { "$ref": "#/$defs/comparison_kind" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "terra_judge_stage",
+        "terra_status",
+        "terra_stage_assignment_sha256",
+        "terra_stage_packet_sha256",
+        "terra_stage_packet_manifest_sha256",
+        "terra_prompt_hash",
+        "source_hashes",
+        "completed_base_case_count",
+        "completed_public_case_count",
+        "partial_base_case_count"
+      ],
+      "properties": {
+        "terra_judge_stage": { "const": "terra_prejudge" },
+        "terra_status": { "const": "in_progress" },
+        "terra_stage_assignment_sha256": { "$ref": "#/$defs/hash" },
+        "terra_stage_packet_sha256": { "$ref": "#/$defs/hash" },
+        "terra_stage_packet_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "terra_prompt_hash": { "$ref": "#/$defs/prefixed_hash" },
+        "source_hashes": { "$ref": "#/$defs/source_hashes" },
+        "completed_base_case_count": { "type": "integer", "minimum": 1 },
+        "completed_public_case_count": { "type": "integer", "minimum": 1 },
+        "partial_base_case_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_base_case_count",
+        "selected_public_case_count",
+        "base_case_ids_sha256",
+        "public_case_ids_sha256",
+        "tier_counts",
+        "selected_cases"
+      ],
+      "properties": {
+        "selected_base_case_count": { "type": "integer", "minimum": 1 },
+        "selected_public_case_count": { "type": "integer", "minimum": 1 },
+        "base_case_ids_sha256": { "$ref": "#/$defs/hash" },
+        "public_case_ids_sha256": { "$ref": "#/$defs/hash" },
+        "tier_counts": { "$ref": "#/$defs/tier_counts" },
+        "selected_cases": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/selected_case" }
+        }
+      }
+    },
+    "sol_release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage_assignment_sha256",
+        "stage_assignment_case_ids_sha256",
+        "packet_case_ids_sha256"
+      ],
+      "properties": {
+        "stage_assignment_sha256": { "$ref": "#/$defs/hash" },
+        "stage_assignment_case_ids_sha256": { "$ref": "#/$defs/hash" },
+        "packet_case_ids_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_payload_present",
+        "reference_payload_present",
+        "output_payload_present",
+        "judge_reason_present",
+        "contains_model_identity",
+        "training_examples_present"
+      ],
+      "properties": {
+        "source_payload_present": { "const": false },
+        "reference_payload_present": { "const": false },
+        "output_payload_present": { "const": false },
+        "judge_reason_present": { "const": false },
+        "contains_model_identity": { "const": false },
+        "training_examples_present": { "const": false }
+      }
+    }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "prefixed_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "comparison_kind": {
+      "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"]
+    },
+    "source_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdicts_sha256",
+        "resume_manifest_sha256",
+        "bundle_sha256",
+        "private_mapping_sha256",
+        "bundle_manifest_sha256",
+        "materialization_plan_sha256"
+      ],
+      "properties": {
+        "verdicts_sha256": { "$ref": "#/$defs/hash" },
+        "resume_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_sha256": { "$ref": "#/$defs/hash" },
+        "private_mapping_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "materialization_plan_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "tier_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critical_flag_coverage",
+        "extra_critical",
+        "noncritical_rejection",
+        "position_conflict",
+        "clean_low_score",
+        "cross_comparison_divergence",
+        "clean_control"
+      ],
+      "properties": {
+        "critical_flag_coverage": { "type": "integer", "minimum": 0 },
+        "extra_critical": { "type": "integer", "minimum": 0 },
+        "noncritical_rejection": { "type": "integer", "minimum": 0 },
+        "position_conflict": { "type": "integer", "minimum": 0 },
+        "clean_low_score": { "type": "integer", "minimum": 0 },
+        "cross_comparison_divergence": { "type": "integer", "minimum": 0 },
+        "clean_control": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "selected_case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_case_id", "public_case_ids", "tiers"],
+      "properties": {
+        "base_case_id": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "public_case_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^judge_[0-9a-f]{24}$" }
+        },
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "critical_flag_coverage",
+              "extra_critical",
+              "noncritical_rejection",
+              "position_conflict",
+              "clean_low_score",
+              "cross_comparison_divergence",
+              "clean_control"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

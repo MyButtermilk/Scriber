@@ -1,0 +1,379 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/training-pair-v1.schema.json",
+  "title": "Scriber synthetic polishing training pair v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "example_id",
+    "canonical_document_id",
+    "parent_canonical_document_id",
+    "seed_id",
+    "split",
+    "domain",
+    "document_type",
+    "language",
+    "address_mode",
+    "risk_tags",
+    "source_text",
+    "target_sst",
+    "target_plain_text",
+    "target_markdown",
+    "target_html",
+    "target_ast",
+    "semantic_plan",
+    "formatting_decisions",
+    "formatting_commands",
+    "paragraph_boundaries",
+    "heading_boundaries",
+    "list_boundaries",
+    "salutation_boundary",
+    "closing_boundary",
+    "signature_boundaries",
+    "protected_spans",
+    "source_protected_spans",
+    "corruption_profile",
+    "severity",
+    "error_origin",
+    "operations",
+    "value_mappings",
+    "applied_normalizations",
+    "ambiguity_flags",
+    "critic_agents",
+    "critic_decisions",
+    "reviewed_package_sha256",
+    "validation_scores",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "example_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,199}$"
+    },
+    "canonical_document_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,159}$"
+    },
+    "parent_canonical_document_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,119}$"
+    },
+    "seed_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{7,79}$"
+    },
+    "split": {
+      "enum": [
+        "train",
+        "validation",
+        "test",
+        "challenge"
+      ]
+    },
+    "domain": {
+      "enum": [
+        "general_business",
+        "tax_legal",
+        "real_estate_energy",
+        "technical_project",
+        "english_mixed",
+        "hard_negatives"
+      ]
+    },
+    "document_type": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80
+    },
+    "language": {
+      "enum": [
+        "de-DE",
+        "en",
+        "mixed"
+      ]
+    },
+    "address_mode": {
+      "enum": [
+        "formal_sie",
+        "personal_du_capitalized",
+        "personal_du_lowercase",
+        "neutral_third_person",
+        "quoted_speech",
+        "mixed_correspondence",
+        "ambiguous"
+      ]
+    },
+    "risk_tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,59}$"
+      }
+    },
+    "source_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30000
+    },
+    "target_sst": {
+      "type": "string",
+      "pattern": "^\\[DOC\\][\\s\\S]*\\[/DOC\\]$",
+      "maxLength": 30000
+    },
+    "target_plain_text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20000
+    },
+    "target_markdown": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 30000
+    },
+    "target_html": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 50000
+    },
+    "target_ast": {
+      "type": "object"
+    },
+    "semantic_plan": {
+      "type": "object"
+    },
+    "formatting_decisions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "formatting_commands": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "paragraph_boundaries": {
+      "$ref": "#/$defs/nonnegativeIntegerArray"
+    },
+    "heading_boundaries": {
+      "$ref": "#/$defs/nonnegativeIntegerArray"
+    },
+    "list_boundaries": {
+      "$ref": "#/$defs/nonnegativeIntegerArray"
+    },
+    "salutation_boundary": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "closing_boundary": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "signature_boundaries": {
+      "$ref": "#/$defs/nonnegativeIntegerArray"
+    },
+    "protected_spans": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "source_protected_spans": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "corruption_profile": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{2,79}$"
+    },
+    "severity": {
+      "enum": [
+        "identity",
+        "clean",
+        "light",
+        "medium",
+        "heavy",
+        "challenge"
+      ]
+    },
+    "error_origin": {
+      "enum": [
+        "stt",
+        "speaker",
+        "mixed",
+        "formatting_only"
+      ]
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      }
+    },
+    "value_mappings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "source",
+          "target"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          },
+          "source": {
+            "type": "string",
+            "minLength": 1
+          },
+          "target": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "applied_normalizations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ambiguity_flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "critic_agents": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "critic_decisions": {
+      "type": "array",
+      "items": {
+        "type": [
+          "object",
+          "string"
+        ]
+      }
+    },
+    "reviewed_package_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "validation_scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deterministic"
+      ],
+      "properties": {
+        "deterministic": {
+          "const": 1.0
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "seed_id",
+        "source_plan_batch",
+        "plan_generator_agent",
+        "target_writer_agent",
+        "canonical_generator_id",
+        "canonical_generator_version",
+        "variant_index",
+        "synthetic_only",
+        "human_curation",
+        "generative_api"
+      ],
+      "properties": {
+        "seed_id": {
+          "type": "string"
+        },
+        "source_plan_batch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "plan_generator_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "target_writer_agent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "canonical_generator_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "canonical_generator_version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "variant_index": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "synthetic_only": {
+          "const": true
+        },
+        "human_curation": {
+          "const": false
+        },
+        "generative_api": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "nonnegativeIntegerArray": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      }
+    }
+  }
+}

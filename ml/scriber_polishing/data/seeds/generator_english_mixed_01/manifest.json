@@ -1,0 +1,85 @@
+{
+  "batch_id": "english_mixed_batch_01",
+  "diversity": {
+    "address_mode_counts": {
+      "ambiguous": 60,
+      "formal_sie": 60,
+      "mixed_correspondence": 60,
+      "neutral_third_person": 60,
+      "quoted_speech": 60
+    },
+    "document_type_counts": {
+      "budget review": 25,
+      "client update": 25,
+      "invoice clarification": 25,
+      "meeting follow-up": 25,
+      "project status report": 25,
+      "release readiness note": 25,
+      "requirements brief": 25,
+      "risk and decision note": 25,
+      "support handover": 25,
+      "training invitation": 25,
+      "vendor coordination email": 25,
+      "verbatim reference note": 25
+    },
+    "fact_count_counts": {
+      "3": 195,
+      "4": 105
+    },
+    "language_counts": {
+      "de-DE": 120,
+      "en": 135,
+      "mixed": 45
+    },
+    "list_kind_counts": {
+      "nested": 20,
+      "none": 160,
+      "ordered": 80,
+      "unordered": 40
+    },
+    "unique_fictional_organizations": 18,
+    "unique_fictional_people": 18,
+    "unique_products": 12
+  },
+  "domain": "english_mixed",
+  "generation": {
+    "contains_critic_verdicts": false,
+    "contains_splits": false,
+    "contains_targets": false,
+    "deterministic": true,
+    "external_generative_api_used": false,
+    "local_only": true
+  },
+  "generator_agent": "generator_english_mixed_01",
+  "generator_sha256": "cc4ac22e36214b9819a1553bdbdeb0da9825dc9feee170250f974536ab632957",
+  "manifest_version": 1,
+  "plans_sha256": "08857f23af2236d2c27cefe99ce5b046398b043112871caa3802bf134342088f",
+  "prompt_hash": "sha256:61760c17833011fc2f3a45c8c702dc14a3449398933b3788aaafa7b79200e501",
+  "quality_checks": {
+    "code_switching_hard_negative_plans": 45,
+    "code_switching_hard_negative_ratio": 0.15,
+    "critic_verdicts_present": false,
+    "external_generative_api_calls": 0,
+    "identity_hard_negative_plans": 25,
+    "identity_hard_negative_ratio": 0.08333333333333333,
+    "negation_condition_modality_plans": 300,
+    "negation_condition_modality_ratio": 1.0,
+    "private_data_records": 0,
+    "splits_present": false,
+    "targets_present": false,
+    "unique_seed_ids": true,
+    "unique_seeds": true
+  },
+  "record_count": 300,
+  "schema": "contracts/seed_plan_schema.json",
+  "schema_sha256": "ae59eafa61ab6b501b5b09bbccae03b11161cb5850f012050c9e93713507cef3",
+  "schema_validation": {
+    "invalid_records": 0,
+    "valid_records": 300,
+    "validator": "jsonschema.Draft202012Validator"
+  },
+  "seed_range": [
+    600000,
+    600299
+  ]
+}

@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 BASE_MODEL_ID = "google/gemma-3-270m-it"
+BASE_MODEL_REVISION = "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
 
 
 def assert_base_model(model_id: str) -> str:

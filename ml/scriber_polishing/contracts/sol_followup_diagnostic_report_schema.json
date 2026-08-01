@@ -1,0 +1,164 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/sol-followup-diagnostic-report-v1.schema.json",
+  "title": "Scriber diagnostic Sol follow-up report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "diagnostic_only",
+    "selection_namespace",
+    "selection_seed",
+    "packages",
+    "release_aggregation",
+    "training_policy",
+    "privacy"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_sol_followup_diagnostic_report" },
+    "status": { "const": "diagnostic_only" },
+    "diagnostic_only": { "const": true },
+    "selection_namespace": { "const": "sol_followup_v1" },
+    "selection_seed": { "const": 270036 },
+    "packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": { "$ref": "#/$defs/package" }
+    },
+    "release_aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full_campaign_aggregation_performed",
+        "release_gate_evaluated",
+        "release_gate_passed",
+        "verdicts_created",
+        "blocked_reason"
+      ],
+      "properties": {
+        "full_campaign_aggregation_performed": { "const": false },
+        "release_gate_evaluated": { "const": false },
+        "release_gate_passed": { "const": false },
+        "verdicts_created": { "const": false },
+        "blocked_reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "training_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "new_training_examples_created",
+        "direct_test_or_challenge_reuse",
+        "allowed_followup"
+      ],
+      "properties": {
+        "new_training_examples_created": { "const": 0 },
+        "direct_test_or_challenge_reuse": { "const": "prohibited" },
+        "allowed_followup": { "const": "none_until_independent_post_evaluation_work_is_authorized" }
+      }
+    },
+    "privacy": { "$ref": "#/$defs/privacy" }
+  },
+  "$defs": {
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "comparison_kind": { "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"] },
+    "tier_counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "critical_flag_coverage",
+        "extra_critical",
+        "noncritical_rejection",
+        "position_conflict",
+        "clean_low_score",
+        "cross_comparison_divergence",
+        "clean_control"
+      ],
+      "properties": {
+        "critical_flag_coverage": { "type": "integer", "minimum": 0 },
+        "extra_critical": { "type": "integer", "minimum": 0 },
+        "noncritical_rejection": { "type": "integer", "minimum": 0 },
+        "position_conflict": { "type": "integer", "minimum": 0 },
+        "clean_low_score": { "type": "integer", "minimum": 0 },
+        "cross_comparison_divergence": { "type": "integer", "minimum": 0 },
+        "clean_control": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparison_kind",
+        "completed_base_case_count",
+        "completed_public_case_count",
+        "partial_base_case_count",
+        "selected_base_case_count",
+        "selected_public_case_count",
+        "tier_counts",
+        "source_hashes",
+        "sol_stage_assignment_sha256",
+        "selection_manifest_sha256",
+        "packet_sha256",
+        "packet_manifest_sha256"
+      ],
+      "properties": {
+        "comparison_kind": { "$ref": "#/$defs/comparison_kind" },
+        "completed_base_case_count": { "type": "integer", "minimum": 1 },
+        "completed_public_case_count": { "type": "integer", "minimum": 1 },
+        "partial_base_case_count": { "type": "integer", "minimum": 0 },
+        "selected_base_case_count": { "type": "integer", "minimum": 1 },
+        "selected_public_case_count": { "type": "integer", "minimum": 1 },
+        "tier_counts": { "$ref": "#/$defs/tier_counts" },
+        "source_hashes": { "$ref": "#/$defs/source_hashes" },
+        "sol_stage_assignment_sha256": { "$ref": "#/$defs/hash" },
+        "selection_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "packet_sha256": { "$ref": "#/$defs/hash" },
+        "packet_manifest_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "source_hashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "verdicts_sha256",
+        "resume_manifest_sha256",
+        "bundle_sha256",
+        "private_mapping_sha256",
+        "bundle_manifest_sha256",
+        "materialization_plan_sha256"
+      ],
+      "properties": {
+        "verdicts_sha256": { "$ref": "#/$defs/hash" },
+        "resume_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_sha256": { "$ref": "#/$defs/hash" },
+        "private_mapping_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "materialization_plan_sha256": { "$ref": "#/$defs/hash" }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_payload_present",
+        "reference_payload_present",
+        "output_payload_present",
+        "judge_reason_present",
+        "contains_model_identity",
+        "training_examples_present"
+      ],
+      "properties": {
+        "source_payload_present": { "const": false },
+        "reference_payload_present": { "const": false },
+        "output_payload_present": { "const": false },
+        "judge_reason_present": { "const": false },
+        "contains_model_identity": { "const": false },
+        "training_examples_present": { "const": false }
+      }
+    }
+  }
+}

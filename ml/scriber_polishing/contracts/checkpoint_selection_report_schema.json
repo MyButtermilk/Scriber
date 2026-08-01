@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/checkpoint-selection-report-v2.schema.json",
+  "title": "Scriber within-run checkpoint selection report v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "status",
+    "selection_config_sha256",
+    "completed_training_report_sha256",
+    "run_fingerprint",
+    "candidate_inventory",
+    "tie_breakers",
+    "candidates",
+    "selected"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "status": {
+      "enum": [
+        "selected",
+        "no_safe_candidate"
+      ]
+    },
+    "selection_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "completed_training_report_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "run_fingerprint": {
+      "$ref": "#/$defs/hash"
+    },
+    "candidate_inventory": {
+      "type": "object"
+    },
+    "tie_breakers": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "items": {
+        "$ref": "#/$defs/tie_breaker"
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/candidate_row"
+      }
+    },
+    "selected": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "#/$defs/selected_checkpoint"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "tie_breaker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "direction"
+      ],
+      "properties": {
+        "field": {
+          "enum": [
+            "hard_safety_passed",
+            "composite_score",
+            "critical_error_count",
+            "generated_subtotal",
+            "eval_loss",
+            "global_step"
+          ]
+        },
+        "direction": {
+          "enum": [
+            "asc",
+            "desc"
+          ]
+        }
+      }
+    },
+    "selected_checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "checkpoint",
+        "global_step",
+        "run_fingerprint",
+        "identity_sha256",
+        "tree_sha256",
+        "config_sha256",
+        "model_sha256",
+        "file_count",
+        "total_bytes",
+        "candidate_evidence_sha256",
+        "deterministic_automatic_report_sha256",
+        "eval_loss"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "checkpoint": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "global_step": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "run_fingerprint": {
+          "$ref": "#/$defs/hash"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "model_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "file_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_bytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "candidate_evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "deterministic_automatic_report_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "candidate_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "checkpoint",
+        "hard_safety_gates",
+        "hard_safety_passed",
+        "failed_hard_safety_gates",
+        "critical_error_count",
+        "generated_subtotal",
+        "normalized_eval_loss",
+        "eval_loss",
+        "composite_score",
+        "rank"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^checkpoint-[1-9][0-9]*$"
+        },
+        "checkpoint": {
+          "$ref": "#/$defs/selected_checkpoint"
+        },
+        "hard_safety_gates": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "boolean"
+          }
+        },
+        "hard_safety_passed": {
+          "type": "boolean"
+        },
+        "failed_hard_safety_gates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "critical_error_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "generated_subtotal": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "normalized_eval_loss": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "eval_loss": {
+          "type": "number",
+          "minimum": 0
+        },
+        "composite_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}

@@ -1,6 +1,6 @@
 schema_version: 1
 seed: 270001
-status: AI_DATA_FACTORY_IN_PROGRESS
+status: READY_FOR_TRAINING
 minimum_ai_seed_documents: 1500
 target_ai_seed_documents: 2400
 minimum_canonical_documents: 12000
@@ -12,7 +12,7 @@ minimum_test_pairs: 4000
 minimum_challenge_pairs: 2000
 minimum_critical_regressions: 500
 split_before_variants: true
-split_group: canonical_document_id
+split_group: parent_canonical_document_id
 severity_mix:
   identity: 0.20
   light: 0.20

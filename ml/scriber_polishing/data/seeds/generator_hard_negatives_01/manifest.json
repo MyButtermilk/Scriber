@@ -1,0 +1,101 @@
+{
+  "batch_id": "hard_negatives_batch_01",
+  "diversity": {
+    "address_mode_counts": {
+      "ambiguous": 75,
+      "formal_sie": 75,
+      "mixed_correspondence": 75,
+      "neutral_third_person": 75
+    },
+    "document_type_counts": {
+      "besprechungsnotiz": 60,
+      "interne_notiz": 60,
+      "projektmail": 60,
+      "pruefvermerk": 60,
+      "statusmeldung": 60
+    },
+    "list_kind_counts": {
+      "nested": 75,
+      "none": 75,
+      "ordered": 75,
+      "unordered": 75
+    },
+    "scenario_topic_counts": {
+      "bedingte_sperre": 20,
+      "betragsabgrenzung": 20,
+      "bewusste_wiederholung": 20,
+      "einheitenabgrenzung": 20,
+      "empfehlungsgrenze": 20,
+      "formatwort": 20,
+      "formatwort_betreff": 20,
+      "freigabe": 20,
+      "moeglichkeit_und_pflicht": 20,
+      "offene_frage": 20,
+      "ortsabgrenzung": 20,
+      "punkt_und_signatur": 20,
+      "rechtsbegriff": 20,
+      "startunsicherheit": 20,
+      "terminabgrenzung": 20
+    },
+    "unique_locations": 4,
+    "unique_organizations": 4,
+    "unique_people": 6,
+    "unique_products": 4
+  },
+  "domain": "hard_negatives",
+  "generation": {
+    "contains_critics": false,
+    "contains_splits": false,
+    "contains_targets": false,
+    "deterministic": true,
+    "external_api_calls": 0,
+    "local_only": true
+  },
+  "generator_agent": "generator_hard_negatives_01",
+  "manifest_version": 1,
+  "plans_sha256": "17bacad27034d354653a46de3f425ff4695406ccc409f1895f7202b28ccff78a",
+  "prompt_hash": "sha256:f8134322d9db5721a693838d39b97cb8ec9c4b256ef350aeec5b37b1435e91cb",
+  "quality_checks": {
+    "critical_risk_coverage": 1.0,
+    "private_data_records": 0,
+    "two_or_more_risk_coverage": 1.0,
+    "unique_seed_ids": true,
+    "unique_seeds": true
+  },
+  "record_count": 300,
+  "risk_distribution": {
+    "amount": 20,
+    "close_numbers": 60,
+    "condition": 60,
+    "date": 40,
+    "do_not_invent_closing": 20,
+    "do_not_invent_format": 40,
+    "double_negation": 20,
+    "format_word_ordinary": 80,
+    "intentional_repetition": 20,
+    "legal_hierarchy": 20,
+    "legal_reference": 20,
+    "list_false_positive": 20,
+    "location": 20,
+    "modality": 20,
+    "name": 20,
+    "negation": 260,
+    "obligation": 40,
+    "possibility": 60,
+    "question": 20,
+    "question_no_answer": 20,
+    "recommendation": 20,
+    "time": 60,
+    "unit": 20
+  },
+  "schema": "contracts/seed_plan_schema.json",
+  "schema_validation": {
+    "invalid_records": 0,
+    "valid_records": 300,
+    "validator": "jsonschema.Draft202012Validator"
+  },
+  "seed_range": [
+    500000,
+    500299
+  ]
+}

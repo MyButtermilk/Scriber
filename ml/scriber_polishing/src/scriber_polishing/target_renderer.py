@@ -2,9 +2,26 @@
 
 from __future__ import annotations
 
+import re
 from html import escape
 
 from .document_ast import Block, BlockType, Document, Inline, InlineStyle
+
+_RICH_QUANTITY_SPACE = re.compile(
+    r"(?P<number>(?<![\w.])[-+]?\d[\d.]*(?:,\d+)?) "
+    r"(?P<unit>kWh/\(m²·a\)|l/\(m²·a\)|€(?:/[A-Za-z0-9²³·()]+)?|"
+    r"Mbit/s|m³/h|km/h|dB\(A\)|m/s|GiB|MiB|MWh|kWh|kWp|vCPU|"
+    r"MW|kW|Wh|mm|cm|km|kg|m²|m³|°C|EUR|USD|CHF|Uhr|TB|"
+    r"min|ms|h|s|W|l|m|%)(?=$|[\s.,;:!?…)\]}<])"
+)
+_RICH_LEGAL_SPACE = re.compile(
+    r"(?P<label>(?<!\w)(?:§§?|Artikel|Art\.|Absatz|Abs\.|Satz|Nummer|Nr\.|Buchstabe)) "
+    r"(?P<value>\d+[a-z]?)(?=$|[\s.,;:!?…)\]}<])"
+)
+_RICH_PREFIX_CURRENCY_SPACE = re.compile(
+    r"(?P<unit>(?<!\w)(?:EUR|USD|CHF|\$|£|€)) "
+    r"(?P<number>[-+]?\d[\d.]*(?:,\d+)?)(?=$|[\s.,;:!?…)\]}<])"
+)
 
 
 def _parts(text: str, inlines: tuple[Inline, ...]) -> tuple[Inline, ...]:
@@ -29,10 +46,19 @@ def _markdown(text: str, inlines: tuple[Inline, ...]) -> str:
     return "".join(result)
 
 
+def _escaped_rich_text(text: str) -> str:
+    """Escape model text and apply the contract's required rich-text spacing."""
+
+    value = escape(text, quote=False).replace("\n", "<br>")
+    value = _RICH_QUANTITY_SPACE.sub(r"\g<number>&nbsp;\g<unit>", value)
+    value = _RICH_LEGAL_SPACE.sub(r"\g<label>&nbsp;\g<value>", value)
+    return _RICH_PREFIX_CURRENCY_SPACE.sub(r"\g<unit>&nbsp;\g<number>", value)
+
+
 def _html(text: str, inlines: tuple[Inline, ...]) -> str:
     result: list[str] = []
     for part in _parts(text, inlines):
-        value = escape(part.text, quote=False).replace("\n", "<br>")
+        value = _escaped_rich_text(part.text)
         if part.style is InlineStyle.BOLD:
             value = f"<strong>{value}</strong>"
         elif part.style is InlineStyle.UNDERLINE:
@@ -112,7 +138,7 @@ def render_html(document: Document) -> str:
         if block.type in (BlockType.ORDERED_LIST, BlockType.UNORDERED_LIST):
             output.append(_html_list(block))
         elif block.type is BlockType.SIGNATURE:
-            output.append("<p>" + "<br>".join(escape(line, quote=False) for line in block.lines) + "</p>")
+            output.append("<p>" + "<br>".join(_escaped_rich_text(line) for line in block.lines) + "</p>")
         else:
             value = _html(block.text, block.inlines)
             if block.type in (BlockType.SUBJECT, BlockType.HEADING_1):

@@ -1,0 +1,166 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/final-report-provenance-v1.schema.json",
+  "title": "Scriber canonically signed final-report provenance declaration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "declaration_id",
+    "issued_at_utc",
+    "assertions",
+    "evidence_sha256s",
+    "known_limitations",
+    "integration_recommendation",
+    "signed_payload_sha256",
+    "signature"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "declaration_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "issued_at_utc": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$"
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "no_openai_api_used",
+        "no_other_generative_model_api_used",
+        "no_openai_api_key_used",
+        "no_additional_codex_credits_purchased",
+        "codex_exclusively_via_chatgpt_pro",
+        "all_training_data_ai_or_local_generator_created",
+        "no_human_curation",
+        "no_human_gold_set",
+        "no_manual_example_review_required",
+        "bulk_data_generated_locally",
+        "test_and_challenge_not_trained",
+        "no_private_scriber_data_without_opt_in"
+      ],
+      "properties": {
+        "no_openai_api_used": {
+          "const": true
+        },
+        "no_other_generative_model_api_used": {
+          "const": true
+        },
+        "no_openai_api_key_used": {
+          "const": true
+        },
+        "no_additional_codex_credits_purchased": {
+          "const": true
+        },
+        "codex_exclusively_via_chatgpt_pro": {
+          "const": true
+        },
+        "all_training_data_ai_or_local_generator_created": {
+          "const": true
+        },
+        "no_human_curation": {
+          "const": true
+        },
+        "no_human_gold_set": {
+          "const": true
+        },
+        "no_manual_example_review_required": {
+          "const": true
+        },
+        "bulk_data_generated_locally": {
+          "const": true
+        },
+        "test_and_challenge_not_trained": {
+          "const": true
+        },
+        "no_private_scriber_data_without_opt_in": {
+          "const": true
+        }
+      }
+    },
+    "evidence_sha256s": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/sha256"
+      },
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "known_limitations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/limitation"
+      }
+    },
+    "integration_recommendation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "signed_payload_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scheme",
+        "signer_id",
+        "value"
+      ],
+      "properties": {
+        "scheme": {
+          "const": "canonical-sha256-attestation-v1"
+        },
+        "signer_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "limitation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "description",
+        "affected_fields"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "affected_fields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}

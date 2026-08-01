@@ -1,0 +1,330 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/variant-release-matrix-input-v2.schema.json",
+  "title": "Scriber deterministic variant release matrix input v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_evidence_sha256",
+    "quantization_config_sha256",
+    "evaluation_config_sha256",
+    "coverage",
+    "variants",
+    "ineligible_variants"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "kind": {
+      "const": "scriber_variant_release_matrix_input"
+    },
+    "quantization_plan_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "quantization_result_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "source_evidence_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "quantization_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "evaluation_config_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "coverage": {
+      "$ref": "#/$defs/coverage"
+    },
+    "variants": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bf16"
+      ],
+      "minProperties": 1,
+      "properties": {
+        "bf16": {
+          "$ref": "#/$defs/variant"
+        },
+        "int8": {
+          "$ref": "#/$defs/variant"
+        },
+        "int4_nf4": {
+          "$ref": "#/$defs/variant"
+        },
+        "Q8_0": {
+          "$ref": "#/$defs/variant"
+        },
+        "Q4_K_M": {
+          "$ref": "#/$defs/variant"
+        }
+      }
+    },
+    "ineligible_variants": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "int8": {
+          "$ref": "#/$defs/failureSource"
+        },
+        "int4_nf4": {
+          "$ref": "#/$defs/failureSource"
+        },
+        "Q8_0": {
+          "$ref": "#/$defs/failureSource"
+        },
+        "Q4_K_M": {
+          "$ref": "#/$defs/failureSource"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "rawHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "^(?!/)(?![A-Za-z]:)[^\\\\\\r\\n]+$"
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "records_filename",
+        "records_sha256",
+        "manifest_filename",
+        "manifest_sha256",
+        "record_count"
+      ],
+      "properties": {
+        "records_filename": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]+$"
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/rawHash"
+        },
+        "manifest_filename": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^/\\\\]+$"
+        },
+        "manifest_sha256": {
+          "$ref": "#/$defs/rawHash"
+        },
+        "record_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy",
+        "suite_order",
+        "suite_count",
+        "expected_case_count",
+        "actual_case_count",
+        "exact_case_coverage",
+        "duplicate_case_ids",
+        "suites",
+        "combined_reference"
+      ],
+      "properties": {
+        "policy": {
+          "const": "concatenate_every_row_from_every_required_suite_in_declared_order"
+        },
+        "suite_order": {
+          "const": [
+            "ai_gold",
+            "critical_regression",
+            "regular_test"
+          ]
+        },
+        "suite_count": {
+          "const": 3
+        },
+        "expected_case_count": {
+          "const": 3250
+        },
+        "actual_case_count": {
+          "const": 3250
+        },
+        "exact_case_coverage": {
+          "const": true
+        },
+        "duplicate_case_ids": {
+          "const": "rejected_fail_closed"
+        },
+        "suites": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ai_gold",
+            "critical_regression",
+            "regular_test"
+          ],
+          "properties": {
+            "ai_gold": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/suite"
+                },
+                {
+                  "properties": {
+                    "record_count": {
+                      "const": 1750
+                    }
+                  }
+                }
+              ]
+            },
+            "critical_regression": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/suite"
+                },
+                {
+                  "properties": {
+                    "record_count": {
+                      "const": 500
+                    }
+                  }
+                }
+              ]
+            },
+            "regular_test": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/suite"
+                },
+                {
+                  "properties": {
+                    "record_count": {
+                      "const": 1000
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "combined_reference": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "records_file",
+            "records_sha256",
+            "manifest_file",
+            "manifest_sha256",
+            "case_ids_sha256",
+            "record_count"
+          ],
+          "properties": {
+            "records_file": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "records_sha256": {
+              "$ref": "#/$defs/rawHash"
+            },
+            "manifest_file": {
+              "$ref": "#/$defs/relativePath"
+            },
+            "manifest_sha256": {
+              "$ref": "#/$defs/rawHash"
+            },
+            "case_ids_sha256": {
+              "$ref": "#/$defs/rawHash"
+            },
+            "record_count": {
+              "const": 3250
+            }
+          }
+        }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_root",
+        "reload_report",
+        "predictions_file",
+        "predictions_manifest",
+        "evaluation_report",
+        "delta_report",
+        "benchmark_report"
+      ],
+      "properties": {
+        "artifact_root": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "reload_report": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "predictions_file": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "predictions_manifest": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "evaluation_report": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "delta_report": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "benchmark_report": {
+          "$ref": "#/$defs/relativePath"
+        }
+      }
+    },
+    "failureSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stage",
+        "reason_code",
+        "evidence_file",
+        "evidence_sha256"
+      ],
+      "properties": {
+        "stage": {
+          "enum": [
+            "artifact",
+            "reload",
+            "predictions",
+            "evaluation",
+            "delta",
+            "benchmark"
+          ]
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]+$"
+        },
+        "evidence_file": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "evidence_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

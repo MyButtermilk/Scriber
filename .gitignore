@@ -61,5 +61,11 @@ tmp/
 /ml/scriber_polishing/data/test/
 /ml/scriber_polishing/data/challenge/
 /ml/scriber_polishing/data/agent_reviews/
+/ml/scriber_polishing/data/seeds/*/plans.jsonl
+/ml/scriber_polishing/data/targets/*/targets.jsonl
+/ml/scriber_polishing/data/targets/*/plans.jsonl
+/ml/scriber_polishing/data/targets/*/rejects.jsonl
+/ml/scriber_polishing/data/final*/
+/ml/scriber_polishing/data/pilot*/
 /ml/scriber_polishing/artifacts/*
 !/ml/scriber_polishing/artifacts/.gitkeep

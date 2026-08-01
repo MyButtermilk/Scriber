@@ -1,0 +1,41 @@
+{
+  "batch_id": "real_estate_energy_batch_01",
+  "count": 300,
+  "deterministic": true,
+  "diversity": {
+    "condition_negation_modality_plans": 163,
+    "document_types": 12,
+    "hard_negative_plans": 75,
+    "scenario_families": 12,
+    "unique_fictional_organizations": 12,
+    "unique_fictional_people": 12,
+    "unique_fictional_properties": 12
+  },
+  "external_generative_api_used": false,
+  "generator_agent": "generator_real_estate_energy_01",
+  "generator_sha256": "3e1e9b8e367c28ac17e2843a0c57e40693b6e393e150c2e929644b7789861440",
+  "plans_sha256": "ef4eb0e3679c0c0c003aef752cba9694f1ba84a388862ba409e04ba6f4990e32",
+  "private_data": false,
+  "prompt_hash": "sha256:83f8475b20c3e4a91fa6d9548e9544b2d0b12303b0ceb1ea36d1dd8a76ceb843",
+  "record_count": 300,
+  "schema_sha256": "ae59eafa61ab6b501b5b09bbccae03b11161cb5850f012050c9e93713507cef3",
+  "schema_validation": {
+    "invalid_records": 0,
+    "valid_records": 300,
+    "validator": "jsonschema.Draft202012Validator"
+  },
+  "schema_version": 1,
+  "seed_range": [
+    300000,
+    300299
+  ],
+  "source_class": "ai_generated",
+  "unit_coverage": {
+    "condition_modality_negation_ratio": 0.5433333333333333,
+    "distinct_unit_expressions": 20,
+    "plans_with_quantity_unit": 300,
+    "ratio": 1.0,
+    "required_condition_modality_negation_ratio": 0.2,
+    "required_minimum_ratio": 0.45
+  }
+}

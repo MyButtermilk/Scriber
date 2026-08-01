@@ -1,0 +1,208 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-final-evaluation-v4-job-manifest.schema.json",
+  "title": "Scriber Hugging Face final-evaluation recovery V4 job manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "source_git_head",
+    "image",
+    "flavor",
+    "timeout_minutes",
+    "batch_size",
+    "max_new_tokens",
+    "primary_packet",
+    "amendment_packet",
+    "retry_packet",
+    "v3_terminal",
+    "v3_terminal_sha256",
+    "v3_launch_ledger",
+    "no_active_jobs",
+    "no_active_jobs_sha256",
+    "authorization",
+    "authorization_sha256",
+    "journal_recovery",
+    "output",
+    "budget",
+    "resume_strategy",
+    "training",
+    "publication",
+    "runner_sha256",
+    "packet_tree_sha256",
+    "file_count",
+    "byte_count"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 4
+    },
+    "kind": {
+      "const": "scriber_hf_final_evaluation_recovery_v4"
+    },
+    "source_git_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "image": {
+      "const": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime"
+    },
+    "flavor": {
+      "const": "l4x1"
+    },
+    "timeout_minutes": {
+      "const": 180
+    },
+    "batch_size": {
+      "const": 8
+    },
+    "max_new_tokens": {
+      "const": 512
+    },
+    "primary_packet": {
+      "type": "object"
+    },
+    "amendment_packet": {
+      "$ref": "#/$defs/packetBinding"
+    },
+    "retry_packet": {
+      "$ref": "#/$defs/packetBinding"
+    },
+    "v3_terminal": {
+      "type": "object"
+    },
+    "v3_terminal_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "v3_launch_ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relative_path",
+        "bytes",
+        "sha256",
+        "job_id",
+        "launch_id"
+      ],
+      "properties": {
+        "relative_path": {
+          "const": ".scriber-1100-final-evaluation-v1.launch-ledger-v3.json"
+        },
+        "bytes": {
+          "const": 2949
+        },
+        "sha256": {
+          "const": "sha256:c2cc76efcbb267e05ea1e9759fcaca628a30421148c780b33a9405748d197834"
+        },
+        "job_id": {
+          "const": "6a6bcb2d23ed89c748ec880e"
+        },
+        "launch_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        }
+      }
+    },
+    "no_active_jobs": {
+      "type": "object"
+    },
+    "no_active_jobs_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "authorization": {
+      "type": "object"
+    },
+    "authorization_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "journal_recovery": {
+      "type": "object"
+    },
+    "output": {
+      "type": "object"
+    },
+    "budget": {
+      "type": "object"
+    },
+    "resume_strategy": {
+      "type": "object"
+    },
+    "training": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "training_steps_executed",
+        "reference_usage",
+        "train_split_allowed"
+      ],
+      "properties": {
+        "training_steps_executed": {
+          "const": 0
+        },
+        "reference_usage": {
+          "const": "inference_and_evaluation_only"
+        },
+        "train_split_allowed": {
+          "const": false
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "destination_kind"
+      ],
+      "properties": {
+        "allowed": {
+          "const": false
+        },
+        "destination_kind": {
+          "const": "private_hf_bucket"
+        }
+      }
+    },
+    "runner_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "packet_tree_sha256": {
+      "$ref": "#/$defs/hash"
+    },
+    "file_count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "byte_count": {
+      "type": "integer",
+      "minimum": 1
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "packetBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "packet_tree_sha256",
+        "job_manifest_sha256",
+        "runner_sha256"
+      ],
+      "properties": {
+        "packet_tree_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "job_manifest_sha256": {
+          "$ref": "#/$defs/hash"
+        },
+        "runner_sha256": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    }
+  }
+}

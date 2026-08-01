@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/ai-verified-gold-manifest-v1.schema.json",
+  "title": "Scriber AI-Verified Gold Set aggregate manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "name",
+    "selection_algorithm",
+    "seed",
+    "candidate_count",
+    "eligible_count",
+    "eligible_unselected_count",
+    "rejected_count",
+    "rejection_reason_counts",
+    "total_count",
+    "split_targets",
+    "split_counts",
+    "splits",
+    "input_eligible_sha256",
+    "selected_records_sha256",
+    "critic_package_count",
+    "critic_packages_sha256",
+    "evidence",
+    "isolation",
+    "provenance"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "name": {
+      "const": "AI-Verified Gold Set"
+    },
+    "selection_algorithm": {
+      "const": "parent_grouped_sha256_v1"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "candidate_count": {
+      "type": "integer",
+      "minimum": 4000
+    },
+    "eligible_count": {
+      "type": "integer",
+      "minimum": 4000
+    },
+    "eligible_unselected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rejected_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "rejection_reason_counts": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[a-z][a-z0-9_]{2,79}$"
+      },
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "total_count": {
+      "type": "integer",
+      "minimum": 4000
+    },
+    "split_targets": {
+      "$ref": "#/$defs/splitCounts"
+    },
+    "split_counts": {
+      "$ref": "#/$defs/splitCounts"
+    },
+    "splits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "train",
+        "validation",
+        "test",
+        "challenge"
+      ],
+      "properties": {
+        "train": {
+          "$ref": "#/$defs/splitEvidence"
+        },
+        "validation": {
+          "$ref": "#/$defs/splitEvidence"
+        },
+        "test": {
+          "$ref": "#/$defs/splitEvidence"
+        },
+        "challenge": {
+          "$ref": "#/$defs/splitEvidence"
+        }
+      }
+    },
+    "input_eligible_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "selected_records_sha256": {
+      "$ref": "#/$defs/sha256"
+    },
+    "critic_package_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "critic_packages_sha256": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/sha256"
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "semantic_plan_schema_valid",
+        "document_ast_valid",
+        "deterministic_renderings_valid",
+        "sst_round_trip_valid",
+        "protected_spans_preserved",
+        "fact_critic_minimum",
+        "style_critic_minimum",
+        "adversarial_critic_minimum",
+        "critical_flags",
+        "deterministic_validator_runs_per_record",
+        "normalized_source_duplicate_records_collapsed",
+        "near_duplicate_parent_families_collapsed",
+        "record_exact_and_normalized_duplicate_count",
+        "near_duplicate_parent_family_count"
+      ],
+      "properties": {
+        "semantic_plan_schema_valid": {
+          "const": true
+        },
+        "document_ast_valid": {
+          "const": true
+        },
+        "deterministic_renderings_valid": {
+          "const": true
+        },
+        "sst_round_trip_valid": {
+          "const": true
+        },
+        "protected_spans_preserved": {
+          "const": true
+        },
+        "fact_critic_minimum": {
+          "const": 1
+        },
+        "style_critic_minimum": {
+          "const": 1
+        },
+        "adversarial_critic_minimum": {
+          "const": 2
+        },
+        "critical_flags": {
+          "const": 0
+        },
+        "deterministic_validator_runs_per_record": {
+          "minimum": 2,
+          "type": "integer"
+        },
+        "normalized_source_duplicate_records_collapsed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "near_duplicate_parent_families_collapsed": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "record_exact_and_normalized_duplicate_count": {
+          "const": 0
+        },
+        "near_duplicate_parent_family_count": {
+          "const": 0
+        }
+      }
+    },
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_split_leakage_count",
+        "routine_manifest_contains_individual_records",
+        "sealed_outputs_written",
+        "test_and_challenge_excluded_from_training"
+      ],
+      "properties": {
+        "parent_split_leakage_count": {
+          "const": 0
+        },
+        "routine_manifest_contains_individual_records": {
+          "const": false
+        },
+        "sealed_outputs_written": {
+          "type": "boolean"
+        },
+        "test_and_challenge_excluded_from_training": {
+          "const": true
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ai_only",
+        "human_curation",
+        "human_gold",
+        "generative_api"
+      ],
+      "properties": {
+        "ai_only": {
+          "const": true
+        },
+        "human_curation": {
+          "const": false
+        },
+        "human_gold": {
+          "const": false
+        },
+        "generative_api": {
+          "const": false
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "splitCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "train",
+        "validation",
+        "test",
+        "challenge"
+      ],
+      "properties": {
+        "train": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "validation": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "test": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "challenge": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "splitEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "count",
+        "parent_count",
+        "records_sha256"
+      ],
+      "properties": {
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "parent_count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "records_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

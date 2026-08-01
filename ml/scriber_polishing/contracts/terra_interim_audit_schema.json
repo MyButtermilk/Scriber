@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/terra-interim-audit-v1.schema.json",
+  "title": "Fail-closed Scriber Terra interim audit v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "packages",
+    "backlog",
+    "release_aggregation",
+    "training_policy"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "kind": { "const": "scriber_terra_interim_audit" },
+    "status": { "enum": ["in_progress", "complete"] },
+    "packages": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/package" }
+    },
+    "backlog": { "$ref": "#/$defs/backlog" },
+    "release_aggregation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "full_campaign_aggregation_performed",
+        "release_gate_evaluated",
+        "release_gate_passed",
+        "blocked_reason"
+      ],
+      "properties": {
+        "full_campaign_aggregation_performed": { "const": false },
+        "release_gate_evaluated": { "const": false },
+        "release_gate_passed": { "const": false },
+        "blocked_reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        }
+      }
+    },
+    "training_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "new_training_examples_created",
+        "direct_test_or_challenge_reuse",
+        "allowed_followup"
+      ],
+      "properties": {
+        "new_training_examples_created": { "const": 0 },
+        "direct_test_or_challenge_reuse": { "const": "prohibited" },
+        "allowed_followup": {
+          "const": "derive_generator_requirements_and_create_independently_seeded_novel_siblings_after_evaluation"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prefixed_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "package": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "comparison_kind",
+        "judge_stage",
+        "package_status",
+        "expected_case_count",
+        "completed_case_count",
+        "missing_case_count",
+        "coverage_fraction",
+        "judge_id",
+        "judge_session_id",
+        "model_family",
+        "reasoning_effort",
+        "prompt_hash",
+        "stage_assignment_sha256",
+        "verdict_output_sha256",
+        "resume_manifest_sha256",
+        "stage_packet_sha256",
+        "stage_packet_manifest_sha256",
+        "bundle_sha256",
+        "bundle_manifest_sha256",
+        "private_mapping_sha256"
+      ],
+      "properties": {
+        "comparison_kind": {
+          "enum": ["fine_tune_vs_base", "fine_tune_vs_rule_baseline"]
+        },
+        "judge_stage": { "const": "terra_prejudge" },
+        "package_status": { "enum": ["in_progress", "complete"] },
+        "expected_case_count": { "type": "integer", "minimum": 1 },
+        "completed_case_count": { "type": "integer", "minimum": 1 },
+        "missing_case_count": { "type": "integer", "minimum": 0 },
+        "coverage_fraction": { "type": "number", "minimum": 0, "maximum": 1 },
+        "judge_id": {
+          "type": "string",
+          "pattern": "^judge_[a-z0-9_]{7,79}$"
+        },
+        "judge_session_id": {
+          "type": "string",
+          "pattern": "^session_[a-z0-9][a-z0-9_-]{7,127}$"
+        },
+        "model_family": { "const": "gpt-5.6-terra" },
+        "reasoning_effort": { "const": "max" },
+        "prompt_hash": { "$ref": "#/$defs/prefixed_hash" },
+        "stage_assignment_sha256": { "$ref": "#/$defs/hash" },
+        "verdict_output_sha256": { "$ref": "#/$defs/hash" },
+        "resume_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "stage_packet_sha256": { "$ref": "#/$defs/hash" },
+        "stage_packet_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_sha256": { "$ref": "#/$defs/hash" },
+        "bundle_manifest_sha256": { "$ref": "#/$defs/hash" },
+        "private_mapping_sha256": { "$ref": "#/$defs/hash" }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "package_status": { "const": "complete" } },
+            "required": ["package_status"]
+          },
+          "then": {
+            "properties": {
+              "missing_case_count": { "const": 0 },
+              "coverage_fraction": { "const": 1 }
+            }
+          },
+          "else": {
+            "properties": {
+              "missing_case_count": { "minimum": 1 },
+              "coverage_fraction": { "exclusiveMaximum": 1 }
+            }
+          }
+        }
+      ]
+    },
+    "backlog": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "record_count",
+        "severity_counts",
+        "failure_signal_counts",
+        "error_flag_counts",
+        "backlog_sha256"
+      ],
+      "properties": {
+        "record_count": { "type": "integer", "minimum": 0 },
+        "severity_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "failure_signal_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "error_flag_counts": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "backlog_sha256": { "$ref": "#/$defs/prefixed_hash" }
+      }
+    }
+  }
+}

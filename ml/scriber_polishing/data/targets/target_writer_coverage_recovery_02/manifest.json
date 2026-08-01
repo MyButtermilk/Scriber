@@ -1,0 +1,57 @@
+{
+  "assigned_input_batches": [
+    {
+      "path": "data/seeds/generator_coverage_recovery_02/plans.jsonl",
+      "sha256": "sha256:bce116acc85a075bcc135755b5fff24999c13328e015fc4287ea168357631c20"
+    },
+    {
+      "path": "data/seeds/generator_coverage_recovery_02/manifest.json",
+      "sha256": "sha256:364926fd4999e957423fa53da976aa5eb8c678d932c2260f69f29ecd67950c5d"
+    },
+    {
+      "path": "contracts/seed_plan_schema.json",
+      "sha256": "sha256:ae59eafa61ab6b501b5b09bbccae03b11161cb5850f012050c9e93713507cef3"
+    },
+    {
+      "path": "contracts/sst_v1_schema.json",
+      "sha256": "sha256:2eb50bed34137833ebde9ed78e2708329c2a5a909e0066d0b248af140aa49ab9"
+    },
+    {
+      "path": "contracts/behavioral_contract.yaml",
+      "sha256": "sha256:c416dcd0617529e754c734baeb73ca63718ac2a8fa12f0cc8014e9fa7fe498fe"
+    },
+    {
+      "path": "contracts/de_business_style.yaml",
+      "sha256": "sha256:02f4ee40467c3643ec2447d17c5a44dec54f9fc55495b1c15d52a84162917dfd"
+    }
+  ],
+  "batch_id": "target_writer_coverage_recovery_02",
+  "canonical_expansion_validation": {
+    "expanded_record_count": 280,
+    "expanded_records_sha256": "sha256:975f5d82a0205a05515249480f275b7b814512dca5ee328420029355ea8b9b08",
+    "variants_per_target": 7
+  },
+  "generation_boundary": {
+    "critic_material_read": false,
+    "external_or_model_api_calls": 0,
+    "human_review": false,
+    "semantic_plans_only_input": true,
+    "split_data_read": false
+  },
+  "record_count": 40,
+  "schema_version": 1,
+  "source_plan": {
+    "batch_id": "coverage_recovery_batch_02",
+    "generator_agent": "generator_coverage_recovery_02",
+    "plans_sha256": "bce116acc85a075bcc135755b5fff24999c13328e015fc4287ea168357631c20",
+    "record_count": 40
+  },
+  "target_prompt_hash": "sha256:e35e642f6478bfe5434b1a2b38fe72e38324d313e96d12ba9d2cca2d482a3ac0",
+  "target_writer_agent": "target_writer_coverage_recovery_02",
+  "target_writer_agent_sha256": "sha256:0fa5be4fdb8cbc9c1be4228c92f8c22281441e6c8ec5b08099cc14f6993ffb2a",
+  "target_writer_sha256": "sha256:a3fd50ed5505cb5085b06604a56d53f4807937b87b2ebac886dbff4651109cb4",
+  "targets_sha256": "sha256:1683bb22502f2f1186f2c43850dcd0ff4c047db2c870ff1a607249ec2b9d35c0",
+  "unique_canonical_document_id_count": 40,
+  "unique_seed_id_count": 40,
+  "writer_id": "target_writer_coverage_recovery_02"
+}

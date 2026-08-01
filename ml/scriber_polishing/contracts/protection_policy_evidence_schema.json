@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/protection-policy-evidence-v1.schema.json",
+  "title": "Scriber protected-span policy evidence v1",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/legacy"
+    },
+    {
+      "$ref": "#/$defs/gemmaUnused"
+    },
+    {
+      "$ref": "#/$defs/lexicalKeep"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "tokenizerCore": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "model_id",
+        "revision",
+        "vocab_size",
+        "backend_sha256",
+        "chat_template_sha256",
+        "identity_sha256"
+      ],
+      "properties": {
+        "model_id": {
+          "const": "google/gemma-3-270m-it"
+        },
+        "revision": {
+          "const": "ac82b4e820549b854eebf28ce6dedaf9fdfa17b3"
+        },
+        "vocab_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "backend_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "chat_template_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "identity_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "vocab_resize": {
+          "const": false
+        }
+      }
+    },
+    "legacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "policy_id",
+        "detector",
+        "marker_format",
+        "policy_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "policy_id": {
+          "const": "legacy_scriber_v1"
+        },
+        "detector": {
+          "const": "legacy_regex_v1"
+        },
+        "marker_format": {
+          "const": "⟦SCRIBER_PROTECTED_{index:04d}⟧"
+        },
+        "tokenizer": {
+          "$ref": "#/$defs/tokenizerCore"
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "gemmaUnused": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "policy_id",
+        "detector",
+        "marker_format",
+        "marker_start",
+        "marker_end",
+        "max_spans",
+        "collision_scope",
+        "pair_mapping",
+        "tokenizer",
+        "markers",
+        "marker_token_ids_sha256",
+        "policy_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "policy_id": {
+          "const": "gemma_unused_v1"
+        },
+        "detector": {
+          "const": "product_critical_v1"
+        },
+        "marker_format": {
+          "const": "<unused{index}>"
+        },
+        "marker_start": {
+          "const": 6200
+        },
+        "marker_end": {
+          "const": 6231
+        },
+        "max_spans": {
+          "const": 32
+        },
+        "collision_scope": {
+          "const": "all_unused_markers"
+        },
+        "pair_mapping": {
+          "const": "unique_exact_value_v1"
+        },
+        "tokenizer": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/tokenizerCore"
+            },
+            {
+              "required": [
+                "vocab_resize"
+              ]
+            }
+          ]
+        },
+        "markers": {
+          "type": "array",
+          "minItems": 32,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "marker_index",
+              "marker",
+              "token_id"
+            ],
+            "properties": {
+              "marker_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 6241
+              },
+              "marker": {
+                "type": "string",
+                "pattern": "^<unused(?:0|[1-9][0-9]{0,3})>$"
+              },
+              "token_id": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "marker_token_ids_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "lexicalKeep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version",
+        "policy_id",
+        "detector",
+        "marker_format",
+        "marker_start",
+        "marker_end",
+        "max_spans",
+        "collision_scope",
+        "pair_mapping",
+        "tokenizer",
+        "markers",
+        "marker_token_sequences_sha256",
+        "policy_sha256"
+      ],
+      "properties": {
+        "schema_version": {
+          "const": 1
+        },
+        "policy_id": {
+          "const": "gemma_lexical_v1"
+        },
+        "detector": {
+          "const": "product_critical_v1"
+        },
+        "marker_format": {
+          "const": "⟦KEEP_{label}⟧"
+        },
+        "marker_start": {
+          "const": 0
+        },
+        "marker_end": {
+          "const": 31
+        },
+        "max_spans": {
+          "const": 32
+        },
+        "collision_scope": {
+          "const": "all_lexical_keep_markers"
+        },
+        "pair_mapping": {
+          "const": "ordered_occurrence_v1"
+        },
+        "tokenizer": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/tokenizerCore"
+            },
+            {
+              "required": [
+                "vocab_resize"
+              ]
+            }
+          ]
+        },
+        "markers": {
+          "type": "array",
+          "minItems": 32,
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "marker_index",
+              "marker",
+              "token_count",
+              "token_ids"
+            ],
+            "properties": {
+              "marker_index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 31
+              },
+              "marker": {
+                "type": "string",
+                "pattern": "^⟦KEEP_[A-Z]{1,2}⟧$"
+              },
+              "token_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 8
+              },
+              "token_ids": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        },
+        "marker_token_sequences_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "policy_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

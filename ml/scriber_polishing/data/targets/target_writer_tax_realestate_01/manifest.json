@@ -1,0 +1,122 @@
+{
+  "absence_confirmations": {
+    "no_corruption": true,
+    "no_critic_verdict": true,
+    "no_external_api_call": true,
+    "no_model_output": true,
+    "no_private_data": true,
+    "no_split_assignment": true
+  },
+  "assigned_input_batches": [
+    {
+      "batch_ids": [
+        "tax_legal_batch_01"
+      ],
+      "generator_agents": [
+        "generator_tax_legal_01"
+      ],
+      "path": "data/seeds/generator_tax_legal_01/plans.jsonl",
+      "record_count": 300,
+      "sha256": "sha256:0cda54733a9bd6251bb33a3bd014e8a0d58b2c6d27793cc87a052bb2106827b7"
+    },
+    {
+      "batch_ids": [
+        "real_estate_energy_batch_01"
+      ],
+      "generator_agents": [
+        "generator_real_estate_energy_01"
+      ],
+      "path": "data/seeds/generator_real_estate_energy_01/plans.jsonl",
+      "record_count": 300,
+      "sha256": "sha256:ef4eb0e3679c0c0c003aef752cba9694f1ba84a388862ba409e04ba6f4990e32"
+    }
+  ],
+  "counts": {
+    "by_address_mode": {
+      "ambiguous": 75,
+      "formal_sie": 315,
+      "mixed_correspondence": 75,
+      "neutral_third_person": 135
+    },
+    "by_block_type": {
+      "closing": 440,
+      "heading_1": 464,
+      "heading_2": 172,
+      "ordered_list": 150,
+      "paragraph": 1800,
+      "salutation": 440,
+      "signature": 440,
+      "subject": 550,
+      "unordered_list": 300
+    },
+    "by_document_type": {
+      "Baufreigabe": 25,
+      "Betriebskostenabrechnung": 25,
+      "Energiebericht": 25,
+      "Energiebeschaffung": 25,
+      "Finanzierungsvermerk": 25,
+      "Investitionsfreigabe": 25,
+      "Mieterinformation": 25,
+      "Mietvertragsnachtrag": 25,
+      "Mängelanzeige": 25,
+      "Nachtragsmeldung": 25,
+      "Wartungsauftrag": 25,
+      "assessment_note": 30,
+      "audit_response": 30,
+      "corporate_tax_note": 30,
+      "deadline_notice": 30,
+      "objection_letter": 30,
+      "payment_query": 30,
+      "record_request": 30,
+      "tax_office_request": 30,
+      "trade_tax_memo": 30,
+      "vat_correspondence": 30,
+      "Übergabeprotokoll": 25
+    },
+    "by_domain": {
+      "real_estate_energy": 300,
+      "tax_legal": 300
+    },
+    "by_fact_count": {
+      "3": 225,
+      "4": 225,
+      "5": 125,
+      "6": 25
+    },
+    "by_language": {
+      "de-DE": 600
+    },
+    "by_list_kind": {
+      "nested": 150,
+      "none": 150,
+      "ordered": 150,
+      "unordered": 150
+    },
+    "by_protected_span_presence": {
+      "absent": 0,
+      "present": 600
+    }
+  },
+  "deterministic_checks": {
+    "canonical_compact_sorted_jsonl": true,
+    "exactly_one_final_newline": true,
+    "in_process_second_generation_byte_identical": true
+  },
+  "manifest_version": 1,
+  "record_count": 600,
+  "target_prompt_hash": "sha256:71ef782b3ec6e87969a063acdeb58890b4822cdb0a679c815f68b63622105956",
+  "targets_sha256": "sha256:e8baf224b262f3f7f8254d48765b05f4cdba14df2f0b50ecc6720f51eead8acc",
+  "unique_counts": {
+    "canonical_document_ids": 600,
+    "seed_ids": 600,
+    "source_seeds": 600
+  },
+  "validation_counts": {
+    "ast_sst_ast_round_trip": 600,
+    "renderer_consistency": 600,
+    "schema_validation": 600,
+    "semantic_preservation": 600
+  },
+  "writer_id": "target_writer_tax_realestate_01",
+  "writer_sha256": "sha256:ee4f07104cfe87d42272acf30e05fcf9cf91c5d6a3b9b14af29e9d152f7db319"
+}

@@ -4,6 +4,38 @@
   "title": "Scriber canonical polishing record v1",
   "type": "object",
   "additionalProperties": false,
+  "dependentRequired": {
+    "semantic_plan": [
+      "parent_canonical_document_id",
+      "canonical_generator_id",
+      "canonical_generator_version",
+      "variant_index"
+    ],
+    "parent_canonical_document_id": [
+      "semantic_plan",
+      "canonical_generator_id",
+      "canonical_generator_version",
+      "variant_index"
+    ],
+    "canonical_generator_id": [
+      "semantic_plan",
+      "parent_canonical_document_id",
+      "canonical_generator_version",
+      "variant_index"
+    ],
+    "canonical_generator_version": [
+      "semantic_plan",
+      "parent_canonical_document_id",
+      "canonical_generator_id",
+      "variant_index"
+    ],
+    "variant_index": [
+      "semantic_plan",
+      "parent_canonical_document_id",
+      "canonical_generator_id",
+      "canonical_generator_version"
+    ]
+  },
   "required": [
     "schema_version",
     "canonical_document_id",
@@ -61,6 +93,89 @@
     "semantic_plan_sha256": {
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "semantic_plan": {
+      "type": "object"
+    },
+    "domain": {
+      "enum": [
+        "general_business",
+        "tax_legal",
+        "real_estate_energy",
+        "technical_project",
+        "english_mixed",
+        "hard_negatives"
+      ]
+    },
+    "document_type": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 80
+    },
+    "risk_tags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{2,59}$"
+      }
+    },
+    "reviewed_package_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "critic_agents": {
+      "type": "array",
+      "minItems": 3,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{7,79}$"
+      }
+    },
+    "critic_decisions": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "critic_id",
+          "critic_role",
+          "acceptable"
+        ],
+        "properties": {
+          "critic_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{7,79}$"
+          },
+          "critic_role": {
+            "enum": [
+              "fact",
+              "style",
+              "adversarial"
+            ]
+          },
+          "acceptable": {
+            "const": true
+          }
+        }
+      }
+    },
+    "parent_canonical_document_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{7,119}$"
+    },
+    "canonical_generator_id": {
+      "const": "local_canonical_expander"
+    },
+    "canonical_generator_version": {
+      "const": "1"
+    },
+    "variant_index": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 7
     },
     "source_text": {
       "type": "string",

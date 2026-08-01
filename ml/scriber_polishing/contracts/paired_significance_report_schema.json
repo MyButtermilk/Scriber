@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/paired-evaluation-significance-v1.schema.json",
+  "title": "Scriber paired evaluation significance report v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "status",
+    "decision",
+    "inputs",
+    "candidates",
+    "metric",
+    "paired_delta",
+    "bootstrap"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_paired_evaluation_significance"},
+    "status": {"const": "complete"},
+    "decision": {"enum": ["SIGNIFICANT_IMPROVEMENT", "NO_SIGNIFICANT_IMPROVEMENT"]},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "base_report_sha256",
+        "fine_tuned_report_sha256",
+        "reference_sha256",
+        "evaluation_config_sha256",
+        "case_count",
+        "case_id_sha256"
+      ],
+      "properties": {
+        "base_report_sha256": {"$ref": "#/$defs/sha256"},
+        "fine_tuned_report_sha256": {"$ref": "#/$defs/sha256"},
+        "reference_sha256": {"$ref": "#/$defs/sha256"},
+        "evaluation_config_sha256": {"$ref": "#/$defs/sha256"},
+        "case_count": {"type": "integer", "minimum": 1},
+        "case_id_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "candidates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base", "fine_tuned"],
+      "properties": {
+        "base": {"type": "string", "minLength": 1},
+        "fine_tuned": {"type": "string", "minLength": 1}
+      }
+    },
+    "metric": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "direction"],
+      "properties": {
+        "name": {
+          "enum": [
+            "sst_valid",
+            "output_only_compliant",
+            "strict_exact_match",
+            "normalized_exact_match",
+            "protected_spans_exact",
+            "ast_exact_match",
+            "renderer_round_trip",
+            "safe_renderer",
+            "block_sequence_exact"
+          ]
+        },
+        "direction": {"const": "higher_is_better"}
+      }
+    },
+    "paired_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_mean", "fine_tuned_mean", "mean", "minimum"],
+      "properties": {
+        "base_mean": {"type": "number"},
+        "fine_tuned_mean": {"type": "number"},
+        "mean": {"type": "number"},
+        "minimum": {"type": "number"}
+      }
+    },
+    "bootstrap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "seed",
+        "resamples",
+        "confidence_level",
+        "lower",
+        "median",
+        "upper",
+        "passed"
+      ],
+      "properties": {
+        "method": {"const": "paired_case_mean_with_replacement_nearest_rank_v1"},
+        "seed": {"type": "integer", "minimum": 0},
+        "resamples": {"type": "integer", "minimum": 1},
+        "confidence_level": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        "lower": {"type": "number"},
+        "median": {"type": "number"},
+        "upper": {"type": "number"},
+        "passed": {"type": "boolean"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}
