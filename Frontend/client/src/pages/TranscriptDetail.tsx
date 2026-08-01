@@ -695,6 +695,26 @@ export default function TranscriptDetail() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
+            {youtubeSourceUrl && (
+              <Button asChild variant="outline" size="sm" className="hidden md:inline-flex">
+                <a
+                  href={youtubeSourceUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={t("Open on YouTube")}
+                  onClick={(event) => {
+                    if (!isTauriRuntime()) return;
+                    event.preventDefault();
+                    void openYoutubeSourceUrl(youtubeSourceUrl);
+                  }}
+                  data-testid="youtube-source-link"
+                >
+                  <Youtube className="text-red-600 dark:text-red-400" aria-hidden="true" />
+                  <span className="hidden 2xl:inline">{t("Open on YouTube")}</span>
+                  <ExternalLink className="hidden 2xl:block" aria-hidden="true" />
+                </a>
+              </Button>
+            )}
             {transcript.content && (
               <Button
                 variant="default"
@@ -764,6 +784,24 @@ export default function TranscriptDetail() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                {youtubeSourceUrl && (
+                  <DropdownMenuItem asChild>
+                    <a
+                      href={youtubeSourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(event) => {
+                        if (!isTauriRuntime()) return;
+                        event.preventDefault();
+                        void openYoutubeSourceUrl(youtubeSourceUrl);
+                      }}
+                    >
+                      <Youtube className="mr-2 h-4 w-4 text-red-600 dark:text-red-400" aria-hidden="true" />
+                      {t("Open on YouTube")}
+                      <ExternalLink className="ml-auto h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+                    </a>
+                  </DropdownMenuItem>
+                )}
                 {transcript.content && (
                   <DropdownMenuItem onClick={handleCopyTranscript}>
                     <Copy className="w-4 h-4 mr-2" /> {t("Copy transcript")}
@@ -827,27 +865,6 @@ export default function TranscriptDetail() {
             showSummaryToc ? "transcript-detail-shell has-summary-toc space-y-6" : "transcript-detail-shell space-y-6"
           }
         >
-          {youtubeSourceUrl && (
-            <div className="flex flex-wrap items-center gap-2 pb-2">
-              <a
-                href={youtubeSourceUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="neu-button inline-flex min-h-7 items-center gap-1.5 rounded-full border border-border/60 px-3 py-1 text-xs font-medium text-muted-foreground no-underline outline-none transition-colors duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 motion-reduce:transition-none"
-                onClick={(event) => {
-                  if (!isTauriRuntime()) return;
-                  event.preventDefault();
-                  void openYoutubeSourceUrl(youtubeSourceUrl);
-                }}
-                data-testid="youtube-source-link"
-              >
-                <Youtube className="h-3.5 w-3.5 text-red-600 dark:text-red-400" aria-hidden="true" />
-                {t("Open on YouTube")}
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>
-            </div>
-          )}
-
           {transcriptQuery.isError && (
             <QueryErrorState
               title={t("Could not load transcript")}

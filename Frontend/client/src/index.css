@@ -4031,7 +4031,6 @@ html:has(body[data-scroll-locked]) {
 @media (min-width: 1440px) {
   .transcript-detail-header-shell.has-summary-toc {
     max-width: 1320px;
-    padding-left: 296px;
   }
 
   .transcript-detail-shell.has-summary-toc {
@@ -4053,9 +4052,9 @@ html:has(body[data-scroll-locked]) {
 
   .transcript-detail-shell.has-summary-toc .summary-toc {
     position: sticky;
-    top: 84px;
+    top: 7rem;
     display: block;
-    max-height: calc(100dvh - 174px);
+    max-height: calc(100dvh - 9rem);
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 0.25rem 0.55rem 0.5rem 0;
