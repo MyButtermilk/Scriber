@@ -69,6 +69,9 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { responseErrorMessage } from "@/lib/request-errors";
 import type {
   DiarizationComponentStatus,
+  LocalPolishingModelsResponse,
+  LocalPolishingOperationResponse,
+  LocalPolishingVariant,
   LocalModelActionResponse,
   MicrophoneDevice,
   MicrophonesResponse,
@@ -80,6 +83,7 @@ import type {
   OverlayVisualizerStyle,
   OutlookCalendarStatus,
   OutlookCalendarSyncResponse,
+  PostProcessingEngine,
   SpeakerModelStatus,
   SpeakerEnrollmentResponse,
   SpeakerProfilesResponse,
@@ -93,6 +97,7 @@ import { Badge } from "@/components/ui/badge";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { PageIntro } from "@/components/page-intro";
+import { LocalPolishingSettings } from "@/components/settings/LocalPolishingSettings";
 import {
   checkDesktopUpdate,
   checkDesktopUpdateIfDue,
@@ -115,6 +120,7 @@ import {
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
 import { localizeOnnxDownloadMessage } from "@/lib/onnx-download-message";
+import { mergeLocalPolishingProgress, normalizeLocalPolishingModelsResponse } from "@/lib/local-polishing";
 import { getCurrentLocale, translateNow, useI18n } from "@/i18n";
 import {
   SETTINGS_SECTION_KEYS,
@@ -1653,6 +1659,8 @@ export default function Settings() {
   const [editingSpeakerProfileId, setEditingSpeakerProfileId] = useState("");
   const [speakerProfileName, setSpeakerProfileName] = useState("");
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
+  const [postProcessingEngine, setPostProcessingEngine] = useState<PostProcessingEngine>("cloud");
+  const [localPolishingVariant, setLocalPolishingVariant] = useState<LocalPolishingVariant>("q8_0");
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -1697,6 +1705,10 @@ export default function Settings() {
   const [onnxModel, setOnnxModel] = useState("");
   const [onnxQuantization, setOnnxQuantization] = useState("int8");
   const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());
+  const [localPolishingCatalog, setLocalPolishingCatalog] = useState<LocalPolishingModelsResponse | null>(null);
+  const [localPolishingLoading, setLocalPolishingLoading] = useState(false);
+  const [localPolishingError, setLocalPolishingError] = useState("");
+  const localPolishingActionInFlightRef = useRef<Set<string>>(new Set());
 
   const speakerProfilesQuery = useQuery<SpeakerProfilesResponse>({
     queryKey: ["/api/meetings/speaker-profiles"],
@@ -2253,7 +2265,7 @@ export default function Settings() {
   const missingActiveCredentialRequirements = uniqueCredentialRequirements([
     missingSelectedCredentialRequirement,
     missingSummarizationCredentialRequirement,
-    missingPostProcessingCredentialRequirement,
+    postProcessingEngine === "cloud" ? missingPostProcessingCredentialRequirement : null,
   ]);
 
   const hasAnyManagedCloudSttCredential = [
@@ -2299,6 +2311,27 @@ export default function Settings() {
     } catch (e: any) {
       setOnnxAvailable(false);
       setOnnxMessage(localizedSettingsError(e, "The requested settings action failed.", locale, t));
+    }
+  }, [locale, t]);
+
+  const loadLocalPolishingModels = useCallback(async () => {
+    setLocalPolishingLoading(true);
+    try {
+      const response = await fetchWithTimeout(
+        apiUrl("/api/local-polishing/models"),
+        { credentials: "include" },
+        30_000,
+      );
+      if (!response.ok) {
+        throw new Error(await responseErrorMessage(response));
+      }
+      const catalog = normalizeLocalPolishingModelsResponse(await response.json());
+      setLocalPolishingCatalog(catalog);
+      setLocalPolishingError("");
+    } catch (error) {
+      setLocalPolishingError(localizedSettingsError(error, "Local polishing models could not be loaded.", locale, t));
+    } finally {
+      setLocalPolishingLoading(false);
     }
   }, [locale, t]);
 
@@ -2378,6 +2411,8 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
+        setPostProcessingEngine(settings.postProcessingEngine === "local" ? "local" : "cloud");
+        setLocalPolishingVariant(settings.localPolishingVariant === "bf16" ? "bf16" : "q8_0");
         setAutoSummarize(settings.autoSummarize === true);
         setYoutubePreferCaptions(settings.youtubePreferCaptions !== false);
         setVoiceprintLibraryOptIn(settings.voiceprintLibraryOptIn === true);
@@ -2468,6 +2503,12 @@ export default function Settings() {
       loadOnnxModels();
     }
   }, [settingsLoaded, onnxAvailable, loadOnnxModels]);
+
+  useEffect(() => {
+    if (settingsLoaded && localPolishingCatalog === null && !localPolishingLoading && !localPolishingError) {
+      void loadLocalPolishingModels();
+    }
+  }, [loadLocalPolishingModels, localPolishingCatalog, localPolishingError, localPolishingLoading, settingsLoaded]);
 
   const updateSettings = useCallback(
     async (patch: SettingsUpdatePayload): Promise<SettingsResponse> => {
@@ -3029,6 +3070,167 @@ export default function Settings() {
       });
     } finally {
       onnxModelActionInFlightRef.current.delete(modelId);
+    }
+  };
+
+  const handlePostProcessingEngineChange = async (engine: PostProcessingEngine) => {
+    if (engine === "local") {
+      const selected = localPolishingCatalog?.models.find((model) => model.variant === localPolishingVariant);
+      if (selected?.status !== "ready") {
+        toast({
+          title: t("Local model not ready"),
+          description: t("Install a local model, then choose Use locally."),
+          duration: 3500,
+        });
+        return;
+      }
+    }
+    const previous = postProcessingEngine;
+    setPostProcessingEngine(engine);
+    try {
+      await updateSettings({ postProcessingEngine: engine });
+      toast({
+        title: t("Saved"),
+        description:
+          engine === "local"
+            ? t("Live cleanup now runs on this device.")
+            : t("Live cleanup now uses the selected cloud model."),
+        duration: 2000,
+      });
+    } catch (error) {
+      setPostProcessingEngine(previous);
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleLocalPolishingInstall = async (variant: LocalPolishingVariant) => {
+    const actionKey = `install:${variant}`;
+    if (localPolishingActionInFlightRef.current.has(actionKey)) return;
+    localPolishingActionInFlightRef.current.add(actionKey);
+    setLocalPolishingCatalog((current) =>
+      mergeLocalPolishingProgress(current, { variant, status: "downloading", progress: 0 }),
+    );
+    try {
+      const response = await fetchWithTimeout(
+        apiUrl(`/api/local-polishing/models/${encodeURIComponent(variant)}/install`),
+        { method: "POST", credentials: "include" },
+        30_000,
+      );
+      const payload = (await response.json().catch(() => ({}))) as LocalPolishingOperationResponse;
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || `${response.status}: ${response.statusText}`);
+      }
+      if (payload.operationId) {
+        setLocalPolishingCatalog((current) =>
+          mergeLocalPolishingProgress(current, {
+            variant,
+            status: payload.status || "downloading",
+            operationId: payload.operationId,
+          }),
+        );
+      }
+      toast({
+        title: t("Download started"),
+        description: t("The model will stay inactive until you choose Use locally."),
+        duration: 3000,
+      });
+    } catch (error) {
+      toast({
+        title: t("Download failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 5000,
+      });
+    } finally {
+      localPolishingActionInFlightRef.current.delete(actionKey);
+      await loadLocalPolishingModels();
+    }
+  };
+
+  const handleLocalPolishingCancel = async (operationId: string) => {
+    const actionKey = `cancel:${operationId}`;
+    if (!operationId || localPolishingActionInFlightRef.current.has(actionKey)) return;
+    localPolishingActionInFlightRef.current.add(actionKey);
+    try {
+      const response = await fetchWithTimeout(
+        apiUrl(`/api/local-polishing/model-operations/${encodeURIComponent(operationId)}`),
+        { method: "DELETE", credentials: "include" },
+        30_000,
+      );
+      const payload = (await response.json().catch(() => ({}))) as LocalPolishingOperationResponse;
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || `${response.status}: ${response.statusText}`);
+      }
+      toast({
+        title: payload.status === "cancelled" ? t("Download canceled") : t("Cancellation requested"),
+        duration: 2500,
+      });
+    } catch (error) {
+      toast({
+        title: t("Cancel failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    } finally {
+      localPolishingActionInFlightRef.current.delete(actionKey);
+      await loadLocalPolishingModels();
+    }
+  };
+
+  const handleLocalPolishingUse = async (variant: LocalPolishingVariant) => {
+    const model = localPolishingCatalog?.models.find((candidate) => candidate.variant === variant);
+    if (model?.status !== "ready") return;
+    const previousEngine = postProcessingEngine;
+    const previousVariant = localPolishingVariant;
+    setPostProcessingEngine("local");
+    setLocalPolishingVariant(variant);
+    try {
+      await updateSettings({ postProcessingEngine: "local", localPolishingVariant: variant });
+      toast({
+        title: t("Local cleanup selected"),
+        description: t("New post-processed dictations will use {{model}} on this device.", {
+          model: variant === "q8_0" ? "Q8_0" : "BF16",
+        }),
+        duration: 3000,
+      });
+    } catch (error) {
+      setPostProcessingEngine(previousEngine);
+      setLocalPolishingVariant(previousVariant);
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    }
+  };
+
+  const handleLocalPolishingRemove = async (variant: LocalPolishingVariant) => {
+    const actionKey = `remove:${variant}`;
+    if (localPolishingActionInFlightRef.current.has(actionKey)) return;
+    localPolishingActionInFlightRef.current.add(actionKey);
+    try {
+      const response = await fetchWithTimeout(
+        apiUrl(`/api/local-polishing/models/${encodeURIComponent(variant)}`),
+        { method: "DELETE", credentials: "include" },
+        30_000,
+      );
+      const payload = (await response.json().catch(() => ({}))) as LocalPolishingOperationResponse;
+      if (!response.ok || payload.success === false) {
+        throw new Error(payload.message || `${response.status}: ${response.statusText}`);
+      }
+      toast({ title: t("Local model removed"), duration: 2500 });
+    } catch (error) {
+      toast({
+        title: t("Delete failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4500,
+      });
+    } finally {
+      localPolishingActionInFlightRef.current.delete(actionKey);
+      await loadLocalPolishingModels();
     }
   };
 
@@ -3720,6 +3922,18 @@ export default function Settings() {
       if (msg.type === "onnx_models_updated") {
         loadOnnxModels();
       }
+      if (msg.type === "local_polishing_model_progress") {
+        setLocalPolishingCatalog((current) => mergeLocalPolishingProgress(current, msg));
+        if (
+          msg.status === "ready" ||
+          msg.status === "error" ||
+          msg.status === "cancelled" ||
+          msg.status === "unavailable" ||
+          msg.status === "not_installed"
+        ) {
+          void loadLocalPolishingModels();
+        }
+      }
       if (
         msg.type === "meeting_state" &&
         ["ready", "capture_failed", "finalization_failed", "analysis_failed", "discarded"].includes(msg.meeting.state)
@@ -3727,7 +3941,7 @@ export default function Settings() {
         void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
       }
     },
-    [loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast],
+    [loadLocalPolishingModels, loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast],
   );
 
   useSharedWebSocket(handleWsMessage);
@@ -3735,12 +3949,13 @@ export default function Settings() {
   useEffect(() => {
     const onWindowFocus = () => {
       void refreshMicrophones();
+      void loadLocalPolishingModels();
     };
     window.addEventListener("focus", onWindowFocus);
     return () => {
       window.removeEventListener("focus", onWindowFocus);
     };
-  }, [refreshMicrophones]);
+  }, [loadLocalPolishingModels, refreshMicrophones]);
 
   const selectedOnnxModel = onnxModels.find((m) => m.id === onnxModel) || onnxModels[0];
   const selectedMicIndex = inputDevices.findIndex(
@@ -3957,101 +4172,123 @@ export default function Settings() {
           </Dialog>
         </SettingLine>
 
-        <FieldShell
-          label={t("Post-processing model")}
-          detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}
-        >
-          <Select value={postProcessingModel} onValueChange={(value) => void handlePostProcessingModelChange(value)}>
-            <SelectTrigger className="h-10 bg-white/70 dark:bg-[var(--live-well)]">
-              {selectedPostProcessingModelOption ? (
-                <div className="flex min-w-0 items-center gap-2 text-left">
-                  <ProviderIcon
-                    icon={selectedPostProcessingModelOption.icon}
-                    label={selectedPostProcessingModelOption.label}
-                    className="h-5 w-5 rounded"
-                  />
-                  <span className="min-w-0 truncate text-[12px] font-semibold">
-                    {selectedPostProcessingModelOption.label}
-                  </span>
-                </div>
-              ) : (
-                <SelectValue placeholder={t("Select cleanup model")} />
-              )}
-            </SelectTrigger>
-            <SelectContent className="min-w-[320px]">
-              {postProcessingModelOptions.map((option) => {
-                const requirement = requiredCredentialForLanguageModel(option.value);
-                const disabledReason = missingCredentialReason(requirement);
-                return (
-                  <SelectItem key={option.value} value={option.value}>
-                    <span className="flex min-w-0 items-center gap-2 py-0.5">
-                      <ProviderIcon icon={option.icon} label={option.label} className="h-5 w-5 rounded" />
-                      <span className="min-w-0">
-                        <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
-                        <span className="block truncate text-ui-micro leading-3 text-slate-500 dark:text-slate-400">
-                          {option.detail}
-                        </span>
-                        {disabledReason ? (
-                          <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-ui-micro font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
-                            {disabledReason}
-                          </span>
-                        ) : null}
-                      </span>
-                    </span>
-                  </SelectItem>
-                );
-              })}
-            </SelectContent>
-          </Select>
-          {missingPostProcessingCredentialRequirement ? (
-            <button
-              type="button"
-              onClick={() => openCredentialDialog(missingPostProcessingCredentialRequirement)}
-              className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-ui-micro font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
-            >
-              {t(MISSING_CREDENTIAL_CTA)}
-            </button>
-          ) : null}
-          <p className="text-ui-micro leading-4 text-slate-500 dark:text-slate-400">
-            {t("Blended token price averages the listed input and output rates.")}{" "}
-            {t("Euro estimates use a fixed rate of {{rate}}. Provider prices may change.", {
-              rate: estimateExchangeRateLabel,
-            })}
-          </p>
-        </FieldShell>
+        <LocalPolishingSettings
+          enabled={postProcessingEnabled}
+          engine={postProcessingEngine}
+          selectedVariant={localPolishingVariant}
+          catalog={localPolishingCatalog}
+          loading={localPolishingLoading}
+          error={localPolishingError}
+          onEngineChange={(engine) => void handlePostProcessingEngineChange(engine)}
+          onInstall={(variant) => void handleLocalPolishingInstall(variant)}
+          onCancel={(operationId) => void handleLocalPolishingCancel(operationId)}
+          onUse={(variant) => void handleLocalPolishingUse(variant)}
+          onRemove={(variant) => void handleLocalPolishingRemove(variant)}
+          onRetry={() => void loadLocalPolishingModels()}
+        />
 
-        <FieldShell label={t("Live cleanup prompt")}>
-          <Textarea
-            value={postProcessingPrompt}
-            onFocus={(event) => expandPromptTextarea(event.currentTarget, 560)}
-            onChange={(event) => {
-              setPostProcessingPrompt(event.target.value);
-              expandPromptTextarea(event.currentTarget, 560);
-            }}
-            onBlur={(event) => {
-              event.currentTarget.style.height = "";
-              void handlePostProcessingPromptBlur();
-            }}
-            placeholder={defaultPostProcessingPrompt(locale)}
-            className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
-            disabled={!postProcessingEnabled}
-          />
-          <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
-            <p className="min-w-[220px] flex-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-              {t("Use")} <span className="font-mono">${"{output}"}</span>{" "}
-              {t("where the raw transcript should be inserted.")}
-            </p>
-            <Button
-              size="sm"
-              variant="outline"
-              className="shrink-0"
-              onClick={handleResetPostProcessingPrompt}
-              disabled={!postProcessingEnabled}
+        {postProcessingEngine === "cloud" ? (
+          <>
+            <FieldShell
+              label={t("Post-processing model")}
+              detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}
             >
-              {t("Reset prompt")}
-            </Button>
-          </div>
-        </FieldShell>
+              <Select
+                value={postProcessingModel}
+                onValueChange={(value) => void handlePostProcessingModelChange(value)}
+              >
+                <SelectTrigger className="h-10 bg-white/70 dark:bg-[var(--live-well)]">
+                  {selectedPostProcessingModelOption ? (
+                    <div className="flex min-w-0 items-center gap-2 text-left">
+                      <ProviderIcon
+                        icon={selectedPostProcessingModelOption.icon}
+                        label={selectedPostProcessingModelOption.label}
+                        className="h-5 w-5 rounded"
+                      />
+                      <span className="min-w-0 truncate text-[12px] font-semibold">
+                        {selectedPostProcessingModelOption.label}
+                      </span>
+                    </div>
+                  ) : (
+                    <SelectValue placeholder={t("Select cleanup model")} />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="min-w-[320px]">
+                  {postProcessingModelOptions.map((option) => {
+                    const requirement = requiredCredentialForLanguageModel(option.value);
+                    const disabledReason = missingCredentialReason(requirement);
+                    return (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="flex min-w-0 items-center gap-2 py-0.5">
+                          <ProviderIcon icon={option.icon} label={option.label} className="h-5 w-5 rounded" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
+                            <span className="block truncate text-ui-micro leading-3 text-slate-500 dark:text-slate-400">
+                              {option.detail}
+                            </span>
+                            {disabledReason ? (
+                              <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-ui-micro font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                {disabledReason}
+                              </span>
+                            ) : null}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              {missingPostProcessingCredentialRequirement ? (
+                <button
+                  type="button"
+                  onClick={() => openCredentialDialog(missingPostProcessingCredentialRequirement)}
+                  className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-ui-micro font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                >
+                  {t(MISSING_CREDENTIAL_CTA)}
+                </button>
+              ) : null}
+              <p className="text-ui-micro leading-4 text-slate-500 dark:text-slate-400">
+                {t("Blended token price averages the listed input and output rates.")}{" "}
+                {t("Euro estimates use a fixed rate of {{rate}}. Provider prices may change.", {
+                  rate: estimateExchangeRateLabel,
+                })}
+              </p>
+            </FieldShell>
+
+            <FieldShell label={t("Live cleanup prompt")}>
+              <Textarea
+                value={postProcessingPrompt}
+                onFocus={(event) => expandPromptTextarea(event.currentTarget, 560)}
+                onChange={(event) => {
+                  setPostProcessingPrompt(event.target.value);
+                  expandPromptTextarea(event.currentTarget, 560);
+                }}
+                onBlur={(event) => {
+                  event.currentTarget.style.height = "";
+                  void handlePostProcessingPromptBlur();
+                }}
+                placeholder={defaultPostProcessingPrompt(locale)}
+                className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
+                disabled={!postProcessingEnabled}
+              />
+              <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
+                <p className="min-w-[220px] flex-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                  {t("Use")} <span className="font-mono">${"{output}"}</span>{" "}
+                  {t("where the raw transcript should be inserted.")}
+                </p>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={handleResetPostProcessingPrompt}
+                  disabled={!postProcessingEnabled}
+                >
+                  {t("Reset prompt")}
+                </Button>
+              </div>
+            </FieldShell>
+          </>
+        ) : null}
       </div>
     </SettingsSubsection>
   );

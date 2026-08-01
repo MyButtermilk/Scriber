@@ -45,6 +45,7 @@
     },
     "variants": {
       "const": [
+        "bf16",
         "Q8_0",
         "Q4_K_M"
       ]
@@ -151,10 +152,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "bf16",
         "Q8_0",
         "Q4_K_M"
       ],
       "properties": {
+        "bf16": {
+          "$ref": "#/$defs/variant_manifest"
+        },
         "Q8_0": {
           "$ref": "#/$defs/variant_manifest"
         },
@@ -335,7 +340,7 @@
       "properties": {
         "path": {
           "type": "string",
-          "pattern": "^(Q8_0|Q4_K_M)/variant-artifact-manifest\\.json$"
+          "pattern": "^(bf16|Q8_0|Q4_K_M)/variant-artifact-manifest\\.json$"
         },
         "sha256": {
           "$ref": "#/$defs/hash"

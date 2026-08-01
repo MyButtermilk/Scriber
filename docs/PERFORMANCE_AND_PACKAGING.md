@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-07-21
+Last verified: 2026-08-01
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -1051,6 +1051,34 @@ Release workflow:
   first-class evidence producer while still requiring real Tauri signing keys,
   HTTPS publication, and Authenticode certificate/cloud-signing evidence.
 
+## Local Polishing Runtime And Model Packaging
+
+Local live-mic transcript polishing deliberately uses one inference stack:
+
+- Release builds stage the checksum-locked official llama.cpp b10158 Windows
+  Vulkan distribution under `backend\tools\local-polishing`. That same archive
+  includes the CPU dispatch libraries, so unsupported/missing Vulkan devices
+  fall back to CPU without a second packaged runtime.
+- `packaging/llama-cpp-polishing-runtime-lock-v1.json` pins the upstream commit,
+  archive size/SHA-256, license size/SHA-256, exact required files, and bounded
+  extraction policy. `scripts/prepare_local_polishing_runtime.py` rejects unsafe
+  archives, stages only the allowlisted runtime files, emits a complete file
+  manifest, and verifies every staged byte before reuse. Authenticode builds
+  refresh that manifest after signing `llama-server.exe`.
+- The installer contains the runtime and MIT notice, but no polishing weights.
+  Settings downloads the public, commit-pinned Q8_0 or BF16 GGUF data files
+  anonymously from Hugging Face into the user model cache. Q8_0 is the normal
+  desktop/laptop choice; BF16 is the larger reference option. Neither variant
+  needs a Hugging Face account, access token, or credential manager.
+- ONNX is not used for this feature. Retaining GGUF for both precisions avoids a
+  second converter/runtime/test matrix and lets both variants share identical
+  prompting, lifecycle, and fallback behavior.
+
+The local-polishing lock and preparation script are part of the normalized
+backend release cache key. Existing Tauri backend targets are reusable only
+when the build metadata says this component was bundled and the complete
+runtime manifest plus `llama-server.exe` identities still match.
+
 ## Size Decisions
 
 No-feature-loss constraints:
@@ -1065,6 +1093,10 @@ No-feature-loss constraints:
 - CPU ONNX local-ASR support is part of the standard sidecar. Full NeMo/Torch
   packaging remains outside the standard sidecar and is not exposed as a local
   provider.
+- The llama.cpp executable/runtime is part of the standard sidecar so a model
+  becomes usable immediately after its post-install download. Q8_0/BF16 GGUF
+  weights remain outside the installer and are never duplicated between the
+  installer and the user model cache.
 
 Current packaging choices:
 

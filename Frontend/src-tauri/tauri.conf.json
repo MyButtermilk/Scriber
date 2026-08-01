@@ -5,7 +5,7 @@
   "identifier": "app.scriber.desktop",
   "build": {
     "beforeDevCommand": "npm run dev:tauri",
-    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -BundleRustDiarizationSidecar -CopyToTauriRelease",
+    "beforeBundleCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/build_tauri_backend_sidecar.ps1 -SkipFrontendBuild -InstallPyInstaller -BundleMediaTools -UseProfileBFfmpeg -ValidateSlimMediaTools -ReuseSidecarIfUnchanged -BundleRustAudioSidecar -BundleRustDiarizationSidecar -BundleLocalPolishingRuntime -CopyToTauriRelease",
     "beforeBuildCommand": "npm run build:webview",
     "devUrl": "http://localhost:5000",
     "frontendDist": "../dist/public"

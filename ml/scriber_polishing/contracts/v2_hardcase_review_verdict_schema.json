@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-hardcase-review-verdict-v1.schema.json",
+  "title": "Scriber V2 hard-case whole-candidate critic verdict v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "review_candidate_sha256",
+    "review_contract_sha256",
+    "reviewer_id",
+    "reviewer_role",
+    "model_family",
+    "reasoning_effort",
+    "independence_attestation",
+    "review_scope",
+    "acceptable",
+    "critical_flags",
+    "noncritical_flags",
+    "confidence",
+    "summary_code"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_hardcase_review_verdict"},
+    "review_candidate_sha256": {"$ref": "#/$defs/sha256"},
+    "review_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "reviewer_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{7,79}$"},
+    "reviewer_role": {"enum": ["fact", "style", "adversarial"]},
+    "model_family": {"enum": ["gpt-5.6-terra", "gpt-5.6-sol"]},
+    "reasoning_effort": {"const": "max"},
+    "independence_attestation": {"const": true},
+    "review_scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entire_candidate", "test_or_challenge_opened"],
+      "properties": {
+        "entire_candidate": {"const": true},
+        "test_or_challenge_opened": {"const": false}
+      }
+    },
+    "acceptable": {"type": "boolean"},
+    "critical_flags": {"$ref": "#/$defs/flags"},
+    "noncritical_flags": {"$ref": "#/$defs/flags"},
+    "confidence": {"enum": ["high", "medium", "low"]},
+    "summary_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,79}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"acceptable": {"const": true}}, "required": ["acceptable"]},
+      "then": {"properties": {"critical_flags": {"maxItems": 0}}}
+    },
+    {
+      "if": {"properties": {"reviewer_role": {"enum": ["fact", "style"]}}, "required": ["reviewer_role"]},
+      "then": {"properties": {"model_family": {"const": "gpt-5.6-terra"}}}
+    },
+    {
+      "if": {"properties": {"reviewer_role": {"const": "adversarial"}}, "required": ["reviewer_role"]},
+      "then": {"properties": {"model_family": {"const": "gpt-5.6-sol"}}}
+    }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "flags": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,79}$"}
+    }
+  }
+}

@@ -10,6 +10,7 @@ from src.core.ws_contracts import (
     frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
+    local_polishing_model_progress_event,
     meeting_audio_level_event,
     meeting_checkpoint_event,
     meeting_detected_event,
@@ -170,6 +171,17 @@ def test_ws_state_and_auxiliary_events_match_contract():
             }
         ),
         version_event_payload({"type": "onnx_models_updated", "modelId": "nemo-parakeet"}),
+        local_polishing_model_progress_event(
+            {
+                "variant": "q8_0",
+                "status": "downloading",
+                "operationId": "operation-1",
+                "progress": 25.0,
+                "bytesReceived": 250,
+                "bytesTotal": 1000,
+                "etaSeconds": 3.5,
+            }
+        ),
     ]
 
     for payload in payloads:

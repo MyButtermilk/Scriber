@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-hardcase-review-package-v1.schema.json",
+  "title": "Scriber V2 hard-case review candidate package v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "training_ready",
+    "spec",
+    "spec_file",
+    "spec_sha256",
+    "generator_sha256",
+    "spec_schema_sha256",
+    "review_package_schema_sha256",
+    "review_contract_sha256",
+    "training_pair_schema_sha256",
+    "review_pair_contract",
+    "source_aggregate_bindings",
+    "review_files",
+    "review_file_sha256",
+    "review_file_counts",
+    "review_candidate_sha256",
+    "parent_split_counts",
+    "category_parent_counts",
+    "category_pair_counts",
+    "count_derivation",
+    "quality_gates",
+    "provenance_policy"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_hardcase_review_candidate"},
+    "training_ready": {"const": false},
+    "spec": {"type": "object"},
+    "spec_file": {"const": "plan.json"},
+    "spec_sha256": {"$ref": "#/$defs/sha256"},
+    "generator_sha256": {"$ref": "#/$defs/sha256"},
+    "spec_schema_sha256": {"$ref": "#/$defs/sha256"},
+    "review_package_schema_sha256": {"$ref": "#/$defs/sha256"},
+    "review_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "training_pair_schema_sha256": {"$ref": "#/$defs/sha256"},
+    "review_pair_contract": {"const": "training_pair_v1_without_critic_metadata"},
+    "source_aggregate_bindings": {"type": "array", "minItems": 2, "items": {"type": "object"}},
+    "review_files": {"$ref": "#/$defs/reviewFiles"},
+    "review_file_sha256": {"$ref": "#/$defs/reviewHashes"},
+    "review_file_counts": {"$ref": "#/$defs/reviewCounts"},
+    "review_candidate_sha256": {"$ref": "#/$defs/sha256"},
+    "parent_split_counts": {"$ref": "#/$defs/splitCounts"},
+    "category_parent_counts": {"$ref": "#/$defs/countMap"},
+    "category_pair_counts": {"$ref": "#/$defs/countMap"},
+    "count_derivation": {"type": "object"},
+    "quality_gates": {"type": "object"},
+    "provenance_policy": {"type": "object"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "reviewFiles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicals", "train_pairs", "validation_pairs"],
+      "properties": {
+        "canonicals": {"const": "review-canonicals.jsonl"},
+        "train_pairs": {"const": "review-train-pairs.jsonl"},
+        "validation_pairs": {"const": "review-validation-pairs.jsonl"}
+      }
+    },
+    "reviewHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicals", "train_pairs", "validation_pairs"],
+      "properties": {
+        "canonicals": {"$ref": "#/$defs/sha256"},
+        "train_pairs": {"$ref": "#/$defs/sha256"},
+        "validation_pairs": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "reviewCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["canonicals", "train_pairs", "validation_pairs"],
+      "properties": {
+        "canonicals": {"type": "integer", "minimum": 1},
+        "train_pairs": {"type": "integer", "minimum": 1},
+        "validation_pairs": {"type": "integer", "minimum": 1}
+      }
+    },
+    "splitCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"type": "integer", "minimum": 1},
+        "validation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "countMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1},
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]{2,59}$"}
+    }
+  }
+}

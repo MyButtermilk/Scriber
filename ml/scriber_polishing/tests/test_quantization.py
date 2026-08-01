@@ -359,9 +359,7 @@ class FakeCommandRunner:
             return CommandResult(
                 0,
                 (
-                    "llama.cpp test UI\n> "
-                    + prompt
-                    + "\n\n[DOC]\n[P]Test.[/P]\n[/DOC]\n\n"
+                    "llama.cpp test UI\n> " + prompt + "\n\n[DOC]\n[P]Test.[/P]\n[/DOC]\n\n"
                     "[ Prompt: 10.0 t/s | Generation: 20.0 t/s ]\nExiting..."
                 ),
                 ("prompt eval time = 1.00 ms / 12 tokens\neval time = 2.00 ms / 8 runs\n"),
@@ -529,15 +527,15 @@ def test_gguf_pipeline_uses_bundle_capability_probe_real_conversion_and_determin
         ),
     )
 
-    assert manifest["variants"] == ["Q8_0", "Q4_K_M"]
+    assert manifest["variants"] == ["bf16", "Q8_0", "Q4_K_M"]
     assert manifest["schema_version"] == 4
     assert manifest["protection_policy"] == _policy_binding()
     assert manifest["tools"]["llama_server"]["filename"] == "llama-server"
     assert manifest["tools"]["llama_server"]["version_output_sha256"] == _hash(b"llama.cpp b7000-test\0")
     assert manifest["gemma3_text_support"]["supported_models_probe"] is True
     assert manifest["gemma3_text_support"]["actual_bf16_conversion"] is True
-    assert set(manifest["variant_manifests"]) == {"Q8_0", "Q4_K_M"}
-    for variant in ("Q8_0", "Q4_K_M"):
+    assert set(manifest["variant_manifests"]) == {"bf16", "Q8_0", "Q4_K_M"}
+    for variant in ("bf16", "Q8_0", "Q4_K_M"):
         variant_root = tmp_path / "gguf" / variant
         variant_manifest = verify_variant_artifact_manifest(variant_root)
         assert variant_manifest["protection_policy"] == _policy_binding()
@@ -553,15 +551,15 @@ def test_gguf_pipeline_uses_bundle_capability_probe_real_conversion_and_determin
     assert all("--single-turn" in call for call in self_test_calls)
     assert all("--gpu-layers" in call and "all" in call for call in self_test_calls)
     assert all("<start_of_turn>user" in call[call.index("--prompt") + 1] for call in self_test_calls)
-    assert not (tmp_path / "gguf" / "model-bf16.gguf").exists()
     assert {path.relative_to(tmp_path / "gguf").as_posix() for path in (tmp_path / "gguf").rglob("*.gguf")} == {
+        "bf16/model-BF16.gguf",
         "Q4_K_M/model-Q4_K_M.gguf",
         "Q8_0/model-Q8_0.gguf",
     }
     base_probe = next(
         index
         for index, call in enumerate(calls)
-        if "llama-cli" in Path(call[0]).name.lower() and "model-bf16.gguf" in " ".join(call)
+        if "llama-cli" in Path(call[0]).name.lower() and "model-BF16.gguf" in " ".join(call)
     )
     quantize_calls = [
         index for index, call in enumerate(calls) if "quantize" in Path(call[0]).name.lower() and "--help" not in call
@@ -639,9 +637,7 @@ def test_gguf_pipeline_accepts_hash_bound_windows_runtime_and_exact_converter_so
     monkeypatch.setattr(
         quantization_module,
         "verify_llama_cpp_source_checkout",
-        lambda *_args, **_kwargs: {
-            "source_inventory": {"tree_sha256": source_tree}
-        },
+        lambda *_args, **_kwargs: {"source_inventory": {"tree_sha256": source_tree}},
     )
 
     class WindowsRunner(FakeCommandRunner):
@@ -670,11 +666,7 @@ def test_gguf_pipeline_accepts_hash_bound_windows_runtime_and_exact_converter_so
         ),
     )
 
-    assert manifest["toolchain"]["llama_cpp_commit"] == (
-        "91f8c9c5fb038c086e13e9cd823c29b33b07ba54"
-    )
+    assert manifest["toolchain"]["llama_cpp_commit"] == ("91f8c9c5fb038c086e13e9cd823c29b33b07ba54")
     for variant in ("Q8_0", "Q4_K_M"):
-        verified = verify_variant_artifact_manifest(
-            tmp_path / "gguf-windows" / variant
-        )
+        verified = verify_variant_artifact_manifest(tmp_path / "gguf-windows" / variant)
         assert verified["toolchain"]["source_tree_sha256"] == source_tree

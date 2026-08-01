@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/hf-v2-training-launch-receipt-v1.schema.json",
+  "title": "Scriber HF V2 single-shot launch receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "claim_repository", "claim_path", "claim_commit", "owner_token", "job_id", "job_inspection", "packet_tree_sha256", "launch_contract_sha256", "remote_result_uri", "submitted_at_utc", "authoritative_snapshot_count", "duplicate_retry_allowed"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_hf_v2_training_launch_receipt"},
+    "claim_repository": {"const": "Buttermilk03/scriber-polishing-launch-claims"},
+    "claim_path": {"const": "claims/v2-hardcase-replay/attempt12-scriber-v2-hardcase-replay-v1.json"},
+    "claim_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "owner_token": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{24}$"},
+    "job_inspection": {"type": "object", "required": ["id", "stage", "exact_identity_verified", "api_cli_identity_sha256", "command_sha256", "url"]},
+    "packet_tree_sha256": {"$ref": "#/$defs/hash"},
+    "launch_contract_sha256": {"$ref": "#/$defs/hash"},
+    "remote_result_uri": {"const": "hf://buckets/Buttermilk03/scriber-polishing-private-runs/attempt12/scriber-v2-hardcase-replay-v1"},
+    "submitted_at_utc": {"type": "string", "format": "date-time"},
+    "authoritative_snapshot_count": {"const": 3},
+    "duplicate_retry_allowed": {"const": false}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

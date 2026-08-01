@@ -83,6 +83,7 @@ from src.core.ws_contracts import (
     frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
+    local_polishing_model_progress_event,
     meeting_audio_level_event,
     meeting_chat_delta_event,
     meeting_checkpoint_event,
@@ -142,6 +143,7 @@ from src.data.transcript_artifact_store import (
     TranscriptArtifactStore,
 )
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
+from src.local_polishing import CatalogError, LocalPolishing, LocalPolishingError
 from src.meeting_capture import MeetingAudioRecorder, MeetingDeviceLevelProbe
 from src.meeting_export import (
     build_eml_draft,
@@ -3531,6 +3533,7 @@ class ScriberWebController:
         job_store: JobStore | None = None,
         latency_metrics_store: LatencyMetricsStore | None = None,
         provider_http_transport: ProviderHttpTransport | None = None,
+        local_polisher: LocalPolishing | None = None,
     ):
         self._loop = loop
         self._clients: set[web.WebSocketResponse] = set()
@@ -3582,6 +3585,11 @@ class ScriberWebController:
         )
         self._latency_metrics_store = latency_metrics_store or LatencyMetricsStore()
         self._provider_http_transport = provider_http_transport or ProviderHttpTransport()
+        self._local_polisher = local_polisher or LocalPolishing()
+        self._local_polishing_watch_tasks: dict[str, asyncio.Task] = {}
+        self._local_polishing_prewarm_tasks: dict[str, asyncio.Task] = {}
+        self._local_polishing_prewarm_target: str | None = None
+        self._local_polishing_close_task: asyncio.Task | None = None
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
@@ -7521,6 +7529,7 @@ class ScriberWebController:
             "apiVersion",
             "createdAt",
             "durationMs",
+            "engine",
             "error",
             "errorType",
             "fallbackToRaw",
@@ -7534,6 +7543,8 @@ class ScriberWebController:
             "providerResponseChars",
             "rawChars",
             "rawWords",
+            "reasonCodes",
+            "runtimeBackend",
             "sessionIdPrefix",
             "status",
             "transcriptId",
@@ -7559,6 +7570,156 @@ class ScriberWebController:
             "count": total_count,
             "limit": query_limit,
         }
+
+    def get_local_polishing_models(self) -> dict[str, Any]:
+        """Return the bounded, authoritative local-model lifecycle snapshot."""
+
+        return self._local_polisher.state().to_dict()
+
+    def _local_polishing_model_snapshot(self, variant: str) -> dict[str, Any] | None:
+        state = self.get_local_polishing_models()
+        for model in state.get("models", []):
+            if isinstance(model, dict) and model.get("variant") == variant:
+                return model
+        return None
+
+    async def _broadcast_local_polishing_model(self, variant: str) -> None:
+        model = self._local_polishing_model_snapshot(variant)
+        if model is not None:
+            await self.broadcast(local_polishing_model_progress_event(model))
+
+    async def _watch_local_polishing_operation(self, operation_id: str, variant: str) -> None:
+        last_payload: dict[str, Any] | None = None
+        try:
+            while not self._shutting_down:
+                model = self._local_polishing_model_snapshot(variant)
+                if model is None:
+                    return
+                payload = local_polishing_model_progress_event(model)
+                if payload != last_payload:
+                    await self.broadcast(payload)
+                    last_payload = payload
+                if model.get("status") in {"ready", "error", "cancelled"}:
+                    return
+                await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug(
+                "Local-polishing progress watcher stopped: {}",
+                type(exc).__name__,
+            )
+        finally:
+            task = asyncio.current_task()
+            if self._local_polishing_watch_tasks.get(operation_id) is task:
+                self._local_polishing_watch_tasks.pop(operation_id, None)
+
+    def _ensure_local_polishing_operation_watcher(self, operation_id: str, variant: str) -> None:
+        existing = self._local_polishing_watch_tasks.get(operation_id)
+        if existing is not None and not existing.done():
+            return
+        if self._shutting_down or self._loop.is_closed():
+            return
+        task = self._loop.create_task(
+            self._watch_local_polishing_operation(operation_id, variant),
+            name=f"local_polishing_install_{variant}",
+        )
+        self._local_polishing_watch_tasks[operation_id] = task
+
+    async def install_local_polishing_model(self, variant: str) -> dict[str, Any]:
+        operation_id = await self._local_polisher.install(variant)
+        self._ensure_local_polishing_operation_watcher(operation_id, variant)
+        model = self._local_polishing_model_snapshot(variant) or {
+            "variant": variant,
+            "status": "downloading",
+        }
+        return {"operationId": operation_id, **model}
+
+    async def cancel_local_polishing_operation(self, operation_id: str) -> dict[str, Any]:
+        operation = await self._local_polisher.cancel(operation_id)
+        payload = operation.to_dict()
+        await self.broadcast(local_polishing_model_progress_event(payload))
+        return payload
+
+    async def remove_local_polishing_model(self, variant: str) -> dict[str, Any]:
+        if (
+            str(Config.POST_PROCESSING_ENGINE).strip().lower() == "local"
+            and str(Config.LOCAL_POLISHING_VARIANT).strip().lower() == variant
+        ):
+            raise LocalPolishingError(
+                "selected_model",
+                "The selected local-polishing model cannot be removed.",
+            )
+        await self._local_polisher.remove(variant)
+        model = self._local_polishing_model_snapshot(variant) or {
+            "variant": variant,
+            "status": "not_installed",
+            "installed": False,
+        }
+        await self.broadcast(local_polishing_model_progress_event(model))
+        return model
+
+    def _schedule_local_polishing_prewarm(self, variant: str) -> None:
+        normalized = str(variant or "").strip().lower()
+        if normalized not in {"q8_0", "bf16"} or self._shutting_down or self._loop.is_closed():
+            return
+        existing = self._local_polishing_prewarm_tasks.get(normalized)
+        if self._local_polishing_prewarm_target == normalized and existing is not None and not existing.done():
+            return
+        for stale_task in tuple(self._local_polishing_prewarm_tasks.values()):
+            if not stale_task.done():
+                stale_task.cancel()
+        self._local_polishing_prewarm_target = normalized
+
+        async def prewarm() -> None:
+            try:
+                ready = await self._local_polisher.prewarm(normalized)
+                if not ready:
+                    logger.warning("Local-polishing prewarm was unavailable for {}", normalized)
+                await self._broadcast_local_polishing_model(normalized)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Local-polishing prewarm failed for {}: {}",
+                    normalized,
+                    type(exc).__name__,
+                )
+
+        task = self._loop.create_task(
+            prewarm(),
+            name=f"local_polishing_prewarm_{normalized}",
+        )
+        self._local_polishing_prewarm_tasks[normalized] = task
+        task.add_done_callback(
+            lambda completed, selected=normalized: self._on_local_polishing_prewarm_done(
+                selected,
+                completed,
+            )
+        )
+
+    def _on_local_polishing_prewarm_done(self, variant: str, task: asyncio.Task) -> None:
+        if self._local_polishing_prewarm_tasks.get(variant) is task:
+            self._local_polishing_prewarm_tasks.pop(variant, None)
+            if self._local_polishing_prewarm_target == variant:
+                self._local_polishing_prewarm_target = None
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug(
+                "Local-polishing prewarm task stopped: {}",
+                type(exc).__name__,
+            )
+
+    async def _cancel_local_polishing_prewarms(self) -> None:
+        self._local_polishing_prewarm_target = None
+        tasks = [task for task in self._local_polishing_prewarm_tasks.values() if not task.done()]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def add_client(self, ws: web.WebSocketResponse) -> None:
         async with self._clients_lock:
@@ -8142,13 +8303,20 @@ class ScriberWebController:
             return
 
         await self.broadcast(status_event("Post-processing...", False, session_id=session_id))
-        selected_model = Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
+        selected_engine = str(Config.POST_PROCESSING_ENGINE or "cloud").strip().lower()
+        selected_variant = str(Config.LOCAL_POLISHING_VARIANT or "q8_0").strip().lower()
+        selected_model = (
+            f"local:{selected_variant}"
+            if selected_engine == "local"
+            else Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
+        )
         diagnostic: dict[str, Any] = {
             "apiVersion": _API_VERSION,
             "createdAt": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
             "sessionIdPrefix": (session_id or "")[:8],
             "transcriptId": str(record.id or ""),
             "provider": provider,
+            "engine": selected_engine,
             "model": selected_model,
             "status": "started",
             "rawChars": len(raw_text),
@@ -8184,9 +8352,17 @@ class ScriberWebController:
             processed_text = await post_process_live_transcript(
                 raw_text,
                 model=selected_model,
+                engine=selected_engine,
+                local_polisher=self._local_polisher,
+                local_variant=selected_variant,
                 diagnostics=processing_diagnostics,
             )
-            if processed_text.strip():
+            fallback_to_raw = bool(processing_diagnostics.get("fallbackToRaw")) or (
+                processing_diagnostics.get("status") == "original_fallback"
+            )
+            if fallback_to_raw:
+                record.replace_content(raw_text)
+            elif processed_text.strip():
                 record.replace_content(processed_text)
                 post_processed = True
             duration_ms = (time.monotonic() - started) * 1000
@@ -8194,14 +8370,20 @@ class ScriberWebController:
             self._mark_hot_path(session_id, "post_processing_completed")
             diagnostic.update(
                 {
-                    "status": "success" if post_processed else "empty_output",
+                    "status": (
+                        "original_fallback" if fallback_to_raw else "success" if post_processed else "empty_output"
+                    ),
                     "durationMs": processing_diagnostics.get("durationMs", duration_ms),
+                    "engine": processing_diagnostics.get("engine", selected_engine),
+                    "fallbackToRaw": fallback_to_raw,
                     "maxOutputTokens": processing_diagnostics.get("maxOutputTokens"),
                     "promptChars": processing_diagnostics.get("promptChars"),
                     "providerResponseChars": processing_diagnostics.get("providerResponseChars"),
                     "processedChars": len(record.content_text()),
                     "outputChanged": processing_diagnostics.get("outputChanged"),
                     "postProcessed": post_processed,
+                    "reasonCodes": processing_diagnostics.get("reasonCodes"),
+                    "runtimeBackend": processing_diagnostics.get("runtimeBackend"),
                 }
             )
             self._emit_workflow_event(
@@ -8215,8 +8397,9 @@ class ScriberWebController:
                 provider=provider,
                 milestone=True,
                 duration_ms=duration_ms,
-                outcome="success",
+                outcome="original_fallback" if fallback_to_raw else "success",
                 meta={
+                    "engine": selected_engine,
                     "model": selected_model,
                     "raw_chars": len(raw_text),
                     "raw_words": len(raw_text.split()),
@@ -8225,6 +8408,9 @@ class ScriberWebController:
                     "prompt_chars": processing_diagnostics.get("promptChars"),
                     "max_output_tokens": processing_diagnostics.get("maxOutputTokens"),
                     "output_changed": processing_diagnostics.get("outputChanged"),
+                    "fallback_to_raw": fallback_to_raw,
+                    "runtime_backend": processing_diagnostics.get("runtimeBackend"),
+                    "reason_codes": processing_diagnostics.get("reasonCodes"),
                 },
             )
         except Exception as exc:
@@ -8232,6 +8418,7 @@ class ScriberWebController:
             diagnostic.update(
                 {
                     "status": "failure",
+                    "engine": selected_engine,
                     "fallbackToRaw": True,
                     "postProcessed": False,
                     "errorType": exc.__class__.__name__,
@@ -10378,6 +10565,16 @@ class ScriberWebController:
             # Don't start if already listening or if stop is in progress
             if self._is_listening or self._is_stopping:
                 return None
+
+            if (
+                post_process
+                and Config.POST_PROCESSING_ENABLED
+                and str(Config.POST_PROCESSING_ENGINE).strip().lower() == "local"
+            ):
+                # Model startup overlaps provider/audio preparation so the
+                # post-processing hotkey never adds avoidable latency after
+                # dictation has already completed.
+                self._schedule_local_polishing_prewarm(Config.LOCAL_POLISHING_VARIANT)
 
             # Trace from controller entry. The previous tracer was created only
             # after provider validation, admission, overlay scheduling, and
@@ -13237,6 +13434,8 @@ class ScriberWebController:
                 *self._meeting_import_tasks.values(),
                 *getattr(self, "_meeting_import_upload_tasks", {}).values(),
                 *self._meeting_capture_watchdogs.values(),
+                *self._local_polishing_watch_tasks.values(),
+                *self._local_polishing_prewarm_tasks.values(),
                 self._device_change_task,
                 self._meeting_detection_task,
                 self._meeting_retention_task,
@@ -13248,6 +13447,14 @@ class ScriberWebController:
         for task in tasks:
             task.cancel()
 
+        local_polishing_close_task = self._local_polishing_close_task
+        if local_polishing_close_task is None:
+            local_polishing_close_task = self._loop.create_task(
+                self._local_polisher.close(),
+                name="local_polishing_shutdown",
+            )
+            self._local_polishing_close_task = local_polishing_close_task
+
         # Live Mic finalization and the detached SQLite lease release are
         # cleanup, not cancellable background work. Observe both within the
         # same bounded drain window without canceling them. In particular, an
@@ -13255,6 +13462,8 @@ class ScriberWebController:
         # commit after it has lowered ``_is_listening``; a second shutdown stop
         # is therefore an idempotent no-op and cannot replace this join.
         wait_tasks = set(tasks)
+        if local_polishing_close_task is not current:
+            wait_tasks.add(local_polishing_close_task)
         background_stop_task = getattr(self, "_background_stop_task", None)
         if background_stop_task is not None and background_stop_task is not current and not background_stop_task.done():
             wait_tasks.add(background_stop_task)
@@ -13355,6 +13564,15 @@ class ScriberWebController:
             if not task.done():
                 task.cancel()
         self._meeting_capture_watchdogs.clear()
+        for task in self._local_polishing_watch_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._local_polishing_watch_tasks.clear()
+        for task in self._local_polishing_prewarm_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._local_polishing_prewarm_tasks.clear()
+        self._local_polishing_prewarm_target = None
         self._pending_audio_payload = None
         if self._audio_broadcast_task is not None:
             self._audio_broadcast_task.cancel()
@@ -13554,6 +13772,8 @@ class ScriberWebController:
             "youtubePreferCaptions": bool(Config.YOUTUBE_PREFER_CAPTIONS),
             "voiceprintLibraryOptIn": bool(Config.VOICEPRINT_LIBRARY_OPT_IN),
             "postProcessingEnabled": bool(Config.POST_PROCESSING_ENABLED),
+            "postProcessingEngine": Config.POST_PROCESSING_ENGINE,
+            "localPolishingVariant": Config.LOCAL_POLISHING_VARIANT,
             "postProcessingHotkey": _hotkey_to_display(Config.POST_PROCESSING_HOTKEY),
             "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
             "meetingHotkey": _hotkey_to_display(Config.MEETING_HOTKEY),
@@ -13623,6 +13843,8 @@ class ScriberWebController:
         validated_onnx_model: str | None = None
         validated_onnx_quantization: str | None = None
         validated_overlay_visualizer_style: str | None = None
+        validated_post_processing_engine: str | None = None
+        validated_local_polishing_variant: str | None = None
         mic_runtime_changed = False
         mic_route_changed = False
 
@@ -13672,6 +13894,20 @@ class ScriberWebController:
         validated_post_processing_model: str | None = None
         if "postProcessingModel" in payload and isinstance(payload["postProcessingModel"], str):
             validated_post_processing_model = _validate_summarization_model(payload["postProcessingModel"])
+        if "postProcessingEngine" in payload:
+            if not isinstance(payload["postProcessingEngine"], str):
+                raise ValueError("Post-processing engine must be text.")
+            candidate_engine = payload["postProcessingEngine"].strip().lower()
+            if candidate_engine not in {"cloud", "local"}:
+                raise ValueError("Unsupported post-processing engine.")
+            validated_post_processing_engine = candidate_engine
+        if "localPolishingVariant" in payload:
+            if not isinstance(payload["localPolishingVariant"], str):
+                raise ValueError("Local polishing variant must be text.")
+            candidate_variant = payload["localPolishingVariant"].strip().lower()
+            if candidate_variant not in {"q8_0", "bf16"}:
+                raise ValueError("Unsupported local polishing variant.")
+            validated_local_polishing_variant = candidate_variant
         has_onnx_model = "onnxModel" in payload and isinstance(payload["onnxModel"], str)
         has_onnx_quantization = "onnxQuantization" in payload and isinstance(
             payload["onnxQuantization"],
@@ -13693,6 +13929,36 @@ class ScriberWebController:
             if candidate_overlay_visualizer_style not in {"bars", "energy_wave"}:
                 raise ValueError("Unsupported overlay visualizer style.")
             validated_overlay_visualizer_style = candidate_overlay_visualizer_style
+
+        local_selection_touched = (
+            validated_post_processing_engine is not None or validated_local_polishing_variant is not None
+        )
+        effective_post_processing_engine = (
+            (validated_post_processing_engine or str(Config.POST_PROCESSING_ENGINE)).strip().lower()
+        )
+        effective_local_polishing_variant = (
+            (validated_local_polishing_variant or str(Config.LOCAL_POLISHING_VARIANT)).strip().lower()
+        )
+        if local_selection_touched and (
+            effective_post_processing_engine == "local" or validated_local_polishing_variant is not None
+        ):
+            selected_local_model = self._local_polishing_model_snapshot(effective_local_polishing_variant)
+            if not selected_local_model or not selected_local_model.get("installed"):
+                raise ValueError("Install the selected local polishing model before using it.")
+            if selected_local_model.get("status") != "ready":
+                raise ValueError("The selected local polishing model is not ready yet.")
+            if effective_post_processing_engine == "local" and not selected_local_model.get("runtimeReady"):
+                await self._cancel_local_polishing_prewarms()
+                if not await self._local_polisher.prewarm(effective_local_polishing_variant):
+                    failed_model = self._local_polishing_model_snapshot(effective_local_polishing_variant)
+                    if failed_model is not None:
+                        await self._broadcast_local_polishing_model(effective_local_polishing_variant)
+                    raise ValueError(
+                        "The verified local polishing runtime could not start. Reinstall Scriber or use cloud cleanup."
+                    )
+        if validated_post_processing_engine == "cloud":
+            await self._cancel_local_polishing_prewarms()
+            await self._local_polisher.unload()
 
         if "hotkey" in payload and isinstance(payload["hotkey"], str):
             normalized = _normalize_hotkey_for_backend(payload["hotkey"])
@@ -13817,6 +14083,17 @@ class ScriberWebController:
 
         if validated_post_processing_model is not None:
             Config.set_post_processing_model(validated_post_processing_model)
+
+        if validated_local_polishing_variant is not None:
+            Config.set_local_polishing_variant(validated_local_polishing_variant)
+
+        if validated_post_processing_engine is not None:
+            Config.set_post_processing_engine(validated_post_processing_engine)
+
+        if local_selection_touched:
+            selected_local_model = self._local_polishing_model_snapshot(effective_local_polishing_variant)
+            if selected_local_model is not None:
+                self._enqueue_control_broadcast(local_polishing_model_progress_event(selected_local_model))
 
         auto_summarize = _payload_bool(payload, "autoSummarize")
         if auto_summarize is not None:
@@ -15315,6 +15592,89 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except Exception as exc:
             logger.exception("Failed to update settings")
             return web.json_response({"message": str(exc) or "Failed to update settings"}, status=500)
+
+    def local_polishing_error_response(exc: Exception) -> web.Response:
+        if isinstance(exc, CatalogError):
+            return web.json_response(
+                {
+                    "success": False,
+                    "code": "catalog_unavailable",
+                    "message": "Local polishing models are not available in this build.",
+                },
+                status=503,
+            )
+        code = exc.code if isinstance(exc, LocalPolishingError) else "local_polishing_unavailable"
+        messages = {
+            "unknown_variant": "This local polishing model is not supported.",
+            "unknown_operation": "This local polishing operation no longer exists.",
+            "selected_model": "Switch away from this local model before removing it.",
+            "model_busy": "Wait for the model download to finish or cancel it first.",
+            "model_in_use": "The local model is currently in use and cannot be removed.",
+            "closed": "Local polishing is shutting down.",
+        }
+        if code == "unknown_operation":
+            status = 404
+        elif code == "unknown_variant":
+            status = 400
+        elif code in {"selected_model", "model_busy", "model_in_use"}:
+            status = 409
+        else:
+            status = 503
+        return web.json_response(
+            {
+                "success": False,
+                "code": code,
+                "message": messages.get(
+                    code,
+                    "Local polishing is temporarily unavailable.",
+                ),
+            },
+            status=status,
+        )
+
+    async def local_polishing_models(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        try:
+            return web.json_response(ctl.get_local_polishing_models())
+        except Exception:
+            logger.exception("Failed to read local-polishing model state")
+            return local_polishing_error_response(RuntimeError())
+
+    async def install_local_polishing_model(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        variant = str(request.match_info.get("variant") or "")
+        try:
+            model = await ctl.install_local_polishing_model(variant)
+        except (CatalogError, LocalPolishingError) as exc:
+            return local_polishing_error_response(exc)
+        except Exception:
+            logger.exception("Failed to start local-polishing model installation")
+            return local_polishing_error_response(RuntimeError())
+        return web.json_response({"success": True, **model}, status=202)
+
+    async def cancel_local_polishing_operation(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        operation_id = str(request.match_info.get("operationId") or "")
+        try:
+            operation = await ctl.cancel_local_polishing_operation(operation_id)
+        except LocalPolishingError as exc:
+            return local_polishing_error_response(exc)
+        except Exception:
+            logger.exception("Failed to cancel local-polishing model installation")
+            return local_polishing_error_response(RuntimeError())
+        return web.json_response({"success": True, **operation}, status=202)
+
+    async def remove_local_polishing_model(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        variant = str(request.match_info.get("variant") or "")
+        try:
+            model = await ctl.remove_local_polishing_model(variant)
+        except LocalPolishingError as exc:
+            return local_polishing_error_response(exc)
+        except Exception:
+            logger.exception("Failed to remove local-polishing model")
+            return local_polishing_error_response(RuntimeError())
+        return web.json_response({"success": True, **model})
 
     async def get_autostart(request: web.Request):
         """Report unavailable outside the Tauri-owned desktop command surface."""
@@ -19908,6 +20268,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.router.add_get("/api/settings", get_settings)
     app.router.add_put("/api/settings", put_settings)
+    app.router.add_get("/api/local-polishing/models", local_polishing_models)
+    app.router.add_post(
+        "/api/local-polishing/models/{variant}/install",
+        install_local_polishing_model,
+    )
+    app.router.add_delete(
+        "/api/local-polishing/model-operations/{operationId}",
+        cancel_local_polishing_operation,
+    )
+    app.router.add_delete(
+        "/api/local-polishing/models/{variant}",
+        remove_local_polishing_model,
+    )
     app.router.add_get("/api/autostart", get_autostart)
     app.router.add_post("/api/autostart", set_autostart)
     app.router.add_get("/api/microphones", microphones)

@@ -668,6 +668,7 @@ function New-SidecarBuildScriptArguments {
         "-BundleMediaTools",
         "-BundleRustAudioSidecar",
         "-BundleRustDiarizationSidecar",
+        "-BundleLocalPolishingRuntime",
         "-CopyToTauriRelease"
     )
     if ($AuthenticodeCertificateThumbprint) {
@@ -1296,6 +1297,21 @@ try {
         }
     }
 
+    $stagedLocalPolishingRuntimeSmokePath = Join-Path $RepoRoot "build\tauri-release-config\local-polishing-runtime-staged-smoke.json"
+    Invoke-Checked -Label "Local polishing runtime staged resource smoke" -Command {
+        Push-Location $RepoRoot
+        try {
+            if (Test-Path -LiteralPath $stagedLocalPolishingRuntimeSmokePath -PathType Leaf) {
+                Remove-Item -LiteralPath $stagedLocalPolishingRuntimeSmokePath -Force
+            }
+            & $releasePython scripts\smoke_local_polishing_runtime.py `
+                --root Frontend\src-tauri\target\release\backend `
+                --output $stagedLocalPolishingRuntimeSmokePath | Out-Host
+        } finally {
+            Pop-Location
+        }
+    }
+
     if (-not $SkipSmoke) {
         Invoke-Checked -Label "Tauri release smoke" -Command {
             Push-Location $RepoRoot
@@ -1315,11 +1331,12 @@ try {
     $runtimeDependencyFootprintPath = Join-Path $metadataDir "runtime-dependency-footprint.json"
     $installedPackageSmokePath = Join-Path $metadataDir "installed-package-smoke.json"
     $diarizationWorkerStagedSmokePath = Join-Path $metadataDir "diarization-worker-staged-smoke.json"
+    $localPolishingRuntimeStagedSmokePath = Join-Path $metadataDir "local-polishing-runtime-staged-smoke.json"
     $tauriBundleLogMetadataPath = Join-Path $metadataDir "tauri-windows-bundle.log"
     $tauriBundleLogSummaryPath = Join-Path $metadataDir "tauri-bundle-log-summary.json"
     $installedPackageSmokeTempPath = Join-Path $RepoRoot "tmp\installer-smoke\installed-package-smoke.json"
     $buildTimingPath = Join-Path $metadataDir "build-timing.json"
-    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $diarizationWorkerStagedSmokePath, $tauriBundleLogSummaryPath, $tauriBundleLogMetadataPath, $installedPackageSmokeTempPath)) {
+    foreach ($staleReport in @($mediaPreparationSmokePath, $runtimeDependencyFootprintPath, $installedPackageSmokePath, $diarizationWorkerStagedSmokePath, $localPolishingRuntimeStagedSmokePath, $tauriBundleLogSummaryPath, $tauriBundleLogMetadataPath, $installedPackageSmokeTempPath)) {
         if (Test-Path -LiteralPath $staleReport -PathType Leaf) {
             Remove-Item -LiteralPath $staleReport -Force
         }
@@ -1342,8 +1359,12 @@ try {
     if (-not (Test-Path -LiteralPath $stagedDiarizationWorkerSmokePath -PathType Leaf)) {
         throw "Diarization worker staged smoke did not write expected report: $stagedDiarizationWorkerSmokePath"
     }
+    if (-not (Test-Path -LiteralPath $stagedLocalPolishingRuntimeSmokePath -PathType Leaf)) {
+        throw "Local polishing runtime staged smoke did not write expected report: $stagedLocalPolishingRuntimeSmokePath"
+    }
     New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
     Copy-Item -LiteralPath $stagedDiarizationWorkerSmokePath -Destination $diarizationWorkerStagedSmokePath -Force
+    Copy-Item -LiteralPath $stagedLocalPolishingRuntimeSmokePath -Destination $localPolishingRuntimeStagedSmokePath -Force
     if (Test-Path -LiteralPath $tauriBundleLogPath -PathType Leaf) {
         New-Item -ItemType Directory -Force -Path $metadataDir | Out-Null
         Copy-Item -LiteralPath $tauriBundleLogPath -Destination $tauriBundleLogMetadataPath -Force
@@ -1834,6 +1855,7 @@ try {
         mediaPreparationSmoke = $mediaPreparationSmoke
         runtimeDependencyFootprint = $runtimeDependencyFootprint
         diarizationWorkerStagedSmoke = $diarizationWorkerStagedSmokePath
+        localPolishingRuntimeStagedSmoke = $localPolishingRuntimeStagedSmokePath
         installedPackageSmoke = $installedPackageSmoke
     } | ConvertTo-Json -Compress
 } catch {

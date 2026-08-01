@@ -821,6 +821,8 @@ def bind_training_dataset(
         raise TrainingIntegrityError(f"dataset manifest is invalid JSON: {error}") from error
     if not isinstance(value, dict):
         raise TrainingIntegrityError("dataset manifest must contain an object")
+    if "training_ready" in value and value.get("training_ready") is not True:
+        raise TrainingIntegrityError("dataset manifest explicitly declares training_ready: false")
     if value.get("synthetic_only") is not True:
         raise TrainingIntegrityError("dataset manifest must declare synthetic_only: true")
     if value.get("human_curation") is not False:

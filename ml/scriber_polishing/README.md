@@ -11,6 +11,90 @@ human curation or human gold set.
 The release pipeline is fail-closed. Generated corpora, checkpoints, model
 weights, caches, and credentials are never committed.
 
+## V2 hard-case supplement
+
+`configs/v2_hardcase_data.json` freezes only aggregate Sol/Terra error flags
+and counts. The generator never reads individual judge cases, predictions,
+references, test records, or challenge records. It creates independently
+seeded synthetic siblings. The existing V1 120k corpus and every V1 artifact
+remain unchanged.
+
+The exact V2 data calculation is:
+
+- 720 parent documents × 2 canonical siblings = 1,440 canonical records.
+- 640 train parents × 2 siblings × 8 pairs = 10,240 train pairs.
+- 80 validation parents × 2 siblings × 4 pairs = 640 validation pairs.
+- Total: 10,240 + 640 = 10,880 synthetic pairs.
+
+Parent assignment happens before sibling and corruption generation. Therefore
+no parent can cross between train and validation. The manifest additionally
+requires the split total, category total, parent-group total, and the equations
+above to agree; any mismatch fails verification.
+
+The V2 corpus has a mandatory two-stage provenance gate. Stage one creates only
+an immutable review candidate. It contains no critic names, decisions, or
+training-ready manifest:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m scriber_polishing.v2_hardcase_dataset --prepare-review
+python -m scriber_polishing.v2_hardcase_dataset --check
+```
+
+The output is `artifacts/v2_hardcase_data_v1/` with `plan.json`, three
+`review-*.jsonl` files, and `review-package.json`. Its content SHA covers every
+canonical and every proposed train/validation pair, but no review metadata.
+The verifier checks contract schemas, byte hashes, aggregate-only provenance,
+NFC normalization, pair and ID deduplication, protected values, count
+derivation, and parent leakage. It rejects `test.jsonl` and `challenge.jsonl`.
+
+Stage two requires four separate verdict JSON files bound to both the candidate
+SHA and `contracts/v2_hardcase_review_verdict_schema.json`: one Terra fact
+review, one Terra style review, and two independent Sol adversarial reviews.
+All four must cover the entire candidate, attest that no test or challenge data
+was opened, use maximum reasoning, return `acceptable: true`, and contain no
+critical flag. The generator never fabricates these verdicts. Finalize with:
+
+```powershell
+python -m scriber_polishing.v2_hardcase_dataset --finalize-review `
+  --evidence path/to/fact.json `
+  --evidence path/to/style.json `
+  --evidence path/to/adversarial-a.json `
+  --evidence path/to/adversarial-b.json
+python -m scriber_polishing.v2_hardcase_dataset --check
+```
+
+Only a successful finalization writes `manifest.json`, `train.jsonl`, and
+`validation.jsonl` with `training_ready: true`. Each pair then carries the four
+real reviewer identities and the exact reviewed candidate SHA. Any missing,
+duplicate, dissenting, critically flagged, or hash-mismatched verdict fails
+closed.
+
+The later V2 training mix replays V1 data deterministically and split-locally:
+10,240 records only from `artifacts/final_data_v1/splits/train.jsonl` plus 640
+only from `artifacts/final_data_v1/splits/validation.jsonl`, combined 1:1 with
+the reviewed V2 supplement for 20,480 train and 1,280 validation records. Test
+and challenge inputs are forbidden. The V1 manifest and both permitted split
+hashes are pinned; replay examples use seeded SHA-256 bottom-k selection and
+both sources are then stably interleaved without changing any row.
+
+After the four-critic V2 finalization succeeds, build and independently check
+the training package with:
+
+```powershell
+python -m scriber_polishing.v2_training_mixer
+python -m scriber_polishing.v2_training_mixer --check
+```
+
+The output is `artifacts/v2_training_mix_v1/` with only `train.jsonl`,
+`validation.jsonl`, and a closed, hash-bound `manifest.json`. The manifest
+records each source binding, selected-ID hashes, stable mixed-order hashes,
+critic-evidence identity, duplicate and parent-leakage gates, and the exact
+20,480/1,280 count derivation. `configs/train_v2_hardcase_mixed.yaml` is the
+matching one-epoch continuation configuration. The supplement-only
+`configs/train_v2_hardcase.yaml` remains diagnostic and is not the mixed V2
+training configuration.
+
 ## Deterministic automatic evaluation
 
 Frozen references can produce two no-model baselines: `raw_transcript` emits

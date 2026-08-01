@@ -6,7 +6,7 @@ import {
   reportFrontendReady,
   wsUrl,
 } from "@/lib/backend";
-import type { MicrophoneDevice } from "@/lib/api-types";
+import type { LocalPolishingModelStatus, LocalPolishingVariant, MicrophoneDevice } from "@/lib/api-types";
 import type { MeetingNote, MeetingSegment, MeetingSummary, MeetingTranscriptCheckpoint } from "@/lib/api-types";
 
 type BaseWsMessage = {
@@ -106,6 +106,23 @@ export type ScriberWebSocketMessage =
       message?: string;
     })
   | (BaseWsMessage & { type: "onnx_models_updated"; modelId: string })
+  | (BaseWsMessage & {
+      type: "local_polishing_model_progress";
+      variant: LocalPolishingVariant;
+      status: LocalPolishingModelStatus;
+      operationId?: string;
+      progress?: number;
+      bytesReceived?: number;
+      bytesTotal?: number;
+      etaSeconds?: number;
+      message?: string;
+      errorCode?: string;
+      installed?: boolean;
+      active?: boolean;
+      runtimeReady?: boolean;
+      runtimeError?: string;
+      code?: string;
+    })
   | (BaseWsMessage & { type: "meeting_state"; meeting: MeetingSummary })
   | (BaseWsMessage & { type: "meeting_segment"; meetingId: string; segment: MeetingSegment })
   | (BaseWsMessage & { type: "meeting_checkpoint"; meetingId: string; checkpoint: MeetingTranscriptCheckpoint })

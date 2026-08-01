@@ -246,7 +246,7 @@ def _boundaries(target_ast: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _build_pair(
+def _build_pair_payload(
     record: Mapping[str, Any],
     *,
     split: Split,
@@ -274,8 +274,7 @@ def _build_pair(
     boundary_fields = _boundaries(target_ast)
     operations: tuple[CorruptionOperation, ...] = corruption.operations
     formatting_commands = [operation.kind for operation in operations if operation.kind == "spoken_formatting"]
-    return validate_training_pair(
-        {
+    return {
             "schema_version": 1,
             "example_id": f"{canonical_id}__pair_{ordinal + 1:02d}",
             "canonical_document_id": canonical_id,
@@ -308,9 +307,6 @@ def _build_pair(
             ],
             "applied_normalizations": copy.deepcopy(record.get("applied_normalizations", [])),
             "ambiguity_flags": copy.deepcopy(record.get("ambiguity_flags", [])),
-            "critic_agents": copy.deepcopy(record.get("critic_agents", [])),
-            "critic_decisions": copy.deepcopy(record.get("critic_decisions", [])),
-            "reviewed_package_sha256": _required_text(record, "reviewed_package_sha256"),
             "validation_scores": {"deterministic": 1.0},
             "provenance": {
                 "seed_id": record["seed_id"],
@@ -325,7 +321,54 @@ def _build_pair(
                 "generative_api": False,
             },
         }
+
+
+def build_review_candidate_pair(
+    record: Mapping[str, Any],
+    *,
+    split: Split,
+    ordinal: int,
+    recipe_name: str,
+    profiles: tuple[CorruptionProfile, ...],
+    seed: int,
+) -> dict[str, Any]:
+    """Build an unapproved pair candidate without any critic assertions."""
+
+    return _build_pair_payload(
+        record,
+        split=split,
+        ordinal=ordinal,
+        recipe_name=recipe_name,
+        profiles=profiles,
+        seed=seed,
     )
+
+
+def _build_pair(
+    record: Mapping[str, Any],
+    *,
+    split: Split,
+    ordinal: int,
+    recipe_name: str,
+    profiles: tuple[CorruptionProfile, ...],
+    seed: int,
+) -> dict[str, Any]:
+    pair = _build_pair_payload(
+        record,
+        split=split,
+        ordinal=ordinal,
+        recipe_name=recipe_name,
+        profiles=profiles,
+        seed=seed,
+    )
+    pair.update(
+        {
+            "critic_agents": copy.deepcopy(record.get("critic_agents", [])),
+            "critic_decisions": copy.deepcopy(record.get("critic_decisions", [])),
+            "reviewed_package_sha256": _required_text(record, "reviewed_package_sha256"),
+        }
+    )
+    return validate_training_pair(pair)
 
 
 def build_dataset_pairs(

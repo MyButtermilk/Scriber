@@ -987,6 +987,48 @@ export interface LocalModelActionResponse {
   quantization?: string;
 }
 
+export type PostProcessingEngine = "cloud" | "local";
+
+export type LocalPolishingVariant = "q8_0" | "bf16";
+
+export type LocalPolishingModelStatus =
+  "not_installed" | "downloading" | "verifying" | "cancelling" | "cancelled" | "ready" | "unavailable" | "error";
+
+export interface LocalPolishingModelInfo {
+  variant: LocalPolishingVariant;
+  name?: string;
+  description?: string;
+  status: LocalPolishingModelStatus;
+  installed?: boolean;
+  active?: boolean;
+  runtimeReady?: boolean;
+  runtimeError?: string;
+  updateAvailable?: boolean;
+  operationId?: string;
+  progress?: number;
+  bytesReceived?: number;
+  bytesTotal?: number;
+  etaSeconds?: number;
+  message?: string;
+  errorCode?: string;
+  sizeBytes?: number;
+}
+
+export interface LocalPolishingModelsResponse {
+  available: boolean;
+  message?: string;
+  currentVariant?: LocalPolishingVariant;
+  models: LocalPolishingModelInfo[];
+}
+
+export interface LocalPolishingOperationResponse {
+  success?: boolean;
+  message?: string;
+  operationId?: string;
+  variant?: LocalPolishingVariant;
+  status?: LocalPolishingModelStatus;
+}
+
 export interface FileUploadLimits {
   provider: string;
   providerLabel: string;
@@ -1050,6 +1092,8 @@ export interface SettingsResponse {
   youtubePreferCaptions?: boolean;
   voiceprintLibraryOptIn?: boolean;
   postProcessingEnabled?: boolean;
+  postProcessingEngine?: PostProcessingEngine;
+  localPolishingVariant?: LocalPolishingVariant;
   postProcessingHotkey?: string;
   postProcessingHotkeyRaw?: string;
   meetingHotkey?: string;
@@ -1095,6 +1139,8 @@ export interface SettingsUpdatePayload {
   youtubePreferCaptions?: boolean;
   voiceprintLibraryOptIn?: boolean;
   postProcessingEnabled?: boolean;
+  postProcessingEngine?: PostProcessingEngine;
+  localPolishingVariant?: LocalPolishingVariant;
   postProcessingHotkey?: string;
   meetingHotkey?: string;
   meetingTranscriptionMode?: MeetingTranscriptionMode;

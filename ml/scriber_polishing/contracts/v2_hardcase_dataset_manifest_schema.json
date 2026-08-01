@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-hardcase-dataset-manifest-v2.schema.json",
+  "title": "Scriber V2 reviewed hard-case training dataset manifest v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "training_ready",
+    "review_package_file",
+    "review_package_sha256",
+    "review_candidate_sha256",
+    "review_contract_sha256",
+    "review_evidence",
+    "manifest_schema_sha256",
+    "source_aggregate_bindings",
+    "split_files",
+    "split_sha256",
+    "split_counts",
+    "parent_split_counts",
+    "canonical_record_count",
+    "category_parent_counts",
+    "category_pair_counts",
+    "count_derivation",
+    "synthetic_only",
+    "human_curation",
+    "generative_api",
+    "split_leakage",
+    "contains_test_or_challenge_split",
+    "direct_test_or_challenge_reuse",
+    "quality_gates",
+    "provenance_policy",
+    "artifact_tree_sha256"
+  ],
+  "properties": {
+    "schema_version": {"const": 2},
+    "kind": {"const": "scriber_v2_reviewed_hardcase_dataset"},
+    "training_ready": {"const": true},
+    "review_package_file": {"const": "review-package.json"},
+    "review_package_sha256": {"$ref": "#/$defs/sha256"},
+    "review_candidate_sha256": {"$ref": "#/$defs/sha256"},
+    "review_contract_sha256": {"$ref": "#/$defs/sha256"},
+    "review_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "sha256", "evidence_tree_sha256", "role_counts", "reviewer_ids"],
+      "properties": {
+        "file": {"const": "review-evidence.json"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "evidence_tree_sha256": {"$ref": "#/$defs/sha256"},
+        "role_counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["fact", "style", "adversarial"],
+          "properties": {
+            "fact": {"const": 1},
+            "style": {"const": 1},
+            "adversarial": {"const": 2}
+          }
+        },
+        "reviewer_ids": {
+          "type": "array",
+          "minItems": 4,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{7,79}$"}
+        }
+      }
+    },
+    "manifest_schema_sha256": {"$ref": "#/$defs/sha256"},
+    "source_aggregate_bindings": {"type": "array", "minItems": 2, "items": {"type": "object"}},
+    "split_files": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {"train": {"const": "train.jsonl"}, "validation": {"const": "validation.jsonl"}}
+    },
+    "split_sha256": {"$ref": "#/$defs/splitHashes"},
+    "split_counts": {"$ref": "#/$defs/splitCounts"},
+    "parent_split_counts": {"$ref": "#/$defs/splitCounts"},
+    "canonical_record_count": {"type": "integer", "minimum": 1},
+    "category_parent_counts": {"$ref": "#/$defs/countMap"},
+    "category_pair_counts": {"$ref": "#/$defs/countMap"},
+    "count_derivation": {"type": "object"},
+    "synthetic_only": {"const": true},
+    "human_curation": {"const": false},
+    "generative_api": {"const": false},
+    "split_leakage": {"const": false},
+    "contains_test_or_challenge_split": {"const": false},
+    "direct_test_or_challenge_reuse": {"const": false},
+    "quality_gates": {"type": "object"},
+    "provenance_policy": {"type": "object"},
+    "artifact_tree_sha256": {"$ref": "#/$defs/sha256"}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "splitHashes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {"train": {"$ref": "#/$defs/sha256"}, "validation": {"$ref": "#/$defs/sha256"}}
+    },
+    "splitCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["train", "validation"],
+      "properties": {
+        "train": {"type": "integer", "minimum": 1},
+        "validation": {"type": "integer", "minimum": 1}
+      }
+    },
+    "countMap": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1},
+      "propertyNames": {"pattern": "^[a-z][a-z0-9_]{2,59}$"}
+    }
+  }
+}

@@ -423,7 +423,9 @@ foreach ($entry in $backendRuntimeEntries) {
 foreach ($path in @(
     "scripts/__init__.py",
     "scripts/check_backend_runtime_imports.py",
-    "scripts/stage_backend_application_layer.py"
+    "scripts/stage_backend_application_layer.py",
+    "scripts/prepare_local_polishing_runtime.py",
+    "packaging/llama-cpp-polishing-runtime-lock-v1.json"
 )) {
     Add-RawFileEntry -Entries $backendEntries -Path $path
 }
@@ -434,4 +436,5 @@ $backendEntries.Add("flag`tuseProfileBFfmpeg`ttrue")
 $backendEntries.Add("flag`tuseGyanFfmpegEssentials`tfalse")
 $backendEntries.Add("flag`tskipBundledFfprobe`tfalse")
 $backendEntries.Add("flag`tvalidateSlimMediaTools`ttrue")
+$backendEntries.Add("flag`tbundleLocalPolishingRuntime`ttrue")
 Write-KeyFile -Name "backend-sidecar.txt" -Entries $backendEntries

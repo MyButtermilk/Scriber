@@ -36,7 +36,8 @@
   an opt-in Voice Library, and optional Outlook Calendar context.
 - **Faster everyday dictation:** separate global shortcuts for faithful text and
   prompt-driven post-processing, backed by native WASAPI capture, mic
-  pre-warming, and a responsive recording overlay.
+  pre-warming, a responsive recording overlay, and optional local transcript
+  polishing with a downloadable GGUF model.
 - **More provider choice:** multilingual Modulate.AI batch and realtime
   transcription, Soniox US/EU routing, cloud streaming and batch providers, and
   downloadable local ONNX models share the same workflow.
@@ -71,7 +72,7 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
 - Optional microphone pre-warming for lower startup latency
 - Native recording overlay with selectable classic bars or an audio-reactive
   energy wave
-- Raw dictation or prompt-driven post-processing
+- Raw dictation or cloud/local prompt-driven post-processing
 - Clipboard-aware insertion with bounded clipboard restoration
 - Searchable recent recordings with useful transcript excerpts
 
@@ -192,11 +193,20 @@ a US project key does not provide EU data residency.
 
 Download supported ONNX models from Settings and transcribe locally without an STT API key. Scriber uses prepared model artifacts rather than asking end users to install or run NeMo and Torch.
 
+### Local transcript polishing (GGUF)
+
+Download the public polishing model directly in Settings without a Hugging Face
+account. **Q8_0** is the recommended desktop/laptop variant; **BF16** is the
+larger reference option for systems with more memory. Both run through the same
+bundled llama.cpp runtime, prefer Vulkan acceleration, and fall back to CPU.
+This text-cleanup path uses GGUF, not ONNX, and never downloads executable code
+from the model repository.
+
 Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Celeris, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
 
 ## 🔑 Credentials and AI behavior stay understandable
 
-Provider credentials, transcription models, summary models, prompts, language behavior, and update controls live in one Settings workspace. Unavailable cloud models remain visibly gated until the matching credential exists.
+Provider credentials, transcription models, summary models, prompts, language behavior, and update controls live in one Settings workspace. Unavailable cloud models remain visibly gated until the matching credential exists; public local polishing downloads do not require credentials.
 
 ![Scriber API keys and summarization settings](docs/screenshots/settings.png)
 
@@ -220,6 +230,7 @@ Scriber runs its desktop shell, frontend, backend, transcript database, settings
 | **Transcript history** | Stored locally in Scriber's user data directory |
 | **Microphone and media** | Sent only when the selected transcription provider is cloud-based |
 | **Summaries and post-processing** | Text is sent only to the model provider you choose for that action |
+| **Local transcript polishing** | Runs on this device after the public GGUF model download; no Hugging Face account is required |
 | **Local ONNX transcription** | Runs without an STT API key |
 | **Credentials** | Stored for the configured provider and redacted from support diagnostics |
 | **Support bundles** | Known API keys, bearer tokens, and session secrets are redacted |
@@ -260,7 +271,7 @@ The installed app is more than a packaged website:
 
 1. Download the latest Windows installer.
 2. Open **Settings** and choose a transcription provider.
-3. Add the matching API key, or download a local ONNX model.
+3. Add the matching API key, or download a local ONNX transcription/GGUF polishing model.
 4. Start with a short Live Mic recording, then try YouTube or a media file.
 
 The standard installer includes the desktop shell, frontend, backend sidecar, Rust audio sidecar, and media tools needed for normal use.
@@ -272,7 +283,10 @@ The standard installer includes the desktop shell, frontend, backend sidecar, Ru
 <details>
 <summary><strong>Can I use Scriber without an API key?</strong></summary>
 
-Yes. Choose a supported local ONNX transcription model. Cloud transcription, summarization, and post-processing require credentials for the provider you select.
+Yes. Choose a supported local ONNX transcription model and/or the public local
+GGUF polishing model. Neither local download requires a Hugging Face account.
+Cloud transcription, summarization, and post-processing still require the
+credentials of the provider you select.
 </details>
 
 <details>

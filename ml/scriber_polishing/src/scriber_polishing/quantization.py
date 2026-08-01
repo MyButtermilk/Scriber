@@ -779,9 +779,7 @@ def _llama_self_test(
             response = raw_output[prompt_offset + len(prompt.prompt) :]
             summary = response_summary_pattern.search(response)
             if summary is None:
-                raise QuantizationError(
-                    f"{label} output lacked its bounded response summary"
-                ) from None
+                raise QuantizationError(f"{label} output lacked its bounded response summary") from None
             output = response[: summary.start()].strip()
         if not output:
             raise QuantizationError(f"{label} produced an empty completion")
@@ -802,9 +800,7 @@ def _llama_self_test(
                     trust_remote_code=False,
                     fix_mistral_regex=False,
                 )
-                generated_tokens = len(
-                    tokenizer.encode(output, add_special_tokens=False)
-                )
+                generated_tokens = len(tokenizer.encode(output, add_special_tokens=False))
             except Exception as error:
                 raise QuantizationError(
                     f"{label} could not count generated tokens with the bound tokenizer: {error}"
@@ -897,9 +893,7 @@ def build_gguf_variants(
         )
     )
     if linux_requested == windows_requested:
-        raise QuantizationError(
-            "select exactly one complete Linux bundle or Windows CUDA runtime"
-        )
+        raise QuantizationError("select exactly one complete Linux bundle or Windows CUDA runtime")
     expected_cli_version_hash: str | None = None
     expected_server_version_hash: str | None = None
     expected_windows_version: tuple[str, str] | None = None
@@ -912,19 +906,13 @@ def build_gguf_variants(
                 bundle_lock,
             )
         except LlamaCppBundleError as error:
-            raise QuantizationError(
-                f"llama.cpp bundle verification failed: {error}"
-            ) from error
+            raise QuantizationError(f"llama.cpp bundle verification failed: {error}") from error
         convert_path = bundle.convert_hf_to_gguf
         quantize_path = bundle.llama_quantize
         llama_cli_path = bundle.llama_cli
         llama_server_path = bundle.llama_server
-        expected_cli_version_hash = str(
-            bundle.build["llama_cli_version_output_sha256"]
-        )
-        expected_server_version_hash = str(
-            bundle.build["llama_server_version_output_sha256"]
-        )
+        expected_cli_version_hash = str(bundle.build["llama_cli_version_output_sha256"])
+        expected_server_version_hash = str(bundle.build["llama_server_version_output_sha256"])
         toolchain_binding = {
             "kind": "llama_cpp_bundle",
             "bundle_lock_sha256": bundle.lock_sha256,
@@ -933,11 +921,7 @@ def build_gguf_variants(
             "build_identity_sha256": bundle.build_identity_sha256,
         }
     else:
-        if (
-            windows_runtime_root is None
-            or windows_runtime_manifest is None
-            or llama_cpp_source is None
-        ):
+        if windows_runtime_root is None or windows_runtime_manifest is None or llama_cpp_source is None:
             raise QuantizationError("Windows llama.cpp runtime inputs are incomplete")
         try:
             windows_runtime = load_verified_windows_llama_cpp_runtime(
@@ -946,9 +930,7 @@ def build_gguf_variants(
             )
             source_binding = verify_llama_cpp_source_checkout(llama_cpp_source)
         except (WindowsLlamaCppRuntimeError, HfLlamaCppToolchainError) as error:
-            raise QuantizationError(
-                f"Windows llama.cpp toolchain verification failed: {error}"
-            ) from error
+            raise QuantizationError(f"Windows llama.cpp toolchain verification failed: {error}") from error
         source_root = Path(llama_cpp_source).expanduser().resolve()
         convert_path = source_root / "convert_hf_to_gguf.py"
         if convert_path.is_symlink() or not convert_path.is_file():
@@ -1017,8 +999,7 @@ def build_gguf_variants(
         )
         if quantize_help.returncode not in {0, 1}:
             raise QuantizationError(
-                "llama-quantize help probe failed with unexpected exit code "
-                f"{quantize_help.returncode}"
+                f"llama-quantize help probe failed with unexpected exit code {quantize_help.returncode}"
             )
         help_text = f"{quantize_help.stdout}\n{quantize_help.stderr}"
         for quantization in ("Q8_0", "Q4_K_M"):
@@ -1038,14 +1019,10 @@ def build_gguf_variants(
         bounded_version = version_text[0][:200]
         cli_version_payload = cli_version.stdout.encode("utf-8") + b"\0" + cli_version.stderr.encode("utf-8")
         actual_version_hash = _sha256_bytes(cli_version_payload)
-        if (
-            expected_cli_version_hash is not None
-            and actual_version_hash != expected_cli_version_hash
-        ):
+        if expected_cli_version_hash is not None and actual_version_hash != expected_cli_version_hash:
             raise QuantizationError("llama-cli version output differs from the locked build identity")
         if expected_windows_version is not None and not all(
-            token in f"{cli_version.stdout}\n{cli_version.stderr}"
-            for token in expected_windows_version
+            token in f"{cli_version.stdout}\n{cli_version.stderr}" for token in expected_windows_version
         ):
             raise QuantizationError("llama-cli version differs from the locked Windows runtime")
         server_version = _run_checked(
@@ -1062,18 +1039,16 @@ def build_gguf_variants(
         bounded_server_version = server_version_text[0][:200]
         server_version_payload = server_version.stdout.encode("utf-8") + b"\0" + server_version.stderr.encode("utf-8")
         actual_server_version_hash = _sha256_bytes(server_version_payload)
-        if (
-            expected_server_version_hash is not None
-            and actual_server_version_hash != expected_server_version_hash
-        ):
+        if expected_server_version_hash is not None and actual_server_version_hash != expected_server_version_hash:
             raise QuantizationError("llama-server version output differs from the locked build identity")
         if expected_windows_version is not None and not all(
-            token in f"{server_version.stdout}\n{server_version.stderr}"
-            for token in expected_windows_version
+            token in f"{server_version.stdout}\n{server_version.stderr}" for token in expected_windows_version
         ):
             raise QuantizationError("llama-server version differs from the locked Windows runtime")
 
-        bf16_gguf = temporary / "model-bf16.gguf"
+        bf16_root = temporary / "bf16"
+        bf16_root.mkdir()
+        bf16_gguf = bf16_root / "model-BF16.gguf"
         _run_checked(
             process_runner,
             [
@@ -1101,8 +1076,36 @@ def build_gguf_variants(
             label="Gemma 3 BF16 llama-cli runtime self-test",
         )
         bf16_reload["protection_policy"] = source_policy
+        bf16_reload["loaded_quantization"] = "bf16"
 
-        variant_manifests: dict[str, dict[str, object]] = {}
+        _copy_gguf_metadata(source, bf16_root)
+        bf16_policy = _verify_frozen_policy(bf16_root)
+        if bf16_policy != source_policy:
+            raise QuantizationError("BF16 changed the frozen lexical protection policy")
+        bf16_reload["protection_policy"] = bf16_policy
+        bf16_manifest = build_variant_artifact_manifest(
+            bf16_root,
+            variant="bf16",
+            backend="llama_cpp",
+            source_id=source_id,
+            source_tree_sha256=str(source_inventory["tree_sha256"]),
+            training_fingerprint=training_fingerprint,
+            quantization={
+                "quant_method": "none",
+                "weight_dtype": "BF16",
+            },
+            toolchain=toolchain_binding,
+            reload_evidence=bf16_reload,
+        )
+        bf16_manifest_path = bf16_root / VARIANT_MANIFEST_FILENAME
+        variant_manifests: dict[str, dict[str, object]] = {
+            "bf16": {
+                "path": bf16_manifest_path.relative_to(temporary).as_posix(),
+                "sha256": sha256_file(bf16_manifest_path),
+                "artifact_tree_sha256": bf16_manifest["artifact"]["tree_sha256"],
+                "reload_self_test": bf16_reload,
+            }
+        }
         for quantization in ("Q8_0", "Q4_K_M"):
             variant_root = temporary / quantization
             variant_root.mkdir()
@@ -1152,8 +1155,6 @@ def build_gguf_variants(
                 "artifact_tree_sha256": variant_manifest["artifact"]["tree_sha256"],
                 "reload_self_test": reload_evidence,
             }
-        bf16_gguf.unlink()
-
         files = _files(temporary)
         manifest: dict[str, object] = {
             "schema_version": 4,
@@ -1162,7 +1163,7 @@ def build_gguf_variants(
             "source_tree_sha256": source_inventory["tree_sha256"],
             "training_fingerprint": training_fingerprint,
             "protection_policy": source_policy,
-            "variants": ["Q8_0", "Q4_K_M"],
+            "variants": ["bf16", "Q8_0", "Q4_K_M"],
             "artifact_tree_sha256": _tree_hash(files),
             "file_count": len(files),
             "total_bytes": sum(int(item["bytes"]) for item in files),
@@ -1189,11 +1190,7 @@ def build_gguf_variants(
                     "version_output_sha256": actual_server_version_hash,
                 },
             },
-            "toolchain": {
-                key: value
-                for key, value in toolchain_binding.items()
-                if key != "kind"
-            },
+            "toolchain": {key: value for key, value in toolchain_binding.items() if key != "kind"},
             "gemma3_text_support": {
                 "supported_models_probe": True,
                 "supported_model": "Gemma3ForCausalLM",
@@ -1212,7 +1209,7 @@ def build_gguf_variants(
         _validate(_GGUF_MANIFEST_SCHEMA, manifest, "GGUF manifest")
         _write_json(temporary / "gguf-bundle-manifest.json", manifest)
         os.replace(temporary, output)
-        for quantization in ("Q8_0", "Q4_K_M"):
+        for quantization in ("bf16", "Q8_0", "Q4_K_M"):
             verify_variant_artifact_manifest(output / quantization)
         return manifest
     except QuantizationError:

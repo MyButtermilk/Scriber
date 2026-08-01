@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://scriber.local/contracts/v2-hardcase-spec-v1.schema.json",
+  "title": "Scriber V2 synthetic hard-case data plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "kind",
+    "seed",
+    "sources",
+    "policy",
+    "generation",
+    "categories"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "kind": {"const": "scriber_v2_synthetic_hardcase_plan"},
+    "seed": {"type": "integer", "minimum": 1},
+    "sources": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "path", "sha256", "unique_error_case_count", "aggregate_only"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,79}$"},
+          "kind": {"const": "aggregate_diagnostic_summary"},
+          "path": {"type": "string", "minLength": 8, "maxLength": 400},
+          "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "unique_error_case_count": {"type": "integer", "minimum": 1},
+          "aggregate_only": {"const": true}
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "direct_test_or_challenge_reuse",
+        "raw_case_content_allowed",
+        "generative_api",
+        "synthetic_only",
+        "allowed_splits",
+        "split_group"
+      ],
+      "properties": {
+        "direct_test_or_challenge_reuse": {"const": false},
+        "raw_case_content_allowed": {"const": false},
+        "generative_api": {"const": false},
+        "synthetic_only": {"const": true},
+        "allowed_splits": {
+          "type": "array",
+          "prefixItems": [{"const": "train"}, {"const": "validation"}],
+          "items": false,
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "split_group": {"const": "parent_canonical_document_id"}
+      }
+    },
+    "generation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "parent_document_count",
+        "canonical_siblings_per_parent",
+        "train_fraction",
+        "train_pairs_per_canonical",
+        "validation_pairs_per_canonical",
+        "unicode_normalization",
+        "serialization"
+      ],
+      "properties": {
+        "parent_document_count": {"type": "integer", "minimum": 8, "maximum": 10000},
+        "canonical_siblings_per_parent": {"type": "integer", "minimum": 1, "maximum": 4},
+        "train_fraction": {"type": "number", "minimum": 0.5, "maximum": 0.95},
+        "train_pairs_per_canonical": {"type": "integer", "minimum": 1, "maximum": 20},
+        "validation_pairs_per_canonical": {"type": "integer", "minimum": 1, "maximum": 10},
+        "unicode_normalization": {"const": "NFC"},
+        "serialization": {"const": "canonical_jsonl_utf8_lf"}
+      }
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "parent_quota", "risk_tags", "aggregate_signals"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,59}$"},
+          "parent_quota": {"type": "integer", "minimum": 1},
+          "risk_tags": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,59}$"}
+          },
+          "aggregate_signals": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["flag", "sol_count", "terra_count"],
+              "properties": {
+                "flag": {"type": "string", "pattern": "^[a-z][a-z0-9_]{2,79}$"},
+                "sol_count": {"type": "integer", "minimum": 0},
+                "terra_count": {"type": "integer", "minimum": 0}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

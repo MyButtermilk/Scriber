@@ -1,0 +1,50 @@
+{
+  "contract": "ScriberLocalPolishingLlamaCppRuntimeLockV1",
+  "schemaVersion": 1,
+  "status": "locked",
+  "upstreamRepository": "https://github.com/ggml-org/llama.cpp",
+  "release": {
+    "tag": "b10158",
+    "commit": "f87067841bac583bc089a225382248d857791ca8",
+    "publishedAtUtc": "2026-07-28T08:54:30Z",
+    "versionOutputContains": [
+      "version: 10158",
+      "f87067841"
+    ]
+  },
+  "platform": {
+    "os": "windows",
+    "architecture": "amd64",
+    "primaryBackend": "vulkan",
+    "cpuFallback": true
+  },
+  "archive": {
+    "filename": "llama-b10158-bin-win-vulkan-x64.zip",
+    "url": "https://github.com/ggml-org/llama.cpp/releases/download/b10158/llama-b10158-bin-win-vulkan-x64.zip",
+    "bytes": 33576221,
+    "sha256": "sha256:07ca10d5ca2607da9698b821c1234334b97bf2690b13ae4eab824fde451fd53e"
+  },
+  "license": {
+    "filename": "LICENSE.llama.cpp.txt",
+    "url": "https://raw.githubusercontent.com/ggml-org/llama.cpp/f87067841bac583bc089a225382248d857791ca8/LICENSE",
+    "bytes": 1078,
+    "sha256": "sha256:94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+  },
+  "maximumArchiveEntries": 128,
+  "maximumExtractedBytes": 100000000,
+  "requiredExactFiles": [
+    "ggml-base.dll",
+    "ggml-rpc.dll",
+    "ggml-vulkan.dll",
+    "ggml.dll",
+    "libomp140.x86_64.dll",
+    "llama-common.dll",
+    "llama-server-impl.dll",
+    "llama-server.exe",
+    "llama.dll",
+    "mtmd.dll"
+  ],
+  "requiredFileGlobs": [
+    "ggml-cpu-*.dll"
+  ]
+}
