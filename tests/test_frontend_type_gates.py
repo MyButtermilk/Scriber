@@ -2685,7 +2685,9 @@ def test_meeting_workspace_guards_async_state_and_touch_delete_controls() -> Non
     assert "min-[1100px]:group-hover:pointer-events-auto" in meetings
     assert "h-11 w-11" in meetings
     assert 'scope: { id: "meeting-action-item-updates" }' in meetings
-    assert "key={`${item.id}:${item.updatedAt}`}" in meetings
+    assert "<div key={item.id}" in meetings
+    assert "<div key={item.updatedAt}" in meetings
+    assert "<AnimatedCheckbox" in meetings
     assert "applyMeetingActionItem(queryClient, variables.id, item);" in meetings
     assert 'queryKey: ["/api/meetings", variables.id, "deliveries"]' in meetings
 
