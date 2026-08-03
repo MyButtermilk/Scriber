@@ -3,7 +3,6 @@ import {
   ArrowRight,
   BarChart3,
   CalendarClock,
-  Check,
   ChevronDown,
   Cloud,
   Download,
@@ -57,6 +56,8 @@ import { cn } from "@/lib/utils";
 import { Textarea } from "@/components/ui/textarea";
 import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { SuccessCheckIcon, TransitionIcon, TransitionText } from "@/components/ui/transition-state";
+import { TransitionTooltip } from "@/components/ui/transition-tooltip";
 import {
   apiUrl,
   refreshGlobalHotkey,
@@ -1529,14 +1530,20 @@ function ApiCredentialRow({
                   className="pr-10 font-mono text-sm"
                 />
                 {typeof show === "boolean" && onShowChange ? (
-                  <button
-                    type="button"
-                    onClick={() => onShowChange(!show)}
-                    className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 transition-colors hover:text-slate-950 dark:hover:text-slate-100"
-                    aria-label={show ? t("Hide credential") : t("Show credential")}
+                  <TransitionTooltip
+                    content={show ? t("Hide credential") : t("Show credential")}
+                    className="absolute right-2 top-1/2 -translate-y-1/2"
+                    style={{ position: "absolute" }}
                   >
-                    {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
+                    <button
+                      type="button"
+                      onClick={() => onShowChange(!show)}
+                      className="inline-flex h-8 w-8 items-center justify-center text-slate-500 transition-colors hover:text-slate-950 dark:hover:text-slate-100"
+                      aria-label={show ? t("Hide credential") : t("Show credential")}
+                    >
+                      {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </TransitionTooltip>
                 ) : null}
               </div>
               <Button
@@ -1544,8 +1551,13 @@ function ApiCredentialRow({
                 onClick={onSave}
                 className={cn(saved && "border-emerald-600 bg-emerald-600 text-white hover:bg-emerald-700")}
               >
-                {saved ? <Check className="mr-2 h-4 w-4" /> : <Save className="mr-2 h-4 w-4" />}
-                {saved ? t("Saved") : t("Save")}
+                <TransitionIcon
+                  state={saved ? "b" : "a"}
+                  className="mr-2"
+                  iconA={<Save className="h-4 w-4" />}
+                  iconB={<SuccessCheckIcon visible={saved} animateOnMount={false} className="h-4 w-4" />}
+                />
+                <TransitionText value={saved ? t("Saved") : t("Save")} />
               </Button>
             </div>
           </FieldShell>
@@ -2467,7 +2479,7 @@ export default function Settings() {
           "Google Cloud": hasValue(keys.googleApplicationCredentials),
         };
         setCredentialReadyKeys(loadedCredentialReadyKeys);
-        setSavedKeys(loadedCredentialReadyKeys);
+        setSavedKeys({});
 
         let microphonePayload = mics;
         if (!Array.isArray(microphonePayload.devices)) {
@@ -6536,7 +6548,7 @@ export default function Settings() {
             <div className="space-y-4" aria-live="polite">
               <div className="flex items-start gap-3 rounded-lg border border-emerald-500/35 bg-emerald-50 px-3 py-3 dark:bg-emerald-950/25">
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-emerald-600 text-white dark:bg-emerald-500 dark:text-slate-950">
-                  <Check className="h-5 w-5" aria-hidden="true" />
+                  <SuccessCheckIcon className="h-5 w-5" />
                 </span>
                 <div className="min-w-0">
                   <p className="text-sm font-semibold text-emerald-950 dark:text-emerald-100">

@@ -2,6 +2,7 @@ import type { MouseEvent } from "react";
 import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
+import { TransitionIcon } from "@/components/ui/transition-state";
 
 type CopyActionButtonProps = {
   onClick: (e: MouseEvent<HTMLButtonElement>) => void;
@@ -38,11 +39,11 @@ export function CopyActionButton({
       data-label={hoverLabel}
       aria-label={ariaLabel}
     >
-      {copied ? (
-        <Check className="copy-pill__check" strokeWidth={2.4} />
-      ) : (
-        <Copy className="copy-pill__icon" strokeWidth={2.05} />
-      )}
+      <TransitionIcon
+        state={copied ? "b" : "a"}
+        iconA={<Copy className="copy-pill__icon" strokeWidth={2.05} />}
+        iconB={<Check className="copy-pill__check" strokeWidth={2.4} />}
+      />
     </button>
   );
 }

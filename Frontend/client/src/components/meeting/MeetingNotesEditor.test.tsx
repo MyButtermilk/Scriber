@@ -164,7 +164,7 @@ describe("MeetingNotesEditor autosave", () => {
     expect(maximumActiveSaves).toBe(1);
 
     await resolveSave(secondSave, note("third", { generation: 2, applied: true }));
-    expect(screen.getByText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
   });
 
   it("keeps B when pagehide B reaches the server before in-flight A", async () => {
@@ -188,7 +188,7 @@ describe("MeetingNotesEditor autosave", () => {
 
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(onSaved).toHaveBeenLastCalledWith(expect.objectContaining({ body: "B", writeGeneration: 2 }), "meeting-a");
-    expect(screen.getByText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
   });
 
   it("keeps B when in-flight A completes before pagehide B", async () => {
@@ -209,7 +209,7 @@ describe("MeetingNotesEditor autosave", () => {
     await resolveSave(saveB, note("B", { generation: 2, applied: true }));
 
     expect(onSaved.mock.calls.map(([saved]) => saved.body)).toEqual(["A", "B"]);
-    expect(screen.getByText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
+    expect(screen.getByLabelText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
   });
 
   it("raises its generation floor and retries after a stale response", async () => {

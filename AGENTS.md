@@ -137,6 +137,10 @@ Frontend and shell:
   primary tabs share the `app-page-shell` 1320 px desktop frame and expose a
   stable `data-page-shell` hook; do not introduce per-tab maximum widths.
   Motion follows the shared transitions.dev Refine/Polish tokens in `:root`.
+  Reusable text/icon swaps, success checks, tooltips, error shakes, and animated
+  checkboxes live under `Frontend/client/src/components/ui`; history skeletons,
+  the list/grid pill, and accordion disclosure reuse the same semantic timing
+  tokens. Toggle/Switch controls intentionally retain their existing behavior.
   Match duration and easing tokens by interaction type, keep frequent tab and
   keyboard navigation immediate, use faster closes than opens for transient
   surfaces, never add `transition: all`, gate hover-only transforms to fine

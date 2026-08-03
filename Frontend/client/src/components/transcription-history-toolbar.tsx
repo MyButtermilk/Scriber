@@ -1,3 +1,4 @@
+import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import { LayoutGrid, LayoutList } from "lucide-react";
 
 import { TranscriptHistorySearch } from "@/components/transcript-history-search";
@@ -38,6 +39,48 @@ export function TranscriptionHistoryToolbar({
 }: TranscriptionHistoryToolbarProps) {
   const { formatNumber, t } = useI18n();
   const formattedTotal = formatNumber(total);
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const pillRef = useRef<HTMLSpanElement>(null);
+  const indicatorReadyRef = useRef(false);
+  const moveIndicator = useCallback((animate: boolean) => {
+    const tabs = tabsRef.current;
+    const pill = pillRef.current;
+    const activeTab = tabs?.querySelector<HTMLElement>('.t-tab[data-state="on"]');
+    if (!tabs || !pill || !activeTab) return;
+
+    if (!animate) {
+      const previousTransition = pill.style.transition;
+      pill.style.transition = "none";
+      pill.style.transform = `translateX(${activeTab.offsetLeft}px)`;
+      pill.style.width = `${activeTab.offsetWidth}px`;
+      void pill.offsetWidth;
+      pill.style.transition = previousTransition;
+      return;
+    }
+
+    pill.style.transform = `translateX(${activeTab.offsetLeft}px)`;
+    pill.style.width = `${activeTab.offsetWidth}px`;
+  }, []);
+
+  useLayoutEffect(() => {
+    moveIndicator(indicatorReadyRef.current);
+    indicatorReadyRef.current = true;
+  }, [moveIndicator, viewMode]);
+
+  useEffect(() => {
+    const tabs = tabsRef.current;
+    if (!tabs) return;
+    const updateWithoutAnimation = () => moveIndicator(false);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateWithoutAnimation);
+    observer?.observe(tabs);
+    tabs.querySelectorAll<HTMLElement>(".t-tab").forEach((tab) => observer?.observe(tab));
+    window.addEventListener("resize", updateWithoutAnimation);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", updateWithoutAnimation);
+    };
+  }, [moveIndicator]);
+
   return (
     <header
       className={cn(
@@ -68,25 +111,27 @@ export function TranscriptionHistoryToolbar({
           className="lg:w-[320px] min-[1280px]:w-[380px]"
         />
         <ToggleGroup
+          ref={tabsRef}
           type="single"
           value={viewMode}
           onValueChange={(value) => {
             if (value === "list" || value === "grid") onViewModeChange(value);
           }}
-          className="transcription-view-toggle shrink-0 rounded-[12px] p-1"
+          className="t-tabs transcription-view-toggle shrink-0 rounded-[12px] p-1"
           aria-label={t("Transcript history layout")}
         >
+          <span ref={pillRef} className="t-tabs-pill" aria-hidden="true" />
           <ToggleGroupItem
             value="list"
             aria-label={t("List view")}
-            className="h-10 w-10 rounded-[9px] p-0 transition-[background-color,color,transform] duration-200 active:scale-[0.96]"
+            className="t-tab h-10 w-10 rounded-[9px] p-0 active:scale-[0.96]"
           >
             <LayoutList className="h-4 w-4" aria-hidden="true" />
           </ToggleGroupItem>
           <ToggleGroupItem
             value="grid"
             aria-label={t("Grid view")}
-            className="h-10 w-10 rounded-[9px] p-0 transition-[background-color,color,transform] duration-200 active:scale-[0.96]"
+            className="t-tab h-10 w-10 rounded-[9px] p-0 active:scale-[0.96]"
           >
             <LayoutGrid className="h-4 w-4" aria-hidden="true" />
           </ToggleGroupItem>

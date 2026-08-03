@@ -2,6 +2,7 @@ import { AlertTriangle, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
+import { TransitionText } from "@/components/ui/transition-state";
 import { useI18n } from "@/i18n";
 import type { UseMeetingNotesAutosaveResult } from "./useMeetingNotesAutosave";
 
@@ -50,11 +51,15 @@ export function MeetingNotesEditor({ autosave, rows = 5, textareaClassName }: Me
           ) : (
             <Check className="mr-2 h-3.5 w-3.5" />
           )}
-          {status === "saving"
-            ? t("Saving…")
-            : status === "dirty"
-              ? t("Unsaved changes")
-              : t("Notes autosave and AI regeneration never overwrites them.")}
+          <TransitionText
+            value={
+              status === "saving"
+                ? t("Saving…")
+                : status === "dirty"
+                  ? t("Unsaved changes")
+                  : t("Notes autosave and AI regeneration never overwrites them.")
+            }
+          />
         </p>
       )}
     </div>

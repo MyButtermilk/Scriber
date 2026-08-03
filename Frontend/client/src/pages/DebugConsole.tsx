@@ -34,6 +34,7 @@ import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { TransitionTooltip } from "@/components/ui/transition-tooltip";
 import { RuntimeLogMessage } from "@/components/debug/RuntimeLogMessage";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
@@ -637,70 +638,75 @@ export default function DebugConsole() {
             </div>
 
             <div className="debug-console-actions" aria-label={t("Console actions")}>
-              <Button
-                className="debug-console-action-button"
-                title={t("Clear view")}
-                aria-label={t("Clear view")}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={clearConsoleView}
-                disabled={!displayedLogs.length}
-              >
-                <Eraser className="h-4 w-4" />
-                <span className="debug-console-action-label">{t("Clear view")}</span>
-              </Button>
-              <Button
-                className="debug-console-action-button"
-                title={t("Clear logs")}
-                aria-label={t("Clear logs")}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setDeleteDialogOpen(true)}
-                disabled={logFileClearLoading || (!logs.length && !sources.length)}
-              >
-                {logFileClearLoading ? <WavePhysicsLoader size="inline" /> : <Trash2 className="h-4 w-4" />}
-                <span className="debug-console-action-label">{t("Clear logs")}</span>
-              </Button>
-              <Button
-                className="debug-console-action-button"
-                title={t("Copy visible logs")}
-                aria-label={t("Copy visible logs")}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void copyVisibleLogs()}
-                disabled={!displayedLogs.length}
-              >
-                <Clipboard className="h-4 w-4" />
-                <span className="debug-console-action-label">{t("Copy")}</span>
-              </Button>
-              <Button
-                className="debug-console-action-button"
-                title={t("Download support bundle")}
-                aria-label={t("Download support bundle")}
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void downloadSupportBundle()}
-                disabled={supportBundleLoading}
-              >
-                {supportBundleLoading ? <WavePhysicsLoader size="inline" /> : <Download className="h-4 w-4" />}
-                <span className="debug-console-action-label">{t("Support")}</span>
-              </Button>
-              <Button
-                className="debug-console-action-button debug-console-refresh-button"
-                title={t("Refresh logs")}
-                aria-label={t("Refresh logs")}
-                type="button"
-                size="sm"
-                onClick={() => void loadLogs()}
-                disabled={loading}
-              >
-                {loading ? <WavePhysicsLoader size="inline" /> : <RefreshCw className="h-4 w-4" />}
-                <span className="debug-console-action-label">{t("Refresh")}</span>
-              </Button>
+              <TransitionTooltip content={t("Clear view")}>
+                <Button
+                  className="debug-console-action-button"
+                  aria-label={t("Clear view")}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={clearConsoleView}
+                  disabled={!displayedLogs.length}
+                >
+                  <Eraser className="h-4 w-4" />
+                  <span className="debug-console-action-label">{t("Clear view")}</span>
+                </Button>
+              </TransitionTooltip>
+              <TransitionTooltip content={t("Clear logs")}>
+                <Button
+                  className="debug-console-action-button"
+                  aria-label={t("Clear logs")}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteDialogOpen(true)}
+                  disabled={logFileClearLoading || (!logs.length && !sources.length)}
+                >
+                  {logFileClearLoading ? <WavePhysicsLoader size="inline" /> : <Trash2 className="h-4 w-4" />}
+                  <span className="debug-console-action-label">{t("Clear logs")}</span>
+                </Button>
+              </TransitionTooltip>
+              <TransitionTooltip content={t("Copy visible logs")}>
+                <Button
+                  className="debug-console-action-button"
+                  aria-label={t("Copy visible logs")}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void copyVisibleLogs()}
+                  disabled={!displayedLogs.length}
+                >
+                  <Clipboard className="h-4 w-4" />
+                  <span className="debug-console-action-label">{t("Copy")}</span>
+                </Button>
+              </TransitionTooltip>
+              <TransitionTooltip content={t("Download support bundle")}>
+                <Button
+                  className="debug-console-action-button"
+                  aria-label={t("Download support bundle")}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void downloadSupportBundle()}
+                  disabled={supportBundleLoading}
+                >
+                  {supportBundleLoading ? <WavePhysicsLoader size="inline" /> : <Download className="h-4 w-4" />}
+                  <span className="debug-console-action-label">{t("Support")}</span>
+                </Button>
+              </TransitionTooltip>
+              <TransitionTooltip content={t("Refresh logs")}>
+                <Button
+                  className="debug-console-action-button debug-console-refresh-button"
+                  aria-label={t("Refresh logs")}
+                  type="button"
+                  size="sm"
+                  onClick={() => void loadLogs()}
+                  disabled={loading}
+                >
+                  {loading ? <WavePhysicsLoader size="inline" /> : <RefreshCw className="h-4 w-4" />}
+                  <span className="debug-console-action-label">{t("Refresh")}</span>
+                </Button>
+              </TransitionTooltip>
             </div>
           </div>
         </header>

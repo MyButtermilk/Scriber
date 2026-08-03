@@ -21,6 +21,7 @@ import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
+import { ErrorShake } from "@/components/ui/error-shake";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
   getFileUploadSnapshot,
@@ -720,14 +721,16 @@ export default function FileTranscribe() {
             )}
           </div>
           {dropError && !isUploading ? (
-            <div
-              className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive"
-              role="alert"
-            >
-              {dropError.fileName
-                ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
-                : t(dropError.reason)}
-            </div>
+            <ErrorShake active trigger={dropError}>
+              <div
+                className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive"
+                role="alert"
+              >
+                {dropError.fileName
+                  ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
+                  : t(dropError.reason)}
+              </div>
+            </ErrorShake>
           ) : null}
           {isUploading && uploadQueueItems.length > 1 && (
             <div className="w-full max-w-md space-y-2 text-left">

@@ -90,6 +90,7 @@ import {
   upsertMeetingImportJob,
 } from "@/lib/meeting-import-cache";
 import { Button } from "@/components/ui/button";
+import { AnimatedCheckbox } from "@/components/ui/animated-checkbox";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -811,17 +812,15 @@ function ActionItems({
   return (
     <div className="divide-y divide-border/60" aria-busy={saving}>
       {items.map((item) => (
-        <div key={`${item.id}:${item.updatedAt}`} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
-          <button
-            type="button"
+        <div key={item.id} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
+          <AnimatedCheckbox
+            checked={item.status === "done"}
             disabled={saving}
             onClick={() => onChange(item, { status: item.status === "done" ? "open" : "done" })}
-            className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
-            aria-label={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
-          >
-            {item.status === "done" && <Check className="h-3.5 w-3.5" />}
-          </button>
-          <div className="min-w-0 space-y-2">
+            className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] [&>svg]:h-3.5 [&>svg]:w-3.5 ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
+            ariaLabel={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
+          />
+          <div key={item.updatedAt} className="min-w-0 space-y-2">
             <Input
               disabled={saving}
               defaultValue={item.text}
