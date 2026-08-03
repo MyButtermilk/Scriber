@@ -2479,7 +2479,7 @@ export default function Settings() {
           "Google Cloud": hasValue(keys.googleApplicationCredentials),
         };
         setCredentialReadyKeys(loadedCredentialReadyKeys);
-        setSavedKeys({});
+        setSavedKeys(loadedCredentialReadyKeys);
 
         let microphonePayload = mics;
         if (!Array.isArray(microphonePayload.devices)) {
