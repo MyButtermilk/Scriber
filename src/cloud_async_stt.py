@@ -51,6 +51,23 @@ from src.runtime.audio_spool import (
 from src.runtime.env_values import env_float, env_int
 from src.runtime.http_response import read_response_text_limited
 
+OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+OPENROUTER_MAI_TRANSCRIBE_MODEL = Config.DEFAULT_OPENROUTER_STT_MODEL
+_OPENROUTER_AUDIO_FORMAT_BY_SUFFIX = {
+    ".flac": "flac",
+    ".mp3": "mp3",
+    ".wav": "wav",
+}
+_OPENROUTER_AUDIO_FORMAT_BY_CONTENT_TYPE = {
+    "audio/flac": "flac",
+    "audio/mpeg": "mp3",
+    "audio/mp3": "mp3",
+    "audio/wav": "wav",
+    "audio/x-wav": "wav",
+}
+_OPENROUTER_BASE64_READ_BYTES = 3 * 256 * 1024
+_OPENROUTER_JSON_AUDIO_SENTINEL = "__SCRIBER_OPENROUTER_AUDIO_BASE64__"
+
 
 def provider_language_code(language: Language | str | None) -> str:
     if not language:
@@ -59,6 +76,67 @@ def provider_language_code(language: Language | str | None) -> str:
     if not raw or raw == "auto":
         return ""
     return raw.replace("_", "-").split("-", 1)[0]
+
+
+def openrouter_audio_format(filename: str, content_type: str) -> str:
+    """Resolve only formats verified for Scriber's OpenRouter MAI route."""
+
+    suffix = os.path.splitext(str(filename or ""))[1].lower()
+    if suffix in _OPENROUTER_AUDIO_FORMAT_BY_SUFFIX:
+        return _OPENROUTER_AUDIO_FORMAT_BY_SUFFIX[suffix]
+    normalized_content_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_content_type in _OPENROUTER_AUDIO_FORMAT_BY_CONTENT_TYPE:
+        return _OPENROUTER_AUDIO_FORMAT_BY_CONTENT_TYPE[normalized_content_type]
+    raise ValueError("OpenRouter MAI requires verified WAV, MP3, or FLAC audio.")
+
+
+def _build_openrouter_stt_json_body(
+    audio_source: bytes | BinaryIO,
+    *,
+    model: str,
+    audio_format: str,
+    language: str,
+) -> BinaryIO:
+    """Build OpenRouter's base64 JSON body with bounded memory use."""
+
+    request: dict[str, Any] = {
+        "model": model,
+        "input_audio": {
+            "data": _OPENROUTER_JSON_AUDIO_SENTINEL,
+            "format": audio_format,
+        },
+        "response_format": "json",
+        "temperature": 0,
+    }
+    if language:
+        request["language"] = language
+
+    serialized = json.dumps(request, ensure_ascii=True, separators=(",", ":"))
+    encoded_sentinel = json.dumps(_OPENROUTER_JSON_AUDIO_SENTINEL)
+    prefix, marker, suffix = serialized.partition(encoded_sentinel)
+    if not marker or encoded_sentinel in suffix:
+        raise RuntimeError("OpenRouter STT request body could not be assembled safely.")
+
+    body = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")  # noqa: SIM115
+    try:
+        body.write(prefix.encode("ascii"))
+        body.write(b'"')
+        if isinstance(audio_source, bytes):
+            source_view = memoryview(audio_source)
+            for offset in range(0, len(source_view), _OPENROUTER_BASE64_READ_BYTES):
+                body.write(base64.b64encode(source_view[offset : offset + _OPENROUTER_BASE64_READ_BYTES]))
+        else:
+            while chunk := audio_source.read(_OPENROUTER_BASE64_READ_BYTES):
+                if not isinstance(chunk, bytes):
+                    raise TypeError("OpenRouter STT audio source must yield bytes.")
+                body.write(base64.b64encode(chunk))
+        body.write(b'"')
+        body.write(suffix.encode("ascii"))
+        body.seek(0)
+        return body
+    except BaseException:
+        body.close()
+        raise
 
 
 def _report_progress(on_progress: Callable[[str], None] | None, message: str) -> None:
@@ -630,6 +708,68 @@ async def transcribe_with_openai_audio_transcription(
         return parsed if isinstance(parsed, dict) else {"text": raw}
 
 
+async def transcribe_with_openrouter_audio_transcription(
+    *,
+    session: aiohttp.ClientSession,
+    api_key: str,
+    audio_source: bytes | BinaryIO,
+    filename: str,
+    content_type: str,
+    model: str = OPENROUTER_MAI_TRANSCRIBE_MODEL,
+    language: Language | str | None,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+) -> dict[str, Any]:
+    """Transcribe verified audio through OpenRouter's dedicated STT endpoint."""
+
+    selected_model = str(model or "").strip() or OPENROUTER_MAI_TRANSCRIBE_MODEL
+    if selected_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
+        raise ValueError("OpenRouter STT is pinned to Microsoft MAI Transcribe 1.5.")
+    audio_format = openrouter_audio_format(filename, content_type)
+    language_code = provider_language_code(language)
+
+    _report_progress(on_progress, "Preparing audio...")
+    body = await asyncio.to_thread(
+        _build_openrouter_stt_json_body,
+        audio_source,
+        model=selected_model,
+        audio_format=audio_format,
+        language=language_code,
+    )
+    try:
+        _report_progress(on_progress, "Uploading audio...")
+        _report_progress(on_progress, "Processing transcription...")
+        async with session.post(
+            OPENROUTER_STT_URL,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://scriber.local",
+                "X-OpenRouter-Title": "Scriber",
+            },
+            timeout=aiohttp.ClientTimeout(total=timeout_secs),
+        ) as response:
+            raw = await read_response_text_limited(response, 64 * 1024 * 1024)
+            if response.status >= 400:
+                raise provider_transport_error(
+                    "openrouter_stt",
+                    "transcription",
+                    status=response.status,
+                    response_body=raw,
+                )
+            if not raw:
+                return {}
+            parsed = parse_provider_json_response(
+                "openrouter_stt",
+                "transcription_response",
+                raw,
+            )
+            return parsed if isinstance(parsed, dict) else {"text": raw}
+    finally:
+        await asyncio.to_thread(body.close)
+
+
 def speechmatics_transcript_payload_to_text(
     payload: dict[str, Any],
     *,
@@ -1109,6 +1249,43 @@ class OpenAIAsyncProcessor(_BufferedAsyncProcessor):
             async with aiohttp.ClientSession() as session:
                 payload = await _call(session)
         return openai_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+
+
+class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
+    provider_name = "openrouter_stt"
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        language: Language | str | None,
+        session: aiohttp.ClientSession | None = None,
+        on_progress: Callable[[str], None] | None = None,
+    ) -> None:
+        super().__init__(session=session, on_progress=on_progress, diarize=False)
+        self._api_key = api_key
+        self._model = model
+        self._language = language
+
+    async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
+        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+            return await transcribe_with_openrouter_audio_transcription(
+                session=session,
+                api_key=self._api_key,
+                audio_source=wav_source,
+                filename="audio.wav",
+                content_type="audio/wav",
+                model=self._model,
+                language=self._language,
+                on_progress=self._on_progress,
+            )
+
+        payload = await _call(self._session) if self._session else None
+        if payload is None:
+            async with aiohttp.ClientSession() as session:
+                payload = await _call(session)
+        return openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
 
 
 class GeminiAsyncProcessor(_BufferedAsyncProcessor):

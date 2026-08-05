@@ -1494,6 +1494,31 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_settings_selects_openrouter_mai_stt_with_the_shared_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "OPENROUTER_API_KEY", "", raising=False)
+    monkeypatch.setattr(web_api.Config, "DEFAULT_STT_SERVICE", "soniox", raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings(
+        {
+            "defaultSttService": "openrouter_stt",
+            "apiKeys": {"openrouter": "one-openrouter-key"},
+        }
+    )
+
+    assert web_api.Config.DEFAULT_STT_SERVICE == "openrouter_stt"
+    assert web_api.Config.OPENROUTER_API_KEY == "one-openrouter-key"
+    assert settings["defaultSttService"] == "openrouter_stt"
+    assert settings["apiKeys"]["openrouter"] == "one-openrouter-key"
+    assert settings["transcriptionProviderModels"]["openrouter_stt"] == "microsoft/mai-transcribe-1.5"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_settings_round_trips_celeris_models_and_key(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

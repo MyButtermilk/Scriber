@@ -1615,6 +1615,67 @@ def test_settings_model_choices_require_saved_api_keys() -> None:
     assert "OpenRouter: hasValue(keys.openrouter)" in settings_source
 
 
+def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> None:
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    translations = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "i18n" / "translations" / "de" / "settings.ts"
+    ).read_text(encoding="utf-8")
+
+    provider_options_source = settings_source[
+        settings_source.index("function createProviderModelOptions") : settings_source.index(
+            "const MEETING_FINAL_STT_OPTIONS"
+        )
+    ]
+    assert_source_contains_tokens(
+        provider_options_source,
+        'benchmarkOption("openrouter_stt", t("Microsoft MAI · OpenRouter"), 6.0, 2.4, "cloud_async", "openrouter", t("One key for STT and AI · about 5% credit purchase fee"))',
+    )
+    assert_source_contains_tokens(
+        provider_options_source,
+        'benchmarkOption("azure_mai", t("Microsoft MAI · Azure direct"), 6.0, 2.4, "cloud_async", "azure", t("Separate Azure Speech key and region · no OpenRouter fee"))',
+    )
+    assert source_token_sequence_position(
+        provider_options_source, 'benchmarkOption("openrouter_stt",'
+    ) < source_token_sequence_position(provider_options_source, 'benchmarkOption("azure_mai",')
+    assert "routeNote?: string;" in settings_source
+    assert "{option.routeNote}" in settings_source
+
+    credential_mapping_source = settings_source[
+        settings_source.index("const requiredCredentialForTranscriptionModel") : settings_source.index(
+            "const requiredCredentialForLanguageModel"
+        )
+    ]
+    assert_source_contains_tokens(
+        credential_mapping_source,
+        'case "openrouter_stt": return { provider: "OpenRouter", label: "OpenRouter API key", helpKey: "openrouter" }',
+    )
+    managed_cloud_credentials = settings_source[
+        settings_source.index("const hasAnyManagedCloudSttCredential") : settings_source.index(
+            "const markCredentialChanged"
+        )
+    ]
+    assert "openRouterKey" in managed_cloud_credentials
+
+    meeting_options_source = settings_source[
+        settings_source.index("const MEETING_FINAL_STT_OPTIONS") : settings_source.index("function providerErrorRate")
+    ]
+    assert_source_contains_tokens(
+        meeting_options_source,
+        'value: "openrouter_stt", label: "Microsoft MAI · OpenRouter", model: "microsoft/mai-transcribe-1.5", credentialModel: "openrouter_stt", recommended: false, nativeDiarization: false, fiveHourSupported: false',
+    )
+
+    openrouter_key_note = (
+        "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. "
+        "OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% "
+        "(minimum $0.80) for standard payments or 5% for crypto."
+    )
+    assert_source_contains_tokens(settings_source, f't("{openrouter_key_note}")')
+    assert f'"{openrouter_key_note}":' in translations
+    assert "OpenRouter erhebt keinen Aufschlag auf Modellpreise" in translations
+    assert "5,5 % (mindestens 0,80 $)" in translations
+    assert "5 % bei Krypto" in translations
+
+
 def test_settings_exposes_modulate_final_text_only_realtime_and_batch() -> None:
     settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
@@ -1728,6 +1789,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"speechmatics"',
     ]
     async_order = [
+        '"openrouter_stt"',
         '"azure_mai"',
         '"assemblyai"',
         '"mistral-async"',

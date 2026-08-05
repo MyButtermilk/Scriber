@@ -213,6 +213,7 @@ class Config:
     _LEGACY_DEFAULT_SONIOX_RT_MODELS = {"stt-rt-v3", "stt-rt-v4"}
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
+    DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -303,6 +304,7 @@ class Config:
         "openai": "OPENAI_API_KEY",
         "openai_async": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
+        "openrouter_stt": "OPENROUTER_API_KEY",
         "cerebras": "CEREBRAS_API_KEY",
         "celeris": "CELERIS_API_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
@@ -332,6 +334,7 @@ class Config:
         "deepgram_async": "Deepgram (Async)",
         "openai": "OpenAI Realtime",
         "openai_async": "OpenAI Batch",
+        "openrouter_stt": "Microsoft MAI Transcribe via OpenRouter",
         "azure_mai": "Microsoft MAI Transcribe",
         "gladia": "Gladia (Streaming)",
         "gladia_async": "Gladia (Async)",
@@ -739,6 +742,7 @@ ${output}"""
                 cls.OPENAI_STT_MODEL,
                 "gpt-4o-mini-transcribe-2025-12-15",
             ),
+            "openrouter_stt": cls.DEFAULT_OPENROUTER_STT_MODEL,
             "azure_mai": configured(cls.AZURE_MAI_MODEL, "mai-transcribe-1.5"),
             "gladia": "solaria-1",
             # Gladia's current pre-recorded v2 request has no STT model field.

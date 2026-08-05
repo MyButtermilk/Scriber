@@ -342,6 +342,15 @@ class TestConfig(unittest.TestCase):
         self.assertIn("openrouter", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("openrouter", Config.SERVICE_LABELS)
 
+    def test_openrouter_stt_reuses_one_key_and_pins_mai_model(self):
+        self.assertEqual(Config.SERVICE_API_KEY_MAP["openrouter_stt"], "OPENROUTER_API_KEY")
+        self.assertEqual(Config.SERVICE_LABELS["openrouter_stt"], "Microsoft MAI Transcribe via OpenRouter")
+        self.assertEqual(Config.DEFAULT_OPENROUTER_STT_MODEL, "microsoft/mai-transcribe-1.5")
+        self.assertEqual(
+            Config.transcription_provider_models()["openrouter_stt"],
+            "microsoft/mai-transcribe-1.5",
+        )
+
     def test_aws_transcribe_is_not_supported(self):
         self.assertNotIn("aws", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("aws", Config.SERVICE_LABELS)

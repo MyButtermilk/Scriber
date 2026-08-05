@@ -549,7 +549,6 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
-        active=False,
     ),
     _capability(
         "gemini_stt",

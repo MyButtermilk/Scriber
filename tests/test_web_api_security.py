@@ -1383,6 +1383,13 @@ def test_audio_upload_max_bytes_defaults_to_azure_mai_limit(monkeypatch):
     assert web_api._get_audio_upload_limit_label("azure_mai") == "300MB"
 
 
+def test_audio_upload_max_bytes_bounds_openrouter_base64_stt(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+    assert web_api._get_audio_upload_max_bytes("openrouter_stt") == 300 * 1024 * 1024
+    assert web_api._get_audio_upload_limit_label("openrouter_stt") == "300MB"
+
+
 def test_audio_upload_max_bytes_defaults_to_modulate_limit(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)

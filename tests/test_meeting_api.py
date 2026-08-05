@@ -1367,6 +1367,35 @@ async def test_live_and_final_profile_reports_both_soniox_passes(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_openrouter_mai_meeting_profile_uses_shared_key_and_conservative_capabilities(monkeypatch):
+    monkeypatch.setattr(web_api.Config, "MEETING_TRANSCRIPTION_MODE", "final_only")
+    monkeypatch.setattr(web_api.Config, "MEETING_FINAL_PROVIDER", "openrouter_stt")
+    monkeypatch.setattr(
+        web_api.Config,
+        "get_api_key",
+        lambda provider: "shared-openrouter-key" if provider == "openrouter_stt" else "",
+    )
+
+    app = web_api.create_app(object())
+    handler = _route_handler(app, "GET", "/api/meeting-profiles")
+    response = await handler(_DirectRequest(app))
+    payload = json.loads(response.body)
+    profile = payload["profiles"][0]
+    capabilities = payload["providerCapabilities"]["openrouter_stt"]
+
+    assert response.status == 200
+    assert profile["available"] is True
+    assert profile["finalProvider"] == "openrouter_stt"
+    assert profile["stages"][1]["model"] == "microsoft/mai-transcribe-1.5"
+    assert profile["costEstimate"]["singleTrackFinalPerAudioHour"] == 0.36
+    assert profile["costEstimate"]["finalPerMeetingHour"] == 0.72
+    assert capabilities["timestamps"] is False
+    assert capabilities["batchDiarization"] is False
+    assert capabilities["localDiarizationFallback"] is True
+    assert capabilities["fiveHourSupported"] is False
+
+
+@pytest.mark.asyncio
 async def test_final_only_mode_never_starts_a_live_preview_provider():
     class Controller:
         async def start_meeting_live_transcription(self, *_args, **_kwargs):
@@ -4134,6 +4163,7 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             "mistral_async",
             "deepgram_async",
             "openai_async",
+            "openrouter_stt",
             "gemini_stt",
             "azure_mai",
             "onnx_local",
@@ -4142,6 +4172,10 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         }.issubset({item["id"] for item in profile_payload["finalProviderOptions"]})
         assert profile_payload["providerCapabilities"]["openai_async"]["batchDiarization"] is False
         assert profile_payload["providerCapabilities"]["openai_async"]["localDiarizationFallback"] is True
+        assert profile_payload["providerCapabilities"]["openrouter_stt"]["batchDiarization"] is False
+        assert profile_payload["providerCapabilities"]["openrouter_stt"]["timestamps"] is False
+        assert profile_payload["providerCapabilities"]["openrouter_stt"]["structuredTokens"] is False
+        assert profile_payload["providerCapabilities"]["openrouter_stt"]["localDiarizationFallback"] is True
         assert profile_payload["providerCapabilities"]["modulate_async"]["batchDiarization"] is False
         assert profile_payload["providerCapabilities"]["modulate_async"]["localDiarizationFallback"] is True
         assert profile_payload["providerCapabilities"]["soniox_async"]["fiveHourSupported"] is True
@@ -4150,8 +4184,10 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert profile_payload["providerCapabilities"]["azure_mai"]["fiveHourSupported"] is True
         assert profile_payload["providerCapabilities"]["onnx_local"]["fiveHourSupported"] is True
         assert profile_payload["providerCapabilities"]["openai_async"]["fiveHourSupported"] is False
+        assert profile_payload["providerCapabilities"]["openrouter_stt"]["fiveHourSupported"] is False
         assert profile_payload["providerCapabilities"]["smallest_async"]["fiveHourSupported"] is False
         assert "not yet verified" in profile_payload["providerCapabilities"]["openai_async"]["fiveHourReason"]
+        assert "not yet verified" in profile_payload["providerCapabilities"]["openrouter_stt"]["fiveHourReason"]
         assert profile_payload["providerCapabilities"]["soniox_async"]["maxDurationSeconds"] == 18_000
         assert profile_payload["providerCapabilities"]["gladia_async"]["maxDurationSeconds"] == 8_100
         assert profile_payload["providerCapabilities"]["mistral_async"]["maxDurationSeconds"] == 10_800

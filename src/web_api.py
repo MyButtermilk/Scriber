@@ -696,6 +696,10 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
     "deepgram_async": {"max_bytes": 2_000_000_000, "label": "2GB"},
     # OpenAI audio transcriptions accept relatively small direct uploads.
     "openai_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
+    # OpenRouter's base64 JSON STT path avoids the 25-MB multipart boundary.
+    # Keep Scriber's local body spool bounded to the upstream MAI file ceiling
+    # without claiming that the route is verified for five-hour processing.
+    "openrouter_stt": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
     # Modulate multilingual batch accepts complete files up to 100 MB.
     "modulate": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
     "modulate_async": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
@@ -709,6 +713,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "mistral": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
     "mistral_async": "The configured Voxtral Mini Transcribe 2 route accepts up to 3 hours per request.",
     "azure_mai": "Scriber transcodes each track to bounded mono 64-kbit/s MP3 before upload.",
+    "openrouter_stt": "OpenRouter accepts base64 audio, but this whole-track route is not yet verified for five-hour processing.",
     "onnx_local": "Local ONNX transcription does not require a cloud file upload.",
     "gladia": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
@@ -727,6 +732,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
         "smallest_async",
         "speechmatics_async",
         "openai_async",
+        "openrouter_stt",
         "gemini_stt",
         "azure_mai",
         "onnx_local",
@@ -735,7 +741,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-07-12"
+_MEETING_PRICING_UPDATED_AT = "2026-08-05"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -785,6 +791,12 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://developers.openai.com/api/docs/models/gpt-4o-mini-transcribe",
         "estimateKind": "token_estimate",
+    },
+    "openrouter_stt": {
+        "perTrackHourUsd": 0.36,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://openrouter.ai/microsoft/mai-transcribe-1.5",
+        "estimateKind": "published_hourly",
     },
     "modulate_async": {
         "perTrackHourUsd": 0.03,
@@ -2085,6 +2097,7 @@ def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
         "mistral",
         "mistral_async",
         "openai",
+        "openrouter_stt",
         "soniox_async",
         "smallest_async",
         "modulate_async",
@@ -5442,6 +5455,8 @@ class ScriberWebController:
             ).rstrip("/")
         elif provider_key == "groq":
             endpoint_identity = "https://api.groq.com/openai/v1"
+        elif provider_key == "openrouter_stt":
+            endpoint_identity = "https://openrouter.ai/api/v1/audio/transcriptions"
         resolved_endpoint_sha256 = (
             hashlib.sha256(endpoint_identity.encode("utf-8")).hexdigest() if endpoint_identity else ""
         )
@@ -5539,6 +5554,7 @@ class ScriberWebController:
             "soniox_async",
             "azure_mai",
             "groq",
+            "openrouter_stt",
             "speechmatics",
             "speechmatics_async",
         }
@@ -13882,6 +13898,7 @@ class ScriberWebController:
                 "smallest_async",
                 "speechmatics_async",
                 "openai_async",
+                "openrouter_stt",
                 "gemini_stt",
                 "azure_mai",
                 "onnx_local",
@@ -16739,6 +16756,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "model": Config.OPENAI_STT_MODEL,
                 "diarization": False,
                 "recommendation": "Uses the optional local Sherpa-ONNX speaker fallback.",
+            },
+            "openrouter_stt": {
+                "label": "Microsoft MAI via OpenRouter",
+                "model": Config.DEFAULT_OPENROUTER_STT_MODEL,
+                "diarization": False,
+                "recommendation": "Uses one OpenRouter key and the optional local Sherpa-ONNX speaker fallback.",
             },
             "gemini_stt": {
                 "label": "Gemini STT",
@@ -20856,7 +20879,14 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":
             import_provider_runtime_module("deepgram", "pipecat.services.deepgram.stt")
-        elif service_name in {"deepgram_async", "gemini_stt", "gladia_async", "openai_async", "speechmatics_async"}:
+        elif service_name in {
+            "deepgram_async",
+            "gemini_stt",
+            "gladia_async",
+            "openai_async",
+            "openrouter_stt",
+            "speechmatics_async",
+        }:
             import_provider_runtime_module(service_name, "src.cloud_async_stt")
         elif service_name == "openai":
             import_provider_runtime_module("openai", "pipecat.services.openai.stt")

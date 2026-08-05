@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-01
+Last verified: 2026-08-05
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -1123,6 +1123,15 @@ Packaging and scripts:
   to MP3 before upload. The shipped control remains post-stop FFmpeg MP3;
   capture-time FFmpeg MP3 is production-safe but default-off after its mixed
   canonical A/B result. Do not restore WAV upload without measured provider need.
+- `openrouter_stt` is the separate active OpenRouter route for Microsoft MAI
+  Transcribe 1.5. Keep its exact model fixed to
+  `microsoft/mai-transcribe-1.5`, reuse the existing `OPENROUTER_API_KEY` used
+  by OpenRouter summaries and post-processing, and send WAV, MP3, or FLAC audio
+  to `/api/v1/audio/transcriptions` as JSON with base64 `input_audio`. This route
+  returns final text only: request normal JSON, do not claim native timestamps
+  or diarization, and do not forward `SCRIBER_CUSTOM_VOCAB` or an Azure
+  `phraseList`. The direct `azure_mai` route remains a distinct credential,
+  endpoint, preparation, and capability path.
 - AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
   paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
   `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not
@@ -1405,7 +1414,8 @@ Packaging and scripts:
   five-hour route until long inputs are safely chunked/merged or an asynchronous
   transport is implemented. Do not show a green five-hour state for whole-track
   routes whose size, duration, and processing-window boundaries have not been
-  proven.
+  proven. In particular, `openrouter_stt` must remain non-five-hour-capable
+  until that exact OpenRouter route has its own bounded long-input evidence.
   Reject an imported or finalized track above a known hard duration before the
   provider call, and keep the live UI's final-30-minute limit warning wired to
   the same central capability.

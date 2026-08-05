@@ -205,20 +205,27 @@ def test_pipecat_owned_routes_do_not_claim_unknown_models(provider):
     assert route.audio_input_format_verified is None
 
 
-def test_modulate_route_reports_final_text_with_estimated_timing():
-    for provider in ("modulate", "modulate_async"):
-        route = freeze_provider_route(
-            workload="meeting",
-            provider=provider,
-            language="de",
-        )
-        draft = route.snapshot_draft()
+@pytest.mark.parametrize(
+    ("provider", "expected_model"),
+    (
+        ("modulate", "velma-2-stt-batch"),
+        ("modulate_async", "velma-2-stt-batch"),
+        ("openrouter_stt", "microsoft/mai-transcribe-1.5"),
+    ),
+)
+def test_text_only_route_reports_final_text_with_estimated_timing(provider, expected_model):
+    route = freeze_provider_route(
+        workload="meeting",
+        provider=provider,
+        language="de",
+    )
+    draft = route.snapshot_draft()
 
-        assert route.model == "velma-2-stt-batch"
-        assert route.execution_route()["language"] == "de"
-        assert draft.response_shape == "final_text"
-        assert draft.timestamp_mode == "estimated"
-        assert draft.diarization_mode == "local_fallback_if_enabled"
+    assert route.model == expected_model
+    assert route.execution_route()["language"] == "de"
+    assert draft.response_shape == "final_text"
+    assert draft.timestamp_mode == "estimated"
+    assert draft.diarization_mode == "local_fallback_if_enabled"
 
 
 def test_provider_speaker_zero_and_exact_timing_become_stage_units():

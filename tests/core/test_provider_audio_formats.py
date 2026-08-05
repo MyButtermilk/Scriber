@@ -11,7 +11,6 @@ from src.core.provider_audio_formats import (
     AudioContainer,
     AudioInputFormat,
     AudioSelectionMode,
-    InactiveProviderAudioRoute,
     ProviderAudioRouteKind,
     UnsupportedAudioInputFormat,
     UnsupportedProviderAudioRoute,
@@ -169,33 +168,28 @@ def test_unknown_model_and_custom_endpoint_fail_closed():
         resolve_batch_provider_audio_capabilities("unknown", "default")
 
 
-def test_openrouter_mai_is_planned_but_inactive_and_never_inherits_generic_opus():
-    with pytest.raises(InactiveProviderAudioRoute):
-        resolve_provider_audio_capabilities(
-            "openrouter_stt",
-            "audio_transcriptions",
-            "microsoft/mai-transcribe-1.5",
-        )
-
-    planned = resolve_provider_audio_capabilities(
+def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_opus():
+    capability = resolve_provider_audio_capabilities(
         "openrouter_stt",
         "audio_transcriptions",
         "microsoft/mai-transcribe-1.5",
-        include_inactive=True,
     )
-    assert planned.active is False
-    assert planned.batch_formats == {
+    assert capability.active is True
+    assert capability.batch_formats == {
         AudioInputFormat.WAV_PCM16,
         AudioInputFormat.MP3,
         AudioInputFormat.FLAC,
     }
-    assert AudioInputFormat.OGG_OPUS not in planned.batch_formats
-    assert AudioInputFormat.WEBM_OPUS not in planned.batch_formats
-    with pytest.raises(InactiveProviderAudioRoute):
-        select_audio_input_format(
-            planned,
-            route_kind=ProviderAudioRouteKind.BATCH,
-        )
+    assert capability.direct_passthrough_formats == capability.batch_formats
+    assert AudioInputFormat.OGG_OPUS not in capability.batch_formats
+    assert AudioInputFormat.WEBM_OPUS not in capability.batch_formats
+    selection = select_audio_input_format(
+        capability,
+        route_kind=ProviderAudioRouteKind.BATCH,
+        original_format=AudioInputFormat.MP3,
+    )
+    assert selection.audio_format is AudioInputFormat.MP3
+    assert selection.mode is AudioSelectionMode.ORIGINAL_PASSTHROUGH
 
 
 def test_current_gemini_route_is_vorbis_not_opus():

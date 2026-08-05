@@ -44,6 +44,12 @@ export const settingsTranslations = {
   "Euro estimates use a fixed rate of {{rate}}. Provider prices may change.":
     "Euro-Beträge sind Schätzungen mit dem festen Kurs {{rate}}. Anbieterpreise können sich ändern.",
   "Provider rate varies": "Anbieterpreis variiert",
+  "Microsoft MAI · OpenRouter": "Microsoft MAI · OpenRouter",
+  "Microsoft MAI · Azure direct": "Microsoft MAI · Azure direkt",
+  "One key for STT and AI · about 5% credit purchase fee":
+    "Ein Schlüssel für STT und KI · rund 5 % Gebühr beim Guthabenkauf",
+  "Separate Azure Speech key and region · no OpenRouter fee":
+    "Separater Azure-Speech-Schlüssel und Region · keine OpenRouter-Gebühr",
   "$0.00 / meeting hour": "0,00 $ / Meetingstunde",
   "{{price}} / meeting hour": "{{price}} / Meetingstunde",
   "~{{price}} / meeting hour": "~{{price}} / Meetingstunde",
@@ -126,6 +132,8 @@ export const settingsTranslations = {
     "Erstellt das finale Transkript; anschließend kann Scriber auf diesem Gerät Sprechernamen ergänzen.",
   "Supports long meetings. Scriber can add speaker names on this device.":
     "Unterstützt lange Meetings. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
+  "Uses the Microsoft MAI model through OpenRouter with the same key as summaries and cloud cleanup. Scriber can add speaker names on this device.":
+    "Verwendet das Microsoft-MAI-Modell über OpenRouter mit demselben Schlüssel wie Zusammenfassungen und Cloud-Bereinigung. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
   "Creates one multilingual final transcript for meetings up to 3 hours without Modulate enrichment signals. Scriber can add speaker names on this device.":
     "Erstellt ein mehrsprachiges finales Transkript für Meetings bis zu 3 Stunden, ohne Anreicherungssignale von Modulate anzufordern. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
   "Works without uploading audio. Scriber can also add speaker names on this device.":
@@ -677,6 +685,8 @@ export const settingsTranslations = {
   "Used for OpenAI STT and summarization.": "Wird für OpenAI-STT und Zusammenfassungen verwendet.",
   "One key unlocks Gemini STT, summaries, and cleanup.":
     "Ein Schlüssel aktiviert Gemini-STT, Zusammenfassungen und Bereinigung.",
+  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% (minimum $0.80) for standard payments or 5% for crypto.":
+    "Ein OpenRouter-API-Schlüssel deckt Microsoft-MAI-STT, Zusammenfassungen, Meeting-Analysen und Cloud-Bereinigung ab. OpenRouter erhebt keinen Aufschlag auf Modellpreise; beim Guthabenkauf fallen derzeit rund 5 % an: 5,5 % (mindestens 0,80 $) bei normalen Zahlungen oder 5 % bei Krypto.",
   "Used for direct Cerebras summary and cleanup models.":
     "Wird für direkte Cerebras-Modelle zur Zusammenfassung und Bereinigung verwendet.",
   "Short structured summaries with an 8K context window":

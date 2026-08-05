@@ -20,6 +20,7 @@ def test_provider_capabilities_known_providers():
     assert supports_direct_file_upload("gladia_async") is True
     assert supports_direct_file_upload("deepgram_async") is True
     assert supports_direct_file_upload("openai_async") is True
+    assert supports_direct_file_upload("openrouter_stt") is True
     assert supports_direct_file_upload("speechmatics_async") is True
     assert supports_direct_file_upload("gemini_stt") is True
     assert supports_direct_file_upload("openai") is False
@@ -40,6 +41,7 @@ def test_provider_capabilities_distinguish_streaming_from_segmented_live():
     assert get_capabilities("deepgram_async").supports_live_streaming is False
     assert get_capabilities("gladia_async").supports_live_streaming is False
     assert get_capabilities("openai_async").supports_live_streaming is False
+    assert get_capabilities("openrouter_stt").supports_live_streaming is False
     assert get_capabilities("groq").supports_live_streaming is False
     assert get_capabilities("elevenlabs").supports_live_streaming is True
     assert get_capabilities("speechmatics_async").supports_live_streaming is False
@@ -56,6 +58,7 @@ def test_provider_capabilities_injection_flags():
     assert injects_immediately_in_live_mode("gladia") is False
     assert injects_immediately_in_live_mode("openai") is False
     assert injects_immediately_in_live_mode("openai_async") is False
+    assert injects_immediately_in_live_mode("openrouter_stt") is False
     assert get_capabilities("unknown-provider").supports_live_streaming is False
 
 
@@ -70,6 +73,8 @@ def test_batch_capabilities_describe_the_active_request_and_normalizer_contract(
     assert supports_word_timestamps("deepgram_async") is True
     assert supports_word_timestamps("speechmatics_async") is True
     assert supports_word_timestamps("openai_async") is True
+    assert supports_batch_diarization("openrouter_stt") is False
+    assert supports_word_timestamps("openrouter_stt") is False
 
     # These active adapters request/normalize provider-level intervals only.
     for provider in ("mistral", "mistral_async", "azure_mai", "gladia", "gladia_async"):
@@ -99,6 +104,7 @@ def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
             "smallest",
             "smallest_async",
             "openai_async",
+            "openrouter_stt",
             "gemini_stt",
             "mistral_async",
             "gladia_async",

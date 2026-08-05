@@ -42,7 +42,7 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("src.smallest_stt", "Smallest AI realtime and async STT adapters"),
     (
         "src.cloud_async_stt",
-        "Deepgram, Gladia, OpenAI, Speechmatics, and Gemini async STT adapters",
+        "Deepgram, Gladia, OpenAI, OpenRouter, Speechmatics, and Gemini async STT adapters",
     ),
     ("src.azure_mai_stt", "Microsoft MAI Transcribe adapter"),
     ("pipecat.services.google.stt", "Google Cloud STT provider"),
@@ -126,6 +126,14 @@ _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
             "src.cloud_async_stt",
             "requirements-base.txt",
             "OpenAI audio transcription adapter",
+        ),
+    ),
+    "openrouter_stt": (
+        ProviderRuntimeDependency(
+            "openrouter_stt",
+            "src.cloud_async_stt",
+            "requirements-base.txt",
+            "OpenRouter Microsoft MAI audio transcription adapter",
         ),
     ),
     "gemini_stt": (

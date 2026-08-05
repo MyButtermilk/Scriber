@@ -168,6 +168,17 @@ Use a realtime provider when words should appear while you speak.
 
 Use completed-audio processing for long recordings, file imports, and providers optimized for accuracy or cost.
 
+### Microsoft MAI through Azure or one OpenRouter key
+
+Microsoft MAI Transcribe 1.5 can use either the separate direct Azure setup or
+the OpenRouter option. With OpenRouter, the same API key covers MAI
+transcription and Scriber's existing OpenRouter summaries and post-processing.
+OpenRouter currently charges **5.5% (minimum $0.80) on standard credit
+purchases** or **5% on cryptocurrency purchases**; this is an account-funding
+fee, not a markup on the model's inference price.
+[See the OpenRouter model page.](https://openrouter.ai/microsoft/mai-transcribe-1.5)
+[See the OpenRouter fee details.](https://openrouter.ai/docs/faq)
+
 ### Modulate.AI multilingual transcription
 
 Modulate.AI is available for multilingual batch and realtime transcription.
@@ -202,7 +213,10 @@ bundled llama.cpp runtime, prefer Vulkan acceleration, and fall back to CPU.
 This text-cleanup path uses GGUF, not ONNX, and never downloads executable code
 from the model repository.
 
-Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft Azure MAI, OpenAI, OpenRouter, Celeris, Deepgram, Mistral, Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and ONNX.
+Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft
+MAI through direct Azure or OpenRouter, OpenAI, Celeris, Deepgram, Mistral,
+Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and
+ONNX.
 
 ## 🔑 Credentials and AI behavior stay understandable
 

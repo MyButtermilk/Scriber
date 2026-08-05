@@ -144,6 +144,7 @@ def provider_batch_model(provider: str) -> str:
         "mistral": Config.MISTRAL_ASYNC_MODEL,
         "mistral_async": Config.MISTRAL_ASYNC_MODEL,
         "openai_async": Config.OPENAI_STT_MODEL,
+        "openrouter_stt": Config.DEFAULT_OPENROUTER_STT_MODEL,
         "onnx_local": Config.ONNX_MODEL,
         "deepgram_async": Config.DEEPGRAM_MODEL,
         "deepgram": Config.DEEPGRAM_MODEL,
@@ -195,6 +196,7 @@ def freeze_provider_route(
         "smallest_async",
         "deepgram_async",
         "openai_async",
+        "openrouter_stt",
         "gemini_stt",
         "azure_mai",
         "gladia",
@@ -203,7 +205,7 @@ def freeze_provider_route(
         "modulate",
         "modulate_async",
     }
-    final_text_only = key in {"modulate", "modulate_async"}
+    final_text_only = key in {"modulate", "modulate_async", "openrouter_stt"}
     resolved_model = str(model or provider_batch_model(key)).strip()
     streaming_only = key in {
         "assemblyai_realtime",
@@ -342,6 +344,14 @@ def freeze_provider_route(
     ):
         raise UnsupportedProviderAudioRoute("Provider endpoint fingerprint is invalid.")
 
+    # OpenRouter's Microsoft MAI transcription contract does not expose a
+    # prompt or phrase-list field. Keep the frozen execution evidence aligned
+    # with the bytes actually sent so later vocabulary changes cannot block an
+    # otherwise identical file or Meeting recovery.
+    resolved_custom_vocab = (
+        "" if key == "openrouter_stt" else str(Config.CUSTOM_VOCAB if custom_vocab is None else custom_vocab)
+    )
+
     return FrozenTranscriptionRoute(
         workload=workload,
         source_track=source_track,
@@ -358,7 +368,7 @@ def freeze_provider_route(
         ),
         parser_id=PARSER_ID,
         parser_version=PARSER_VERSION,
-        custom_vocab=str(Config.CUSTOM_VOCAB if custom_vocab is None else custom_vocab),
+        custom_vocab=resolved_custom_vocab,
         local_worker_manifest=local_worker_manifest,
         provider_route=(capability.route if capability else requested_provider_route),
         audio_input_format=resolved_audio_format,

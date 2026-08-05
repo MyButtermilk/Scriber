@@ -409,6 +409,7 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
         "deepgram_async",
         "gladia_async",
         "openai_async",
+        "openrouter_stt",
         "speechmatics_async",
         "modulate_async",
         "azure_mai",
@@ -2180,6 +2181,7 @@ class ScriberPipeline:
             "deepgram_async": configured_models["deepgram-async"],
             "openai": configured_models["openai"],
             "openai_async": configured_models["openai-async"],
+            "openrouter_stt": configured_models["openrouter_stt"],
             "azure_mai": configured_models["azure_mai"],
             "gladia": configured_models["gladia"],
             "gladia_async": configured_models["gladia-async"],
@@ -2206,6 +2208,7 @@ class ScriberPipeline:
             "deepgram_async": "batch",
             "openai": "realtime",
             "openai_async": "batch",
+            "openrouter_stt": "batch",
             "azure_mai": "segmented",
             "gladia": "realtime",
             "gladia_async": "batch",
@@ -3268,6 +3271,42 @@ class ScriberPipeline:
                 session=session,
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
+            )
+
+        elif self.service_name == "openrouter_stt":
+            from src.cloud_async_stt import (
+                OPENROUTER_MAI_TRANSCRIBE_MODEL,
+                OPENROUTER_STT_URL,
+                OpenRouterSTTProcessor,
+            )
+
+            api_key = _get_api_key("openrouter_stt")
+            if not api_key:
+                raise ValueError("OpenRouter API Key is missing.")
+            bound_model = self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL)
+            if bound_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
+                raise ProviderAudioCapabilityError("OpenRouter STT has no active exact model contract.")
+            provider_route = batch_route_for_provider("openrouter_stt")
+            if not provider_route:
+                raise ProviderAudioCapabilityError("OpenRouter STT has no active exact batch request contract.")
+            capability = resolve_provider_audio_capabilities(
+                "openrouter_stt",
+                provider_route,
+                bound_model,
+            )
+            require_exact_audio_input_format(
+                capability,
+                AudioInputFormat.WAV_PCM16,
+                route_kind=ProviderAudioRouteKind.BATCH,
+            )
+            self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)
+            logger.info("Using Microsoft MAI Transcribe through OpenRouter")
+            return OpenRouterSTTProcessor(
+                api_key=api_key,
+                model=bound_model,
+                language=self._execution_language(),
+                session=session,
+                on_progress=self.on_progress,
             )
 
         elif self.service_name == "azure_mai":
@@ -4456,6 +4495,45 @@ class ScriberPipeline:
                 self.last_structured_transcript_payload = payload
                 if text and self.on_transcription:
                     logger.info(f"OpenAI direct transcription completed ({len(text)} chars)")
+                    self.on_transcription(text, True)
+
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "openrouter_stt":
+                from src.cloud_async_stt import (
+                    OPENROUTER_STT_URL,
+                    openai_transcript_payload_to_text,
+                    transcribe_with_openrouter_audio_transcription,
+                )
+
+                api_key = Config.get_api_key("openrouter_stt")
+                if not api_key:
+                    raise ValueError("OpenRouter API key is missing")
+                self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)
+
+                async with self._provider_session() as session:
+                    with open(path, "rb") as f:
+                        payload = await transcribe_with_openrouter_audio_transcription(
+                            session=session,
+                            api_key=api_key,
+                            audio_source=f,
+                            filename=path.name,
+                            content_type=content_type,
+                            model=self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL),
+                            language=self._execution_language(),
+                            on_progress=self.on_progress,
+                            timeout_secs=batch_timeout_seconds,
+                        )
+
+                text = openai_transcript_payload_to_text(
+                    payload,
+                    prefer_speaker_labels=False,
+                )
+                self.last_structured_transcript_payload = payload
+                if text and self.on_transcription:
+                    logger.info(f"OpenRouter MAI direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
 
                 if self.on_progress:

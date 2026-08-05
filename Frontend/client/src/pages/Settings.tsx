@@ -252,7 +252,8 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "deepgram-async", label: "Deepgram Async" },
   { value: "openai", label: "OpenAI Realtime" },
   { value: "openai-async", label: "OpenAI Async" },
-  { value: "azure_mai", label: "Microsoft MAI Transcribe" },
+  { value: "openrouter_stt", label: "Microsoft MAI · OpenRouter" },
+  { value: "azure_mai", label: "Microsoft MAI · Azure direct" },
   { value: "gladia", label: "Gladia STT Streaming" },
   { value: "gladia-async", label: "Gladia Async" },
   { value: "groq", label: "Groq Segmented" },
@@ -721,6 +722,7 @@ interface ProviderModelOption {
   label: string;
   model: string;
   detail: string;
+  routeNote?: string;
   group: "cloud_streaming" | "cloud_async" | "local";
   icon?: ProviderIconKey;
   hourlyCostEur?: number;
@@ -762,11 +764,13 @@ function createProviderModelOptions(
     wordErrorRatePercent: number,
     group: ProviderModelOption["group"],
     icon?: ProviderIconKey,
+    routeNote?: string,
   ): ProviderModelOption => ({
     value,
     label,
     model: providerModels[value] || "",
     detail: sttBenchmarkDetail(usdPerThousandMinutes, wordErrorRatePercent, localeTag, t),
+    routeNote,
     group,
     icon,
     hourlyCostEur: usdPerThousandMinutes * 0.06 * USD_TO_EUR_FOR_ESTIMATES,
@@ -808,7 +812,24 @@ function createProviderModelOptions(
     benchmarkOption("deepgram", "Deepgram", 4.8, 6.6, "cloud_streaming", "deepgram"),
     benchmarkOption("gladia", "Gladia", 12.5, 7.8, "cloud_streaming", "gladia"),
     benchmarkOption("speechmatics", "Speechmatics", 17.5, 8.0, "cloud_streaming", "speechmatics"),
-    benchmarkOption("azure_mai", "Microsoft MAI", 6.0, 2.4, "cloud_async", "azure"),
+    benchmarkOption(
+      "openrouter_stt",
+      t("Microsoft MAI · OpenRouter"),
+      6.0,
+      2.4,
+      "cloud_async",
+      "openrouter",
+      t("One key for STT and AI · about 5% credit purchase fee"),
+    ),
+    benchmarkOption(
+      "azure_mai",
+      t("Microsoft MAI · Azure direct"),
+      6.0,
+      2.4,
+      "cloud_async",
+      "azure",
+      t("Separate Azure Speech key and region · no OpenRouter fee"),
+    ),
     benchmarkOption("assemblyai", "AssemblyAI", 3.5, 3.1, "cloud_async", "assemblyai"),
     benchmarkOption("mistral-async", "Mistral Batch", 3.0, 3.6, "cloud_async", "mistral"),
     benchmarkOption("groq", "Groq Segmented", 4.0, 3.7, "cloud_async", "groq"),
@@ -932,8 +953,19 @@ const MEETING_FINAL_STT_OPTIONS = [
     detail: "Creates the final transcript, then Scriber can add speaker names on this device.",
   },
   {
+    value: "openrouter_stt",
+    label: "Microsoft MAI · OpenRouter",
+    model: "microsoft/mai-transcribe-1.5",
+    credentialModel: "openrouter_stt",
+    recommended: false,
+    nativeDiarization: false,
+    fiveHourSupported: false,
+    detail:
+      "Uses the Microsoft MAI model through OpenRouter with the same key as summaries and cloud cleanup. Scriber can add speaker names on this device.",
+  },
+  {
     value: "azure_mai",
-    label: "Microsoft MAI",
+    label: "Microsoft MAI · Azure direct",
     model: "mai-transcribe-1.5",
     credentialModel: "azure_mai",
     recommended: false,
@@ -1223,6 +1255,11 @@ function ProviderChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
+          {option.routeNote ? (
+            <span className="mt-0.5 block text-ui-micro font-medium leading-[14px] text-blue-700 dark:text-blue-300">
+              {option.routeNote}
+            </span>
+          ) : null}
           {disabled ? (
             <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
               <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -2213,6 +2250,8 @@ export default function Settings() {
       case "openai":
       case "openai-async":
         return { provider: "OpenAI", label: "OpenAI API key", helpKey: "openai" };
+      case "openrouter_stt":
+        return { provider: "OpenRouter", label: "OpenRouter API key", helpKey: "openrouter" };
       case "azure_mai":
         return { provider: "Azure", label: "Azure MAI Speech key and region", helpKey: "azure" };
       case "gladia":
@@ -2288,6 +2327,7 @@ export default function Settings() {
     assemblyAIKey,
     deepgramKey,
     openAIKey,
+    openRouterKey,
     azureMaiKey,
     gladiaKey,
     groqKey,
@@ -5043,7 +5083,7 @@ export default function Settings() {
                         return (
                           <SelectItem key={option.value} value={option.value} disabled={unavailable}>
                             {option.recommended ? t("Recommended: ") : ""}
-                            {option.label} ({option.model})
+                            {t(option.label)} ({option.model})
                           </SelectItem>
                         );
                       })}
@@ -5054,7 +5094,7 @@ export default function Settings() {
                   <div className="rounded-lg bg-slate-50 px-3 py-2.5 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <p className="text-xs font-semibold text-slate-950 dark:text-slate-100">
-                        {selectedMeetingFinalOption.label}
+                        {t(selectedMeetingFinalOption.label)}
                       </p>
                       <div className="flex flex-wrap items-center justify-end gap-1.5">
                         {selectedMeetingFinalOption.recommended && (
@@ -5981,6 +6021,9 @@ export default function Settings() {
                 helpKey="openrouter"
                 saved={savedKeys.OpenRouter === true}
                 onSave={() => handleSaveApiKey("OpenRouter")}
+                note={t(
+                  "One OpenRouter API key covers Microsoft MAI STT, summaries, meeting analysis, and cloud cleanup. OpenRouter does not mark up model prices; buying credits currently adds about 5%: 5.5% (minimum $0.80) for standard payments or 5% for crypto.",
+                )}
                 {...credentialDialogProps("OpenRouter")}
               />
               <ApiCredentialRow

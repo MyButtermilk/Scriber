@@ -195,6 +195,18 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
         injects_immediately_in_live_mode=False,
         supports_word_timestamps=True,
     ),
+    "openrouter_stt": ProviderCapabilities(
+        supports_live_streaming=False,
+        supports_direct_file_upload=True,
+        injects_immediately_in_live_mode=False,
+        # OpenRouter's Microsoft MAI route returns final text only. Do not
+        # inherit OpenAI-compatible verbose timestamps or diarization.
+        supports_batch_diarization=False,
+        supports_word_timestamps=False,
+        # OpenRouter does not publish an integration contract proving a whole
+        # five-hour request, so the Meeting UI must remain conservative.
+        supports_five_hour_meeting=False,
+    ),
     "groq": ProviderCapabilities(
         supports_live_streaming=False,
         supports_direct_file_upload=False,

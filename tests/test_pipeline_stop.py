@@ -214,6 +214,7 @@ def test_live_analyzer_requirements_respect_disabled_vad_setting(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
     assert _live_analyzer_requirements("azure_mai") == (False, False)
+    assert _live_analyzer_requirements("openrouter_stt") == (False, False)
     assert _live_analyzer_requirements("deepgram", segmented_service=True) == (
         False,
         False,
@@ -226,6 +227,7 @@ def test_live_analyzer_requirements_enable_only_requested_paths(monkeypatch):
     monkeypatch.setattr(Config, "SONIOX_MODE", "realtime")
 
     assert _live_analyzer_requirements("azure_mai") == (True, False)
+    assert _live_analyzer_requirements("openrouter_stt") == (True, False)
     assert _live_analyzer_requirements("mistral") == (True, False)
     assert _live_analyzer_requirements("groq") == (True, False)
     assert _live_analyzer_requirements("soniox") == (False, False)
@@ -319,6 +321,7 @@ def test_live_recording_gate_preserves_one_turn_without_vad(monkeypatch):
         ("azure_mai", LIVE_STT_STOP_END_FRAME_FINALIZES),
         ("gladia", LIVE_STT_STOP_END_FRAME_FINALIZES),
         ("openai_async", LIVE_STT_STOP_END_FRAME_FINALIZES),
+        ("openrouter_stt", LIVE_STT_STOP_END_FRAME_FINALIZES),
         ("soniox_async", LIVE_STT_STOP_END_FRAME_FINALIZES),
     ],
 )
@@ -945,6 +948,39 @@ async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes
     assert captured["custom_vocab"] == "Frozen Azure term"
 
 
+@pytest.mark.asyncio
+async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_openai_options(monkeypatch, tmp_path):
+    source = tmp_path / "openrouter.wav"
+    source.write_bytes(b"RIFF-audio")
+    captured = {}
+
+    async def fake_transcribe(**kwargs):
+        captured.update(kwargs)
+        return {"text": "done"}
+
+    monkeypatch.setattr(
+        "src.cloud_async_stt.transcribe_with_openrouter_audio_transcription",
+        fake_transcribe,
+    )
+    monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "one-key")
+    pipeline = ScriberPipeline(
+        service_name="openrouter_stt",
+        execution_route={
+            "model": "microsoft/mai-transcribe-1.5",
+            "language": "de-DE",
+        },
+    )
+    monkeypatch.setattr(Config, "LANGUAGE", "en-US")
+
+    await pipeline.transcribe_file_direct(str(source))
+
+    assert captured["api_key"] == "one-key"
+    assert captured["model"] == "microsoft/mai-transcribe-1.5"
+    assert captured["language"] == "de-DE"
+    assert "custom_vocab" not in captured
+    assert "diarize" not in captured
+
+
 class _DummyTask:
     def __init__(self, done_event: asyncio.Event, *, set_done_on_stop: bool):
         self._done_event = done_event
@@ -1342,6 +1378,26 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
     assert mistral._diarize is True
     assert smallest._diarize is True
     assert assemblyai._speaker_labels is True
+
+
+def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route(monkeypatch):
+    monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "shared-openrouter-key")
+    monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
+    session = object()
+    pipeline = ScriberPipeline(service_name="openrouter_stt")
+
+    service = pipeline._create_stt_service(session)
+    configuration = pipeline.stt_runtime_configuration()
+
+    assert type(service).__name__ == "OpenRouterSTTProcessor"
+    assert service._api_key == "shared-openrouter-key"
+    assert service._model == "microsoft/mai-transcribe-1.5"
+    assert service._language == "de-DE"
+    assert service._session is session
+    assert configuration["provider"] == "openrouter_stt"
+    assert configuration["model"] == "microsoft/mai-transcribe-1.5"
+    assert configuration["mode"] == "batch"
+    assert configuration["language"] == "de-DE"
 
 
 def test_onnx_file_factory_uses_bounded_flushing_service(monkeypatch):

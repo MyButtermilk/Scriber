@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-01
+Last verified: 2026-08-05
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -1281,8 +1281,16 @@ capability revision, upload bound, preferred generated formats, and a narrower
 direct-pass-through allowlist. Container and codec are distinct: OGG/Vorbis,
 OGG/Opus, WebM/Vorbis, and WebM/Opus are different values, and generic OGG or
 WebM documentation is never promoted into an exact codec claim. Exact lookup
-rejects unknown/custom routes and inactive entries; the planned OpenRouter MAI
-route remains represented but inactive.
+rejects unknown/custom routes and inactive entries. The active `openrouter_stt`
+route is pinned to the exact `microsoft/mai-transcribe-1.5` model and accepts
+WAV/PCM16, MP3, or FLAC. Its direct adapter posts JSON with base64
+`input_audio` to OpenRouter's `/api/v1/audio/transcriptions` endpoint and reuses
+the same `OPENROUTER_API_KEY` as existing OpenRouter summarization and
+post-processing. The response boundary retains final text only; this route does
+not claim native timestamps, diarization, or custom-vocabulary support. Direct
+`azure_mai` remains a separate Azure credential, endpoint, audio-preparation,
+and capability path. The OpenRouter route is not marked five-hour-capable
+without exact long-input evidence.
 
 File-backed direct transcription probes the real stream with ffprobe before
 selection. If the exact original is in the pass-through allowlist and below the
@@ -1477,7 +1485,9 @@ API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
 stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
 can configure the simple Google path with one Gemini API key. Gemini, Cerebras,
 Celeris, and OpenRouter summarization/post-processing use direct HTTP and do not
-require `google-generativeai`. Direct Celeris calls use the fixed
+require `google-generativeai`; OpenRouter STT reuses that same stored key through
+the separate fixed-model audio-transcriptions adapter described above. Direct
+Celeris calls use the fixed
 `https://inference.celeris.ai/celeris-1/v1` route, quantize every output budget
 to 256-token steps, and conservatively partition File, YouTube, and Meeting
 inputs below the 8,192-token context ceiling. Direct Cerebras calls use

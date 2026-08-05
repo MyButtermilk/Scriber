@@ -486,6 +486,7 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "azure_mai_transcribe": "azure_mai",
         "deepgram": "deepgram",
         "openai": "openai",
+        "openrouter_stt": "openrouter_stt",
         "modulate": "modulate",
         "modulate_async": "modulate_async",
         "onnx_local": "onnx_local",

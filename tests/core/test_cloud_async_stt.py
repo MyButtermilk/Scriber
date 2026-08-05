@@ -1,5 +1,7 @@
 import asyncio
+import base64
 import io
+import json
 import threading
 import wave
 
@@ -8,7 +10,10 @@ from pipecat.frames.frames import EndFrame, InputAudioRawFrame, TranscriptionFra
 from pipecat.processors.frame_processor import FrameDirection
 
 from src.cloud_async_stt import (
+    OPENROUTER_MAI_TRANSCRIBE_MODEL,
+    OPENROUTER_STT_URL,
     SpeechmaticsAsyncProcessor,
+    _build_openrouter_stt_json_body,
     _delete_speechmatics_job,
     _pcm_stream_to_wav,
     _wait_for_gemini_file_active,
@@ -18,6 +23,7 @@ from src.cloud_async_stt import (
     transcribe_with_deepgram_pre_recorded,
     transcribe_with_gemini_audio,
     transcribe_with_openai_audio_transcription,
+    transcribe_with_openrouter_audio_transcription,
 )
 from src.config import Config
 from src.microphone import RustCaptureWavArtifact
@@ -71,6 +77,94 @@ def test_reserved_pcm_spool_becomes_wav_without_copying_payload():
             assert reader.readframes(reader.getnframes()) == pcm
     finally:
         wav_source.close()
+
+
+def test_openrouter_json_body_reads_audio_in_bounded_base64_chunks():
+    class TrackingStream(io.BytesIO):
+        def __init__(self, value: bytes):
+            super().__init__(value)
+            self.read_sizes: list[int] = []
+
+        def read(self, size: int = -1) -> bytes:
+            self.read_sizes.append(size)
+            return super().read(size)
+
+    audio = b"\x00\x01\x02" * (300_000 + 1)
+    source = TrackingStream(audio)
+    body = _build_openrouter_stt_json_body(
+        source,
+        model=OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        audio_format="wav",
+        language="de",
+    )
+    try:
+        payload = json.loads(body.read())
+    finally:
+        body.close()
+
+    assert source.read_sizes
+    assert source.read_sizes[-1] > 0
+    assert len(set(source.read_sizes)) == 1
+    assert source.read_sizes[0] < len(audio)
+    assert base64.b64decode(payload["input_audio"]["data"], validate=True) == audio
+    assert payload["input_audio"]["format"] == "wav"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_only_fields():
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"text":"Hallo von MAI","usage":{"seconds":1.25}}'
+
+    class Session:
+        url = ""
+        headers: dict[str, str]
+        raw_body = b""
+
+        def post(self, url, **kwargs):
+            self.url = url
+            self.headers = kwargs["headers"]
+            self.raw_body = kwargs["data"].read()
+            return Response()
+
+    session = Session()
+    audio = b"RIFF-openrouter-test-audio"
+    payload = await transcribe_with_openrouter_audio_transcription(
+        session=session,
+        api_key="openrouter-secret",
+        audio_source=audio,
+        filename="dictation.wav",
+        content_type="audio/wav",
+        model=OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        language="de-DE",
+    )
+    request = json.loads(session.raw_body)
+
+    assert session.url == OPENROUTER_STT_URL
+    assert session.headers["Authorization"] == "Bearer openrouter-secret"
+    assert session.headers["Content-Type"] == "application/json"
+    assert request == {
+        "model": "microsoft/mai-transcribe-1.5",
+        "input_audio": {
+            "data": base64.b64encode(audio).decode("ascii"),
+            "format": "wav",
+        },
+        "response_format": "json",
+        "temperature": 0,
+        "language": "de",
+    }
+    assert "timestamp_granularities" not in request
+    assert "prompt" not in request
+    assert "verbose_json" not in session.raw_body.decode("ascii")
+    assert payload["text"] == "Hallo von MAI"
 
 
 @pytest.mark.asyncio
