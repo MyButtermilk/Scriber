@@ -36,8 +36,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 use uuid::Uuid;
 #[cfg(windows)]
 use windows::Win32::Graphics::Dwm::{
-    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR,
-    DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
 };
 #[cfg(windows)]
 use windows_sys::Win32::Foundation::{
@@ -656,29 +655,6 @@ impl PendingNavigationState {
             true
         } else {
             false
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DesktopWindowChromeTheme {
-    Light,
-    Dark,
-}
-
-impl DesktopWindowChromeTheme {
-    fn parse(value: &str) -> Result<Self, String> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "light" => Ok(Self::Light),
-            "dark" => Ok(Self::Dark),
-            other => Err(format!("unsupported desktop window theme '{other}'")),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Dark => "dark",
         }
     }
 }
@@ -1393,12 +1369,11 @@ fn set_global_hotkey_capture_active(
 }
 
 #[tauri::command]
-fn set_desktop_window_chrome_theme(app: AppHandle, theme: String) -> Result<(), String> {
-    let theme = DesktopWindowChromeTheme::parse(&theme)?;
+fn initialize_desktop_window_frame(app: AppHandle) -> Result<(), String> {
     let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
         return Err("main window not found".to_string());
     };
-    apply_desktop_window_chrome_theme(&window, theme)?;
+    apply_desktop_window_frame(&window)?;
     reveal_initial_main_window(&window)
 }
 
@@ -1420,8 +1395,8 @@ fn reveal_initial_main_window<R: Runtime>(window: &WebviewWindow<R>) -> Result<(
     apply_desktop_window_icon_to_window(window, "initial reveal");
     window
         .show()
-        .map_err(|err| format!("Could not reveal themed main window: {err}"))?;
-    write_shell_log("initial main window revealed after desktop theme applied");
+        .map_err(|err| format!("Could not reveal initialized main window: {err}"))?;
+    write_shell_log("initial main window revealed after desktop frame initialization");
     Ok(())
 }
 
@@ -1435,6 +1410,9 @@ fn schedule_initial_main_window_reveal_fallback(app: AppHandle) {
             write_shell_log("initial main window reveal fallback could not find main window");
             return;
         };
+        if let Err(err) = apply_desktop_window_frame(&window) {
+            write_shell_log(&format!("initial main window frame fallback failed: {err}"));
+        }
         apply_desktop_window_icon_to_window(&window, "initial reveal fallback");
         match window.show() {
             Ok(()) => write_shell_log("initial main window revealed by fallback"),
@@ -1498,51 +1476,38 @@ fn tray_action(app: AppHandle, action: String) -> Result<(), String> {
     handle_tray_action(&app, &action)
 }
 
-fn apply_desktop_window_chrome_theme<R: Runtime>(
-    window: &tauri::WebviewWindow<R>,
-    theme: DesktopWindowChromeTheme,
-) -> Result<(), String> {
+fn apply_desktop_window_frame<R: Runtime>(window: &tauri::WebviewWindow<R>) -> Result<(), String> {
     #[cfg(windows)]
     {
-        apply_windows_desktop_window_chrome_theme(window, theme)?;
+        apply_windows_desktop_window_frame(window)?;
     }
     #[cfg(not(windows))]
     {
-        let _ = (window, theme);
+        let _ = window;
     }
     Ok(())
 }
 
 #[cfg(windows)]
-fn apply_windows_desktop_window_chrome_theme<R: Runtime>(
+fn apply_windows_desktop_window_frame<R: Runtime>(
     window: &tauri::WebviewWindow<R>,
-    theme: DesktopWindowChromeTheme,
 ) -> Result<(), String> {
     let hwnd = window
         .hwnd()
         .map_err(|err| format!("failed to get main window handle: {err}"))?;
-    let use_dark_mode: i32 = if theme == DesktopWindowChromeTheme::Dark {
-        1
-    } else {
-        0
-    };
-    let (caption_color, text_color, border_color) = desktop_window_chrome_colors(theme);
 
     unsafe {
-        set_dwm_window_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode)
-            .map_err(|err| format!("failed to set DWM dark mode: {err}"))?;
-        set_dwm_window_attribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color)
-            .map_err(|err| format!("failed to set DWM caption color: {err}"))?;
-        set_dwm_window_attribute(hwnd, DWMWA_TEXT_COLOR, &text_color)
-            .map_err(|err| format!("failed to set DWM text color: {err}"))?;
-        set_dwm_window_attribute(hwnd, DWMWA_BORDER_COLOR, &border_color)
-            .map_err(|err| format!("failed to set DWM border color: {err}"))?;
+        if let Err(err) = set_dwm_window_attribute(hwnd, DWMWA_BORDER_COLOR, &DWM_COLOR_NONE) {
+            write_shell_log(&format!("desktop window border suppression skipped: {err}"));
+        }
+        if let Err(err) =
+            set_dwm_window_attribute(hwnd, DWMWA_WINDOW_CORNER_PREFERENCE, &DWMWCP_ROUND)
+        {
+            write_shell_log(&format!("desktop window corner preference skipped: {err}"));
+        }
     }
 
-    write_shell_log(&format!(
-        "desktop window chrome theme applied: {}",
-        theme.as_str()
-    ));
+    write_shell_log("theme-invariant desktop window frame initialized");
     Ok(())
 }
 
@@ -1560,28 +1525,6 @@ unsafe fn set_dwm_window_attribute<T>(
             std::mem::size_of::<T>() as u32,
         )
     }
-}
-
-#[cfg(windows)]
-fn desktop_window_chrome_colors(theme: DesktopWindowChromeTheme) -> (u32, u32, u32) {
-    match theme {
-        // COLORREF is 0x00bbggrr, so keep the helper in RGB order.
-        DesktopWindowChromeTheme::Dark => (
-            rgb_to_colorref(31, 34, 40),
-            rgb_to_colorref(245, 247, 250),
-            DWM_COLOR_NONE,
-        ),
-        DesktopWindowChromeTheme::Light => (
-            rgb_to_colorref(229, 231, 235),
-            rgb_to_colorref(9, 17, 32),
-            DWM_COLOR_NONE,
-        ),
-    }
-}
-
-#[cfg(windows)]
-fn rgb_to_colorref(red: u8, green: u8, blue: u8) -> u32 {
-    u32::from(red) | (u32::from(green) << 8) | (u32::from(blue) << 16)
 }
 
 pub fn run() {
@@ -1705,7 +1648,7 @@ pub fn run() {
             acknowledge_navigation,
             refresh_global_hotkey,
             set_global_hotkey_capture_active,
-            set_desktop_window_chrome_theme,
+            initialize_desktop_window_frame,
             set_ui_locale,
             tray_status,
             set_tray_update_status,
@@ -5837,19 +5780,6 @@ mod tests {
     }
 
     #[test]
-    fn desktop_window_chrome_theme_parser_accepts_light_and_dark() {
-        assert_eq!(
-            super::DesktopWindowChromeTheme::parse("light").unwrap(),
-            super::DesktopWindowChromeTheme::Light
-        );
-        assert_eq!(
-            super::DesktopWindowChromeTheme::parse(" DARK ").unwrap(),
-            super::DesktopWindowChromeTheme::Dark
-        );
-        assert!(super::DesktopWindowChromeTheme::parse("sepia").is_err());
-    }
-
-    #[test]
     fn window_visibility_accepts_window_with_enough_visible_area() {
         assert!(super::physical_rect_has_min_visible_area(
             1800, 900, 900, 700, 0, 0, 1920, 1080, 96
@@ -5871,23 +5801,9 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn rgb_to_colorref_uses_windows_bgr_order() {
-        assert_eq!(super::rgb_to_colorref(0x11, 0x22, 0x33), 0x00332211);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn window_chrome_matches_the_app_shell_without_a_native_border() {
-        let (caption_color, _text_color, border_color) =
-            super::desktop_window_chrome_colors(super::DesktopWindowChromeTheme::Light);
-        let app_shell_light = super::rgb_to_colorref(0xe5, 0xe7, 0xeb);
-        assert_eq!(caption_color, app_shell_light);
-        assert_eq!(border_color, super::DWM_COLOR_NONE);
-
-        let (_caption_color, _text_color, border_color) =
-            super::desktop_window_chrome_colors(super::DesktopWindowChromeTheme::Dark);
-        assert_eq!(border_color, super::DWM_COLOR_NONE);
+    fn window_frame_policy_is_theme_invariant() {
         assert_eq!(super::DWM_COLOR_NONE, 0xFFFF_FFFE);
+        assert_eq!(super::DWMWCP_ROUND.0, 2);
     }
 
     #[test]

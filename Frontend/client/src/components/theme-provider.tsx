@@ -188,29 +188,13 @@ function fallbackCircularThemeReveal(
   });
 }
 
-async function applyDesktopWindowTheme(theme: ResolvedTheme) {
+async function initializeDesktopWindowFrame() {
   if (!isTauriRuntime()) return;
-  const failures: unknown[] = [];
-  try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    await getCurrentWindow().setTheme(theme);
-  } catch (error) {
-    failures.push(error);
-  }
-  try {
-    const { setTheme: setAppTheme } = await import("@tauri-apps/api/app");
-    await setAppTheme(theme);
-  } catch (error) {
-    failures.push(error);
-  }
   try {
     const { invoke } = await import("@tauri-apps/api/core");
-    await invoke("set_desktop_window_chrome_theme", { theme });
+    await invoke("initialize_desktop_window_frame");
   } catch (error) {
-    failures.push(error);
-  }
-  if (failures.length === 3) {
-    console.debug("Desktop window theme update failed.", failures[0]);
+    console.debug("Desktop window frame initialization failed.", error);
   }
 }
 
@@ -222,17 +206,17 @@ export function ThemeProvider({
 }: ThemeProviderProps) {
   const [theme, setTheme] = useState<Theme>(() => readStoredTheme(storageKey, normalizeTheme(defaultTheme)));
   const [resolvedTheme, setResolvedTheme] = useState<ResolvedTheme>("dark");
-  const deferredDesktopThemeRef = useRef<ResolvedTheme | null>(null);
+  const desktopFrameInitializedRef = useRef(false);
   const revealGenerationRef = useRef(0);
 
   useEffect(() => {
     const effectiveTheme = resolveEffectiveTheme(theme);
     applyThemeClass(effectiveTheme);
     setResolvedTheme(effectiveTheme);
-    if (deferredDesktopThemeRef.current === effectiveTheme) {
-      return;
+    if (!desktopFrameInitializedRef.current) {
+      desktopFrameInitializedRef.current = true;
+      void initializeDesktopWindowFrame();
     }
-    void applyDesktopWindowTheme(effectiveTheme);
   }, [theme]);
 
   // Listen for system theme changes
@@ -244,7 +228,6 @@ export function ThemeProvider({
       const newTheme = e.matches ? "dark" : "light";
       applyThemeClass(newTheme);
       setResolvedTheme(newTheme);
-      void applyDesktopWindowTheme(newTheme);
     };
 
     mediaQuery.addEventListener("change", handleChange);
@@ -267,7 +250,6 @@ export function ThemeProvider({
       removeThemeRevealOverlays();
 
       if (!transitionOrigin || prefersReducedMotion) {
-        deferredDesktopThemeRef.current = null;
         setThemeRevealActive(false);
         setTheme(normalizedNextTheme);
         return;
@@ -281,7 +263,6 @@ export function ThemeProvider({
       };
 
       const beginReveal = () => {
-        deferredDesktopThemeRef.current = nextResolvedTheme;
         setThemeRevealActive(true);
         let didFinish = false;
 
@@ -290,10 +271,6 @@ export function ThemeProvider({
           didFinish = true;
           if (revealGenerationRef.current !== revealGeneration) return;
           setThemeRevealActive(false);
-          if (deferredDesktopThemeRef.current === nextResolvedTheme) {
-            deferredDesktopThemeRef.current = null;
-          }
-          void applyDesktopWindowTheme(nextResolvedTheme);
         };
       };
 

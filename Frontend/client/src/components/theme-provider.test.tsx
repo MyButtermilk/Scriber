@@ -162,6 +162,20 @@ describe("ThemeProvider circular reveal", () => {
     delete document.documentElement.dataset.themeRevealActive;
   });
 
+  it("initializes the theme-invariant desktop frame once on startup", async () => {
+    desktopThemeBoundary.runtime.enabled = true;
+    renderThemeControl("light", "dark");
+
+    await act(async () => {
+      await flushMicrotasks();
+    });
+
+    expect(desktopThemeBoundary.invoke).toHaveBeenCalledOnce();
+    expect(desktopThemeBoundary.invoke).toHaveBeenCalledWith("initialize_desktop_window_frame");
+    expect(desktopThemeBoundary.setWindowTheme).not.toHaveBeenCalled();
+    expect(desktopThemeBoundary.setAppTheme).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["light", "dark"],
     ["dark", "light"],
@@ -210,7 +224,7 @@ describe("ThemeProvider circular reveal", () => {
   it.each([
     ["light", "dark"],
     ["dark", "light"],
-  ] as const)("finishes %s to %s once without changing desktop chrome early", async (source, target) => {
+  ] as const)("keeps native window composition unchanged throughout %s to %s", async (source, target) => {
     vi.useFakeTimers();
     const { transitions } = installControlledViewTransitions();
     installAnimateSpy();
@@ -234,20 +248,17 @@ describe("ThemeProvider circular reveal", () => {
     });
 
     expect(document.documentElement).not.toHaveAttribute("data-theme-reveal-active");
-    expect(desktopThemeBoundary.setWindowTheme).toHaveBeenCalledOnce();
-    expect(desktopThemeBoundary.setWindowTheme).toHaveBeenCalledWith(target);
-    expect(desktopThemeBoundary.setAppTheme).toHaveBeenCalledOnce();
-    expect(desktopThemeBoundary.setAppTheme).toHaveBeenCalledWith(target);
-    expect(desktopThemeBoundary.invoke).toHaveBeenCalledOnce();
-    expect(desktopThemeBoundary.invoke).toHaveBeenCalledWith("set_desktop_window_chrome_theme", { theme: target });
+    expect(desktopThemeBoundary.setWindowTheme).not.toHaveBeenCalled();
+    expect(desktopThemeBoundary.setAppTheme).not.toHaveBeenCalled();
+    expect(desktopThemeBoundary.invoke).not.toHaveBeenCalled();
 
     await act(async () => {
       vi.advanceTimersByTime(1);
       await flushMicrotasks();
     });
 
-    expect(desktopThemeBoundary.setWindowTheme).toHaveBeenCalledOnce();
-    expect(desktopThemeBoundary.setAppTheme).toHaveBeenCalledOnce();
-    expect(desktopThemeBoundary.invoke).toHaveBeenCalledOnce();
+    expect(desktopThemeBoundary.setWindowTheme).not.toHaveBeenCalled();
+    expect(desktopThemeBoundary.setAppTheme).not.toHaveBeenCalled();
+    expect(desktopThemeBoundary.invoke).not.toHaveBeenCalled();
   });
 });

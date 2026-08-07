@@ -1428,6 +1428,7 @@ def test_desktop_chrome_is_dom_rendered_without_duplicate_branding() -> None:
     css = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
 
     assert tauri_config["app"]["windows"][0]["decorations"] is False
+    assert tauri_config["app"]["windows"][0]["shadow"] is False
     assert tauri_config["app"]["windows"][0]["visible"] is False
     assert tauri_config["app"]["windows"][0]["backgroundColor"] == "#202225"
     permissions = set(tauri_capabilities["permissions"])
@@ -1476,13 +1477,13 @@ def test_theme_reveal_controls_desktop_chrome_and_card_repaints() -> None:
     assert "setTheme(normalizedNextTheme);" in provider_source
     assert "localStorage.getItem(storageKey) as Theme" not in provider_source
     assert "localStorage.setItem(storageKey, nextTheme)" not in provider_source
-    assert "deferredDesktopThemeRef" in provider_source
+    assert "desktopFrameInitializedRef" in provider_source
+    assert 'invoke("initialize_desktop_window_frame")' in provider_source
+    assert "set_desktop_window_chrome_theme" not in provider_source
+    assert 'import("@tauri-apps/api/window")' not in provider_source
+    assert 'import("@tauri-apps/api/app")' not in provider_source
     assert "const revealGeneration = revealGenerationRef.current + 1;" in provider_source
     assert "if (revealGenerationRef.current !== revealGeneration) return;" in provider_source
-    assert_source_contains_tokens(
-        provider_source,
-        "deferredDesktopThemeRef.current = null; setThemeRevealActive(false);",
-    )
     assert "setThemeRevealActive(true)" in provider_source
     assert "setThemeRevealActive(false)" in provider_source
     assert "void transition.finished.then(finishReveal, finishReveal)" in provider_source

@@ -22,6 +22,7 @@
         "visible": false,
         "backgroundColor": "#202225",
         "decorations": false,
+        "shadow": false,
         "dragDropEnabled": false
       }
     ],

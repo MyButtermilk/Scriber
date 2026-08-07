@@ -137,9 +137,13 @@ Frontend and shell:
   primary tabs share the `app-page-shell` 1320 px desktop frame and expose a
   stable `data-page-shell` hook; do not introduce per-tab maximum widths.
   The main app viewport uses a document-owned, auto-hiding overlay scrollbar
-  and a one-pixel inset window frame. Keep the native DWM border disabled so
-  that this frame and every visible client edge participate in the circular
-  light/dark View Transition instead of changing color after it finishes.
+  and a one-pixel inset window frame. Keep both the native DWM border and the
+  undecorated-window shadow disabled; the latter otherwise reserves a
+  DPI-dependent non-client row above the WebView. Request the rounded Windows
+  corner preference once before the hidden main window is revealed. The main
+  HWND frame must remain theme-invariant so the document-owned frame and every
+  visible edge participate in the circular light/dark View Transition instead
+  of changing color after it finishes.
   Motion follows the shared transitions.dev Refine/Polish tokens in `:root`.
   Reusable text/icon swaps, success checks, tooltips, error shakes, and animated
   checkboxes live under `Frontend/client/src/components/ui`; history skeletons,
