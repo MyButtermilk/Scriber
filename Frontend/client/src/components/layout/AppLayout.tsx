@@ -13,6 +13,7 @@ import { ActiveMeetingPill } from "@/components/meeting/ActiveMeetingPill";
 import { LanguageToggle } from "@/components/language-toggle";
 import { useI18n } from "@/i18n";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
+import { AppOverlayScrollbar } from "@/components/layout/AppOverlayScrollbar";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -129,7 +130,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   };
 
   return (
-    <div className="min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
+    <div className="app-window-frame min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md"
@@ -221,10 +222,10 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         {/* Main Content Area */}
         <main id="main-content" className="min-h-0 min-w-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
           {/* Content panel - rounded, inset within the sidebar-colored background */}
-          <div className="min-w-0 flex-1 overflow-hidden md:bg-card md:rounded-xl md:neu-panel-inset">
+          <div className="relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl md:neu-panel-inset">
             <div
               ref={scrollContainerRef}
-              className="h-full min-w-0 overflow-y-auto overflow-x-hidden"
+              className="app-scroll-viewport h-full min-w-0 overflow-y-auto overflow-x-hidden"
               data-app-scroll-container="true"
             >
               <div className="min-h-full min-w-0 bg-background">
@@ -233,6 +234,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 </AppScrollContainerContext.Provider>
               </div>
             </div>
+            <AppOverlayScrollbar scrollContainerRef={scrollContainerRef} />
           </div>
         </main>
       </div>

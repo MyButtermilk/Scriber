@@ -31,6 +31,7 @@ const initialState: ThemeProviderState = {
 
 const ThemeProviderContext = createContext<ThemeProviderState>(initialState);
 const THEME_TRANSITION_DURATION_MS = 760;
+const THEME_REVEAL_OVERSCAN_PX = 2;
 const THEME_REVEAL_OVERLAY_CLASS = "theme-reveal-overlay";
 const THEME_REVEAL_ACTIVE_DATASET_KEY = "themeRevealActive";
 
@@ -89,11 +90,19 @@ function setThemeRevealActive(active: boolean) {
   delete root.dataset[THEME_REVEAL_ACTIVE_DATASET_KEY];
 }
 
-function circularThemeReveal(origin: { x: number; y: number }, transition: ViewTransition) {
-  const endRadius = Math.hypot(
-    Math.max(origin.x, window.innerWidth - origin.x),
-    Math.max(origin.y, window.innerHeight - origin.y),
+function themeRevealRadius(origin: { x: number; y: number }): number {
+  return (
+    Math.hypot(Math.max(origin.x, window.innerWidth - origin.x), Math.max(origin.y, window.innerHeight - origin.y)) +
+    THEME_REVEAL_OVERSCAN_PX
   );
+}
+
+function removeThemeRevealOverlays() {
+  window.document.querySelectorAll(`.${THEME_REVEAL_OVERLAY_CLASS}`).forEach((overlay) => overlay.remove());
+}
+
+function circularThemeReveal(origin: { x: number; y: number }, transition: ViewTransition) {
+  const endRadius = themeRevealRadius(origin);
   const clipPath = [
     `circle(0px at ${origin.x}px ${origin.y}px)`,
     `circle(${endRadius}px at ${origin.x}px ${origin.y}px)`,
@@ -147,15 +156,13 @@ function fallbackCircularThemeReveal(
   nextTheme: ResolvedTheme,
   commitTheme: () => void,
 ): Promise<void> {
-  window.document.querySelectorAll(`.${THEME_REVEAL_OVERLAY_CLASS}`).forEach((overlay) => overlay.remove());
+  removeThemeRevealOverlays();
 
-  const endRadius = Math.hypot(
-    Math.max(origin.x, window.innerWidth - origin.x),
-    Math.max(origin.y, window.innerHeight - origin.y),
-  );
+  const endRadius = themeRevealRadius(origin);
   const overlay = window.document.createElement("div");
   overlay.className = THEME_REVEAL_OVERLAY_CLASS;
   overlay.style.background = nextTheme === "dark" ? "#1a1d23" : "#e5e7eb";
+  overlay.style.boxShadow = `inset 0 0 0 1px ${nextTheme === "dark" ? "#1f2228" : "#e5e7eb"}`;
   overlay.style.clipPath = `circle(0px at ${origin.x}px ${origin.y}px)`;
   overlay.style.transition = `clip-path ${THEME_TRANSITION_DURATION_MS}ms cubic-bezier(0.16, 1, 0.3, 1)`;
   window.document.body.appendChild(overlay);
@@ -257,6 +264,8 @@ export function ThemeProvider({
       const startViewTransition = documentWithViewTransition.startViewTransition?.bind(documentWithViewTransition);
       const transitionOrigin = options?.origin ?? getVisibleThemeToggleOrigin();
 
+      removeThemeRevealOverlays();
+
       if (!transitionOrigin || prefersReducedMotion) {
         deferredDesktopThemeRef.current = null;
         setThemeRevealActive(false);
@@ -274,8 +283,11 @@ export function ThemeProvider({
       const beginReveal = () => {
         deferredDesktopThemeRef.current = nextResolvedTheme;
         setThemeRevealActive(true);
+        let didFinish = false;
 
         return () => {
+          if (didFinish) return;
+          didFinish = true;
           if (revealGenerationRef.current !== revealGeneration) return;
           setThemeRevealActive(false);
           if (deferredDesktopThemeRef.current === nextResolvedTheme) {

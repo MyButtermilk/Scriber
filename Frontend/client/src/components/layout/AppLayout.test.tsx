@@ -42,7 +42,7 @@ describe("AppLayout navigation", () => {
 
   it("labels every main navigation and exposes the current page", () => {
     const location = memoryLocation({ path: "/meetings/42" });
-    const { getAllByRole } = render(
+    const { container, getAllByRole } = render(
       <Router hook={location.hook}>
         <LocaleProvider>
           <AppLayout>
@@ -54,6 +54,10 @@ describe("AppLayout navigation", () => {
 
     const navigations = getAllByRole("navigation", { name: "Main navigation" });
     expect(navigations).toHaveLength(2);
+    const windowFrame = container.querySelector(".app-window-frame");
+    expect(windowFrame).not.toBeNull();
+    expect(windowFrame?.querySelector(".app-scroll-viewport")).not.toBeNull();
+    expect(windowFrame?.querySelector("[data-app-overlay-scrollbar]")).not.toBeNull();
 
     for (const navigation of navigations) {
       expect(within(navigation).getByRole("link", { name: "Meetings" })).toHaveAttribute("aria-current", "page");

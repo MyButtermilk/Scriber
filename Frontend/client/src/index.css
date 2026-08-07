@@ -190,6 +190,10 @@
   /* Sidebar shell - a restrained step darker than the workspace so the
      navigation remains structurally distinct in the light theme as well. */
   --sidebar: 220 15% 89%;
+  --app-window-frame: #e5e7eb;
+  --app-scrollbar-thumb-opacity: 0.52;
+  --app-scrollbar-thumb-hover-opacity: 0.62;
+  --app-scrollbar-thumb-drag-opacity: 0.72;
 
   /* Background - cool gray base (matches neu-bg) */
   --background: 220 15% 91%;
@@ -232,9 +236,7 @@
   --chart-5: 27 87% 67%;
 }
 
-/* Prevent layout shifts with scrollbar */
 html {
-  scrollbar-gutter: stable;
   font-size: 93.75%;
 }
 
@@ -261,6 +263,21 @@ html {
   contain: strict;
 }
 
+/* DWM's native border cannot participate in a document View Transition.
+   This document-owned inset frame can, so its color follows the reveal edge. */
+.app-window-frame {
+  position: relative;
+}
+
+.app-window-frame::after {
+  position: fixed;
+  z-index: 70;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 0 1px var(--app-window-frame);
+  content: "";
+}
+
 html[data-theme-reveal-active="true"] *,
 html[data-theme-reveal-active="true"] *::before,
 html[data-theme-reveal-active="true"] *::after {
@@ -271,11 +288,7 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   transition-property: clip-path !important;
 }
 
-html:has(body[data-scroll-locked]) {
-  overflow-y: scroll;
-}
-
-/* Webkit overlay scrollbar */
+/* Shared native scrollbar styling for nested scroll areas. */
 ::-webkit-scrollbar {
   width: 8px;
 }
@@ -291,6 +304,103 @@ html:has(body[data-scroll-locked]) {
 
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.5);
+}
+
+/* The app viewport owns an inset overlay thumb. Keep native scroll mechanics,
+   but do not reserve or paint a contrasting scrollbar column. */
+.app-scroll-viewport {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.app-scroll-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+.app-overlay-scrollbar {
+  position: absolute;
+  z-index: 30;
+  top: 6px;
+  right: 0;
+  bottom: 6px;
+  width: 24px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-quick) var(--ease-out);
+}
+
+.app-overlay-scrollbar[data-scrollable="true"][data-visible="true"] {
+  opacity: 1;
+}
+
+.app-overlay-scrollbar[data-scrollable="true"][data-visible="true"] .app-overlay-scrollbar-thumb {
+  pointer-events: auto;
+}
+
+.app-overlay-scrollbar-thumb {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 24px;
+  cursor: grab;
+  touch-action: none;
+  will-change: transform;
+}
+
+.app-overlay-scrollbar-thumb::before {
+  position: absolute;
+  top: 0;
+  right: 5px;
+  bottom: 0;
+  width: 6px;
+  border-radius: 999px;
+  background: hsl(var(--foreground) / var(--app-scrollbar-thumb-opacity));
+  content: "";
+  transition: background-color var(--duration-micro) var(--ease-out);
+}
+
+.app-overlay-scrollbar-thumb:hover::before {
+  background: hsl(var(--foreground) / var(--app-scrollbar-thumb-hover-opacity));
+}
+
+.app-overlay-scrollbar[data-dragging="true"] .app-overlay-scrollbar-thumb {
+  cursor: grabbing;
+}
+
+.app-overlay-scrollbar[data-dragging="true"] .app-overlay-scrollbar-thumb::before {
+  background: hsl(var(--foreground) / var(--app-scrollbar-thumb-drag-opacity));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-overlay-scrollbar,
+  .app-overlay-scrollbar-thumb::before {
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .app-window-frame::after {
+    border: 1px solid CanvasText;
+    box-shadow: none;
+  }
+
+  .app-scroll-viewport {
+    scrollbar-color: auto;
+    scrollbar-width: auto;
+    -ms-overflow-style: auto;
+  }
+
+  .app-scroll-viewport::-webkit-scrollbar {
+    display: block;
+    width: auto;
+    height: auto;
+  }
+
+  .app-overlay-scrollbar {
+    display: none;
+  }
 }
 
 .dark {
@@ -321,6 +431,10 @@ html:has(body[data-scroll-locked]) {
   --neu-dark: 220 6% 10%;
 
   --sidebar: 220 6% 14%;
+  --app-window-frame: #1f2228;
+  --app-scrollbar-thumb-opacity: 0.34;
+  --app-scrollbar-thumb-hover-opacity: 0.44;
+  --app-scrollbar-thumb-drag-opacity: 0.55;
 
   --background: 220 6% 16%;
   --foreground: 0 0% 92%;

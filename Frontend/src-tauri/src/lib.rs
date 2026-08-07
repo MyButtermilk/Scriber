@@ -87,6 +87,11 @@ const BACKEND_GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(6);
 const BACKEND_TERMINATE_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_TERMINATE_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const BACKEND_HEALTH_MAX_RESPONSE_BYTES: u64 = 64 * 1024;
+#[cfg(windows)]
+// Microsoft documents 0xFFFFFFFE as COLOR_NONE for DWMWA_BORDER_COLOR. Keep
+// the native DWM border disabled so the WebView's CSS theme reveal owns every
+// visible edge of the frameless main window.
+const DWM_COLOR_NONE: u32 = 0xFFFF_FFFE;
 static INITIAL_MAIN_WINDOW_REVEALED: AtomicBool = AtomicBool::new(false);
 static BENCHMARK_PROVIDER_REPLAY_ARM: Mutex<Option<BenchmarkProviderReplayArm>> = Mutex::new(None);
 const BACKEND_JSON_MAX_RESPONSE_BYTES: u64 = 32 * 1024 * 1024;
@@ -1564,12 +1569,12 @@ fn desktop_window_chrome_colors(theme: DesktopWindowChromeTheme) -> (u32, u32, u
         DesktopWindowChromeTheme::Dark => (
             rgb_to_colorref(31, 34, 40),
             rgb_to_colorref(245, 247, 250),
-            rgb_to_colorref(31, 34, 40),
+            DWM_COLOR_NONE,
         ),
         DesktopWindowChromeTheme::Light => (
             rgb_to_colorref(229, 231, 235),
             rgb_to_colorref(9, 17, 32),
-            rgb_to_colorref(229, 231, 235),
+            DWM_COLOR_NONE,
         ),
     }
 }
@@ -5872,12 +5877,17 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn light_window_chrome_matches_light_app_shell() {
+    fn window_chrome_matches_the_app_shell_without_a_native_border() {
         let (caption_color, _text_color, border_color) =
             super::desktop_window_chrome_colors(super::DesktopWindowChromeTheme::Light);
         let app_shell_light = super::rgb_to_colorref(0xe5, 0xe7, 0xeb);
         assert_eq!(caption_color, app_shell_light);
-        assert_eq!(border_color, app_shell_light);
+        assert_eq!(border_color, super::DWM_COLOR_NONE);
+
+        let (_caption_color, _text_color, border_color) =
+            super::desktop_window_chrome_colors(super::DesktopWindowChromeTheme::Dark);
+        assert_eq!(border_color, super::DWM_COLOR_NONE);
+        assert_eq!(super::DWM_COLOR_NONE, 0xFFFF_FFFE);
     }
 
     #[test]
