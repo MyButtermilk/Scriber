@@ -154,7 +154,7 @@ Aufgabe: Verwandle den nachfolgenden Input in eine klar strukturierte Zusammenfa
 Inhaltsregeln:
 - Beginne mit einem prägnanten Titel mit höchstens 15 Wörtern.
 - Erkläre in einem kurzen Satz, worum es geht.
-- Verdichte die Essenz in höchstens fünf zentralen Aussagen oder Learnings.
+- Wähle Anzahl und Struktur zentraler Aussagen nach dem Inhalt statt nach einer festen Schablone.
 - Ergänze danach eine detaillierte, thematisch gegliederte Vertiefung.
 - Benenne Entscheidungen, offene Punkte und nächste Schritte, sofern vorhanden.
 - Halte Absätze kurz, hebe Schlüsselbegriffe hervor und nutze Listen, wenn sie die Lesbarkeit verbessern.
@@ -163,8 +163,13 @@ Inhaltsregeln:
 
 Input:"""
 
+_LEGACY_SUMMARIZATION_PROMPT_V1 = _CURRENT_SUMMARIZATION_PROMPT.replace(
+    "- Wähle Anzahl und Struktur zentraler Aussagen nach dem Inhalt statt nach einer festen Schablone.",
+    "- Verdichte die Essenz in höchstens fünf zentralen Aussagen oder Learnings.",
+)
+
 _SUMMARIZATION_PROMPT_MIGRATION_KEY = "summarizationPromptMigrationVersion"
-_SUMMARIZATION_PROMPT_MIGRATION_VERSION = 1
+_SUMMARIZATION_PROMPT_MIGRATION_VERSION = 2
 
 
 def _stored_migration_version(value: object) -> int:
@@ -179,18 +184,19 @@ def _stored_migration_version(value: object) -> int:
 
 
 def _migrate_summarization_prompt_once(settings: dict) -> bool:
-    """Install the current prompt exactly once for every existing settings file.
+    """Install built-in prompt revisions without overwriting later user edits.
 
-    Older Scriber installations have no migration marker. Their stored prompt
-    is deliberately replaced on the first start of this release, even when it
-    was customized. The durable marker is written in the same JSON snapshot;
-    later user edits keep that marker and therefore remain authoritative.
+    Version 1 deliberately replaced pre-migration prompts once. Version 2 only
+    replaces the exact stock v1 prompt; a prompt edited after v1 remains
+    authoritative. The durable marker is written in the same JSON snapshot.
     """
     completed_version = _stored_migration_version(settings.get(_SUMMARIZATION_PROMPT_MIGRATION_KEY))
     if completed_version >= _SUMMARIZATION_PROMPT_MIGRATION_VERSION:
         return False
     if "summarizationPrompt" in settings:
-        settings["summarizationPrompt"] = _CURRENT_SUMMARIZATION_PROMPT
+        stored_prompt = settings["summarizationPrompt"]
+        if completed_version < 1 or stored_prompt == _LEGACY_SUMMARIZATION_PROMPT_V1:
+            settings["summarizationPrompt"] = _CURRENT_SUMMARIZATION_PROMPT
     settings[_SUMMARIZATION_PROMPT_MIGRATION_KEY] = _SUMMARIZATION_PROMPT_MIGRATION_VERSION
     return True
 
@@ -228,6 +234,7 @@ class Config:
     DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+    MODEL_API_KEY = os.getenv("MODEL_API_KEY")
     CEREBRAS_API_KEY = os.getenv("CEREBRAS_API_KEY")
     CELERIS_API_KEY = os.getenv("CELERIS_API_KEY")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
@@ -305,6 +312,7 @@ class Config:
         "openai_async": "OPENAI_API_KEY",
         "openrouter": "OPENROUTER_API_KEY",
         "openrouter_stt": "OPENROUTER_API_KEY",
+        "meta": "MODEL_API_KEY",
         "cerebras": "CEREBRAS_API_KEY",
         "celeris": "CELERIS_API_KEY",
         "azure_mai": "AZURE_MAI_SPEECH_KEY",
@@ -882,6 +890,7 @@ ${output}"""
         add("DEEPGRAM_API_KEY", cls.DEEPGRAM_API_KEY or "")
         add("OPENAI_API_KEY", cls.OPENAI_API_KEY or "")
         add("OPENROUTER_API_KEY", cls.OPENROUTER_API_KEY or "")
+        add("MODEL_API_KEY", getattr(cls, "MODEL_API_KEY", "") or "")
         add("CEREBRAS_API_KEY", cls.CEREBRAS_API_KEY or "")
         add("CELERIS_API_KEY", cls.CELERIS_API_KEY or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")

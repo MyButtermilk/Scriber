@@ -1,6 +1,6 @@
 """
 LLM-based transcript summarization.
-Supports OpenAI, Google Gemini, and OpenRouter models.
+Supports OpenAI, Google Gemini, Meta, Cerebras, Celeris, and OpenRouter models.
 """
 
 from __future__ import annotations
@@ -45,6 +45,8 @@ SummarizationModel = Literal[
     "gpt-5.2",
     "gpt-5-mini",
     "gpt-5-nano",
+    "muse-spark-1.2",
+    "muse-spark-1.2-contributor",
     "google/gemini-2.5-flash-lite:nitro",
     "minimax/minimax-m3:nitro",
     "openai/gpt-oss-120b",
@@ -53,6 +55,29 @@ SummarizationModel = Literal[
     "celeris-1",
     "z-ai/glm-5.2:nitro",
 ]
+
+
+class SummaryOutputLimitError(RuntimeError):
+    """A provider returned visible text but marked it as incomplete."""
+
+    meeting_analysis_error_code = "meeting_analysis_incomplete_response"
+
+
+class MetaContributorAccessError(ValueError):
+    """The selected Meta project does not expose the Contributor model."""
+
+
+_META_CONTRIBUTOR_ACCESS_MESSAGE = (
+    "Muse Spark 1.2 Contributor is not available for this Meta project. "
+    "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+    "in the Meta dashboard, then try again."
+)
+
+
+def _is_incomplete_summary_error(error: BaseException) -> bool:
+    return getattr(error, "meeting_analysis_error_code", "") == "meeting_analysis_incomplete_response"
+
+
 _OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
 _OPENROUTER_PROVIDER_ROUTED_MODELS = frozenset({"openai/gpt-oss-120b"})
 _OPENROUTER_PROVIDER_ROUTE_SUFFIXES = frozenset({"baseten", "cerebras"})
@@ -63,6 +88,8 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-mini": 8192,
     "gpt-5.5": 8192,
     "gpt-5.2": 8192,
+    "muse-spark-1.2": 131_072,
+    "muse-spark-1.2-contributor": 131_072,
     "gemini-flash-latest": 65536,
     "gemini-3.5-flash": 65536,
     "gemini-3-flash-preview": 8192,
@@ -85,8 +112,12 @@ _HTML_OUTPUT_GUARDRAIL = (
     "colors, and interaction; you control document structure only.\n"
     "- Start with one <section> containing one concise, specific <h2> title and one short <p> standfirst "
     "that explains the subject and why it matters.\n"
-    "- When the source has enough substance, add 3 to 5 key takeaways in a concise <ul> inside that first "
-    "section. Begin each takeaway with a short <strong> lead phrase followed by a precise explanation.\n"
+    "- After the standfirst, add at most one compact snapshot only when it improves orientation. Choose its "
+    "structure from the source: use <ul> for genuinely distinct takeaways (with no fixed item count), or "
+    "<dl>/<dt>/<dd> for factual label-value pairs. Omit the snapshot entirely when it would merely repeat "
+    "the sections below. Do not force a card count or reuse one visual pattern for every summary.\n"
+    "- When a snapshot uses <ul>, begin an item with a short <strong> lead phrase only when that phrase adds "
+    "real scanning value; plain list items are equally valid.\n"
     "- Organize the remaining material into sibling <section> elements with descriptive <h2> headings. "
     "Use <h3> and <h4> only for genuine subdivisions, never as decoration.\n"
     "- Keep paragraphs short and focused. Prefer prose for explanation; use <ul> for parallel items, <ol> "
@@ -203,6 +234,10 @@ def _should_fallback_to_openrouter() -> bool:
 
 def _is_openrouter_model(model: str) -> bool:
     return "/" in (model or "") and not model.startswith(("http://", "https://", "cerebras/"))
+
+
+def _is_meta_model(model: str) -> bool:
+    return (model or "").strip() in {"muse-spark-1.2", "muse-spark-1.2-contributor"}
 
 
 def _is_cerebras_model(model: str) -> bool:
@@ -430,8 +465,10 @@ def _dynamic_length_instruction(input_words: int, target_words: int) -> str:
     return (
         "Zusätzliche Längenregel (automatisch): "
         f"Der Input hat ungefähr {input_words} Wörter. "
-        f"Erstelle eine inhaltlich vollständige Zusammenfassung mit ungefähr {target_words} Wörtern (Toleranz ±15%). "
-        "Nutze das verfügbare Ausgabebudget großzügig, statt künstlich kurz zu bleiben. "
+        f"Nutze ungefähr {target_words} Wörter nur als Richtwert; er ist kein hartes Limit. "
+        "Bestimme die tatsächlich nötige Länge selbst; Vollständigkeit hat Vorrang und die Antwort darf deutlich "
+        "länger werden, wenn relevante Inhalte sonst fehlen würden. "
+        "Bleibe nicht künstlich kurz und kürze keine relevanten Inhalte zugunsten einer Zielgröße. "
         "Bei langen Inputs sollen alle Hauptthemen, Entscheidungen, offenen Punkte und relevanten Details enthalten sein. "
         "Beende die Antwort immer mit einem vollständig abgeschlossenen Satz und Abschnitt."
     )
@@ -494,7 +531,7 @@ def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
     return min(retry_cap, max(current_tokens + 512, grown))
 
 
-async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int) -> str:
+async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int | None) -> str:
     if is_celeris_model(model):
         result = await celeris_chat_completion(
             prompt,
@@ -505,6 +542,8 @@ async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int)
         result = await _summarize_openai(prompt, model, max_output_tokens)
     elif model.startswith("gemini-"):
         result = await _summarize_gemini(prompt, model, max_output_tokens)
+    elif _is_meta_model(model):
+        result = await _summarize_meta(prompt, model, max_output_tokens)
     elif _is_cerebras_model(model):
         result = await _summarize_cerebras(prompt, model, max_output_tokens)
     elif _is_openrouter_model(model):
@@ -521,7 +560,7 @@ async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int)
 async def _summarize_structured_html_with_model(
     prompt: str,
     model: str,
-    max_output_tokens: int,
+    max_output_tokens: int | None,
 ) -> str:
     """Generate a summary while enforcing the HTML document contract.
 
@@ -615,7 +654,7 @@ async def _summarize_celeris_document(
         return await _summarize_with_model(
             full_prompt,
             CELERIS_MODEL,
-            final_tokens,
+            None,
         )
 
     chunks = _split_text_for_celeris(text)
@@ -638,7 +677,7 @@ async def _summarize_celeris_document(
             return await _summarize_with_model(
                 prompt,
                 CELERIS_MODEL,
-                _CELERIS_PARTIAL_OUTPUT_TOKENS,
+                None,
             )
 
     partials = list(await asyncio.gather(*(summarize_part(index, chunk) for index, chunk in enumerate(chunks))))
@@ -669,7 +708,7 @@ async def _summarize_celeris_document(
             return await _summarize_with_model(
                 prompt,
                 CELERIS_MODEL,
-                _CELERIS_REDUCE_OUTPUT_TOKENS,
+                None,
             )
 
     while len(partials) > _CELERIS_REDUCE_FAN_IN:
@@ -700,7 +739,7 @@ async def _summarize_celeris_document(
     return await _summarize_with_model(
         synthesis_prompt,
         CELERIS_MODEL,
-        final_tokens,
+        None,
     )
 
 
@@ -709,10 +748,15 @@ async def _try_openrouter_summary_fallback(
     *,
     primary_model: str,
     primary_error: Exception,
-    max_output_tokens: int,
+    max_output_tokens: int | None,
     timeout_seconds: float,
     require_structured_html: bool = False,
 ) -> str | None:
+    if _is_meta_model(primary_model):
+        # Meta is a direct, explicitly selected provider boundary. Never send
+        # its full prompt or transcript to OpenRouter after any Meta failure;
+        # the user must choose a different provider themselves.
+        return None
     if _is_openrouter_model(primary_model):
         return None
     if not _should_fallback_to_openrouter():
@@ -742,12 +786,20 @@ async def _try_openrouter_summary_fallback(
             fallback_request,
             timeout=timeout_seconds,
         )
+    except SummaryOutputLimitError:
+        # Preserve the bounded public classification for Meeting recovery.
+        # Provider/model diagnostics were already written by the transport.
+        raise
     except TimeoutError as exc:
+        if _is_incomplete_summary_error(primary_error):
+            raise primary_error from None
         timeout_display = max(1, int(round(timeout_seconds)))
         raise RuntimeError(
             f"{primary_model} summarization failed and OpenRouter fallback timed out after {timeout_display}s."
         ) from exc
     except Exception:
+        if _is_incomplete_summary_error(primary_error):
+            raise primary_error from None
         raise RuntimeError(f"{primary_model} summarization failed and the OpenRouter fallback also failed.") from None
 
 
@@ -793,13 +845,12 @@ async def summarize_text(
     )
 
     logger.info(
-        "Summarizing transcript with {} ({} chars, ~{} words, target ~{} words, duration_s={}, max_output_tokens={})",
+        "Summarizing transcript with {} ({} chars, ~{} words, target ~{} words, duration_s={}; provider chooses output length)",
         model,
         len(text),
         input_words,
         target_words,
         duration_seconds,
-        output_tokens,
     )
 
     timeout_seconds = _summary_timeout_seconds()
@@ -818,7 +869,7 @@ async def summarize_text(
             )
         else:
             summary = await asyncio.wait_for(
-                _summarize_structured_html_with_model(full_prompt, model, output_tokens),
+                _summarize_structured_html_with_model(full_prompt, model, None),
                 timeout=timeout_seconds,
             )
         summary = normalize_summary_document_html(summary)
@@ -836,7 +887,7 @@ async def summarize_text(
             full_prompt,
             primary_model=model,
             primary_error=timeout_error,
-            max_output_tokens=output_tokens,
+            max_output_tokens=None,
             timeout_seconds=timeout_seconds,
             require_structured_html=True,
         )
@@ -851,7 +902,7 @@ async def summarize_text(
             full_prompt,
             primary_model=model,
             primary_error=exc,
-            max_output_tokens=output_tokens,
+            max_output_tokens=None,
             timeout_seconds=timeout_seconds,
             require_structured_html=True,
         )
@@ -877,7 +928,7 @@ async def summarize_text(
                     )
                     try:
                         summary = await asyncio.wait_for(
-                            _summarize_openai(full_prompt, fallback_model, output_tokens),
+                            _summarize_openai(full_prompt, fallback_model, None),
                             timeout=timeout_seconds,
                         )
                         summary = normalize_summary_document_html(summary)
@@ -905,7 +956,7 @@ async def generate_text_with_model(
     prompt: str,
     model: str | None = None,
     *,
-    max_output_tokens: int = 2048,
+    max_output_tokens: int | None = 2048,
 ) -> str:
     """Generate text with the configured summary LLM routing.
 
@@ -919,9 +970,11 @@ async def generate_text_with_model(
     selected_model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
     if _is_openrouter_model(selected_model):
         selected_model = _openrouter_nitro_model(selected_model)
-    model_key = _openrouter_nitro_model(selected_model) if _is_openrouter_model(selected_model) else selected_model
-    token_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_output_tokens)
-    output_tokens = max(128, min(max_output_tokens, token_cap))
+    output_tokens: int | None = None
+    if max_output_tokens is not None:
+        model_key = _openrouter_nitro_model(selected_model) if _is_openrouter_model(selected_model) else selected_model
+        token_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_output_tokens)
+        output_tokens = max(128, min(max_output_tokens, token_cap))
     timeout_seconds = _summary_timeout_seconds()
 
     try:
@@ -970,12 +1023,14 @@ async def generate_meeting_analysis_text(
     """
     token = _summary_timeout_override.set(_meeting_analysis_timeout_seconds())
     try:
-        return await generate_text_with_model(prompt, model, max_output_tokens=max_output_tokens)
+        # Meeting analysis prompts define the required structured content. Do
+        # not impose a Scriber output-token ceiling on any remote model.
+        return await generate_text_with_model(prompt, model, max_output_tokens=None)
     finally:
         _summary_timeout_override.reset(token)
 
 
-async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> str:
+async def _summarize_openai(prompt: str, model: str, max_output_tokens: int | None) -> str:
     """Summarize using OpenAI API."""
     api_key = Config.OPENAI_API_KEY
     if not api_key:
@@ -994,29 +1049,53 @@ async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> 
         client = openai.AsyncOpenAI(api_key=api_key)
 
     try:
-        # gpt-5 models are most reliable with the Responses API and max_output_tokens.
+        # GPT-5 models are most reliable with the Responses API. Summary
+        # workflows omit max_output_tokens so the model chooses its own length.
         if model.startswith("gpt-5") and hasattr(client, "responses"):
+            response_kwargs: dict[str, Any] = {
+                "model": model,
+                "input": prompt,
+            }
+            if max_output_tokens is not None:
+                response_kwargs["max_output_tokens"] = max_output_tokens
             response = await client.responses.create(
-                model=model,
-                input=prompt,
-                max_output_tokens=max_output_tokens,
+                **response_kwargs,
             )
             content = _extract_openai_response_text(response)
+            incomplete_details = getattr(response, "incomplete_details", None)
+            incomplete_reason = str(getattr(incomplete_details, "reason", "") or "").strip().lower()
+            if str(getattr(response, "status", "") or "").strip().lower() == "incomplete" or incomplete_reason in {
+                "max_output_tokens",
+                "length",
+            }:
+                raise SummaryOutputLimitError(
+                    "OpenAI reached its native output limit before completing the response. "
+                    "The partial response was discarded to avoid saving truncated content."
+                )
             logger.info(f"OpenAI summarization complete: {len(content or '')} chars")
             return content or ""
 
         chat_kwargs: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_output_tokens,
         }
+        if max_output_tokens is not None:
+            chat_kwargs["max_tokens"] = max_output_tokens
         if not model.startswith("gpt-5"):
             chat_kwargs["temperature"] = 0.3
         response = await client.chat.completions.create(**chat_kwargs)
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        content = choice.message.content
+        if str(getattr(choice, "finish_reason", "") or "").strip().lower() == "length":
+            raise SummaryOutputLimitError(
+                "OpenAI reached its native output limit before completing the response. "
+                "The partial response was discarded to avoid saving truncated content."
+            )
         logger.info(f"OpenAI summarization complete: {len(content or '')} chars")
         return content or ""
 
+    except SummaryOutputLimitError:
+        raise
     except openai.APIError as e:
         logger.error("OpenAI API error ({})", type(e).__name__)
         raise provider_transport_error(
@@ -1058,16 +1137,17 @@ def _extract_openai_response_text(response: Any) -> str:
 def _build_openrouter_payload(
     prompt: str,
     models: str | Sequence[str],
-    max_output_tokens: int,
+    max_output_tokens: int | None,
 ) -> dict[str, Any]:
     normalized_models = _openrouter_model_candidates(models)
 
     payload: dict[str, Any] = {
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_output_tokens,
         "temperature": 0.3,
         "reasoning": _openrouter_reasoning_config(),
     }
+    if max_output_tokens is not None:
+        payload["max_tokens"] = max_output_tokens
     if len(normalized_models) == 1:
         payload["model"] = _openrouter_payload_model(normalized_models[0])
         provider_order = _openrouter_provider_order_for_model(normalized_models[0])
@@ -1286,15 +1366,18 @@ async def _post_openrouter_chat_completion(
             ) from None
 
 
-def _openrouter_used_model(data: dict[str, Any], fallback: str) -> str:
+def _openrouter_used_model(data: dict[str, Any], fallbacks: str | Sequence[str]) -> str:
     model = data.get("model") if isinstance(data, dict) else None
     candidate = _safe_model_identifier(model)
     allowed_models = {configured for configured in _MODEL_OUTPUT_TOKEN_CAPS if _is_openrouter_model(configured)}
-    if fallback and fallback != "unknown":
-        allowed_models.add(fallback)
+    fallback_models = [fallbacks] if isinstance(fallbacks, str) else list(fallbacks)
+    safe_fallbacks = [
+        safe for fallback in fallback_models if (safe := _safe_model_identifier(fallback)) and safe != "unknown"
+    ]
+    allowed_models.update(safe_fallbacks)
     if candidate and any(_same_openrouter_model(candidate, allowed) for allowed in allowed_models):
         return candidate
-    return fallback
+    return safe_fallbacks[0] if safe_fallbacks else "unknown"
 
 
 def _openrouter_retry_candidates(
@@ -1350,7 +1433,7 @@ def _openrouter_next_output_budget(
 async def _summarize_openrouter(
     prompt: str,
     models: str | Sequence[str],
-    max_output_tokens: int,
+    max_output_tokens: int | None,
     *,
     require_structured_html: bool = False,
 ) -> str:
@@ -1385,11 +1468,14 @@ async def _summarize_openrouter(
         initial_models = requested_models
 
     attempts: list[list[str]] = [initial_models]
-    attempt_budgets: list[int] = [max_output_tokens]
-    seen_attempts: set[tuple[tuple[str, ...], int]] = {(tuple(initial_models), max_output_tokens)}
+    attempt_budgets: list[int | None] = [max_output_tokens]
+    seen_attempts: set[tuple[tuple[str, ...], int | None]] = {(tuple(initial_models), max_output_tokens)}
     invalid_html_model_families: set[str] = set()
+    length_limited_attempts: set[tuple[str, int | None]] = set()
     last_empty_detail = ""
-    retry_cap = _openrouter_retry_output_cap(initial_models, max_output_tokens)
+    retry_cap = (
+        _openrouter_retry_output_cap(initial_models, max_output_tokens) if max_output_tokens is not None else None
+    )
 
     session = aiohttp.ClientSession(timeout=timeout)
     try:
@@ -1401,33 +1487,98 @@ async def _summarize_openrouter(
             data = await _post_openrouter_chat_completion(payload, headers, session)
 
             content = _extract_openrouter_response_text(data).strip()
-            used_model = _openrouter_used_model(data, attempt_models[0])
+            used_model = _openrouter_used_model(data, attempt_models)
             logger.info(
-                "OpenRouter summarization complete: {} chars (requested_models={}, response_model={})",
+                "OpenRouter response received: {} chars (requested_models={}, response_model={})",
                 len(content or ""),
                 payload.get("model") or payload.get("models"),
                 used_model,
             )
 
             length_limited = _openrouter_should_retry_with_more_tokens(data)
-            already_retried_with_larger_budget = any(
-                previous_budget < attempt_max_tokens for previous_budget in attempt_budgets[:attempt_index]
+            already_retried_with_larger_budget = bool(
+                attempt_max_tokens is not None
+                and any(
+                    previous_budget is not None and previous_budget < attempt_max_tokens
+                    for previous_budget in attempt_budgets[:attempt_index]
+                )
             )
+            if length_limited:
+                length_limited_attempts.add((_openrouter_model_family(used_model), attempt_max_tokens))
+            if length_limited and attempt_max_tokens is None:
+                last_empty_detail = _openrouter_empty_response_detail(data)
+                alternate_models = _openrouter_retry_candidates(
+                    attempt_models,
+                    used_model=used_model,
+                    allow_default_fallbacks=isinstance(models, str),
+                )
+                alternate_models = [
+                    candidate
+                    for candidate in alternate_models
+                    if (_openrouter_model_family(candidate), None) not in length_limited_attempts
+                ]
+                alternate_key = (tuple(alternate_models), None)
+                if alternate_models and alternate_key not in seen_attempts:
+                    logger.warning(
+                        "OpenRouter selected {} but it reached its native output limit. "
+                        "Retrying alternate models={} without a Scriber token cap. detail={}",
+                        used_model,
+                        alternate_models,
+                        last_empty_detail,
+                    )
+                    attempts.append(alternate_models)
+                    attempt_budgets.append(None)
+                    seen_attempts.add(alternate_key)
+                    attempt_index += 1
+                    continue
+                raise SummaryOutputLimitError(
+                    "OpenRouter reached the selected model's native output limit. "
+                    "The partial summary was discarded to avoid saving truncated content."
+                )
             if length_limited and content and already_retried_with_larger_budget:
                 last_empty_detail = _openrouter_empty_response_detail(data)
-                # A visible response has already been regenerated with a larger
-                # token budget. Trying the same oversized answer again through
-                # every fallback model can consume the caller's entire global
-                # timeout without making the response complete. Keep empty
-                # length responses eligible for another model because those
-                # commonly spent the whole budget on hidden reasoning.
-                raise RuntimeError(
+                # OpenRouter may select the same model again when a multi-model
+                # request is regenerated with a larger budget. Give one as-yet
+                # untried model family the full retry budget before failing the
+                # request. A model that failed only at the initial smaller
+                # budget remains eligible once at this full retry budget.
+                alternate_models = _openrouter_retry_candidates(
+                    attempt_models,
+                    used_model=used_model,
+                    allow_default_fallbacks=isinstance(models, str),
+                )
+                alternate_models = [
+                    candidate
+                    for candidate in alternate_models
+                    if (_openrouter_model_family(candidate), attempt_max_tokens) not in length_limited_attempts
+                ]
+                alternate_key = (tuple(alternate_models), attempt_max_tokens)
+                if alternate_models and alternate_key not in seen_attempts:
+                    logger.warning(
+                        "OpenRouter stopped due length from {} after the larger-budget retry. "
+                        "Retrying alternate models={} at max_tokens={}. detail={}",
+                        used_model,
+                        alternate_models,
+                        attempt_max_tokens,
+                        last_empty_detail,
+                    )
+                    attempts.append(alternate_models)
+                    attempt_budgets.append(attempt_max_tokens)
+                    seen_attempts.add(alternate_key)
+                    attempt_index += 1
+                    continue
+                raise SummaryOutputLimitError(
                     "OpenRouter hit max_tokens after the larger-budget retry "
                     f"(max_tokens={attempt_max_tokens}, detail={last_empty_detail}). "
                     "The partial summary was discarded to avoid saving truncated content."
                 )
 
-            if length_limited and attempt_max_tokens < retry_cap:
+            if (
+                length_limited
+                and attempt_max_tokens is not None
+                and retry_cap is not None
+                and attempt_max_tokens < retry_cap
+            ):
                 last_empty_detail = _openrouter_empty_response_detail(data)
                 next_max_tokens = _openrouter_next_output_budget(attempt_max_tokens, retry_cap, data)
                 # A length stop without any visible content usually means the
@@ -1463,6 +1614,11 @@ async def _summarize_openrouter(
 
             if content and not length_limited:
                 if not require_structured_html:
+                    logger.info(
+                        "OpenRouter response accepted for caller validation: {} chars (response_model={})",
+                        len(content),
+                        used_model,
+                    )
                     return content
 
                 try:
@@ -1473,6 +1629,11 @@ async def _summarize_openrouter(
                     # or parser details in logs or user-facing errors.
                     normalized_html = ""
                 if normalized_html:
+                    logger.info(
+                        "OpenRouter structured summary accepted: {} chars (response_model={})",
+                        len(normalized_html),
+                        used_model,
+                    )
                     return normalized_html
 
                 invalid_html_model_families.add(_openrouter_model_family(used_model))
@@ -1525,7 +1686,7 @@ async def _summarize_openrouter(
                 attempt_index += 1
                 continue
             if _openrouter_should_retry_with_more_tokens(data):
-                raise RuntimeError(
+                raise SummaryOutputLimitError(
                     "OpenRouter hit max_tokens before completing the summary "
                     f"(max_tokens={attempt_max_tokens}, detail={last_empty_detail}). "
                     "The partial summary was discarded to avoid saving truncated content."
@@ -1551,7 +1712,101 @@ async def _summarize_openrouter(
         await session.close()
 
 
-async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -> str:
+async def _post_meta_chat_completion(
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    session: aiohttp.ClientSession,
+) -> dict[str, Any]:
+    async with session.post(
+        "https://api.meta.ai/v1/chat/completions",
+        json=payload,
+        headers=headers,
+    ) as resp:
+        raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
+        if resp.status >= 400:
+            raise provider_transport_error(
+                "meta",
+                "summarization",
+                status=resp.status,
+                response_body=raw,
+            )
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            raise provider_transport_error(
+                "meta",
+                "summarization_response",
+                code="invalid_json",
+            ) from None
+
+
+async def _summarize_meta(prompt: str, model: str, max_output_tokens: int | None) -> str:
+    """Generate text with Meta's OpenAI-compatible Model API."""
+
+    api_key = getattr(Config, "MODEL_API_KEY", "") or ""
+    if not api_key:
+        raise ValueError("Meta Model API key not configured. Please add it in Settings.")
+    if not _is_meta_model(model):
+        raise ValueError(f"Unsupported Meta model: {model}")
+
+    timeout_seconds = _summary_timeout_seconds()
+    timeout = aiohttp.ClientTimeout(
+        total=timeout_seconds,
+        connect=min(15, timeout_seconds),
+        sock_connect=min(15, timeout_seconds),
+        sock_read=timeout_seconds,
+    )
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if max_output_tokens is not None:
+        payload["max_completion_tokens"] = max_output_tokens
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            data = await _post_meta_chat_completion(payload, headers, session)
+    except ProviderTransportError as exc:
+        if model == "muse-spark-1.2-contributor" and exc.status == 404:
+            raise MetaContributorAccessError(_META_CONTRIBUTOR_ACCESS_MESSAGE) from None
+        raise
+    except aiohttp.ClientError as exc:
+        logger.error("Meta Model API summarization HTTP error ({})", type(exc).__name__)
+        raise provider_transport_error(
+            "meta",
+            "summarization",
+            code=type(exc).__name__,
+        ) from None
+
+    content = _extract_openrouter_response_text(data).strip()
+    choice = _openrouter_primary_choice(data)
+    finish_reason = str(choice.get("finish_reason") or "").strip().lower()
+    logger.info(
+        "Meta Model API response received: {} chars (model={}, finish_reason={})",
+        len(content),
+        model,
+        finish_reason or "unknown",
+    )
+    if finish_reason == "length":
+        raise SummaryOutputLimitError(
+            "Meta Model API reached its output limit before completing the response. "
+            "The partial response was discarded to avoid saving truncated content."
+        )
+    if not content:
+        raise RuntimeError("Meta Model API returned an empty response.")
+    logger.info(
+        "Meta Model API response accepted for caller validation: {} chars (model={})",
+        len(content),
+        model,
+    )
+    return content
+
+
+async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int | None) -> str:
     """Generate text through direct Cerebras OpenAI-compatible Chat Completions."""
     api_key = getattr(Config, "CEREBRAS_API_KEY", "") or ""
     if not api_key:
@@ -1564,11 +1819,7 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
         sock_connect=min(15, timeout_seconds),
         sock_read=timeout_seconds,
     )
-    payload = {
-        "model": _cerebras_model_id(model),
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": max_output_tokens,
-    }
+    payload = _build_cerebras_payload(prompt, model, max_output_tokens)
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -1597,6 +1848,11 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
                 ) from None
 
         content = _extract_openrouter_response_text(data).strip()
+        if _openrouter_should_retry_with_more_tokens(data):
+            raise SummaryOutputLimitError(
+                "Cerebras reached its native output limit before completing the response. "
+                "The partial response was discarded to avoid saving truncated content."
+            )
         if not content:
             detail = _openrouter_empty_response_detail(data)
             raise RuntimeError(f"Cerebras returned empty response. detail={detail}")
@@ -1622,10 +1878,24 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int) -
         ) from None
 
 
-def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int) -> dict[str, Any]:
-    generation_config: dict[str, Any] = {
-        "maxOutputTokens": max_output_tokens,
+def _build_cerebras_payload(
+    prompt: str,
+    model: str,
+    max_output_tokens: int | None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": _cerebras_model_id(model),
+        "messages": [{"role": "user", "content": prompt}],
     }
+    if max_output_tokens is not None:
+        payload["max_tokens"] = max_output_tokens
+    return payload
+
+
+def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int | None) -> dict[str, Any]:
+    generation_config: dict[str, Any] = {}
+    if max_output_tokens is not None:
+        generation_config["maxOutputTokens"] = max_output_tokens
     temperature_raw = os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "").strip()
     if temperature_raw:
         generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
@@ -1712,7 +1982,7 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any
     return content, finish_reason, candidate_tokens, total_tokens
 
 
-async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> str:
+async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int | None) -> str:
     """Summarize using Google Gemini API."""
     api_key = Config.GOOGLE_API_KEY
     if not api_key:
@@ -1729,8 +1999,12 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         http_retries = _env_int("SCRIBER_SUMMARY_GEMINI_RETRIES", 2, min_value=0)
-        max_token_retries = _env_int("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", 2, min_value=0)
-        retry_cap = _gemini_retry_output_cap(model, max_output_tokens)
+        max_token_retries = (
+            _env_int("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", 2, min_value=0)
+            if max_output_tokens is not None
+            else 0
+        )
+        retry_cap = _gemini_retry_output_cap(model, max_output_tokens) if max_output_tokens is not None else None
         current_max_output_tokens = max_output_tokens
 
         async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -1754,7 +2028,12 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
                 )
 
                 if finish_reason == "MAX_TOKENS":
-                    if max_token_attempt < max_token_retries and current_max_output_tokens < retry_cap:
+                    if (
+                        max_token_attempt < max_token_retries
+                        and current_max_output_tokens is not None
+                        and retry_cap is not None
+                        and current_max_output_tokens < retry_cap
+                    ):
                         next_max_output_tokens = _gemini_next_output_budget(current_max_output_tokens, retry_cap)
                         logger.warning(
                             "Gemini stopped due MAX_TOKENS (max_output_tokens={}, candidate_tokens={}, total_tokens={}). Retrying with max_output_tokens={} and thinkingLevel={}.",
@@ -1767,7 +2046,7 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int) -> 
                         current_max_output_tokens = next_max_output_tokens
                         continue
 
-                    raise RuntimeError(
+                    raise SummaryOutputLimitError(
                         "Gemini hit MAX_TOKENS before completing the summary "
                         f"(finish_reason=MAX_TOKENS, max_output_tokens={current_max_output_tokens}, "
                         f"candidate_tokens={candidate_tokens}, total_tokens={total_tokens}). "

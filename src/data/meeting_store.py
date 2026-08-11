@@ -1402,6 +1402,7 @@ class MeetingStore:
         error_code: str = "",
         error_message: str = "",
         capture_metadata: dict[str, Any] | None = None,
+        analysis_model: str | None = None,
     ) -> dict[str, Any]:
         if new_state not in MEETING_STATES:
             raise InvalidMeetingTransition(f"Unknown meeting state: {new_state}")
@@ -1425,6 +1426,7 @@ class MeetingStore:
             cursor = conn.execute(
                 """UPDATE meetings SET state = ?, started_at = ?, ended_at = ?, updated_at = ?,
                    error_code = ?, error_message = ?, capture_metadata_json = ?,
+                   analysis_model = CASE WHEN ? THEN ? ELSE analysis_model END,
                    processing_phase = CASE WHEN ? THEN '' ELSE processing_phase END,
                    processing_progress = CASE WHEN ? THEN NULL ELSE processing_progress END,
                    processing_status = CASE WHEN ? THEN '' ELSE processing_status END,
@@ -1439,6 +1441,8 @@ class MeetingStore:
                     error_code,
                     error_message,
                     _json(metadata),
+                    int(analysis_model is not None),
+                    str(analysis_model or "").strip(),
                     int(clear_processing_progress),
                     int(clear_processing_progress),
                     int(clear_processing_progress),

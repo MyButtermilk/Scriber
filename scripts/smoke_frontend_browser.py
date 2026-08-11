@@ -83,6 +83,12 @@ PRIMARY_TAB_SHELLS = [
     ("/settings", "settings"),
 ]
 
+SUMMARY_READING_TRACK_VIEWPORT = {
+    "width": 2048,
+    "height": 1252,
+    "deviceScaleFactor": 1,
+}
+
 
 def terminate_process_tree(process: Any) -> None:
     if process.poll() is not None:
@@ -2359,6 +2365,95 @@ async def capture_page_screenshot(cdp: CdpClient, *, output_dir: Path, label: st
         raise RuntimeError("CDP Page.captureScreenshot did not return image data.")
     path.write_bytes(base64.b64decode(data))
     return evidence_path_for_report(path)
+
+
+async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
+    viewport_expression = r"""
+(() => ({
+  viewportWidth: window.innerWidth,
+  viewportHeight: window.innerHeight,
+  devicePixelRatio: window.devicePixelRatio
+}))()
+"""
+    original_viewport = await cdp.evaluate(viewport_expression, timeout=5)
+    original_device_metrics = {
+        "width": int(original_viewport["viewportWidth"]),
+        "height": int(original_viewport["viewportHeight"]),
+        "deviceScaleFactor": float(original_viewport["devicePixelRatio"]),
+        "mobile": False,
+    }
+    restored_viewport: dict[str, Any] = {}
+    try:
+        await cdp.call(
+            "Emulation.setDeviceMetricsOverride",
+            {**SUMMARY_READING_TRACK_VIEWPORT, "mobile": False},
+            timeout=5,
+        )
+        state = await wait_for_interaction_state(
+            cdp,
+            label="summary-reading-track",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  const documentRoot = document.querySelector('.summary-document[data-summary-format="html"]');
+  const overview = documentRoot?.querySelector(':scope > .summary-overview');
+  const detail = documentRoot?.querySelector(':scope > section:not(.summary-overview)');
+  if (!documentRoot || !overview || !detail) {
+    return { ok: false, reason: 'summary document sections are not ready' };
+  }
+  const rootRect = documentRoot.getBoundingClientRect();
+  const overviewRect = overview.getBoundingClientRect();
+  const detailRect = detail.getBoundingClientRect();
+  const widthDelta = Math.abs(overviewRect.width - detailRect.width);
+  const leftDelta = Math.abs(overviewRect.left - detailRect.left);
+  const overflowX = Math.max(0, documentRoot.scrollWidth - documentRoot.clientWidth);
+  const viewportWidth = window.innerWidth;
+  return {
+    ok: viewportWidth === __EXPECTED_VIEWPORT_WIDTH__
+      && widthDelta <= 1
+      && leftDelta <= 1
+      && overflowX <= 1,
+    viewportWidth,
+    viewportHeight: window.innerHeight,
+    rootWidth: rootRect.width,
+    overviewWidth: overviewRect.width,
+    detailWidth: detailRect.width,
+    widthDelta,
+    leftDelta,
+    overflowX,
+    snapshotKind: overview.querySelector(':scope > .summary-snapshot--facts')
+      ? 'facts'
+      : overview.querySelector(':scope > .summary-snapshot--takeaways')
+        ? 'takeaways'
+        : 'none',
+  };
+})()
+""".replace("__EXPECTED_VIEWPORT_WIDTH__", str(SUMMARY_READING_TRACK_VIEWPORT["width"])),
+        )
+    finally:
+        await cdp.call("Emulation.clearDeviceMetricsOverride", timeout=5)
+        restored_viewport = await cdp.evaluate(viewport_expression, timeout=5)
+        if restored_viewport != original_viewport:
+            # Chromium's new headless mode can retain the last emulated viewport
+            # after clearing the override. Reapply the captured dimensions so the
+            # remaining smoke scenarios still run with their original viewport.
+            await cdp.call(
+                "Emulation.setDeviceMetricsOverride",
+                original_device_metrics,
+                timeout=5,
+            )
+            restored_viewport = await cdp.evaluate(viewport_expression, timeout=5)
+
+    viewport_restored = restored_viewport == original_viewport
+    return {
+        "name": "summary-reading-track",
+        "ok": bool(state.get("ok")) and viewport_restored,
+        "viewport": SUMMARY_READING_TRACK_VIEWPORT,
+        "state": state,
+        "originalViewport": original_viewport,
+        "restoredViewport": restored_viewport,
+        "viewportRestored": viewport_restored,
+    }
 
 
 async def exercise_dark_boot_shell(
@@ -7637,6 +7732,10 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     interaction_checks.append(
                         await exercise_transcript_processing_refresh(cdp, timeout_sec=args.page_timeout_sec)
                     )
+                elif route == "/transcript/file-00001":
+                    interaction_checks.append(
+                        await exercise_summary_reading_track(cdp, timeout_sec=args.page_timeout_sec)
+                    )
                 if interaction_checks:
                     scenario["interactionChecks"] = interaction_checks
                     scenario["ok"] = bool(scenario["ok"]) and all(item.get("ok") for item in interaction_checks)
@@ -7912,6 +8011,21 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             if route == "/settings"
             else [{"name": "transcript-processing-refresh", "ok": True}]
             if route == "/transcript/youtube-processing-smoke"
+            else [
+                {
+                    "name": "summary-reading-track",
+                    "ok": True,
+                    "viewport": SUMMARY_READING_TRACK_VIEWPORT,
+                    "state": {
+                        "viewportWidth": SUMMARY_READING_TRACK_VIEWPORT["width"],
+                        "viewportHeight": SUMMARY_READING_TRACK_VIEWPORT["height"],
+                    },
+                    "originalViewport": {"viewportWidth": 1280, "viewportHeight": 900, "devicePixelRatio": 1},
+                    "restoredViewport": {"viewportWidth": 1280, "viewportHeight": 900, "devicePixelRatio": 1},
+                    "viewportRestored": True,
+                }
+            ]
+            if route == "/transcript/file-00001"
             else [],
             "validateOnly": True,
         }

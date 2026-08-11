@@ -152,10 +152,12 @@ def test_fresh_install_marks_prompt_migration_without_storing_a_prompt():
 
     assert config_module._migrate_summarization_prompt_once(settings) is True
     assert "summarizationPrompt" not in settings
-    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == (
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
+    )
 
 
-@pytest.mark.parametrize("stored_version", [1, "1", 2, 99])
+@pytest.mark.parametrize("stored_version", [2, "2", 3, 99])
 def test_completed_summary_prompt_migration_preserves_user_prompt(stored_version):
     settings = {
         "summarizationPrompt": "Spätere bewusste Nutzeränderung",
@@ -164,6 +166,26 @@ def test_completed_summary_prompt_migration_preserves_user_prompt(stored_version
 
     assert config_module._migrate_summarization_prompt_once(settings) is False
     assert settings["summarizationPrompt"] == "Spätere bewusste Nutzeränderung"
+
+
+def test_v2_summary_prompt_migration_upgrades_only_the_exact_stock_v1_prompt():
+    marker_key = config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY
+    stock_settings = {
+        "summarizationPrompt": config_module._LEGACY_SUMMARIZATION_PROMPT_V1,
+        marker_key: 1,
+    }
+    edited_settings = {
+        "summarizationPrompt": "Spätere bewusste Nutzeränderung mit höchstens fünf Punkten.",
+        marker_key: 1,
+    }
+
+    assert config_module._migrate_summarization_prompt_once(stock_settings) is True
+    assert stock_settings["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
+    assert stock_settings[marker_key] == config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
+
+    assert config_module._migrate_summarization_prompt_once(edited_settings) is True
+    assert edited_settings["summarizationPrompt"] == "Spätere bewusste Nutzeränderung mit höchstens fünf Punkten."
+    assert edited_settings[marker_key] == config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
 
 
 @pytest.mark.parametrize("invalid_marker", [None, True, -1, "invalid"])
@@ -177,7 +199,9 @@ def test_invalid_summary_prompt_migration_marker_is_treated_as_not_completed(
 
     assert config_module._migrate_summarization_prompt_once(settings) is True
     assert settings["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
-    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+    assert settings[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == (
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
+    )
 
 
 def test_user_prompt_edit_keeps_completed_migration_marker(monkeypatch):
@@ -197,7 +221,7 @@ def test_user_prompt_edit_keeps_completed_migration_marker(monkeypatch):
     Config.set_summarization_prompt("Mein später angepasster Prompt")
 
     assert config_module._json_settings["summarizationPrompt"] == ("Mein später angepasster Prompt")
-    assert config_module._json_settings[marker_key] == 1
+    assert config_module._json_settings[marker_key] == config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
     assert Config.json_settings_migration_pending() is False
 
 
@@ -217,7 +241,9 @@ def test_prompt_upgrade_migrates_once_across_real_process_starts(tmp_path):
     }
     persisted = json.loads(settings_path.read_text(encoding="utf-8"))
     assert persisted["summarizationPrompt"] == config_module._CURRENT_SUMMARIZATION_PROMPT
-    assert persisted[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == 1
+    assert persisted[config_module._SUMMARIZATION_PROMPT_MIGRATION_KEY] == (
+        config_module._SUMMARIZATION_PROMPT_MIGRATION_VERSION
+    )
 
     persisted["summarizationPrompt"] = "Später vom Nutzer angepasster Prompt"
     settings_path.write_text(json.dumps(persisted), encoding="utf-8")
@@ -446,6 +472,17 @@ def test_persist_to_env_file_includes_openrouter_api_key(monkeypatch, tmp_path):
     Config.persist_to_env_file(str(target))
 
     assert "OPENROUTER_API_KEY=openrouter-secret" in target.read_text(encoding="utf-8")
+
+
+def test_persist_to_env_file_includes_meta_model_api_key(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "MODEL_API_KEY", "meta-secret", raising=False)
+
+    Config.persist_to_env_file(str(target))
+
+    contents = target.read_text(encoding="utf-8")
+    assert contents.count("MODEL_API_KEY=") == 1
+    assert "MODEL_API_KEY=meta-secret" in contents
 
 
 def test_persist_to_env_file_includes_celeris_api_key(monkeypatch, tmp_path):

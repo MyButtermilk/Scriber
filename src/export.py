@@ -171,7 +171,7 @@ def _build_export_blocks(
                     )
                 )
                 continue
-        blocks.append(_ExportBlock("body", (_InlineSpan(paragraph),)))
+        blocks.append(_ExportBlock("transcript_body", (_InlineSpan(paragraph),)))
     return blocks
 
 
@@ -362,7 +362,8 @@ _PDF_STYLES = {
     "heading1": _PdfStyle(14, 18, space_before=16, space_after=8, base_bold=True, keep_with_next=True),
     "heading2": _PdfStyle(12, 15, space_before=12, space_after=6, base_bold=True, keep_with_next=True),
     "heading3": _PdfStyle(11, 14, space_before=10, space_after=4, base_bold=True, keep_with_next=True),
-    "body": _PdfStyle(10, 14, space_after=6, alignment="justify"),
+    "body": _PdfStyle(10, 14, space_after=6),
+    "transcript_body": _PdfStyle(10, 14, space_after=6),
     "speaker": _PdfStyle(10, 14, space_after=6),
     "bullet": _PdfStyle(10, 14, space_after=4, left_indent=20, bullet_indent=10),
     "spacer": _PdfStyle(1, 12),
@@ -399,24 +400,59 @@ def _pdf_clean_text(value: str) -> str:
     )
 
 
+def _pdf_standard_width_table(specification: str) -> tuple[int, ...]:
+    widths = tuple(int(value) for value in specification.split())
+    if len(widths) != 224:
+        raise RuntimeError("Standard PDF font width table must cover WinAnsi bytes 32-255")
+    return widths
+
+
+_PDF_HELVETICA_WIDTHS = _pdf_standard_width_table(
+    """
+    278 278 355 556 556 889 667 191 333 333 389 584 278 333 278 278
+    556 556 556 556 556 556 556 556 556 556 278 278 584 584 584 556
+    1015 667 667 722 722 667 611 778 722 278 500 667 556 833 722 778
+    667 778 722 667 611 722 667 944 667 667 611 278 278 278 469 556
+    333 556 556 500 556 556 278 556 556 222 222 500 222 833 556 556
+    556 556 333 500 278 556 500 722 500 500 500 334 260 334 584 350
+    556 350 222 556 333 1000 556 556 333 1000 667 333 1000 350 611 350
+    350 222 222 333 333 350 556 1000 333 1000 500 333 944 350 500 667
+    278 333 556 556 556 556 260 556 333 737 370 556 584 333 737 333
+    400 584 333 333 333 556 537 278 333 333 365 556 834 834 834 611
+    667 667 667 667 667 667 1000 722 667 667 667 667 278 278 278 278
+    722 722 778 778 778 778 778 584 778 722 722 722 722 667 667 611
+    556 556 556 556 556 556 889 500 556 556 556 556 278 278 278 278
+    556 556 556 556 556 556 556 584 611 556 556 556 556 500 556 500
+    """
+)
+
+_PDF_HELVETICA_BOLD_WIDTHS = _pdf_standard_width_table(
+    """
+    278 333 474 556 556 889 722 238 333 333 389 584 278 333 278 278
+    556 556 556 556 556 556 556 556 556 556 333 333 584 584 584 611
+    975 722 722 722 722 667 611 778 722 278 556 722 611 833 722 778
+    667 778 722 667 611 722 667 944 667 667 611 333 278 333 584 556
+    333 556 611 556 611 556 333 611 611 278 278 556 278 889 611 611
+    611 611 389 556 333 611 556 778 556 556 500 389 280 389 584 350
+    556 350 278 556 500 1000 556 556 333 1000 667 333 1000 350 611 350
+    350 278 278 500 500 350 556 1000 333 1000 556 333 944 350 500 667
+    278 333 556 556 556 556 280 556 333 737 370 556 584 333 737 333
+    400 584 333 333 333 611 556 278 333 333 365 556 834 834 834 611
+    722 722 722 722 722 722 1000 722 667 667 667 667 278 278 278 278
+    722 722 778 778 778 778 778 584 778 722 722 722 722 667 667 611
+    556 556 556 556 556 556 889 556 556 556 556 556 278 278 278 278
+    611 611 611 611 611 611 611 584 611 611 611 611 611 556 611 556
+    """
+)
+
+
 def _pdf_width(text: str, font: str, size: float) -> float:
+    encoded = text.encode("cp1252", errors="replace")
     if font == "F5":
-        return len(text.encode("cp1252", errors="replace")) * size * 0.60
-    units = 0.0
-    for character in text:
-        if character in " \u00a0":
-            units += 0.278
-        elif character in "ilI.,'`:;!|":
-            units += 0.28
-        elif character in "mwMW@%&":
-            units += 0.84
-        elif character.isupper():
-            units += 0.68
-        elif character.isdigit():
-            units += 0.56
-        else:
-            units += 0.54
-    return units * size
+        return len(encoded) * size * 0.60
+    widths = _PDF_HELVETICA_BOLD_WIDTHS if font in {"F2", "F4"} else _PDF_HELVETICA_WIDTHS
+    units = sum(widths[byte - 32] for byte in encoded if byte >= 32)
+    return units * size / 1000.0
 
 
 def _append_pdf_chunk(chunks: list[tuple[str, str]], text: str, font: str) -> None:
@@ -528,36 +564,41 @@ def _draw_pdf_line(
     style: _PdfStyle,
     justify: bool,
 ) -> None:
+    if not line:
+        return
     line_width = _pdf_line_width(line, style.size)
     cursor_x = x + max(0.0, (available_width - line_width) / 2) if style.alignment == "center" else x
     spaces = sum(text.count(" ") for text, _font in line)
     extra_space = max(0.0, available_width - line_width) / spaces if justify and spaces else 0.0
     gray = _pdf_number(style.gray)
+    command = [
+        b"BT ",
+        gray.encode("ascii"),
+        b" g 1 0 0 1 ",
+        _pdf_number(cursor_x).encode("ascii"),
+        b" ",
+        _pdf_number(y).encode("ascii"),
+        b" Tm",
+    ]
+    if extra_space:
+        command.extend((b" ", _pdf_number(extra_space).encode("ascii"), b" Tw"))
+
+    current_font = ""
     for text, font in line:
-        fragments = re.split(r"( +)", text)
-        for fragment in fragments:
-            if not fragment:
-                continue
-            width = _pdf_width(fragment, font, style.size)
-            if fragment.isspace():
-                cursor_x += width + extra_space * len(fragment)
-                continue
-            commands.append(
-                b"BT /"
-                + font.encode("ascii")
-                + b" "
-                + _pdf_number(style.size).encode("ascii")
-                + b" Tf "
-                + gray.encode("ascii")
-                + b" g 1 0 0 1 "
-                + _pdf_number(cursor_x).encode("ascii")
-                + b" "
-                + _pdf_number(y).encode("ascii")
-                + b" Tm "
-                + _pdf_literal(fragment)
-                + b" Tj ET"
+        if font != current_font:
+            command.extend(
+                (
+                    b" /",
+                    font.encode("ascii"),
+                    b" ",
+                    _pdf_number(style.size).encode("ascii"),
+                    b" Tf",
+                )
             )
-            cursor_x += width
+            current_font = font
+        command.extend((b" ", _pdf_literal(text), b" Tj"))
+    command.append(b" ET")
+    commands.append(b"".join(command))
 
 
 def _layout_pdf(blocks: list[_ExportBlock]) -> list[bytes]:

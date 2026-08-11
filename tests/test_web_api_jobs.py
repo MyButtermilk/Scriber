@@ -1604,6 +1604,64 @@ async def test_youtube_auto_summary_failure_is_exposed_as_summary_state(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_youtube_meta_contributor_404_exposes_actionable_access_error_without_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    from src.core.provider_errors import provider_transport_error
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    openrouter_fallback = AsyncMock(
+        return_value="<section><h2>Fallback</h2><p>Must not replace the selected Meta model.</p></section>"
+    )
+
+    async def _meta_contributor_not_available(*_args, **_kwargs):
+        raise provider_transport_error(
+            "meta",
+            "summarization",
+            status=404,
+            response_body='{"error":{"message":"private provider detail"}}',
+        )
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", True)
+    monkeypatch.setattr(Config, "SUMMARIZATION_MODEL", "muse-spark-1.2-contributor")
+    monkeypatch.setattr(Config, "MODEL_API_KEY", "meta-test-key", raising=False)
+    monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "openrouter-test-key", raising=False)
+    monkeypatch.delenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", raising=False)
+
+    with (
+        patch(
+            "src.summarization._post_meta_chat_completion",
+            new=AsyncMock(side_effect=_meta_contributor_not_available),
+        ),
+        patch("src.summarization._summarize_openrouter", new=openrouter_fallback),
+        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(ctl, "_save_transcript_summary_state_async", new=AsyncMock()),
+        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+    ):
+        await ctl._finalize_youtube_content(
+            rec,
+            content="A complete transcript that should remain available when summary access is missing.",
+            provider="youtube_captions_auto",
+            started_at=time.monotonic(),
+            source="captions",
+        )
+
+    assert rec.status == "completed"
+    assert rec.summary_status == "failed"
+    assert rec.summary == ""
+    assert rec.summary_error == (
+        "Muse Spark 1.2 Contributor is not available for this Meta project. "
+        "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+        "in the Meta dashboard, then try again."
+    )
+    assert "404" not in rec.summary_error
+    assert "private provider detail" not in rec.summary_error
+    openrouter_fallback.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_file_transcription_empty_provider_result_fails_job(monkeypatch, tmp_path):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)

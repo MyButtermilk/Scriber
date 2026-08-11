@@ -229,7 +229,11 @@ Provider credentials, transcription models, summary models, prompts, language be
 - Practical price and error estimates where benchmark data is available
 - Custom vocabulary for names, brands, and domain language
 - Automatic summarization and caption-first controls
-- Gemini, OpenRouter, OpenAI, Cerebras, and Celeris summary paths
+- Gemini, Meta Muse Spark, OpenRouter, OpenAI, Cerebras, and Celeris summary paths. Scriber does not send an
+  application-defined maximum output-token value for File, YouTube, or Meeting summaries; the selected model
+  decides the required response length, while incomplete provider responses are rejected instead of saved.
+- Muse Spark Contributor may allow Meta to use prompts and responses to improve future Meta models. Scriber
+  marks this tier clearly and does not recommend it for sensitive or confidential content.
 - Light, dark, and system theme support
 - Complete German and English interface with a persistent language switch in
   the app shell and Settings; transcription-language choices remain separate

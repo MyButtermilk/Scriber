@@ -109,6 +109,29 @@ async def test_celeris_transport_uses_documented_request_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_celeris_summary_request_can_omit_scriber_output_limit() -> None:
+    session = _FakeSession(
+        [
+            _FakeResponse(
+                status=200,
+                payload={"choices": [{"finish_reason": "stop", "message": {"content": "ready"}}]},
+            )
+        ]
+    )
+
+    result = await celeris_chat_completion(
+        "Summarize completely.",
+        max_output_tokens=None,
+        timeout_seconds=30,
+        api_key="test-key",
+        session=session,
+    )
+
+    assert result == "ready"
+    assert "max_tokens" not in session.calls[0]["json"]
+
+
+@pytest.mark.asyncio
 async def test_celeris_transport_retries_rate_limits_without_logging_content(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

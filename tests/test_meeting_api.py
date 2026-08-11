@@ -16,7 +16,7 @@ from types import SimpleNamespace
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from src import database, web_api
+from src import database, summarization, web_api
 from src.data.meeting_import_store import MeetingImportStatus, MeetingImportStore
 from src.data.meeting_store import MeetingCreate, MeetingStore
 from src.data.transcript_artifact_store import SourceAssetState, TranscriptArtifactStore
@@ -3630,6 +3630,46 @@ async def test_finalizer_failure_updates_durable_import_and_retry_reopens_it(mon
 
 
 @pytest.mark.asyncio
+async def test_analysis_output_limit_failure_persists_safe_public_guidance(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "analysis-output-limit.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    database.init_database()
+    meeting_store = MeetingStore()
+    meeting_store.initialize()
+    meeting = meeting_store.create(MeetingCreate(title="Long analysis"))
+    meeting_store.transition(meeting["id"], "finalizing")
+    import_store = MeetingImportStore(tmp_path / "analysis-output-limit.db")
+    controller = _durable_import_controller(meeting_store, import_store)
+
+    class OutputLimitedFinalizer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        @staticmethod
+        async def run(meeting_id, _progress):
+            meeting_store.transition(meeting_id, "analyzing")
+            raise summarization.SummaryOutputLimitError("minimax hit max_tokens with private provider diagnostics")
+
+    monkeypatch.setattr(web_api, "MeetingFinalizer", OutputLimitedFinalizer)
+
+    await controller._run_meeting_finalization(meeting["id"])
+
+    failed = meeting_store.get(meeting["id"])
+    assert failed["state"] == "analysis_failed"
+    assert failed["errorCode"] == "meeting_analysis_incomplete_response"
+    assert failed["errorMessage"] == (
+        "The AI service did not return a complete meeting brief. "
+        "Your transcript, recording, speaker names, and notes are safe."
+    )
+    assert "minimax" not in failed["errorMessage"]
+    assert "max_tokens" not in failed["errorMessage"]
+
+    import_store.close()
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_finalization_progress_is_persisted_before_websocket_broadcast(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "meeting-progress.db")
@@ -3729,10 +3769,128 @@ async def test_import_recovery_projects_analysis_failure_to_retryable_failed_job
 
     failed = import_store.require(waiting.id)
     assert failed.status == MeetingImportStatus.FAILED
-    assert failed.error_code == "meeting_analysis_failed"
+    assert failed.error_code == "process_interrupted_during_analysis"
+    assert failed.error_message == "Canonical transcript is intact."
     assert failed.meeting_id == meeting_id
     import_store.close()
     database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_analysis_retry_atomically_uses_current_configured_model(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "analysis-retry-model.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "MEETING_ANALYSIS_MODEL", "gpt-5-mini")
+    monkeypatch.setattr(web_api.Config, "OPENAI_API_KEY", "configured-key")
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(MeetingCreate(title="Retry with new model", analysis_model="gemini-flash-latest"))
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "analyzing")
+    store.transition(meeting["id"], "analysis_failed")
+    import_store = MeetingImportStore(tmp_path / "analysis-retry-model.db")
+    controller = FakeController(store)
+    controller._meeting_import_store = import_store
+    controller._meeting_tasks = {}
+    client = TestClient(TestServer(web_api.create_app(controller)))
+    await client.start_server()
+    try:
+        response = await client.post(f"/api/meetings/{meeting['id']}/retry")
+        payload = await response.json()
+
+        assert response.status == 202
+        assert payload["state"] == "analyzing"
+        assert payload["analysisModel"] == "gpt-5-mini"
+        assert store.get(meeting["id"])["analysisModel"] == "gpt-5-mini"
+        assert controller.analysis_scheduled == [meeting["id"]]
+    finally:
+        await client.close()
+        import_store.close()
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_analysis_retry_atomically_restores_previous_model_state_and_error(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "analysis-retry-cancel-rollback.db")
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(web_api.Config, "OPENAI_API_KEY", "configured-key")
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(
+        MeetingCreate(
+            title="Cancelled analysis retry",
+            analysis_model="gemini-flash-latest",
+        )
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "analyzing")
+    store.transition(
+        meeting["id"],
+        "analysis_failed",
+        error_code="meeting_analysis_provider_failed",
+        error_message="The summary provider could not complete this meeting.",
+    )
+    import_store = MeetingImportStore(tmp_path / "analysis-retry-cancel-rollback.db")
+    controller = FakeController(store)
+    controller._meeting_import_store = import_store
+    controller._meeting_tasks = {}
+    transition_entered = threading.Event()
+    release_transition = threading.Event()
+    original_transition = store.transition
+
+    def blocking_transition(meeting_id, new_state, **kwargs):
+        result = original_transition(meeting_id, new_state, **kwargs)
+        if new_state == "analyzing" and kwargs.get("analysis_model") == "gpt-5-mini":
+            transition_entered.set()
+            assert release_transition.wait(timeout=5)
+        return result
+
+    store.transition = blocking_transition
+
+    def schedule_analysis(meeting_id, *, start_gate):
+        async def wait_for_start():
+            await start_gate.wait()
+
+        controller._meeting_tasks[meeting_id] = asyncio.create_task(wait_for_start())
+        return True
+
+    controller.schedule_meeting_analysis = schedule_analysis
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/retry")
+    request = _DirectRequest(
+        app,
+        meeting_id=meeting["id"],
+        payload={"analysisModel": "gpt-5-mini"},
+    )
+    request.can_read_body = True
+    request_task = asyncio.create_task(handler(request))
+    try:
+        assert await asyncio.wait_for(asyncio.to_thread(transition_entered.wait, 5), timeout=6)
+        request_task.cancel()
+        release_transition.set()
+        with pytest.raises(asyncio.CancelledError):
+            await request_task
+
+        persisted = store.get(meeting["id"])
+        assert persisted["state"] == "analysis_failed"
+        assert persisted["analysisModel"] == "gemini-flash-latest"
+        assert persisted["errorCode"] == "meeting_analysis_provider_failed"
+        assert persisted["errorMessage"] == "The summary provider could not complete this meeting."
+        assert controller._meeting_tasks[meeting["id"]].cancelled()
+    finally:
+        release_transition.set()
+        if not request_task.done():
+            request_task.cancel()
+            await asyncio.gather(request_task, return_exceptions=True)
+        await asyncio.gather(*controller._meeting_tasks.values(), return_exceptions=True)
+        import_store.close()
+        database._close_all_connections()
 
 
 @pytest.mark.asyncio

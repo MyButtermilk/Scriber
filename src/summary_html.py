@@ -216,11 +216,32 @@ class _HtmlToMarkdown(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
         self.lists: list[str] = []
+        self.in_definition_term = False
+        self.definition_item_count: int | None = None
+
+    def _rstrip_parts(self) -> None:
+        while self.parts and not self.parts[-1].rstrip():
+            self.parts.pop()
+        if self.parts:
+            self.parts[-1] = self.parts[-1].rstrip()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
         if tag in {"section", "p", "blockquote", "pre", "table", "tr"}:
             self.parts.append("\n")
+        elif tag == "dl":
+            self.parts.append("\n")
+            self.definition_item_count = 0
+        elif tag == "dt":
+            self._rstrip_parts()
+            separator = "\n\n" if self.definition_item_count == 0 else "\n"
+            self.parts.append(f"{separator}- **")
+            if self.definition_item_count is not None:
+                self.definition_item_count += 1
+            self.in_definition_term = True
+        elif tag == "dd":
+            self._rstrip_parts()
+            self.parts.append(" ")
         elif re.fullmatch(r"h[1-4]", tag):
             self.parts.append(f"\n{'#' * int(tag[1])} ")
         elif tag in {"ul", "ol"}:
@@ -230,11 +251,14 @@ class _HtmlToMarkdown(HTMLParser):
             marker = "1. " if self.lists and self.lists[-1] == "ol" else "- "
             self.parts.append(f"\n{marker}")
         elif tag == "strong":
-            self.parts.append("**")
+            if not self.in_definition_term:
+                self.parts.append("**")
         elif tag == "em":
-            self.parts.append("*")
+            if not self.in_definition_term:
+                self.parts.append("*")
         elif tag == "code":
-            self.parts.append("`")
+            if not self.in_definition_term:
+                self.parts.append("`")
         elif tag == "br":
             self.parts.append("\n")
         elif tag in {"th", "td"}:
@@ -245,9 +269,21 @@ class _HtmlToMarkdown(HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         tag = tag.lower()
         if tag in {"strong", "em"}:
-            self.parts.append("**" if tag == "strong" else "*")
+            if not self.in_definition_term:
+                self.parts.append("**" if tag == "strong" else "*")
         elif tag == "code":
-            self.parts.append("`")
+            if not self.in_definition_term:
+                self.parts.append("`")
+        elif tag == "dt":
+            self._rstrip_parts()
+            self.parts.append(":** ")
+            self.in_definition_term = False
+        elif tag == "dd":
+            self._rstrip_parts()
+            self.parts.append("\n")
+        elif tag == "dl":
+            self.parts.append("\n")
+            self.definition_item_count = None
         elif tag in {"section", "p", "blockquote", "pre", "tr"} or re.fullmatch(r"h[1-4]", tag):
             self.parts.append("\n")
         elif tag in {"ul", "ol"}:

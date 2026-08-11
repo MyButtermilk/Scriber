@@ -39,6 +39,10 @@ export const settingsTranslations = {
     "Die WER (Wortfehlerrate) gibt an, welcher Anteil der Wörter im Benchmark falsch transkribiert wurde; niedriger ist besser.",
   "AA score compares model answer quality in an independent benchmark; higher is better.":
     "Der AA-Score vergleicht die Antwortqualität von Modellen in einem unabhängigen Benchmark; höher ist besser.",
+  "Standard tier · prompts and responses are not used to train Meta models":
+    "Standardtarif · Prompts und Antworten werden nicht zum Training von Meta-Modellen verwendet",
+  "Contributor tier · prompts and responses may be used to train future Meta models":
+    "Contributor-Tarif · Prompts und Antworten dürfen zum Training künftiger Meta-Modelle verwendet werden",
   "Blended token price averages the listed input and output rates.":
     "Der gemischte Tokenpreis ist der Mittelwert der angegebenen Ein- und Ausgabepreise.",
   "Euro estimates use a fixed rate of {{rate}}. Provider prices may change.":
@@ -61,6 +65,7 @@ export const settingsTranslations = {
   "OpenAI keys": "OpenAI-Schlüssel",
   "Deepgram console": "Deepgram-Konsole",
   "AssemblyAI dashboard": "AssemblyAI-Dashboard",
+  "Meta Model API dashboard": "Meta-Model-API-Dashboard",
   "OpenRouter keys": "OpenRouter-Schlüssel",
   "Google Cloud credentials": "Google-Cloud-Anmeldedaten",
   "Soniox console": "Soniox-Konsole",
@@ -75,6 +80,7 @@ export const settingsTranslations = {
   "Soniox API key": "Soniox-API-Schlüssel",
   "Modulate.AI API key": "Modulate.AI-API-Schlüssel",
   "Gemini API key": "Gemini-API-Schlüssel",
+  "Meta Model API key": "Meta-Model-API-Schlüssel",
   "Mistral API key": "Mistral-API-Schlüssel",
   "Smallest AI API key": "Smallest-AI-API-Schlüssel",
   "AssemblyAI API key": "AssemblyAI-API-Schlüssel",
@@ -694,6 +700,14 @@ export const settingsTranslations = {
   "Used for Celeris summaries in Meetings, YouTube, and File.":
     "Wird für Celeris-Zusammenfassungen in Meetings, YouTube und Datei verwendet.",
   "Used for search and metadata in the YouTube tab.": "Wird für Suche und Metadaten im YouTube-Tab verwendet.",
+  "Used for direct Meta summaries in Meetings, YouTube, and File.":
+    "Wird für direkte Meta-Zusammenfassungen in Meetings, YouTube und Datei verwendet.",
+  "Meta Contributor data-use warning": "Hinweis zur Datennutzung von Meta Contributor",
+  "Contributor data use": "Datennutzung im Contributor-Tarif",
+  "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. This model is not recommended for sensitive or confidential content.":
+    "Meta darf Prompts und Antworten, die mit dem Contributor-Modell gesendet werden, zur Verbesserung künftiger Meta-Modelle verwenden. Dieses Modell wird nicht für sensible oder vertrauliche Inhalte empfohlen.",
+  "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.2 Standard or request Contributor access in the Meta dashboard.":
+    "Die Verfügbarkeit von Contributor hängt vom Zugriff Ihres Meta-Projekts ab. Wenn Meta dieses Modell für das Projekt nicht aufführt, verwenden Sie Muse Spark 1.2 Standard oder beantragen Sie den Contributor-Zugriff im Meta-Dashboard.",
   "Use one Soniox API key and choose where Soniox processes your audio.":
     "Verwende einen Soniox-API-Schlüssel und wähle aus, wo Soniox dein Audio verarbeitet.",
   "One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off.":

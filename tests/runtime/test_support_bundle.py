@@ -176,6 +176,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     monkeypatch.setenv("OPENAI_API_KEY", "sk-abcdefghijklmnop")
     monkeypatch.setenv("GROQ_API_KEY", groq_key)
     monkeypatch.setenv("AZURE_MAI_SPEECH_KEY", "azure-process-secret")
+    monkeypatch.setenv("MODEL_API_KEY", "meta-process-secret")
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "session-secret-value")
     shell_pipe = r"\\.\pipe\scriber-shell-bundle"
     raw_endpoint_id = r"SWD\MMDEVAPI\{0.0.1.00000000}.{support-bundle-capture}"
@@ -188,7 +189,7 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     )
     (data_dir / ".env").write_text(
         f"SONIOX_API_KEY=env-secret-value\nGROQ_API_KEY={groq_key}\n"
-        f"AZURE_MAI_SPEECH_KEY=azure-env-secret\nSCRIBER_MODE=toggle\n"
+        f"AZURE_MAI_SPEECH_KEY=azure-env-secret\nMODEL_API_KEY=meta-env-secret\nSCRIBER_MODE=toggle\n"
         f"SCRIBER_SHELL_IPC_PIPE={shell_pipe}\n",
         encoding="utf-8",
     )
@@ -238,6 +239,8 @@ def test_create_support_bundle_redacts_config_env_and_logs(monkeypatch, tmp_path
     assert "azure-process-secret" not in combined
     assert "azure-env-secret" not in combined
     assert "azure-log-secret" not in combined
+    assert "meta-process-secret" not in combined
+    assert "meta-env-secret" not in combined
     assert groq_key not in combined
     assert groq_log_key not in combined
     assert "session-secret-value" not in combined

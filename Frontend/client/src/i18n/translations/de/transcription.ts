@@ -254,6 +254,8 @@ export const transcriptionTranslations = {
   "Summary generated": "Zusammenfassung erstellt",
   "Summary generation failed": "Erstellung der Zusammenfassung fehlgeschlagen",
   "Summary generation failed.": "Die Zusammenfassung konnte nicht erstellt werden.",
+  "Muse Spark 1.2 Contributor is not available for this Meta project. Choose Muse Spark 1.2 Standard in Settings or request Contributor access in the Meta dashboard, then try again.":
+    "Muse Spark 1.2 Contributor ist für dieses Meta-Projekt nicht verfügbar. Wähle in den Einstellungen Muse Spark 1.2 Standard oder beantrage im Meta-Dashboard Zugriff auf Contributor und versuche es anschließend erneut.",
   "Summary generation timed out. Select “Summarize” in the header to retry.":
     "Zeitüberschreitung bei der Zusammenfassung. Wähle im Kopfbereich „Zusammenfassen“, um es erneut zu versuchen.",
   "Summary has been copied.": "Die Zusammenfassung wurde kopiert.",

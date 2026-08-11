@@ -501,6 +501,60 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert 'if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;' in source
 
 
+def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> None:
+    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
+    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    translations = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "i18n" / "translations" / "de" / "settings.ts"
+    ).read_text(encoding="utf-8")
+
+    assert 'const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";' in settings_source
+    assert 'const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";' in settings_source
+    assert 'label: "Muse Spark 1.2"' in settings_source
+    assert 'label: "Muse Spark 1.2 Contributor"' in settings_source
+    standard_option = settings_source[
+        settings_source.index("value: META_MUSE_SPARK_STANDARD_MODEL") : settings_source.index(
+            "value: META_MUSE_SPARK_CONTRIBUTOR_MODEL"
+        )
+    ]
+    contributor_option = settings_source[
+        settings_source.index("value: META_MUSE_SPARK_CONTRIBUTOR_MODEL") : settings_source.index(
+            'value: "minimax/minimax-m3:nitro"'
+        )
+    ]
+    assert 'label: "Muse Spark 1.2"' in standard_option
+    assert 'group: "meta"' in standard_option
+    assert 'label: "Muse Spark 1.2 Contributor"' in contributor_option
+    assert 'group: "meta"' in contributor_option
+    assert 'key: "meta"' in settings_source
+    assert 'items: summarizationModelOptions.filter((option) => option.group === "meta")' in settings_source
+
+    assert "meta?: string;" in api_types
+    assert 'meta: { href: "https://dev.meta.ai/"' in settings_source
+    assert "const [metaModelApiKey, setMetaModelApiKey]" in settings_source
+    assert 'setMetaModelApiKey(keys.meta || "");' in settings_source
+    assert '"Meta Model API": hasValue(keys.meta)' in settings_source
+    assert 'if (provider === "Meta Model API") apiKeys.meta = metaModelApiKey;' in settings_source
+    assert 'provider="Meta Model API"' in settings_source
+    assert "value={metaModelApiKey}" in settings_source
+    assert 'helpKey="meta"' in settings_source
+    assert "model === META_MUSE_SPARK_STANDARD_MODEL || model === META_MUSE_SPARK_CONTRIBUTOR_MODEL" in settings_source
+    assert 'provider: "Meta Model API", label: "Meta Model API key", helpKey: "meta"' in settings_source
+
+    warning = (
+        "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. "
+        "This model is not recommended for sensitive or confidential content."
+    )
+    assert_source_contains_tokens(settings_source, f't("{warning}")')
+    assert "active={summarizationModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL}" in settings_source
+    assert "active={meetingAnalysisModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL}" in settings_source
+    assert f'"{warning}":' in translations
+    assert "zur Verbesserung künftiger Meta-Modelle verwenden" in translations
+    assert "nicht für sensible oder vertrauliche Inhalte empfohlen" in translations
+    assert_source_contains_tokens(settings_source, "Contributor availability depends on access for your Meta project.")
+    assert "beantragen Sie den Contributor-Zugriff im Meta-Dashboard" in translations
+
+
 def test_websocket_reconnect_reports_frontend_ready() -> None:
     backend_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "backend.ts").read_text(encoding="utf-8")
     websocket_source = (REPO_ROOT / "Frontend" / "client" / "src" / "contexts" / "WebSocketContext.tsx").read_text(
@@ -1963,7 +2017,9 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
         "--summary-accent: #f19a78;",
     ):
         assert token in styles
-    assert '.summary-document[data-summary-format="html"] > section:first-of-type' in styles
+    assert '.summary-document[data-summary-format="html"] > .summary-overview' in styles
+    assert ".summary-snapshot--takeaways.is-compact" in styles
+    assert ".summary-snapshot--facts" in styles
     assert "grid-template-columns: repeat(2, minmax(0, 1fr));" in styles
     assert ".summary-toc__path-active" in styles
     assert "stroke-dasharray var(--duration-medium) var(--ease-smooth-out)" in styles
@@ -1995,7 +2051,8 @@ def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() 
 
     base_shell = rule_body(".transcript-detail-shell {")
     base_toc = rule_body(".summary-toc {")
-    intro = rule_body('.summary-document[data-summary-format="html"] > section:first-of-type > p:first-of-type {')
+    summary_document = rule_body(".summary-document {")
+    intro = rule_body('.summary-document[data-summary-format="html"] > .summary-overview > p:first-of-type {')
     wide_layout_start = styles.index("@media (min-width: 1440px)")
     wide_shell = rule_body(".transcript-detail-shell.has-summary-toc {", wide_layout_start)
     wide_meta = rule_body(
@@ -2015,6 +2072,8 @@ def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() 
     assert "max-width: 1040px;" in base_shell
     assert "margin-inline: auto;" in base_shell
     assert "display: none;" in base_toc
+    assert "width: 100%;" in summary_document
+    assert "max-width: 76ch;" in summary_document
     assert "max-width: 62ch;" in intro
     assert "max-width: 1320px;" in wide_shell
     assert "width: calc(100% - 280px);" in wide_meta

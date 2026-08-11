@@ -46,6 +46,7 @@ export const meetingsTranslations = {
   "Capture needs attention": "Aufnahme erfordert Aufmerksamkeit",
   "Capture paused": "Aufnahme pausiert",
   "Change in Settings": "In den Einstellungen ändern",
+  "Change summary model": "Zusammenfassungsmodell wechseln",
   "Check before a long meeting": "Vor einem langen Meeting prüfen",
   "Check the title and choose which microphone and speakers to record. Scriber saves both on this device and creates the transcript after you stop.":
     "Prüfe den Titel und wähle aus, welches Mikrofon und welche Lautsprecher aufgenommen werden sollen. Scriber speichert beides auf diesem Gerät und erstellt das Transkript, nachdem du die Aufnahme beendet hast.",
@@ -516,7 +517,26 @@ export const meetingsTranslations = {
   "The recording could not be imported.": "Die Aufnahme konnte nicht importiert werden.",
   "This Meeting does not own native audio capture.": "Die native Audioaufnahme gehört nicht zu diesem Meeting.",
   "Try another transcription option": "Andere Transkriptionsoption versuchen",
-  "Try meeting brief again": "Meeting-Zusammenfassung erneut versuchen",
+  "Try meeting brief again": "Meeting-Zusammenfassung erneut erstellen",
+  "The meeting brief could not be completed.": "Die Meeting-Zusammenfassung konnte nicht fertiggestellt werden.",
+  "The AI service did not return a complete response for every part of this meeting.":
+    "Der KI-Dienst hat nicht für alle Teile dieses Meetings eine vollständige Antwort geliefert.",
+  "The AI service took too long to finish the meeting brief.":
+    "Der KI-Dienst hat zu lange gebraucht, um die Meeting-Zusammenfassung fertigzustellen.",
+  "The AI service could not finish the meeting brief.":
+    "Der KI-Dienst konnte die Meeting-Zusammenfassung nicht fertigstellen.",
+  "Your transcript, recording, speaker names, and notes are saved.":
+    "Dein Transkript, die Aufnahme, die Sprechernamen und deine Notizen sind gespeichert.",
+  "Select “Try meeting brief again” below. Scriber reuses completed parts and only creates the meeting brief again.":
+    "Wähle unten „Meeting-Zusammenfassung erneut erstellen“. Scriber verwendet bereits fertige Teile wieder und erstellt nur die Zusammenfassung neu.",
+  "If it fails again, choose another summary model in Meeting settings and try again.":
+    "Falls es erneut nicht klappt, wähle in den Meeting-Einstellungen ein anderes Zusammenfassungsmodell und versuche es noch einmal.",
+  "The AI service did not return a complete meeting brief. Your transcript, recording, speaker names, and notes are safe.":
+    "Der KI-Dienst hat keine vollständige Meeting-Zusammenfassung geliefert. Dein Transkript, die Aufnahme, die Sprechernamen und deine Notizen sind sicher.",
+  "The AI service took too long to complete the meeting brief. Your transcript, recording, speaker names, and notes are safe.":
+    "Der KI-Dienst hat zu lange für die Meeting-Zusammenfassung gebraucht. Dein Transkript, die Aufnahme, die Sprechernamen und deine Notizen sind sicher.",
+  "Scriber could not complete the meeting brief. Your transcript, recording, speaker names, and notes are safe.":
+    "Scriber konnte die Meeting-Zusammenfassung nicht fertigstellen. Dein Transkript, die Aufnahme, die Sprechernamen und deine Notizen sind sicher.",
   Unassigned: "Nicht zugewiesen",
   "Undo latest": "Letzte Änderung rückgängig machen",
   "Untitled Outlook meeting": "Outlook-Meeting ohne Titel",
@@ -605,6 +625,7 @@ export const meetingsTranslations = {
   "Recording stopped": "Aufnahme beendet",
   "Transcript needs attention": "Transkript erfordert Aufmerksamkeit",
   "Meeting brief needs attention": "Meeting-Zusammenfassung erfordert Aufmerksamkeit",
+  "Meeting brief is not ready yet": "Meeting-Zusammenfassung ist noch nicht fertig",
   "Recording interrupted": "Aufnahme unterbrochen",
   Discarded: "Verworfen",
   "Local fallback after transcription": "Lokaler Fallback nach der Transkription",

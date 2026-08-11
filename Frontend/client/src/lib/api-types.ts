@@ -1052,6 +1052,7 @@ export interface SettingsApiKeys {
   assemblyai?: string;
   deepgram?: string;
   openai?: string;
+  meta?: string;
   openrouter?: string;
   cerebras?: string;
   celeris?: string;

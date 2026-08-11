@@ -1503,26 +1503,39 @@ required `google-genai` namespace dependency and still requires Google Cloud
 credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
 API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
 stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
-can configure the simple Google path with one Gemini API key. Gemini, Cerebras,
-Celeris, and OpenRouter summarization/post-processing use direct HTTP and do not
-require `google-generativeai`; OpenRouter STT reuses that same stored key through
-the separate fixed-model audio-transcriptions adapter described above. Direct
-Celeris calls use the fixed
-`https://inference.celeris.ai/celeris-1/v1` route, quantize every output budget
-to 256-token steps, and conservatively partition File, YouTube, and Meeting
-inputs below the 8,192-token context ceiling. Direct Cerebras calls use
+can configure the simple Google path with one Gemini API key. Gemini, Meta Muse
+Spark, Cerebras, Celeris, and OpenRouter summarization/post-processing use
+direct HTTP and do not require `google-generativeai`; OpenRouter STT reuses that
+same stored key through the separate fixed-model audio-transcriptions adapter
+described above. Meta Muse Spark uses the OpenAI-compatible
+`https://api.meta.ai/v1/chat/completions` route and `MODEL_API_KEY`. The standard
+tier does not use prompts or responses to train Meta models; the explicitly
+labelled Contributor tier may use both to improve future Meta models and is not
+recommended for sensitive or confidential content. Direct Celeris calls use
+the fixed `https://inference.celeris.ai/celeris-1/v1` route and conservatively
+partition File, YouTube, and Meeting inputs below the 8,192-token context
+ceiling. Its explicit generic-generation budgets remain quantized to 256-token
+steps. Direct Cerebras calls use
 `cerebras/gemma-4-31b`, which is the live post-processing default. Most
 OpenRouter summary fallback models are
 sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
 provider ordering through `baseten,cerebras` when selected. OpenRouter remains
 the automatic cross-provider summary fallback when an OpenRouter key is
-configured.
+configured. File, YouTube, and Meeting summary transports omit provider
+`max_tokens`, `max_completion_tokens`, `max_output_tokens`, and
+`maxOutputTokens` fields across every supported summary provider. The model
+therefore chooses the response length. Native provider truncation signals such
+as `length`, `MAX_TOKENS`, or an incomplete Responses API status remain
+fail-closed: partial output is discarded and never persisted as a completed
+summary.
 
 New File and YouTube summaries use a model-independent semantic HTML contract
 appended after the editable content prompt. The contract favors a stable
-editorial brief: an overview with key takeaways, followed by real topic
-sections, with lists, definition lists, and tables used only when the source
-structure warrants them. The backend
+editorial brief: an overview followed by real topic sections. The opening
+snapshot is optional and content-driven: a list has no fixed item count, a
+definition list is used for genuine label-value facts, and neither is emitted
+when it would only repeat the article below. Lists, definition lists, and tables
+are used only when the source structure warrants them. The backend
 normalizes and allowlist-sanitizes the fragment before storing it with
 `summaryFormat=html`; an empty, truncated, unbalanced, or ambiguous result, or a
 fragment without complete sibling `section` roots and the required first `h2`
@@ -1537,11 +1550,12 @@ ink, and clay presentation through dedicated light/dark CSS tokens. Existing
 Markdown summaries continue through the legacy renderer. On the first start of
 an installation without `summarizationPromptMigrationVersion`, Scriber replaces
 the previously stored prompt with the current neutral content prompt and writes
-the versioned marker in the same `settings.json` snapshot. This intentionally
-also resets prompts customized in an older Scriber version once, because they
-may still demand Markdown. After the marker exists, later user changes remain
-authoritative and startup never resets them again. The migration persists
-`settings.json` only and cannot rewrite `.env`.
+the versioned marker in the same `settings.json` snapshot. Version 1
+intentionally also reset prompts customized before that marker once because
+they could still demand Markdown. Version 2 replaces only the byte-exact stock
+v1 prompt to remove its fixed five-takeaway bias; prompts edited after v1 remain
+authoritative. The migration persists `settings.json` only and cannot rewrite
+`.env`.
 OpenAI live STT uses Pipecat's OpenAI Realtime STT service plus the explicit
 `openai` SDK and `websockets` dependencies; OpenAI async/batch uses the direct
 Audio Transcriptions HTTP adapter. Groq STT uses Pipecat's `groq` SDK

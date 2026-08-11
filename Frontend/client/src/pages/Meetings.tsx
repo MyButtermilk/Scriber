@@ -58,7 +58,7 @@ import {
   MEETING_SPEAKER_SAMPLE_MIN_MS,
   type MeetingPlaybackRequest,
 } from "@/lib/meeting-playback";
-import { localizeMeetingErrorMessage } from "@/lib/meeting-error-message";
+import { localizeMeetingErrorMessage, meetingAnalysisFailurePresentation } from "@/lib/meeting-error-message";
 import { alphabeticalLabel, genericMeetingSpeakerLabels } from "@/lib/meeting-display";
 import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
@@ -220,7 +220,7 @@ function stateLabel(state: MeetingState, t: Translate): string {
     ready: "Ready",
     capture_failed: "Recording stopped",
     finalization_failed: "Transcript needs attention",
-    analysis_failed: "Meeting brief needs attention",
+    analysis_failed: "Meeting brief is not ready yet",
     interrupted: "Recording interrupted",
     discarded: "Discarded",
   };
@@ -846,52 +846,52 @@ function ActionItems({
   return (
     <div className="divide-y divide-border/60" aria-busy={saving}>
       {items.map((item) => {
-        const displayedOwner =
-          (item.ownerSpeakerId ? speakerNames.get(item.ownerSpeakerId) : "") || item.owner || "";
+        const displayedOwner = (item.ownerSpeakerId ? speakerNames.get(item.ownerSpeakerId) : "") || item.owner || "";
         return (
-        <div key={item.id} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
-          <AnimatedCheckbox
-            checked={item.status === "done"}
-            disabled={saving}
-            onClick={() => onChange(item, { status: item.status === "done" ? "open" : "done" })}
-            className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] [&>svg]:h-3.5 [&>svg]:w-3.5 ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
-            ariaLabel={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
-          />
-          <div key={item.updatedAt} className="min-w-0 space-y-2">
-            <Input
+          <div key={item.id} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
+            <AnimatedCheckbox
+              checked={item.status === "done"}
               disabled={saving}
-              defaultValue={item.text}
-              className={`h-auto border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:ring-0 ${item.status === "done" ? "text-muted-foreground line-through" : ""}`}
-              onBlur={(event) =>
-                event.target.value.trim() !== item.text && onChange(item, { text: event.target.value })
-              }
+              onClick={() => onChange(item, { status: item.status === "done" ? "open" : "done" })}
+              className={`mt-1 flex h-6 w-6 items-center justify-center rounded-full border active:scale-[0.97] [&>svg]:h-3.5 [&>svg]:w-3.5 ${item.status === "done" ? "border-emerald-500 bg-emerald-500 text-white" : "border-border hover:border-primary"}`}
+              ariaLabel={item.status === "done" ? t("Reopen action item") : t("Complete action item")}
             />
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Input
-                key={`${item.ownerSpeakerId ?? "manual"}:${displayedOwner}`}
-                disabled={saving}
-                defaultValue={displayedOwner}
-                placeholder={t("Owner")}
-                className="h-8 text-xs"
-                onBlur={(event) =>
-                  event.target.value !== displayedOwner && onChange(item, { owner: event.target.value || null })
-                }
-              />
+            <div key={item.updatedAt} className="min-w-0 space-y-2">
               <Input
                 disabled={saving}
-                type="date"
-                defaultValue={item.dueDate ?? ""}
-                className="h-8 text-xs"
+                defaultValue={item.text}
+                className={`h-auto border-0 bg-transparent px-0 py-0 text-sm shadow-none focus-visible:ring-0 ${item.status === "done" ? "text-muted-foreground line-through" : ""}`}
                 onBlur={(event) =>
-                  event.target.value !== (item.dueDate ?? "") && onChange(item, { dueDate: event.target.value || null })
+                  event.target.value.trim() !== item.text && onChange(item, { text: event.target.value })
                 }
               />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Input
+                  key={`${item.ownerSpeakerId ?? "manual"}:${displayedOwner}`}
+                  disabled={saving}
+                  defaultValue={displayedOwner}
+                  placeholder={t("Owner")}
+                  className="h-8 text-xs"
+                  onBlur={(event) =>
+                    event.target.value !== displayedOwner && onChange(item, { owner: event.target.value || null })
+                  }
+                />
+                <Input
+                  disabled={saving}
+                  type="date"
+                  defaultValue={item.dueDate ?? ""}
+                  className="h-8 text-xs"
+                  onBlur={(event) =>
+                    event.target.value !== (item.dueDate ?? "") &&
+                    onChange(item, { dueDate: event.target.value || null })
+                  }
+                />
+              </div>
+              {item.segmentIds.length > 0 && (
+                <CitationBadges citations={item.segmentIds} segmentStarts={segmentStarts} onCitation={onCitation} />
+              )}
             </div>
-            {item.segmentIds.length > 0 && (
-              <CitationBadges citations={item.segmentIds} segmentStarts={segmentStarts} onCitation={onCitation} />
-            )}
           </div>
-        </div>
         );
       })}
     </div>
@@ -1390,6 +1390,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     staleTime: 5_000,
   });
   const detail = detailQuery.data;
+  const analysisFailure = useMemo(
+    () =>
+      detail?.state === "analysis_failed"
+        ? meetingAnalysisFailurePresentation(detail.errorCode, detail.errorMessage, t)
+        : null,
+    [detail?.errorCode, detail?.errorMessage, detail?.state, t],
+  );
   useEffect(() => {
     if (!detail || !["stopping", "finalizing", "analyzing"].includes(detail.state)) {
       setMeetingProgress(null);
@@ -3371,7 +3378,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           disabled={!meetingTitleDraft.trim() || titleMutation.isPending}
                           aria-label={t("Save meeting title")}
                         >
-                          {titleMutation.isPending ? <WavePhysicsLoader size="inline" /> : <Check className="h-4 w-4" />}
+                          {titleMutation.isPending ? (
+                            <WavePhysicsLoader size="inline" />
+                          ) : (
+                            <Check className="h-4 w-4" />
+                          )}
                         </Button>
                         <Button
                           type="button"
@@ -3720,9 +3731,22 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
-              {detail.errorMessage && (
-                <div className="mt-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
-                  <p>{localizeMeetingErrorMessage(detail.errorMessage, t)}</p>
+              {(detail.errorMessage || analysisFailure) && (
+                <div
+                  className="mt-4 rounded-xl border border-amber-300/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100"
+                  role="alert"
+                >
+                  {analysisFailure ? (
+                    <div className="space-y-1.5">
+                      <p className="font-semibold">{analysisFailure.title}</p>
+                      <p>{analysisFailure.reason}</p>
+                      <p>{analysisFailure.safety}</p>
+                      <p>{analysisFailure.retryGuidance}</p>
+                      <p className="opacity-85">{analysisFailure.settingsGuidance}</p>
+                    </div>
+                  ) : (
+                    <p>{localizeMeetingErrorMessage(detail.errorMessage, t)}</p>
+                  )}
                   {detail.state === "finalization_failed" && (
                     <label className="mt-3 block max-w-sm text-xs font-semibold">
                       {t("Try another transcription option")}
@@ -3780,15 +3804,22 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           ? t("Try meeting brief again")
                           : t("Create transcript from saved audio")}
                       </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="ghost"
-                        disabled={recoveryMutation.isPending}
-                        onClick={() => recoveryMutation.mutate({ id: detail.id, action: "discard" })}
-                      >
-                        {t("Discard")}
-                      </Button>
+                      {detail.state === "analysis_failed" ? (
+                        <Button type="button" size="sm" variant="ghost" onClick={openMeetingSettings}>
+                          <Sparkles className="mr-2 h-3.5 w-3.5" />
+                          {t("Change summary model")}
+                        </Button>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={recoveryMutation.isPending}
+                          onClick={() => recoveryMutation.mutate({ id: detail.id, action: "discard" })}
+                        >
+                          {t("Discard")}
+                        </Button>
+                      )}
                     </div>
                   )}
                 </div>

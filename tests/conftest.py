@@ -25,6 +25,7 @@ for provider_key in (
     "DEEPGRAM_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
+    "MODEL_API_KEY",
     "CEREBRAS_API_KEY",
     "CELERIS_API_KEY",
     "AZURE_MAI_SPEECH_KEY",

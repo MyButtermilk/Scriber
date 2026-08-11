@@ -230,6 +230,30 @@ async def test_five_hour_analysis_bounds_prompts_and_parallelism():
 
 
 @pytest.mark.asyncio
+async def test_failed_map_chunk_cancels_parallel_provider_work_before_returning():
+    segments = _segments(600)
+    sibling_started = asyncio.Event()
+    sibling_cancelled = asyncio.Event()
+
+    async def generate(prompt: str, _model: str | None, **_kwargs: Any) -> str:
+        ids = _ids_in_prompt(prompt)
+        if ids and ids[0] == "segment-0000":
+            await sibling_started.wait()
+            raise RuntimeError("synthetic map failure")
+        sibling_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            sibling_cancelled.set()
+            raise
+
+    with pytest.raises(RuntimeError, match="synthetic map failure"):
+        await analyze_meeting("Fail-fast workshop", segments, [], model="test-model", generate=generate)
+
+    await asyncio.wait_for(sibling_cancelled.wait(), timeout=0.5)
+
+
+@pytest.mark.asyncio
 async def test_long_analysis_preserves_validated_maps_when_provider_reducer_times_out():
     segments = _segments(180, interval_ms=60_000)
     reduce_calls = 0

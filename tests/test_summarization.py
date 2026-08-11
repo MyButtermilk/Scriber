@@ -1,10 +1,13 @@
 import inspect
 import json
+import sys
 import traceback
+from types import SimpleNamespace
 
 import pytest
 
 from src import summarization
+from src.celeris import CelerisOutputLimitError
 from src.summary_html import normalize_summary_html
 
 
@@ -24,10 +27,10 @@ def test_summary_provider_module_never_logs_diagnostic_tracebacks_with_request_l
 async def test_meeting_analysis_uses_a_longer_nested_provider_timeout(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SCRIBER_SUMMARY_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC", raising=False)
-    observed = []
+    observed: list[tuple[float, int | None]] = []
 
     async def fake_generate(prompt, model=None, *, max_output_tokens=2048):
-        observed.append(summarization._summary_timeout_seconds())
+        observed.append((summarization._summary_timeout_seconds(), max_output_tokens))
         return "ok"
 
     monkeypatch.setattr(summarization, "generate_text_with_model", fake_generate)
@@ -35,7 +38,7 @@ async def test_meeting_analysis_uses_a_longer_nested_provider_timeout(monkeypatc
     assert summarization._summary_timeout_seconds() == 240.0
     assert summarization._meeting_analysis_timeout_seconds() == 900.0
     assert await summarization.generate_meeting_analysis_text("prompt") == "ok"
-    assert observed == [900.0]
+    assert observed == [(900.0, None)]
     assert summarization._summary_timeout_seconds() == 240.0
 
 
@@ -130,6 +133,16 @@ def test_openrouter_payload_normalizes_models_to_nitro():
     assert payload["reasoning"] == {"exclude": True, "effort": "medium"}
 
 
+def test_openrouter_summary_payload_can_omit_scriber_output_limit():
+    payload = summarization._build_openrouter_payload(
+        "prompt",
+        ["minimax/minimax-m3", "z-ai/glm-5.2"],
+        None,
+    )
+
+    assert "max_tokens" not in payload
+
+
 def test_openrouter_payload_routes_gpt_oss_120b_to_baseten_first():
     payload = summarization._build_openrouter_payload(
         "prompt",
@@ -171,6 +184,210 @@ def test_cerebras_direct_model_is_not_openrouter():
     assert not summarization._is_openrouter_model("cerebras/gemma-4-31b")
     assert summarization._is_cerebras_model("cerebras/gemma-4-31b")
     assert summarization._cerebras_model_id("cerebras/gemma-4-31b") == "gemma-4-31b"
+
+
+def test_cerebras_summary_payload_can_omit_scriber_output_limit():
+    payload = summarization._build_cerebras_payload(
+        "prompt",
+        "cerebras/gemma-4-31b",
+        None,
+    )
+
+    assert payload == {
+        "model": "gemma-4-31b",
+        "messages": [{"role": "user", "content": "prompt"}],
+    }
+
+
+def test_meta_muse_models_are_direct_models_with_large_output_caps():
+    for model in ("muse-spark-1.2", "muse-spark-1.2-contributor"):
+        assert summarization._is_meta_model(model)
+        assert not summarization._is_openrouter_model(model)
+        assert summarization._MODEL_OUTPUT_TOKEN_CAPS[model] == 131_072
+
+
+@pytest.mark.asyncio
+async def test_meta_muse_chat_completion_uses_official_contract(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[dict[str, object], dict[str, str]]] = []
+    monkeypatch.setattr(summarization.Config, "MODEL_API_KEY", "meta-test-key", raising=False)
+
+    async def _fake_post(payload, headers, _session):
+        calls.append((payload, headers))
+        return {
+            "model": "muse-spark-1.2",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "Meta summary"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_meta_chat_completion", _fake_post)
+
+    result = await summarization._summarize_meta("Summarize this", "muse-spark-1.2", None)
+
+    assert result == "Meta summary"
+    payload, headers = calls[0]
+    assert payload == {
+        "model": "muse-spark-1.2",
+        "messages": [{"role": "user", "content": "Summarize this"}],
+    }
+    assert headers == {"Authorization": "Bearer meta-test-key", "Content-Type": "application/json"}
+
+
+@pytest.mark.asyncio
+async def test_meta_muse_discards_output_marked_incomplete(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(summarization.Config, "MODEL_API_KEY", "meta-test-key", raising=False)
+
+    async def _fake_post(_payload, _headers, _session):
+        return {
+            "model": "muse-spark-1.2-contributor",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {"role": "assistant", "content": "partial"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_meta_chat_completion", _fake_post)
+
+    with pytest.raises(summarization.SummaryOutputLimitError, match="output limit"):
+        await summarization._summarize_meta("prompt", "muse-spark-1.2-contributor", 2048)
+
+
+@pytest.mark.asyncio
+async def test_meta_muse_routes_both_youtube_and_meeting_summary_workflows(monkeypatch: pytest.MonkeyPatch):
+    calls: list[tuple[str, int | None]] = []
+
+    async def _fake_meta(_prompt: str, model: str, max_output_tokens: int | None) -> str:
+        calls.append((model, max_output_tokens))
+        if model.endswith("contributor"):
+            return '{"overview":"Meeting result"}'
+        return "<section><h2>Video</h2><p>YouTube result</p></section>"
+
+    monkeypatch.setattr(summarization, "_summarize_meta", _fake_meta)
+    monkeypatch.setattr(summarization.Config, "SUMMARIZATION_PROMPT", "Summarize")
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "0")
+
+    youtube = await summarization.summarize_text(
+        "A sufficiently detailed YouTube transcript about product planning.",
+        model="muse-spark-1.2",
+    )
+    meeting = await summarization.generate_meeting_analysis_text(
+        "Return meeting JSON",
+        model="muse-spark-1.2-contributor",
+        max_output_tokens=2048,
+    )
+
+    assert youtube == "<section><h2>Video</h2><p>YouTube result</p></section>"
+    assert meeting == '{"overview":"Meeting result"}'
+    assert calls == [
+        ("muse-spark-1.2", None),
+        ("muse-spark-1.2-contributor", None),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["muse-spark-1.2", "muse-spark-1.2-contributor"])
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_error", "expected_message"),
+    [
+        ("timeout", RuntimeError, "timed out"),
+        ("rate_limit", summarization.ProviderTransportError, "meta summarization failed"),
+        ("service_unavailable", summarization.ProviderTransportError, "meta summarization failed"),
+        ("invalid_output", RuntimeError, "no displayable structured HTML summary"),
+        ("native_length", summarization.SummaryOutputLimitError, "output limit"),
+    ],
+)
+async def test_direct_meta_summary_never_sends_transcript_to_openrouter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    failure_kind: str,
+    expected_error: type[Exception],
+    expected_message: str,
+):
+    openrouter_calls: list[str] = []
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _failing_meta(_prompt: str, _model: str, _max_output_tokens: int | None) -> str:
+        if failure_kind == "timeout":
+            raise TimeoutError
+        if failure_kind == "rate_limit":
+            raise summarization.provider_transport_error("meta", "summarization", status=429)
+        if failure_kind == "service_unavailable":
+            raise summarization.provider_transport_error("meta", "summarization", status=503)
+        if failure_kind == "native_length":
+            raise summarization.SummaryOutputLimitError("Meta reached its native output limit.")
+        return "<script>PRIVATE_META_TRANSCRIPT_SENTINEL</script>"
+
+    async def _unexpected_openrouter(prompt: str, *_args, **_kwargs) -> str:
+        openrouter_calls.append(prompt)
+        return _structured_summary("must not be used")
+
+    monkeypatch.setattr(summarization, "_summarize_meta", _failing_meta)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _unexpected_openrouter)
+
+    with pytest.raises(expected_error, match=expected_message):
+        await summarization.summarize_text(
+            "PRIVATE_META_TRANSCRIPT_SENTINEL",
+            model=model,
+        )
+
+    assert openrouter_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "primary_error", "expected_error"),
+    [
+        ("muse-spark-1.2", TimeoutError(), RuntimeError),
+        (
+            "muse-spark-1.2",
+            summarization.provider_transport_error("meta", "summarization", status=503),
+            summarization.ProviderTransportError,
+        ),
+        (
+            "muse-spark-1.2-contributor",
+            summarization.SummaryOutputLimitError("Meta reached its native output limit."),
+            summarization.SummaryOutputLimitError,
+        ),
+        (
+            "muse-spark-1.2-contributor",
+            summarization.MetaContributorAccessError("Contributor access is unavailable."),
+            summarization.MetaContributorAccessError,
+        ),
+    ],
+)
+async def test_direct_meta_meeting_analysis_never_sends_prompt_to_openrouter_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    primary_error: Exception,
+    expected_error: type[Exception],
+):
+    openrouter_calls: list[str] = []
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _failing_meta(_prompt: str, _model: str, _max_output_tokens: int | None) -> str:
+        raise primary_error
+
+    async def _unexpected_openrouter(prompt: str, *_args, **_kwargs) -> str:
+        openrouter_calls.append(prompt)
+        return "must not be used"
+
+    monkeypatch.setattr(summarization, "_summarize_meta", _failing_meta)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _unexpected_openrouter)
+
+    with pytest.raises(expected_error):
+        await summarization.generate_meeting_analysis_text(
+            "PRIVATE_META_MEETING_PROMPT_SENTINEL",
+            model=model,
+        )
+
+    assert openrouter_calls == []
 
 
 def test_openrouter_reasoning_effort_is_only_sent_when_explicit(monkeypatch: pytest.MonkeyPatch):
@@ -378,6 +595,14 @@ def test_gemini_payload_sets_explicit_thinking_level(monkeypatch: pytest.MonkeyP
     assert generation_config["thinkingConfig"] == {"thinkingLevel": "LOW"}
 
 
+def test_gemini_summary_payload_can_omit_scriber_output_limit(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", raising=False)
+
+    payload = summarization._build_gemini_payload("prompt", "gemini-flash-latest", None)
+
+    assert "maxOutputTokens" not in payload["generationConfig"]
+
+
 def test_gemini_35_flash_payload_uses_medium_thinking_level_by_default(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", raising=False)
 
@@ -386,11 +611,45 @@ def test_gemini_35_flash_payload_uses_medium_thinking_level_by_default(monkeypat
     assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "MEDIUM"}
 
 
-def test_dynamic_length_instruction_contains_budget():
+def test_dynamic_length_instruction_keeps_word_count_advisory():
     instruction = summarization._dynamic_length_instruction(1500, 270)
     assert "1500" in instruction
     assert "270" in instruction
     assert "Längenregel" in instruction
+    assert "kein hartes Limit" in instruction
+    assert "Vollständigkeit" in instruction
+    assert "kürze keine relevanten Inhalte" in instruction
+
+
+@pytest.mark.asyncio
+async def test_openai_summary_request_can_omit_scriber_output_limit(monkeypatch: pytest.MonkeyPatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(summarization.Config, "OPENAI_API_KEY", "openai-test-key")
+
+    class _FakeResponses:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                output_text="complete summary",
+                status="completed",
+                incomplete_details=None,
+                output=[],
+            )
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            self.responses = _FakeResponses()
+
+    class _FakeApiError(Exception):
+        pass
+
+    fake_openai = SimpleNamespace(AsyncOpenAI=_FakeClient, APIError=_FakeApiError)
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+
+    result = await summarization._summarize_openai("prompt", "gpt-5-mini", None)
+
+    assert result == "complete summary"
+    assert captured == {"model": "gpt-5-mini", "input": "prompt"}
 
 
 def test_normalize_summary_html_converts_markdown_drift():
@@ -400,10 +659,10 @@ def test_normalize_summary_html_converts_markdown_drift():
 
 
 @pytest.mark.asyncio
-async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest.MonkeyPatch):
+async def test_summarize_text_lets_provider_choose_output_length(monkeypatch: pytest.MonkeyPatch):
     captured: dict[str, object] = {}
 
-    async def _fake_openai(prompt: str, model: str, max_output_tokens: int) -> str:
+    async def _fake_openai(prompt: str, model: str, max_output_tokens: int | None) -> str:
         captured["prompt"] = prompt
         captured["model"] = model
         captured["max_output_tokens"] = max_output_tokens
@@ -420,13 +679,13 @@ async def test_summarize_text_passes_dynamic_budget_to_model(monkeypatch: pytest
 
     assert out == _structured_summary("ok")
     assert captured["model"] == "gpt-5-mini"
-    assert isinstance(captured["max_output_tokens"], int)
-    assert captured["max_output_tokens"] >= 512
+    assert captured["max_output_tokens"] is None
     prompt = str(captured["prompt"])
     assert "Zusätzliche Längenregel" in prompt
     assert "Return only one well-formed, semantic, static HTML fragment" in prompt
     assert "Do not return Markdown" in prompt
-    assert "3 to 5 key takeaways" in prompt
+    assert "no fixed item count" in prompt
+    assert "Do not force a card count" in prompt
     assert "Scriber owns typography, spacing, colors, and interaction" in prompt
     assert "Infer the dominant natural language from the transcript itself" in prompt
     assert "UNTRUSTED_TRANSCRIPT_TEXT:" in prompt
@@ -477,10 +736,10 @@ async def test_summarize_with_model_rejects_empty_provider_result(
 
 
 @pytest.mark.asyncio
-async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.MonkeyPatch):
-    captured_tokens: list[int] = []
+async def test_summarize_text_never_adds_provider_token_cap_for_long_video(monkeypatch: pytest.MonkeyPatch):
+    captured_tokens: list[int | None] = []
 
-    async def _fake_openai(_prompt: str, _model: str, max_output_tokens: int) -> str:
+    async def _fake_openai(_prompt: str, _model: str, max_output_tokens: int | None) -> str:
         captured_tokens.append(max_output_tokens)
         return _structured_summary("ok")
 
@@ -493,7 +752,7 @@ async def test_summarize_text_uses_duration_based_boost(monkeypatch: pytest.Monk
     await summarization.summarize_text(text, model="gpt-5-mini", duration="30:01")
 
     assert len(captured_tokens) == 2
-    assert captured_tokens[1] > captured_tokens[0]
+    assert captured_tokens == [None, None]
 
 
 @pytest.mark.asyncio
@@ -928,7 +1187,7 @@ async def test_summarize_openrouter_discards_partial_length_response_at_retry_ca
 
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
-    with pytest.raises(RuntimeError, match="partial summary was discarded"):
+    with pytest.raises(summarization.SummaryOutputLimitError, match="partial summary was discarded"):
         await summarization._summarize_openrouter("prompt", ["z-ai/glm-5.2:nitro"], 900)
 
 
@@ -961,9 +1220,225 @@ async def test_summarize_openrouter_stops_after_larger_partial_retry_without_mod
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
     with pytest.raises(RuntimeError, match="larger-budget retry"):
-        await summarization._summarize_openrouter("large meeting reduce prompt", "minimax/minimax-m3:nitro", 4096)
+        await summarization._summarize_openrouter(
+            "large meeting reduce prompt",
+            ["minimax/minimax-m3:nitro"],
+            4096,
+        )
 
     assert [call["max_tokens"] for call in calls] == [4096, 8192]
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_tries_alternate_model_after_larger_partial_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) < 3:
+            return {
+                "model": "minimax/minimax-m3",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {"role": "assistant", "content": "large but truncated response"},
+                    }
+                ],
+                "usage": {
+                    "completion_tokens": payload["max_tokens"],
+                    "prompt_tokens": 16_000,
+                    "total_tokens": 16_000 + payload["max_tokens"],
+                },
+            }
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "complete alternate-model summary"},
+                }
+            ],
+            "usage": {"completion_tokens": 1_200, "prompt_tokens": 16_000, "total_tokens": 17_200},
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization._summarize_openrouter(
+        "large meeting reduce prompt",
+        ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"],
+        4096,
+    )
+
+    assert out == "complete alternate-model summary"
+    assert [call["max_tokens"] for call in calls] == [4096, 8192, 8192]
+    assert calls[2]["model"] == "z-ai/glm-5.2:nitro"
+
+
+@pytest.mark.asyncio
+async def test_summarize_openrouter_retries_initial_model_at_full_budget_after_other_model_hits_limit(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_RETRY_MAX_TOKENS", "8192")
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            model = "minimax/minimax-m3"
+        elif len(calls) == 2:
+            model = "z-ai/glm-5.2-20260616"
+        else:
+            return {
+                "model": "minimax/minimax-m3",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "native_finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "complete first-model summary"},
+                    }
+                ],
+            }
+        return {
+            "model": model,
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "native_finish_reason": "length",
+                    "message": {"role": "assistant", "content": "truncated"},
+                }
+            ],
+            "usage": {"completion_tokens": payload["max_tokens"]},
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    out = await summarization._summarize_openrouter(
+        "large meeting reduce prompt",
+        ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"],
+        4096,
+    )
+
+    assert out == "complete first-model summary"
+    assert [call["max_tokens"] for call in calls] == [4096, 8192, 8192]
+    assert calls[2]["model"] == "minimax/minimax-m3:nitro"
+
+
+def test_openrouter_used_model_accepts_any_requested_custom_candidate():
+    assert (
+        summarization._openrouter_used_model(
+            {"model": "vendor/custom-two-20260801"},
+            ["vendor/custom-one:nitro", "vendor/custom-two:nitro"],
+        )
+        == "vendor/custom-two-20260801"
+    )
+
+
+@pytest.mark.asyncio
+async def test_meeting_analysis_tries_complete_alternate_without_scriber_token_cap(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_gemini(_prompt: str, _model: str, _max_output_tokens: int) -> str:
+        raise RuntimeError("Gemini API error 503: UNAVAILABLE")
+
+    async def _fake_post(payload, _headers, _timeout):
+        calls.append(payload)
+        if len(calls) == 1:
+            return {
+                "model": "minimax/minimax-m3",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {"role": "assistant", "content": "truncated map JSON"},
+                    }
+                ],
+                "usage": {
+                    "completion_tokens": 8_192,
+                    "prompt_tokens": 8_000,
+                    "total_tokens": 16_192,
+                },
+            }
+        return {
+            "model": "z-ai/glm-5.2-20260616",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "VALID COMPLETE MAP JSON"},
+                }
+            ],
+            "usage": {"completion_tokens": 1_100, "prompt_tokens": 8_000, "total_tokens": 9_100},
+        }
+
+    monkeypatch.setattr(summarization, "_summarize_gemini", _fake_gemini)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    result = await summarization.generate_meeting_analysis_text(
+        "large meeting map prompt",
+        "gemini-3.1-pro-preview",
+        max_output_tokens=3072,
+    )
+
+    assert result == "VALID COMPLETE MAP JSON"
+    assert len(calls) == 2
+    assert all("max_tokens" not in call for call in calls)
+    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "primary_target", "primary_error"),
+    [
+        (
+            "celeris-1",
+            "celeris_chat_completion",
+            CelerisOutputLimitError("Celeris reached its native output limit."),
+        ),
+        (
+            "gemini-flash-latest",
+            "_summarize_gemini",
+            summarization.SummaryOutputLimitError("Gemini finish_reason=MAX_TOKENS."),
+        ),
+    ],
+)
+async def test_meeting_output_limit_classification_survives_other_fallback_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    primary_target: str,
+    primary_error: RuntimeError,
+):
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _output_limited(*_args, **_kwargs):
+        raise primary_error
+
+    async def _different_fallback_failure(*_args, **_kwargs):
+        raise RuntimeError("Fallback transport failed for an unrelated reason.")
+
+    monkeypatch.setattr(summarization, primary_target, _output_limited)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _different_fallback_failure)
+
+    with pytest.raises(type(primary_error)) as caught:
+        await summarization.generate_meeting_analysis_text(
+            "large meeting analysis prompt",
+            model,
+            max_output_tokens=3072,
+        )
+
+    assert caught.value is primary_error
+    assert caught.value.meeting_analysis_error_code == "meeting_analysis_incomplete_response"
 
 
 @pytest.mark.asyncio
@@ -1106,5 +1581,33 @@ async def test_summarize_gemini_discards_partial_after_repeated_max_tokens(monke
 
     monkeypatch.setattr(summarization, "_post_gemini_generate_content", _fake_post)
 
-    with pytest.raises(RuntimeError, match="MAX_TOKENS"):
+    with pytest.raises(summarization.SummaryOutputLimitError, match="MAX_TOKENS"):
         await summarization._summarize_gemini("prompt", "gemini-flash-latest", 3000)
+
+
+@pytest.mark.asyncio
+async def test_summarize_gemini_without_scriber_cap_still_discards_native_truncation(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
+
+    async def _fake_post(_session, _url, payload, *, retries):
+        calls.append(payload)
+        return {
+            "candidates": [
+                {
+                    "finishReason": "MAX_TOKENS",
+                    "content": {"parts": [{"text": "partial darf nicht zurueckkommen"}]},
+                }
+            ],
+            "usageMetadata": {"candidatesTokenCount": 65_536, "totalTokenCount": 66_000},
+        }
+
+    monkeypatch.setattr(summarization, "_post_gemini_generate_content", _fake_post)
+
+    with pytest.raises(summarization.SummaryOutputLimitError, match="MAX_TOKENS"):
+        await summarization._summarize_gemini("prompt", "gemini-flash-latest", None)
+
+    assert len(calls) == 1
+    assert "maxOutputTokens" not in calls[0]["generationConfig"]

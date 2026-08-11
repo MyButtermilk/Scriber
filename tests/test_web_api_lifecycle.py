@@ -1494,6 +1494,32 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trips_meta_muse_models_and_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.Config, "MODEL_API_KEY", "", raising=False)
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings(
+        {
+            "summarizationModel": "muse-spark-1.2",
+            "meetingAnalysisModel": "muse-spark-1.2-contributor",
+            "apiKeys": {"meta": "meta-secret"},
+        }
+    )
+
+    assert web_api.Config.SUMMARIZATION_MODEL == "muse-spark-1.2"
+    assert web_api.Config.MEETING_ANALYSIS_MODEL == "muse-spark-1.2-contributor"
+    assert web_api.Config.MODEL_API_KEY == "meta-secret"
+    assert settings["summarizationModel"] == "muse-spark-1.2"
+    assert settings["meetingAnalysisModel"] == "muse-spark-1.2-contributor"
+    assert settings["apiKeys"]["meta"] == "meta-secret"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_settings_selects_openrouter_mai_stt_with_the_shared_key(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")

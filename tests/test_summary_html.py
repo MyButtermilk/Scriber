@@ -110,3 +110,23 @@ def test_summary_visible_text_and_export_projection_hide_markup():
     assert projected == "## Overview\n\n**Visible** detail"
     assert export._summary_for_export(html, "html") == projected
     assert export._summary_for_export("## Legacy", "markdown") == "## Legacy"
+
+
+def test_summary_export_preserves_definition_list_fact_boundaries():
+    html = (
+        "<section>\n"
+        "  <h2>Overview</h2>\n"
+        "  <p>Short standfirst.</p>\n"
+        "  <dl>\n"
+        "    <dt><strong>Target</strong></dt>\n"
+        "    <dd>September</dd>\n"
+        "    <dt>Owner</dt>\n"
+        "    <dd>Team</dd>\n"
+        "  </dl>\n"
+        "</section>"
+    )
+
+    projected = summary_html_to_markdown(html)
+
+    assert projected == ("## Overview\n\nShort standfirst.\n\n- **Target:** September\n- **Owner:** Team")
+    assert "TargetSeptember" not in export._summary_for_export(html, "html")

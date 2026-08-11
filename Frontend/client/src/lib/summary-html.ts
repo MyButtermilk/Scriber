@@ -99,6 +99,18 @@ const SUMMARY_FORBIDDEN_ATTRIBUTES = [
 ] as const;
 
 const SUMMARY_SAFE_ATTRIBUTES = ["colspan", "rowspan", "scope"] as const;
+const SUMMARY_GENERATED_ATTRIBUTES = ["class", "id"] as const;
+const SUMMARY_GENERATED_CLASS_NAMES = new Set([
+  "is-compact",
+  "summary-overview",
+  "summary-snapshot",
+  "summary-snapshot--facts",
+  "summary-snapshot--takeaways",
+]);
+
+const COMPACT_TAKEAWAY_MIN_ITEMS = 4;
+const COMPACT_TAKEAWAY_MAX_ITEM_CHARACTERS = 160;
+const COMPACT_TAKEAWAY_MAX_TOTAL_CHARACTERS = 640;
 
 const EMPTY_PREPARED_SUMMARY: PreparedSummaryHtml = {
   html: "",
@@ -186,16 +198,67 @@ function nodeToPlainText(node: Node): string {
   return content;
 }
 
-function sanitizeSummaryFragment(value: string, allowGeneratedIds: boolean): string {
+function sanitizeSummaryFragment(value: string, allowGeneratedAttributes: boolean): string {
+  const forbiddenAttributes = allowGeneratedAttributes
+    ? SUMMARY_FORBIDDEN_ATTRIBUTES.filter((attribute) => attribute !== "class")
+    : [...SUMMARY_FORBIDDEN_ATTRIBUTES];
   return DOMPurify.sanitize(value, {
     ALLOW_ARIA_ATTR: false,
     ALLOW_DATA_ATTR: false,
-    ALLOWED_ATTR: allowGeneratedIds ? [...SUMMARY_SAFE_ATTRIBUTES, "id"] : [...SUMMARY_SAFE_ATTRIBUTES],
+    ALLOWED_ATTR: allowGeneratedAttributes
+      ? [...SUMMARY_SAFE_ATTRIBUTES, ...SUMMARY_GENERATED_ATTRIBUTES]
+      : [...SUMMARY_SAFE_ATTRIBUTES],
     ALLOWED_TAGS: [...SUMMARY_TAGS],
-    FORBID_ATTR: [...SUMMARY_FORBIDDEN_ATTRIBUTES],
+    FORBID_ATTR: forbiddenAttributes,
     FORBID_TAGS: [...SUMMARY_FORBIDDEN_TAGS],
     KEEP_CONTENT: true,
     RETURN_TRUSTED_TYPE: false,
+  });
+}
+
+function directChildrenByTagName(element: Element, tagName: string): Element[] {
+  return Array.from(element.children).filter((child) => child.tagName.toLowerCase() === tagName);
+}
+
+function isCompactTakeawayList(list: Element): boolean {
+  const items = directChildrenByTagName(list, "li");
+  if (items.length < COMPACT_TAKEAWAY_MIN_ITEMS) return false;
+
+  let totalCharacters = 0;
+  for (const item of items) {
+    if (item.querySelector("blockquote, dl, ol, pre, table, ul")) return false;
+    const characterCount = (item.textContent || "").replace(/\s+/g, " ").trim().length;
+    if (characterCount > COMPACT_TAKEAWAY_MAX_ITEM_CHARACTERS) return false;
+    totalCharacters += characterCount;
+  }
+  return totalCharacters <= COMPACT_TAKEAWAY_MAX_TOTAL_CHARACTERS;
+}
+
+function annotateSummaryStructure(document: Document): void {
+  const overview = Array.from(document.body.children).find((child) => child.tagName.toLowerCase() === "section");
+  if (!overview) return;
+
+  overview.classList.add("summary-overview");
+  const standfirst = directChildrenByTagName(overview, "p")[0];
+  const snapshot = standfirst?.nextElementSibling;
+  if (!snapshot) return;
+
+  const snapshotTag = snapshot.tagName.toLowerCase();
+  if (snapshotTag === "ul") {
+    snapshot.classList.add("summary-snapshot", "summary-snapshot--takeaways");
+    if (isCompactTakeawayList(snapshot)) snapshot.classList.add("is-compact");
+  } else if (snapshotTag === "dl") {
+    snapshot.classList.add("summary-snapshot", "summary-snapshot--facts");
+  }
+}
+
+function enforceGeneratedSummaryClassAllowlist(document: Document): void {
+  document.body.querySelectorAll<HTMLElement>("[class]").forEach((element) => {
+    const allowedClasses = Array.from(element.classList).filter((className) =>
+      SUMMARY_GENERATED_CLASS_NAMES.has(className),
+    );
+    if (allowedClasses.length > 0) element.className = allowedClasses.join(" ");
+    else element.removeAttribute("class");
   });
 }
 
@@ -227,6 +290,9 @@ export function prepareSummaryHtml(value: string): PreparedSummaryHtml {
       };
     })
     .filter((item): item is SummaryOutlineItem => item !== null);
+
+  annotateSummaryStructure(document);
+  enforceGeneratedSummaryClassAllowlist(document);
 
   const html = sanitizeSummaryFragment(document.body.innerHTML, true).trim();
   const plainText = nodeToPlainText(document.body)

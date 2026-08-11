@@ -647,7 +647,13 @@ _VALID_SUMMARIZATION_MODEL_PREFIXES = (
     "z-ai/",
     "cerebras/",
 )
-_VALID_SUMMARIZATION_MODELS = frozenset({"celeris-1"})
+_VALID_SUMMARIZATION_MODELS = frozenset(
+    {
+        "celeris-1",
+        "muse-spark-1.2",
+        "muse-spark-1.2-contributor",
+    }
+)
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -1474,6 +1480,8 @@ def _meeting_llm_model_ready(model: str) -> bool:
         return bool(Config.GOOGLE_API_KEY)
     if normalized.startswith("cerebras/"):
         return bool(Config.CEREBRAS_API_KEY)
+    if normalized in {"muse-spark-1.2", "muse-spark-1.2-contributor"}:
+        return bool(getattr(Config, "MODEL_API_KEY", ""))
     if normalized == "celeris-1":
         return bool(Config.CELERIS_API_KEY)
     return "/" in normalized and bool(Config.OPENROUTER_API_KEY)
@@ -2419,6 +2427,51 @@ class ProviderResultReconciliationRequired(RuntimeError):
     def __init__(self, provider: str) -> None:
         self.provider = str(provider or "provider").strip().lower()[:48] or "provider"
         super().__init__(f"{self.provider} returned a result; automatic provider replay is disabled")
+
+
+def _meeting_analysis_failure_details(exc: Exception) -> tuple[str, str]:
+    """Return stable public recovery details without exposing provider internals."""
+
+    public_code = str(getattr(exc, "meeting_analysis_error_code", "") or "")
+    if public_code == "meeting_analysis_incomplete_response":
+        return (
+            public_code,
+            "The AI service did not return a complete meeting brief. "
+            "Your transcript, recording, speaker names, and notes are safe.",
+        )
+    if isinstance(exc, TimeoutError) or "timed out" in str(exc).casefold():
+        return (
+            "meeting_analysis_timeout",
+            "The AI service took too long to complete the meeting brief. "
+            "Your transcript, recording, speaker names, and notes are safe.",
+        )
+    return (
+        "meeting_analysis_failed",
+        "Scriber could not complete the meeting brief. Your transcript, recording, speaker names, and notes are safe.",
+    )
+
+
+_SAFE_PERSISTED_MEETING_ANALYSIS_ERROR_CODES = frozenset(
+    {
+        "meeting_analysis_incomplete_response",
+        "meeting_analysis_timeout",
+        "meeting_analysis_failed",
+        "process_interrupted_during_analysis",
+    }
+)
+
+
+def _persisted_meeting_analysis_failure_details(meeting: Mapping[str, Any]) -> tuple[str, str]:
+    """Project only known-safe persisted Meeting errors into import recovery."""
+
+    code = str(meeting.get("errorCode") or "").strip()
+    message = str(meeting.get("errorMessage") or "").strip()
+    if code in _SAFE_PERSISTED_MEETING_ANALYSIS_ERROR_CODES and message:
+        return code, message[:1_000]
+    return (
+        "meeting_analysis_failed",
+        "The canonical transcript is intact, but Meeting analysis must be retried.",
+    )
 
 
 def _retry_error_after_provider_result(
@@ -12581,11 +12634,12 @@ class ScriberWebController:
                         self._meeting_store.transition, record.meeting_id, "finalizing"
                     )
                 if meeting["state"] == "analysis_failed":
+                    error_code, error_message = _persisted_meeting_analysis_failure_details(meeting)
                     record = await _to_thread_cancellation_barrier(
                         store.mark_failed,
                         import_id,
-                        error_code="meeting_analysis_failed",
-                        error_message=("The canonical transcript is intact, but Meeting analysis must be retried."),
+                        error_code=error_code,
+                        error_message=error_message,
                     )
                     await self._broadcast_meeting_import(record, 1.0, "Meeting analysis is waiting for retry")
                     return
@@ -12616,6 +12670,7 @@ class ScriberWebController:
         except Exception as exc:
             logger.exception("Durable Meeting import failed")
             previous = await asyncio.to_thread(store.require, import_id)
+            meeting = None
             if previous.status == MeetingImportStatus.FINALIZING and previous.meeting_id:
                 finalizer_task = self._meeting_tasks.get(previous.meeting_id)
                 if finalizer_task is not None and not finalizer_task.done():
@@ -12640,21 +12695,31 @@ class ScriberWebController:
                     return
                 if meeting is not None and meeting["state"] in {"finalizing", "analyzing"}:
                     failed_state = "analysis_failed" if meeting["state"] == "analyzing" else "finalization_failed"
+                    if failed_state == "analysis_failed":
+                        error_code, error_message = _meeting_analysis_failure_details(exc)
+                    else:
+                        error_code = type(exc).__name__
+                        error_message = redact_text(str(exc))[:240]
                     try:
                         await _to_thread_cancellation_barrier(
                             self._meeting_store.transition,
                             previous.meeting_id,
                             failed_state,
-                            error_code=type(exc).__name__,
-                            error_message=redact_text(str(exc))[:240],
+                            error_code=error_code,
+                            error_message=error_message,
                         )
                     except Exception:
                         logger.exception("Meeting state could not be synchronized with import failure")
+            if meeting is not None and meeting["state"] == "analyzing":
+                import_error_code, import_error_message = _meeting_analysis_failure_details(exc)
+            else:
+                import_error_code = type(exc).__name__
+                import_error_message = redact_text(str(exc))[:240]
             record = await _to_thread_cancellation_barrier(
                 store.mark_failed,
                 import_id,
-                error_code=type(exc).__name__,
-                error_message=redact_text(str(exc))[:240],
+                error_code=import_error_code,
+                error_message=import_error_message,
             )
             if (
                 record.status == MeetingImportStatus.FAILED
@@ -12909,12 +12974,13 @@ class ScriberWebController:
                 except Exception:
                     logger.exception("Ready Meeting import repair could not be scheduled")
                 return
+            error_code, error_message = _meeting_analysis_failure_details(exc)
             failed = await asyncio.to_thread(
                 self._meeting_store.transition,
                 meeting_id,
                 "analysis_failed",
-                error_code="analysis_regeneration_failed",
-                error_message=redact_text(str(exc))[:240],
+                error_code=error_code,
+                error_message=error_message,
             )
             await self.broadcast(meeting_state_event(failed))
             import_job = await asyncio.to_thread(self._meeting_import_store.find_by_meeting_id, meeting_id)
@@ -12922,8 +12988,8 @@ class ScriberWebController:
                 import_job = await asyncio.to_thread(
                     self._meeting_import_store.mark_failed,
                     import_job.id,
-                    error_code="analysis_regeneration_failed",
-                    error_message=redact_text(str(exc))[:240],
+                    error_code=error_code,
+                    error_message=error_message,
                 )
                 await self._broadcast_meeting_import(import_job, 1.0, "Meeting import analysis failed")
 
@@ -13415,11 +13481,14 @@ class ScriberWebController:
                 return
             failed_state = "analysis_failed" if current["state"] == "analyzing" else "finalization_failed"
             safe_error = redact_text(str(exc) or type(exc).__name__)[:240]
+            error_code = type(exc).__name__
+            if failed_state == "analysis_failed":
+                error_code, safe_error = _meeting_analysis_failure_details(exc)
             failed = await asyncio.to_thread(
                 self._meeting_store.transition,
                 meeting_id,
                 failed_state,
-                error_code=type(exc).__name__,
+                error_code=error_code,
                 error_message=safe_error,
             )
             await self.broadcast(meeting_state_event(failed))
@@ -13428,7 +13497,7 @@ class ScriberWebController:
                 import_job = await asyncio.to_thread(
                     self._meeting_import_store.mark_failed,
                     import_job.id,
-                    error_code=type(exc).__name__,
+                    error_code=error_code,
                     error_message=safe_error,
                 )
                 await self._broadcast_meeting_import(import_job, 1.0, "Meeting import finalization failed")
@@ -13820,6 +13889,7 @@ class ScriberWebController:
                 "deepgram": Config.DEEPGRAM_API_KEY or "",
                 "openai": Config.OPENAI_API_KEY or "",
                 "openrouter": getattr(Config, "OPENROUTER_API_KEY", "") or "",
+                "meta": getattr(Config, "MODEL_API_KEY", "") or "",
                 "cerebras": getattr(Config, "CEREBRAS_API_KEY", "") or "",
                 "celeris": getattr(Config, "CELERIS_API_KEY", "") or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
@@ -14172,6 +14242,7 @@ class ScriberWebController:
                 "deepgram": ("deepgram", lambda v: Config.set_api_key("deepgram", v)),
                 "openai": ("openai", lambda v: Config.set_api_key("openai", v)),
                 "openrouter": ("openrouter", lambda v: Config.set_api_key("openrouter", v)),
+                "meta": ("meta", lambda v: Config.set_api_key("meta", v)),
                 "cerebras": ("cerebras", lambda v: Config.set_api_key("cerebras", v)),
                 "celeris": ("celeris", lambda v: Config.set_api_key("celeris", v)),
                 "gladia": ("gladia", lambda v: Config.set_api_key("gladia", v)),
@@ -18818,6 +18889,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
         requested_final_provider = ""
+        requested_analysis_model = ""
         if request.can_read_body:
             try:
                 raw_retry = await request.json()
@@ -18826,6 +18898,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if not isinstance(raw_retry, dict):
                 return web.json_response({"message": "Expected JSON object"}, status=400)
             requested_final_provider = str(raw_retry.get("finalProvider") or "").strip().lower()
+            requested_analysis_model = str(raw_retry.get("analysisModel") or "").strip()
         start_gate: asyncio.Event | None = None
         reserved_task: asyncio.Task | None = None
         reopened_import: Any | None = None
@@ -18833,6 +18906,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         retry_state = ""
         previous_final_provider = ""
         previous_reprocess_final_model: str | None = None
+        previous_analysis_model = ""
         changed_final_provider = ""
         try:
             current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
@@ -18840,6 +18914,22 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response({"message": "Meeting is not waiting for a finalization retry."}, status=409)
             original_state = str(current["state"])
             retry_state = "analyzing" if current["state"] == "analysis_failed" else "finalizing"
+            previous_analysis_model = str(current.get("analysisModel") or "").strip()
+            analysis_model_for_retry: str | None = None
+            if retry_state == "analyzing":
+                analysis_model_for_retry = _validate_summarization_model(
+                    requested_analysis_model or Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
+                )
+                if not _meeting_llm_model_ready(analysis_model_for_retry):
+                    return web.json_response(
+                        {"message": "Configure the API key for the selected Meeting analysis model first."},
+                        status=409,
+                    )
+            elif requested_analysis_model:
+                return web.json_response(
+                    {"message": "The Meeting analysis model can change only during an analysis retry."},
+                    status=409,
+                )
             if requested_final_provider:
                 if retry_state != "finalizing":
                     return web.json_response(
@@ -18938,7 +19028,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     expected_status=MeetingImportStatus.FAILED,
                 )
                 await ctl._broadcast_meeting_import(reopened_import, 0.97, "Retrying Meeting import finalization")
-            finalizing = await _to_thread_cancellation_barrier(ctl._meeting_store.transition, meeting_id, retry_state)
+            finalizing = await _to_thread_cancellation_barrier(
+                ctl._meeting_store.transition,
+                meeting_id,
+                retry_state,
+                analysis_model=analysis_model_for_retry,
+            )
             start_gate.set()
             await ctl.broadcast(meeting_state_event(finalizing))
             return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
@@ -18970,6 +19065,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                                 rollback_state,
                                 error_code=str(current.get("errorCode") or "retry_not_started"),
                                 error_message=str(current.get("errorMessage") or "Meeting retry could not be started."),
+                                analysis_model=(previous_analysis_model if retry_state == "analyzing" else None),
                             )
                     except Exception:
                         logger.exception("Meeting retry state reservation could not be rolled back")

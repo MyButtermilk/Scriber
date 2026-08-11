@@ -15,6 +15,7 @@ from zipfile import ZipFile
 
 import pytest
 
+import src.export as export_module
 from scripts.check_backend_runtime_imports import (
     FROZEN_EXPORT_COMPAT_IMPORTS,
     REQUIRED_FROZEN_EXPORT_IMPORTS,
@@ -358,6 +359,56 @@ def test_stdlib_exports_accept_html_summary_without_legacy_renderers() -> None:
     docx_text, _paragraph_count = _docx_text_and_paragraph_count(docx)
     assert "Größe & Qualität" in docx_text
     assert "Die Straße bleibt offen." in docx_text
+
+
+def test_youtube_pdf_draws_plain_transcript_lines_left_aligned(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed_transcript_lines: list[tuple[str, bool, int, bool]] = []
+    draw_pdf_line = export_module._draw_pdf_line
+
+    def capture_draw_pdf_line(commands, line, **kwargs):
+        if any("TRANSCRIPT_SENTINEL" in text for text, _font in line):
+            style = kwargs["style"]
+            command_count = len(commands)
+            result = draw_pdf_line(commands, line, **kwargs)
+            new_commands = commands[command_count:]
+            observed_transcript_lines.append(
+                (
+                    style.alignment,
+                    bool(kwargs["justify"]),
+                    len(new_commands),
+                    any(b"(TRANSCRIPT_SENTINEL Eine normale" in command for command in new_commands),
+                )
+            )
+            return result
+        return draw_pdf_line(commands, line, **kwargs)
+
+    monkeypatch.setattr(export_module, "_draw_pdf_line", capture_draw_pdf_line)
+
+    export_to_pdf(
+        "YouTube layout check",
+        "TRANSCRIPT_SENTINEL " + "Eine normale Transkriptzeile mit mehreren Wörtern. " * 18,
+        summary="Kurze Zusammenfassung.",
+    )
+
+    assert observed_transcript_lines
+    assert observed_transcript_lines == [("left", False, 1, True)]
+
+
+def test_pdf_wrap_uses_exact_standard_helvetica_metrics() -> None:
+    style = export_module._PDF_STYLES["transcript_body"]
+    body_width = 595.276 - 72.0 - 72.0
+
+    assert export_module._pdf_width("W ", "F1", 10) == pytest.approx(12.22)
+    assert export_module._pdf_width("W ", "F2", 10) == pytest.approx(12.22)
+
+    lines = export_module._wrap_pdf_spans(
+        (export_module._InlineSpan("W " * 200),),
+        style,
+        body_width,
+    )
+
+    assert len(lines) > 1
+    assert all(export_module._pdf_line_width(line, style.size) <= body_width for line in lines)
 
 
 def test_supported_pyautogui_injection_functions_do_not_require_pillow() -> None:

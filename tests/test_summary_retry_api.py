@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from src import web_api
+from src import summarization, web_api
 from src.data.job_store import JobStore
 from src.web_api import ScriberWebController, TranscriptRecord
 
@@ -137,4 +137,51 @@ async def test_summary_retry_failure_keeps_transcript_completed_and_persists_err
     assert record.summary_format == "markdown"
     reasons = [call.kwargs["reason"] for call in broadcast.await_args_list]
     assert reasons == ["summary_pending", "summary_failed"]
+    assert save_state.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_summary_retry_preserves_safe_meta_contributor_access_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    controller = ScriberWebController(
+        asyncio.get_running_loop(),
+        job_store=JobStore(db_path=tmp_path / "jobs.db"),
+    )
+    record = _failed_summary_record()
+    controller._add_to_history(record)
+    message = (
+        "Muse Spark 1.2 Contributor is not available for this Meta project. "
+        "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+        "in the Meta dashboard, then try again."
+    )
+
+    async def fail_summary(*_args, **_kwargs) -> str:
+        raise summarization.MetaContributorAccessError(message)
+
+    save_state = AsyncMock()
+    broadcast = AsyncMock()
+    monkeypatch.setattr("src.summarization.summarize_text", fail_summary)
+    monkeypatch.setattr(controller, "_save_transcript_summary_state_async", save_state)
+    monkeypatch.setattr(controller, "_broadcast_history_updated", broadcast)
+
+    client = TestClient(TestServer(web_api.create_app(controller)))
+    await client.start_server()
+    try:
+        response = await client.post(f"/api/transcripts/{record.id}/summarize")
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 400
+    assert payload == {"message": message}
+    assert record.summary_status == "failed"
+    assert record.summary_error == message
+    assert "404" not in record.summary_error
+    assert record.status == "completed"
+    assert record.content.startswith("This durable transcript")
+    assert record.summary == "## Previous summary"
+    assert [call.kwargs["reason"] for call in broadcast.await_args_list] == ["summary_pending", "summary_failed"]
     assert save_state.await_count == 2

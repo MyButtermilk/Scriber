@@ -992,7 +992,21 @@ async def analyze_meeting(
             )
         return result
 
-    partials = list(await asyncio.gather(*(analyze_chunk(index, chunk) for index, chunk in enumerate(chunks))))
+    map_tasks = [
+        asyncio.create_task(analyze_chunk(index, chunk), name=f"meeting-analysis-map-{index + 1}")
+        for index, chunk in enumerate(chunks)
+    ]
+    try:
+        partials = list(await asyncio.gather(*map_tasks))
+    except BaseException:
+        # asyncio.gather propagates the first failure without cancelling its
+        # siblings. Stop and drain them explicitly so a failed Meeting cannot
+        # keep spending provider time or emit misleading late success logs.
+        for task in map_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*map_tasks, return_exceptions=True)
+        raise
 
     reduce_levels = 0
     remaining = len(partials)

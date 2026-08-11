@@ -270,6 +270,8 @@ const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;
 const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
 const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
+const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";
+const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";
 
 type HotkeyCaptureEvent = Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"> & {
   preventDefault?: () => void;
@@ -314,8 +316,8 @@ type SummarizationModelOption = {
   value: string;
   label: string;
   detail: string;
-  group: "gemini" | "openrouter" | "openai" | "cerebras" | "celeris";
-  icon: ProviderIconKey;
+  group: "gemini" | "meta" | "openrouter" | "openai" | "cerebras" | "celeris";
+  icon?: ProviderIconKey;
 };
 
 function languageModelBenchmarkDetail(
@@ -394,6 +396,18 @@ function createSummarizationModelOptions(localeTag: string, t: Translate): reado
       detail: t("Short structured summaries with an 8K context window"),
       group: "celeris",
       icon: "celeris",
+    },
+    {
+      value: META_MUSE_SPARK_STANDARD_MODEL,
+      label: "Muse Spark 1.2",
+      detail: t("Standard tier · prompts and responses are not used to train Meta models"),
+      group: "meta",
+    },
+    {
+      value: META_MUSE_SPARK_CONTRIBUTOR_MODEL,
+      label: "Muse Spark 1.2 Contributor",
+      detail: t("Contributor tier · prompts and responses may be used to train future Meta models"),
+      group: "meta",
     },
     {
       value: "minimax/minimax-m3:nitro",
@@ -534,6 +548,7 @@ const API_KEY_HELP_LINKS = {
   deepgram: { href: "https://console.deepgram.com/", label: "Deepgram console" },
   assemblyai: { href: "https://www.assemblyai.com/dashboard", label: "AssemblyAI dashboard" },
   gemini: { href: "https://aistudio.google.com/app/apikey", label: "Google AI Studio" },
+  meta: { href: "https://dev.meta.ai/", label: "Meta Model API dashboard" },
   openrouter: { href: "https://openrouter.ai/settings/keys", label: "OpenRouter keys" },
   cerebras: { href: "https://cloud.cerebras.ai/", label: "Cerebras Cloud" },
   celeris: { href: "https://console.celeris.ai/", label: "Celeris Console" },
@@ -1352,6 +1367,36 @@ function SummaryModelChoice({
   );
 }
 
+function MetaContributorWarning({ active }: { active: boolean }) {
+  const { t } = useI18n();
+  if (!active) {
+    return null;
+  }
+
+  return (
+    <div
+      role="note"
+      aria-label={t("Meta Contributor data-use warning")}
+      className="flex gap-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-4 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.2)] dark:bg-amber-950/35 dark:text-amber-100"
+    >
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <div>
+        <p className="font-semibold">{t("Contributor data use")}</p>
+        <p>
+          {t(
+            "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. This model is not recommended for sensitive or confidential content.",
+          )}
+        </p>
+        <p className="mt-1">
+          {t(
+            "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.2 Standard or request Contributor access in the Meta dashboard.",
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function FieldShell({ label, children, detail }: { label: string; children: ReactNode; detail?: string }) {
   return (
     <div className="space-y-1.5">
@@ -1621,6 +1666,7 @@ export default function Settings() {
   const [deepgramKey, setDeepgramKey] = useState("");
   const [assemblyAIKey, setAssemblyAIKey] = useState("");
   const [geminiKey, setGeminiKey] = useState("");
+  const [metaModelApiKey, setMetaModelApiKey] = useState("");
   const [openRouterKey, setOpenRouterKey] = useState("");
   const [cerebrasKey, setCerebrasKey] = useState("");
   const [celerisKey, setCelerisKey] = useState("");
@@ -1652,6 +1698,7 @@ export default function Settings() {
   const [showDeepgramKey, setShowDeepgramKey] = useState(false);
   const [showAssemblyAIKey, setShowAssemblyAIKey] = useState(false);
   const [showGeminiKey, setShowGeminiKey] = useState(false);
+  const [showMetaModelApiKey, setShowMetaModelApiKey] = useState(false);
   const [showOpenRouterKey, setShowOpenRouterKey] = useState(false);
   const [showCerebrasKey, setShowCerebrasKey] = useState(false);
   const [showCelerisKey, setShowCelerisKey] = useState(false);
@@ -2187,6 +2234,8 @@ export default function Settings() {
         return savedCredentialAvailable("OpenAI", openAIKey);
       case "Gemini":
         return savedCredentialAvailable("Gemini", geminiKey);
+      case "Meta Model API":
+        return savedCredentialAvailable("Meta Model API", metaModelApiKey);
       case "OpenRouter":
         return savedCredentialAvailable("OpenRouter", openRouterKey);
       case "Cerebras":
@@ -2272,6 +2321,9 @@ export default function Settings() {
   };
 
   const requiredCredentialForLanguageModel = (model: string): CredentialRequirement | null => {
+    if (model === META_MUSE_SPARK_STANDARD_MODEL || model === META_MUSE_SPARK_CONTRIBUTOR_MODEL) {
+      return { provider: "Meta Model API", label: "Meta Model API key", helpKey: "meta" };
+    }
     if (model.startsWith("gpt-")) {
       return { provider: "OpenAI", label: "OpenAI API key", helpKey: "openai" };
     }
@@ -2486,6 +2538,7 @@ export default function Settings() {
         setDeepgramKey(keys.deepgram || "");
         setOpenAIKey(keys.openai || "");
         setGeminiKey(keys.googleApiKey || "");
+        setMetaModelApiKey(keys.meta || "");
         setOpenRouterKey(keys.openrouter || "");
         setCerebrasKey(keys.cerebras || "");
         setCelerisKey(keys.celeris || "");
@@ -2501,6 +2554,7 @@ export default function Settings() {
         const loadedCredentialReadyKeys = {
           OpenAI: hasValue(keys.openai),
           Gemini: hasValue(keys.googleApiKey),
+          "Meta Model API": hasValue(keys.meta),
           OpenRouter: hasValue(keys.openrouter),
           Cerebras: hasValue(keys.cerebras),
           Celeris: hasValue(keys.celeris),
@@ -2686,6 +2740,7 @@ export default function Settings() {
       if (provider === "Deepgram") apiKeys.deepgram = deepgramKey;
       if (provider === "AssemblyAI") apiKeys.assemblyai = assemblyAIKey;
       if (provider === "Gemini") apiKeys.googleApiKey = geminiKey;
+      if (provider === "Meta Model API") apiKeys.meta = metaModelApiKey;
       if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;
       if (provider === "Cerebras") apiKeys.cerebras = cerebrasKey;
       if (provider === "Celeris") apiKeys.celeris = celerisKey;
@@ -2720,6 +2775,8 @@ export default function Settings() {
             return hasValue(assemblyAIKey);
           case "Gemini":
             return hasValue(geminiKey);
+          case "Meta Model API":
+            return hasValue(metaModelApiKey);
           case "OpenRouter":
             return hasValue(openRouterKey);
           case "Cerebras":
@@ -4140,6 +4197,11 @@ export default function Settings() {
       items: summarizationModelOptions.filter((option) => option.group === "celeris"),
     },
     {
+      key: "meta",
+      label: "Meta",
+      items: summarizationModelOptions.filter((option) => option.group === "meta"),
+    },
+    {
       key: "openrouter",
       label: "OpenRouter",
       items: summarizationModelOptions.filter((option) => option.group === "openrouter"),
@@ -5378,6 +5440,7 @@ export default function Settings() {
                       ))}
                     </SelectContent>
                   </Select>
+                  <MetaContributorWarning active={meetingAnalysisModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL} />
                 </SettingLine>
                 <SettingLine
                   label={t("Create meeting brief automatically")}
@@ -6012,6 +6075,18 @@ export default function Settings() {
                 {...credentialDialogProps("Gemini")}
               />
               <ApiCredentialRow
+                provider="Meta Model API"
+                value={metaModelApiKey}
+                onValueChange={markCredentialChanged("Meta Model API", setMetaModelApiKey)}
+                show={showMetaModelApiKey}
+                onShowChange={setShowMetaModelApiKey}
+                helpKey="meta"
+                saved={savedKeys["Meta Model API"] === true}
+                onSave={() => handleSaveApiKey("Meta Model API")}
+                note={t("Used for direct Meta summaries in Meetings, YouTube, and File.")}
+                {...credentialDialogProps("Meta Model API")}
+              />
+              <ApiCredentialRow
                 provider="OpenRouter"
                 icon="openrouter"
                 value={openRouterKey}
@@ -6289,6 +6364,7 @@ export default function Settings() {
                   </div>
                 </div>
               ))}
+              <MetaContributorWarning active={summarizationModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL} />
               <div
                 role="note"
                 aria-label={t("Benchmark notes")}

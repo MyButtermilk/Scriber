@@ -30,6 +30,12 @@ CELERIS_RESPONSE_LIMIT_BYTES = 8 * 1024 * 1024
 _RETRYABLE_STATUSES = frozenset({429, 500, 502, 503, 504})
 
 
+class CelerisOutputLimitError(RuntimeError):
+    """Celeris stopped at its native context/output boundary."""
+
+    meeting_analysis_error_code = "meeting_analysis_incomplete_response"
+
+
 def is_celeris_model(model: str | None) -> bool:
     return str(model or "").strip().casefold() == CELERIS_MODEL
 
@@ -121,7 +127,7 @@ def _retry_after_seconds(response: Any, attempt: int) -> float:
 async def celeris_chat_completion(
     prompt: str,
     *,
-    max_output_tokens: int,
+    max_output_tokens: int | None,
     timeout_seconds: float,
     api_key: str | None = None,
     session: Any | None = None,
@@ -132,7 +138,10 @@ async def celeris_chat_completion(
     if not key:
         raise ValueError("Celeris API key not configured. Please add it in Settings.")
 
-    output_tokens = celeris_request_max_tokens(prompt, max_output_tokens)
+    planning_output_tokens = celeris_request_max_tokens(
+        prompt,
+        CELERIS_PRODUCT_OUTPUT_CAP_TOKENS if max_output_tokens is None else max_output_tokens,
+    )
     timeout_value = max(15.0, float(timeout_seconds))
     request_timeout = aiohttp.ClientTimeout(
         total=timeout_value,
@@ -143,10 +152,11 @@ async def celeris_chat_completion(
     payload = {
         "model": CELERIS_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": output_tokens,
         "temperature": 0,
         "seed": 7,
     }
+    if max_output_tokens is not None:
+        payload["max_tokens"] = planning_output_tokens
     headers = {
         "Authorization": f"Bearer {key}",
         "Content-Type": "application/json",
@@ -184,13 +194,24 @@ async def celeris_chat_completion(
                     except json.JSONDecodeError as exc:
                         raise RuntimeError("Celeris returned invalid JSON.") from exc
                     content = _response_text(data)
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    first_choice = choices[0] if isinstance(choices, list) and choices else {}
+                    finish_reason = (
+                        str(first_choice.get("finish_reason") or "").strip().lower()
+                        if isinstance(first_choice, dict)
+                        else ""
+                    )
+                    if finish_reason == "length":
+                        raise CelerisOutputLimitError(
+                            "Celeris reached its native output limit before completing the response."
+                        )
                     if not content:
                         raise RuntimeError("Celeris returned an empty response.")
                     logger.info(
-                        "Celeris generation complete: {} chars (model={}, max_tokens={})",
+                        "Celeris generation complete: {} chars (model={}, provider_output_limit={})",
                         len(content),
                         CELERIS_MODEL,
-                        output_tokens,
+                        "native" if max_output_tokens is None else planning_output_tokens,
                     )
                     return content
             except TimeoutError:
@@ -211,6 +232,7 @@ __all__ = [
     "CELERIS_CHAT_COMPLETIONS_URL",
     "CELERIS_CONTEXT_TOKENS",
     "CELERIS_MODEL",
+    "CelerisOutputLimitError",
     "CELERIS_TOKEN_QUANTUM",
     "celeris_chat_completion",
     "celeris_prompt_fits",

@@ -5,6 +5,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
+from scripts import smoke_frontend_browser
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -31,7 +35,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["summary"]["routeCount"] == 11
     assert "/meetings" in payload["summary"]["routes"]
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 20
+    assert payload["summary"]["interactionCheckCount"] == 21
     assert set(payload["summary"]["interactionChecks"]) == {
         "history-search-copy-navigation",
         "youtube-history-actions",
@@ -45,6 +49,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
         "settings-persistence",
         "settings-desktop-controls",
         "transcript-processing-refresh",
+        "summary-reading-track",
         "command-palette",
         "transcript-detail-actions",
         "transcript-cancel-action",
@@ -86,6 +91,13 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     ]
     meetings = next(item for item in payload["scenarios"] if item["route"] == "/meetings")
     assert meetings["interactionChecks"] == [{"name": "meeting-end-to-end", "ok": True}]
+    transcript_detail = next(item for item in payload["scenarios"] if item["route"] == "/transcript/file-00001")
+    summary_reading_track = transcript_detail["interactionChecks"][0]
+    assert summary_reading_track["name"] == "summary-reading-track"
+    assert summary_reading_track["ok"] is True
+    assert summary_reading_track["viewport"] == {"width": 2048, "height": 1252, "deviceScaleFactor": 1}
+    assert summary_reading_track["state"]["viewportWidth"] == 2048
+    assert summary_reading_track["viewportRestored"] is True
     assert payload["commandPaletteCheck"]["name"] == "command-palette"
     assert payload["transcriptDetailActionsCheck"]["name"] == "transcript-detail-actions"
     assert payload["transcriptCancelCheck"]["name"] == "transcript-cancel-action"
@@ -133,7 +145,7 @@ def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 21
+    assert payload["summary"]["interactionCheckCount"] == 22
     assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
     assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
     assert payload["fastTabSwitchCheck"]["ok"] is True
@@ -200,6 +212,114 @@ def test_frontend_browser_smoke_compares_primary_tab_shells_at_large_desktop_siz
     assert "maxWidthReached" in script
     assert "desktopPageShellLayoutsCheck" in script
     assert "desktop-shell-{shell_id}" in script
+
+
+class _SummaryReadingTrackCdp:
+    def __init__(self, *, fail_measurement: bool = False, sticky_clear: bool = False) -> None:
+        self.fail_measurement = fail_measurement
+        self.sticky_clear = sticky_clear
+        self.override_active = False
+        self.viewport_width = 1280
+        self.viewport_height = 900
+        self.device_pixel_ratio = 1.0
+        self.calls: list[str] = []
+
+    async def call(
+        self,
+        method: str,
+        params: dict[str, object] | None = None,
+        *,
+        timeout: float | None = None,
+    ) -> dict[str, object]:
+        del timeout
+        self.calls.append(method)
+        if method == "Emulation.setDeviceMetricsOverride":
+            self.override_active = True
+            assert params is not None
+            self.viewport_width = int(params["width"])
+            self.viewport_height = int(params["height"])
+            self.device_pixel_ratio = float(params["deviceScaleFactor"])
+        elif method == "Emulation.clearDeviceMetricsOverride":
+            self.override_active = False
+            if not self.sticky_clear:
+                self.viewport_width = 1280
+                self.viewport_height = 900
+                self.device_pixel_ratio = 1.0
+        return {}
+
+    async def evaluate(self, expression: str, *, timeout: float | None = None) -> dict[str, object]:
+        del timeout
+        if ".summary-document" in expression:
+            if self.fail_measurement:
+                raise RuntimeError("synthetic summary measurement failure")
+            return {
+                "ok": self.viewport_width == 2048,
+                "viewportWidth": self.viewport_width,
+                "viewportHeight": self.viewport_height,
+                "rootWidth": 760,
+                "overviewWidth": 760,
+                "detailWidth": 760,
+                "widthDelta": 0,
+                "leftDelta": 0,
+                "overflowX": 0,
+                "snapshotKind": "facts",
+            }
+        return {
+            "viewportWidth": self.viewport_width,
+            "viewportHeight": self.viewport_height,
+            "devicePixelRatio": self.device_pixel_ratio,
+        }
+
+
+@pytest.mark.asyncio
+async def test_summary_reading_track_measures_at_wide_viewport_and_restores_it() -> None:
+    cdp = _SummaryReadingTrackCdp()
+
+    result = await smoke_frontend_browser.exercise_summary_reading_track(cdp, timeout_sec=1)
+
+    assert result["ok"] is True
+    assert result["state"]["viewportWidth"] == 2048
+    assert result["viewportRestored"] is True
+    assert result["originalViewport"] == result["restoredViewport"]
+    assert cdp.calls == [
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+    ]
+    assert cdp.override_active is False
+
+
+@pytest.mark.asyncio
+async def test_summary_reading_track_reapplies_original_metrics_when_clear_is_sticky() -> None:
+    cdp = _SummaryReadingTrackCdp(sticky_clear=True)
+
+    result = await smoke_frontend_browser.exercise_summary_reading_track(cdp, timeout_sec=1)
+
+    assert result["ok"] is True
+    assert result["viewportRestored"] is True
+    assert result["restoredViewport"] == {
+        "viewportWidth": 1280,
+        "viewportHeight": 900,
+        "devicePixelRatio": 1.0,
+    }
+    assert cdp.calls == [
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+        "Emulation.setDeviceMetricsOverride",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_summary_reading_track_restores_viewport_after_measurement_failure() -> None:
+    cdp = _SummaryReadingTrackCdp(fail_measurement=True)
+
+    with pytest.raises(RuntimeError, match="synthetic summary measurement failure"):
+        await smoke_frontend_browser.exercise_summary_reading_track(cdp, timeout_sec=1)
+
+    assert cdp.calls == [
+        "Emulation.setDeviceMetricsOverride",
+        "Emulation.clearDeviceMetricsOverride",
+    ]
+    assert cdp.override_active is False
 
 
 def test_frontend_browser_smoke_exercises_fast_tab_switch() -> None:
