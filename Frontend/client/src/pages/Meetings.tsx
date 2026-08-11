@@ -59,6 +59,7 @@ import {
   type MeetingPlaybackRequest,
 } from "@/lib/meeting-playback";
 import { localizeMeetingErrorMessage } from "@/lib/meeting-error-message";
+import { alphabeticalLabel, genericMeetingSpeakerLabels } from "@/lib/meeting-display";
 import { useSharedWebSocket, useWebSocketContext, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { useI18n, type TranslationValues } from "@/i18n";
@@ -746,7 +747,44 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   );
 });
 
-function EvidenceList({ items, onCitation }: { items: unknown; onCitation?: (id: string) => void }) {
+function CitationBadges({
+  citations,
+  segmentStarts,
+  onCitation,
+}: {
+  citations: string[];
+  segmentStarts: ReadonlyMap<string, number>;
+  onCitation?: (id: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="mt-2 flex flex-wrap gap-1.5">
+      {citations.map((citation, index) => {
+        const startMs = segmentStarts.get(citation);
+        const label = alphabeticalLabel(index);
+        return (
+          <button type="button" key={citation} onClick={() => onCitation?.(citation)}>
+            <Badge variant="outline" className="text-ui-micro hover:border-primary">
+              {startMs == null
+                ? t("Segment {{label}}", { label })
+                : t("Segment {{label}} · from {{time}}", { label, time: formatMeetingOffset(startMs) })}
+            </Badge>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function EvidenceList({
+  items,
+  segmentStarts,
+  onCitation,
+}: {
+  items: unknown;
+  segmentStarts: ReadonlyMap<string, number>;
+  onCitation?: (id: string) => void;
+}) {
   const { t } = useI18n();
   if (!Array.isArray(items) || items.length === 0) {
     return (
@@ -770,15 +808,7 @@ function EvidenceList({ items, onCitation }: { items: unknown; onCitation?: (id:
               </p>
             )}
             {citations.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                {citations.map((citation) => (
-                  <button type="button" key={citation} onClick={() => onCitation?.(citation)}>
-                    <Badge variant="outline" className="font-mono text-ui-micro hover:border-primary">
-                      {citation.slice(0, 8)}
-                    </Badge>
-                  </button>
-                ))}
-              </div>
+              <CitationBadges citations={citations} segmentStarts={segmentStarts} onCitation={onCitation} />
             )}
           </div>
         );
@@ -791,6 +821,8 @@ function ActionItems({
   items,
   onChange,
   saving,
+  segmentStarts,
+  speakerNames,
   onCitation,
 }: {
   items: MeetingActionItem[];
@@ -799,6 +831,8 @@ function ActionItems({
     changes: Partial<Pick<MeetingActionItem, "text" | "owner" | "dueDate" | "status">>,
   ) => void;
   saving: boolean;
+  segmentStarts: ReadonlyMap<string, number>;
+  speakerNames: ReadonlyMap<string, string>;
   onCitation?: (id: string) => void;
 }) {
   const { t } = useI18n();
@@ -811,7 +845,10 @@ function ActionItems({
   }
   return (
     <div className="divide-y divide-border/60" aria-busy={saving}>
-      {items.map((item) => (
+      {items.map((item) => {
+        const displayedOwner =
+          (item.ownerSpeakerId ? speakerNames.get(item.ownerSpeakerId) : "") || item.owner || "";
+        return (
         <div key={item.id} className="grid gap-3 py-4 sm:grid-cols-[32px_minmax(0,1fr)]">
           <AnimatedCheckbox
             checked={item.status === "done"}
@@ -831,12 +868,13 @@ function ActionItems({
             />
             <div className="grid gap-2 sm:grid-cols-2">
               <Input
+                key={`${item.ownerSpeakerId ?? "manual"}:${displayedOwner}`}
                 disabled={saving}
-                defaultValue={item.owner ?? ""}
+                defaultValue={displayedOwner}
                 placeholder={t("Owner")}
                 className="h-8 text-xs"
                 onBlur={(event) =>
-                  event.target.value !== (item.owner ?? "") && onChange(item, { owner: event.target.value || null })
+                  event.target.value !== displayedOwner && onChange(item, { owner: event.target.value || null })
                 }
               />
               <Input
@@ -850,19 +888,12 @@ function ActionItems({
               />
             </div>
             {item.segmentIds.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {item.segmentIds.map((citation) => (
-                  <button type="button" key={citation} onClick={() => onCitation?.(citation)}>
-                    <Badge variant="outline" className="font-mono text-ui-micro hover:border-primary">
-                      {citation.slice(0, 8)}
-                    </Badge>
-                  </button>
-                ))}
-              </div>
+              <CitationBadges citations={item.segmentIds} segmentStarts={segmentStarts} onCitation={onCitation} />
             )}
           </div>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -1095,6 +1126,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const { isConnected: meetingWsConnected } = useWebSocketContext();
   const { toast } = useToast();
   const [title, setTitle] = useState("");
+  const [editingMeetingTitle, setEditingMeetingTitle] = useState(false);
+  const [meetingTitleDraft, setMeetingTitleDraft] = useState("");
   const [selectedCalendarEventId, setSelectedCalendarEventId] = useState("");
   const [calendarSelectionNeedsReview, setCalendarSelectionNeedsReview] = useState(false);
   const calendarSelectionInitializedRef = useRef(false);
@@ -1409,6 +1442,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setChatAnswer(null);
     setTranscriptSearch("");
     setRetryFinalProvider("");
+    setEditingMeetingTitle(false);
+    setMeetingTitleDraft("");
   }, [selectedId]);
 
   useEffect(
@@ -1896,6 +1931,23 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       toast({ variant: "destructive", title: t("Meeting control failed"), description: t(error.message) }),
   });
 
+  const titleMutation = useMutation({
+    mutationFn: async ({ id, title: nextTitle }: { id: string; title: string }) => {
+      const response = await apiRequest("PATCH", `/api/meetings/${id}`, { title: nextTitle });
+      return response.json() as Promise<MeetingSummary>;
+    },
+    onSuccess: (meeting) => {
+      applyMeetingSummaryEvent(queryClient, meeting);
+      queryClient.setQueryData<MeetingDetail>(["/api/meetings", meeting.id], (current) =>
+        current ? { ...current, title: meeting.title } : current,
+      );
+      setEditingMeetingTitle(false);
+      toast({ title: t("Meeting title updated") });
+    },
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Meeting title was not saved"), description: t(error.message) }),
+  });
+
   const deleteMeetingMutation = useMutation({
     mutationFn: async (id: string) => {
       await apiRequest("DELETE", `/api/meetings/${id}`);
@@ -2319,16 +2371,30 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 : t("Ready for a shorter meeting · review the details before a long recording.");
   const meetingImportBusy = meetingImportMutation.isPending || Boolean(meetingImportId);
   const liveSegments = useMemo(() => detail?.segments ?? [], [detail?.segments]);
+  const segmentStarts = useMemo(
+    () => new Map(liveSegments.map((segment) => [segment.id, segment.startMs])),
+    [liveSegments],
+  );
+  const genericSpeakerNames = useMemo(() => {
+    const names = new Map<string, string>();
+    genericMeetingSpeakerLabels(detail?.speakers ?? []).forEach((generic, speakerId) => {
+      names.set(speakerId, t("Speaker {{letter}}", { letter: generic.replace(/^Speaker /, "") }));
+    });
+    return names;
+  }, [detail?.speakers, t]);
   const groupedSegments = useMemo(
     () =>
       liveSegments.map((segment) => {
-        const rawLabel = segment.speakerLabel || (segment.source === "microphone" ? "You" : "Meeting audio");
+        const rawLabel =
+          (segment.speakerId ? genericSpeakerNames.get(segment.speakerId) : "") ||
+          segment.speakerLabel ||
+          (segment.source === "microphone" ? "You" : "Meeting audio");
         return {
           ...segment,
           label: rawLabel === "You" || rawLabel === "Meeting audio" ? t(rawLabel) : rawLabel,
         };
       }),
-    [liveSegments, t],
+    [genericSpeakerNames, liveSegments, t],
   );
   const visibleTranscriptSegments = useMemo(() => {
     const query = transcriptSearch.trim().toLocaleLowerCase(localeTag);
@@ -3275,9 +3341,70 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     {t("All meetings")}
                   </Button>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">
-                      {detail.title}
-                    </h2>
+                    {editingMeetingTitle ? (
+                      <form
+                        className="flex min-w-0 flex-1 items-center gap-1.5"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          const nextTitle = meetingTitleDraft.trim();
+                          if (nextTitle && nextTitle !== detail.title) {
+                            titleMutation.mutate({ id: detail.id, title: nextTitle });
+                          } else {
+                            setEditingMeetingTitle(false);
+                          }
+                        }}
+                      >
+                        <Input
+                          autoFocus
+                          value={meetingTitleDraft}
+                          maxLength={500}
+                          disabled={titleMutation.isPending}
+                          aria-label={t("Meeting title")}
+                          onChange={(event) => setMeetingTitleDraft(event.target.value)}
+                          className="h-9 min-w-48 max-w-xl font-heading text-lg font-semibold"
+                        />
+                        <Button
+                          type="submit"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          disabled={!meetingTitleDraft.trim() || titleMutation.isPending}
+                          aria-label={t("Save meeting title")}
+                        >
+                          {titleMutation.isPending ? <WavePhysicsLoader size="inline" /> : <Check className="h-4 w-4" />}
+                        </Button>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8"
+                          disabled={titleMutation.isPending}
+                          aria-label={t("Cancel title editing")}
+                          onClick={() => setEditingMeetingTitle(false)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </form>
+                    ) : (
+                      <div className="flex min-w-0 items-center gap-1">
+                        <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">
+                          {detail.title}
+                        </h2>
+                        <Button
+                          type="button"
+                          size="icon"
+                          variant="ghost"
+                          className="h-8 w-8 shrink-0 text-muted-foreground"
+                          aria-label={t("Edit meeting title")}
+                          onClick={() => {
+                            setMeetingTitleDraft(detail.title);
+                            setEditingMeetingTitle(true);
+                          }}
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    )}
                     <Badge variant="outline" className={stateTone(detail.state)}>
                       {stateLabel(detail.state, t)}
                     </Badge>
@@ -3872,7 +3999,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                                 <Check className="h-4 w-4 text-primary" />
                                 <h4 className="text-sm font-semibold">{t("Decisions")}</h4>
                               </div>
-                              <EvidenceList items={analysis.decisions} onCitation={seekCitation} />
+                              <EvidenceList
+                                items={analysis.decisions}
+                                segmentStarts={segmentStarts}
+                                onCitation={seekCitation}
+                              />
                             </section>
                             <section>
                               <div className="flex items-center gap-2">
@@ -3884,6 +4015,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                                   ...(Array.isArray(analysis.risks) ? analysis.risks : []),
                                   ...(Array.isArray(analysis.openQuestions) ? analysis.openQuestions : []),
                                 ]}
+                                segmentStarts={segmentStarts}
                                 onCitation={seekCitation}
                               />
                             </section>
@@ -3896,6 +4028,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             <ActionItems
                               items={detail.actionItems ?? []}
                               saving={actionItemMutation.isPending}
+                              segmentStarts={segmentStarts}
+                              speakerNames={genericSpeakerNames}
                               onCitation={seekCitation}
                               onChange={(item, changes) =>
                                 actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })
@@ -3904,18 +4038,28 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           </section>
                         </div>
                       ) : workspaceView === "decisions" ? (
-                        <EvidenceList items={analysis.decisions} onCitation={seekCitation} />
+                        <EvidenceList
+                          items={analysis.decisions}
+                          segmentStarts={segmentStarts}
+                          onCitation={seekCitation}
+                        />
                       ) : workspaceView === "actions" ? (
                         <ActionItems
                           items={detail.actionItems ?? []}
                           saving={actionItemMutation.isPending}
+                          segmentStarts={segmentStarts}
+                          speakerNames={genericSpeakerNames}
                           onCitation={seekCitation}
                           onChange={(item, changes) =>
                             actionItemMutation.mutate({ id: detail.id, itemId: item.id, changes })
                           }
                         />
                       ) : (
-                        <EvidenceList items={analysis.openQuestions} onCitation={seekCitation} />
+                        <EvidenceList
+                          items={analysis.openQuestions}
+                          segmentStarts={segmentStarts}
+                          onCitation={seekCitation}
+                        />
                       )}
                     </div>
                   ) : (
@@ -3957,7 +4101,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
                             const savedVoiceName = profile?.displayName || "";
                             const savedVoicePreviewUrl = profile?.preview?.url || "";
-                            const rawMeetingSpeakerName = speaker.displayName || speaker.label;
+                            const rawMeetingSpeakerName =
+                              genericSpeakerNames.get(speaker.id) || speaker.displayName || speaker.label;
                             const meetingSpeakerName =
                               rawMeetingSpeakerName === "Meeting audio" ? t("Meeting audio") : rawMeetingSpeakerName;
                             const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;

@@ -356,7 +356,15 @@ bytes.
    evidence say that the component was not recorded instead of guessing.
 5. The canonical transcript is immutable input to versioned MeetingAnalysisV1
    output. Notes, speaker renames, action-item edits, cited chat, exports, and
-   webhook delivery are separate durable work objects. Analysis stays on a
+   webhook delivery are separate durable work objects. The Meeting title is a
+   mutable workspace field: `PATCH /api/meetings/{id}` updates both the Meeting
+   row and its compatibility transcript projection, then publishes the normal
+   Meeting state event. Automatic action-item owners retain an optional durable
+   speaker id. The analysis prompt asks for the exact transcript speaker label,
+   which the store resolves only when it identifies one speaker unambiguously;
+   their displayed owner is then projected from the speaker's current
+   name so a later speaker rename reaches every linked task, while unmatched
+   free-text owners remain valid. Analysis stays on a
    single request only when the prompt is at most 48,000 characters and the
    Meeting is at most 60 minutes. Longer Meetings map stable, timestamped chunks
    capped at 30,000 characters and 30 minutes with concurrency two, then reduce
@@ -368,12 +376,19 @@ bytes.
    only already schema/citation-validated maps locally. Both provider and local
    paths enforce the same bounded output contract before the final deterministic
    merge preserves cited segment ids and derives chapter times from canonical
-   timestamps.
+   timestamps. Meeting analysis uses a context-local 900-second request budget
+   by default (`SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC`), including nested
+   provider retries. The ordinary summary budget remains 240 seconds and is not
+   widened for File, YouTube, chat, or other text generation.
    Every REST and live WebSocket segment carries `startMs`, `endMs`, and the
    derived `durationMs`. Transcript rows and AI citations always seek the
    complete playback-mix asset. Offsets at or above one
    hour render as unambiguous `H:MM:SS`; each row exposes start, end, and duration
-   while retaining click-to-seek. Speaker-identification previews expand short
+   while retaining click-to-seek. Analysis citations render as stable
+   alphabetical chips plus the canonical audio start offset instead of exposing
+   internal segment ids. Anonymous technical speaker ids similarly render as
+   localized `Speaker A`, `Speaker B`, and so on until the user assigns a name.
+   Speaker-identification previews expand short
    utterances with surrounding mix context to a five-to-eight-second window.
    The Meeting view offers immediate speaker/text filtering; the token-protected `/search` endpoint uses FTS5 with
    chronological neighboring segments and falls back to the live revision until
@@ -907,7 +922,12 @@ Key modules:
 - `Frontend/client/src/components/transcription-history-toolbar.tsx`: shared
   count, search, and list/grid controls for Live Mic, YouTube, and File history.
 - `Frontend/client/src/pages/DebugConsole.tsx`: token-protected log viewer,
-  redacted post-processing diagnostics, and support bundle download.
+  redacted post-processing diagnostics, and support bundle export. Desktop
+  export uses the native Save As dialog, reports the selected path, and retains
+  an opaque capability token for Open file/Open folder/Copy file actions. The
+  Windows clipboard action publishes a CF_HDROP file entry from that registry
+  path, never a WebView-supplied path; browser builds keep their normal download
+  behavior.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: one shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: browser/dev/Tauri backend URL and token
   handling.

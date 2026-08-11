@@ -1330,6 +1330,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     debug_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "DebugConsole.tsx").read_text(
         encoding="utf-8"
     )
+    support_bundle_source = (
+        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "support-bundle.ts"
+    ).read_text(encoding="utf-8")
     structured_log_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "debug" / "RuntimeLogMessage.tsx"
     ).read_text(encoding="utf-8")
@@ -1348,8 +1351,19 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert "aria-pressed={selectedLevel === level}" in debug_source
     assert "debug-level-selected-icon" in debug_source
     assert 't("Download support bundle")' in debug_source
-    assert 'source: "Support bundle downloaded as {{filename}}. Check your Downloads folder."' in debug_source
-    assert "values: { filename }" in debug_source
+    assert '"Support bundle saved to {{path}}."' in debug_source
+    assert '"Support bundle downloaded as {{filename}}. Check your Downloads folder."' in debug_source
+    assert 't("Open file")' in debug_source
+    assert 't("Open folder")' in debug_source
+    assert 't("Copy file")' in debug_source
+    assert 'className="debug-action-status-message"' in debug_source
+    assert 'className="debug-action-status-actions"' in debug_source
+    assert ".debug-action-status-message {" in css
+    assert ".debug-action-status-actions {" in css
+    assert "flex-wrap: wrap;" in css
+    assert 'invoke<Omit<SavedDesktopSupportBundle' in support_bundle_source
+    assert '"save_support_bundle"' in support_bundle_source
+    assert '"copy_meeting_export_file"' in support_bundle_source
     assert "renderLocalizedMessage(actionStatus, t, formatNumber)" in debug_source
     assert 't("{{filename}} was saved by the browser download manager.", { filename })' in debug_source
     assert "/api/runtime/post-processing-diagnostics?limit=8" in debug_source

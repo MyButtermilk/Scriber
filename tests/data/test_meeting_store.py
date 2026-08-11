@@ -59,6 +59,32 @@ def test_transcription_mode_is_first_class_and_validated(store: MeetingStore):
         store.create(MeetingCreate(title="Invalid mode", transcription_mode="minute_chunks"))
 
 
+def test_completed_meeting_title_can_be_renamed_without_changing_its_state(store: MeetingStore):
+    meeting = store.create(MeetingCreate(title="Original title"))
+    database.save_transcript(
+        {
+            "id": meeting["id"],
+            "title": "Original title",
+            "status": "completed",
+            "type": "meeting",
+            "content": "Canonical meeting text",
+        }
+    )
+    store.transition(meeting["id"], "finalizing")
+    store.transition(meeting["id"], "ready")
+
+    renamed = store.rename(meeting["id"], "  Customer follow-up  ")
+
+    assert renamed["title"] == "Customer follow-up"
+    assert renamed["state"] == "ready"
+    assert store.detail(meeting["id"])["title"] == "Customer follow-up"
+    assert database.get_transcript(meeting["id"])["title"] == "Customer follow-up"
+    assert database.search_transcript_metadata("Customer follow-up")["total"] == 1
+    assert database.search_transcript_metadata("Original title")["total"] == 0
+    with pytest.raises(ValueError, match="title"):
+        store.rename(meeting["id"], "   ")
+
+
 def test_processing_progress_is_durable_monotonic_and_scoped_to_one_run(
     store: MeetingStore,
 ):
@@ -1982,6 +2008,99 @@ def test_workspace_note_upsert_and_action_item_edits_survive_regeneration(store:
     retried = store.detail(meeting["id"])["actionItems"]
     assert {item["id"] for item in retried} == set(items)
     assert [item["text"] for item in retried].count("Model replacement") == 1
+
+
+def test_action_owner_links_to_speaker_and_follows_later_rename(store: MeetingStore):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "segment-owner",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Speaker 1",
+                "startMs": 1_453_000,
+                "endMs": 1_460_000,
+                "text": "Alex sends the invitation.",
+                "isFinal": True,
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    store.rename_speaker(meeting["id"], speaker["id"], "Alex")
+    store.save_output(
+        meeting["id"],
+        kind="analysis",
+        payload={
+            "actionItems": [
+                {
+                    "id": "action-owner",
+                    "text": "Send the invitation",
+                    "owner": "Alex",
+                    "dueDate": None,
+                    "status": "open",
+                    "segmentIds": ["segment-owner"],
+                }
+            ]
+        },
+    )
+
+    linked = store.detail(meeting["id"])["actionItems"][0]
+    assert linked["ownerSpeakerId"] == speaker["id"]
+    assert linked["owner"] == "Alex"
+
+    store.rename_speaker(meeting["id"], speaker["id"], "Alexander Immler")
+    renamed = store.detail(meeting["id"])["actionItems"][0]
+    assert renamed["ownerSpeakerId"] == speaker["id"]
+    assert renamed["owner"] == "Alexander Immler"
+
+
+def test_action_owner_migration_backfills_existing_unambiguous_speaker(store: MeetingStore):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "segment-owner-migration",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Speaker 1",
+                "startMs": 1000,
+                "endMs": 2000,
+                "text": "Alex owns the follow-up.",
+                "isFinal": True,
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    store.rename_speaker(meeting["id"], speaker["id"], "Alex")
+    store.save_output(
+        meeting["id"],
+        kind="analysis",
+        payload={
+            "actionItems": [
+                {
+                    "id": "legacy-owner",
+                    "text": "Prepare follow-up",
+                    "owner": "Alex",
+                    "segmentIds": ["segment-owner-migration"],
+                }
+            ]
+        },
+    )
+
+    database._close_all_connections()
+    with sqlite3.connect(database._DB_PATH) as conn:
+        conn.execute("ALTER TABLE meeting_action_items DROP COLUMN owner_speaker_id")
+    store.initialize()
+
+    migrated = store.detail(meeting["id"])["actionItems"][0]
+    assert migrated["ownerSpeakerId"] == speaker["id"]
+    store.rename_speaker(meeting["id"], speaker["id"], "Alexander")
+    assert store.detail(meeting["id"])["actionItems"][0]["owner"] == "Alexander"
 
 
 def test_workspace_note_write_generation_wins_independent_of_arrival_order(

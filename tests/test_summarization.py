@@ -20,6 +20,25 @@ def test_summary_provider_module_never_logs_diagnostic_tracebacks_with_request_l
     assert "logger.exception(" not in inspect.getsource(summarization)
 
 
+@pytest.mark.asyncio
+async def test_meeting_analysis_uses_a_longer_nested_provider_timeout(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("SCRIBER_SUMMARY_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC", raising=False)
+    observed = []
+
+    async def fake_generate(prompt, model=None, *, max_output_tokens=2048):
+        observed.append(summarization._summary_timeout_seconds())
+        return "ok"
+
+    monkeypatch.setattr(summarization, "generate_text_with_model", fake_generate)
+
+    assert summarization._summary_timeout_seconds() == 240.0
+    assert summarization._meeting_analysis_timeout_seconds() == 900.0
+    assert await summarization.generate_meeting_analysis_text("prompt") == "ok"
+    assert observed == [900.0]
+    assert summarization._summary_timeout_seconds() == 240.0
+
+
 def test_summary_budget_scales_with_input_size():
     short_input = _words(700)
     long_input = _words(12_000)

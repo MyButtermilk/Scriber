@@ -83,6 +83,7 @@ function actionItem(meetingId: string, text: string): MeetingActionItem {
     meetingId,
     text,
     owner: null,
+    ownerSpeakerId: null,
     dueDate: null,
     status: "open",
     segmentIds: [],
@@ -379,6 +380,41 @@ test("manual speaker rename clears only the target's stale participant identity"
   assert.equal(updated?.items[0].profileMatch?.displayName, "Alexander");
   assert.deepEqual(updated?.items[0].suggestions, []);
   assert.deepEqual(updated?.items[1], untouched);
+});
+
+test("speaker rename immediately propagates to linked action-item owners", () => {
+  const client = new QueryClient();
+  const linked = {
+    ...actionItem("a", "Send the invitation"),
+    id: "linked-item",
+    owner: "Speaker 1",
+    ownerSpeakerId: "speaker-1",
+  } satisfies MeetingActionItem;
+  const manual = {
+    ...actionItem("a", "Confirm the venue"),
+    id: "manual-item",
+    owner: "External owner",
+  } satisfies MeetingActionItem;
+  client.setQueryData(["/api/meetings", "a"], {
+    ...meeting("a"),
+    apiVersion: REST_API_VERSION,
+    segments: [],
+    speakers: [],
+    notes: [],
+    actionItems: [linked, manual],
+    outputs: [],
+    outputVersions: [],
+    audioGaps: [],
+    audioAssets: [],
+    transcriptCheckpoints: [],
+  } satisfies MeetingDetail);
+
+  applyMeetingSpeakerName(client, "a", "speaker-1", "Alexander");
+
+  const actionItems = client.getQueryData<MeetingDetail>(["/api/meetings", "a"])?.actionItems;
+  assert.equal(actionItems?.[0].owner, "Alexander");
+  assert.equal(actionItems?.[0].ownerSpeakerId, "speaker-1");
+  assert.equal(actionItems?.[1].owner, "External owner");
 });
 
 test("targeted refreshes never refetch Meeting child queries", async () => {

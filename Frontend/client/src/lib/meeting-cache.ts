@@ -257,6 +257,7 @@ export function applyMeetingSpeakerName(
               ? {
                   ...speaker,
                   displayName,
+                  displayNameSource: "manual",
                 }
               : speaker,
           ),
@@ -267,6 +268,14 @@ export function applyMeetingSpeakerName(
                   speakerLabel: displayName,
                 }
               : segment,
+          ),
+          actionItems: current.actionItems.map((item) =>
+            item.ownerSpeakerId === speakerId
+              ? {
+                  ...item,
+                  owner: displayName,
+                }
+              : item,
           ),
         }
       : current,

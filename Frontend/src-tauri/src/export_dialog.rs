@@ -19,7 +19,7 @@ const MAX_STREAMED_AUDIO_EXPORT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RECENT_EXPORTS: usize = 16;
 const MAX_FILENAME_UTF8_BYTES: usize = 180;
 const MAX_FILENAME_UTF16_UNITS: usize = 180;
-const ALLOWED_EXTENSIONS: &[&str] = &["json", "md", "pdf", "docx", "eml", "opus"];
+const ALLOWED_EXTENSIONS: &[&str] = &["json", "md", "pdf", "docx", "eml", "opus", "zip"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ExportError {
@@ -43,6 +43,7 @@ enum ExportError {
     SavedFileMissing,
     OpenFailed,
     RevealFailed,
+    ClipboardFailed,
 }
 
 impl ExportError {
@@ -68,6 +69,7 @@ impl ExportError {
             Self::SavedFileMissing => "meeting_export_saved_file_missing",
             Self::OpenFailed => "meeting_export_open_failed",
             Self::RevealFailed => "meeting_export_reveal_failed",
+            Self::ClipboardFailed => "meeting_export_clipboard_failed",
         }
     }
 }
@@ -88,6 +90,7 @@ struct ExportLocale {
 enum BufferedExportSubject {
     Meeting,
     Transcript,
+    SupportBundle,
 }
 
 impl ExportLocale {
@@ -109,6 +112,13 @@ impl ExportLocale {
         }
     }
 
+    fn save_support_bundle_dialog_title(self) -> &'static str {
+        match self.locale {
+            UiLocale::De => "Supportpaket speichern",
+            UiLocale::En => "Save support bundle",
+        }
+    }
+
     fn save_audio_dialog_title(self) -> &'static str {
         match self.locale {
             UiLocale::De => "Komprimiertes Meeting-Audio speichern",
@@ -122,6 +132,8 @@ impl ExportLocale {
             (UiLocale::En, "opus") => "Compressed meeting audio",
             (UiLocale::De, "eml") => "Meeting-E-Mail-Entwurf",
             (UiLocale::En, "eml") => "Meeting email draft",
+            (UiLocale::De, "zip") => "Scriber-Supportpaket",
+            (UiLocale::En, "zip") => "Scriber support bundle",
             (UiLocale::De, _) => "Meeting-Export",
             (UiLocale::En, _) => "Meeting export",
         }
@@ -141,6 +153,8 @@ impl ExportLocale {
             (UiLocale::En, "eml") => "Email draft",
             (UiLocale::De, "opus") => "Komprimiertes Meeting-Audio",
             (UiLocale::En, "opus") => "Compressed meeting audio",
+            (UiLocale::De, "zip") => "ZIP-Archiv",
+            (UiLocale::En, "zip") => "ZIP archive",
             (UiLocale::De, _) => "Meeting-Export",
             (UiLocale::En, _) => "Meeting export",
         }
@@ -268,6 +282,12 @@ impl ExportLocale {
             (UiLocale::En, ExportError::RevealFailed) => {
                 "Scriber could not open the folder."
             }
+            (UiLocale::De, ExportError::ClipboardFailed) => {
+                "Scriber konnte die gespeicherte Datei nicht in die Zwischenablage kopieren."
+            }
+            (UiLocale::En, ExportError::ClipboardFailed) => {
+                "Scriber could not copy the saved file to the clipboard."
+            }
         };
         MeetingExportCommandError {
             code: error.code(),
@@ -282,6 +302,39 @@ impl ExportLocale {
     ) -> MeetingExportCommandError {
         if subject == BufferedExportSubject::Meeting {
             return self.error(error);
+        }
+        if subject == BufferedExportSubject::SupportBundle {
+            let message = match (self.locale, error) {
+                (UiLocale::De, ExportError::UnsupportedFormat) => {
+                    "Dieses Supportpaket-Format wird nicht unterstützt."
+                }
+                (UiLocale::En, ExportError::UnsupportedFormat) => {
+                    "That support bundle format is not supported."
+                }
+                (UiLocale::De, ExportError::EmptyExport) => {
+                    "Das Supportpaket war leer. Versuche es erneut."
+                }
+                (UiLocale::En, ExportError::EmptyExport) => {
+                    "The support bundle was empty. Please try again."
+                }
+                (UiLocale::De, ExportError::ExportTooLarge) => {
+                    "Das Supportpaket ist zu groß, um es aus dieser Ansicht zu speichern."
+                }
+                (UiLocale::En, ExportError::ExportTooLarge) => {
+                    "The support bundle is too large to save from this screen."
+                }
+                (UiLocale::De, ExportError::SaveFailed) => {
+                    "Scriber konnte das Supportpaket nicht speichern. Versuche es erneut."
+                }
+                (UiLocale::En, ExportError::SaveFailed) => {
+                    "Scriber could not save the support bundle. Please try again."
+                }
+                _ => return self.error(error),
+            };
+            return MeetingExportCommandError {
+                code: error.code(),
+                message: message.to_string(),
+            };
         }
         let message = match (self.locale, error) {
             (UiLocale::De, ExportError::UnsupportedFormat) => {
@@ -616,6 +669,7 @@ fn save_buffered_export(
     let dialog_title = match subject {
         BufferedExportSubject::Meeting => text.save_dialog_title(),
         BufferedExportSubject::Transcript => text.save_transcript_dialog_title(),
+        BufferedExportSubject::SupportBundle => text.save_support_bundle_dialog_title(),
     };
     let selected = window
         .dialog()
@@ -689,6 +743,23 @@ pub async fn save_transcript_export(
         extension,
         bytes,
         BufferedExportSubject::Transcript,
+    )
+}
+
+#[tauri::command]
+pub async fn save_support_bundle(
+    window: WebviewWindow,
+    registry: State<'_, MeetingExportRegistry>,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<Option<SavedMeetingExport>, MeetingExportCommandError> {
+    save_buffered_export(
+        window,
+        &registry,
+        filename,
+        "zip".to_string(),
+        bytes,
+        BufferedExportSubject::SupportBundle,
     )
 }
 
@@ -846,6 +917,80 @@ pub fn reveal_meeting_export(
         .map_err(|_| text.error(ExportError::RevealFailed))
 }
 
+#[cfg(windows)]
+fn windows_file_drop_payload(path: &Path) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut wide_path: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide_path.extend_from_slice(&[0, 0]);
+    let mut payload = vec![0_u8; 20 + wide_path.len() * 2];
+    payload[0..4].copy_from_slice(&20_u32.to_le_bytes());
+    payload[16..20].copy_from_slice(&1_i32.to_le_bytes());
+    for (index, unit) in wide_path.into_iter().enumerate() {
+        let offset = 20 + index * 2;
+        payload[offset..offset + 2].copy_from_slice(&unit.to_le_bytes());
+    }
+    payload
+}
+
+#[cfg(windows)]
+fn copy_file_path_to_clipboard(path: &Path) -> Result<(), ExportError> {
+    use windows_sys::Win32::{
+        Foundation::GlobalFree,
+        System::{
+            DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+            Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE},
+            Ole::CF_HDROP,
+        },
+    };
+
+    // CF_HDROP stores a 20-byte DROPFILES header followed by a double-null-
+    // terminated UTF-16 path list. The registry token above is the only source
+    // of this path; the WebView cannot place an arbitrary file on the clipboard.
+    let payload = windows_file_drop_payload(path);
+
+    unsafe {
+        let handle = GlobalAlloc(GMEM_MOVEABLE, payload.len());
+        if handle.is_null() {
+            return Err(ExportError::ClipboardFailed);
+        }
+        let target = GlobalLock(handle);
+        if target.is_null() {
+            GlobalFree(handle);
+            return Err(ExportError::ClipboardFailed);
+        }
+        std::ptr::copy_nonoverlapping(payload.as_ptr(), target.cast::<u8>(), payload.len());
+        GlobalUnlock(handle);
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            GlobalFree(handle);
+            return Err(ExportError::ClipboardFailed);
+        }
+        if EmptyClipboard() == 0 || SetClipboardData(CF_HDROP as u32, handle).is_null() {
+            CloseClipboard();
+            GlobalFree(handle);
+            return Err(ExportError::ClipboardFailed);
+        }
+        CloseClipboard();
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn copy_file_path_to_clipboard(_path: &Path) -> Result<(), ExportError> {
+    Err(ExportError::ClipboardFailed)
+}
+
+#[tauri::command]
+pub fn copy_meeting_export_file(
+    app: AppHandle,
+    registry: State<'_, MeetingExportRegistry>,
+    token: String,
+) -> Result<(), MeetingExportCommandError> {
+    let text = ExportLocale::new(ui_locale_for_app(&app));
+    let path = saved_export_path(&registry, &token).map_err(|error| text.error(error))?;
+    copy_file_path_to_clipboard(&path).map_err(|error| text.error(error))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,6 +1034,7 @@ mod tests {
     fn unsupported_formats_are_rejected() {
         assert_eq!(normalize_extension(".PDF").unwrap(), "pdf");
         assert_eq!(normalize_extension(".OPUS").unwrap(), "opus");
+        assert_eq!(normalize_extension(".ZIP").unwrap(), "zip");
         assert_eq!(
             normalize_extension("exe").unwrap_err(),
             ExportError::UnsupportedFormat
@@ -907,6 +1053,14 @@ mod tests {
             "Transkript exportieren"
         );
         assert_eq!(english.save_transcript_dialog_title(), "Export transcript");
+        assert_eq!(
+            german.save_support_bundle_dialog_title(),
+            "Supportpaket speichern"
+        );
+        assert_eq!(
+            english.save_support_bundle_dialog_title(),
+            "Save support bundle"
+        );
         assert_eq!(
             german.save_audio_dialog_title(),
             "Komprimiertes Meeting-Audio speichern"
@@ -967,6 +1121,7 @@ mod tests {
             ExportError::SavedFileMissing,
             ExportError::OpenFailed,
             ExportError::RevealFailed,
+            ExportError::ClipboardFailed,
         ];
 
         for error in errors {
@@ -1010,6 +1165,22 @@ mod tests {
             ensure_extension(PathBuf::from("meeting.PDF"), "pdf"),
             PathBuf::from("meeting.PDF")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_file_clipboard_payload_is_a_wide_double_null_terminated_drop_list() {
+        let path = PathBuf::from(r"C:\Temp\scriber-support.zip");
+        let payload = windows_file_drop_payload(&path);
+        assert_eq!(&payload[0..4], &20_u32.to_le_bytes());
+        assert_eq!(&payload[16..20], &1_i32.to_le_bytes());
+        assert_eq!(&payload[payload.len() - 4..], &[0, 0, 0, 0]);
+        let wide: Vec<u16> = payload[20..]
+            .chunks_exact(2)
+            .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
+            .take_while(|unit| *unit != 0)
+            .collect();
+        assert_eq!(String::from_utf16(&wide).unwrap(), path.to_string_lossy());
     }
 
     #[test]

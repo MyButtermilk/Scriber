@@ -1,6 +1,9 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const meetingsTranslations = {
+  "Segment {{label}}": "Segment {{label}}",
+  "Segment {{label}} · from {{time}}": "Segment {{label}} · ab {{time}}",
+  "Speaker {{letter}}": "Sprecher {{letter}}",
   // Meeting shell, capture, and processing states.
   " (default)": " (Standard)",
   "A new full transcript is being created": "Ein neues vollständiges Transkript wird erstellt",
@@ -10,6 +13,11 @@ export const meetingsTranslations = {
   "AI suggestions could not be created. You can still choose participants yourself.":
     "KI-Vorschläge konnten nicht erstellt werden. Du kannst die Teilnehmenden weiterhin selbst auswählen.",
   "Action item was not saved": "Die Aufgabe wurde nicht gespeichert",
+  "Cancel title editing": "Titelbearbeitung abbrechen",
+  "Edit meeting title": "Meeting-Titel bearbeiten",
+  "Meeting title updated": "Meeting-Titel aktualisiert",
+  "Meeting title was not saved": "Meeting-Titel wurde nicht gespeichert",
+  "Save meeting title": "Meeting-Titel speichern",
   "Action items": "Aufgaben",
   "Active meeting": "Aktives Meeting",
   "Added on this device · up to 60 min": "Auf diesem Gerät hinzugefügt · bis zu 60 Min.",

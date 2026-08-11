@@ -1453,7 +1453,11 @@ Packaging and scripts:
   only with explicit carried-user provenance. Automatic action ids must remain
   stable across reordered model output by hashing normalized semantic content
   plus citations; semantic/citation matching must retain user text, owner,
-  status, and due date without duplicating the regenerated item.
+  status, and due date without duplicating the regenerated item. Resolve an
+  exact, unambiguous generated transcript-speaker label to `owner_speaker_id`
+  and project its current
+  Meeting speaker name when reading tasks, so speaker renames propagate without
+  overwriting unmatched free-text owners.
 - Meeting analysis keeps the single-call fast path only at or below 48,000
   prompt characters and 60 minutes. Longer transcripts map stable chunks of at
   most 30,000 characters and 30 minutes with concurrency two, then use a
@@ -1462,7 +1466,9 @@ Packaging and scripts:
   unit, and preserve exact segment citations and timestamp-derived chapter
   boundaries. When equal chapters from different map chunks are deduplicated,
   recompute their start/end from every merged citation before exposing playback
-  links.
+  links. Its context-local request budget defaults to 900 seconds through
+  `SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC`; do not widen the ordinary 240-second
+  summary budget to solve long-Meeting timeouts.
 - The release local diarization implementation is a separate statically linked
   Rust worker. Do not link Sherpa into the live audio sidecar or Tauri shell.
   Ship the worker executable as a versioned resource of the signed Scriber
@@ -1512,7 +1518,9 @@ Packaging and scripts:
 - Debug console uses `/api/runtime/logs`, `DELETE /api/runtime/logs`, and
   `/api/runtime/support-bundle`; post-processing debug state is exposed through
   `/api/runtime/post-processing-diagnostics` and the `postProcessing` hot-path
-  metrics snapshot.
+  metrics snapshot. In Tauri, support bundles use native Save As plus the same
+  opaque export-token Open file/Open folder/Copy file boundary as other
+  exports; never accept a WebView-supplied path for those follow-up actions.
 
 ## Performance Status To Preserve
 

@@ -191,6 +191,7 @@ export interface MeetingActionItem {
   meetingId: string;
   text: string;
   owner: string | null;
+  ownerSpeakerId: string | null;
   dueDate: string | null;
   status: "open" | "done" | "dismissed";
   segmentIds: string[];

@@ -20,7 +20,9 @@ import {
   Download,
   Eraser,
   Eye,
+  FileArchive,
   Filter,
+  FolderOpen,
   Check,
   Layers3,
   RefreshCw,
@@ -40,6 +42,13 @@ import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { cn } from "@/lib/utils";
+import {
+  copySupportBundleFile,
+  openSupportBundle,
+  revealSupportBundle,
+  saveSupportBundle,
+  type SavedDesktopSupportBundle,
+} from "@/lib/support-bundle";
 import type {
   PostProcessingDiagnostic,
   PostProcessingDiagnosticsResponse,
@@ -211,11 +220,6 @@ function logEntryKey(entry: RuntimeLogEntry) {
   ].join("\u001f");
 }
 
-function filenameFromDisposition(disposition: string | null) {
-  const match = disposition?.match(/filename="?([^";]+)"?/i);
-  return match?.[1] || `scriber-support-bundle-${Date.now()}.zip`;
-}
-
 function formatMs(value: number | null | undefined, formatNumber: ReturnType<typeof useI18n>["formatNumber"]) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "--";
   if (value >= 1000) {
@@ -250,6 +254,7 @@ export default function DebugConsole() {
   const [clearedLogKeys, setClearedLogKeys] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [supportBundleLoading, setSupportBundleLoading] = useState(false);
+  const [lastSupportBundle, setLastSupportBundle] = useState<SavedDesktopSupportBundle | null>(null);
   const [logFileClearLoading, setLogFileClearLoading] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [error, setError] = useState<LocalizedMessageState | null>(null);
@@ -515,34 +520,21 @@ export default function DebugConsole() {
     setSupportBundleLoading(true);
     setError(null);
     try {
-      const res = await fetchWithTimeout(
-        apiUrl("/api/runtime/support-bundle"),
-        {
-          method: "POST",
-          credentials: "include",
-        },
-        120_000,
-      );
-      if (!res.ok) {
-        throw new Error((await res.text()) || res.statusText);
-      }
-      const blob = await res.blob();
-      const filename = filenameFromDisposition(res.headers.get("Content-Disposition"));
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
+      const result = await saveSupportBundle();
+      if (result.status === "cancelled") return;
+      const { filename } = result;
+      setLastSupportBundle(result.desktop ? result : null);
       setActionStatus({
-        source: "Support bundle downloaded as {{filename}}. Check your Downloads folder.",
-        values: { filename },
+        source: result.desktop
+          ? "Support bundle saved to {{path}}."
+          : "Support bundle downloaded as {{filename}}. Check your Downloads folder.",
+        values: result.desktop ? { path: result.path } : { filename },
       });
       toast({
-        title: t("Support bundle downloaded"),
-        description: t("{{filename}} was saved by the browser download manager.", { filename }),
+        title: t(result.desktop ? "Support bundle saved" : "Support bundle downloaded"),
+        description: result.desktop
+          ? result.path
+          : t("{{filename}} was saved by the browser download manager.", { filename }),
       });
     } catch (err: any) {
       setError({
@@ -556,6 +548,24 @@ export default function DebugConsole() {
       });
     } finally {
       setSupportBundleLoading(false);
+    }
+  };
+
+  const runSupportBundleAction = async (action: "open" | "reveal" | "copy-file") => {
+    if (!lastSupportBundle) return;
+    try {
+      if (action === "open") await openSupportBundle(lastSupportBundle.token);
+      else if (action === "reveal") await revealSupportBundle(lastSupportBundle.token);
+      else await copySupportBundleFile(lastSupportBundle.token);
+      if (action === "copy-file") {
+        toast({ title: t("Support bundle file copied") });
+      }
+    } catch (err: any) {
+      toast({
+        title: t("Action failed"),
+        description: t(String(err?.message || err)),
+        variant: "destructive",
+      });
     }
   };
 
@@ -850,12 +860,26 @@ export default function DebugConsole() {
           </div>
 
           {actionStatus && (
-            <div
-              className="debug-action-status"
-              aria-live="polite"
-              title={renderLocalizedMessage(actionStatus, t, formatNumber)}
-            >
-              {renderLocalizedMessage(actionStatus, t, formatNumber)}
+            <div className="debug-action-status" aria-live="polite">
+              <span className="debug-action-status-message" title={renderLocalizedMessage(actionStatus, t, formatNumber)}>
+                {renderLocalizedMessage(actionStatus, t, formatNumber)}
+              </span>
+              {lastSupportBundle && (
+                <span className="debug-action-status-actions">
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void runSupportBundleAction("open")}>
+                    <FileArchive className="mr-1.5 h-3.5 w-3.5" />
+                    {t("Open file")}
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void runSupportBundleAction("reveal")}>
+                    <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
+                    {t("Open folder")}
+                  </Button>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void runSupportBundleAction("copy-file")}>
+                    <Clipboard className="mr-1.5 h-3.5 w-3.5" />
+                    {t("Copy file")}
+                  </Button>
+                </span>
+              )}
             </div>
           )}
           {error && <div className="debug-error-banner">{renderLocalizedMessage(error, t, formatNumber)}</div>}

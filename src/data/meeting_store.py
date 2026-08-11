@@ -665,6 +665,7 @@ class MeetingStore:
                     meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
                     text TEXT NOT NULL,
                     owner TEXT,
+                    owner_speaker_id TEXT,
                     due_date TEXT,
                     status TEXT NOT NULL CHECK(status IN ('open','done','dismissed')) DEFAULT 'open',
                     segment_ids_json TEXT NOT NULL DEFAULT '[]',
@@ -934,6 +935,29 @@ class MeetingStore:
                     "ALTER TABLE meeting_output_versions ADD COLUMN transcript_edit_version INTEGER NOT NULL DEFAULT 0"
                 )
             action_item_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_action_items)")}
+            if "owner_speaker_id" not in action_item_columns:
+                conn.execute("ALTER TABLE meeting_action_items ADD COLUMN owner_speaker_id TEXT")
+                speaker_names: dict[tuple[str, str], set[str]] = {}
+                for speaker in conn.execute(
+                    "SELECT meeting_id,id,label,display_name FROM meeting_speakers"
+                ).fetchall():
+                    for candidate in (speaker["label"], speaker["display_name"]):
+                        key = _action_semantic_key(candidate)
+                        if key:
+                            speaker_names.setdefault((str(speaker["meeting_id"]), key), set()).add(
+                                str(speaker["id"])
+                            )
+                for action in conn.execute(
+                    "SELECT meeting_id,id,owner FROM meeting_action_items WHERE owner IS NOT NULL"
+                ).fetchall():
+                    matches = speaker_names.get(
+                        (str(action["meeting_id"]), _action_semantic_key(action["owner"])), set()
+                    )
+                    if len(matches) == 1:
+                        conn.execute(
+                            "UPDATE meeting_action_items SET owner_speaker_id=? WHERE meeting_id=? AND id=?",
+                            (next(iter(matches)), action["meeting_id"], action["id"]),
+                        )
             if "provenance" not in action_item_columns:
                 conn.execute(
                     """ALTER TABLE meeting_action_items ADD COLUMN provenance TEXT NOT NULL
@@ -1301,6 +1325,26 @@ class MeetingStore:
         if row is None:
             raise MeetingNotFound(meeting_id)
         return self._meeting(row)
+
+    def rename(self, meeting_id: str, title: str) -> dict[str, Any]:
+        normalized = " ".join(str(title or "").split())
+        if not normalized or len(normalized) > 500:
+            raise ValueError("Meeting title must contain 1 to 500 characters.")
+        now = _utc_now()
+        with db._get_connection() as conn:
+            cursor = conn.execute(
+                "UPDATE meetings SET title=?,updated_at=? WHERE id=?",
+                (normalized, now, meeting_id),
+            )
+            if int(cursor.rowcount or 0) != 1:
+                conn.rollback()
+                raise MeetingNotFound(meeting_id)
+            # Meeting transcripts share the same durable id. Keep history and
+            # transcript search aligned when the user changes the workspace title.
+            conn.execute("UPDATE transcripts SET title=?,updated_at=? WHERE id=?", (normalized, now, meeting_id))
+            db._sync_fts_row(conn, meeting_id)
+            conn.commit()
+        return self.get(meeting_id)
 
     def delete(self, meeting_id: str) -> bool:
         self.get(meeting_id)
@@ -3134,6 +3178,22 @@ class MeetingStore:
     ) -> None:
         if not isinstance(items, list):
             items = []
+        speaker_rows = conn.execute(
+            "SELECT id,label,display_name FROM meeting_speakers WHERE meeting_id=?",
+            (meeting_id,),
+        ).fetchall()
+        speaker_names: dict[str, set[str]] = {}
+        for speaker in speaker_rows:
+            for candidate in (speaker["label"], speaker["display_name"]):
+                key = _action_semantic_key(candidate)
+                if key:
+                    speaker_names.setdefault(key, set()).add(str(speaker["id"]))
+
+        def linked_speaker_id(owner: Any) -> str | None:
+            key = _action_semantic_key(owner)
+            matches = speaker_names.get(key, set())
+            return next(iter(matches)) if len(matches) == 1 else None
+
         normalized: builtins.list[dict[str, Any]] = []
         seen_payloads: dict[tuple[str, str, str], dict[str, Any]] = {}
         for raw in items:
@@ -3159,6 +3219,7 @@ class MeetingStore:
                 "id": item_id,
                 "text": text,
                 "owner": raw.get("owner"),
+                "ownerSpeakerId": linked_speaker_id(raw.get("owner")),
                 "dueDate": raw.get("dueDate"),
                 "status": status,
                 "segmentIds": segment_ids,
@@ -3249,11 +3310,12 @@ class MeetingStore:
         for item in automatic_items:
             conn.execute(
                 """INSERT INTO meeting_action_items
-                   (id,meeting_id,text,owner,due_date,status,segment_ids_json,user_modified,
+                   (id,meeting_id,text,owner,owner_speaker_id,due_date,status,segment_ids_json,user_modified,
                     provenance,created_at,updated_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(meeting_id,id) DO UPDATE SET
-                   text=excluded.text,owner=excluded.owner,due_date=excluded.due_date,
+                   text=excluded.text,owner=excluded.owner,owner_speaker_id=excluded.owner_speaker_id,
+                   due_date=excluded.due_date,
                    status=excluded.status,segment_ids_json=excluded.segment_ids_json,
                    provenance='automatic',updated_at=excluded.updated_at
                    WHERE meeting_action_items.meeting_id=excluded.meeting_id
@@ -3263,6 +3325,7 @@ class MeetingStore:
                     meeting_id,
                     item["text"],
                     item["owner"],
+                    item["ownerSpeakerId"],
                     item["dueDate"],
                     item["status"],
                     _json(item["segmentIds"]),
@@ -3287,6 +3350,7 @@ class MeetingStore:
             raise MeetingNotFound("Meeting action item not found")
         text = str(changes.get("text", row["text"])).strip()
         owner = changes.get("owner", row["owner"])
+        owner_speaker_id = row["owner_speaker_id"]
         due_date = changes.get("dueDate", row["due_date"])
         status = str(changes.get("status", row["status"]))
         if not text or len(text) > 4000:
@@ -3297,11 +3361,30 @@ class MeetingStore:
         due_date = None if due_date is None or not str(due_date).strip() else str(due_date).strip()[:40]
         now = _utc_now()
         with db._get_connection() as conn:
+            if "owner" in changes:
+                owner_speaker_id = None
+                if owner:
+                    owner_key = _action_semantic_key(owner)
+                    candidates = conn.execute(
+                        "SELECT id,label,display_name FROM meeting_speakers WHERE meeting_id=?",
+                        (meeting_id,),
+                    ).fetchall()
+                    matches = {
+                        str(candidate["id"])
+                        for candidate in candidates
+                        if owner_key
+                        in {
+                            _action_semantic_key(candidate["label"]),
+                            _action_semantic_key(candidate["display_name"]),
+                        }
+                    }
+                    if len(matches) == 1:
+                        owner_speaker_id = next(iter(matches))
             conn.execute(
-                """UPDATE meeting_action_items SET text=?,owner=?,due_date=?,status=?,
+                """UPDATE meeting_action_items SET text=?,owner=?,owner_speaker_id=?,due_date=?,status=?,
                    user_modified=1,provenance='user_modified',updated_at=?
                    WHERE meeting_id=? AND id=?""",
-                (text, owner, due_date, status, now, meeting_id, item_id),
+                (text, owner, owner_speaker_id, due_date, status, now, meeting_id, item_id),
             )
             conn.commit()
         return self.action_items(meeting_id, item_id=item_id)[0]
@@ -3313,17 +3396,23 @@ class MeetingStore:
         *,
         item_id: str | None = None,
     ) -> builtins.list[dict[str, Any]]:
-        where = "meeting_id = ?" + (" AND id = ?" if item_id else "")
+        where = "a.meeting_id = ?" + (" AND a.id = ?" if item_id else "")
         params = (meeting_id, item_id) if item_id else (meeting_id,)
         rows = conn.execute(
-            f"SELECT * FROM meeting_action_items WHERE {where} ORDER BY created_at, id", params
+            f"""SELECT a.*,s.display_name AS linked_owner_name
+                FROM meeting_action_items a
+                LEFT JOIN meeting_speakers s
+                  ON s.meeting_id=a.meeting_id AND s.id=a.owner_speaker_id
+                WHERE {where} ORDER BY a.created_at, a.id""",
+            params,
         ).fetchall()
         return [
             {
                 "id": row["id"],
                 "meetingId": row["meeting_id"],
                 "text": row["text"],
-                "owner": row["owner"],
+                "owner": row["linked_owner_name"] or row["owner"],
+                "ownerSpeakerId": row["owner_speaker_id"],
                 "dueDate": row["due_date"],
                 "status": row["status"],
                 "segmentIds": _loads(row["segment_ids_json"], []),
@@ -5423,7 +5512,11 @@ class MeetingStore:
                 (meeting_id,),
             ).fetchall()
             action_item_rows = conn.execute(
-                "SELECT * FROM meeting_action_items WHERE meeting_id=? ORDER BY created_at,id",
+                """SELECT a.*,s.display_name AS linked_owner_name
+                   FROM meeting_action_items a
+                   LEFT JOIN meeting_speakers s
+                     ON s.meeting_id=a.meeting_id AND s.id=a.owner_speaker_id
+                   WHERE a.meeting_id=? ORDER BY a.created_at,a.id""",
                 (meeting_id,),
             ).fetchall()
             audio_gap_rows = conn.execute(
@@ -5512,7 +5605,8 @@ class MeetingStore:
                 "id": row["id"],
                 "meetingId": row["meeting_id"],
                 "text": row["text"],
-                "owner": row["owner"],
+                "owner": row["linked_owner_name"] or row["owner"],
+                "ownerSpeakerId": row["owner_speaker_id"],
                 "dueDate": row["due_date"],
                 "status": row["status"],
                 "segmentIds": _loads(row["segment_ids_json"], []),

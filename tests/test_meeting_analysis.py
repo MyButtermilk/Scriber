@@ -582,6 +582,7 @@ def test_prompt_keeps_all_untrusted_fields_as_json_data():
     assert '"startMs": 3600000' in prompt
     assert "complete serialized JSON must contain at most 9,000 characters" in prompt
     assert "at most 12 segmentIds per item" in prompt
+    assert "copy that speaker label exactly into `owner`" in prompt
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ Supports OpenAI, Google Gemini, and OpenRouter models.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import math
 import os
@@ -136,8 +137,17 @@ def _transcript_language_instruction(fallback_language: Any = "") -> str:
     )
 
 
+_summary_timeout_override: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "scriber_summary_timeout_override",
+    default=None,
+)
+
+
 def _summary_timeout_seconds() -> float:
     """Global timeout guard for a single summarization request."""
+    override = _summary_timeout_override.get()
+    if override is not None:
+        return override
     raw = os.getenv("SCRIBER_SUMMARY_TIMEOUT_SEC", "240").strip()
     try:
         value = float(raw)
@@ -145,6 +155,16 @@ def _summary_timeout_seconds() -> float:
         value = 240.0
     # Keep a sane lower bound to avoid accidental immediate timeouts.
     return max(15.0, value)
+
+
+def _meeting_analysis_timeout_seconds() -> float:
+    """Long request budget used only by multi-stage Meeting analysis."""
+    raw = os.getenv("SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC", "900").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        value = 900.0
+    return max(60.0, value)
 
 
 def _is_retryable_gemini_failure(message: str) -> bool:
@@ -935,6 +955,24 @@ async def generate_text_with_model(
         if fallback is not None:
             return fallback.strip()
         raise
+
+
+async def generate_meeting_analysis_text(
+    prompt: str,
+    model: str | None = None,
+    *,
+    max_output_tokens: int = 2048,
+) -> str:
+    """Generate one Meeting-analysis response with its longer nested budget.
+
+    The context-local override reaches provider transports and internal retry
+    attempts without changing File, YouTube, chat, or ordinary summary limits.
+    """
+    token = _summary_timeout_override.set(_meeting_analysis_timeout_seconds())
+    try:
+        return await generate_text_with_model(prompt, model, max_output_tokens=max_output_tokens)
+    finally:
+        _summary_timeout_override.reset(token)
 
 
 async def _summarize_openai(prompt: str, model: str, max_output_tokens: int) -> str:

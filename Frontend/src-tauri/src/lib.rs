@@ -1658,9 +1658,11 @@ pub fn run() {
             tray_action,
             export_dialog::save_meeting_export,
             export_dialog::save_transcript_export,
+            export_dialog::save_support_bundle,
             export_dialog::save_meeting_audio_export,
             export_dialog::open_meeting_export,
-            export_dialog::reveal_meeting_export
+            export_dialog::reveal_meeting_export,
+            export_dialog::copy_meeting_export_file
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Scriber desktop shell");

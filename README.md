@@ -260,7 +260,8 @@ Transcription crosses microphones, media tools, model APIs, networking, and desk
 - Severity, source, date, component, and message filters
 - Clear selected view or persisted runtime logs
 - Copy visible diagnostics
-- Generate a redacted support bundle
+- Generate a redacted support bundle; the Windows app asks where to save it and
+  then offers Open file, Open folder, and Copy file actions
 - Inspect post-processing health without logging transcript text
 - Track live runtime state and provider failures
 

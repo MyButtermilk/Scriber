@@ -1273,6 +1273,37 @@ async def test_meeting_detail_survives_unreadable_final_route_metadata():
 
 
 @pytest.mark.asyncio
+async def test_meeting_title_patch_persists_and_broadcasts_the_updated_summary():
+    calls = []
+
+    class Store:
+        @staticmethod
+        def rename(meeting_id, title):
+            calls.append((meeting_id, title))
+            return {"id": meeting_id, "title": title.strip(), "state": "ready"}
+
+    class Controller:
+        _meeting_store = Store()
+
+        @staticmethod
+        async def broadcast(event):
+            calls.append(event)
+
+    app = web_api.create_app(Controller())
+    handler = _route_handler(app, "PATCH", "/api/meetings/{id}")
+    response = await handler(
+        _DirectRequest(app, meeting_id="meeting-title", payload={"title": "Customer review"})
+    )
+    payload = json.loads(response.body)
+
+    assert response.status == 200
+    assert payload["title"] == "Customer review"
+    assert calls[0] == ("meeting-title", "Customer review")
+    assert calls[1]["type"] == "meeting_state"
+    assert calls[1]["meeting"]["title"] == "Customer review"
+
+
+@pytest.mark.asyncio
 async def test_meeting_capabilities_reports_verified_five_hour_storage(monkeypatch):
     class Store:
         def active(self):

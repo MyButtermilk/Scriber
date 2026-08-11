@@ -12816,7 +12816,7 @@ class ScriberWebController:
 
     async def _run_meeting_analysis(self, meeting_id: str) -> None:
         from src.meeting_analysis import MEETING_ANALYSIS_SCHEMA_VERSION, analyze_meeting
-        from src.summarization import generate_text_with_model
+        from src.summarization import generate_meeting_analysis_text
 
         try:
             detail = await asyncio.to_thread(self._meeting_store.detail, meeting_id)
@@ -12863,7 +12863,7 @@ class ScriberWebController:
                 canonical,
                 detail["notes"],
                 model=detail["analysisModel"],
-                generate=generate_text_with_model,
+                generate=generate_meeting_analysis_text,
                 cache_get=cache_get,
                 cache_put=cache_put,
                 on_progress=analysis_progress,
@@ -13290,7 +13290,7 @@ class ScriberWebController:
         )
 
     async def _run_meeting_finalization(self, meeting_id: str) -> None:
-        from src.summarization import generate_text_with_model
+        from src.summarization import generate_meeting_analysis_text
 
         async def progress(status: str, amount: float) -> None:
             phase = "analysis" if amount >= 0.8 else "finalize"
@@ -13333,7 +13333,7 @@ class ScriberWebController:
             self._meeting_store,
             data_dir() / "meetings",
             _create_scriber_pipeline,
-            generate_text_with_model,
+            generate_meeting_analysis_text,
             self._speaker_model,
             self._speaker_diarizer,
             getattr(self, "_transcript_artifacts", None),
@@ -17161,6 +17161,21 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
 
+    async def patch_meeting(request: web.Request):
+        ctl: ScriberWebController = request.app[APP_CONTROLLER]
+        meeting_id = request.match_info.get("id", "")
+        try:
+            raw = await request.json()
+            if not isinstance(raw, dict):
+                raise ValueError("Expected JSON object")
+            updated = await asyncio.to_thread(ctl._meeting_store.rename, meeting_id, raw.get("title", ""))
+            await ctl.broadcast(meeting_state_event(updated))
+            return web.json_response({**updated, "apiVersion": REST_API_VERSION})
+        except MeetingNotFound:
+            return web.json_response({"message": "Meeting not found"}, status=404)
+        except (TypeError, ValueError) as exc:
+            return web.json_response({"message": str(exc)}, status=400)
+
     async def search_meeting_transcript(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
@@ -20350,6 +20365,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/meetings/import", import_meeting_file)
     app.router.add_post("/api/meetings", start_meeting)
     app.router.add_get("/api/meetings/{id}", meeting_detail)
+    app.router.add_patch("/api/meetings/{id}", patch_meeting)
     app.router.add_get("/api/meetings/{id}/search", search_meeting_transcript)
     app.router.add_patch("/api/meetings/{id}/segments/{segmentId}", patch_meeting_segment)
     app.router.add_post("/api/meetings/{id}/segments/{segmentId}/undo", undo_meeting_segment_edit)
