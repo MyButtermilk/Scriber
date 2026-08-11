@@ -1291,9 +1291,7 @@ async def test_meeting_title_patch_persists_and_broadcasts_the_updated_summary()
 
     app = web_api.create_app(Controller())
     handler = _route_handler(app, "PATCH", "/api/meetings/{id}")
-    response = await handler(
-        _DirectRequest(app, meeting_id="meeting-title", payload={"title": "Customer review"})
-    )
+    response = await handler(_DirectRequest(app, meeting_id="meeting-title", payload={"title": "Customer review"}))
     payload = json.loads(response.body)
 
     assert response.status == 200

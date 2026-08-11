@@ -938,15 +938,11 @@ class MeetingStore:
             if "owner_speaker_id" not in action_item_columns:
                 conn.execute("ALTER TABLE meeting_action_items ADD COLUMN owner_speaker_id TEXT")
                 speaker_names: dict[tuple[str, str], set[str]] = {}
-                for speaker in conn.execute(
-                    "SELECT meeting_id,id,label,display_name FROM meeting_speakers"
-                ).fetchall():
+                for speaker in conn.execute("SELECT meeting_id,id,label,display_name FROM meeting_speakers").fetchall():
                     for candidate in (speaker["label"], speaker["display_name"]):
                         key = _action_semantic_key(candidate)
                         if key:
-                            speaker_names.setdefault((str(speaker["meeting_id"]), key), set()).add(
-                                str(speaker["id"])
-                            )
+                            speaker_names.setdefault((str(speaker["meeting_id"]), key), set()).add(str(speaker["id"]))
                 for action in conn.execute(
                     "SELECT meeting_id,id,owner FROM meeting_action_items WHERE owner IS NOT NULL"
                 ).fetchall():

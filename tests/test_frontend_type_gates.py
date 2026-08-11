@@ -1330,9 +1330,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     debug_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "DebugConsole.tsx").read_text(
         encoding="utf-8"
     )
-    support_bundle_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "support-bundle.ts"
-    ).read_text(encoding="utf-8")
+    support_bundle_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "support-bundle.ts").read_text(
+        encoding="utf-8"
+    )
     structured_log_source = (
         REPO_ROOT / "Frontend" / "client" / "src" / "components" / "debug" / "RuntimeLogMessage.tsx"
     ).read_text(encoding="utf-8")
@@ -1361,7 +1361,7 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert ".debug-action-status-message {" in css
     assert ".debug-action-status-actions {" in css
     assert "flex-wrap: wrap;" in css
-    assert 'invoke<Omit<SavedDesktopSupportBundle' in support_bundle_source
+    assert "invoke<Omit<SavedDesktopSupportBundle" in support_bundle_source
     assert '"save_support_bundle"' in support_bundle_source
     assert '"copy_meeting_export_file"' in support_bundle_source
     assert "renderLocalizedMessage(actionStatus, t, formatNumber)" in debug_source
