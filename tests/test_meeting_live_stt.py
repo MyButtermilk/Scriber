@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from src.meeting_live_stt import SonioxMeetingStream
+from src.meeting_live_stt import MeetingLiveTranscriber, SonioxMeetingStream
 
 _CLOSED = object()
 
@@ -99,6 +99,58 @@ async def test_soniox_meeting_stream_uses_selected_realtime_region():
     await stream.stop()
 
     assert connected_urls == ["wss://stt-rt.eu.soniox.com/transcribe-websocket"]
+
+
+@pytest.mark.asyncio
+async def test_meeting_live_transcriber_enables_diarization_for_both_tracks():
+    transcriber = MeetingLiveTranscriber(
+        meeting_id="meeting-shared-microphone",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="de",
+        on_segment=lambda segment: _append([], segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+    )
+
+    assert transcriber.streams["microphone"].diarization is True
+    assert transcriber.streams["system"].diarization is True
+
+
+@pytest.mark.asyncio
+async def test_soniox_microphone_stream_preserves_additional_room_speakers():
+    websocket = FakeWebSocket()
+    segments = []
+
+    async def connect(_url):
+        return websocket
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-shared-microphone",
+        source="microphone",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="de",
+        diarization=True,
+        on_segment=lambda segment: _append(segments, segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        connect_factory=connect,
+        session_id="session-shared-mic",
+    )
+    await stream.start()
+    await websocket.push(
+        {
+            "tokens": [
+                {"text": "Hallo.", "is_final": True, "start_ms": 0, "end_ms": 300, "speaker": "a"},
+                {"text": "Guten Tag.", "is_final": True, "start_ms": 400, "end_ms": 800, "speaker": "b"},
+                {"text": "<end>", "is_final": True},
+            ]
+        }
+    )
+    await _eventually(lambda: len([segment for segment in segments if segment.is_final]) == 2)
+    await stream.stop()
+
+    finals = [segment for segment in segments if segment.is_final]
+    assert [segment.speaker_label for segment in finals] == ["You", "Speaker 2"]
 
 
 class FakeTurnState:

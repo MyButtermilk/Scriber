@@ -38,6 +38,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { TransitionTooltip } from "@/components/ui/transition-tooltip";
 import { RuntimeLogMessage } from "@/components/debug/RuntimeLogMessage";
+import { PageIntro } from "@/components/page-intro";
 import { useToast } from "@/hooks/use-toast";
 import { apiUrl } from "@/lib/backend";
 import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
@@ -572,21 +573,18 @@ export default function DebugConsole() {
   return (
     <>
       <div className="app-page-shell debug-console-page" data-page-shell="console">
-        <header className="debug-console-hero">
-          <div className="debug-console-intro">
-            <div className="debug-console-eyebrow">
-              <span className="debug-console-eyebrow-line" />
-              {t("System observability")}
-            </div>
-            <div className="debug-console-title-row">
-              <div>
-                <h1>{t("Debug console")}</h1>
-                <p>{t("Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.")}</p>
-              </div>
-            </div>
-          </div>
+        <section className="debug-console-hero" aria-label={t("Debug console")} data-debug-workbench-header="true">
+          <PageIntro
+            eyebrow={t("System observability")}
+            title={t("Debug console")}
+            description={t(
+              "Inspect runtime events, isolate failures, and package diagnostics without leaving Scriber.",
+            )}
+            sticky={false}
+            className="debug-console-intro !mb-0"
+          />
 
-          <div className="debug-console-overview">
+          <div className="debug-console-overview" data-debug-surface="overview">
             <div className="debug-console-stats" aria-label={t("Runtime log summary")}>
               <div
                 className="debug-console-stat"
@@ -719,9 +717,9 @@ export default function DebugConsole() {
               </TransitionTooltip>
             </div>
           </div>
-        </header>
+        </section>
 
-        <section className="debug-command-deck" aria-label={t("Log controls")}>
+        <section className="debug-command-deck" aria-label={t("Log controls")} data-debug-surface="controls">
           <div className="debug-command-primary">
             <div className="debug-search-field">
               <Search className="pointer-events-none h-4 w-4" />
@@ -886,7 +884,7 @@ export default function DebugConsole() {
         </section>
 
         <div className="debug-console-workspace">
-          <section className="debug-log-panel" aria-label={t("Runtime log stream")}>
+          <section className="debug-log-panel" aria-label={t("Runtime log stream")} data-debug-surface="log-stream">
             <header className="debug-log-header">
               <div>
                 <span className="debug-log-kicker">{t("Runtime stream")}</span>
@@ -952,7 +950,11 @@ export default function DebugConsole() {
             </section>
           </section>
 
-          <aside className="debug-diagnostics-panel" aria-label={t("Post-processing diagnostics")}>
+          <aside
+            className="debug-diagnostics-panel"
+            aria-label={t("Post-processing diagnostics")}
+            data-debug-surface="diagnostics"
+          >
             <div className="debug-diagnostics-heading">
               <div className="debug-diagnostics-mark">
                 <Bug className="h-4 w-4" />

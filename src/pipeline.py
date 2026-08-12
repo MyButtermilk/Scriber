@@ -1858,9 +1858,9 @@ class ScriberPipeline:
         self.on_error = on_error
         self.mic_prewarm_manager = mic_prewarm_manager
         self.enable_speaker_diarization = bool(enable_speaker_diarization)
-        # Direct file jobs historically enable diarization by default. Meeting
-        # finalization overrides this per track so the single-user mic is plain
-        # while shared system audio remains diarized.
+        # Direct file jobs enable diarization by default. Meeting finalization
+        # explicitly enables it for every canonical track because several
+        # people can share either the microphone or system-audio source.
         self.direct_file_speaker_diarization = (
             True if direct_file_speaker_diarization is None else bool(direct_file_speaker_diarization)
         )

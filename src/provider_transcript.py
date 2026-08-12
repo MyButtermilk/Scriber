@@ -165,10 +165,10 @@ def group_provider_words(
         if not text:
             continue
         speaker_key = _speaker_key(group[0]["speaker"])
-        if source == "microphone":
-            speaker = "You"
-        elif speaker_key:
+        if speaker_key:
             speaker = speaker_labels.setdefault(speaker_key, f"Speaker {len(speaker_labels) + 1}")
+        elif source == "microphone":
+            speaker = "You"
         else:
             speaker = "Meeting audio"
         confidences = [word["confidence"] for word in group if word["confidence"] is not None]
@@ -217,10 +217,10 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
             if start is None or end is None or end < start or not text:
                 continue
             speaker_key = _speaker_key(utterance.get("speaker"))
-            if source == "microphone":
-                speaker_label = "You"
-            elif speaker_key:
+            if speaker_key:
                 speaker_label = speaker_labels.setdefault(speaker_key, f"Speaker {len(speaker_labels) + 1}")
+            elif source == "microphone":
+                speaker_label = "You"
             else:
                 speaker_label = "Meeting audio"
             segments.append(

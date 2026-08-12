@@ -120,8 +120,8 @@ export const settingsTranslations = {
   Open: "Öffnen",
 
   // Meeting transcription provider explanations.
-  "Keeps live and final transcription with the same service. Separates remote voices from system audio and keeps exact timing for meetings up to 5 hours.":
-    "Verwendet denselben Dienst für Live- und finale Transkription. Trennt entfernte Stimmen vom Systemaudio und erhält bei Meetings bis zu 5 Stunden exakte Zeitangaben.",
+  "Keeps live and final transcription with the same service. Separates speakers on shared microphones and system audio and keeps exact timing for meetings up to 5 hours.":
+    "Verwendet denselben Dienst für Live- und finale Transkription. Trennt Sprecher an gemeinsam genutzten Mikrofonen sowie im Systemaudio und erhält bei Meetings bis zu 5 Stunden exakte Zeitangaben.",
   "Strong speaker naming and timing for meetings up to 5 hours.":
     "Zuverlässige Sprecherbenennung und Zeitangaben für Meetings bis zu 5 Stunden.",
   "Includes speaker names and timing for recordings up to 3 hours.":
@@ -489,6 +489,8 @@ export const settingsTranslations = {
     "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als „Du“.",
   "Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as":
     "Entfernte Stimmen aus deinen Lautsprechern werden getrennt. Personen, die dasselbe ausgewählte Mikrofon verwenden, erscheinen derzeit gemeinsam als",
+  "Remote voices and people sharing the selected microphone are separated when speaker detection is available. A single detected microphone speaker appears as You.":
+    "Entfernte Stimmen und Personen am gemeinsam genutzten Mikrofon werden getrennt, wenn die Sprechererkennung verfügbar ist. Ein einzelner erkannter Mikrofonsprecher erscheint als „Du“.",
   You: "Du",
   "During meeting": "Während des Meetings",
   "After meeting": "Nach dem Meeting",
@@ -608,6 +610,16 @@ export const settingsTranslations = {
   "Duplicate saved speaker": "Doppelter gespeicherter Sprecher",
   "Merge duplicate…": "Duplikat wählen …",
   "Merge speakers": "Sprecher zusammenführen",
+  "Play sample": "Beispiel abspielen",
+  "Stop sample": "Probe stoppen",
+  "Play voice sample for {{name}}": "Stimmprobe von {{name}} abspielen",
+  "Stop voice sample for {{name}}": "Stimmprobe von {{name}} stoppen",
+  "No sample yet": "Noch keine Probe",
+  "Voice sample is unavailable": "Stimmprobe ist nicht verfügbar",
+  "Try again. If the problem continues, record a new named sample.":
+    "Versuche es erneut. Wenn das Problem bleibt, nimm eine neue benannte Probe auf.",
+  "A reference sample will be saved after this voice is heard again.":
+    "Eine Referenzprobe wird gespeichert, sobald diese Stimme erneut erkannt wird.",
 
   // Outlook calendar.
   "The last Microsoft sign-in was canceled. Connect again when you are ready.":
@@ -757,8 +769,8 @@ export const settingsTranslations = {
     "Nimm eine kurze Probe auf, damit Scriber den Namen dieser Person künftig in Meeting-Transkripten anzeigen kann.",
   "Scriber can now match this voice in future meetings. You can rename or delete it from the list at any time.":
     "Scriber kann diese Stimme künftig in Meetings zuordnen. Du kannst sie jederzeit in der Liste umbenennen oder löschen.",
-  "The recording was not saved or uploaded. Only the local voice profile remains on this device.":
-    "Die Aufnahme wurde weder gespeichert noch hochgeladen. Nur das lokale Stimmprofil bleibt auf diesem Gerät.",
+  "A short reference clip was saved locally so you can verify the name. Nothing was uploaded.":
+    "Ein kurzer Referenzclip wurde lokal gespeichert, damit du den Namen prüfen kannst. Es wurde nichts hochgeladen.",
   Done: "Fertig",
   "Person's name": "Name der Person",
   "For example, Alex": "Zum Beispiel Alex",
@@ -786,8 +798,8 @@ export const settingsTranslations = {
   "Voice sample progress": "Fortschritt der Stimmprobe",
   "The voice sample was not saved.": "Die Stimmprobe wurde nicht gespeichert.",
   "Check the microphone and try again.": "Prüfe das Mikrofon und versuche es erneut.",
-  "Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.":
-    "Scriber hört etwa 8 Sekunden lang zu. Die Aufnahme wird weder gespeichert noch hochgeladen. Das lokale Stimmprofil bleibt erhalten, bis du es löschst.",
+  "Scriber listens for about 8 seconds and keeps a short local reference clip so you can verify the saved name. Nothing is uploaded.":
+    "Scriber hört etwa 8 Sekunden lang zu und speichert einen kurzen lokalen Referenzclip, damit du den Namen prüfen kannst. Es wird nichts hochgeladen.",
   "Saving voice": "Stimme wird gespeichert",
   "Recording voice": "Stimme wird aufgenommen",
   "Try sample again": "Probe erneut versuchen",

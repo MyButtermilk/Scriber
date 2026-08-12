@@ -11,6 +11,7 @@ from __future__ import annotations
 import builtins
 import hashlib
 import hmac
+import io
 import json
 import math
 import re
@@ -40,6 +41,8 @@ MEETING_SEGMENTS_FTS_SCHEMA_VERSION = 2
 MEETING_SEGMENTS_FTS_SCHEMA_KEY = "meeting_segments_fts_schema_version"
 VOICE_PROFILE_MATCH_THRESHOLD = 0.82
 VOICE_PROFILE_MATCH_MARGIN = 0.08
+VOICE_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
+VOICE_PROFILE_PREVIEW_SOURCES = frozenset({"enrollment", "microphone", "system"})
 # A compact base every 10 minutes keeps work bounded. Delta checkpoints carry
 # an additional previous-base tail, so one corrupt base row cannot invalidate
 # the rest of a long meeting's recovery interval.
@@ -591,6 +594,18 @@ class MeetingStore:
                     embedding_blob BLOB,
                     quality REAL,
                     created_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS speaker_profile_previews (
+                    profile_id TEXT PRIMARY KEY REFERENCES speaker_profiles(id) ON DELETE CASCADE,
+                    audio_blob BLOB NOT NULL,
+                    mime_type TEXT NOT NULL DEFAULT 'audio/wav'
+                        CHECK(mime_type='audio/wav'),
+                    duration_ms INTEGER NOT NULL
+                        CHECK(duration_ms BETWEEN 2000 AND 4000),
+                    source TEXT NOT NULL
+                        CHECK(source IN ('enrollment','microphone','system')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS speaker_library_state (
                     id INTEGER PRIMARY KEY CHECK(id=1),
@@ -3737,14 +3752,143 @@ class MeetingStore:
             for row in rows
         ]
 
+    @staticmethod
+    def _validate_speaker_profile_preview(audio: bytes, duration_ms: int, source: str) -> tuple[bytes, int, str]:
+        payload = bytes(audio or b"")
+        normalized_source = str(source or "").strip().lower()
+        if normalized_source not in VOICE_PROFILE_PREVIEW_SOURCES:
+            raise ValueError("Speaker reference source is invalid.")
+        if len(payload) < 44 or len(payload) > VOICE_PROFILE_PREVIEW_MAX_BYTES:
+            raise ValueError("Speaker reference audio has an invalid size.")
+        try:
+            with wave.open(io.BytesIO(payload), "rb") as reader:
+                if (
+                    reader.getnchannels() != 1
+                    or reader.getsampwidth() != 2
+                    or reader.getframerate() != 16_000
+                    or reader.getcomptype() != "NONE"
+                ):
+                    raise ValueError("Speaker reference audio must be mono 16 kHz PCM16 WAV.")
+                actual_duration_ms = round(reader.getnframes() * 1_000 / reader.getframerate())
+        except (EOFError, wave.Error) as exc:
+            raise ValueError("Speaker reference audio is not a valid WAV.") from exc
+        declared_duration_ms = int(duration_ms)
+        if not 2_000 <= actual_duration_ms <= 4_000 or abs(actual_duration_ms - declared_duration_ms) > 1:
+            raise ValueError("Speaker reference audio duration is invalid.")
+        return payload, actual_duration_ms, normalized_source
+
+    @classmethod
+    def _save_speaker_profile_preview_conn(
+        cls,
+        conn: sqlite3.Connection,
+        profile_id: str,
+        audio: bytes,
+        *,
+        duration_ms: int,
+        source: str,
+        replace: bool,
+        now: str,
+    ) -> bool:
+        payload, actual_duration_ms, normalized_source = cls._validate_speaker_profile_preview(
+            audio,
+            duration_ms,
+            source,
+        )
+        if conn.execute("SELECT 1 FROM speaker_profiles WHERE id=?", (profile_id,)).fetchone() is None:
+            raise MeetingNotFound("Speaker profile not found")
+        if replace:
+            conn.execute(
+                """INSERT INTO speaker_profile_previews
+                   (profile_id,audio_blob,mime_type,duration_ms,source,created_at,updated_at)
+                   VALUES (?,?,'audio/wav',?,?,?,?)
+                   ON CONFLICT(profile_id) DO UPDATE SET
+                     audio_blob=excluded.audio_blob,mime_type=excluded.mime_type,
+                     duration_ms=excluded.duration_ms,source=excluded.source,
+                     updated_at=excluded.updated_at""",
+                (profile_id, payload, actual_duration_ms, normalized_source, now, now),
+            )
+            return True
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO speaker_profile_previews
+               (profile_id,audio_blob,mime_type,duration_ms,source,created_at,updated_at)
+               VALUES (?,?,'audio/wav',?,?,?,?)""",
+            (profile_id, payload, actual_duration_ms, normalized_source, now, now),
+        )
+        return bool(cursor.rowcount)
+
+    def save_speaker_profile_preview(
+        self,
+        profile_id: str,
+        audio: bytes,
+        *,
+        duration_ms: int,
+        source: str,
+        replace: bool = False,
+    ) -> bool:
+        now = _utc_now()
+        with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            saved = self._save_speaker_profile_preview_conn(
+                conn,
+                str(profile_id or "").strip(),
+                audio,
+                duration_ms=duration_ms,
+                source=source,
+                replace=replace,
+                now=now,
+            )
+            conn.commit()
+        return saved
+
+    def speaker_profile_previews(self) -> dict[str, dict[str, Any]]:
+        rows = (
+            db._get_connection()
+            .execute(
+                """SELECT profile_id,duration_ms,source,created_at,updated_at
+               FROM speaker_profile_previews"""
+            )
+            .fetchall()
+        )
+        return {
+            str(row["profile_id"]): {
+                "profileId": str(row["profile_id"]),
+                "durationMs": int(row["duration_ms"]),
+                "source": str(row["source"]),
+                "createdAt": str(row["created_at"]),
+                "updatedAt": str(row["updated_at"]),
+            }
+            for row in rows
+        }
+
+    def speaker_profile_preview(self, profile_id: str) -> dict[str, Any] | None:
+        row = (
+            db._get_connection()
+            .execute(
+                """SELECT audio_blob,mime_type,duration_ms,source,created_at,updated_at
+               FROM speaker_profile_previews WHERE profile_id=?""",
+                (str(profile_id or "").strip(),),
+            )
+            .fetchone()
+        )
+        if row is None:
+            return None
+        return {
+            "audio": bytes(row["audio_blob"]),
+            "mimeType": str(row["mime_type"]),
+            "durationMs": int(row["duration_ms"]),
+            "source": str(row["source"]),
+            "createdAt": str(row["created_at"]),
+            "updatedAt": str(row["updated_at"]),
+        }
+
     def speaker_profile_preview_candidates(self) -> dict[str, dict[str, Any]]:
         """Return one private, retained-audio observation per learned profile.
 
         These descriptors are an internal capability-minting boundary.  They
         intentionally contain no filesystem path and must never be serialized
         directly to a REST response.  Explicit enrollment recordings are not
-        persisted, so only profiles learned from Meeting observations can have
-        a playback preview.
+        persisted in older versions, so any profile with a retained Meeting
+        observation can be lazily backfilled with a playback reference.
         """
 
         rows = (
@@ -3762,8 +3906,7 @@ class MeetingStore:
                    WHEN s.source='microphone' THEN 'playback_microphone'
                    WHEN s.source='system' THEN 'playback_system'
                    ELSE '' END
-               WHERE p.enrollment_sample_count=0
-                 AND m.state IN ('ready','analysis_failed')
+               WHERE m.state IN ('ready','analysis_failed')
                  AND s.source IN ('microphone','system')
                  AND s.end_ms-s.start_ms>=2000
                ORDER BY p.id,quality DESC,(s.end_ms-s.start_ms) DESC,o.created_at DESC"""
@@ -3778,7 +3921,7 @@ class MeetingStore:
             segment_start_ms = max(0, int(row["start_ms"]))
             segment_end_ms = max(segment_start_ms, int(row["end_ms"]))
             segment_duration_ms = segment_end_ms - segment_start_ms
-            duration_ms = min(8_000, segment_duration_ms)
+            duration_ms = min(4_000, segment_duration_ms)
             # Center long observations to avoid clipping a turn boundary while
             # preserving the original meeting-clock seek position.
             start_ms = segment_start_ms + max(0, (segment_duration_ms - duration_ms) // 2)
@@ -3919,6 +4062,9 @@ class MeetingStore:
         *,
         quality: float = 1.0,
         profile_id: str = "",
+        preview_audio: bytes | None = None,
+        preview_duration_ms: int = 0,
+        preview_source: str = "enrollment",
     ) -> dict[str, Any]:
         name = " ".join(str(display_name).split()).strip()
         if not name:
@@ -3993,6 +4139,16 @@ class MeetingStore:
                     ),
                 )
             self._recompute_speaker_profile_conn(conn, resolved_id, now)
+            if preview_audio is not None:
+                self._save_speaker_profile_preview_conn(
+                    conn,
+                    resolved_id,
+                    preview_audio,
+                    duration_ms=preview_duration_ms,
+                    source=preview_source,
+                    replace=True,
+                    now=now,
+                )
             row = conn.execute(
                 """SELECT id,display_name,is_named,sample_count,enrollment_sample_count,
                           enrolled_at,created_at,updated_at
@@ -4626,6 +4782,17 @@ class MeetingStore:
                         source_profile_id,
                     ),
                 )
+            target_preview = conn.execute(
+                "SELECT 1 FROM speaker_profile_previews WHERE profile_id=?",
+                (target_profile_id,),
+            ).fetchone()
+            if target_preview is None:
+                conn.execute(
+                    "UPDATE speaker_profile_previews SET profile_id=?,updated_at=? WHERE profile_id=?",
+                    (target_profile_id, now, source_profile_id),
+                )
+            else:
+                conn.execute("DELETE FROM speaker_profile_previews WHERE profile_id=?", (source_profile_id,))
             conn.execute(
                 """UPDATE meeting_speakers SET profile_id=?,updated_at=?
                    WHERE profile_id IN (?,?)""",
@@ -4704,6 +4871,10 @@ class MeetingStore:
                 )
             self._recompute_speaker_profile_conn(conn, new_profile_id, now)
             self._recompute_speaker_profile_conn(conn, old_profile_id, now)
+            conn.execute(
+                "DELETE FROM speaker_profile_previews WHERE profile_id=? AND source<>'enrollment'",
+                (old_profile_id,),
+            )
             conn.commit()
         return {
             "meetingId": meeting_id,

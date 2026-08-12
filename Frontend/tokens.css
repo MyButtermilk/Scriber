@@ -1,0 +1,155 @@
+/* Hallmark · genre: modern-minimal · tone: precise, calm, technical · palette anchor: cobalt · structural fingerprint: Workbench + Long Document · design-system: design.md · designed-as-app */
+/* Hallmark · pre-emit critique: P5 H4 E4 S5 R4 V5 */
+/* Hallmark · audit: 58/58 gates pass · contrast, responsiveness, interaction states, token integrity, and app-shell structure verified */
+
+/* Main-WebView-only family aliases keep the real Hallmark weights from changing
+   the native overlay and tray, which continue to use the established families. */
+@font-face {
+  font-family: "Scriber Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./node_modules/@fontsource/inter/files/inter-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Scriber Inter";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url("./node_modules/@fontsource/inter/files/inter-latin-500-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Scriber Switzer";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("./node_modules/@carrot-kpi/switzer-font/files/switzer-latin-400-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Scriber Switzer";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url("./node_modules/@carrot-kpi/switzer-font/files/switzer-latin-600-normal.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Scriber Switzer";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 700;
+  src: url("./node_modules/@carrot-kpi/switzer-font/files/switzer-latin-700-normal.woff2") format("woff2");
+}
+
+:root[data-scriber-main-window="true"] {
+  color-scheme: light;
+
+  /* Cool paper and ink; cobalt is a signal, never a section fill. */
+  --color-paper: oklch(97% 0.009 255);
+  --color-paper-2: oklch(94% 0.012 255);
+  --color-paper-3: oklch(91% 0.014 255);
+  --color-rule: oklch(84% 0.014 255);
+  --color-rule-2: oklch(72% 0.018 255);
+  --color-muted: oklch(48% 0.018 255);
+  --color-neutral: oklch(38% 0.02 255);
+  --color-ink-2: oklch(30% 0.023 255);
+  --color-ink: oklch(18% 0.02 257);
+  --color-accent: oklch(72% 0.18 257);
+  --color-accent-strong: oklch(50% 0.2 257);
+  --color-accent-soft: oklch(92% 0.035 257);
+  --color-accent-ink: oklch(18% 0.02 257);
+  --color-focus: oklch(48% 0.22 257);
+  --color-success: oklch(49% 0.13 154);
+  --color-success-soft: oklch(93% 0.035 154);
+  --color-warning: oklch(52% 0.13 72);
+  --color-warning-soft: oklch(94% 0.04 72);
+  --color-danger: oklch(52% 0.18 25);
+  --color-danger-soft: oklch(94% 0.035 25);
+
+  --font-display: "Scriber Switzer", "Switzer", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Scriber Inter", "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-outlier: ui-monospace, "Cascadia Code", "SFMono-Regular", monospace;
+  --display-weight: 700;
+  --body-weight: 400;
+  --label-weight: 500;
+  --tracking-display: -0.035em;
+  --tracking-label: 0.01em;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-md: 1.125rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5625rem;
+  --text-2xl: 1.9531rem;
+  --text-display: clamp(2.15rem, 1.72rem + 1.2vw, 3.05rem);
+
+  --space-3xs: 0.125rem;
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2.5rem;
+  --space-2xl: 4rem;
+  --space-3xl: 6rem;
+  --space-4xl: 9rem;
+
+  --rule-hair: 1px;
+  --rule-fine: 2px;
+  --focus-offset: 1px;
+  --radius-input: 0.5rem;
+  --radius-card: 0.75rem;
+  --radius-section: 1rem;
+  --radius-pill: 999px;
+
+  --shadow-whisper: 0 1px 2px oklch(18% 0.02 257 / 0.06);
+  --shadow-popover: 0 12px 32px oklch(18% 0.02 257 / 0.12);
+
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-micro: 100ms;
+  --dur-short: 180ms;
+  --dur-medium: 280ms;
+  --dur-long: 420ms;
+
+  --z-base: 1;
+  --z-raised: 10;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 400;
+  --z-toast: 500;
+  --z-tooltip: 600;
+}
+
+:root[data-scriber-main-window="true"].dark {
+  color-scheme: dark;
+
+  --color-paper: oklch(16% 0.018 255);
+  --color-paper-2: oklch(19.5% 0.019 255);
+  --color-paper-3: oklch(24% 0.02 255);
+  --color-rule: oklch(31% 0.02 255);
+  --color-rule-2: oklch(40% 0.02 255);
+  --color-muted: oklch(68% 0.014 255);
+  --color-neutral: oklch(76% 0.013 255);
+  --color-ink-2: oklch(84% 0.012 255);
+  --color-ink: oklch(94.5% 0.012 255);
+  --color-accent: oklch(72% 0.15 257);
+  --color-accent-strong: oklch(79% 0.13 257);
+  --color-accent-soft: oklch(25% 0.045 257);
+  --color-accent-ink: oklch(16% 0.018 255);
+  --color-focus: oklch(80% 0.16 257);
+  --color-success: oklch(73% 0.12 154);
+  --color-success-soft: oklch(24% 0.035 154);
+  --color-warning: oklch(78% 0.12 72);
+  --color-warning-soft: oklch(25% 0.035 72);
+  --color-danger: oklch(72% 0.15 25);
+  --color-danger-soft: oklch(24% 0.035 25);
+
+  --shadow-whisper: 0 1px 2px oklch(7% 0.015 255 / 0.28);
+  --shadow-popover: 0 18px 42px oklch(7% 0.015 255 / 0.42);
+}

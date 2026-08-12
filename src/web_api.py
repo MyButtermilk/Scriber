@@ -230,7 +230,7 @@ from src.speaker_diarization import (
     diarization_component_installed,
     format_speaker_transcript,
 )
-from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample
+from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample, voice_reference_wav
 from src.speaker_intelligence import WeSpeakerModel
 from src.transcript_artifacts import (
     FrozenTranscriptionRoute,
@@ -304,11 +304,11 @@ class SpeakerProfilePreviewGrant:
     """Process-local capability for one bounded local speaker sample."""
 
     profile_id: str
-    meeting_id: str
-    source: str
-    start_ms: int
     duration_ms: int
     expires_at: float
+    source: str
+    meeting_id: str = ""
+    start_ms: int = 0
 
 
 async def _render_speaker_profile_preview(
@@ -320,7 +320,7 @@ async def _render_speaker_profile_preview(
         raise ValueError("Unsupported speaker preview source.")
     if not re.fullmatch(r"[0-9a-f]{32}", grant.meeting_id):
         raise ValueError("Invalid speaker preview meeting capability.")
-    if not (2_000 <= grant.duration_ms <= 8_000) or grant.start_ms < 0:
+    if not (2_000 <= grant.duration_ms <= 4_000) or grant.start_ms < 0:
         raise ValueError("Invalid speaker preview interval.")
     source_name = "microphone.opus" if grant.source == "microphone" else "system.opus"
     meeting_root = (data_dir() / "meetings").resolve()
@@ -19721,45 +19721,52 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def list_speaker_profiles(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         preview_candidates_fn = getattr(ctl._meeting_store, "speaker_profile_preview_candidates", None)
-        if callable(preview_candidates_fn):
-            items, preview_candidates = await asyncio.gather(
-                asyncio.to_thread(ctl._meeting_store.speaker_profiles),
-                asyncio.to_thread(preview_candidates_fn),
-            )
-        else:
-            items = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
-            preview_candidates = {}
+        stored_previews_fn = getattr(ctl._meeting_store, "speaker_profile_previews", None)
+        pending = [asyncio.to_thread(ctl._meeting_store.speaker_profiles)]
+        pending.append(
+            asyncio.to_thread(preview_candidates_fn) if callable(preview_candidates_fn) else asyncio.sleep(0, result={})
+        )
+        pending.append(
+            asyncio.to_thread(stored_previews_fn) if callable(stored_previews_fn) else asyncio.sleep(0, result={})
+        )
+        items, preview_candidates, stored_previews = await asyncio.gather(*pending)
         items = [dict(item) for item in items]
         now = time.monotonic()
         prune_speaker_preview_grants(now)
         for item in items:
-            candidate = preview_candidates.get(str(item.get("id") or ""))
+            profile_id = str(item.get("id") or "")
+            stored_preview = stored_previews.get(profile_id)
+            candidate = stored_preview or preview_candidates.get(profile_id)
             if not isinstance(candidate, dict):
                 item["preview"] = None
                 continue
             source = str(candidate.get("source") or "")
-            meeting_id = str(candidate.get("meetingId") or "")
-            source_name = "microphone.opus" if source == "microphone" else "system.opus"
-            source_path = data_dir() / "meetings" / meeting_id / "final" / source_name
-            if (
-                source not in {"microphone", "system"}
-                or not re.fullmatch(r"[0-9a-f]{32}", meeting_id)
-                or not source_path.is_file()
-            ):
-                item["preview"] = None
-                continue
-            duration_ms = max(0, min(8_000, int(candidate.get("durationMs") or 0)))
+            duration_ms = max(0, min(4_000, int(candidate.get("durationMs") or 0)))
             if duration_ms < 2_000:
                 item["preview"] = None
                 continue
+            meeting_id = ""
+            start_ms = 0
+            if stored_preview is None:
+                meeting_id = str(candidate.get("meetingId") or "")
+                source_name = "microphone.opus" if source == "microphone" else "system.opus"
+                source_path = data_dir() / "meetings" / meeting_id / "final" / source_name
+                if (
+                    source not in {"microphone", "system"}
+                    or not re.fullmatch(r"[0-9a-f]{32}", meeting_id)
+                    or not source_path.is_file()
+                ):
+                    item["preview"] = None
+                    continue
+                start_ms = max(0, int(candidate.get("startMs") or 0))
             token = uuid4().hex
             speaker_preview_grants[token] = SpeakerProfilePreviewGrant(
-                profile_id=str(item.get("id") or ""),
-                meeting_id=meeting_id,
-                source=source,
-                start_ms=max(0, int(candidate.get("startMs") or 0)),
+                profile_id=profile_id,
                 duration_ms=duration_ms,
                 expires_at=now + _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS,
+                source=source,
+                meeting_id=meeting_id,
+                start_ms=start_ms,
             )
             item["preview"] = {
                 "token": token,
@@ -19793,8 +19800,30 @@ def create_app(controller: ScriberWebController) -> web.Application:
             speaker_preview_grants.pop(token, None)
             return web.json_response({"message": "Speaker preview not found"}, status=404)
 
-        # Deleting a profile or purging its retained Meeting audio immediately
-        # revokes every previously minted process-local capability.
+        stored_preview_fn = getattr(ctl._meeting_store, "speaker_profile_preview", None)
+        stored_preview = (
+            await asyncio.to_thread(stored_preview_fn, grant.profile_id) if callable(stored_preview_fn) else None
+        )
+        if isinstance(stored_preview, dict):
+            audio = bytes(stored_preview.get("audio") or b"")
+            if not audio.startswith(b"RIFF") or len(audio) > _SPEAKER_PROFILE_PREVIEW_MAX_BYTES:
+                logger.warning("Local Voice Library stored preview failed validation")
+                return web.json_response(
+                    {"message": "The local speaker preview could not be played."},
+                    status=503,
+                )
+            return web.Response(
+                body=audio,
+                content_type="audio/wav",
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "Content-Disposition": "inline",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        # Deleting a profile or purging its legacy retained Meeting audio
+        # immediately revokes every previously minted process-local capability.
         candidates_fn = getattr(ctl._meeting_store, "speaker_profile_preview_candidates", None)
         current_candidates = await asyncio.to_thread(candidates_fn) if callable(candidates_fn) else {}
         if grant.profile_id not in current_candidates:
@@ -19802,6 +19831,19 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Speaker preview not found"}, status=404)
         try:
             audio = await _render_speaker_profile_preview(grant)
+            save_preview_fn = getattr(ctl._meeting_store, "save_speaker_profile_preview", None)
+            if callable(save_preview_fn):
+                try:
+                    await asyncio.to_thread(
+                        save_preview_fn,
+                        grant.profile_id,
+                        audio,
+                        duration_ms=grant.duration_ms,
+                        source=grant.source,
+                        replace=False,
+                    )
+                except Exception as exc:
+                    logger.warning("Local Voice Library preview persistence failed: {}", type(exc).__name__)
         except FileNotFoundError:
             speaker_preview_grants.pop(token, None)
             return web.json_response({"message": "Speaker preview not found"}, status=404)
@@ -20009,6 +20051,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 )
                 if pending_cancel is not None:
                     raise pending_cancel
+                preview_audio, preview_duration_ms = voice_reference_wav(pcm, sample_rate=16_000)
                 pcm = b""
                 profile = await _to_thread_cancellation_barrier(
                     ctl._meeting_store.enroll_speaker_profile,
@@ -20016,6 +20059,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     embedding,
                     quality=quality,
                     profile_id=profile_id,
+                    preview_audio=preview_audio,
+                    preview_duration_ms=preview_duration_ms,
+                    preview_source="enrollment",
                 )
             public_capture = {
                 "durationMs": int(snapshot.get("durationMs", 0) or 0),
@@ -20028,7 +20074,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "apiVersion": REST_API_VERSION,
                     "profile": profile,
                     "capture": public_capture,
-                    "audioPersisted": False,
+                    "audioPersisted": True,
                     "audioSentToProvider": False,
                 },
                 status=201,

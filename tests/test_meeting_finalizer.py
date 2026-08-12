@@ -352,12 +352,13 @@ async def test_finalizer_accepts_one_silent_canonical_track(
 
     class TrackPipeline(FakePipeline):
         async def transcribe_file(self, path: str):
-            await self.transcribe_file_direct(path)
+            source = "system" if "system" in Path(path).name else "microphone"
+            text = f"Valid {source} speech" if source == speech_source else ""
+            if text:
+                self.on_transcription(text, True)
 
-    def pipeline_factory(*, on_transcription, enable_speaker_diarization, **_kwargs):
-        source = "system" if enable_speaker_diarization else "microphone"
-        text = f"Valid {source} speech" if source == speech_source else ""
-        return TrackPipeline(text, on_transcription)
+    def pipeline_factory(*, on_transcription, **_kwargs):
+        return TrackPipeline("", on_transcription)
 
     finalizer = MeetingFinalizer(store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None)
     _stub_two_track_preparation(finalizer, tmp_path)
@@ -387,6 +388,70 @@ async def test_finalizer_accepts_one_silent_canonical_track(
     ]
     silent_source = "system" if speech_source == "microphone" else "microphone"
     assert any(f"No {silent_source} speech detected" in status for status, _ in updates)
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_finalizer_requests_speaker_diarization_for_every_canonical_track(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "all-track-diarization.db")
+    monkeypatch.setattr("src.meeting_finalizer.supports_direct_file_upload", lambda _provider: False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    meeting = store.create(
+        MeetingCreate(
+            title="Three people in one room",
+            final_provider="soniox_async",
+            auto_analyze=False,
+        )
+    )
+    store.transition(meeting["id"], "finalizing")
+    observed: list[tuple[str, bool, bool]] = []
+
+    class TrackPipeline(FakePipeline):
+        def __init__(self, on_transcription, *, enabled: bool, direct_enabled: bool):
+            super().__init__("", on_transcription)
+            self.enabled = enabled
+            self.direct_enabled = direct_enabled
+            self.last_structured_transcript_payload = None
+
+        async def transcribe_file(self, path: str):
+            source = "system" if "system" in Path(path).name else "microphone"
+            observed.append((source, self.enabled, self.direct_enabled))
+            self.last_structured_transcript_payload = {
+                "tokens": [
+                    {"text": f" {source}", "start_ms": 0, "end_ms": 100, "speaker": "1"},
+                ]
+            }
+            self.on_transcription(source, True)
+
+    def pipeline_factory(
+        *,
+        on_transcription,
+        enable_speaker_diarization,
+        direct_file_speaker_diarization,
+        **_kwargs,
+    ):
+        return TrackPipeline(
+            on_transcription,
+            enabled=enable_speaker_diarization,
+            direct_enabled=direct_file_speaker_diarization,
+        )
+
+    finalizer = MeetingFinalizer(store, tmp_path / "audio", pipeline_factory, lambda *_args, **_kwargs: None)
+    _stub_two_track_preparation(finalizer, tmp_path)
+
+    async def progress(_status, _amount):
+        return None
+
+    result = await finalizer.run(meeting["id"], progress)
+
+    assert result["state"] == "ready"
+    assert observed == [
+        ("microphone", True, True),
+        ("system", True, True),
+    ]
     database._close_all_connections()
 
 
@@ -693,9 +758,14 @@ async def test_finalizer_recovery_reuses_completed_track_without_second_provider
             sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         )
 
-    def pipeline_factory(*, on_transcription, enable_speaker_diarization, **_kwargs):
-        text = "[Speaker 1]: We approved the launch." if enable_speaker_diarization else "I will send the brief."
-        return FakePipeline(text, on_transcription)
+    class CanonicalTrackPipeline(FakePipeline):
+        async def transcribe_file_direct(self, path: str):
+            source = "system" if "system" in Path(path).name else "microphone"
+            text = "[Speaker 1]: We approved the launch." if source == "system" else "I will send the brief."
+            self.on_transcription(text, True)
+
+    def pipeline_factory(*, on_transcription, **_kwargs):
+        return CanonicalTrackPipeline("", on_transcription)
 
     async def generate(prompt, _model, **_kwargs):
         segment_ids = re.findall(r'"segmentId":\s*"(seg_[a-f0-9]{32})"', prompt)
@@ -1326,7 +1396,7 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
     for source_index, source in enumerate(("microphone", "system"), start=1):
         relative = f"{meeting['id']}/audio/{source}-000000.wav"
         path = audio_root / relative
-        _write_meeting_wav(path, frames=16_000, sample_value=source_index * 1_000)
+        _write_meeting_wav(path, frames=48_000, sample_value=source_index * 1_000)
         checkpoint_paths.append(path)
         chunks_by_source[source] = [
             store.add_audio_chunk(
@@ -1364,6 +1434,7 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
         }
 
     registered: list[tuple] = []
+    saved_previews: list[tuple] = []
 
     class VoiceStore:
         @staticmethod
@@ -1383,6 +1454,12 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
         @staticmethod
         def register_speaker_embedding(*args, **kwargs):
             registered.append((args, kwargs))
+            return {"profileId": "profile-1"}
+
+        @staticmethod
+        def save_speaker_profile_preview(*args, **kwargs):
+            saved_previews.append((args, kwargs))
+            return True
 
     class VoiceModel:
         @staticmethod
@@ -1400,6 +1477,15 @@ async def test_lossless_work_tracks_bound_full_pcm_to_one_source_and_preserve_ch
     finalizer.speaker_model = VoiceModel()
     await finalizer._apply_speaker_intelligence(meeting["id"], {"system": prepared["system"]})
     assert len(registered) == 1
+    assert len(saved_previews) == 1
+    preview_args, preview_kwargs = saved_previews[0]
+    assert preview_args[0] == "profile-1"
+    assert preview_args[1].startswith(b"RIFF")
+    assert preview_kwargs == {
+        "duration_ms": 3_000,
+        "source": "system",
+        "replace": False,
+    }
     assert not list((audio_root / meeting["id"] / "final").glob("*.voice.wav"))
     database._close_all_connections()
 

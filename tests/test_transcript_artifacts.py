@@ -247,6 +247,27 @@ def test_provider_speaker_zero_and_exact_timing_become_stage_units():
     assert evidence["nativeSpeakerEvidence"] is True
 
 
+def test_soniox_microphone_diarization_preserves_multiple_native_speakers():
+    units, evidence = stage_units_from_provider(
+        provider="soniox_async",
+        payload={
+            "tokens": [
+                {"text": "First.", "start_ms": 0, "end_ms": 300, "speaker": "1"},
+                {"text": "Second.", "start_ms": 400, "end_ms": 700, "speaker": "2"},
+                {"text": "Third.", "start_ms": 800, "end_ms": 1_100, "speaker": "3"},
+            ]
+        },
+        text="First. Second. Third.",
+        duration_ms=1_100,
+        source_track="microphone",
+    )
+
+    assert [unit.speaker_key for unit in units] == ["1", "2", "3"]
+    assert [unit.speaker_label for unit in units] == ["Speaker 1", "Speaker 2", "Speaker 3"]
+    assert all(unit.speaker_origin == "provider_native" for unit in units)
+    assert evidence["nativeSpeakerEvidence"] is True
+
+
 def test_plain_provider_text_is_honestly_estimated_over_duration():
     units, evidence = stage_units_from_provider(
         provider="gemini_stt",

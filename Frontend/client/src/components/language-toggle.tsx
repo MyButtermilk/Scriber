@@ -15,7 +15,7 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
   if (!compact) {
     return (
       <div
-        className={cn("flex h-10 min-w-0 flex-1 items-center gap-1", className)}
+        className={cn("language-toggle flex h-11 min-w-0 flex-1 items-center gap-1", className)}
         role="group"
         aria-label={t("Language")}
       >
@@ -31,8 +31,8 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
               key={option}
               type="button"
               className={cn(
-                "neu-nav-item h-9 min-w-0 flex-1 rounded-[12px] border border-transparent px-2 text-xs font-semibold outline-none transition-[background-color,color,box-shadow,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar motion-reduce:transition-none",
-                selected ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
+                "language-toggle__option h-11 min-w-0 flex-1 rounded-lg border border-transparent px-2 text-xs font-semibold outline-none",
+                selected ? "is-active text-foreground" : "text-muted-foreground",
               )}
               onClick={() => setLocale(option)}
               aria-label={ariaLabel}

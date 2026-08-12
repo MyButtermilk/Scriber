@@ -1060,11 +1060,15 @@ Packaging and scripts:
   shared-timeline timestamp rebasing, and versioned `meeting_live_status`
   reconnect/recovery/degraded events. Report the first preview-queue overflow
   immediately; durable recorder loss must remain zero. Meeting realtime
-  requests Soniox speaker diarization for the system-audio stream only; the
-  microphone stream remains the local `You` track. Preserve every contiguous
-  system-speaker token run as its own timestamped final live segment, normalize
-  raw provider speaker ids by first appearance, and scope raw ids to one
-  WebSocket connection so reconnect reuse cannot silently merge people.
+  requests Soniox speaker diarization for both the system-audio and microphone
+  streams because multiple in-room participants may share one microphone. The
+  first realtime microphone speaker remains `You`; additional detected speakers
+  retain anonymous labels. Preserve every contiguous speaker-token run as its
+  own timestamped final live segment, normalize raw provider speaker ids by
+  first appearance, and scope raw ids to one WebSocket connection so reconnect
+  reuse cannot silently merge people. Final batch transcription requests native
+  or local speaker separation independently for both canonical tracks; collapse
+  the microphone result to `You` only when it contains exactly one speaker.
 - Live microphone transcription must not request or format provider speaker
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
@@ -1248,8 +1252,16 @@ Packaging and scripts:
   native-audio admission lease. Capture mono 16 kHz PCM into a short bounded
   in-memory buffer only, reject unreadable, short, quiet, or clipped samples,
   require clear speech activity across at least two enrollment windows, and
-  clear the buffer after local WeSpeaker inference on every success, failure,
-  and cancellation path. The pinned ONNX export has fixed batch size one:
+  clear the capture buffer after local WeSpeaker inference and creation of one
+  bounded audit clip on every success, failure, and cancellation path. Keep
+  exactly one mono 16 kHz PCM16 WAV reference per profile, centered and capped
+  at four seconds, in the local SQLite store so Settings can play it for an
+  explicit name-to-voice check. This reference is local biometric audio: serve
+  it only through a short-lived token-protected capability with `no-store`,
+  exclude it from exports, logs, diagnostics, and support bundles, and delete
+  it with the profile/library. Explicit enrollment replaces the reference with
+  the newest confirmed sample; automatic Meeting learning may fill a missing
+  reference but must not silently replace one. The pinned ONNX export has fixed batch size one:
   infer each accepted window as waveform `[1, 160000]` plus mask `[1, 589]`,
   normalize each result, and persist only their normalized centroid. Validate
   the native start response as mono 16 kHz
@@ -1258,7 +1270,8 @@ Packaging and scripts:
   Persist only one normalized aggregate enrollment centroid plus count,
   effective-weight, resultant-norm, and time metadata on the local speaker
   profile; reconstruct its weighted sum only in memory for exact incremental
-  and merge math. Never persist individual enrollment samples. Profile
+  and merge math. Never persist individual enrollment samples beyond the one
+  bounded audit reference described above. Profile
   recomputation, Meeting deletion, merge, and split
   must preserve that explicit seed correctly. Whole-library deletion and
   Meeting-finalizer registration share a durable SQLite enabled gate under

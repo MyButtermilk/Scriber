@@ -59,6 +59,7 @@ from src.runtime.subprocess_utils import (
     read_stream_limited,
 )
 from src.speaker_diarization import DiarizationIneligibleError, diarization_component_installed
+from src.speaker_enrollment import voice_reference_wav_from_file
 from src.transcript_artifacts import (
     canonical_drafts,
     freeze_provider_route,
@@ -756,8 +757,8 @@ class MeetingFinalizer:
                         on_audio_level=None,
                         on_transcription=on_transcription,
                         on_progress=None,
-                        enable_speaker_diarization=source == "system",
-                        direct_file_speaker_diarization=source == "system",
+                        enable_speaker_diarization=True,
+                        direct_file_speaker_diarization=True,
                         execution_route=execution_route,
                         direct_file_expected_duration_seconds=duration_ms / 1_000.0,
                         provider_http_transport=self.provider_http_transport,
@@ -835,12 +836,12 @@ class MeetingFinalizer:
                 if derivation is not None:
                     selected_units = list(derivation.units)
                 elif (
-                    source == "system"
+                    source in {"microphone", "system"}
                     and not native_speaker_evidence
                     and self.speaker_diarizer is not None
                     and await diarization_component_installed(self.speaker_diarizer)
                 ):
-                    await progress("Separating remote speakers locally", 0.25 + index * 0.25)
+                    await progress("Separating speakers locally...", 0.25 + index * 0.25)
                     normalized_words = None
                     if pipeline is None:
                         normalized_words = [
@@ -1289,13 +1290,38 @@ class MeetingFinalizer:
                                 int(segment["endMs"]) - track.timeline_origin_ms,
                             ),
                         )
-                        self.store.register_speaker_embedding(
+                        registration = self.store.register_speaker_embedding(
                             meeting_id,
                             speaker_id,
                             str(segment["id"]),
                             embedding,
                             quality=1.0,
                         )
+                        save_preview = getattr(self.store, "save_speaker_profile_preview", None)
+                        profile_id = str((registration or {}).get("profileId") or "")
+                        if profile_id and callable(save_preview):
+                            start_ms = max(
+                                0,
+                                int(segment["startMs"]) - track.timeline_origin_ms,
+                            )
+                            end_ms = max(
+                                start_ms,
+                                int(segment["endMs"]) - track.timeline_origin_ms,
+                            )
+                            preview_audio, preview_duration_ms = await asyncio.to_thread(
+                                voice_reference_wav_from_file,
+                                str(extraction_path),
+                                start_ms,
+                                end_ms,
+                            )
+                            await asyncio.to_thread(
+                                save_preview,
+                                profile_id,
+                                preview_audio,
+                                duration_ms=preview_duration_ms,
+                                source=str(segment["source"]),
+                                replace=False,
+                            )
                     except Exception:
                         # Voiceprints are optional; transcript finalization remains authoritative.
                         continue

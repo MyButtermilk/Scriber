@@ -20,6 +20,10 @@ const isOverlayWindow = typeof window !== "undefined" && window.location.search.
 const isTrayWindow = typeof window !== "undefined" && window.location.search.includes("tray=1");
 const MainApp = lazy(() => import("./App"));
 
+if (!isOverlayWindow && !isTrayWindow) {
+  document.documentElement.dataset.scriberMainWindow = "true";
+}
+
 if (isOverlayWindow) {
   // Apply the transparent document surface before the lazy overlay bundle
   // mounts. This prevents the normal app background from becoming the first

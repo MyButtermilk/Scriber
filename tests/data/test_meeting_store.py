@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import math
 import sqlite3
+import struct
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier, Event, current_thread
@@ -19,6 +23,7 @@ from src.data.meeting_store import (
     VoiceLibraryDisabled,
 )
 from src.meeting_analysis import stable_analysis_item_id
+from src.speaker_enrollment import voice_reference_wav
 
 
 @pytest.fixture()
@@ -2978,9 +2983,9 @@ def test_learned_voice_preview_candidate_is_bounded_and_never_exposes_a_path(
         "profileId": learned["profileId"],
         "meetingId": meeting["id"],
         "source": "system",
-        "startMs": 7_000,
-        "endMs": 15_000,
-        "durationMs": 8_000,
+        "startMs": 9_000,
+        "endMs": 13_000,
+        "durationMs": 4_000,
     }
     assert not any("path" in key.casefold() for key in candidate)
 
@@ -3009,6 +3014,64 @@ def test_explicit_voice_enrollment_creates_named_privacy_minimal_profile(
         ).fetchone()
     assert len(stored["enrollment_embedding_blob"]) == 1_024
     assert stored["enrollment_sample_count"] == 1
+
+
+def test_speaker_profile_keeps_one_private_playable_reference_clip(store: MeetingStore):
+    pcm = struct.pack(
+        "<96000h",
+        *[round(4_000 * math.sin(2 * math.pi * 190 * index / 16_000)) for index in range(96_000)],
+    )
+    audio, duration_ms = voice_reference_wav(pcm, sample_rate=16_000)
+
+    profile = store.enroll_speaker_profile(
+        "Ada Lovelace",
+        [1.0] + [0.0] * 255,
+        preview_audio=audio,
+        preview_duration_ms=duration_ms,
+        preview_source="enrollment",
+    )
+
+    assert not any("audio" in key.casefold() for key in profile)
+    assert store.speaker_profile_previews() == {
+        profile["id"]: {
+            "profileId": profile["id"],
+            "durationMs": 4_000,
+            "source": "enrollment",
+            "createdAt": profile["createdAt"],
+            "updatedAt": profile["updatedAt"],
+        }
+    }
+    stored = store.speaker_profile_preview(profile["id"])
+    assert stored is not None
+    assert stored["audio"] == audio
+    assert stored["mimeType"] == "audio/wav"
+    with wave.open(io.BytesIO(stored["audio"]), "rb") as reader:
+        assert reader.getnframes() == 64_000
+
+    assert store.delete_speaker_profile(profile["id"]) is True
+    assert store.speaker_profile_preview(profile["id"]) is None
+
+
+def test_profile_merge_preserves_target_reference_and_deletes_source_reference(store: MeetingStore):
+    audio, duration_ms = voice_reference_wav(b"\0\0" * (4 * 16_000), sample_rate=16_000)
+    target = store.enroll_speaker_profile(
+        "Alice",
+        [1.0] + [0.0] * 255,
+        preview_audio=audio,
+        preview_duration_ms=duration_ms,
+    )
+    source_audio = audio[:-2] + b"\1\0"
+    source = store.enroll_speaker_profile(
+        "Alicia",
+        [0.0, 1.0] + [0.0] * 254,
+        preview_audio=source_audio,
+        preview_duration_ms=duration_ms,
+    )
+
+    store.merge_speaker_profiles(target["id"], source["id"])
+
+    assert store.speaker_profile_preview(target["id"])["audio"] == audio
+    assert store.speaker_profile_preview(source["id"]) is None
 
 
 def test_existing_voice_profiles_migrate_to_enrollment_schema_without_data_loss(monkeypatch, tmp_path):
@@ -3056,6 +3119,11 @@ def test_existing_voice_profiles_migrate_to_enrollment_schema_without_data_loss(
         "enrollment_resultant_norm",
         "enrolled_at",
     }.issubset(columns)
+    with database._get_connection() as conn:
+        preview_table = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='speaker_profile_previews'"
+        ).fetchone()
+    assert preview_table is not None
     database._close_all_connections()
 
 
@@ -3457,6 +3525,16 @@ def test_voice_profile_sample_count_includes_observations_beyond_matching_window
 def test_deleted_voice_library_blocks_late_finalizer_registration_until_reenabled(
     store: MeetingStore,
 ):
+    preview_audio, preview_duration_ms = voice_reference_wav(
+        b"\0\0" * (4 * 16_000),
+        sample_rate=16_000,
+    )
+    existing = store.enroll_speaker_profile(
+        "Existing voice",
+        [0.0, 1.0] + [0.0] * 254,
+        preview_audio=preview_audio,
+        preview_duration_ms=preview_duration_ms,
+    )
     meeting = store.create(create_request())
     store.add_segments(
         meeting["id"],
@@ -3475,6 +3553,7 @@ def test_deleted_voice_library_blocks_late_finalizer_registration_until_reenable
     )
     speaker = store.detail(meeting["id"])["speakers"][0]
     store.delete_all_speaker_profiles()
+    assert store.speaker_profile_preview(existing["id"]) is None
 
     skipped = store.register_speaker_embedding(
         meeting["id"],

@@ -449,11 +449,19 @@ def stage_units_from_provider(
     origin_ms: int = 0,
 ) -> tuple[tuple[StageUnit, ...], dict[str, Any]]:
     normalized = normalize_provider_segments(provider, payload, source_track, origin_ms)
+    microphone_speaker_keys = {
+        str(segment.get("speakerKey") or "").strip()
+        for segment in normalized
+        if str(segment.get("speakerKey") or "").strip()
+    }
+    single_microphone_speaker = source_track == "microphone" and len(microphone_speaker_keys) == 1
     units: list[StageUnit] = []
     for segment in normalized:
         label = str(segment.get("speakerLabel") or "").strip()
         key = segment.get("speakerKey")
-        has_speaker = bool(label and label not in {"Meeting audio", "You"})
+        has_speaker = bool(key not in (None, "") and label and label != "Meeting audio")
+        if has_speaker and single_microphone_speaker:
+            label = "You"
         units.append(
             StageUnit(
                 source_track=source_track,
@@ -550,6 +558,18 @@ def stage_units_from_local_segments(
                 provider_native_id=f"local-diarization-{index}",
             )
         )
+    microphone_speaker_keys = {
+        str(unit.speaker_key or "").strip()
+        for unit in units
+        if unit.source_track == "microphone" and str(unit.speaker_key or "").strip()
+    }
+    if len(microphone_speaker_keys) == 1:
+        units = [
+            StageUnit(**{**unit.__dict__, "speaker_label": "You"})
+            if unit.source_track == "microphone" and unit.speaker_key not in (None, "")
+            else unit
+            for unit in units
+        ]
     return tuple(units)
 
 

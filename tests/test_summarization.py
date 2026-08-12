@@ -5,6 +5,7 @@ import traceback
 from types import SimpleNamespace
 
 import pytest
+from aiohttp import ClientPayloadError
 
 from src import summarization
 from src.celeris import CelerisOutputLimitError
@@ -563,6 +564,53 @@ async def test_invalid_summary_json_is_absent_from_formatted_exception_chain():
         )
     )
     assert private_marker not in formatted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "post",
+    [
+        summarization._post_openrouter_chat_completion,
+        summarization._post_meta_chat_completion,
+    ],
+)
+async def test_summary_chat_completion_retries_incomplete_response_payload(post):
+    calls = 0
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise ClientPayloadError("response payload is not completed")
+            return json.dumps(
+                {
+                    "model": "muse-spark-1.2",
+                    "choices": [
+                        {
+                            "finish_reason": "stop",
+                            "message": {"role": "assistant", "content": "complete summary"},
+                        }
+                    ],
+                }
+            )
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    result = await post({"messages": []}, {}, Session())
+
+    assert result["choices"][0]["message"]["content"] == "complete summary"
+    assert calls == 2
 
 
 def test_summary_diagnostics_discard_unknown_identifier_shaped_values():

@@ -284,7 +284,11 @@ return no speech; that track contributes no synthetic segment when another
 canonical track has usable units. Finalization still fails if every available
 canonical track is empty, a provider request raises, or returned text cannot be
 normalized into usable segments. Surviving units retain their original source
-and Meeting-clock intervals.
+and Meeting-clock intervals. Speaker diarization is requested independently on
+both canonical tracks because several in-room participants may share one
+microphone while remote participants share the system track. A single-speaker
+microphone result is projected as `You`; multiple provider-native or local
+speaker identities remain distinct.
 
 Local speaker separation is a second immutable evidence layer rather than a
 mutation of the provider result. `transcription_track_derivations` binds the
@@ -436,7 +440,12 @@ bytes.
    checksum-verified staging file; promotion and a cross-process post-check use
    the same enabled gate so an in-flight download cannot restore deleted data.
    After finalization, speaker identity resolution is deliberately layered.
-   Scriber first proposes unique local Voice Library matches, then assigns the
+   Scriber first proposes unique local Voice Library matches. Each saved
+   profile may retain exactly one private, four-second-or-shorter PCM reference
+   clip in SQLite; Settings mints a short-lived authenticated playback
+   capability so the user can audit whether its saved name matches the voice.
+   This reference never participates in matching or leaves local storage and is
+   removed with the profile/library. Scriber then assigns the
    microphone track to the connected Outlook account where possible. Only an
    explicit user action may ask the configured LLM about unresolved speakers.
    That request contains opaque speaker/participant ids, participant names, and

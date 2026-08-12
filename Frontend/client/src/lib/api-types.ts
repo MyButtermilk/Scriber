@@ -641,7 +641,8 @@ export interface SpeakerEnrollmentResponse {
     peak: number;
     quality: number;
   };
-  audioPersisted: false;
+  /** A bounded local reference clip is retained for name-to-voice auditing. */
+  audioPersisted: true;
   audioSentToProvider: false;
 }
 

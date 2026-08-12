@@ -4,6 +4,7 @@ import io
 import math
 import struct
 import threading
+import wave
 
 import pytest
 
@@ -12,7 +13,7 @@ from src.runtime.audio_frame_pipe import (
     AudioFrameHeader,
     encode_audio_frame,
 )
-from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample
+from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample, voice_reference_wav
 
 
 def _frame(samples: list[int], *, sequence: int = 0, flags: int = 0) -> bytes:
@@ -41,6 +42,19 @@ def _tone(
         round(amplitude * math.sin(2 * math.pi * frequency * index / sample_rate))
         for index in range(round(duration_seconds * sample_rate))
     ]
+
+
+def test_voice_reference_wav_keeps_only_a_bounded_auditable_segment() -> None:
+    pcm = struct.pack("<96000h", *_tone(6.0))
+
+    audio, duration_ms = voice_reference_wav(pcm, sample_rate=16_000)
+
+    assert duration_ms == 4_000
+    assert audio.startswith(b"RIFF")
+    assert len(audio) <= 4 * 16_000 * 2 + 64
+    with wave.open(io.BytesIO(audio), "rb") as reader:
+        assert (reader.getframerate(), reader.getnchannels(), reader.getsampwidth()) == (16_000, 1, 2)
+        assert reader.getnframes() == 64_000
 
 
 def test_voice_enrollment_capture_is_bounded_and_clearable() -> None:

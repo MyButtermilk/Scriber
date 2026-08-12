@@ -179,12 +179,13 @@ Meetings:
 - Independent Soniox live streams now supervise send/receive failures, reconnect
   with bounded exponential backoff, emit one preview-gap marker per outage, and
   report reconnect/recovery state visibly while durable local capture continues.
-- Soniox realtime speaker diarization is active for system audio, and final live
-  provider turns now preserve every contiguous speaker run instead of assigning
-  the whole turn to its majority speaker. The shared microphone track is still
-  intentionally presented as `You`; separating several in-room people sharing
-  one microphone remains a product decision because it changes provider cost,
-  final-transcript routing, and the single-speaker Meeting UX.
+- Soniox realtime speaker diarization is active for system audio and shared
+  microphones, and final live provider turns preserve every contiguous speaker
+  run instead of assigning the whole turn to its majority speaker. The first
+  realtime microphone identity remains `You`; additional in-room speakers keep
+  anonymous labels. Final batch transcription and the optional local fallback
+  separate both canonical tracks, collapsing a microphone result to `You` only
+  when exactly one speaker was found.
 - Durable recorder errors are watchdog inputs; simulated disk-full preserves
   completed chunks, rejects the incomplete chunk, and stops capture visibly.
 - The Meeting pipeline now has an explicit five-hour target (18,000 seconds):

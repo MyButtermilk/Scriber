@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import array
+import io
 import math
 import sys
 import threading
 import time
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, BinaryIO
@@ -25,6 +27,80 @@ _MIN_ACTIVE_SPEECH_MS = 1_200
 _EMBEDDING_WINDOW_MS = 4_000
 _MIN_ACTIVE_MS_PER_EMBEDDING_WINDOW = 500
 _MIN_USABLE_EMBEDDING_WINDOWS = 2
+_VOICE_REFERENCE_MIN_DURATION_MS = 2_000
+_VOICE_REFERENCE_MAX_DURATION_MS = 4_000
+
+
+def voice_reference_wav(
+    pcm: bytes,
+    *,
+    sample_rate: int = 16_000,
+    max_duration_ms: int = _VOICE_REFERENCE_MAX_DURATION_MS,
+) -> tuple[bytes, int]:
+    """Build one privacy-bounded mono PCM16 reference clip in memory.
+
+    The clip is intentionally shorter than the enrollment recording. It exists
+    only so a person can audit a saved name-to-voice association later; local
+    speaker matching continues to use embeddings, never this audio payload.
+    """
+
+    rate = int(sample_rate)
+    if rate != 16_000:
+        raise ValueError("Voice reference audio must be 16 kHz PCM16.")
+    payload = bytes(pcm or b"")
+    if not payload or len(payload) % 2:
+        raise ValueError("Voice reference audio must contain complete PCM16 samples.")
+    total_frames = len(payload) // 2
+    minimum_frames = round(rate * _VOICE_REFERENCE_MIN_DURATION_MS / 1_000)
+    if total_frames < minimum_frames:
+        raise ValueError("Voice reference audio is too short.")
+    bounded_ms = max(
+        _VOICE_REFERENCE_MIN_DURATION_MS,
+        min(_VOICE_REFERENCE_MAX_DURATION_MS, int(max_duration_ms)),
+    )
+    selected_frames = min(total_frames, round(rate * bounded_ms / 1_000))
+    start_frame = max(0, (total_frames - selected_frames) // 2)
+    selected = payload[start_frame * 2 : (start_frame + selected_frames) * 2]
+
+    output = io.BytesIO()
+    with wave.open(output, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(rate)
+        writer.writeframes(selected)
+    duration_ms = round(selected_frames * 1_000 / rate)
+    return output.getvalue(), duration_ms
+
+
+def voice_reference_wav_from_file(
+    path: str,
+    start_ms: int,
+    end_ms: int,
+) -> tuple[bytes, int]:
+    """Read one bounded reference interval from a canonical PCM WAV."""
+
+    start = max(0, int(start_ms))
+    end = max(start, int(end_ms))
+    if end - start < _VOICE_REFERENCE_MIN_DURATION_MS:
+        raise ValueError("Voice reference interval is too short.")
+    with wave.open(str(path), "rb") as reader:
+        if (
+            reader.getnchannels() != 1
+            or reader.getsampwidth() != 2
+            or reader.getframerate() != 16_000
+            or reader.getcomptype() != "NONE"
+        ):
+            raise ValueError("Voice reference source must be mono 16 kHz PCM16 WAV.")
+        available_frames = int(reader.getnframes())
+        requested_start = min(available_frames, round(start * 16_000 / 1_000))
+        requested_end = min(available_frames, round(end * 16_000 / 1_000))
+        requested_frames = max(0, requested_end - requested_start)
+        maximum_frames = round(16_000 * _VOICE_REFERENCE_MAX_DURATION_MS / 1_000)
+        selected_frames = min(requested_frames, maximum_frames)
+        selected_start = requested_start + max(0, (requested_frames - selected_frames) // 2)
+        reader.setpos(selected_start)
+        pcm = reader.readframes(selected_frames)
+    return voice_reference_wav(pcm, sample_rate=16_000)
 
 
 @dataclass

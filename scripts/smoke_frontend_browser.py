@@ -156,6 +156,14 @@ class FrontendSmokeBackend:
                 "enrolledAt": "",
                 "createdAt": "2026-06-01T10:00:00Z",
                 "updatedAt": "2026-06-01T10:00:00Z",
+                "preview": {
+                    "token": "smoke-a",
+                    "url": "/api/meetings/speaker-profile-preview/smoke-a",
+                    "startMs": 0,
+                    "endMs": 4_000,
+                    "durationMs": 4_000,
+                    "source": "system",
+                },
             },
             {
                 "id": "profile-smoke-b",
@@ -167,6 +175,14 @@ class FrontendSmokeBackend:
                 "enrolledAt": "",
                 "createdAt": "2026-06-01T10:00:00Z",
                 "updatedAt": "2026-06-01T10:00:00Z",
+                "preview": {
+                    "token": "smoke-b",
+                    "url": "/api/meetings/speaker-profile-preview/smoke-b",
+                    "startMs": 0,
+                    "endMs": 4_000,
+                    "durationMs": 4_000,
+                    "source": "system",
+                },
             },
         ]
         self.outlook_connected = False
@@ -227,6 +243,10 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/meeting-profiles", self.meeting_profiles)
         app.router.add_get("/api/meetings/profiles", self.meeting_profiles)
         app.router.add_get("/api/meetings/speaker-profiles", self.meeting_speaker_profiles)
+        app.router.add_get(
+            "/api/meetings/speaker-profile-preview/{token}",
+            self.meeting_speaker_profile_preview,
+        )
         app.router.add_post("/api/meetings/speaker-profiles/enroll", self.enroll_meeting_speaker_profile)
         app.router.add_patch("/api/meetings/speaker-profiles/{profile_id}", self.patch_meeting_speaker_profile)
         app.router.add_delete("/api/meetings/speaker-profiles/{profile_id}", self.delete_meeting_speaker_profile)
@@ -1266,6 +1286,20 @@ class FrontendSmokeBackend:
             }
         )
 
+    async def meeting_speaker_profile_preview(self, request: web.Request) -> web.Response:
+        self.meeting_requests.append("speaker-profile-preview")
+        output = io.BytesIO()
+        with wave.open(output, "wb") as writer:
+            writer.setnchannels(1)
+            writer.setsampwidth(2)
+            writer.setframerate(16_000)
+            writer.writeframes(b"\0\0" * (4 * 16_000))
+        return web.Response(
+            body=output.getvalue(),
+            content_type="audio/wav",
+            headers={"Cache-Control": "private, no-store"},
+        )
+
     async def patch_meeting_speaker_profile(self, request: web.Request) -> web.Response:
         payload = await request.json()
         profile = next(
@@ -1299,6 +1333,14 @@ class FrontendSmokeBackend:
             "enrolledAt": now,
             "createdAt": now,
             "updatedAt": now,
+            "preview": {
+                "token": "smoke-enrolled",
+                "url": "/api/meetings/speaker-profile-preview/smoke-enrolled",
+                "startMs": 0,
+                "endMs": 4_000,
+                "durationMs": 4_000,
+                "source": "enrollment",
+            },
         }
         self.speaker_profiles.append(profile)
         self.meeting_requests.append("speaker-profile-enroll")
@@ -1307,7 +1349,7 @@ class FrontendSmokeBackend:
                 "apiVersion": "1",
                 "profile": profile,
                 "capture": {"durationMs": 8_000, "rms": 0.12, "peak": 0.48, "quality": 0.88},
-                "audioPersisted": False,
+                "audioPersisted": True,
                 "audioSentToProvider": False,
             },
             status=201,
@@ -4103,6 +4145,9 @@ async def exercise_meeting_identity_settings(
   }
   if (stage === 4) {
     if (!text.includes('Katherine Johnson')) return { ok: false, waiting: 'enrolled-profile' };
+    const play = section.querySelector('button[aria-label="Play voice sample for Katherine Johnson"]');
+    if (!play) return { ok: false, waiting: 'speaker-profile-preview-control' };
+    play.click();
     const profile = Array.from(section.querySelectorAll('button'))
       .find((node) => (node.textContent || '').includes('Speaker a1b2c3'));
     if (!profile) return { ok: false, waiting: 'anonymous-profile' };
@@ -4193,6 +4238,7 @@ async def exercise_meeting_identity_settings(
     )
     required_requests = {
         "speaker-profile-enroll",
+        "speaker-profile-preview",
         "speaker-profile-rename",
         "speaker-profile-delete",
         "outlook-connect",

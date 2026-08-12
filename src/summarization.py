@@ -1338,32 +1338,66 @@ def _openrouter_should_retry_with_more_tokens(data: dict[str, Any]) -> bool:
     return finish_reason == "length" or native_finish_reason == "length"
 
 
+async def _post_chat_completion_json(
+    *,
+    provider: str,
+    url: str,
+    payload: dict[str, Any],
+    headers: dict[str, str],
+    session: aiohttp.ClientSession,
+) -> dict[str, Any]:
+    """Read one bounded chat response, retrying a truncated HTTP payload once."""
+
+    retries = _env_int("SCRIBER_SUMMARY_PAYLOAD_RETRIES", 1, min_value=0, max_value=3)
+    retryable_errors = (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError)
+    for attempt in range(retries + 1):
+        try:
+            async with session.post(url, json=payload, headers=headers) as resp:
+                raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
+                if resp.status >= 400:
+                    raise provider_transport_error(
+                        provider,
+                        "summarization",
+                        status=resp.status,
+                        response_body=raw,
+                    )
+                try:
+                    return json.loads(raw)
+                except json.JSONDecodeError:
+                    raise provider_transport_error(
+                        provider,
+                        "summarization_response",
+                        code="invalid_json",
+                    ) from None
+        except retryable_errors as exc:
+            if attempt >= retries:
+                raise
+            delay = min(2.0, 0.25 * (2**attempt))
+            logger.warning(
+                "{} summarization response body was interrupted ({}); retrying request {}/{} in {:.2f}s.",
+                provider.capitalize(),
+                type(exc).__name__,
+                attempt + 2,
+                retries + 1,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError(f"{provider} summarization request ended without a response.")
+
+
 async def _post_openrouter_chat_completion(
     payload: dict[str, Any],
     headers: dict[str, str],
     session: aiohttp.ClientSession,
 ) -> dict[str, Any]:
-    async with session.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        json=payload,
+    return await _post_chat_completion_json(
+        provider="openrouter",
+        url="https://openrouter.ai/api/v1/chat/completions",
+        payload=payload,
         headers=headers,
-    ) as resp:
-        raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
-        if resp.status >= 400:
-            raise provider_transport_error(
-                "openrouter",
-                "summarization",
-                status=resp.status,
-                response_body=raw,
-            )
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            raise provider_transport_error(
-                "openrouter",
-                "summarization_response",
-                code="invalid_json",
-            ) from None
+        session=session,
+    )
 
 
 def _openrouter_used_model(data: dict[str, Any], fallbacks: str | Sequence[str]) -> str:
@@ -1717,27 +1751,13 @@ async def _post_meta_chat_completion(
     headers: dict[str, str],
     session: aiohttp.ClientSession,
 ) -> dict[str, Any]:
-    async with session.post(
-        "https://api.meta.ai/v1/chat/completions",
-        json=payload,
+    return await _post_chat_completion_json(
+        provider="meta",
+        url="https://api.meta.ai/v1/chat/completions",
+        payload=payload,
         headers=headers,
-    ) as resp:
-        raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
-        if resp.status >= 400:
-            raise provider_transport_error(
-                "meta",
-                "summarization",
-                status=resp.status,
-                response_body=raw,
-            )
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            raise provider_transport_error(
-                "meta",
-                "summarization_response",
-                code="invalid_json",
-            ) from None
+        session=session,
+    )
 
 
 async def _summarize_meta(prompt: str, model: str, max_output_tokens: int | None) -> str:

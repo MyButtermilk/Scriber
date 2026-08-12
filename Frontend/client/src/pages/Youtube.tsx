@@ -830,7 +830,7 @@ export default function Youtube() {
               </label>
               <Input
                 id="youtube-source-search"
-                className="h-12 border-0 bg-transparent pr-10 text-[15px] shadow-none focus-visible:ring-0"
+                className="h-[44px] border-0 bg-transparent pr-10 text-[15px] shadow-none focus-visible:ring-0"
                 placeholder={t("Paste a YouTube link or search videos…")}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
@@ -839,7 +839,7 @@ export default function Youtube() {
               {query && !isSearching ? (
                 <button
                   type="button"
-                  className="absolute right-0 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+                  className="absolute inset-y-0 right-0 my-auto inline-flex h-[44px] w-[44px] items-center justify-center rounded-[10px] text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
                   onClick={() => setQuery("")}
                   aria-label={t("Clear YouTube search")}
                 >
@@ -849,7 +849,7 @@ export default function Youtube() {
             </div>
             <Button
               size="sm"
-              className="h-10 w-10 shrink-0 rounded-lg px-0 text-[12px] font-semibold active:scale-[0.98] sm:w-auto sm:min-w-[112px] sm:px-4"
+              className="h-[44px] w-[44px] shrink-0 rounded-lg px-0 text-[12px] font-semibold sm:w-auto sm:min-w-[112px] sm:px-4"
               disabled={!query.trim() || isSearching}
               type="submit"
               aria-label={isSearching ? t("Searching YouTube") : t("Find video")}

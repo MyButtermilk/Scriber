@@ -20,6 +20,7 @@ from src import database, summarization, web_api
 from src.data.meeting_import_store import MeetingImportStatus, MeetingImportStore
 from src.data.meeting_store import MeetingCreate, MeetingStore
 from src.data.transcript_artifact_store import SourceAssetState, TranscriptArtifactStore
+from src.speaker_enrollment import voice_reference_wav
 
 
 def test_meeting_device_test_duration_override_is_bounded_and_fail_closed(monkeypatch):
@@ -1507,6 +1508,44 @@ def _recording_meeting_control_controller(monkeypatch, tmp_path, db_name):
     controller._meeting_recorders[meeting["id"]] = recorder
     controller.start_meeting_capture_watchdog(meeting["id"], capture_id)
     return controller, store, meeting, recorder
+
+
+@pytest.mark.asyncio
+async def test_saved_speaker_preview_plays_without_retained_meeting_audio(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "saved-preview.db")
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    store.set_speaker_library_enabled(True)
+    audio, duration_ms = voice_reference_wav(b"\0\0" * (4 * 16_000), sample_rate=16_000)
+    profile = store.enroll_speaker_profile(
+        "Alice",
+        [1.0] + [0.0] * 255,
+        preview_audio=audio,
+        preview_duration_ms=duration_ms,
+        preview_source="enrollment",
+    )
+
+    class Model:
+        @staticmethod
+        def status():
+            return {"installed": True}
+
+    controller = SimpleNamespace(_meeting_store=store, _speaker_model=Model())
+    app = web_api.create_app(controller)
+    list_handler = _route_handler(app, "GET", "/api/meetings/speaker-profiles")
+    listed_response = await list_handler(_DirectRequest(app))
+    listed = next(item for item in json.loads(listed_response.body)["items"] if item["id"] == profile["id"])
+    assert listed["preview"]["source"] == "enrollment"
+
+    preview_handler = _route_handler(app, "GET", "/api/meetings/speaker-profile-preview/{token}")
+    response = await preview_handler(SimpleNamespace(app=app, match_info={"token": listed["preview"]["token"]}))
+
+    assert response.status == 200
+    assert response.body == audio
+    assert response.headers["Cache-Control"] == "private, no-store"
+    database._close_all_connections()
 
 
 @pytest.mark.asyncio
@@ -4344,11 +4383,40 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             profile_payload["providerCapabilities"][provider]["batchDiarization"] is True
             for provider in ("soniox_async", "assemblyai", "mistral_async", "deepgram_async")
         )
+        native_diarization_providers = {
+            "soniox_async",
+            "assemblyai",
+            "mistral_async",
+            "deepgram_async",
+            "gladia_async",
+            "smallest_async",
+            "speechmatics_async",
+        }
+        local_fallback_providers = {
+            "openai_async",
+            "openrouter_stt",
+            "gemini_stt",
+            "azure_mai",
+            "onnx_local",
+            "groq",
+            "modulate_async",
+        }
+        capabilities = profile_payload["providerCapabilities"]
+        assert all(capabilities[provider]["batchDiarization"] is True for provider in native_diarization_providers)
+        assert all(
+            capabilities[provider].get("localDiarizationFallback", False) is False
+            for provider in native_diarization_providers
+        )
+        assert all(capabilities[provider]["batchDiarization"] is False for provider in local_fallback_providers)
+        assert all(capabilities[provider]["localDiarizationFallback"] is True for provider in local_fallback_providers)
         assert {
             "soniox_async",
             "assemblyai",
             "mistral_async",
             "deepgram_async",
+            "gladia_async",
+            "smallest_async",
+            "speechmatics_async",
             "openai_async",
             "openrouter_stt",
             "gemini_stt",
@@ -5005,13 +5073,26 @@ class _EnrollmentStore:
     def speaker_profiles():
         return []
 
-    def enroll_speaker_profile(self, display_name, embedding, *, quality, profile_id=""):
+    def enroll_speaker_profile(
+        self,
+        display_name,
+        embedding,
+        *,
+        quality,
+        profile_id="",
+        preview_audio=None,
+        preview_duration_ms=0,
+        preview_source="",
+    ):
         self.enrollments.append(
             {
                 "displayName": display_name,
                 "embedding": embedding,
                 "quality": quality,
                 "profileId": profile_id,
+                "previewAudio": preview_audio,
+                "previewDurationMs": preview_duration_ms,
+                "previewSource": preview_source,
             }
         )
         return {
@@ -5225,6 +5306,15 @@ async def test_voice_enrollment_api_is_local_private_and_cleans_up(monkeypatch):
     monkeypatch.setattr(web_api, "_wait_for_voice_enrollment", no_wait)
     monkeypatch.setattr(web_api, "_claim_persistent_audio", claim_audio)
     monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+    monkeypatch.setattr(
+        web_api,
+        "voice_reference_wav",
+        lambda pcm, *, sample_rate: (
+            (b"RIFF" + b"\0" * 60, 4_000)
+            if pcm == b"private-pcm" and sample_rate == 16_000
+            else (_ for _ in ()).throw(AssertionError("unexpected enrollment PCM"))
+        ),
+    )
 
     response = await handler(
         _DirectRequest(
@@ -5246,7 +5336,7 @@ async def test_voice_enrollment_api_is_local_private_and_cleans_up(monkeypatch):
         "peak": 0.4,
         "quality": 0.956,
     }
-    assert payload["audioPersisted"] is False
+    assert payload["audioPersisted"] is True
     assert payload["audioSentToProvider"] is False
     serialized = json.dumps(payload).lower()
     assert "private-pcm" not in serialized
@@ -5270,6 +5360,9 @@ async def test_voice_enrollment_api_is_local_private_and_cleans_up(monkeypatch):
     assert controller._speaker_model.samples == [(b"private-pcm", 16_000)]
     assert controller._meeting_store.enrollments[0]["displayName"] == "Alice Example"
     assert controller._meeting_store.enrollments[0]["embedding"] == [1.0] + [0.0] * 255
+    assert controller._meeting_store.enrollments[0]["previewAudio"].startswith(b"RIFF")
+    assert controller._meeting_store.enrollments[0]["previewDurationMs"] == 4_000
+    assert controller._meeting_store.enrollments[0]["previewSource"] == "enrollment"
     assert captures[0].started_with == "private-pipe"
     assert captures[0].cleared is True
     assert released == [claim]

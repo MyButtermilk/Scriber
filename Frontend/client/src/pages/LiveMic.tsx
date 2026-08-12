@@ -522,7 +522,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
     <div ref={wrapperRef} className={`glossy-mic-wrapper ${isActive ? "is-recording" : ""}`}>
       <div className="glossy-mic-outer-ring">
         <div className="glossy-mic-trench">
-          <div className="glossy-mic-pulse-glow" />
+          <div className="glossy-mic-pulse-glow" aria-hidden="true" />
           <div className="glossy-mic-ripple-container" aria-hidden="true">
             {ripples.map((ripple) => (
               <span
@@ -546,11 +546,11 @@ const GlossyMicButton = memo(function GlossyMicButton({
             aria-busy={busy}
             aria-label={label}
           >
-            <span className="glossy-mic-layer glossy-mic-idle-layer" />
-            <span className="glossy-mic-layer glossy-mic-recording-layer" />
-            <span className="glossy-mic-layer glossy-mic-flare-layer" />
-            <span className="glossy-mic-gloss-highlight" />
-            <Mic className="glossy-mic-icon" />
+            <span className="glossy-mic-layer glossy-mic-idle-layer" aria-hidden="true" />
+            <span className="glossy-mic-layer glossy-mic-recording-layer" aria-hidden="true" />
+            <span className="glossy-mic-layer glossy-mic-flare-layer" aria-hidden="true" />
+            <span className="glossy-mic-gloss-highlight" aria-hidden="true" />
+            <Mic className="glossy-mic-icon" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -1082,19 +1082,19 @@ export default function LiveMic() {
         <section className="live-mic-stage-shell">
           <div className="live-mic-stage-core">
             <div className="live-mic-control-deck relative flex min-h-[270px] flex-col items-center justify-center px-6 py-6 lg:min-h-0 lg:py-7">
-              <div className="absolute left-5 top-5 inline-flex items-center gap-2 rounded-full bg-white/75 px-2.5 py-1.5 text-[11px] font-semibold text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] dark:text-slate-300">
-                <span
-                  className={`h-2 w-2 rounded-full ${
-                    isRecording
-                      ? "bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)]"
-                      : toggleAction !== null || isPreparing || isTranscribing
-                        ? "bg-amber-400"
-                        : isConnected
-                          ? "bg-emerald-500"
-                          : "bg-slate-400"
-                  }`}
-                  aria-hidden="true"
-                />
+              <div
+                className="live-mic-status-chip absolute left-5 top-5 inline-flex items-center gap-2 px-2.5 py-1.5 text-[11px] font-semibold"
+                data-state={
+                  isRecording
+                    ? "recording"
+                    : toggleAction !== null || isPreparing || isTranscribing
+                      ? "busy"
+                      : isConnected
+                        ? "ready"
+                        : "offline"
+                }
+              >
+                <span className="live-mic-status-dot h-2 w-2 rounded-full" aria-hidden="true" />
                 {stageStatusLabel}
               </div>
 
@@ -1122,7 +1122,8 @@ export default function LiveMic() {
                 <div className="flex min-h-11 flex-col items-center justify-center gap-0.5">
                   <p className="text-[12px] font-medium text-foreground/85">{stageStatusHint}</p>
                   <p
-                    className={`font-mono text-[13px] font-semibold tabular-nums transition-colors duration-200 ${isMicCaptureActive ? "text-red-500" : "text-muted-foreground"}`}
+                    className="live-mic-timer font-mono text-[13px] font-semibold tabular-nums"
+                    data-active={isMicCaptureActive ? "true" : "false"}
                   >
                     {formatTime(elapsed)}
                   </p>
@@ -1143,7 +1144,7 @@ export default function LiveMic() {
                   </p>
                 </div>
                 {(isPreparing || isTranscribing) && (
-                  <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-ui-micro font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
+                  <span className="live-mic-progress-chip inline-flex items-center gap-1.5 px-2.5 py-1 text-ui-micro font-semibold">
                     <WavePhysicsLoader size="micro" />
                     {stageStatusLabel}
                   </span>
@@ -1202,10 +1203,7 @@ export default function LiveMic() {
               </div>
 
               {isRecording && inputWarning && (
-                <div
-                  className="mt-3 space-y-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-700 dark:text-amber-200"
-                  role="alert"
-                >
+                <div className="live-mic-warning mt-3 space-y-3 px-4 py-3 text-sm" role="alert">
                   <p>{t(inputWarning)}</p>
                   {inputWarningActions.length > 0 && (
                     <div className="flex flex-wrap gap-2">

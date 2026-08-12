@@ -600,8 +600,6 @@ class SonioxMeetingStream:
         return [run for run in runs if run]
 
     def _speaker_label(self, tokens: list[dict[str, Any]]) -> str:
-        if self.source == "microphone":
-            return "You"
         ordered_speakers = [
             str(token.get("speaker")).strip()
             for token in tokens
@@ -611,7 +609,7 @@ class SonioxMeetingStream:
         ]
         speakers = Counter(ordered_speakers)
         if not speakers:
-            return "Meeting audio"
+            return "You" if self.source == "microphone" else "Meeting audio"
         for ordered_raw_speaker in ordered_speakers:
             ordered_key = (self._speaker_epoch, ordered_raw_speaker)
             if ordered_key not in self._speaker_numbers:
@@ -624,6 +622,8 @@ class SonioxMeetingStream:
             number = self._next_speaker_number
             self._speaker_numbers[key] = number
             self._next_speaker_number += 1
+        if self.source == "microphone" and number == 1:
+            return "You"
         return f"Speaker {number}"
 
     async def _emit(self, tokens: list[dict[str, Any]], *, is_final: bool) -> None:
@@ -716,7 +716,7 @@ class MeetingLiveTranscriber:
                 api_key=api_key,
                 model=model,
                 language=language,
-                diarization=source == "system",
+                diarization=True,
                 on_segment=on_segment,
                 on_gap=on_gap,
                 on_status=on_status,

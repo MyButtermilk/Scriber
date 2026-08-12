@@ -786,14 +786,14 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         )
     }
 
-    assert 'className="mt-3 max-w-[72ch] text-pretty text-[13px]' in component_source
+    assert 'className="page-intro__description max-w-[65ch] text-pretty text-sm' in component_source
     assert "sticky = true" in component_source
     assert 'data-page-intro="true"' in component_source
     assert "rounded-[20px]" not in component_source
     assert 'sticky ? "sticky top-3 z-20" : "relative z-0"' in component_source
     assert "-mx-4 -mt-5" not in component_source
     assert "bottomContent" in component_source
-    assert "text-ui-micro" in component_source
+    assert "page-intro__context" in component_source
     assert 'title={t("Settings")}' in page_sources["Settings.tsx"]
     assert 'eyebrow={t("Workspace controls")}' in page_sources["Settings.tsx"]
     assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
@@ -2473,7 +2473,7 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 'title={t("Voice Library")}' in meeting_settings
     assert_source_contains_tokens(
         meeting_settings,
-        't("Remote voices coming through your speakers are separated. People sharing the selected microphone currently appear together as")',
+        't("Remote voices and people sharing the selected microphone are separated when speaker detection is available. A single detected microphone speaker appears as You.")',
     )
     assert 'label={t("Recognize familiar speakers")}' in meeting_settings
     assert 'aria-label={t("Recognize familiar speakers in future meetings")}' in meeting_settings
@@ -2482,7 +2482,7 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 't("Teach Scriber a voice")' in settings
     assert_source_contains_tokens(
         settings,
-        't("Scriber listens for about 8 seconds. The recording is not saved or uploaded. The local voice profile remains until you delete it.")',
+        't("Scriber listens for about 8 seconds and keeps a short local reference clip so you can verify the saved name. Nothing is uploaded.")',
     )
     assert 'setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5")' in settings
     assert "sonioxRealtimeModel" in meeting_settings
@@ -2720,8 +2720,8 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
     assert "app-page-shell" in live_mic
     assert 'data-page-shell="live-mic"' in live_mic
     assert "actions?: ReactNode" in page_intro
-    assert "text-[36px]" in page_intro
-    assert "md:text-[42px]" in page_intro
+    assert "text-[30px]" in page_intro
+    assert "md:text-[36px]" in page_intro
     assert ".meetings-history-rail" in styles
     assert ".meetings-workspace-panel" in styles
     assert "background: var(--live-core);" in styles
@@ -2780,11 +2780,12 @@ def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
 
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
     live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
-    assert "dark:bg-[var(--live-core)]" in settings
-    assert "dark:bg-[var(--live-card)]" in settings
-    assert "dark:bg-[var(--live-well)]" in settings
-    assert "dark:border-[var(--workspace-border)]" in settings
-    assert "dark:bg-[var(--live-card)]" in live_mic
+    assert "settings-section min-w-0" in settings
+    assert "border border-border bg-card" in settings
+    assert "settings-subsection border-t border-border" in settings
+    assert "bg-[var(--color-paper)]" in settings
+    assert "live-mic-stage-shell" in live_mic
+    assert ".live-mic-stage-shell," in styles
 
 
 def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:
@@ -2877,7 +2878,7 @@ def test_frontend_motion_uses_transitions_dev_refine_and_polish_contract() -> No
     assert "data-[state=closed]:zoom-out-[0.99]" in dialog
     assert "data-[state=open]:duration-[var(--duration-slow)]" in sheet
     assert "data-[state=closed]:duration-[var(--duration-medium)]" in sheet
-    assert "data-[state=open]:zoom-in-[0.97]" in select
+    assert "data-[state=open]:zoom-in-[0.98]" in select
     assert "data-[state=closed]:zoom-out-[0.99]" in select
     assert "data-[state=open]:duration-0" in command
     assert "<DialogTitle" in command

@@ -19,16 +19,18 @@ export function QueryErrorState({
 }: QueryErrorStateProps) {
   const { t } = useI18n();
   return (
-    <Alert variant="destructive" className={cn("relative", className)}>
+    <Alert variant="destructive" className={cn("query-error-state", className)}>
       <AlertCircle className="h-4 w-4" />
-      <AlertTitle>{t(title)}</AlertTitle>
-      <AlertDescription className="pr-20">{t(description)}</AlertDescription>
+      <div className="query-error-state__copy min-w-0">
+        <AlertTitle>{t(title)}</AlertTitle>
+        <AlertDescription>{t(description)}</AlertDescription>
+      </div>
       {onRetry && (
         <Button
           type="button"
           variant="outline"
           size="sm"
-          className="absolute right-3 top-1/2 -translate-y-1/2"
+          className="query-error-state__action w-fit max-w-full"
           onClick={onRetry}
         >
           <RotateCcw className="mr-1 h-3.5 w-3.5" />
