@@ -1063,7 +1063,7 @@ function ProviderIcon({ icon, label, className }: { icon?: ProviderIconKey; labe
   return (
     <span
       className={cn(
-        "settings-provider-icon flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md border border-border bg-background p-1",
+        "flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-md bg-white p-1 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.08)]",
         className,
       )}
     >
@@ -1096,21 +1096,21 @@ function SectionPanel({
     <section
       id={id}
       className={cn(
-        "settings-section min-w-0 scroll-mt-6 rounded-2xl border border-border bg-card p-5 md:p-6",
+        "settings-section min-w-0 scroll-mt-6 rounded-[20px] border border-slate-200/85 bg-white/65 p-5 shadow-[0_22px_48px_-42px_rgba(15,23,42,0.46)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-core)] dark:shadow-[0_24px_54px_-42px_rgba(0,0,0,0.72)] md:p-6",
         className,
       )}
     >
       <div className="mb-5 flex min-w-0 items-start gap-3">
         {Icon ? (
-          <span className="settings-section-icon mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center text-primary">
+          <span className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center text-blue-600 dark:text-blue-300">
             <Icon className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden="true" />
           </span>
         ) : null}
         <div className="min-w-0 flex-1">
-          <h2 className="settings-section-title font-heading text-[19px] !font-bold leading-6 tracking-[-0.02em] text-foreground md:text-[20px]">
+          <h2 className="text-[19px] !font-bold leading-6 tracking-[-0.02em] text-slate-950 dark:text-slate-50 md:text-[20px]">
             {title}
           </h2>
-          <p className="settings-section-description mt-1.5 max-w-[62ch] text-[12.5px] leading-[18px] text-muted-foreground">
+          <p className="mt-1.5 max-w-[62ch] text-[12.5px] leading-[18px] text-slate-600 dark:text-slate-400">
             {description}
           </p>
         </div>
@@ -1133,14 +1133,13 @@ function SettingLine({
 }) {
   return (
     <div
-      className={cn(
-        "settings-line grid gap-2.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center",
-        className,
-      )}
+      className={cn("grid gap-2.5 py-2.5 sm:grid-cols-[minmax(0,1fr)_minmax(150px,220px)] sm:items-center", className)}
     >
       <div className="min-w-0">
-        <Label className="text-[13px] font-semibold leading-4 text-foreground">{label}</Label>
-        {description ? <p className="mt-1 text-[12px] leading-[16px] text-muted-foreground">{description}</p> : null}
+        <Label className="text-[13px] font-semibold leading-4 text-slate-950 dark:text-slate-100">{label}</Label>
+        {description ? (
+          <p className="mt-1 text-[12px] leading-[16px] text-slate-600 dark:text-slate-400">{description}</p>
+        ) : null}
       </div>
       <div className="min-w-0 sm:justify-self-end">{children}</div>
     </div>
@@ -1163,17 +1162,26 @@ function SettingsSubsection({
   className?: string;
 }) {
   return (
-    <div className={cn("settings-subsection border-t border-border px-0 py-4", className)}>
+    <div
+      className={cn(
+        "settings-subsection rounded-[15px] border border-slate-200/90 bg-slate-50/75 px-4 py-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.72),0_12px_28px_-28px_rgba(15,23,42,0.4)] dark:border-[var(--workspace-border)] dark:bg-[var(--live-card)] dark:shadow-[inset_0_1px_0_var(--live-highlight),0_14px_30px_-28px_rgba(0,0,0,0.72)]",
+        className,
+      )}
+    >
       <div className="mb-3.5 flex min-w-0 items-start justify-between gap-3">
         <div className="flex min-w-0 flex-1 items-start gap-2">
           {Icon ? (
-            <span className="settings-subsection-icon mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center text-primary">
+            <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-[9px] bg-blue-50/90 text-blue-600 shadow-[inset_0_0_0_1px_rgba(37,99,235,0.09)] dark:bg-blue-950/35 dark:text-blue-300">
               <Icon className="h-4 w-4" strokeWidth={2.1} aria-hidden="true" />
             </span>
           ) : null}
           <div className="min-w-0 flex-1">
-            <h3 className="text-[14.5px] !font-bold leading-5 tracking-[-0.01em] text-foreground">{title}</h3>
-            <p className="mt-1 max-w-[62ch] text-[12px] leading-[17px] text-muted-foreground">{description}</p>
+            <h3 className="text-[14.5px] !font-bold leading-5 tracking-[-0.01em] text-slate-950 dark:text-slate-100">
+              {title}
+            </h3>
+            <p className="mt-1 max-w-[62ch] text-[12px] leading-[17px] text-slate-600 dark:text-slate-400">
+              {description}
+            </p>
           </div>
         </div>
         {action ? <div className="shrink-0">{action}</div> : null}
@@ -1229,7 +1237,7 @@ function ProviderChoice({
   return (
     <div
       className={cn(
-        "settings-model-choice group flex min-h-[52px] min-w-0 w-full items-stretch rounded-lg transition-[background-color,border-color] duration-[var(--dur-short)] ease-[var(--ease-out)]",
+        "group flex min-h-[52px] w-full items-stretch rounded-lg transition-[background-color,box-shadow] duration-200",
         selected
           ? "neu-nav-active text-foreground"
           : "text-slate-800 hover:bg-slate-100/80 dark:text-slate-200 dark:hover:bg-[var(--live-card-hover)]",
@@ -4423,7 +4431,7 @@ export default function Settings() {
                   void handlePostProcessingPromptBlur();
                 }}
                 placeholder={defaultPostProcessingPrompt(locale)}
-                className="min-h-[64px] resize-none overflow-hidden break-words bg-[var(--color-paper)] text-sm transition-[background-color,border-color,color] duration-[var(--dur-short)] ease-[var(--ease-out)] focus:border-[var(--color-focus)] motion-reduce:transition-none"
+                className="min-h-[64px] resize-none overflow-hidden break-words bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
                 disabled={!postProcessingEnabled}
               />
               <div className="mt-2 flex min-w-0 flex-wrap items-center justify-between gap-2">
@@ -4465,7 +4473,7 @@ export default function Settings() {
           void handleSummarizationPromptBlur();
         }}
         placeholder={t("Summarize the key points, decisions, and action items. Keep it concise and structured.")}
-        className="min-h-[60px] resize-none overflow-hidden bg-[var(--color-paper)] text-sm transition-[background-color,border-color,color] duration-[var(--dur-short)] ease-[var(--ease-out)] focus:border-[var(--color-focus)] motion-reduce:transition-none"
+        className="min-h-[60px] resize-none overflow-hidden bg-white/70 text-sm transition-[height,box-shadow,transform,border-color] duration-300 ease-out focus:-translate-y-0.5 focus:border-blue-300 focus:shadow-[0_18px_45px_-30px_rgba(37,99,235,0.75)] motion-reduce:transform-none motion-reduce:transition-none dark:bg-[var(--live-well)] dark:focus:border-blue-700"
       />
     </FieldShell>
   );
@@ -4758,10 +4766,10 @@ export default function Settings() {
                   revealRequestedSettingsSection(item.section);
                 }}
                 className={cn(
-                  "settings-section-link relative inline-flex h-11 items-center gap-1.5 rounded-lg border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none",
+                  "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-blue-500/60",
                   active
-                    ? "is-active border-border bg-background text-foreground"
-                    : "text-muted-foreground hover:text-foreground",
+                    ? "neu-nav-active text-foreground"
+                    : "text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100",
                 )}
               >
                 <item.icon className="h-3.5 w-3.5" aria-hidden="true" />
@@ -4902,7 +4910,7 @@ export default function Settings() {
                 </SettingLine>
 
                 {favoriteMic && (
-                  <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-[color:var(--color-warning)]">
+                  <div className="flex items-center gap-1.5 py-2 text-[11px] font-medium text-amber-600 dark:text-amber-400">
                     <Star className="h-3 w-3 fill-current" />
                     {t("Favorite microphone is used automatically when connected.")}
                   </div>
@@ -5780,7 +5788,10 @@ export default function Settings() {
                         {playingSpeakerProfileId === profile.id ? t("Stop sample") : t("Play sample")}
                       </Button>
                     ) : (
-                      <span className="shrink-0 text-[11px] text-slate-500" title={t("A reference sample will be saved after this voice is heard again.")}>
+                      <span
+                        className="shrink-0 text-[11px] text-slate-500"
+                        title={t("A reference sample will be saved after this voice is heard again.")}
+                      >
                         {t("No sample yet")}
                       </span>
                     )}
@@ -6420,7 +6431,7 @@ export default function Settings() {
                       {group.label}
                     </h3>
                   </div>
-                  <div className="grid grid-cols-[minmax(0,1fr)] gap-x-2 gap-y-1 sm:grid-cols-2">
+                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
                     {group.items.map((option) => {
                       const requirement = requiredCredentialForLanguageModel(option.value);
                       const disabledReason = missingCredentialReason(requirement);

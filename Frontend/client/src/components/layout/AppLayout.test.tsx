@@ -58,20 +58,10 @@ describe("AppLayout navigation", () => {
     expect(windowFrame).not.toBeNull();
     expect(windowFrame?.querySelector(".app-scroll-viewport")).not.toBeNull();
     expect(windowFrame?.querySelector("[data-app-overlay-scrollbar]")).not.toBeNull();
-    expect(container.querySelector(".scriber-app-shell")).toHaveAttribute("data-app-shell", "true");
-    expect(container.querySelector(".scriber-nav-rail")).toHaveAttribute("data-navigation-rail", "true");
-    expect(container.querySelector(".scriber-workspace-frame")).toHaveAttribute("data-workspace-frame", "true");
-    expect(container.querySelector(".scriber-workspace-scroll")).toHaveAttribute("data-workspace-scroll", "true");
 
     for (const navigation of navigations) {
-      const meetingsLink = within(navigation).getByRole("link", { name: "Meetings" });
-      const youtubeLink = within(navigation).getByRole("link", { name: "YouTube" });
-
-      expect(meetingsLink).toHaveAttribute("aria-current", "page");
-      expect(meetingsLink).toHaveAttribute("data-active", "true");
-      expect(meetingsLink).toHaveClass("scriber-nav-link", "min-h-11");
-      expect(youtubeLink).not.toHaveAttribute("aria-current");
-      expect(youtubeLink).toHaveAttribute("data-active", "false");
+      expect(within(navigation).getByRole("link", { name: "Meetings" })).toHaveAttribute("aria-current", "page");
+      expect(within(navigation).getByRole("link", { name: "YouTube" })).not.toHaveAttribute("aria-current");
     }
   });
 });

@@ -76,18 +76,14 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   ];
 
   const renderNav = (onNavigate?: () => void) => (
-    <nav
-      className="scriber-primary-nav flex-1 px-3 pt-1"
-      aria-label={t("Main navigation")}
-      data-app-navigation="primary"
-    >
-      <ul className="scriber-primary-nav__list space-y-1">
+    <nav className="flex-1 px-3 pt-1" aria-label={t("Main navigation")}>
+      <ul className="space-y-1.5">
         {tabs.map((tab) => {
           const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
           const Icon = tab.icon;
 
           return (
-            <li key={tab.href} className="scriber-primary-nav__item">
+            <li key={tab.href}>
               <Link
                 href={tab.href}
                 onPointerEnter={() => handleNavIntent(tab.href)}
@@ -95,21 +91,13 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                 onFocus={() => handleNavIntent(tab.href)}
                 onClick={onNavigate}
                 aria-current={isActive ? "page" : undefined}
-                data-active={isActive ? "true" : "false"}
-                data-route={tab.href}
                 className={cn(
-                  "scriber-nav-link relative flex min-h-11 min-w-0 cursor-pointer items-center gap-3 rounded-lg border border-transparent px-3 text-sm font-medium no-underline",
-                  isActive ? "neu-nav-active text-foreground" : "text-muted-foreground",
+                  "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer no-underline outline-none",
+                  isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                <Icon
-                  className={cn(
-                    "scriber-nav-link__icon h-[18px] w-[18px] shrink-0 stroke-[1.5px]",
-                    isActive && "stroke-2",
-                  )}
-                  aria-hidden="true"
-                />
-                <span className="scriber-nav-link__label min-w-0 truncate whitespace-nowrap">{tab.label}</span>
+                <Icon className={cn("w-5 h-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} />
+                <span>{tab.label}</span>
               </Link>
             </li>
           );
@@ -121,7 +109,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   const renderConsoleUtility = (onNavigate?: () => void) => {
     const isActive = location.startsWith("/debug");
     return (
-      <div className="scriber-nav-utilities px-3" data-app-navigation="utility">
+      <div className="px-3">
         <Link
           href="/debug"
           onPointerEnter={() => handleNavIntent("/debug")}
@@ -129,28 +117,20 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           onFocus={() => handleNavIntent("/debug")}
           onClick={onNavigate}
           aria-current={isActive ? "page" : undefined}
-          data-active={isActive ? "true" : "false"}
-          data-route="/debug"
           className={cn(
-            "scriber-nav-link scriber-nav-utility relative flex min-h-11 min-w-0 items-center gap-3 rounded-lg border border-transparent px-3 text-sm font-medium no-underline",
-            isActive ? "neu-nav-active text-foreground" : "text-muted-foreground",
+            "neu-nav-item flex min-h-10 items-center gap-3 rounded-xl border border-transparent px-3 text-sm font-medium no-underline outline-none",
+            isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
           )}
         >
-          <Terminal
-            className={cn("scriber-nav-link__icon h-[18px] w-[18px] shrink-0 stroke-[1.5px]", isActive && "stroke-2")}
-            aria-hidden="true"
-          />
-          <span className="scriber-nav-link__label min-w-0 truncate whitespace-nowrap">{t("Console")}</span>
+          <Terminal className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
+          <span>{t("Console")}</span>
         </Link>
       </div>
     );
   };
 
   return (
-    <div
-      className="app-window-frame scriber-app-shell flex min-h-[100dvh] flex-col overflow-hidden bg-sidebar font-sans md:h-[100dvh]"
-      data-app-shell="true"
-    >
+    <div className="app-window-frame min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md"
@@ -161,9 +141,9 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       <DesktopTitleBar />
       <ActiveMeetingPill />
 
-      <div className="scriber-app-shell__body flex min-h-0 flex-1 flex-col overflow-hidden bg-sidebar md:flex-row">
+      <div className="min-h-0 flex-1 overflow-hidden bg-sidebar flex flex-col md:flex-row">
         {/* Mobile Header */}
-        <header className="scriber-mobile-header flex items-center justify-between border-b border-border/50 px-3 py-2 md:hidden">
+        <header className="md:hidden flex items-center justify-between border-b border-border/50 px-3 py-2">
           <div className="flex items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>
@@ -179,19 +159,17 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               </SheetTrigger>
               <SheetContent side="left" className="w-[280px] border-r border-border/50 bg-sidebar p-0">
                 <SheetTitle className="sr-only">{t("Main navigation")}</SheetTitle>
-                <div className="scriber-mobile-nav flex h-full flex-col" data-mobile-navigation="true">
-                  <div className="scriber-nav-brand flex items-center gap-2.5 px-4 pb-3 pt-5">
+                <div className="flex h-full flex-col">
+                  <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
                     <BrandMark className="h-9 w-9" />
-                    <span className="scriber-wordmark font-heading text-lg font-semibold tracking-tight text-foreground">
-                      Scriber
-                    </span>
+                    <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
                   </div>
-                  <div className="scriber-nav-search px-3 pb-3">
+                  <div className="px-3 pb-3">
                     <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                   </div>
                   {renderNav(() => setMobileNavOpen(false))}
                   {renderConsoleUtility(() => setMobileNavOpen(false))}
-                  <div className="scriber-nav-preferences mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+                  <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
                     <LanguageToggle />
                     <ThemeToggle align="edge" />
                   </div>
@@ -199,7 +177,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               </SheetContent>
             </Sheet>
             <BrandMark className="h-8 w-8" decorative />
-            <span className="scriber-wordmark font-heading text-base font-semibold tracking-tight">Scriber</span>
+            <span className="font-heading text-base font-semibold tracking-tight">Scriber</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -218,17 +196,15 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         </header>
 
         {/* Left Sidebar - extends to screen edges */}
-        <aside className="scriber-nav-rail hidden w-60 shrink-0 flex-col md:flex md:w-64" data-navigation-rail="true">
+        <aside className="hidden md:flex w-60 md:w-64 shrink-0 flex-col">
           {/* Logo and Branding */}
-          <div className="scriber-nav-brand flex items-center gap-2.5 px-4 pb-3 pt-5">
+          <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
             <BrandMark className="h-9 w-9" />
-            <span className="scriber-wordmark font-heading text-lg font-semibold tracking-tight text-foreground">
-              Scriber
-            </span>
+            <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
           </div>
 
           {/* Search Bar */}
-          <div className="scriber-nav-search px-3 pb-3">
+          <div className="px-3 pb-3">
             <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPalette} />
           </div>
 
@@ -237,26 +213,22 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           {renderConsoleUtility()}
 
           {/* Theme Toggle at bottom */}
-          <div className="scriber-nav-preferences mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+          <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
             <LanguageToggle />
             <ThemeToggle align="edge" />
           </div>
         </aside>
 
         {/* Main Content Area */}
-        <main id="main-content" className="scriber-workspace flex min-h-0 min-w-0 flex-1 flex-col pb-3 md:py-3 md:pr-3">
+        <main id="main-content" className="min-h-0 min-w-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
           {/* Content panel - rounded, inset within the sidebar-colored background */}
-          <div
-            className="scriber-workspace-frame relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl md:bg-card md:neu-panel-inset"
-            data-workspace-frame="true"
-          >
+          <div className="relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl md:neu-panel-inset">
             <div
               ref={scrollContainerRef}
-              className="app-scroll-viewport scriber-workspace-scroll h-full min-w-0 overflow-x-hidden overflow-y-auto"
+              className="app-scroll-viewport h-full min-w-0 overflow-y-auto overflow-x-hidden"
               data-app-scroll-container="true"
-              data-workspace-scroll="true"
             >
-              <div className="scriber-workspace-surface min-h-full min-w-0 bg-background">
+              <div className="min-h-full min-w-0 bg-background">
                 <AppScrollContainerContext.Provider value={scrollContainerRef}>
                   {children}
                 </AppScrollContainerContext.Provider>

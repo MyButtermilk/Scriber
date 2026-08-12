@@ -668,18 +668,12 @@ export default function TranscriptDetail() {
   );
 
   return (
-    <div
-      className="transcript-detail-page min-h-full bg-background"
-      data-transcript-layout="long-document"
-      data-transcript-status={transcript.status}
-    >
-      <div
-        className="transcript-detail-header-sticky sticky top-0 z-40 px-4 pt-3 md:px-12 lg:px-8 xl:px-12"
-        data-transcript-utility-toolbar="true"
-      >
+    <div className="min-h-full bg-background">
+      {/* Header Toolbar */}
+      <div className="transcript-detail-header-sticky sticky top-0 z-40 px-4 pt-4 md:px-12 lg:px-8 xl:px-12">
         <header
           data-transcript-detail-header="true"
-          className={`transcript-detail-header-shell flex min-h-14 items-center justify-between gap-4 border-b border-border/70${showSummaryToc ? " has-summary-toc" : ""}`}
+          className={`transcript-detail-header-shell flex min-h-16 items-center justify-between gap-4 backdrop-blur-xl${showSummaryToc ? " has-summary-toc" : ""}`}
         >
           <div className="flex min-w-0 flex-1 items-center gap-4">
             <Link href={getBackLink()}>
@@ -688,20 +682,19 @@ export default function TranscriptDetail() {
               </Button>
             </Link>
             <div className="min-w-0 flex-1">
-              <p
-                className="truncate font-heading text-[15px] font-semibold tracking-[-0.02em] text-foreground md:text-[17px]"
+              <h1
+                className="truncate font-heading text-[18px] font-semibold tracking-[-0.025em] text-foreground md:text-[24px]"
                 title={transcript?.title || t("Transcript")}
-                data-transcript-toolbar-title="true"
               >
                 {transcript?.title || t("Transcript")}
-              </p>
-              <p className="truncate text-xs text-muted-foreground" data-transcript-toolbar-metadata="true">
+              </h1>
+              <p className="truncate text-xs text-muted-foreground">
                 {dateDisplay} • <span>{durationDisplay}</span>
               </p>
             </div>
           </div>
 
-          <div className="transcript-detail-toolbar-actions flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {youtubeSourceUrl && (
               <Button asChild variant="outline" size="sm" className="hidden md:inline-flex">
                 <a
@@ -865,28 +858,13 @@ export default function TranscriptDetail() {
         </header>
       </div>
 
-      <div
-        className="transcript-detail-scroll px-4 pb-10 pt-6 md:px-12 md:pb-12 md:pt-8 lg:px-8 xl:px-12"
-        data-transcript-document="true"
-      >
-        <article
+      {/* Main Content */}
+      <div className="transcript-detail-scroll p-4 md:p-8 md:px-12 lg:px-8 xl:px-12">
+        <div
           className={
             showSummaryToc ? "transcript-detail-shell has-summary-toc space-y-6" : "transcript-detail-shell space-y-6"
           }
-          data-transcript-document-flow="true"
         >
-          <header
-            className="transcript-document-header max-w-[65ch] border-b border-border/70 pb-6"
-            data-transcript-document-header="true"
-          >
-            <h1 className="min-w-0 font-heading text-3xl font-bold leading-tight tracking-[-0.035em] text-foreground [overflow-wrap:anywhere] md:text-4xl">
-              {transcript?.title || t("Transcript")}
-            </h1>
-            <p className="mt-3 text-sm leading-6 text-muted-foreground tabular-nums">
-              {dateDisplay} • <span>{durationDisplay}</span>
-            </p>
-          </header>
-
           {transcriptQuery.isError && (
             <QueryErrorState
               title={t("Could not load transcript")}
@@ -951,16 +929,11 @@ export default function TranscriptDetail() {
               type="multiple"
               value={accordionValue}
               onValueChange={setAccordionValue}
-              className="transcript-detail-accordion border-y border-border/70"
-              data-transcript-disclosures="true"
+              className="transcript-detail-accordion space-y-4"
             >
               {/* Summary Section */}
-              <AccordionItem
-                value="summary"
-                className="transcript-detail-section border-0 bg-transparent shadow-none"
-                data-transcript-section="summary"
-              >
-                <AccordionTrigger className="transcript-detail-section-trigger min-h-14 px-1 py-3 hover:no-underline">
+              <AccordionItem value="summary" className="neu-recording-row overflow-hidden">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
                   <div className="flex items-center gap-2">
                     <Sparkles className="summary-accent-icon w-4 h-4" />
                     <span className="text-base font-semibold tracking-tight">{t("Summary")}</span>
@@ -971,16 +944,14 @@ export default function TranscriptDetail() {
                       </span>
                     )}
                     {isSummaryStepStale && (
-                      <span className="ml-2 text-xs text-[color:var(--color-warning)]">
-                        {t("Summarization timed out")}
-                      </span>
+                      <span className="text-xs text-amber-600 ml-2">{t("Summarization timed out")}</span>
                     )}
                     {isSummaryFailed && (
                       <span className="text-xs text-destructive ml-2">{t("Summarization failed")}</span>
                     )}
                   </div>
                 </AccordionTrigger>
-                <AccordionContent className="transcript-detail-section-content px-1 pb-6">
+                <AccordionContent className="px-4 pb-4">
                   {hasSummary ? (
                     summaryFormat === "html" ? (
                       <TranscriptSummaryDocument prepared={preparedSummaryHtml} />
@@ -1006,12 +977,8 @@ export default function TranscriptDetail() {
               </AccordionItem>
 
               {/* Transcript Section */}
-              <AccordionItem
-                value="transcript"
-                className="transcript-detail-section border-0 bg-transparent shadow-none"
-                data-transcript-section="transcript"
-              >
-                <AccordionTrigger className="transcript-detail-section-trigger min-h-14 px-1 py-3 hover:no-underline">
+              <AccordionItem value="transcript" className="neu-recording-row overflow-hidden">
+                <AccordionTrigger className="px-4 py-3 hover:no-underline">
                   <div className="flex min-w-0 items-center gap-2 pr-3">
                     <FileText className="h-4 w-4 shrink-0 text-blue-600" />
                     <span className="text-base font-semibold tracking-tight">{t("Transcript")}</span>
@@ -1024,8 +991,8 @@ export default function TranscriptDetail() {
                     )}
                   </div>
                 </AccordionTrigger>
-                <AccordionContent className="transcript-detail-section-content px-1 pb-6">
-                  <div className="transcript-content transcript-reading-column max-w-[65ch] text-base leading-7">
+                <AccordionContent className="px-4 pb-4">
+                  <div className="transcript-content">
                     {transcriptQuery.isLoading ? (
                       t("Loading…")
                     ) : transcript.status === "processing" ? (
@@ -1044,7 +1011,7 @@ export default function TranscriptDetail() {
               </AccordionItem>
             </Accordion>
           </div>
-        </article>
+        </div>
       </div>
     </div>
   );
