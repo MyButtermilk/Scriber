@@ -119,6 +119,12 @@ Backend and runtime:
   audio frame-pipe protocol.
 - `src/runtime/provider_http.py`: event-loop-owned reusable aiohttp provider
   transport, bounded DNS/connection pooling, and privacy-safe request timing.
+- `src/runtime/cancellation.py`: the boundary discipline for work a thread
+  cannot abandon. `to_thread_cancellation_barrier` holds a durable commit
+  point until its worker really finishes; `await_with_delayed_cancellation`
+  returns the pending `CancelledError` beside the result so a caller can
+  record the ownership it just acquired before unwinding. Call these directly
+  rather than through aliases in `web_api.py`.
 - `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
   concurrent asyncio work. It retains tasks, observes every result, reports
   failures through the loop handler, reserves thread-safe submissions before

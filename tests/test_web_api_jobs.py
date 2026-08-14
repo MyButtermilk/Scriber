@@ -11,6 +11,7 @@ from src import web_api
 from src.config import Config
 from src.data.job_store import JobStatus, JobStore
 from src.pipeline import direct_file_workflow_timeout_seconds
+from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.web_api import ScriberWebController, TranscriptRecord
 from src.youtube_download import YouTubeCaptionCue, YouTubeDownloadError, YouTubeTranscript
 
@@ -2514,7 +2515,7 @@ async def test_thread_cancellation_barrier_survives_repeated_cancel_requests():
         assert release.wait(timeout=2.0)
         finished.set()
 
-    task = asyncio.create_task(web_api._to_thread_cancellation_barrier(durable_mutation))
+    task = asyncio.create_task(to_thread_cancellation_barrier(durable_mutation))
     assert await asyncio.to_thread(started.wait, 1.0)
     try:
         task.cancel()

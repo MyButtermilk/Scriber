@@ -197,6 +197,11 @@ from src.native_overlay import (
 )
 from src.outlook_calendar import OutlookCalendarService
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
+from src.runtime.cancellation import (
+    await_with_delayed_cancellation,
+    remove_tree_if_exists,
+    to_thread_cancellation_barrier,
+)
 from src.runtime.env_values import env_float as _safe_env_float
 from src.runtime.env_values import env_int as _safe_env_int
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
@@ -448,7 +453,7 @@ async def _create_scriber_pipeline_off_loop(*args: Any, **kwargs: Any) -> Any:
     but not-yet-started pipeline before delivering a pending cancellation.
     """
 
-    pipeline, pending_cancel = await _await_with_delayed_cancellation(
+    pipeline, pending_cancel = await await_with_delayed_cancellation(
         asyncio.to_thread(_create_scriber_pipeline, *args, **kwargs)
     )
     if pending_cancel is None:
@@ -1665,84 +1670,10 @@ async def _write_upload_stream_to_disk(
     return bytes_read, too_large
 
 
-def _remove_tree(path: Path) -> None:
-    import shutil
-
-    if path.exists():
-        shutil.rmtree(path)
-
-
-async def _remove_tree_if_exists(path: Path) -> None:
-    await asyncio.to_thread(_remove_tree, path)
-
-
-async def _to_thread_cancellation_barrier(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Await a thread mutation to completion even when its caller is canceled.
-
-    ``asyncio.to_thread`` cannot stop work already running in the executor.  A
-    task that immediately unwinds on cancellation can therefore close a SQLite
-    store or delete a file while that worker still owns it.  Durable import
-    commit points use this small barrier so shutdown/cancel observes the actual
-    mutation boundary before cleanup continues.
-    """
-    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            # Shutdown and explicit user cancellation can race and call
-            # ``Task.cancel`` more than once.  Keep observing the non-cancelable
-            # thread worker until its durable boundary has really completed.
-            pending_cancel = exc
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            logger.exception("Durable thread mutation failed while its caller was canceling")
-            raise pending_cancel from None
-        raise
-    if pending_cancel is not None:
-        raise pending_cancel
-    return result
-
-
-async def _await_with_delayed_cancellation(
-    awaitable: Awaitable[Any],
-) -> tuple[Any, asyncio.CancelledError | None]:
-    """Finish an ownership-changing await before delivering cancellation.
-
-    Shielding alone is insufficient for ``asyncio.to_thread``: the worker keeps
-    running after its caller is canceled, while the caller loses the mutation's
-    result (for example, the capture id of a newly started audio sidecar).  This
-    helper observes the worker to completion and returns the pending
-    ``CancelledError`` beside its result.  The caller can first record resource
-    ownership, then re-raise cancellation through its normal cleanup path.
-    """
-
-    # ``Awaitable`` includes both coroutine objects and already scheduled
-    # Futures (for example ``asyncio.gather``). ``create_task`` rejects the
-    # latter even though this helper's public contract accepts them.
-    worker = asyncio.ensure_future(awaitable)
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            pending_cancel = exc
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            raise pending_cancel from None
-        raise
-    return result, pending_cancel
-
-
 async def _await_cleanup_barrier(awaitable: Awaitable[Any]) -> Any:
     """Let cleanup finish even if another cancellation arrives meanwhile."""
 
-    result, pending_cancel = await _await_with_delayed_cancellation(awaitable)
+    result, pending_cancel = await await_with_delayed_cancellation(awaitable)
     if pending_cancel is not None:
         raise pending_cancel
     return result
@@ -2516,7 +2447,7 @@ async def _claim_persistent_audio(
             return current
         raise AudioAdmissionConflict(current)
     store, controller_id = _persistent_audio_admission(controller)
-    claim, pending_cancel = await _await_with_delayed_cancellation(
+    claim, pending_cancel = await await_with_delayed_cancellation(
         asyncio.to_thread(
             store.acquire,
             owner_kind=owner_kind,
@@ -2575,7 +2506,7 @@ async def _release_persistent_audio(controller: Any, claim: AudioAdmissionClaim 
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
     store, _controller_id = _persistent_audio_admission(controller)
-    released, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(store.release, target))
+    released, pending_cancel = await await_with_delayed_cancellation(asyncio.to_thread(store.release, target))
     if pending_cancel is not None:
         raise pending_cancel
     return bool(released)
@@ -2591,7 +2522,7 @@ async def _release_shutdown_audio_claim(
     actually released, then deliver the pending cancellation.
     """
 
-    released, pending_cancel = await _await_with_delayed_cancellation(release_worker)
+    released, pending_cancel = await await_with_delayed_cancellation(release_worker)
     if pending_cancel is not None:
         raise pending_cancel
     return bool(released)
@@ -3266,7 +3197,7 @@ async def _cleanup_meeting_capture_ownership(
             prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
             if callable(prepare_disconnect):
                 prepare_disconnect()
-            await _to_thread_cancellation_barrier(
+            await to_thread_cancellation_barrier(
                 call_shell_ipc,
                 "audioMeetingStop",
                 {"meetingId": meeting_id, "captureId": ownership.capture_id},
@@ -3280,7 +3211,7 @@ async def _cleanup_meeting_capture_ownership(
     persistence: dict[str, Any] | None = None
     if recorder is not None:
         try:
-            result = await _to_thread_cancellation_barrier(recorder.stop, expected_disconnect=True)
+            result = await to_thread_cancellation_barrier(recorder.stop, expected_disconnect=True)
             if isinstance(result, dict):
                 persistence = result
             if getattr(controller, "_meeting_recorders", {}).get(meeting_id) is recorder:
@@ -3313,7 +3244,7 @@ async def _cleanup_meeting_capture_ownership(
 
     failed: dict[str, Any] | None = None
     try:
-        current = await _to_thread_cancellation_barrier(controller._meeting_store.get, meeting_id)
+        current = await to_thread_cancellation_barrier(controller._meeting_store.get, meeting_id)
         if current.get("state") in {
             "starting",
             "recording",
@@ -3326,7 +3257,7 @@ async def _cleanup_meeting_capture_ownership(
                 metadata["captureId"] = ownership.capture_id
             if persistence is not None:
                 metadata["persistence"] = persistence
-            failed = await _to_thread_cancellation_barrier(
+            failed = await to_thread_cancellation_barrier(
                 controller._meeting_store.transition,
                 meeting_id,
                 ownership.failure_state,
@@ -3906,9 +3837,9 @@ class ScriberWebController:
                 meeting_root = (meetings_root / meeting_id).resolve()
                 if meeting_root.parent != meetings_root:
                     continue
-                await _remove_tree_if_exists(meeting_root)
+                await remove_tree_if_exists(meeting_root)
                 await asyncio.to_thread(db.delete_transcript, meeting_id)
-                await _to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
+                await to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
                 self.clear_meeting_audio_level_state(meeting_id)
         except asyncio.CancelledError:
             raise
@@ -4660,7 +4591,7 @@ class ScriberWebController:
 
     async def _pause_idle_mic_prewarm_for_capture(self) -> None:
         self._cancel_post_recording_mic_prewarm_timer()
-        _, pending_cancel = await _await_with_delayed_cancellation(
+        _, pending_cancel = await await_with_delayed_cancellation(
             asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         )
         if pending_cancel is not None:
@@ -6012,7 +5943,7 @@ class ScriberWebController:
                 return False
             if transcript_id:
                 self._mark_source_assets_purge_pending(transcript_id)
-            await _remove_tree_if_exists(file_dir)
+            await remove_tree_if_exists(file_dir)
             if transcript_id:
                 self._mark_source_assets_purged(transcript_id, reason=f"file_{reason}_task_released")
             logger.debug("Cleaned up uploaded file directory ({}): {}", reason, file_dir)
@@ -8627,10 +8558,10 @@ class ScriberWebController:
             if recovery_attempt_id
             else asyncio.to_thread(self._begin_transcript_artifact, rec, route)
         )
-        result, pending_cancel = await _await_with_delayed_cancellation(begin_worker)
+        result, pending_cancel = await await_with_delayed_cancellation(begin_worker)
         if pending_cancel is not None:
             attempt, owner, _recovery = result
-            await _to_thread_cancellation_barrier(
+            await to_thread_cancellation_barrier(
                 self._terminate_artifact_attempt_before_result,
                 attempt,
                 owner=owner,
@@ -8814,7 +8745,7 @@ class ScriberWebController:
         owner: str,
         canceled: bool,
     ) -> None:
-        await _to_thread_cancellation_barrier(
+        await to_thread_cancellation_barrier(
             self._terminate_artifact_attempt_before_result,
             attempt,
             owner=owner,
@@ -8922,7 +8853,7 @@ class ScriberWebController:
         **kwargs: Any,
     ) -> str:
         """Observe a started canonical commit through its durable transaction boundary."""
-        rendered, pending_cancel = await _await_with_delayed_cancellation(
+        rendered, pending_cancel = await await_with_delayed_cancellation(
             asyncio.to_thread(self._commit_transcript_artifact, rec, **kwargs)
         )
         # Keep mutable TranscriptRecord ownership on the event-loop thread.
@@ -8962,7 +8893,7 @@ class ScriberWebController:
         self,
         **kwargs: Any,
     ) -> AttemptRecord:
-        return await _to_thread_cancellation_barrier(
+        return await to_thread_cancellation_barrier(
             self._persist_provider_stage_before_local_diarization,
             **kwargs,
         )
@@ -9924,7 +9855,7 @@ class ScriberWebController:
                 try:
                     self._mark_source_assets_purge_pending(rec.id)
                     if out_dir.exists():
-                        await _remove_tree_if_exists(out_dir)
+                        await remove_tree_if_exists(out_dir)
                         logger.debug(f"Cleaned up YouTube download directory: {out_dir}")
                     self._mark_source_assets_purged(rec.id, reason=f"youtube_{rec.status}_task_released")
                 except Exception as cleanup_err:
@@ -10968,7 +10899,7 @@ class ScriberWebController:
                         minimum=400,
                         maximum=6000,
                     )
-                    prewarm_result, prewarm_pending_cancel = await _await_with_delayed_cancellation(
+                    prewarm_result, prewarm_pending_cancel = await await_with_delayed_cancellation(
                         asyncio.to_thread(
                             self._mic_prewarm.resume_after_active_capture,
                             temporary=True,
@@ -10983,7 +10914,7 @@ class ScriberWebController:
                         raise prewarm_pending_cancel
 
                 if pipeline_runtime_was_cold:
-                    _runtime_result, runtime_pending_cancel = await _await_with_delayed_cancellation(
+                    _runtime_result, runtime_pending_cancel = await await_with_delayed_cancellation(
                         asyncio.to_thread(_load_scriber_pipeline_runtime)
                     )
                     if runtime_pending_cancel is not None:
@@ -12267,7 +12198,7 @@ class ScriberWebController:
             if not staging_exists:
                 raise ValueError("Meeting import workspace artifacts are missing.")
             destination_root.parent.mkdir(parents=True, exist_ok=True)
-            await _to_thread_cancellation_barrier(os.replace, staging_root, destination_root)
+            await to_thread_cancellation_barrier(os.replace, staging_root, destination_root)
 
         async def verify(path: Path, expected_bytes: int | None, expected_sha256: str) -> None:
             if not path.is_file():
@@ -12300,7 +12231,7 @@ class ScriberWebController:
             if meeting["state"] == "finalizing":
                 if not allow_unowned_finalizing:
                     return
-                meeting = await _to_thread_cancellation_barrier(
+                meeting = await to_thread_cancellation_barrier(
                     self._meeting_store.transition,
                     record.meeting_id,
                     "finalization_failed",
@@ -12308,7 +12239,7 @@ class ScriberWebController:
                     error_message="Meeting import failed before finalizer ownership.",
                 )
             try:
-                await _to_thread_cancellation_barrier(self._meeting_store.transition, record.meeting_id, "discarded")
+                await to_thread_cancellation_barrier(self._meeting_store.transition, record.meeting_id, "discarded")
             except InvalidMeetingTransition, MeetingConflict:
                 return
         storage_root = data_dir().resolve()
@@ -12320,9 +12251,9 @@ class ScriberWebController:
         if meeting_root.parent != expected_parent:
             logger.error("Refusing to clean an invalid Meeting import workspace path")
             return
-        await _remove_tree_if_exists(meeting_root)
+        await remove_tree_if_exists(meeting_root)
         if meeting is not None:
-            await _to_thread_cancellation_barrier(self._meeting_store.delete, record.meeting_id)
+            await to_thread_cancellation_barrier(self._meeting_store.delete, record.meeting_id)
 
     async def _run_meeting_import(self, import_id: str) -> None:
         store = self._meeting_import_store
@@ -12335,10 +12266,10 @@ class ScriberWebController:
             }:
                 return
             if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                await _to_thread_cancellation_barrier(store.mark_canceled, import_id)
+                await to_thread_cancellation_barrier(store.mark_canceled, import_id)
                 return
             if record.status == MeetingImportStatus.RECEIVED:
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.PROBING,
@@ -12347,7 +12278,7 @@ class ScriberWebController:
             if record.status == MeetingImportStatus.PROBING:
                 await self._broadcast_meeting_import(record, 0.88, "Inspecting media")
                 original_path = self._meeting_import_staging_path(record.id, record.original_relative_path)
-                duration_seconds = await _to_thread_cancellation_barrier(_probe_media_duration_seconds, original_path)
+                duration_seconds = await to_thread_cancellation_barrier(_probe_media_duration_seconds, original_path)
                 if not duration_seconds or duration_seconds <= 0:
                     raise ValueError("Meeting recording contains no usable audio.")
                 final_provider = str(record.profile_snapshot.get("finalProvider") or Config.MEETING_FINAL_PROVIDER)
@@ -12361,7 +12292,7 @@ class ScriberWebController:
                         f"{provider_duration_limit // 60} minutes. Choose a compatible model "
                         "for this Meeting import."
                     )
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.PREPARING,
@@ -12401,9 +12332,9 @@ class ScriberWebController:
                 if process.returncode != 0 or not normalized_part.is_file():
                     reason = classify_ffmpeg_stderr(stderr.decode("utf-8", errors="replace"))
                     raise ValueError(f"Meeting audio could not be prepared ({reason}).")
-                await _to_thread_cancellation_barrier(os.replace, normalized_part, normalized_path)
-                normalized_hash = await _to_thread_cancellation_barrier(MeetingFinalizer._sha256_file, normalized_path)
-                record = await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(os.replace, normalized_part, normalized_path)
+                normalized_hash = await to_thread_cancellation_barrier(MeetingFinalizer._sha256_file, normalized_path)
+                record = await to_thread_cancellation_barrier(
                     store.mark_prepared,
                     import_id,
                     relative_path=normalized_path.relative_to(data_dir().resolve()).as_posix(),
@@ -12421,7 +12352,7 @@ class ScriberWebController:
                 await asyncio.sleep(1.0)
                 record = await asyncio.to_thread(store.require, import_id)
             if record.status == MeetingImportStatus.WAITING_FOR_WORKSPACE:
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.COMMITTING,
@@ -12452,7 +12383,7 @@ class ScriberWebController:
                         )
                         if not wait_for_capture:
                             try:
-                                meeting = await _to_thread_cancellation_barrier(
+                                meeting = await to_thread_cancellation_barrier(
                                     self._meeting_store.create,
                                     MeetingCreate(
                                         title=str(metadata.get("title") or Path(record.source_filename).stem),
@@ -12496,7 +12427,7 @@ class ScriberWebController:
                     if existing_import_id and existing_import_id != import_id:
                         raise ValueError("Meeting import workspace belongs to another job.")
                     if not existing_import_id:
-                        meeting = await _to_thread_cancellation_barrier(
+                        meeting = await to_thread_cancellation_barrier(
                             self._meeting_store.transition,
                             record.meeting_id,
                             meeting["state"],
@@ -12508,7 +12439,7 @@ class ScriberWebController:
                 runtime_root = data_dir().resolve()
                 meetings_root = (runtime_root / "meetings").resolve()
                 duration_ms = int(record.probe.get("durationMs") or 1)
-                await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(
                     self._meeting_store.add_audio_chunk,
                     record.meeting_id,
                     source="system",
@@ -12521,13 +12452,13 @@ class ScriberWebController:
                 capture_metadata["originalRelativePath"] = committed_original.relative_to(meetings_root).as_posix()
                 meeting = await asyncio.to_thread(self._meeting_store.get, record.meeting_id)
                 if meeting["state"] in {"starting", "interrupted", "finalization_failed", "capture_failed"}:
-                    meeting = await _to_thread_cancellation_barrier(
+                    meeting = await to_thread_cancellation_barrier(
                         self._meeting_store.transition,
                         record.meeting_id,
                         "finalizing",
                         capture_metadata=capture_metadata,
                     )
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.FINALIZING,
@@ -12543,7 +12474,7 @@ class ScriberWebController:
                 if not chunks:
                     raise ValueError("Committed Meeting import has no durable system audio track.")
                 if meeting["state"] == "ready":
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.transition,
                         import_id,
                         MeetingImportStatus.COMPLETED,
@@ -12552,12 +12483,12 @@ class ScriberWebController:
                     await self._broadcast_meeting_import(record, 1.0, "Meeting import complete")
                     return
                 if meeting["state"] in {"interrupted", "finalization_failed", "capture_failed", "starting"}:
-                    meeting = await _to_thread_cancellation_barrier(
+                    meeting = await to_thread_cancellation_barrier(
                         self._meeting_store.transition, record.meeting_id, "finalizing"
                     )
                 if meeting["state"] == "analysis_failed":
                     error_code, error_message = _persisted_meeting_analysis_failure_details(meeting)
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.mark_failed,
                         import_id,
                         error_code=error_code,
@@ -12566,7 +12497,7 @@ class ScriberWebController:
                     await self._broadcast_meeting_import(record, 1.0, "Meeting analysis is waiting for retry")
                     return
                 if meeting["state"] == "discarded":
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.mark_failed,
                         import_id,
                         error_code="meeting_workspace_discarded",
@@ -12585,8 +12516,8 @@ class ScriberWebController:
                 raise
             record = await asyncio.to_thread(store.require, import_id)
             if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                record = await _to_thread_cancellation_barrier(store.mark_canceled, import_id)
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
+                record = await to_thread_cancellation_barrier(store.mark_canceled, import_id)
+                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
                 await self._broadcast_meeting_import(record, 0.0, "Meeting import canceled")
             raise
         except Exception as exc:
@@ -12605,7 +12536,7 @@ class ScriberWebController:
                     meeting = None
                 if meeting is not None and meeting["state"] == "ready":
                     try:
-                        completed = await _to_thread_cancellation_barrier(
+                        completed = await to_thread_cancellation_barrier(
                             store.transition,
                             import_id,
                             MeetingImportStatus.COMPLETED,
@@ -12623,7 +12554,7 @@ class ScriberWebController:
                         error_code = type(exc).__name__
                         error_message = redact_text(str(exc))[:240]
                     try:
-                        await _to_thread_cancellation_barrier(
+                        await to_thread_cancellation_barrier(
                             self._meeting_store.transition,
                             previous.meeting_id,
                             failed_state,
@@ -12637,7 +12568,7 @@ class ScriberWebController:
             else:
                 import_error_code = type(exc).__name__
                 import_error_message = redact_text(str(exc))[:240]
-            record = await _to_thread_cancellation_barrier(
+            record = await to_thread_cancellation_barrier(
                 store.mark_failed,
                 import_id,
                 error_code=import_error_code,
@@ -12653,7 +12584,7 @@ class ScriberWebController:
                     allow_unowned_finalizing=True,
                 )
             if record.status == MeetingImportStatus.FAILED:
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
+                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
             await self._broadcast_meeting_import(record, 1.0, "Meeting import failed")
 
     def schedule_meeting_finalization(self, meeting_id: str, *, start_gate: asyncio.Event | None = None) -> bool:
@@ -15622,12 +15553,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             )
 
             if bytes_read == 0:
-                await _remove_tree_if_exists(save_dir)
+                await remove_tree_if_exists(save_dir)
                 return web.json_response({"message": "Uploaded file is empty"}, status=400)
 
             if too_large:
                 try:
-                    await _remove_tree_if_exists(save_dir)
+                    await remove_tree_if_exists(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
                 return web.json_response(
@@ -15646,7 +15577,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     # Check if extracted audio is within size limit
                     audio_size = audio_path.stat().st_size
                     if audio_size > final_audio_limit:
-                        await _remove_tree_if_exists(save_dir)
+                        await remove_tree_if_exists(save_dir)
                         return web.json_response(
                             {
                                 "message": (
@@ -15671,7 +15602,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     logger.info(f"Audio extracted successfully: {safe_filename} ({audio_size / (1024 * 1024):.1f}MB)")
 
                 except RuntimeError as extract_err:
-                    await _remove_tree_if_exists(save_dir)
+                    await remove_tree_if_exists(save_dir)
                     logger.error(f"Audio extraction failed: {extract_err}")
                     return web.json_response(
                         {"message": f"Failed to extract audio from video: {extract_err}"},
@@ -15681,7 +15612,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 transcribe_path = await _maybe_compress_audio_upload(save_path, max_bytes=final_audio_limit)
                 compressed_size = transcribe_path.stat().st_size
                 if compressed_size > final_audio_limit:
-                    await _remove_tree_if_exists(save_dir)
+                    await remove_tree_if_exists(save_dir)
                     return web.json_response(
                         {
                             "message": (
@@ -15705,7 +15636,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         finally:
             if save_dir is not None and not transcription_scheduled:
                 try:
-                    await _remove_tree_if_exists(save_dir)
+                    await remove_tree_if_exists(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup incomplete file upload: {cleanup_err}")
 
@@ -16713,7 +16644,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if current_task is not None:
             upload_tasks[import_id] = current_task
         try:
-            record = await _to_thread_cancellation_barrier(ctl._meeting_import_store.begin_receiving, import_id)
+            record = await to_thread_cancellation_barrier(ctl._meeting_import_store.begin_receiving, import_id)
             receiving_claimed = True
             storage_root = data_dir().resolve()
             imports_root = (storage_root / "meeting-imports").resolve()
@@ -16737,7 +16668,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     handle.write(chunk)
                     digest.update(chunk)
                     if received - last_reported >= 1024 * 1024:
-                        record = await _to_thread_cancellation_barrier(
+                        record = await to_thread_cancellation_barrier(
                             ctl._meeting_import_store.update_receive_progress, import_id, received
                         )
                         fraction = received / max(1, record.expected_bytes or received)
@@ -16763,7 +16694,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             # avoids a canceled to_thread continuing after DELETE removes the
             # staging directory.
             os.replace(part_path, committed_path)
-            record = await _to_thread_cancellation_barrier(
+            record = await to_thread_cancellation_barrier(
                 ctl._meeting_import_store.mark_received,
                 import_id,
                 relative_path=committed_path.relative_to(storage_root).as_posix(),
@@ -16787,14 +16718,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
             try:
                 record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
                 if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                    record = await _to_thread_cancellation_barrier(ctl._meeting_import_store.mark_canceled, import_id)
+                    record = await to_thread_cancellation_barrier(ctl._meeting_import_store.mark_canceled, import_id)
                     await ctl._broadcast_meeting_import(record, 0.0, "Meeting import canceled")
                 elif record.status in {
                     MeetingImportStatus.CREATED,
                     MeetingImportStatus.RECEIVING,
                 }:
                     if not getattr(ctl, "_shutting_down", False):
-                        record = await _to_thread_cancellation_barrier(
+                        record = await to_thread_cancellation_barrier(
                             ctl._meeting_import_store.mark_failed,
                             import_id,
                             error_code="upload_interrupted",
@@ -16813,7 +16744,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 if part_path is not None:
                     part_path.unlink(missing_ok=True)
                 if job_root is not None:
-                    await _remove_tree_if_exists(job_root)
+                    await remove_tree_if_exists(job_root)
             raise
         except MeetingImportNotFound:
             return web.json_response({"message": "Meeting import not found"}, status=404)
@@ -16837,7 +16768,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     return web.json_response(meeting_import_payload(record), status=202)
                 return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
             try:
-                await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(
                     ctl._meeting_import_store.mark_failed,
                     import_id,
                     error_code=type(exc).__name__,
@@ -16848,7 +16779,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if part_path is not None:
                 part_path.unlink(missing_ok=True)
             if job_root is not None:
-                await _remove_tree_if_exists(job_root)
+                await remove_tree_if_exists(job_root)
             return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
         except Exception:
             logger.exception("Meeting import upload failed")
@@ -16856,7 +16787,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
                 return web.json_response(meeting_import_payload(record), status=202)
             try:
-                await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(
                     ctl._meeting_import_store.mark_failed,
                     import_id,
                     error_code="upload_interrupted",
@@ -16867,7 +16798,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if part_path is not None:
                 part_path.unlink(missing_ok=True)
             if job_root is not None:
-                await _remove_tree_if_exists(job_root)
+                await remove_tree_if_exists(job_root)
             return web.json_response({"message": "The Meeting recording upload was interrupted."}, status=500)
         finally:
             if current_task is not None and upload_tasks.get(import_id) is current_task:
@@ -16910,7 +16841,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if record.status == MeetingImportStatus.CANCEL_REQUESTED and all(task.done() for task in tasks):
                 record = await asyncio.to_thread(ctl._meeting_import_store.mark_canceled, import_id)
             if record.status == MeetingImportStatus.CANCELED:
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
+                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
             await ctl._broadcast_meeting_import(
                 record,
                 0.0,
@@ -17022,7 +16953,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             nonlocal meeting_claim
             ownership = _MeetingCaptureOwnership(failure_state="capture_failed")
             try:
-                meeting, pending_cancel = await _await_with_delayed_cancellation(
+                meeting, pending_cancel = await await_with_delayed_cancellation(
                     asyncio.to_thread(ctl._meeting_store.create, create_request)
                 )
             except MeetingConflict as exc:
@@ -17049,7 +16980,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "aecEnabled": meeting["aecEnabled"],
                     "chunkDurationSeconds": 30,
                 }
-                response, pending_cancel = await _await_with_delayed_cancellation(
+                response, pending_cancel = await await_with_delayed_cancellation(
                     asyncio.to_thread(
                         call_shell_ipc,
                         "audioMeetingStart",
@@ -17153,7 +17084,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     "renderDeviceId": requested_render_id,
                     "renderNativeEndpointIdHash": render_hash,
                 }
-                recording, pending_cancel = await _await_with_delayed_cancellation(
+                recording, pending_cancel = await await_with_delayed_cancellation(
                     asyncio.to_thread(
                         ctl._meeting_store.transition,
                         meeting["id"],
@@ -17300,7 +17231,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not isinstance(selection, dict):
             selection = {}
         try:
-            response, pending_cancel = await _await_with_delayed_cancellation(
+            response, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     call_shell_ipc,
                     "audioMeetingResume",
@@ -17344,7 +17275,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             except TypeError, ValueError:
                 gap_duration_ms = 0
             gap_end_ms = pause_start_ms + gap_duration_ms
-            await _to_thread_cancellation_barrier(
+            await to_thread_cancellation_barrier(
                 ctl._meeting_store.add_audio_gap,
                 meeting_id,
                 source="all",
@@ -17415,7 +17346,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 degraded=live_preview_degraded,
                 error_code="live_stt_resume_failed",
             )
-            updated, pending_cancel = await _await_with_delayed_cancellation(
+            updated, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     ctl._meeting_store.transition,
                     meeting_id,
@@ -17736,7 +17667,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         )
         try:
             await ctl._pause_idle_mic_prewarm_for_capture()
-            response, pending_cancel = await _await_with_delayed_cancellation(
+            response, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     call_shell_ipc,
                     "audioMeetingResume",
@@ -17802,7 +17733,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 },
             )
             live_preview_ref["transcriber"] = ownership.live_transcriber
-            await _to_thread_cancellation_barrier(
+            await to_thread_cancellation_barrier(
                 ctl._meeting_store.add_audio_gap,
                 meeting_id,
                 source="all",
@@ -17823,7 +17754,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 degraded=live_preview_degraded,
                 error_code="live_stt_resume_failed",
             )
-            recording, pending_cancel = await _await_with_delayed_cancellation(
+            recording, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     ctl._meeting_store.transition,
                     meeting_id,
@@ -18008,7 +17939,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if reserved_task is None:
             return web.json_response({"message": "Meeting retranscription could not be started."}, status=503)
         try:
-            finalizing, pending_cancel = await _await_with_delayed_cancellation(
+            finalizing, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     ctl._meeting_store.reserve_full_reprocess,
                     meeting_id,
@@ -18182,14 +18113,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response({"message": "Meeting processing is already running."}, status=409)
             reserved_task = ctl._meeting_tasks.get(meeting_id)
             if import_job is not None and import_job.status == MeetingImportStatus.FAILED:
-                reopened_import = await _to_thread_cancellation_barrier(
+                reopened_import = await to_thread_cancellation_barrier(
                     ctl._meeting_import_store.transition,
                     import_job.id,
                     MeetingImportStatus.FINALIZING,
                     expected_status=MeetingImportStatus.FAILED,
                 )
                 await ctl._broadcast_meeting_import(reopened_import, 0.97, "Retrying Meeting import finalization")
-            finalizing = await _to_thread_cancellation_barrier(
+            finalizing = await to_thread_cancellation_barrier(
                 ctl._meeting_store.transition,
                 meeting_id,
                 retry_state,
@@ -18220,7 +18151,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             rollback_state = (
                                 "finalization_failed" if original_state == "capture_failed" else original_state
                             )
-                            await _to_thread_cancellation_barrier(
+                            await to_thread_cancellation_barrier(
                                 ctl._meeting_store.transition,
                                 meeting_id,
                                 rollback_state,
@@ -18232,7 +18163,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         logger.exception("Meeting retry state reservation could not be rolled back")
                 if reopened_import is not None:
                     try:
-                        await _to_thread_cancellation_barrier(
+                        await to_thread_cancellation_barrier(
                             ctl._meeting_import_store.mark_failed,
                             reopened_import.id,
                             error_code="retry_not_started",
@@ -18247,7 +18178,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         persisted.get("state") in {"finalization_failed", "capture_failed", "interrupted"}
                         and str(persisted.get("finalProvider") or "").strip().lower() == changed_final_provider
                     ):
-                        await _to_thread_cancellation_barrier(
+                        await to_thread_cancellation_barrier(
                             ctl._meeting_store.change_final_provider_for_retry,
                             meeting_id,
                             previous_final_provider,
@@ -18274,7 +18205,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if not ctl.schedule_meeting_analysis(meeting_id, start_gate=start_gate):
                 return web.json_response({"message": "Meeting analysis is already running."}, status=409)
             reserved_task = ctl._meeting_tasks.get(meeting_id)
-            analyzing = await _to_thread_cancellation_barrier(ctl._meeting_store.transition, meeting_id, "analyzing")
+            analyzing = await to_thread_cancellation_barrier(ctl._meeting_store.transition, meeting_id, "analyzing")
             start_gate.set()
             await ctl.broadcast(meeting_state_event(analyzing))
             return web.json_response({**analyzing, "apiVersion": REST_API_VERSION}, status=202)
@@ -18290,7 +18221,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     try:
                         persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
                         if persisted["state"] == "analyzing":
-                            await _to_thread_cancellation_barrier(
+                            await to_thread_cancellation_barrier(
                                 ctl._meeting_store.transition,
                                 meeting_id,
                                 original_state,
@@ -19078,7 +19009,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             if bool(getattr(ctl, "_voice_enrollment_active", False)):
                 return web.json_response({"message": "A Voice Library sample is already being recorded."}, status=409)
             try:
-                claimed_audio, pending_cancel = await _await_with_delayed_cancellation(
+                claimed_audio, pending_cancel = await await_with_delayed_cancellation(
                     _claim_persistent_audio(
                         ctl,
                         owner_kind="voice_enrollment",
@@ -19105,7 +19036,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 raise claim_cancel
             await ctl.broadcast(state_event(ctl.get_state()))
             await ctl._pause_idle_mic_prewarm_for_capture()
-            response, pending_cancel = await _await_with_delayed_cancellation(
+            response, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     call_shell_ipc,
                     "audioCaptureStart",
@@ -19170,14 +19101,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 sample_rate=16_000,
                 max_duration_seconds=(duration_ms + 1_000) / 1_000,
             )
-            _, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(capture.start, frame_pipe))
+            _, pending_cancel = await await_with_delayed_cancellation(asyncio.to_thread(capture.start, frame_pipe))
             if pending_cancel is not None:
                 raise pending_cancel
             await _wait_for_voice_enrollment(duration_ms)
             expect_native_stop = getattr(capture, "expect_native_stop", None)
             if callable(expect_native_stop):
                 expect_native_stop()
-            stop_response, pending_cancel = await _await_with_delayed_cancellation(
+            stop_response, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
                     call_shell_ipc,
                     "audioCaptureStop",
@@ -19191,7 +19122,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 raise RuntimeError("Native microphone capture did not stop cleanly.")
             if pending_cancel is not None:
                 raise pending_cancel
-            snapshot, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(capture.stop))
+            snapshot, pending_cancel = await await_with_delayed_cancellation(asyncio.to_thread(capture.stop))
             if pending_cancel is not None:
                 raise pending_cancel
             quality = assess_voice_sample(snapshot)
@@ -19207,14 +19138,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         {"message": "The local voice recognition model is no longer available."},
                         status=409,
                     )
-                embedding, pending_cancel = await _await_with_delayed_cancellation(
+                embedding, pending_cancel = await await_with_delayed_cancellation(
                     ctl._speaker_model.extract_pcm16(pcm, sample_rate=16_000)
                 )
                 if pending_cancel is not None:
                     raise pending_cancel
                 preview_audio, preview_duration_ms = voice_reference_wav(pcm, sample_rate=16_000)
                 pcm = b""
-                profile = await _to_thread_cancellation_barrier(
+                profile = await to_thread_cancellation_barrier(
                     ctl._meeting_store.enroll_speaker_profile,
                     display_name,
                     embedding,
@@ -19327,7 +19258,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 else:
                     logger.error("Voice Library retained native-audio ownership after unconfirmed cleanup")
 
-            _, cleanup_cancel = await _await_with_delayed_cancellation(cleanup_enrollment())
+            _, cleanup_cancel = await await_with_delayed_cancellation(cleanup_enrollment())
             if cleanup_cancel is not None and not handler_cancelled:
                 raise cleanup_cancel
 
@@ -19425,7 +19356,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             {"message": ("Voice Library was turned off while the local download was running.")},
                             status=409,
                         )
-                    status, promotion_cancel = await _await_with_delayed_cancellation(
+                    status, promotion_cancel = await await_with_delayed_cancellation(
                         asyncio.to_thread(ctl._speaker_model.promote_staged, staged)
                     )
                     staged = None
@@ -19435,13 +19366,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     enabled_after_promotion = bool(Config.VOICEPRINT_LIBRARY_OPT_IN)
                     post_check_cancel = None
                     if callable(durable_enabled):
-                        durable_after_promotion, post_check_cancel = await _await_with_delayed_cancellation(
+                        durable_after_promotion, post_check_cancel = await await_with_delayed_cancellation(
                             asyncio.to_thread(durable_enabled)
                         )
                         enabled_after_promotion = bool(enabled_after_promotion and durable_after_promotion)
                     pending_cancel = promotion_cancel or post_check_cancel
                     if not enabled_after_promotion:
-                        _, delete_cancel = await _await_with_delayed_cancellation(
+                        _, delete_cancel = await await_with_delayed_cancellation(
                             asyncio.to_thread(ctl._speaker_model.delete)
                         )
                         pending_cancel = pending_cancel or delete_cancel
@@ -19474,7 +19405,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return deleted
 
         async with _voice_library_mutation_lock(ctl):
-            deleted_profiles, pending_cancel = await _await_with_delayed_cancellation(delete_all_voice_data())
+            deleted_profiles, pending_cancel = await await_with_delayed_cancellation(delete_all_voice_data())
             if pending_cancel is not None:
                 raise pending_cancel
         return web.json_response({"apiVersion": REST_API_VERSION, "deleted": True, "deletedProfiles": deleted_profiles})

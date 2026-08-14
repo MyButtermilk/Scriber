@@ -926,6 +926,11 @@ Key modules:
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
 - `src/runtime/provider_http.py`: app-owned, event-loop-bound aiohttp provider
   pool and privacy-safe connection/request timing.
+- `src/runtime/cancellation.py`: the boundary module for work an executor
+  cannot abandon, used by durable import commits, workspace cleanup, and
+  ownership-changing audio startup. It is the counterpart to the supervisor
+  below: that module owns the lifetime of work nobody awaits, this one owns
+  the boundary of work that must not be left behind.
 - `src/runtime/task_supervisor.py`: the common lifecycle module for
   intentionally concurrent asyncio work. Its `spawn`/`submit`/`close` interface
   retains tasks, consumes every result, forwards failures to the loop exception
