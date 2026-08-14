@@ -52,14 +52,19 @@ Backend and runtime:
 - `src/web_api.py`: main aiohttp application composition and controller,
   WebSocket server, settings, jobs, transcript history, mic control, uploads,
   and the routes not yet split into domain modules.
-- `src/api/`: module-level Runtime, ONNX, YouTube, and Meeting Delivery route
-  domains, shared aiohttp app keys and HTTP security helpers. Each route module
-  owns its narrow structural controller port beside the handlers that consume
-  it; do not recreate a central controller-port catalogue. Runtime routes own
-  debug logs and support bundles. Each ONNX download owns a request-local
-  progress scope so parallel requests cannot drain one another; final state
-  follows its admitted progress work, and aiohttp cleanup seals every active
-  scope before cancellation.
+- `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, and Meeting
+  Delivery route domains, shared aiohttp app keys and HTTP security helpers.
+  Each route module owns its narrow structural controller port beside the
+  handlers that consume it; do not recreate a central controller-port
+  catalogue. Runtime routes own debug logs and support bundles. Each ONNX
+  download owns a request-local progress scope so parallel requests cannot
+  drain one another; final state follows its admitted progress work, and
+  aiohttp cleanup seals every active scope before cancellation. Transcript
+  routes read through `ScriberWebController.transcript_view` and delegate the
+  whole summary lifecycle to `summarize_transcript`, which returns a domain
+  outcome the route maps onto a status code. When an extracted handler needs
+  controller internals, add a public method shaped by that need instead of
+  widening a port with private names.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

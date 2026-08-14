@@ -11,6 +11,7 @@ These tests compare the two directly.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from typing import Protocol, get_type_hints
 
@@ -18,13 +19,15 @@ import pytest
 
 from src.api.onnx_routes import OnnxControllerPort
 from src.api.runtime_routes import RuntimeControllerPort
+from src.api.transcript_routes import TranscriptsControllerPort, TranscriptViewPort
 from src.api.youtube_routes import PublicRecordPort, YoutubeControllerPort
-from src.web_api import ScriberWebController, TranscriptRecord
+from src.web_api import ScriberWebController, TranscriptRecord, TranscriptView
 
 PORTS = [
     RuntimeControllerPort,
     OnnxControllerPort,
     YoutubeControllerPort,
+    TranscriptsControllerPort,
 ]
 
 
@@ -71,6 +74,13 @@ def test_transcript_record_satisfies_the_public_record_port():
     actual = inspect.signature(TranscriptRecord.to_public)
     assert list(declared.parameters) == list(actual.parameters)
     assert get_type_hints(TranscriptRecord.to_public)["include_content"] is bool
+
+
+def test_transcript_view_satisfies_the_view_port():
+    """transcript_view's return value is typed through this port."""
+    declared = {name for name in get_type_hints(TranscriptViewPort)}
+    actual = {field.name for field in dataclasses.fields(TranscriptView)}
+    assert declared <= actual, f"TranscriptViewPort names fields TranscriptView lacks: {declared - actual}"
 
 
 def test_ports_stay_narrow():

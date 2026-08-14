@@ -42,6 +42,7 @@ from src.api.http_security import (
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.onnx_routes import register_onnx_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
+from src.api.transcript_routes import register_transcript_routes
 from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
@@ -2301,6 +2302,49 @@ class TranscriptRecord:
         self.summary_updated_at = ""
         self._youtube_stt_provider_used = ""
         self._persistence_failed = False
+
+
+@dataclass(frozen=True)
+class TranscriptView:
+    """One normalized read of a transcript for API consumers.
+
+    A transcript reaches a route either as a live ``TranscriptRecord`` from the
+    in-memory history or, once that entry has been evicted, as the durable row
+    reloaded from storage. Both carry the same fields under different shapes,
+    and every reader used to repeat that fallback field by field. Producing the
+    view once keeps the branch in a single place and lets route modules stay
+    free of ``TranscriptRecord`` entirely.
+    """
+
+    id: str
+    title: str
+    content: str
+    summary: str
+    summary_format: str
+    status: str
+    date: str
+    duration: str
+
+
+@dataclass(frozen=True)
+class SummaryOutcome:
+    """What a summary attempt did, without deciding how to report it.
+
+    ``kind`` is the domain result; mapping it onto a status code belongs to the
+    route module.
+    """
+
+    kind: Literal[
+        "completed",
+        "not_found",
+        "empty_content",
+        "not_completed",
+        "already_running",
+        "rejected",
+        "failed",
+    ]
+    summary: str = ""
+    message: str = ""
 
 
 class TranscriptPersistenceError(RuntimeError):
@@ -7118,6 +7162,44 @@ class ScriberWebController:
     def _get_history_record(self, transcript_id: str) -> TranscriptRecord | None:
         """Get a transcript by ID from the history index."""
         return self._history_by_id.get(transcript_id)
+
+    def has_transcript_record(self, transcript_id: str) -> bool:
+        """Report whether the in-memory history still knows this transcript."""
+        return self._get_history_record(transcript_id) is not None
+
+    def transcript_was_deleted(self, transcript_id: str) -> bool:
+        """Report whether this transcript was deleted during the current run."""
+        return transcript_id in self._deleted_transcript_ids
+
+    async def transcript_view(self, transcript_id: str) -> TranscriptView | None:
+        """Read a transcript through the live record or its durable row.
+
+        ``get_transcript`` also warms lazily loaded content, so it runs first
+        and the in-memory record is preferred afterwards when both exist.
+        """
+
+        stored = await self.get_transcript(transcript_id)
+        record = self._get_history_record(transcript_id)
+        if record is None and not isinstance(stored, dict):
+            return None
+
+        def field(attribute: str, key: str, default: str = "") -> str:
+            if record is not None:
+                return str(getattr(record, attribute, default) or default)
+            assert isinstance(stored, dict)
+            return str(stored.get(key, default) or default)
+
+        content = record.content_text() if record is not None else str((stored or {}).get("content", "") or "")
+        return TranscriptView(
+            id=transcript_id,
+            title=field("title", "title"),
+            content=content,
+            summary=field("summary", "summary"),
+            summary_format=field("summary_format", "summaryFormat", "markdown") or "markdown",
+            status=field("status", "status"),
+            date=field("date", "date"),
+            duration=field("duration", "duration"),
+        )
 
     def get_state(self) -> dict[str, Any]:
         with self._current_lock:
@@ -14281,6 +14363,117 @@ class ScriberWebController:
         self._schedule_settings_persist()
         return settings
 
+    async def summarize_transcript(self, transcript_id: str) -> SummaryOutcome:
+        """Run one summary for a transcript and persist every state it passes.
+
+        The whole lifecycle lives here rather than in the route module because
+        it owns transcript state: the single-flight registration, the pending /
+        completed / failed transitions, their durable writes, and the history
+        broadcast that follows each one. A route only maps the outcome onto a
+        response.
+
+        Both storage paths are covered: a live history record, and a durable
+        row whose in-memory record has already been evicted.
+        """
+
+        from src.summarization import summarize_text
+
+        view = await self.transcript_view(transcript_id)
+        record = self._get_history_record(transcript_id)
+        if view is None:
+            return SummaryOutcome(kind="not_found")
+
+        if not view.content.strip():
+            return SummaryOutcome(kind="empty_content")
+        if view.status != "completed":
+            return SummaryOutcome(kind="not_completed")
+
+        summary_task = asyncio.current_task()
+        if summary_task is None or not self._register_summary_task(transcript_id, summary_task):
+            return SummaryOutcome(kind="already_running")
+
+        async def persist_detached_failure(error: str) -> None:
+            try:
+                await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="failed",
+                    error=error,
+                )
+            except Exception as persist_error:
+                logger.error(
+                    "Failed to persist summary failure state for {}: {}",
+                    transcript_id,
+                    persist_error,
+                )
+
+        async def mark_failed(public_message: str | ValueError) -> None:
+            if record is not None:
+                record.mark_summary_failed(public_message)
+                await self._save_transcript_summary_state_async(record)
+                await self._broadcast_history_updated(record=record, reason="summary_failed")
+            else:
+                await persist_detached_failure(str(public_message))
+
+        try:
+            if record is not None:
+                record.mark_summary_pending()
+                await self._save_transcript_summary_state_async(record, require_success=True)
+                await self._broadcast_history_updated(record=record, reason="summary_pending")
+            else:
+                updated = await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="pending",
+                )
+                if not updated:
+                    return SummaryOutcome(kind="not_found")
+
+            model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
+            summary = await summarize_text(view.content, model, duration=view.duration)
+            if self.transcript_was_deleted(transcript_id):
+                return SummaryOutcome(
+                    kind="not_found",
+                    message="Transcript was deleted while summarization was running",
+                )
+
+            if record is not None:
+                record.mark_summary_completed(summary)
+                await self._save_transcript_summary_state_async(
+                    record,
+                    include_summary=True,
+                    require_success=True,
+                )
+                await self._broadcast_history_updated(record=record, reason="summary_completed")
+                logger.info(f"Summarized transcript: {record.title} ({len(summary)} chars)")
+            else:
+                updated = await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
+                if not updated:
+                    return SummaryOutcome(kind="not_found")
+                logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
+            return SummaryOutcome(kind="completed", summary=summary)
+        except asyncio.CancelledError:
+            if record is not None:
+                record.mark_summary_failed("Summary canceled")
+                await self._save_transcript_summary_state_async(record)
+                await self._broadcast_history_updated(record=record, reason="summary_canceled")
+            else:
+                await persist_detached_failure("Summary canceled")
+            raise
+        except ValueError as exc:
+            await mark_failed(exc)
+            return SummaryOutcome(kind="rejected", message=str(exc))
+        except Exception as exc:
+            info = provider_user_error(None, exc)
+            public_message = "Could not create the summary. Please try again."
+            logger.error(
+                "Summarization failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
+            await mark_failed(public_message)
+            return SummaryOutcome(kind="failed", message=public_message)
+
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""
         # Find record in history
@@ -15577,50 +15770,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             payload = raw_payload
         return web.json_response(ctl.request_microphone_refresh(payload))
 
-    async def transcripts(request: web.Request):
-        """List transcripts with optional search, filtering, and pagination.
-
-        Query parameters:
-            q: Search query (searches title, content, channel)
-            type: Filter by transcript type (mic, youtube, file)
-            offset: Number of items to skip (default 0)
-            limit: Maximum number of items to return (default 50, max 100)
-        """
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        query = request.query.get("q", "")
-        transcript_type = request.query.get("type", "")
-
-        # Parse pagination parameters
-        try:
-            offset = int(request.query.get("offset", "0"))
-        except ValueError:
-            offset = 0
-        try:
-            limit = int(request.query.get("limit", "50"))
-        except ValueError:
-            limit = 50
-
-        try:
-            return web.json_response(
-                await ctl.list_transcripts(
-                    include_content=False,
-                    query=query,
-                    transcript_type=transcript_type,
-                    offset=offset,
-                    limit=limit,
-                )
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def transcript_detail(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info["id"]
-        rec = await ctl.get_transcript(transcript_id)
-        if not rec:
-            return web.json_response({"message": "Not found"}, status=404)
-        return web.json_response(rec)
-
     async def file_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         save_dir: Path | None = None
@@ -15789,224 +15938,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     await _remove_tree_if_exists(save_dir)
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup incomplete file upload: {cleanup_err}")
-
-    async def delete_transcript(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        delete_status, found = await ctl.delete_transcript_record(transcript_id)
-        if delete_status == "not_found" or found is None:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-        if delete_status == "busy":
-            return web.json_response(
-                {"message": "Transcript is still stopping; try deleting it again."},
-                status=409,
-            )
-        if delete_status == "persistence_error":
-            return web.json_response(
-                {"message": "Failed to delete transcript from storage"},
-                status=500,
-            )
-        logger.info(f"Deleted transcript: {found.title} ({transcript_id})")
-
-        return web.json_response({"success": True, "id": transcript_id})
-
-    async def summarize_transcript(request: web.Request):
-        """Summarize a transcript using the configured LLM model."""
-        from src.summarization import summarize_text
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        # Ensure full content is loaded (lazy-load safe)
-        full_data = await ctl.get_transcript(transcript_id)
-        rec = ctl._get_history_record(transcript_id)
-
-        if not rec and not full_data:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-
-        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
-        status = rec.status if rec else (full_data.get("status", "") if isinstance(full_data, dict) else "")
-        duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
-
-        if not content or not content.strip():
-            return web.json_response({"message": "Transcript has no content to summarize"}, status=400)
-
-        if status != "completed":
-            return web.json_response({"message": "Transcript is not yet completed"}, status=400)
-
-        summary_task = asyncio.current_task()
-        if summary_task is None or not ctl._register_summary_task(transcript_id, summary_task):
-            return web.json_response(
-                {"message": "A summary is already running for this transcript"},
-                status=409,
-            )
-
-        async def persist_detached_summary_failure(error: str) -> None:
-            try:
-                await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    transcript_id,
-                    status="failed",
-                    error=error,
-                )
-            except Exception as persist_error:
-                logger.error(
-                    "Failed to persist summary failure state for {}: {}",
-                    transcript_id,
-                    persist_error,
-                )
-
-        try:
-            if rec:
-                rec.mark_summary_pending()
-                await ctl._save_transcript_summary_state_async(
-                    rec,
-                    require_success=True,
-                )
-                await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
-            else:
-                updated = await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    transcript_id,
-                    status="pending",
-                )
-                if not updated:
-                    return web.json_response({"message": "Transcript not found"}, status=404)
-
-            model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
-            summary = await summarize_text(content, model, duration=duration)
-            if transcript_id in ctl._deleted_transcript_ids:
-                return web.json_response(
-                    {"message": "Transcript was deleted while summarization was running"}, status=404
-                )
-            if rec:
-                rec.mark_summary_completed(summary)
-                await ctl._save_transcript_summary_state_async(
-                    rec,
-                    include_summary=True,
-                    require_success=True,
-                )
-                await ctl._broadcast_history_updated(record=rec, reason="summary_completed")
-                logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
-            else:
-                updated = await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
-                if not updated:
-                    return web.json_response({"message": "Transcript not found"}, status=404)
-                logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
-            return web.json_response({"success": True, "summary": summary, "summaryFormat": "html"})
-        except asyncio.CancelledError:
-            if rec:
-                rec.mark_summary_failed("Summary canceled")
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_canceled")
-            else:
-                await persist_detached_summary_failure("Summary canceled")
-            raise
-        except ValueError as exc:
-            if rec:
-                rec.mark_summary_failed(exc)
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
-            else:
-                await persist_detached_summary_failure(str(exc))
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            info = provider_user_error(None, exc)
-            public_message = "Could not create the summary. Please try again."
-            logger.error(
-                "Summarization failed (error_type={}, code={})",
-                type(exc).__name__,
-                info.code or "unknown",
-            )
-            if rec:
-                rec.mark_summary_failed(public_message)
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
-            else:
-                await persist_detached_summary_failure(public_message)
-            return web.json_response({"message": public_message}, status=500)
-
-    async def stop_transcript(request: web.Request):
-        """Cancel a running transcription task."""
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        success = await ctl.cancel_transcript(transcript_id)
-        if not success:
-            # Check if it exists at all
-            found = ctl._get_history_record(transcript_id) is not None
-            if not found:
-                return web.json_response({"message": "Transcript not found"}, status=404)
-            return web.json_response({"message": "Transcription is not running"}, status=400)
-
-        return web.json_response({"success": True})
-
-    async def export_transcript(request: web.Request):
-        """Export transcript as PDF or DOCX."""
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        export_format = request.match_info.get("format", "pdf").lower()
-
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        if export_format not in ("pdf", "docx"):
-            return web.json_response({"message": "Invalid format. Use 'pdf' or 'docx'"}, status=400)
-
-        # Ensure full content is loaded (lazy-load safe)
-        full_data = await ctl.get_transcript(transcript_id)
-        rec = ctl._get_history_record(transcript_id)
-        if not rec and not full_data:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-
-        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
-        summary = rec.summary if rec else (full_data.get("summary", "") if isinstance(full_data, dict) else "")
-        summary_format = (
-            rec.summary_format
-            if rec
-            else (full_data.get("summaryFormat", "markdown") if isinstance(full_data, dict) else "markdown")
-        )
-        title = rec.title if rec else (full_data.get("title", "") if isinstance(full_data, dict) else "")
-        date = rec.date if rec else (full_data.get("date", "") if isinstance(full_data, dict) else "")
-        duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
-
-        if not content:
-            return web.json_response({"message": "Transcript has no content to export"}, status=400)
-
-        try:
-            data, content_type, ext = await _render_transcript_export_async(
-                export_format=export_format,
-                title=title or "Transcript",
-                content=content,
-                summary=summary,
-                summary_format=summary_format or "markdown",
-                date=date,
-                duration=duration,
-            )
-
-            # Sanitize filename
-            safe_title = "".join(c for c in (title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
-            filename = f"{safe_title or 'transcript'}.{ext}"
-
-            return web.Response(
-                body=data,
-                content_type=content_type,
-                headers={
-                    "Content-Disposition": _attachment_content_disposition(filename),
-                },
-            )
-        except ImportError as e:
-            return web.json_response({"message": str(e)}, status=500)
-        except Exception as e:
-            logger.exception(f"Export failed: {e}")
-            return web.json_response({"message": f"Export failed: {e}"}, status=500)
 
     async def list_meetings(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -20011,12 +19942,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/microphones", microphones)
     app.router.add_post("/api/microphones/refresh", refresh_microphones)
 
-    app.router.add_get("/api/transcripts", transcripts)
-    app.router.add_get("/api/transcripts/{id}", transcript_detail)
-    app.router.add_delete("/api/transcripts/{id}", delete_transcript)
-    app.router.add_post("/api/transcripts/{id}/summarize", summarize_transcript)
-    app.router.add_post("/api/transcripts/{id}/cancel", stop_transcript)
-    app.router.add_get("/api/transcripts/{id}/export/{format}", export_transcript)
+    register_transcript_routes(
+        app,
+        controller=controller,
+        render_export=_render_transcript_export_async,
+    )
 
     app.router.add_get("/api/meetings", list_meetings)
     app.router.add_get("/api/meetings/capabilities", meeting_capabilities)
