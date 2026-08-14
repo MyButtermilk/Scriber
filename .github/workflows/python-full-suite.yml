@@ -78,6 +78,7 @@ jobs:
         shell: pwsh
         run: >-
           .\venv\Scripts\python.exe -m mypy
+          src\api
           src\core
           src\runtime
           src\data

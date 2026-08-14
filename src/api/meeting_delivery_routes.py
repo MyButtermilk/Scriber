@@ -155,7 +155,7 @@ async def validate_webhook_target(raw_url: str) -> ValidatedWebhookTarget:
 
 
 def build_meeting_delivery_payload(detail: dict[str, Any]) -> dict[str, Any]:
-    analysis = next(
+    analysis: Any = next(
         (item.get("payload", {}) for item in detail.get("outputs", []) if item.get("kind") == "analysis"),
         {},
     )

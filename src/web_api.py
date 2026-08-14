@@ -4,7 +4,6 @@ import copy
 import hashlib
 import hmac
 import importlib
-import ipaddress
 import json
 import os
 import re
@@ -19,14 +18,28 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from loguru import logger
 
 from src import database as db
+from src.api.http_security import (
+    SESSION_TOKEN_ENV,
+    SESSION_TOKEN_HEADER,
+    SESSION_TOKEN_QUERY,
+    attachment_content_disposition,
+    configured_session_token,
+    is_loopback_bind_host,
+    is_loopback_request,
+    request_has_valid_session_token,
+    request_session_token,
+    session_token_required,
+    validate_server_bind_security,
+)
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
+from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
@@ -67,9 +80,6 @@ from src.core.provider_errors import ProviderUserError, provider_user_error
 from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
-    validate_frontend_performance_flush_request_payload,
-    validate_frontend_performance_request_payload,
-    validate_frontend_ready_request_payload,
     validate_provider_replay_arm_request_payload,
     validate_provider_replay_prepare_request_payload,
     validate_provider_replay_status_query,
@@ -80,7 +90,6 @@ from src.core.state_machine import InvalidTransitionError, RecordingState, Recor
 from src.core.ws_contracts import (
     audio_level_event,
     error_event,
-    frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
     local_polishing_model_progress_event,
@@ -174,7 +183,6 @@ from src.native_overlay import (
 )
 from src.outlook_calendar import OutlookCalendarService
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
-from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
 from src.runtime.env_values import env_float as _safe_env_float
 from src.runtime.env_values import env_int as _safe_env_int
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
@@ -218,7 +226,7 @@ from src.runtime.shell_ipc import (
     diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
 )
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
-from src.runtime.support_bundle import create_support_bundle, redact_text
+from src.runtime.support_bundle import redact_text
 from src.soniox_region import (
     normalize_soniox_region,
     soniox_realtime_websocket_url,
@@ -552,7 +560,7 @@ _FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV = "SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIME
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
-_SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
+_SESSION_TOKEN_ENV = SESSION_TOKEN_ENV
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
 _DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
 _DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
@@ -573,8 +581,8 @@ _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
 )
 _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
-_SESSION_TOKEN_HEADER = "X-Scriber-Token"
-_SESSION_TOKEN_QUERY = "scriberToken"
+_SESSION_TOKEN_HEADER = SESSION_TOKEN_HEADER
+_SESSION_TOKEN_QUERY = SESSION_TOKEN_QUERY
 _WS_SEND_TIMEOUT_SECONDS = 1.0
 # Shared by the app-owned HTTP session and background Outlook maintenance.
 # A bare aiohttp ClientSession defaults to a roughly five-minute total timeout,
@@ -608,27 +616,10 @@ def _validate_settings_text_lengths(payload: dict[str, Any]) -> None:
             raise ValueError(f"apiKeys.{setting_name} exceeds the {_SETTINGS_SECRET_MAX_BYTES}-byte settings limit")
 
 
-def _attachment_content_disposition(filename: str) -> str:
-    """Build an injection-safe attachment header with a UTF-8 filename."""
-    cleaned = "".join(
-        character
-        for character in str(filename or "")
-        if ord(character) >= 32 and character not in {'"', "\\", "/", "\x7f"}
-    ).strip()
-    if not cleaned:
-        cleaned = "download"
-    raw_suffix = Path(cleaned).suffix
-    ascii_suffix = "".join(
-        character for character in raw_suffix if character.isascii() and (character.isalnum() or character in ".-_")
-    )
-    raw_stem = cleaned[: -len(raw_suffix)] if raw_suffix else cleaned
-    ascii_stem = "".join(
-        character if character.isascii() and (character.isalnum() or character in " .-_") else "_"
-        for character in raw_stem
-    ).strip(" ._")
-    ascii_fallback = f"{ascii_stem or 'download'}{ascii_suffix}"
-    encoded = quote(cleaned, safe="")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+# Transport security helpers now live in src.api.http_security so extracted
+# route modules can share them. The private aliases keep the many call sites
+# below unchanged.
+_attachment_content_disposition = attachment_content_disposition
 
 
 # Video file extensions that require audio extraction
@@ -974,59 +965,12 @@ def _safe_work_directory_component(value: str) -> str:
     return hashlib.sha256(candidate.encode("utf-8", errors="replace")).hexdigest()[:32]
 
 
-def _configured_session_token() -> str:
-    return os.getenv(_SESSION_TOKEN_ENV, "").strip()
-
-
-def _is_loopback_bind_host(host: str) -> bool:
-    normalized = str(host or "").strip().lower()
-    if normalized == "localhost":
-        return True
-    if normalized.startswith("[") and normalized.endswith("]"):
-        normalized = normalized[1:-1]
-    normalized = normalized.split("%", 1)[0]
-    try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        return False
-    mapped = getattr(address, "ipv4_mapped", None)
-    return bool(address.is_loopback or (mapped and mapped.is_loopback))
-
-
-def _validate_server_bind_security(host: str, session_token: str) -> None:
-    """Fail closed before exposing an unauthenticated non-loopback listener."""
-
-    if _is_loopback_bind_host(host):
-        return
-    token = str(session_token or "").strip()
-    if len(token.encode("utf-8", errors="strict")) < 32:
-        raise RuntimeError(
-            "SCRIBER_SESSION_TOKEN must contain at least 32 bytes when SCRIBER_WEB_HOST is not loopback."
-        )
-
-
-def _request_session_token(request: web.Request) -> str:
-    header_token = request.headers.get(_SESSION_TOKEN_HEADER, "").strip()
-    if header_token:
-        return header_token
-
-    auth = request.headers.get("Authorization", "").strip()
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-
-    return request.query.get(_SESSION_TOKEN_QUERY, "").strip()
-
-
-def _request_has_valid_session_token(request: web.Request, token: str | None = None) -> bool:
-    expected = (token if token is not None else _configured_session_token()).strip()
-    if not expected:
-        return False
-    provided = _request_session_token(request)
-    return bool(provided) and hmac.compare_digest(provided, expected)
-
-
-def _session_token_required() -> bool:
-    return bool(_configured_session_token())
+_configured_session_token = configured_session_token
+_is_loopback_bind_host = is_loopback_bind_host
+_validate_server_bind_security = validate_server_bind_security
+_request_session_token = request_session_token
+_request_has_valid_session_token = request_has_valid_session_token
+_session_token_required = session_token_required
 
 
 def _audio_engine_feature_flags() -> dict[str, Any]:
@@ -1246,19 +1190,7 @@ def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
     return {name: dict(status) for name, status in statuses.items()}
 
 
-def _is_loopback_request(request: web.Request) -> bool:
-    peername = request.transport.get_extra_info("peername") if request.transport else None
-    if isinstance(peername, tuple) and peername:
-        host = str(peername[0]).split("%", 1)[0].lower()
-        if host == "localhost":
-            return True
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        mapped = getattr(address, "ipv4_mapped", None)
-        return bool(address.is_loopback or (mapped and mapped.is_loopback))
-    return False
+_is_loopback_request = is_loopback_request
 
 
 def _request_requires_session_token(request: web.Request) -> bool:
@@ -14679,7 +14611,6 @@ class ScriberWebController:
 
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
 APP_HTTP_SESSION: web.AppKey[ClientSession] = web.AppKey("http_session", ClientSession)
-APP_SHUTDOWN_EVENT: web.AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
     "provider_replay",
     ProviderReplayRegistry,
@@ -14946,10 +14877,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.cleanup_ctx.append(http_session_ctx)
     app.cleanup_ctx.append(provider_replay_activation_ctx)
 
-    async def health(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_health())
-
     async def ws_handler(request: web.Request):
         origin = request.headers.get("Origin")
         if origin and not _origin_allowed(origin):
@@ -14977,210 +14904,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         finally:
             await ctl.remove_client(ws)
         return ws
-
-    async def get_state(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_state())
-
-    async def get_runtime(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_runtime_info())
-
-    async def get_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_frontend_ready())
-
-    async def post_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_ready_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        return web.json_response(ctl.record_frontend_ready(payload, request))
-
-    async def get_frontend_performance(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        raw_after_sequence = request.query.get("afterSequence")
-        after_sequence: int | None = None
-        if raw_after_sequence is not None:
-            try:
-                after_sequence = int(raw_after_sequence)
-            except ValueError:
-                return web.json_response(
-                    {"message": "afterSequence must be a non-negative integer"},
-                    status=400,
-                )
-            if after_sequence < 0:
-                return web.json_response(
-                    {"message": "afterSequence must be a non-negative integer"},
-                    status=400,
-                )
-        source_instance_id = request.query.get("sourceInstanceId")
-        if source_instance_id is not None and (
-            not source_instance_id
-            or len(source_instance_id) > 64
-            or not all(char.isalnum() or char in "-_" for char in source_instance_id)
-        ):
-            return web.json_response(
-                {"message": "sourceInstanceId must be a bounded opaque identifier"},
-                status=400,
-            )
-        return web.json_response(
-            ctl.get_frontend_performance(
-                after_sequence=after_sequence,
-                source_instance_id=source_instance_id,
-            )
-        )
-
-    async def post_frontend_performance(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_performance_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        return web.json_response(ctl.record_frontend_performance(payload))
-
-    async def request_frontend_performance_flush(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_performance_flush_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        flush = ctl.request_frontend_performance_flush(payload["sourceInstanceId"])
-        if flush is None:
-            return web.json_response(
-                {"message": "Frontend performance source changed"},
-                status=409,
-            )
-        await ctl.broadcast(
-            frontend_performance_flush_event(
-                flush["sourceInstanceId"],
-                flush["heartbeatSequence"],
-            )
-        )
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "accepted": True,
-                **flush,
-            },
-            status=202,
-        )
-
-    async def get_audio_diagnostics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload = await asyncio.to_thread(ctl.get_audio_diagnostics)
-        return web.json_response(payload)
-
-    async def get_post_processing_diagnostics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "20"))
-        except ValueError:
-            limit = 20
-        return web.json_response(ctl.get_post_processing_diagnostics(limit=limit))
-
-    async def get_runtime_logs(request: web.Request):
-        try:
-            limit = int(request.query.get("limit", "500"))
-        except ValueError:
-            limit = 500
-        try:
-            payload = await asyncio.to_thread(collect_debug_logs, limit=limit)
-        except Exception:
-            logger.exception("Failed to collect runtime logs")
-            return web.json_response({"message": "Failed to collect runtime logs"}, status=500)
-        return web.json_response(payload)
-
-    async def delete_runtime_logs(request: web.Request):
-        try:
-            payload = await asyncio.to_thread(clear_debug_logs)
-        except Exception:
-            logger.exception("Failed to clear runtime logs")
-            return web.json_response({"message": "Failed to clear runtime logs"}, status=500)
-        status = 200 if payload.get("ok") else 500
-        return web.json_response(payload, status=status)
-
-    async def shutdown_runtime(request: web.Request):
-        if not _is_loopback_request(request):
-            return web.json_response({"message": "Runtime shutdown is only available on loopback"}, status=403)
-
-        token = _configured_session_token()
-        if not token:
-            return web.json_response({"message": "Runtime shutdown token is not configured"}, status=403)
-        if not _request_has_valid_session_token(request, token):
-            return web.json_response({"message": "Session token required"}, status=401)
-
-        stop_event = request.app.get(APP_SHUTDOWN_EVENT)
-        if not isinstance(stop_event, asyncio.Event):
-            return web.json_response({"message": "Runtime shutdown is not available"}, status=503)
-
-        stop_event.set()
-        return web.json_response({"ok": True, "message": "Shutdown requested"})
-
-    async def create_runtime_support_bundle(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        runtime_info = ctl.get_runtime_info()
-        app_state = ctl.get_state()
-        post_processing_diagnostics = ctl.get_post_processing_diagnostics(limit=30)
-
-        def build_bundle() -> Path:
-            return create_support_bundle(
-                runtime_info=runtime_info,
-                app_state=app_state,
-                audio_diagnostics=ctl.get_audio_diagnostics(),
-                post_processing_diagnostics=post_processing_diagnostics,
-            )
-
-        try:
-            bundle_path = await asyncio.to_thread(build_bundle)
-        except Exception:
-            logger.exception("Failed to create support bundle")
-            return web.json_response({"message": "Failed to create support bundle"}, status=500)
-
-        return web.FileResponse(
-            bundle_path,
-            headers={
-                "Content-Disposition": _attachment_content_disposition(bundle_path.name),
-            },
-        )
-
-    async def get_hot_path_metrics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "50"))
-        except ValueError:
-            limit = 50
-        include_active = str(request.query.get("includeActive", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        payload = await asyncio.to_thread(
-            ctl.get_hot_path_metrics,
-            limit=limit,
-            include_active=include_active,
-        )
-        return web.json_response(payload)
 
     def _provider_replay_contract_error(exc: RESTContractError) -> web.Response:
         status = 404 if "runId does not match this runtime" in str(exc) else 400
@@ -20393,26 +20116,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.Response(status=404)
         return web.FileResponse(frontend_file)
 
-    app.router.add_get("/api/health", health)
+    register_runtime_routes(app, controller=controller)
     app.router.add_get("/ws", ws_handler)
-
-    app.router.add_get("/api/state", get_state)
-    app.router.add_get("/api/runtime", get_runtime)
-    app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
-    app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
-    app.router.add_get("/api/runtime/frontend-performance", get_frontend_performance)
-    app.router.add_post("/api/runtime/frontend-performance", post_frontend_performance)
-    app.router.add_post(
-        "/api/runtime/frontend-performance/flush-request",
-        request_frontend_performance_flush,
-    )
-    app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
-    app.router.add_get("/api/runtime/post-processing-diagnostics", get_post_processing_diagnostics)
-    app.router.add_get("/api/runtime/logs", get_runtime_logs)
-    app.router.add_delete("/api/runtime/logs", delete_runtime_logs)
-    app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
-    app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
-    app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
     if provider_replay.enabled:
         app.router.add_post(
             f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/prepare",

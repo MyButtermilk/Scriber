@@ -180,7 +180,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         ),
     ]
     assert typecheck["shell"] == "pwsh"
-    assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\core src\\runtime src\\data")
+    assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\api src\\core src\\runtime src\\data")
     assert "src\\native_overlay.py" in typecheck["run"]
     assert "src\\meeting_export.py" in typecheck["run"]
     assert step_names.index("Typecheck extended Python tranche") == (

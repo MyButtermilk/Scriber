@@ -14,7 +14,7 @@ follow_imports = "silent"
 show_error_codes = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-files = ["src/core", "src/runtime", "src/data"]
+files = ["src/api", "src/core", "src/runtime", "src/data"]
 
 [[tool.mypy.overrides]]
 # onnxruntime does not publish a py.typed marker; SmartTurn still validates its
