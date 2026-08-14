@@ -54,6 +54,7 @@ from src.api.upload_policy import (
     format_upload_limit,
     safe_upload_filename,
 )
+from src.api.voice_component_routes import VoiceLibraryDeps, register_voice_component_routes
 from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
@@ -16549,6 +16550,25 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "finishedAt": payload["finishedAt"],
         }
 
+    def voice_library_deps() -> VoiceLibraryDeps:
+        """Resolve the Voice Library collaborators for one request.
+
+        The two locks stay with composition because the enrollment routes, which
+        have not moved yet, take the mutation lock for the same invariant.
+
+        ``persist_settings`` is bound as a call rather than looked up here: only
+        the erase route performs it, and reading the attribute up front would
+        make reading the model's status fail on a composition that never needs
+        to persist anything.
+        """
+        return VoiceLibraryDeps(
+            speaker_model=controller._speaker_model,
+            meeting_store=controller._meeting_store,
+            persist_settings=lambda: controller._schedule_settings_persist(),
+            download_lock=_speaker_model_download_lock(controller),
+            mutation_lock=_voice_library_mutation_lock(controller),
+        )
+
     def _task_registry(attribute: str) -> dict[str, asyncio.Task]:
         registry = getattr(controller, attribute, None)
         if registry is None:
@@ -19025,154 +19045,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except ValueError as exc:
             return web.json_response({"message": str(exc)}, status=409)
 
-    async def speaker_model_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "optedIn": bool(Config.VOICEPRINT_LIBRARY_OPT_IN),
-                **ctl._speaker_model.status(),
-            }
-        )
-
-    async def download_speaker_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if not Config.VOICEPRINT_LIBRARY_OPT_IN:
-            return web.json_response(
-                {"message": "Confirm the Voice Library biometric-processing opt-in first."}, status=409
-            )
-        durable_enabled = getattr(ctl._meeting_store, "speaker_library_enabled", None)
-        if callable(durable_enabled) and not await asyncio.to_thread(durable_enabled):
-            return web.json_response(
-                {"message": "Voice Library was turned off before the download started."},
-                status=409,
-            )
-        staged = None
-        try:
-            async with _speaker_model_download_lock(ctl):
-                staged = await ctl._speaker_model.stage_download(request.app[APP_HTTP_SESSION])
-                async with _voice_library_mutation_lock(ctl):
-                    durable_enabled = getattr(ctl._meeting_store, "speaker_library_enabled", None)
-                    enabled_before_promotion = bool(
-                        Config.VOICEPRINT_LIBRARY_OPT_IN
-                        and (not callable(durable_enabled) or await asyncio.to_thread(durable_enabled))
-                    )
-                    if not enabled_before_promotion:
-                        return web.json_response(
-                            {"message": ("Voice Library was turned off while the local download was running.")},
-                            status=409,
-                        )
-                    status, promotion_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(ctl._speaker_model.promote_staged, staged)
-                    )
-                    staged = None
-                    # The SQLite gate is cross-process. Recheck it after the
-                    # atomic replace so an opt-out from another Scriber process
-                    # can never leave the model behind after deletion.
-                    enabled_after_promotion = bool(Config.VOICEPRINT_LIBRARY_OPT_IN)
-                    post_check_cancel = None
-                    if callable(durable_enabled):
-                        durable_after_promotion, post_check_cancel = await await_with_delayed_cancellation(
-                            asyncio.to_thread(durable_enabled)
-                        )
-                        enabled_after_promotion = bool(enabled_after_promotion and durable_after_promotion)
-                    pending_cancel = promotion_cancel or post_check_cancel
-                    if not enabled_after_promotion:
-                        _, delete_cancel = await await_with_delayed_cancellation(
-                            asyncio.to_thread(ctl._speaker_model.delete)
-                        )
-                        pending_cancel = pending_cancel or delete_cancel
-                        if pending_cancel is not None:
-                            raise pending_cancel
-                        return web.json_response(
-                            {"message": ("Voice Library was turned off while the local download was finishing.")},
-                            status=409,
-                        )
-                    if pending_cancel is not None:
-                        raise pending_cancel
-            return web.json_response({"apiVersion": REST_API_VERSION, **status})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=502)
-        finally:
-            if staged is not None:
-                try:
-                    await asyncio.to_thread(ctl._speaker_model.discard_staged, staged)
-                except OSError:
-                    logger.warning("Voice Library staged model cleanup failed")
-
-    async def delete_speaker_library(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-
-        async def delete_all_voice_data() -> int:
-            deleted = await asyncio.to_thread(ctl._meeting_store.delete_all_speaker_profiles)
-            await asyncio.to_thread(ctl._speaker_model.delete)
-            Config.set_voiceprint_library_opt_in(False)
-            ctl._schedule_settings_persist()
-            return deleted
-
-        async with _voice_library_mutation_lock(ctl):
-            deleted_profiles, pending_cancel = await await_with_delayed_cancellation(delete_all_voice_data())
-            if pending_cancel is not None:
-                raise pending_cancel
-        return web.json_response({"apiVersion": REST_API_VERSION, "deleted": True, "deletedProfiles": deleted_profiles})
-
-    async def diarization_component_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        status_async = getattr(ctl._speaker_diarizer, "status_async", None)
-        status = await status_async() if callable(status_async) else ctl._speaker_diarizer.status()
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                **status,
-            }
-        )
-
-    async def install_diarization_component(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            status = await ctl._speaker_diarizer.install(request.app[APP_HTTP_SESSION])
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                    **status,
-                }
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            return web.json_response(
-                {"message": redact_text(str(exc))[:240] or "Local diarization install failed."},
-                status=502,
-            )
-
-    async def delete_diarization_component(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        delete_async = getattr(ctl._speaker_diarizer, "delete_async", None)
-        if callable(delete_async):
-            deleted = await delete_async()
-        else:
-            await asyncio.to_thread(ctl._speaker_diarizer.delete)
-            deleted = True
-        if not deleted:
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "deleted": False,
-                    "message": "Local speaker separation is currently in use.",
-                },
-                status=409,
-            )
-        status_async = getattr(ctl._speaker_diarizer, "status_async", None)
-        status = await status_async() if callable(status_async) else ctl._speaker_diarizer.status()
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "deleted": True,
-                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                **status,
-            }
-        )
-
     async def frontend_static(request: web.Request):
         if (
             request.path == "/api"
@@ -19251,12 +19123,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/meetings/speaker-profiles/merge", merge_speaker_profiles)
     app.router.add_delete("/api/meetings/speaker-profiles/{profileId}", delete_speaker_profile)
     app.router.add_patch("/api/meetings/speaker-profiles/{profileId}", patch_speaker_profile)
-    app.router.add_get("/api/meetings/speaker-model", speaker_model_status)
-    app.router.add_post("/api/meetings/speaker-model", download_speaker_model)
-    app.router.add_delete("/api/meetings/speaker-library", delete_speaker_library)
-    app.router.add_get("/api/meetings/diarization-component", diarization_component_status)
-    app.router.add_post("/api/meetings/diarization-component", install_diarization_component)
-    app.router.add_delete("/api/meetings/diarization-component", delete_diarization_component)
+    register_voice_component_routes(
+        app,
+        voice_library=voice_library_deps,
+        diarizer=lambda: controller._speaker_diarizer,
+    )
     register_meeting_import_routes(
         app,
         deps=meeting_import_deps,

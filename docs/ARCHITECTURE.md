@@ -875,11 +875,11 @@ Key modules:
 - `src/api/runtime_routes.py`, `src/api/onnx_routes.py`,
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
   `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
-  `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`, and
-  `src/api/meeting_import_routes.py`:
+  `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
+  `src/api/meeting_import_routes.py`, and `src/api/voice_component_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
-  Settings, Local Polishing, Device, Outlook Calendar, and Meeting Import
-  domains. Runtime owns debug logs and support bundles. ONNX
+  Settings, Local Polishing, Device, Outlook Calendar, Meeting Import, and Voice
+  Component domains. Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
   scopes before cancellation. Transcript routes hold no transcript state: one
@@ -907,7 +907,16 @@ Key modules:
   attributes rather than as a class. Those arrive as an immutable
   `MeetingImportDeps` bundle assembled per request, because the store is
   replaced after the app exists and the shutdown flag has to answer for the
-  moment cancellation lands rather than for the moment the upload began. Their narrow
+  moment cancellation lands rather than for the moment the upload began. Voice
+  Component owns the two optional local components -- the Voice Library speaker
+  model and the diarization component -- and with them the biometric opt-in.
+  That consent flag is durable and cross-process, so it can be withdrawn from
+  another Scriber window while a download is mid-flight; every mutation
+  re-checks it after the step that could outlive it and deletes what it just
+  installed if consent is gone. Its two dependency providers are deliberately
+  separate: the Voice Library routes and the diarization routes share no
+  collaborator, so one bundle would make reading the model's status fail on a
+  composition that never built a diarizer. Their narrow
   structural controller ports live beside the consuming handlers so a route
   module's dependency surface stays local. Each domain's route test pins its
   exact method/property surface and boundary-critical return types against the

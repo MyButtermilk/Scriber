@@ -65,11 +65,16 @@ against the real controller or service, including boundary-critical route-owned
 DTO return types. The shared fixture contains only signature-reflection
 mechanics: method/property allowlists remain in their owning domain test, so
 there is no central port catalogue. Outlook Calendar has no controller port but
-still pins one for its calendar collaborator; Meeting Import has no port at all
-and guards its wiring instead, building the real app around a minimal stub and
-asserting that composition resolves every declared dependency. A renamed
-controller attribute therefore fails at test time rather than as a request-time
-`AttributeError` on whichever route happens to need it. Meeting-import tests
+still pins one for its calendar collaborator; Meeting Import and Voice Component
+have no port at all and guard their wiring instead, building the real app around
+a minimal stub and asserting that composition resolves every declared
+dependency. A renamed controller attribute therefore fails at test time rather
+than as a request-time `AttributeError` on whichever route happens to need it.
+The Voice Component guard additionally pins the wiring's *granularity*: it
+builds a controller with no diarizer and no settings-persist hook, so a future
+change that collapses the two providers into one bundle — or that resolves the
+persist hook eagerly instead of deferring it to the erase route — fails there
+rather than in whichever suite happens to read the model's status. Meeting-import tests
 run against the real `MeetingImportStore` because the assertion that matters is
 which durable state a job is left in after a replayed PUT, a size mismatch, or
 a cancel. Upload-policy tests separately cover the
