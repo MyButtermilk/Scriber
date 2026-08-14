@@ -56,7 +56,7 @@ def test_github_api_does_not_expose_token_in_validation_errors() -> None:
 def test_github_api_keeps_authorization_out_of_redirected_headers() -> None:
     api = GitHubApi(token="private-release-token")
 
-    request = api._build_request(  # noqa: SLF001 - validates the credential boundary
+    request = api._build_request(
         "/repos/example/project/releases/assets/42",
         method="GET",
         accept="application/octet-stream",

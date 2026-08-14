@@ -91,9 +91,7 @@ def _write_component_fixture(manager: SherpaOnnxDiarizer) -> None:
                 "byteSize": len(content),
             }
         )
-    worker = manager._descriptor_from_worker_manifest(  # noqa: SLF001 - contract fixture
-        manager._worker_override, manager._worker_manifest_override
-    )
+    worker = manager._descriptor_from_worker_manifest(manager._worker_override, manager._worker_manifest_override)
     manager.manifest_path.write_text(
         json.dumps(
             {

@@ -42,9 +42,7 @@ class FfmpegAudioFileInput(BaseInputTransport):
         self._block_size = int(block_size)
         self._max_queued_frames = max(
             1,
-            int(
-                math.ceil(max(1.0, float(max_queued_audio_secs)) * max(1, int(sample_rate)) / max(1, self._block_size))
-            ),
+            math.ceil(max(1.0, float(max_queued_audio_secs)) * max(1, int(sample_rate)) / max(1, self._block_size)),
         )
         self._done = asyncio.Event()
         self._ffmpeg: asyncio.subprocess.Process | None = None

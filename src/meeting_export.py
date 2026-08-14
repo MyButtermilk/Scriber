@@ -471,7 +471,7 @@ def build_eml_draft(
     # while avoiding that parser edge case.
     message.set_content(template["body"], cte="quoted-printable")
     if attachment is not None and attachment_name:
-        maintype, subtype = (attachment_type.split("/", 1) + ["octet-stream"])[:2]
+        maintype, subtype = ([*attachment_type.split("/", 1), "octet-stream"])[:2]
         message.add_attachment(attachment, maintype=maintype, subtype=subtype, filename=attachment_name)
     # Windows mail clients are stricter than Python's parser about RFC 5322
     # line endings. The old path emitted LF-only bytes; SMTP policy guarantees

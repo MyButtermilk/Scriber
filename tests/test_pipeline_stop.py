@@ -2441,7 +2441,7 @@ async def test_gate_committing_realtime_provider_flushes_before_endframe(monkeyp
                 events.append("provider_final")
                 pipeline._mark_final_transcription_received()
 
-            asyncio.create_task(_mark_final())
+            self._mark_final_task = asyncio.create_task(_mark_final())
             return True
 
     pipeline.pipeline = _DummyRuntimePipelineGraph(

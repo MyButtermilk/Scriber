@@ -315,7 +315,7 @@ def _validate_provider_replay(evidence: Mapping[str, Any]) -> dict[str, Any]:
             f"providerReplay.series[{index}].fixtureDurationMs",
             exclusive=True,
         )
-        duration_seconds = int(round(fixture_duration_ms / 1000.0))
+        duration_seconds = round(fixture_duration_ms / 1000.0)
         observed_series.add((provider, duration_seconds))
         for field in ("requestedSamples", "measuredSamples"):
             _require_equal(value.get(field), 30, f"providerReplay.series[{index}].{field}")
@@ -337,7 +337,7 @@ def _validate_provider_replay(evidence: Mapping[str, Any]) -> dict[str, Any]:
             f"providerReplay.results[{index}].fixtureDurationMs",
             exclusive=True,
         )
-        duration_seconds = int(round(duration_ms / 1000.0))
+        duration_seconds = round(duration_ms / 1000.0)
         sample_distribution[(provider, duration_seconds)] += 1
         for field in (
             "metricEligible",

@@ -380,7 +380,7 @@ def _candidate_cache_dirs() -> list[Path | None]:
 
     # Filter to existing dirs; add None to allow default cache resolution
     existing = [p for p in uniq if p.exists()]
-    return existing + [None]
+    return [*existing, None]
 
 
 def _resolve_repo_id(model_name: str, quantization_label: str) -> str | None:
@@ -785,7 +785,7 @@ async def download_model(
         logger.error(f"Unknown model: {model_name}")
         return False
 
-    quantization_onnx, q_label = _normalize_quantization(quantization)
+    _quantization_onnx, q_label = _normalize_quantization(quantization)
     supported = _get_supported_quantizations(model_name)
     if q_label not in supported:
         _set_download_state(
@@ -1117,7 +1117,7 @@ def _load_model_impl(
         raise
 
 
-def unload_model(model_name: str = None) -> None:
+def unload_model(model_name: str | None = None) -> None:
     """
     Unload model(s) from cache to free memory.
 

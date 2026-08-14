@@ -3545,6 +3545,10 @@ class ScriberWebController:
         self._local_polishing_close_task: asyncio.Task | None = None
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
+        # Fire-and-forget work still needs an owner. Without a strong reference
+        # the event loop only keeps a weak one, so a task can be garbage
+        # collected mid-await and silently drop the work it was scheduled for.
+        self._detached_tasks: set[asyncio.Task] = set()
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
         self._job_concurrency_limit = _env_int(
             "SCRIBER_JOB_CONCURRENCY",
@@ -5931,7 +5935,7 @@ class ScriberWebController:
             )
             if not queued:
                 return False
-            retry_label = int(round(delay_seconds))
+            retry_label = round(delay_seconds)
             rec.status = "processing"
             rec.step = f"Retrying local completion in {retry_label}s ({attempts}/{self._job_max_attempts})"
             rec.updated_at = datetime.now().isoformat()
@@ -5960,7 +5964,7 @@ class ScriberWebController:
 
         delay_seconds = self._retry_delay_seconds(attempts)
         retry_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
-        retry_label = int(round(delay_seconds))
+        retry_label = round(delay_seconds)
         try:
             updated = await asyncio.to_thread(
                 self._job_store.set_retry,
@@ -6778,12 +6782,37 @@ class ScriberWebController:
             self._hot_path_tracers.pop(session_id, None)
             self._hot_path_reports_emitted.discard(session_id)
 
+    def _spawn_detached(self, coro: Awaitable[Any], *, name: str) -> asyncio.Task:
+        """Schedule fire-and-forget work while holding a reference to the task.
+
+        asyncio only keeps a weak reference to running tasks, so a task nobody
+        stores can be collected before it finishes. Callers that do not await
+        the result use this helper to keep the work alive until completion.
+        """
+        task = asyncio.ensure_future(coro)
+        task.set_name(name)
+        self._detached_tasks.add(task)
+        task.add_done_callback(self._detached_tasks.discard)
+        return task
+
+    async def _wait_for_detached_tasks(self, timeout_seconds: float = 2.0) -> int:
+        tasks = {task for task in self._detached_tasks if not task.done()}
+        if not tasks:
+            return 0
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, float(timeout_seconds)),
+        )
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        return len(pending)
+
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
 
         # get_overlay will create if needed, or update callback if already exists
         def schedule_stop() -> None:
-            asyncio.create_task(self.stop_listening())
+            self._spawn_detached(self.stop_listening(), name="overlay_stop_listening")
 
         def on_stop() -> None:
             self._loop.call_soon_threadsafe(schedule_stop)
@@ -9500,7 +9529,10 @@ class ScriberWebController:
                         return
                     rec.step = step
                     rec.updated_at = datetime.now().isoformat()
-                    asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+                    self._spawn_detached(
+                        self._broadcast_history_updated(record=rec, reason="progress"),
+                        name="youtube_download_progress_broadcast",
+                    )
 
                 self._loop.call_soon_threadsafe(apply_progress)
 
@@ -10724,9 +10756,15 @@ class ScriberWebController:
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
-                    asyncio.create_task(self.broadcast(error_payload))
+                    self._spawn_detached(
+                        self.broadcast(error_payload),
+                        name="provider_error_broadcast",
+                    )
                     # Schedule pipeline stop to clean up properly
-                    asyncio.create_task(self._emergency_stop_pipeline(session_id=session_id))
+                    self._spawn_detached(
+                        self._emergency_stop_pipeline(session_id=session_id),
+                        name="provider_error_emergency_stop",
+                    )
 
                 self._loop.call_soon_threadsafe(schedule_cleanup)
 
@@ -13485,6 +13523,12 @@ class ScriberWebController:
             logger.warning(
                 "Timed out waiting for {} metric write(s) during shutdown",
                 metric_pending,
+            )
+        detached_pending = await self._wait_for_detached_tasks(max(0.0, min(2.0, float(timeout_seconds))))
+        if detached_pending:
+            logger.warning(
+                "Timed out waiting for {} detached task(s) during shutdown",
+                detached_pending,
             )
         recorders, self._meeting_recorders = list(self._meeting_recorders.values()), {}
         if recorders:

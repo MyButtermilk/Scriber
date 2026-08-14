@@ -11,7 +11,7 @@ import threading
 import time
 import wave
 from collections.abc import Callable, Mapping
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, ClassVar
 
 import aiohttp
 from loguru import logger
@@ -226,6 +226,10 @@ class _AnalyzerCache:
     _refill_in_progress = False
     _vad_generation = 0
     _smart_turn_generation = 0
+    # Async analyzer cleanups are scheduled without an awaiting caller. Keeping
+    # a strong reference prevents the event loop from collecting the task
+    # before the analyzer has actually released its executor and buffers.
+    _pending_cleanup_tasks: ClassVar[set[asyncio.Task]] = set()
 
     @staticmethod
     def _cleanup_unclaimed(analyzer: Any, *, label: str) -> None:
@@ -244,7 +248,9 @@ class _AnalyzerCache:
                 except RuntimeError:
                     asyncio.run(cleanup_result)
                 else:
-                    loop.create_task(cleanup_result)
+                    task = loop.create_task(cleanup_result, name=f"analyzer_cleanup_{label}")
+                    _AnalyzerCache._pending_cleanup_tasks.add(task)
+                    task.add_done_callback(_AnalyzerCache._pending_cleanup_tasks.discard)
         except Exception as exc:
             logger.debug(f"Unused {label} analyzer cleanup failed: {exc}")
 
@@ -4975,7 +4981,9 @@ class ScriberPipeline:
                         # Wait for websocket to be ready if it's still connecting
                         if websocket:
                             wait_start = asyncio.get_running_loop().time()
-                            while (
+                            # Polling is intentional: websockets exposes
+                            # connection state as an enum, not an event.
+                            while (  # noqa: ASYNC110
                                 websocket.state not in (State.OPEN, State.CLOSED)
                                 and (asyncio.get_running_loop().time() - wait_start) < 2.0
                             ):
@@ -4989,7 +4997,10 @@ class ScriberPipeline:
                                 try:
                                     # Wait up to 0.5s for audio queue to drain
                                     drain_start = asyncio.get_running_loop().time()
-                                    while (
+                                    # Polling is intentional: the provider
+                                    # owns this queue and join() would wait
+                                    # past the deadline.
+                                    while (  # noqa: ASYNC110
                                         not audio_queue.empty()
                                         and (asyncio.get_running_loop().time() - drain_start) < 0.5
                                     ):

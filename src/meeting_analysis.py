@@ -15,7 +15,7 @@ from src.celeris import celeris_prompt_fits, is_celeris_model
 
 MEETING_ANALYSIS_SCHEMA_VERSION = "1"
 _EVIDENCE_FIELDS = ("topics", "decisions", "actionItems", "openQuestions", "risks", "chapters")
-_ALL_ARRAY_FIELDS = _EVIDENCE_FIELDS + ("keywords",)
+_ALL_ARRAY_FIELDS = (*_EVIDENCE_FIELDS, "keywords")
 ANALYSIS_SINGLE_PASS_MAX_CHARS = 48_000
 ANALYSIS_SINGLE_PASS_MAX_DURATION_MS = 60 * 60 * 1000
 ANALYSIS_MAP_MAX_CHARS = 30_000
