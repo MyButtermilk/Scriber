@@ -4,14 +4,27 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import contextmanager
 
 import pytest
+from loguru import logger
 
 from src.runtime.cancellation import (
     await_with_delayed_cancellation,
     remove_tree_if_exists,
     to_thread_cancellation_barrier,
 )
+
+
+@contextmanager
+def _captured_loguru():
+    """Collect loguru output; the module logs through loguru, not stdlib."""
+    records: list[str] = []
+    sink_id = logger.add(lambda message: records.append(str(message)), level="ERROR")
+    try:
+        yield records
+    finally:
+        logger.remove(sink_id)
 
 
 def _blocking_mutation(started: threading.Event, release: threading.Event, finished: threading.Event):
@@ -75,20 +88,13 @@ async def test_a_failing_mutation_propagates_when_nobody_cancels():
 
 
 @pytest.mark.asyncio
-async def test_a_failing_mutation_propagates_its_failure_even_to_a_cancelling_caller():
-    """Documents current behaviour, which is not what the source suggests.
+async def test_a_failing_mutation_still_reports_cancellation_to_a_cancelling_caller():
+    """A caller that asked to stop unwinds through CancelledError.
 
-    ``to_thread_cancellation_barrier`` ends with a handler that converts a
-    failed mutation into the pending ``CancelledError`` when the caller was
-    cancelling. That branch is unreachable: the loop awaits
-    ``asyncio.shield(worker)``, which re-raises the worker's exception, so
-    control leaves the loop before ``worker.result()`` is ever called. The
-    caller therefore sees the mutation's own failure, and the accompanying
-    "failed while its caller was canceling" log line never fires.
-
-    Arguably the real failure is the more useful thing to surface, so this test
-    pins the behaviour rather than the intent. Deciding between the two is a
-    change of contract, not of structure.
+    Callers of this barrier are already in a cancellation path and handle
+    CancelledError there. Letting the mutation's own failure escape instead
+    would skip that cleanup and surface an unexpected exception during
+    shutdown, so the failure is logged and the pending cancel wins.
     """
     started, release = threading.Event(), threading.Event()
 
@@ -106,8 +112,30 @@ async def test_a_failing_mutation_propagates_its_failure_even_to_a_cancelling_ca
     assert not task.done()
     release.set()
 
-    with pytest.raises(RuntimeError, match="store is closed"):
+    with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_a_swallowed_failure_is_never_silent():
+    """The pending cancel hides the failure from the caller, so it is logged."""
+    started, release = threading.Event(), threading.Event()
+
+    def explode() -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+        raise RuntimeError("store is closed")
+
+    task = asyncio.create_task(to_thread_cancellation_barrier(explode))
+    assert await asyncio.to_thread(started.wait, 2.0)
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    release.set()
+
+    with _captured_loguru() as records, pytest.raises(asyncio.CancelledError):
+        await task
+    assert any("store is closed" in record for record in records)
 
 
 @pytest.mark.asyncio
@@ -171,3 +199,29 @@ async def test_removing_a_tree_is_safe_when_it_is_already_gone(tmp_path):
     # A second pass models cleanup running twice after a crash.
     await remove_tree_if_exists(target)
     assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_delayed_cancellation_also_reports_a_failure_as_cancellation():
+    """Same rule as the barrier: the caller asked to stop, so it unwinds that way."""
+    started, release = threading.Event(), threading.Event()
+
+    def explode() -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+        raise RuntimeError("sidecar refused the claim")
+
+    async def caller() -> None:
+        await await_with_delayed_cancellation(asyncio.to_thread(explode))
+
+    task = asyncio.create_task(caller())
+    assert await asyncio.to_thread(started.wait, 2.0)
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done()
+    release.set()
+
+    with _captured_loguru() as records, pytest.raises(asyncio.CancelledError):
+        await task
+    assert any("sidecar refused the claim" in record for record in records)

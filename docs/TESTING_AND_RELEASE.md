@@ -52,6 +52,13 @@ barrier in addition to the static Ruff gate. ONNX route tests additionally keep
 parallel download scopes isolated and reject worker progress arriving after app
 cleanup.
 
+`tests/runtime/test_cancellation.py` pins the boundary contract for work an
+executor cannot abandon: a durable mutation finishes before cancellation is
+delivered, repeated `Task.cancel` still waits for that boundary, and a
+mutation that fails while its caller is cancelling reports `CancelledError`
+with the failure logged rather than letting an unexpected exception escape a
+shutdown path.
+
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
 against the real controller or service, including boundary-critical route-owned

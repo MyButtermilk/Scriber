@@ -57,6 +57,11 @@ async def to_thread_cancellation_barrier(function: Callable[..., Any], *args: An
             # ``Task.cancel`` more than once.  Keep observing the non-cancelable
             # thread worker until its durable boundary has really completed.
             pending_cancel = exc
+        except BaseException:
+            # The worker itself failed.  ``shield`` re-raises that here, but the
+            # failure belongs to ``worker.result()`` below: only there is it
+            # observed, and only there can a pending cancellation still win.
+            break
     try:
         result = worker.result()
     except BaseException:
@@ -92,10 +97,15 @@ async def await_with_delayed_cancellation(
             await asyncio.shield(worker)
         except asyncio.CancelledError as exc:
             pending_cancel = exc
+        except BaseException:
+            # See the barrier above: the worker's failure is observed by
+            # ``worker.result()`` rather than swallowed by this loop.
+            break
     try:
         result = worker.result()
     except BaseException:
         if pending_cancel is not None:
+            logger.exception("Ownership-changing await failed while its caller was canceling")
             raise pending_cancel from None
         raise
     return result, pending_cancel
