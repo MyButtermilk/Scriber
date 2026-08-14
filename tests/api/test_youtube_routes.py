@@ -10,7 +10,12 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from src.api import youtube_routes
 from src.api.app_keys import APP_HTTP_SESSION
-from src.api.youtube_routes import register_youtube_routes, safe_thumbnail_url
+from src.api.youtube_routes import (
+    PublicRecordPort,
+    YoutubeControllerPort,
+    register_youtube_routes,
+    safe_thumbnail_url,
+)
 
 
 class _StubController:
@@ -188,3 +193,18 @@ async def test_transcribe_maps_controller_failures_onto_status_codes():
         assert invalid.status == 400
     finally:
         await client.close()
+
+
+def test_controller_and_record_adapters_match_the_youtube_ports(assert_protocol_contract):
+    from src.web_api import ScriberWebController, TranscriptRecord
+
+    assert_protocol_contract(
+        YoutubeControllerPort,
+        ScriberWebController,
+        methods={"start_youtube_transcription"},
+    )
+    assert_protocol_contract(
+        PublicRecordPort,
+        TranscriptRecord,
+        methods={"to_public"},
+    )

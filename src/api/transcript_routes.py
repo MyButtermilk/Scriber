@@ -14,7 +14,7 @@ The port below is what remains, and it names no private members.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from aiohttp import web
 from loguru import logger
@@ -22,8 +22,15 @@ from loguru import logger
 from src.api.http_security import attachment_content_disposition
 
 
-class TranscriptViewPort(Protocol):
-    """The normalized transcript fields these routes render."""
+@dataclass(frozen=True)
+class TranscriptView:
+    """One normalized transcript read shared by the controller and routes.
+
+    A transcript reaches a route either as a live in-memory record or, after
+    eviction, as a durable row reloaded from storage. Both carry the same data
+    under different shapes; the controller collapses that fallback once and
+    returns this immutable route-owned value.
+    """
 
     id: str
     title: str
@@ -35,12 +42,25 @@ class TranscriptViewPort(Protocol):
     duration: str
 
 
-class SummaryOutcomePort(Protocol):
-    """The result of one summary attempt."""
+@dataclass(frozen=True)
+class SummaryOutcome:
+    """The domain result of one summary attempt.
 
-    kind: str
-    summary: str
-    message: str
+    The controller decides what happened; the route maps ``kind`` onto the
+    public HTTP response.
+    """
+
+    kind: Literal[
+        "completed",
+        "not_found",
+        "empty_content",
+        "not_completed",
+        "already_running",
+        "rejected",
+        "failed",
+    ]
+    summary: str = ""
+    message: str = ""
 
 
 class TranscriptsControllerPort(Protocol):
@@ -58,7 +78,7 @@ class TranscriptsControllerPort(Protocol):
 
     async def get_transcript(self, transcript_id: str) -> dict[str, Any] | None: ...
 
-    async def transcript_view(self, transcript_id: str) -> TranscriptViewPort | None: ...
+    async def transcript_view(self, transcript_id: str) -> TranscriptView | None: ...
 
     def has_transcript_record(self, transcript_id: str) -> bool: ...
 
@@ -71,7 +91,7 @@ class TranscriptsControllerPort(Protocol):
 
     async def cancel_transcript(self, transcript_id: str) -> bool: ...
 
-    async def summarize_transcript(self, transcript_id: str) -> SummaryOutcomePort: ...
+    async def summarize_transcript(self, transcript_id: str) -> SummaryOutcome: ...
 
 
 ExportRenderer = Any

@@ -46,13 +46,10 @@ from src.api.onnx_routes import register_onnx_routes
 from src.api.outlook_calendar_routes import register_outlook_calendar_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.api.settings_routes import register_settings_routes
-from src.api.transcript_routes import register_transcript_routes
+from src.api.transcript_routes import SummaryOutcome, TranscriptView, register_transcript_routes
 from src.api.upload_policy import (
     ALLOWED_UPLOAD_EXTENSIONS,
-    AUDIO_EXTENSIONS,
-    MAX_UPLOAD_FILENAME_CHARS,
     VIDEO_EXTENSIONS,
-    WINDOWS_RESERVED_NAMES,
     format_upload_limit,
     safe_upload_filename,
 )
@@ -634,10 +631,6 @@ def _validate_settings_text_lengths(payload: dict[str, Any]) -> None:
 _attachment_content_disposition = attachment_content_disposition
 
 
-# Video file extensions that require audio extraction
-_VIDEO_EXTENSIONS = VIDEO_EXTENSIONS
-_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
-_ALLOWED_UPLOAD_EXTENSIONS = ALLOWED_UPLOAD_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
@@ -897,9 +890,7 @@ def _meeting_stt_cost_estimate(provider: str, mode: str) -> dict[str, Any]:
     }
 
 
-_MAX_UPLOAD_FILENAME_CHARS = MAX_UPLOAD_FILENAME_CHARS
 _MAX_DELETED_TRANSCRIPT_TOMBSTONES = 4096
-_WINDOWS_RESERVED_NAMES = WINDOWS_RESERVED_NAMES
 
 
 def _normalize_input_warning_actions(actions: list[dict[str, Any]] | None) -> list[dict[str, str]]:
@@ -927,9 +918,6 @@ def _normalize_input_warning_actions(actions: list[dict[str, Any]] | None) -> li
 def _input_warning_actions_for_code(code: str) -> list[dict[str, str]]:
     template = _INPUT_WARNING_ACTIONS_BY_CODE.get(str(code or "").strip(), ())
     return [dict(action) for action in template]
-
-
-_safe_upload_filename = safe_upload_filename
 
 
 def _safe_work_directory_component(value: str) -> str:
@@ -1441,12 +1429,12 @@ def _get_default_audio_upload_limit(provider: str | None) -> dict[str, Any]:
     if not supports_direct_file_upload(key):
         return {
             "max_bytes": _DEFAULT_AUDIO_INGEST_MAX_BYTES,
-            "label": _format_upload_limit(_DEFAULT_AUDIO_INGEST_MAX_BYTES),
+            "label": format_upload_limit(_DEFAULT_AUDIO_INGEST_MAX_BYTES),
         }
     fallback_bytes = _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
     return {
         "max_bytes": fallback_bytes,
-        "label": _format_upload_limit(fallback_bytes),
+        "label": format_upload_limit(fallback_bytes),
     }
 
 
@@ -1467,11 +1455,8 @@ def _get_audio_upload_max_bytes(provider: str | None = None) -> int:
 def _get_audio_upload_limit_label(provider: str | None = None) -> str:
     override = _get_upload_limit_override_bytes()
     if override is not None:
-        return _format_upload_limit(override)
+        return format_upload_limit(override)
     return str(_get_default_audio_upload_limit(provider)["label"])
-
-
-_format_upload_limit = format_upload_limit
 
 
 def _multipart_request_is_definitely_oversized(
@@ -1500,7 +1485,7 @@ def _get_audio_ingest_limit_label(provider: str | None = None) -> str:
     final_limit = _get_audio_upload_max_bytes(provider)
     if ingest_limit == final_limit and ingest_limit > _DEFAULT_AUDIO_INGEST_MAX_BYTES:
         return _get_audio_upload_limit_label(provider)
-    return _format_upload_limit(ingest_limit)
+    return format_upload_limit(ingest_limit)
 
 
 def _get_audio_max_bytes(provider: str | None = None) -> int:
@@ -1524,9 +1509,9 @@ def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
         "rawAudioIngestMaxBytes": _get_audio_ingest_max_bytes(resolved_provider),
         "rawAudioIngestMaxLabel": _get_audio_ingest_limit_label(resolved_provider),
         "videoMaxBytes": _get_video_max_bytes(),
-        "videoMaxLabel": _format_upload_limit(_get_video_max_bytes()),
+        "videoMaxLabel": format_upload_limit(_get_video_max_bytes()),
         "compressionThresholdBytes": compression_threshold_bytes,
-        "compressionThresholdLabel": _format_upload_limit(compression_threshold_bytes),
+        "compressionThresholdLabel": format_upload_limit(compression_threshold_bytes),
     }
 
 
@@ -2271,49 +2256,6 @@ class TranscriptRecord:
         self.summary_updated_at = ""
         self._youtube_stt_provider_used = ""
         self._persistence_failed = False
-
-
-@dataclass(frozen=True)
-class TranscriptView:
-    """One normalized read of a transcript for API consumers.
-
-    A transcript reaches a route either as a live ``TranscriptRecord`` from the
-    in-memory history or, once that entry has been evicted, as the durable row
-    reloaded from storage. Both carry the same fields under different shapes,
-    and every reader used to repeat that fallback field by field. Producing the
-    view once keeps the branch in a single place and lets route modules stay
-    free of ``TranscriptRecord`` entirely.
-    """
-
-    id: str
-    title: str
-    content: str
-    summary: str
-    summary_format: str
-    status: str
-    date: str
-    duration: str
-
-
-@dataclass(frozen=True)
-class SummaryOutcome:
-    """What a summary attempt did, without deciding how to report it.
-
-    ``kind`` is the domain result; mapping it onto a status code belongs to the
-    route module.
-    """
-
-    kind: Literal[
-        "completed",
-        "not_found",
-        "empty_content",
-        "not_completed",
-        "already_running",
-        "rejected",
-        "failed",
-    ]
-    summary: str = ""
-    message: str = ""
 
 
 class TranscriptPersistenceError(RuntimeError):
@@ -15622,20 +15564,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 return web.json_response({"message": "No file uploaded"}, status=400)
 
             # Validate file extension
-            safe_filename = _safe_upload_filename(original_filename)
+            safe_filename = safe_upload_filename(original_filename)
             ext = Path(safe_filename).suffix.lower()
-            if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
+            if ext not in ALLOWED_UPLOAD_EXTENSIONS:
                 return web.json_response(
                     {
                         "message": (
-                            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTENSIONS))}"
+                            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
                         )
                     },
                     status=400,
                 )
 
             # Determine if this is a video file (needs audio extraction)
-            is_video = ext in _VIDEO_EXTENSIONS
+            is_video = ext in VIDEO_EXTENSIONS
             upload_provider = Config.DEFAULT_STT_SERVICE
             try:
                 upload_provider = ctl._select_available_provider()
@@ -15653,7 +15595,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 ingest_max_bytes = _get_audio_ingest_max_bytes(upload_provider)
                 final_audio_limit = _get_audio_upload_max_bytes(upload_provider)
             ingest_limit_label = (
-                _format_upload_limit(ingest_max_bytes) if is_video else _get_audio_ingest_limit_label(upload_provider)
+                format_upload_limit(ingest_max_bytes) if is_video else _get_audio_ingest_limit_label(upload_provider)
             )
             final_audio_limit_label = _get_audio_upload_limit_label(upload_provider)
 
@@ -16703,9 +16645,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
             raw = await request.json()
             if not isinstance(raw, dict):
                 raise ValueError("Expected JSON object")
-            safe_filename = _safe_upload_filename(str(raw.get("filename") or "meeting-recording"))
+            safe_filename = safe_upload_filename(str(raw.get("filename") or "meeting-recording"))
             extension = Path(safe_filename).suffix.lower()
-            if extension not in _ALLOWED_UPLOAD_EXTENSIONS:
+            if extension not in ALLOWED_UPLOAD_EXTENSIONS:
                 raise ValueError(f"Unsupported meeting recording type: {extension}")
             expected_bytes = int(raw.get("byteSize") or 0)
             if expected_bytes <= 0:
@@ -16713,11 +16655,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             provider = Config.MEETING_FINAL_PROVIDER
             _validate_provider_ready(provider)
             max_bytes = (
-                _get_video_max_bytes() if extension in _VIDEO_EXTENSIONS else _get_audio_ingest_max_bytes(provider)
+                _get_video_max_bytes() if extension in VIDEO_EXTENSIONS else _get_audio_ingest_max_bytes(provider)
             )
             if expected_bytes > max_bytes:
                 return web.json_response(
-                    {"message": f"Meeting recording is too large (max {_format_upload_limit(max_bytes)})."},
+                    {"message": f"Meeting recording is too large (max {format_upload_limit(max_bytes)})."},
                     status=413,
                 )
             profile = {

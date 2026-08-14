@@ -15,7 +15,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from src.api.http_security import attachment_content_disposition
-from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
+from src.api.runtime_routes import APP_SHUTDOWN_EVENT, RuntimeControllerPort, register_runtime_routes
 from src.core.rest_contracts import REST_API_VERSION
 
 
@@ -51,6 +51,29 @@ class _StubController:
 
     async def broadcast(self, event: dict) -> None:
         self.broadcasts.append(event)
+
+
+def test_controller_adapter_matches_the_runtime_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        RuntimeControllerPort,
+        ScriberWebController,
+        methods={
+            "broadcast",
+            "get_health",
+            "get_state",
+            "get_runtime_info",
+            "get_frontend_ready",
+            "record_frontend_ready",
+            "get_frontend_performance",
+            "record_frontend_performance",
+            "request_frontend_performance_flush",
+            "get_audio_diagnostics",
+            "get_post_processing_diagnostics",
+            "get_hot_path_metrics",
+        },
+    )
 
 
 async def _client(

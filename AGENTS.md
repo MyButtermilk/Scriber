@@ -54,16 +54,23 @@ Backend and runtime:
   and the routes not yet split into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, and Meeting Delivery route domains,
-  shared aiohttp app keys and HTTP security helpers.
+  shared aiohttp app keys, HTTP security helpers, and the upload policy used by
+  both file transcription and Meeting imports.
   Each route module owns its narrow structural controller port beside the
   handlers that consume it; do not recreate a central controller-port
-  catalogue. Runtime routes own debug logs and support bundles. Each ONNX
+  catalogue. The matching route test owns the exact adapter-contract assertion,
+  including boundary-critical return types; shared test support may provide
+  reflection mechanics but never a list of application ports. Runtime routes
+  own debug logs and support bundles. Each ONNX
   download owns a request-local progress scope so parallel requests cannot
   drain one another; final state follows its admitted progress work, and
   aiohttp cleanup seals every active scope before cancellation. Transcript
   routes read through `ScriberWebController.transcript_view` and delegate the
   whole summary lifecycle to `summarize_transcript`, which returns a domain
-  outcome the route maps onto a status code. When an extracted handler needs
+  outcome the route maps onto a status code. The Transcript route module owns
+  the immutable `TranscriptView` and `SummaryOutcome` DTOs returned across that
+  boundary; do not recreate looser writable-field Protocols for those values.
+  When an extracted handler needs
   controller internals, add a public method shaped by that need instead of
   widening a port with private names. Local Polishing owns the typed
   failure-code table that maps each bounded error onto its status and public
@@ -74,7 +81,10 @@ Backend and runtime:
   request: composition must stay able to build an application whose controller
   never materializes a calendar. Its OAuth callback answers the system browser
   in HTML and records every sync failure before responding, so a degraded
-  connection stays visible in `status()`.
+  connection stays visible in `status()`. `src/api/upload_policy.py` owns the
+  Windows-safe filename, accepted media-extension, and limit-label invariants;
+  ingest handlers consume that interface directly rather than through aliases
+  in `web_api.py`.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

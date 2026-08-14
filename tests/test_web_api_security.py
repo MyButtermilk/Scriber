@@ -14,23 +14,6 @@ from src.api import youtube_routes
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
-def test_safe_upload_filename_strips_dirs():
-    assert web_api._safe_upload_filename("subdir/evil.mp3") == "evil.mp3"
-
-
-def test_safe_upload_filename_sanitizes_invalid_chars():
-    out = web_api._safe_upload_filename("bad<name>.mp3")
-    assert "<" not in out
-    assert ">" not in out
-
-
-def test_safe_upload_filename_bounds_length_and_preserves_extension():
-    out = web_api._safe_upload_filename(f"{'a' * 400}.mp3")
-
-    assert len(out) == web_api._MAX_UPLOAD_FILENAME_CHARS
-    assert out.endswith(".mp3")
-
-
 def test_origin_allowed_defaults(monkeypatch):
     monkeypatch.delenv("SCRIBER_ALLOWED_ORIGINS", raising=False)
     assert web_api._origin_allowed("http://localhost:3000")
@@ -1509,10 +1492,6 @@ async def test_maybe_compress_audio_upload_keeps_original_when_not_smaller(monke
 
     assert got == upload_path
     assert upload_path.exists()
-
-
-def test_allowed_upload_extensions_include_video_extensions():
-    assert web_api._VIDEO_EXTENSIONS.issubset(web_api._ALLOWED_UPLOAD_EXTENSIONS)
 
 
 def test_validate_default_stt_service_accepts_known():

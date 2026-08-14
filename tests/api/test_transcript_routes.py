@@ -9,7 +9,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.transcript_routes import register_transcript_routes
+from src.api.transcript_routes import (
+    SummaryOutcome,
+    TranscriptsControllerPort,
+    TranscriptView,
+    register_transcript_routes,
+)
 
 
 @dataclass(frozen=True)
@@ -282,3 +287,25 @@ async def test_export_reports_an_unknown_transcript():
         assert (await client.get("/api/transcripts/t-1/export/pdf")).status == 404
     finally:
         await client.close()
+
+
+def test_controller_adapter_matches_the_transcript_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        TranscriptsControllerPort,
+        ScriberWebController,
+        methods={
+            "list_transcripts",
+            "get_transcript",
+            "transcript_view",
+            "has_transcript_record",
+            "delete_transcript_record",
+            "cancel_transcript",
+            "summarize_transcript",
+        },
+        returns={
+            "transcript_view": TranscriptView | None,
+            "summarize_transcript": SummaryOutcome,
+        },
+    )

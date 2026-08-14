@@ -884,8 +884,12 @@ Key modules:
   `transcript_view` read collapses the live-record/durable-row fallback, and
   `summarize_transcript` owns single-flight registration, the pending /
   completed / failed transitions, their durable writes, and the history
-  broadcast. Settings routes stay thin because `update_settings` already owns
-  the settings lock, validation, and persistence behind its public signature.
+  broadcast. The immutable `TranscriptView` and `SummaryOutcome` DTOs belong to
+  the route domain and are returned directly by the controller contract, so
+  value mutability and return types cannot drift behind a looser structural
+  field Protocol. Settings routes stay thin because `update_settings` already
+  owns the settings lock, validation, and persistence behind its public
+  signature.
   Local Polishing owns a typed failure-code table so each bounded error maps
   onto its own status and public message. Device routes answer the
   Tauri-owned autostart contract explicitly rather than 404. Outlook Calendar
@@ -893,10 +897,17 @@ Key modules:
   collaborator and resolves it per request, so composition still builds with a
   controller that never materializes one. Their narrow
   structural controller ports live beside the consuming handlers so a route
-  module's dependency surface stays local.
+  module's dependency surface stays local. Each domain's route test pins its
+  exact method/property surface and boundary-critical return types against the
+  real adapter; shared test support contains reflection mechanics only and does
+  not form a port catalogue.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP security
   policy and identity-stable aiohttp application keys used across composition
   and extracted route modules.
+- `src/api/upload_policy.py`: the shared upload-policy module for file
+  transcription and Meeting imports. Its interface owns Windows-safe filename
+  normalization, the accepted audio/video extensions, and user-facing byte
+  limit labels; both ingest paths call it directly.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

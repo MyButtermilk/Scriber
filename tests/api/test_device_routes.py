@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.device_routes import register_device_routes
+from src.api.device_routes import DeviceControllerPort, register_device_routes
 
 
 class _StubController:
@@ -103,3 +103,13 @@ async def test_refresh_passes_a_hint_through_and_rejects_malformed_bodies():
     finally:
         await client.close()
     assert controller.refresh_hints == [{"reason": "device_change"}]
+
+
+def test_controller_adapter_matches_the_device_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        DeviceControllerPort,
+        ScriberWebController,
+        methods={"list_microphones", "request_microphone_refresh"},
+    )

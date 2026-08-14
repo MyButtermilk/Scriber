@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.local_polishing_routes import register_local_polishing_routes
+from src.api.local_polishing_routes import LocalPolishingControllerPort, register_local_polishing_routes
 from src.local_polishing import CatalogError, LocalPolishingError
 
 
@@ -148,3 +148,18 @@ async def test_an_unknown_typed_code_falls_back_without_raising():
         assert (await response.json())["code"] == "brand_new_code"
     finally:
         await client.close()
+
+
+def test_controller_adapter_matches_the_local_polishing_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        LocalPolishingControllerPort,
+        ScriberWebController,
+        methods={
+            "get_local_polishing_models",
+            "install_local_polishing_model",
+            "cancel_local_polishing_operation",
+            "remove_local_polishing_model",
+        },
+    )

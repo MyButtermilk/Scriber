@@ -11,7 +11,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.onnx_routes import APP_ONNX_SERVICE, register_onnx_routes
+from src.api.onnx_routes import APP_ONNX_SERVICE, OnnxControllerPort, register_onnx_routes
 
 
 class _StubController:
@@ -362,7 +362,6 @@ async def test_delete_reports_unknown_busy_and_deleted_states(monkeypatch):
         assert controller.events[-1]["type"] == "onnx_models_updated"
     finally:
         await client.close()
-
     _install_onnx_stub(monkeypatch, is_model_downloading=lambda _model_id: True)
     client = await _client(controller)
     try:
@@ -370,3 +369,13 @@ async def test_delete_reports_unknown_busy_and_deleted_states(monkeypatch):
         assert busy.status == 409
     finally:
         await client.close()
+
+
+def test_controller_adapter_matches_the_onnx_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        OnnxControllerPort,
+        ScriberWebController,
+        methods={"broadcast"},
+    )

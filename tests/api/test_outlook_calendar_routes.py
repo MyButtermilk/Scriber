@@ -13,7 +13,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from src.api.app_keys import APP_HTTP_SESSION
-from src.api.outlook_calendar_routes import register_outlook_calendar_routes
+from src.api.outlook_calendar_routes import OutlookCalendarPort, register_outlook_calendar_routes
 
 
 class _StubCalendar:
@@ -75,6 +75,26 @@ async def _client(calendar: _StubCalendar) -> TestClient:
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
+
+
+def test_calendar_adapter_matches_the_route_port(assert_protocol_contract):
+    from src.outlook_calendar import OutlookCalendarService
+
+    assert_protocol_contract(
+        OutlookCalendarPort,
+        OutlookCalendarService,
+        methods={
+            "status",
+            "begin_connect",
+            "cancel_connect",
+            "complete_connect",
+            "sync",
+            "disconnect",
+            "record_sync_error",
+            "events_for_day",
+        },
+        properties={"authorization_pending"},
+    )
 
 
 @pytest.mark.asyncio

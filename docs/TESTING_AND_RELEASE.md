@@ -52,6 +52,16 @@ barrier in addition to the static Ruff gate. ONNX route tests additionally keep
 parallel download scopes isolated and reject worker progress arriving after app
 cleanup.
 
+The focused `tests/api/test_*_routes.py` suites exercise each extracted route
+module against lightweight stubs, then locally pin its complete structural port
+against the real controller or service, including boundary-critical route-owned
+DTO return types. The shared fixture contains only signature-reflection
+mechanics: method/property allowlists remain in their owning domain test, so
+there is no central port catalogue. Upload-policy tests separately cover the
+180 UTF-16-code-unit filename bound, Windows reserved-device names and invalid
+surrogates, accepted media extensions, and human-readable limit labels used by
+both File transcription and Meeting imports.
+
 Frontend:
 
 ```powershell

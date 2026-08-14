@@ -8,7 +8,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.settings_routes import register_settings_routes
+from src.api.settings_routes import SettingsControllerPort, register_settings_routes
 
 
 class _StubController:
@@ -94,3 +94,13 @@ async def test_put_falls_back_to_a_generic_message_for_an_empty_failure():
         assert (await response.json())["message"] == "Failed to update settings"
     finally:
         await client.close()
+
+
+def test_controller_adapter_matches_the_settings_port(assert_protocol_contract):
+    from src.web_api import ScriberWebController
+
+    assert_protocol_contract(
+        SettingsControllerPort,
+        ScriberWebController,
+        methods={"get_settings", "update_settings"},
+    )
