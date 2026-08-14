@@ -26,6 +26,7 @@ from loguru import logger
 
 from src import database as db
 from src.api.app_keys import APP_HTTP_SESSION
+from src.api.device_routes import register_device_routes
 from src.api.http_security import (
     SESSION_TOKEN_ENV,
     SESSION_TOKEN_HEADER,
@@ -39,9 +40,11 @@ from src.api.http_security import (
     session_token_required,
     validate_server_bind_security,
 )
+from src.api.local_polishing_routes import register_local_polishing_routes
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.onnx_routes import register_onnx_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
+from src.api.settings_routes import register_settings_routes
 from src.api.transcript_routes import register_transcript_routes
 from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
@@ -156,7 +159,7 @@ from src.data.transcript_artifact_store import (
     TranscriptArtifactStore,
 )
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
-from src.local_polishing import CatalogError, LocalPolishing, LocalPolishingError
+from src.local_polishing import LocalPolishing, LocalPolishingError
 from src.meeting_capture import MeetingAudioRecorder, MeetingDeviceLevelProbe
 from src.meeting_export import (
     build_eml_draft,
@@ -15629,147 +15632,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return await start_live_request(request, post_process=True)
 
-    async def get_settings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(await asyncio.to_thread(ctl.get_settings))
-
-    async def put_settings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Invalid JSON"}, status=400)
-        try:
-            updated = await ctl.update_settings(payload if isinstance(payload, dict) else {})
-            return web.json_response(updated)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            logger.exception("Failed to update settings")
-            return web.json_response({"message": str(exc) or "Failed to update settings"}, status=500)
-
-    def local_polishing_error_response(exc: Exception) -> web.Response:
-        if isinstance(exc, CatalogError):
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "catalog_unavailable",
-                    "message": "Local polishing models are not available in this build.",
-                },
-                status=503,
-            )
-        code = exc.code if isinstance(exc, LocalPolishingError) else "local_polishing_unavailable"
-        messages = {
-            "unknown_variant": "This local polishing model is not supported.",
-            "unknown_operation": "This local polishing operation no longer exists.",
-            "selected_model": "Switch away from this local model before removing it.",
-            "model_busy": "Wait for the model download to finish or cancel it first.",
-            "model_in_use": "The local model is currently in use and cannot be removed.",
-            "closed": "Local polishing is shutting down.",
-        }
-        if code == "unknown_operation":
-            status = 404
-        elif code == "unknown_variant":
-            status = 400
-        elif code in {"selected_model", "model_busy", "model_in_use"}:
-            status = 409
-        else:
-            status = 503
-        return web.json_response(
-            {
-                "success": False,
-                "code": code,
-                "message": messages.get(
-                    code,
-                    "Local polishing is temporarily unavailable.",
-                ),
-            },
-            status=status,
-        )
-
-    async def local_polishing_models(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            return web.json_response(ctl.get_local_polishing_models())
-        except Exception:
-            logger.exception("Failed to read local-polishing model state")
-            return local_polishing_error_response(RuntimeError())
-
-    async def install_local_polishing_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        variant = str(request.match_info.get("variant") or "")
-        try:
-            model = await ctl.install_local_polishing_model(variant)
-        except (CatalogError, LocalPolishingError) as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to start local-polishing model installation")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **model}, status=202)
-
-    async def cancel_local_polishing_operation(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        operation_id = str(request.match_info.get("operationId") or "")
-        try:
-            operation = await ctl.cancel_local_polishing_operation(operation_id)
-        except LocalPolishingError as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to cancel local-polishing model installation")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **operation}, status=202)
-
-    async def remove_local_polishing_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        variant = str(request.match_info.get("variant") or "")
-        try:
-            model = await ctl.remove_local_polishing_model(variant)
-        except LocalPolishingError as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to remove local-polishing model")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **model})
-
-    async def get_autostart(request: web.Request):
-        """Report unavailable outside the Tauri-owned desktop command surface."""
-        return web.json_response(
-            {
-                "enabled": False,
-                "available": False,
-                "message": "Desktop autostart is managed by the Tauri shell",
-            }
-        )
-
-    async def set_autostart(request: web.Request):
-        """Reject legacy backend mutations; the installed shell owns autostart."""
-        return web.json_response(
-            {
-                "enabled": False,
-                "available": False,
-                "message": "Desktop autostart is managed by the Tauri shell",
-            },
-            status=409,
-        )
-
-    async def microphones(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        devices = await asyncio.to_thread(ctl.list_microphones)
-        return web.json_response({"devices": devices})
-
-    async def refresh_microphones(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload: dict[str, Any] | None = None
-        if request.can_read_body:
-            try:
-                raw_payload = await request.json()
-            except Exception:
-                return web.json_response({"message": "Invalid JSON"}, status=400)
-            if not isinstance(raw_payload, dict):
-                return web.json_response({"message": "Expected JSON object"}, status=400)
-            payload = raw_payload
-        return web.json_response(ctl.request_microphone_refresh(payload))
-
     async def file_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         save_dir: Path | None = None
@@ -19922,25 +19784,9 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/live-mic/toggle", toggle_live)
     app.router.add_post("/api/live-mic/toggle-post-processing", toggle_live_post_processing)
 
-    app.router.add_get("/api/settings", get_settings)
-    app.router.add_put("/api/settings", put_settings)
-    app.router.add_get("/api/local-polishing/models", local_polishing_models)
-    app.router.add_post(
-        "/api/local-polishing/models/{variant}/install",
-        install_local_polishing_model,
-    )
-    app.router.add_delete(
-        "/api/local-polishing/model-operations/{operationId}",
-        cancel_local_polishing_operation,
-    )
-    app.router.add_delete(
-        "/api/local-polishing/models/{variant}",
-        remove_local_polishing_model,
-    )
-    app.router.add_get("/api/autostart", get_autostart)
-    app.router.add_post("/api/autostart", set_autostart)
-    app.router.add_get("/api/microphones", microphones)
-    app.router.add_post("/api/microphones/refresh", refresh_microphones)
+    register_settings_routes(app, controller=controller)
+    register_local_polishing_routes(app, controller=controller)
+    register_device_routes(app, controller=controller)
 
     register_transcript_routes(
         app,

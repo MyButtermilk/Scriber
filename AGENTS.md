@@ -52,8 +52,9 @@ Backend and runtime:
 - `src/web_api.py`: main aiohttp application composition and controller,
   WebSocket server, settings, jobs, transcript history, mic control, uploads,
   and the routes not yet split into domain modules.
-- `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, and Meeting
-  Delivery route domains, shared aiohttp app keys and HTTP security helpers.
+- `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
+  Polishing, Device, and Meeting Delivery route domains, shared aiohttp app
+  keys and HTTP security helpers.
   Each route module owns its narrow structural controller port beside the
   handlers that consume it; do not recreate a central controller-port
   catalogue. Runtime routes own debug logs and support bundles. Each ONNX
@@ -64,7 +65,11 @@ Backend and runtime:
   whole summary lifecycle to `summarize_transcript`, which returns a domain
   outcome the route maps onto a status code. When an extracted handler needs
   controller internals, add a public method shaped by that need instead of
-  widening a port with private names.
+  widening a port with private names. Local Polishing owns the typed
+  failure-code table that maps each bounded error onto its status and public
+  message; an unexpected failure never reaches the client verbatim. Device
+  routes keep the Tauri-owned autostart contract answering explicitly instead
+  of 404, and enumerate microphones off the loop.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

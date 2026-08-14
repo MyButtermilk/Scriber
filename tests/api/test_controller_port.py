@@ -17,8 +17,11 @@ from typing import Protocol, get_type_hints
 
 import pytest
 
+from src.api.device_routes import DeviceControllerPort
+from src.api.local_polishing_routes import LocalPolishingControllerPort
 from src.api.onnx_routes import OnnxControllerPort
 from src.api.runtime_routes import RuntimeControllerPort
+from src.api.settings_routes import SettingsControllerPort
 from src.api.transcript_routes import TranscriptsControllerPort, TranscriptViewPort
 from src.api.youtube_routes import PublicRecordPort, YoutubeControllerPort
 from src.web_api import ScriberWebController, TranscriptRecord, TranscriptView
@@ -28,6 +31,9 @@ PORTS = [
     OnnxControllerPort,
     YoutubeControllerPort,
     TranscriptsControllerPort,
+    SettingsControllerPort,
+    LocalPolishingControllerPort,
+    DeviceControllerPort,
 ]
 
 
