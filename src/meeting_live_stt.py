@@ -129,6 +129,10 @@ class SonioxMeetingStream:
         self._stop_sentinel_queued = False
         self._stop_timeout_s = min(30.0, max(0.05, float(stop_timeout_s)))
         self._backpressure_reported = False
+        # asyncio keeps only a weak reference to a running task. Holding the
+        # backpressure report here stops it from being collected before the
+        # degraded-status callback has run.
+        self._backpressure_task: asyncio.Task | None = None
         self._turn_emitted = False
         self._connection_timeline_offset_ms = self.timeline_offset_ms
         self._next_timeline_ms = float(self.timeline_offset_ms)
@@ -214,10 +218,15 @@ class SonioxMeetingStream:
             self.dropped_frames += 1
         if self.dropped_frames and not self._backpressure_reported:
             self._backpressure_reported = True
-            asyncio.create_task(
+            self._backpressure_task = asyncio.create_task(
                 self._report_backpressure(),
                 name=f"meeting-live-backpressure-{self.source}",
             )
+            self._backpressure_task.add_done_callback(self._clear_backpressure_task)
+
+    def _clear_backpressure_task(self, task: asyncio.Task) -> None:
+        if self._backpressure_task is task:
+            self._backpressure_task = None
 
     async def _report_backpressure(self) -> None:
         await self.on_gap(self.source, "live_stt_backpressure")

@@ -716,7 +716,7 @@ class FrontendSmokeBackend:
         self.meeting_start_payload = dict(payload)
         self.meeting = self._synthetic_meeting(str(payload.get("title", "")))
         self.meeting_requests.append("start")
-        asyncio.create_task(self.broadcast_meeting_reconnect_cycle(self.meeting["id"]))
+        self._reconnect_cycle_task = asyncio.create_task(self.broadcast_meeting_reconnect_cycle(self.meeting["id"]))
         return web.json_response(self._meeting_summary())
 
     async def meeting_detail(self, request: web.Request) -> web.Response:

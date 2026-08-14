@@ -560,7 +560,7 @@ def _timing_summary(
     def total_nanoseconds(installer_bytes: int, milliseconds: Any) -> int | None:
         if isinstance(milliseconds, bool) or not isinstance(milliseconds, (int, float)):
             return None
-        return installer_bytes * 160 + int(round(float(milliseconds) * 1_000_000))
+        return installer_bytes * 160 + round(float(milliseconds) * 1_000_000)
 
     return {
         "evidenceSha256": evidence_sha256,
