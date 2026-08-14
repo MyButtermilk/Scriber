@@ -132,6 +132,17 @@ Backend and runtime:
   barrier. Do not schedule fire-and-forget work through hidden `create_task()`
   lambdas; use the owning module's supervisor so shutdown can account for work
   accepted immediately before the barrier and reject work offered afterwards.
+- `src/runtime/audio_admission.py`: the single owner of this process's native
+  audio lease. Only one capture may hold the device and the exclusion is
+  durable and cross-process, so `AudioAdmissionOwner` holds every rule for
+  keeping one: a heartbeat that never runs twice, adopting this controller's
+  own pending-to-durable Meeting rebinding instead of mistaking its CAS bump
+  for a loss, failing closed against a different controller, letting a Meeting
+  ride out an unavailable store while Live Mic gives up before the TTL lapses,
+  and releasing a lease a worker thread created after cancellation already won.
+  Go through the owner rather than touching `_persistent_audio_claim` and the
+  heartbeat task directly; those attributes are still the storage location, but
+  only as a migration seam.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
 - `src/local_polishing/`: public, immutable Hugging Face GGUF catalog,

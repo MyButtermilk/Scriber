@@ -198,6 +198,9 @@ from src.native_overlay import (
 )
 from src.outlook_calendar import OutlookCalendarService
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
+from src.runtime.audio_admission import AudioAdmissionOwner
+from src.runtime.audio_admission import release_claim_in_thread as release_audio_claim_in_thread
+from src.runtime.audio_admission import same_claim as same_audio_claim
 from src.runtime.cancellation import (
     await_with_delayed_cancellation,
     remove_tree_if_exists,
@@ -2320,7 +2323,66 @@ _AUDIO_ADMISSION_TTL_SECONDS = 60.0
 _AUDIO_ADMISSION_HEARTBEAT_SECONDS = 15.0
 
 
+def _audio_admission_owner(controller: Any) -> AudioAdmissionOwner:
+    """Return the one owner of this controller's native-audio lease.
+
+    Created lazily for the same reason the admission lock is: a few focused API
+    tests build lightweight controllers without running
+    ``ScriberWebController.__init__``, and they belong on the same admission
+    path rather than on a private fallback.
+
+    The claim and the heartbeat task are still read and written on the
+    controller, through the accessors below.  That is the deliberate seam
+    documented in :mod:`src.runtime.audio_admission`: the rules moved, the
+    storage has not yet.
+    """
+
+    owner = getattr(controller, "_audio_admission", None)
+    if isinstance(owner, AudioAdmissionOwner):
+        return owner
+
+    def _lost_meetings() -> set[str]:
+        lost = getattr(controller, "_audio_admission_lost_meetings", None)
+        if not isinstance(lost, set):
+            lost = set()
+            controller._audio_admission_lost_meetings = lost
+        return lost
+
+    def _set_claim(claim: AudioAdmissionClaim | None) -> None:
+        controller._persistent_audio_claim = claim
+
+    def _set_heartbeat(task: asyncio.Task | None) -> None:
+        controller._audio_admission_heartbeat_task = task
+
+    async def _live_mic_lost(*, session_id: str) -> None:
+        emergency_stop = getattr(controller, "_emergency_stop_pipeline", None)
+        if callable(emergency_stop):
+            await emergency_stop(session_id=session_id)
+
+    owner = AudioAdmissionOwner(
+        resolve_admission=lambda: _persistent_audio_admission(controller),
+        get_lost_meetings=_lost_meetings,
+        get_claim=lambda: getattr(controller, "_persistent_audio_claim", None),
+        set_claim=_set_claim,
+        get_heartbeat=lambda: getattr(controller, "_audio_admission_heartbeat_task", None),
+        set_heartbeat=_set_heartbeat,
+        is_shutting_down=lambda: bool(getattr(controller, "_shutting_down", False)),
+        on_live_mic_lost=_live_mic_lost,
+        ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
+        heartbeat_seconds=_AUDIO_ADMISSION_HEARTBEAT_SECONDS,
+    )
+    controller._audio_admission = owner
+    return owner
+
+
 def _persistent_audio_admission(controller: Any) -> tuple[AudioAdmissionStore, str]:
+    """Resolve this controller's lease store and stable controller identity.
+
+    Kept as the primitive rather than folded into the owner: it is the seam
+    focused tests substitute to drive store-level races, and the owner resolves
+    through it on every use so a substitution still takes effect.
+    """
+
     store = getattr(controller, "_audio_admission_store", None)
     if store is None:
         store = AudioAdmissionStore(Path(db._DB_PATH))
@@ -2334,105 +2396,23 @@ def _persistent_audio_admission(controller: Any) -> tuple[AudioAdmissionStore, s
 
 
 def _same_audio_claim(left: AudioAdmissionClaim | None, right: AudioAdmissionClaim) -> bool:
-    return bool(
-        left is not None
-        and left.owner_kind == right.owner_kind
-        and left.owner_id == right.owner_id
-        and left.controller_id == right.controller_id
-        and left.state_version == right.state_version
-    )
+    return same_audio_claim(left, right)
 
 
 def _meeting_audio_claim(controller: Any, meeting_id: str) -> AudioAdmissionClaim | None:
     """Return only the process claim owned by this exact Meeting."""
 
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if (
-        isinstance(current, AudioAdmissionClaim)
-        and current.owner_kind == "meeting"
-        and current.owner_id == str(meeting_id or "")
-    ):
-        return current
-    return None
+    return _audio_admission_owner(controller).meeting_claim(meeting_id)
 
 
 async def _handle_persistent_audio_claim_loss(controller: Any, claim: AudioAdmissionClaim, *, reason: str) -> None:
     """Fail closed when another controller has superseded our audio lease."""
 
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if not _same_audio_claim(current, claim):
-        return
-    controller._persistent_audio_claim = None
-    logger.error(
-        "Persistent native-audio admission lost: owner={} reason={}",
-        claim.owner_kind,
-        reason,
-    )
-    if claim.owner_kind == "live_mic":
-        emergency_stop = getattr(controller, "_emergency_stop_pipeline", None)
-        if callable(emergency_stop):
-            await emergency_stop(session_id=claim.owner_id)
-        return
-    if claim.owner_kind == "meeting" and not claim.owner_id.startswith("pending-"):
-        lost = getattr(controller, "_audio_admission_lost_meetings", None)
-        if not isinstance(lost, set):
-            lost = set()
-            controller._audio_admission_lost_meetings = lost
-        lost.add(claim.owner_id)
+    await _audio_admission_owner(controller).note_loss(claim, reason=reason)
 
 
 async def _audio_claim_heartbeat(controller: Any) -> None:
-    consecutive_errors = 0
-    try:
-        while True:
-            await asyncio.sleep(_AUDIO_ADMISSION_HEARTBEAT_SECONDS)
-            claim = getattr(controller, "_persistent_audio_claim", None)
-            if not isinstance(claim, AudioAdmissionClaim):
-                return
-            store, _controller_id = _persistent_audio_admission(controller)
-            try:
-                renewed = await asyncio.to_thread(store.renew, claim, ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS)
-            except AudioAdmissionConflict as exc:
-                active = exc.active
-                current = getattr(controller, "_persistent_audio_claim", None)
-                # Pending->durable Meeting binding intentionally increments the
-                # CAS generation.  If that transfer wins the SQLite race with
-                # an in-flight renewal, adopt the newer claim and keep beating.
-                if (
-                    _same_audio_claim(current, claim)
-                    and active.controller_id == claim.controller_id
-                    and active.owner_kind == claim.owner_kind
-                    and active.state_version > claim.state_version
-                ):
-                    controller._persistent_audio_claim = active
-                    consecutive_errors = 0
-                    continue
-                await _handle_persistent_audio_claim_loss(controller, claim, reason="superseded")
-                return
-            except Exception as exc:
-                consecutive_errors += 1
-                logger.warning(
-                    "Persistent native-audio admission heartbeat retry: error={} attempt={}",
-                    type(exc).__name__,
-                    consecutive_errors,
-                )
-                # Live Mic has no durable workflow row that can exclude a new
-                # controller after lease expiry. Stop before the 60-second TTL
-                # can lapse rather than risk two simultaneous captures.
-                if claim.owner_kind == "live_mic" and consecutive_errors >= 3:
-                    await _handle_persistent_audio_claim_loss(controller, claim, reason="renewal_unavailable")
-                    return
-                continue
-            consecutive_errors = 0
-            if _same_audio_claim(getattr(controller, "_persistent_audio_claim", None), claim):
-                controller._persistent_audio_claim = renewed
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.error(
-            "Persistent native-audio admission heartbeat stopped: {}",
-            type(exc).__name__,
-        )
+    await _audio_admission_owner(controller).run_heartbeat()
 
 
 async def _claim_persistent_audio(
@@ -2442,75 +2422,21 @@ async def _claim_persistent_audio(
     owner_id: str,
     heartbeat: bool = True,
 ) -> AudioAdmissionClaim:
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if isinstance(current, AudioAdmissionClaim):
-        if current.owner_kind == owner_kind and current.owner_id == owner_id:
-            return current
-        raise AudioAdmissionConflict(current)
-    store, controller_id = _persistent_audio_admission(controller)
-    claim, pending_cancel = await await_with_delayed_cancellation(
-        asyncio.to_thread(
-            store.acquire,
-            owner_kind=owner_kind,
-            owner_id=owner_id,
-            controller_id=controller_id,
-            ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
-        )
+    return await _audio_admission_owner(controller).acquire(
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        heartbeat=heartbeat,
     )
-    # A SQLite acquisition already running in a worker thread cannot be
-    # cancelled. Never lose the returned ownership record: if shutdown or task
-    # cancellation won the race, release the newly-created lease before
-    # propagating cancellation instead of leaving a 60-second phantom owner.
-    if pending_cancel is not None or getattr(controller, "_shutting_down", False):
-        try:
-            await _await_cleanup_barrier(asyncio.to_thread(store.release, claim))
-        except BaseException as cleanup_exc:
-            logger.warning(
-                "Persistent native-audio claim rollback failed: {}",
-                type(cleanup_exc).__name__,
-            )
-        if pending_cancel is not None:
-            raise pending_cancel
-        raise asyncio.CancelledError("Native audio claim aborted during shutdown")
-    controller._persistent_audio_claim = claim
-    lost_meetings = getattr(controller, "_audio_admission_lost_meetings", None)
-    if isinstance(lost_meetings, set):
-        lost_meetings.discard(owner_id)
-    if heartbeat:
-        task = getattr(controller, "_audio_admission_heartbeat_task", None)
-        if task is None or task.done():
-            controller._audio_admission_heartbeat_task = asyncio.create_task(
-                _audio_claim_heartbeat(controller), name="audio_admission_heartbeat"
-            )
-    return claim
 
 
 async def _transfer_persistent_audio_claim(
     controller: Any, claim: AudioAdmissionClaim, *, owner_id: str
 ) -> AudioAdmissionClaim:
-    store, _controller_id = _persistent_audio_admission(controller)
-    transferred = await asyncio.to_thread(store.transfer, claim, owner_id=owner_id)
-    if _same_audio_claim(getattr(controller, "_persistent_audio_claim", None), claim):
-        controller._persistent_audio_claim = transferred
-    return transferred
+    return await _audio_admission_owner(controller).transfer(claim, owner_id=owner_id)
 
 
 async def _release_persistent_audio(controller: Any, claim: AudioAdmissionClaim | None = None) -> bool:
-    target = claim or getattr(controller, "_persistent_audio_claim", None)
-    if not isinstance(target, AudioAdmissionClaim):
-        return False
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if _same_audio_claim(current, target):
-        controller._persistent_audio_claim = None
-        task = getattr(controller, "_audio_admission_heartbeat_task", None)
-        controller._audio_admission_heartbeat_task = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-    store, _controller_id = _persistent_audio_admission(controller)
-    released, pending_cancel = await await_with_delayed_cancellation(asyncio.to_thread(store.release, target))
-    if pending_cancel is not None:
-        raise pending_cancel
-    return bool(released)
+    return await _audio_admission_owner(controller).release(claim)
 
 
 async def _release_shutdown_audio_claim(
@@ -2529,27 +2455,11 @@ async def _release_shutdown_audio_claim(
     return bool(released)
 
 
-def _release_shutdown_audio_claim_in_thread(
-    store: Any,
-    claim: AudioAdmissionClaim,
-) -> None:
-    """No-loop fallback for synchronous teardown callers."""
-
-    try:
-        store.release(claim)
-    except Exception as exc:
-        logger.warning(
-            "Persistent native-audio admission release during shutdown failed: {}",
-            type(exc).__name__,
-        )
+_release_shutdown_audio_claim_in_thread = release_audio_claim_in_thread
 
 
 async def _foreign_persistent_audio_claim(controller: Any) -> AudioAdmissionClaim | None:
-    store, controller_id = _persistent_audio_admission(controller)
-    active = await asyncio.to_thread(store.active)
-    if active is None or active.controller_id == controller_id:
-        return None
-    return active
+    return await _audio_admission_owner(controller).foreign_claim()
 
 
 async def _active_meeting_audio_conflict(

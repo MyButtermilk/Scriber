@@ -872,6 +872,18 @@ Key modules:
 
 - `src/web_api.py`: aiohttp application composition, WebSocket/controller state,
   jobs, settings, and explicit dev/test frontend fallback.
+- `src/runtime/audio_admission.py`: the single owner of this process's native
+  audio lease. Only one capture may hold the device, and the exclusion is
+  durable and cross-process, so the rules for holding a lease are not obvious:
+  renew on a heartbeat that never runs twice, adopt this controller's own
+  pending-to-durable Meeting rebinding rather than mistaking its CAS bump for a
+  loss, fail closed against a genuinely different controller, let a Meeting ride
+  out an unavailable store while Live Mic gives up before the TTL can lapse, and
+  release a lease a worker thread created after cancellation already won. Those
+  rules lived as free functions over loose controller attributes; the owner now
+  holds them together. The claim and the heartbeat task are still stored on the
+  controller and reached through accessors -- a deliberate seam, since the suite
+  that guards this concern reads them directly.
 - `src/api/runtime_routes.py`, `src/api/onnx_routes.py`,
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
   `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
