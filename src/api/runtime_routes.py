@@ -17,6 +17,7 @@ from typing import Any
 from aiohttp import web
 from loguru import logger
 
+from src.api.controller_port import RuntimeControllerPort
 from src.api.http_security import (
     attachment_content_disposition,
     configured_session_token,
@@ -37,14 +38,9 @@ from src.runtime.support_bundle import create_support_bundle
 
 @dataclass(frozen=True)
 class RuntimeRoutesService:
-    """Dependencies the runtime domain needs from the surrounding app.
+    """Dependencies the runtime domain needs from the surrounding app."""
 
-    ``controller`` is typed loosely on purpose: annotating it as
-    ``ScriberWebController`` would import ``web_api``, which imports this
-    module in turn.
-    """
-
-    controller: Any
+    controller: RuntimeControllerPort
 
 
 APP_RUNTIME_SERVICE: web.AppKey[RuntimeRoutesService] = web.AppKey(
@@ -58,7 +54,7 @@ APP_RUNTIME_SERVICE: web.AppKey[RuntimeRoutesService] = web.AppKey(
 APP_SHUTDOWN_EVENT: web.AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 
 
-def _controller(request: web.Request) -> Any:
+def _controller(request: web.Request) -> RuntimeControllerPort:
     return request.app[APP_RUNTIME_SERVICE].controller
 
 
@@ -275,7 +271,7 @@ async def get_hot_path_metrics(request: web.Request) -> web.Response:
     return web.json_response(payload)
 
 
-def register_runtime_routes(app: web.Application, *, controller: Any) -> None:
+def register_runtime_routes(app: web.Application, *, controller: RuntimeControllerPort) -> None:
     """Register the runtime domain without web_api closure coupling."""
 
     app[APP_RUNTIME_SERVICE] = RuntimeRoutesService(controller=controller)

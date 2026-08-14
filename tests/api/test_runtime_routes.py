@@ -14,6 +14,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from src.api.http_security import attachment_content_disposition
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.core.rest_contracts import REST_API_VERSION
 
@@ -199,9 +200,32 @@ async def test_runtime_logs_report_a_collector_failure_as_500(monkeypatch):
         await client.close()
 
 
+@pytest.mark.parametrize(
+    "filename",
+    [
+        'scriber "support".zip',
+        "scriber\\support.zip",
+        "scriber/support.zip",
+        "scriber\r\nX-Injected: 1.zip",
+    ],
+)
+def test_attachment_header_never_carries_a_quote_or_separator(filename):
+    """Checked on the builder, not through a file.
+
+    Windows rejects these characters in a path outright, so a bundle named
+    this way cannot be created on the platform Scriber ships on. The header
+    still has to survive them, because the name reaches it as a string.
+    """
+    disposition = attachment_content_disposition(filename)
+    quoted = disposition.split("filename=", 1)[1].split(";", 1)[0]
+    assert quoted.startswith('"') and quoted.endswith('"')
+    assert '"' not in quoted[1:-1]
+    assert "\r" not in disposition and "\n" not in disposition
+
+
 @pytest.mark.asyncio
-async def test_support_bundle_sets_an_injection_safe_attachment_header(monkeypatch, tmp_path):
-    bundle = tmp_path / 'scriber "support".zip'
+async def test_support_bundle_encodes_a_non_ascii_filename(monkeypatch, tmp_path):
+    bundle = tmp_path / "Scriber Diagnose Überblick.zip"
     bundle.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
     monkeypatch.setattr(
         "src.api.runtime_routes.create_support_bundle",
@@ -213,8 +237,9 @@ async def test_support_bundle_sets_an_injection_safe_attachment_header(monkeypat
         response = await client.post("/api/runtime/support-bundle")
         assert response.status == 200
         disposition = response.headers["Content-Disposition"]
-        assert '"' not in disposition.split("filename=")[1].split(";")[0].strip('"')
-        assert "filename*=UTF-8''" in disposition
+        # The ASCII fallback stays readable; the exact name rides in filename*.
+        assert 'filename="Scriber Diagnose _berblick.zip"' in disposition
+        assert "filename*=UTF-8''Scriber%20Diagnose%20%C3%9Cberblick.zip" in disposition
     finally:
         await client.close()
 

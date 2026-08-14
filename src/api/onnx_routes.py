@@ -15,19 +15,15 @@ from typing import Any
 from aiohttp import web
 from loguru import logger
 
+from src.api.controller_port import OnnxControllerPort
 from src.config import Config
 
 
 @dataclass
 class OnnxRoutesService:
-    """Dependencies the ONNX domain needs from the surrounding app.
+    """Dependencies the ONNX domain needs from the surrounding app."""
 
-    ``controller`` is typed loosely on purpose: annotating it as
-    ``ScriberWebController`` would import ``web_api``, which imports this
-    module in turn.
-    """
-
-    controller: Any
+    controller: OnnxControllerPort
     # Download progress is broadcast from the worker thread through
     # call_soon_threadsafe. asyncio keeps only a weak reference to the tasks
     # that creates, so they are held here until they finish.
@@ -306,7 +302,7 @@ async def delete_model_route(request: web.Request) -> web.Response:
         return web.json_response({"message": str(e)}, status=500)
 
 
-def register_onnx_routes(app: web.Application, *, controller: Any) -> None:
+def register_onnx_routes(app: web.Application, *, controller: OnnxControllerPort) -> None:
     """Register the ONNX model domain without web_api closure coupling."""
 
     app[APP_ONNX_SERVICE] = OnnxRoutesService(controller=controller)

@@ -20,6 +20,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src.api.app_keys import APP_HTTP_SESSION
+from src.api.controller_port import YoutubeControllerPort
 from src.config import Config
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -37,14 +38,9 @@ _MISSING_API_KEY_MESSAGE = "Missing YouTube API key. Set YOUTUBE_API_KEY or save
 
 @dataclass(frozen=True)
 class YoutubeRoutesService:
-    """Dependencies the YouTube domain needs from the surrounding app.
+    """Dependencies the YouTube domain needs from the surrounding app."""
 
-    ``controller`` is typed loosely on purpose: annotating it as
-    ``ScriberWebController`` would import ``web_api``, which imports this
-    module in turn.
-    """
-
-    controller: Any
+    controller: YoutubeControllerPort
 
 
 APP_YOUTUBE_SERVICE: web.AppKey[YoutubeRoutesService] = web.AppKey(
@@ -315,7 +311,7 @@ async def transcribe(request: web.Request) -> web.Response:
     return web.json_response(rec.to_public(include_content=True))
 
 
-def register_youtube_routes(app: web.Application, *, controller: Any) -> None:
+def register_youtube_routes(app: web.Application, *, controller: YoutubeControllerPort) -> None:
     """Register the YouTube domain without web_api closure coupling."""
 
     app[APP_YOUTUBE_SERVICE] = YoutubeRoutesService(controller=controller)
