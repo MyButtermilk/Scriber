@@ -874,9 +874,10 @@ Key modules:
   jobs, settings, and explicit dev/test frontend fallback.
 - `src/api/runtime_routes.py`, `src/api/onnx_routes.py`,
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
-  `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`, and
-  `src/api/device_routes.py`: module-level handlers for the extracted Runtime,
-  ONNX, YouTube, Transcript, Settings, Local Polishing, and Device domains. Runtime owns debug logs and support bundles. ONNX
+  `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
+  `src/api/device_routes.py`, and `src/api/outlook_calendar_routes.py`:
+  module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
+  Settings, Local Polishing, Device, and Outlook Calendar domains. Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
   scopes before cancellation. Transcript routes hold no transcript state: one
@@ -887,7 +888,10 @@ Key modules:
   the settings lock, validation, and persistence behind its public signature.
   Local Polishing owns a typed failure-code table so each bounded error maps
   onto its own status and public message. Device routes answer the
-  Tauri-owned autostart contract explicitly rather than 404. Their narrow
+  Tauri-owned autostart contract explicitly rather than 404. Outlook Calendar
+  is the one domain that needs no controller: it depends on the calendar
+  collaborator and resolves it per request, so composition still builds with a
+  controller that never materializes one. Their narrow
   structural controller ports live beside the consuming handlers so a route
   module's dependency surface stays local.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP security

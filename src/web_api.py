@@ -43,6 +43,7 @@ from src.api.http_security import (
 from src.api.local_polishing_routes import register_local_polishing_routes
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.onnx_routes import register_onnx_routes
+from src.api.outlook_calendar_routes import register_outlook_calendar_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.api.settings_routes import register_settings_routes
 from src.api.transcript_routes import register_transcript_routes
@@ -16369,109 +16370,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             }
         )
 
-    async def outlook_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload = await ctl._outlook_calendar.status()
-        return web.json_response({"apiVersion": REST_API_VERSION, **payload})
-
-    async def outlook_connect(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json() if request.can_read_body else {}
-            open_browser = not isinstance(raw, dict) or raw.get("openBrowser") is not False
-            payload = ctl._outlook_calendar.begin_connect(open_browser=open_browser)
-            return web.json_response({"apiVersion": REST_API_VERSION, **payload}, status=202)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
-    async def outlook_callback(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if request.query.get("error"):
-            ctl._outlook_calendar.cancel_connect(request.query.get("state", ""))
-            return web.Response(
-                text="<h1>Outlook connection canceled</h1><p>You can close this window.</p>",
-                content_type="text/html",
-                status=400,
-            )
-        try:
-            await ctl._outlook_calendar.complete_connect(request.query.get("state", ""), request.query.get("code", ""))
-            sync_warning = False
-            try:
-                await ctl._outlook_calendar.sync(request.app[APP_HTTP_SESSION])
-            except Exception as sync_exc:
-                sync_warning = True
-                ctl._outlook_calendar.record_sync_error(type(sync_exc).__name__)
-                logger.warning(
-                    "Initial Outlook calendar sync failed after successful authorization: {}", type(sync_exc).__name__
-                )
-            return web.Response(
-                text=(
-                    "<h1>Outlook connected</h1><p>The account is connected, but the first calendar sync failed. "
-                    "Return to Scriber and choose Sync now.</p>"
-                    if sync_warning
-                    else "<h1>Outlook connected</h1><p>You can close this window and return to Scriber.</p>"
-                ),
-                content_type="text/html",
-            )
-        except Exception as exc:
-            logger.warning("Outlook OAuth callback failed: {}", type(exc).__name__)
-            return web.Response(
-                text="<h1>Outlook connection failed</h1><p>Return to Scriber and try again.</p>",
-                content_type="text/html",
-                status=400,
-            )
-
-    async def outlook_sync(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            changed = await ctl._outlook_calendar.sync(request.app[APP_HTTP_SESSION])
-            status = await ctl._outlook_calendar.status()
-            return web.json_response({"apiVersion": REST_API_VERSION, "changed": changed, **status})
-        except ValueError as exc:
-            ctl._outlook_calendar.record_sync_error(type(exc).__name__)
-            return web.json_response({"message": str(exc)}, status=409)
-        except TimeoutError:
-            ctl._outlook_calendar.record_sync_error("TimeoutError")
-            return web.json_response(
-                {"message": "Outlook did not respond in time. Your saved calendar remains available."},
-                status=504,
-            )
-        except Exception as exc:
-            error_type = type(exc).__name__
-            ctl._outlook_calendar.record_sync_error(error_type)
-            logger.warning("Manual Outlook calendar sync failed: {}", error_type)
-            return web.json_response(
-                {"message": "Outlook calendar could not be refreshed. Your saved calendar remains available."},
-                status=502,
-            )
-
-    async def outlook_events(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._outlook_calendar.authorization_pending:
-            return web.json_response(
-                {"message": "Finish the Outlook sign-in before loading calendar events."},
-                status=409,
-            )
-        try:
-            payload = await asyncio.to_thread(
-                ctl._outlook_calendar.events_for_day,
-                day_value=request.query.get("date", ""),
-                time_zone_name=request.query.get("timeZone", ""),
-                start_value=request.query.get("start", ""),
-                end_value=request.query.get("end", ""),
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **payload})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def outlook_disconnect(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            await ctl._outlook_calendar.disconnect()
-            return web.json_response({"apiVersion": REST_API_VERSION, "disconnected": True})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
     async def meeting_hotkey(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         active = await asyncio.to_thread(ctl._meeting_store.active)
@@ -19799,12 +19697,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/meetings/audio-devices", meeting_audio_devices)
     app.router.add_post("/api/meetings/device-test", meeting_device_test)
     app.router.add_get("/api/meeting-profiles", meeting_profiles)
-    app.router.add_get("/api/calendar/outlook/status", outlook_status)
-    app.router.add_post("/api/calendar/outlook/connect", outlook_connect)
-    app.router.add_get("/api/calendar/outlook/callback", outlook_callback)
-    app.router.add_post("/api/calendar/outlook/sync", outlook_sync)
-    app.router.add_get("/api/calendar/outlook/events", outlook_events)
-    app.router.add_delete("/api/calendar/outlook", outlook_disconnect)
+    register_outlook_calendar_routes(app, get_calendar=lambda: controller._outlook_calendar)
     app.router.add_post("/api/meetings/hotkey", meeting_hotkey)
     app.router.add_get("/api/meetings/detection", get_meeting_detection)
     app.router.add_post("/api/meetings/detection/dismiss", dismiss_meeting_detection)

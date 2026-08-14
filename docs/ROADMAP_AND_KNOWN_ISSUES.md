@@ -128,9 +128,9 @@ Meetings:
   recovery, canonical/live revisions, notes, editable action items, cited chat,
   exports, playback, retention, and webhook delivery surfaces.
 - Meeting delivery was the first domain extracted from `create_app`; Runtime,
-  ONNX model management, YouTube, Transcript, Settings, Local Polishing, and
-  Device routes now follow the same module-level registration shape with
-  domain-local controller ports.
+  ONNX model management, YouTube, Transcript, Settings, Local Polishing,
+  Device, and Outlook Calendar routes now follow the same module-level
+  registration shape with domain-local ports.
   Transcript routes were the first to need controller internals; those became
   public methods shaped by the routes' needs rather than a wider port.
   Webhook targets are HTTPS-only, DNS-validated and socket-pinned; confirmation

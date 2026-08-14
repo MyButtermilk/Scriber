@@ -20,10 +20,12 @@ import pytest
 from src.api.device_routes import DeviceControllerPort
 from src.api.local_polishing_routes import LocalPolishingControllerPort
 from src.api.onnx_routes import OnnxControllerPort
+from src.api.outlook_calendar_routes import OutlookCalendarPort
 from src.api.runtime_routes import RuntimeControllerPort
 from src.api.settings_routes import SettingsControllerPort
 from src.api.transcript_routes import TranscriptsControllerPort, TranscriptViewPort
 from src.api.youtube_routes import PublicRecordPort, YoutubeControllerPort
+from src.outlook_calendar import OutlookCalendarService
 from src.web_api import ScriberWebController, TranscriptRecord, TranscriptView
 
 PORTS = [
@@ -87,6 +89,28 @@ def test_transcript_view_satisfies_the_view_port():
     declared = {name for name in get_type_hints(TranscriptViewPort)}
     actual = {field.name for field in dataclasses.fields(TranscriptView)}
     assert declared <= actual, f"TranscriptViewPort names fields TranscriptView lacks: {declared - actual}"
+
+
+def test_outlook_calendar_port_matches_its_collaborator():
+    """This port names the calendar, not the controller, so it is checked apart."""
+    for name, declared in _declared_methods(OutlookCalendarPort).items():
+        actual = getattr(OutlookCalendarService, name, None)
+        assert actual is not None, f"OutlookCalendarPort requires a missing {name}"
+        assert inspect.iscoroutinefunction(actual) == inspect.iscoroutinefunction(declared), (
+            f"{name}: async-ness differs between OutlookCalendarPort and OutlookCalendarService"
+        )
+        expected_params = list(inspect.signature(declared).parameters.values())[1:]
+        actual_params = list(inspect.signature(actual).parameters.values())[1:]
+        assert [(p.name, p.kind) for p in expected_params] == [(p.name, p.kind) for p in actual_params], (
+            f"{name}: parameter names/kinds differ from OutlookCalendarService"
+        )
+
+
+def test_outlook_calendar_port_declares_the_pending_property():
+    """A property is not collected as a method, so it is asserted directly."""
+    assert isinstance(inspect.getattr_static(OutlookCalendarService, "authorization_pending"), property), (
+        "authorization_pending is no longer a property on OutlookCalendarService"
+    )
 
 
 def test_ports_stay_narrow():
