@@ -875,9 +875,11 @@ Key modules:
 - `src/api/runtime_routes.py`, `src/api/onnx_routes.py`,
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
   `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
-  `src/api/device_routes.py`, and `src/api/outlook_calendar_routes.py`:
+  `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`, and
+  `src/api/meeting_import_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
-  Settings, Local Polishing, Device, and Outlook Calendar domains. Runtime owns debug logs and support bundles. ONNX
+  Settings, Local Polishing, Device, Outlook Calendar, and Meeting Import
+  domains. Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
   scopes before cancellation. Transcript routes hold no transcript state: one
@@ -895,7 +897,17 @@ Key modules:
   Tauri-owned autostart contract explicitly rather than 404. Outlook Calendar
   is the one domain that needs no controller: it depends on the calendar
   collaborator and resolves it per request, so composition still builds with a
-  controller that never materializes one. Their narrow
+  controller that never materializes one. Meeting Import owns the whole durable
+  upload protocol -- claiming a receive generation, streaming to staging,
+  reporting progress, committing the source atomically, and leaving a
+  recoverable state on cancellation, on a duplicate PUT, and on failure. It is
+  the second domain without a controller port, for the opposite reason: the
+  protocol needs the durable store, the progress broadcast, both task
+  registries, and the shutdown flag, which composition supplies as loose
+  attributes rather than as a class. Those arrive as an immutable
+  `MeetingImportDeps` bundle assembled per request, because the store is
+  replaced after the app exists and the shutdown flag has to answer for the
+  moment cancellation lands rather than for the moment the upload began. Their narrow
   structural controller ports live beside the consuming handlers so a route
   module's dependency surface stays local. Each domain's route test pins its
   exact method/property surface and boundary-critical return types against the

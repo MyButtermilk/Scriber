@@ -53,9 +53,9 @@ Backend and runtime:
   WebSocket server, settings, jobs, transcript history, mic control, uploads,
   and the routes not yet split into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
-  Polishing, Device, Outlook Calendar, and Meeting Delivery route domains,
-  shared aiohttp app keys, HTTP security helpers, and the upload policy used by
-  both file transcription and Meeting imports.
+  Polishing, Device, Outlook Calendar, Meeting Delivery, and Meeting Import
+  route domains, shared aiohttp app keys, HTTP security helpers, and the upload
+  policy used by both file transcription and Meeting imports.
   Each route module owns its narrow structural controller port beside the
   handlers that consume it; do not recreate a central controller-port
   catalogue. The matching route test owns the exact adapter-contract assertion,

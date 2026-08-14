@@ -294,7 +294,7 @@ paths; installed-app and physical-device evidence remains part of release QA.
   controller using the same SQLite database exposes the same race during a
   concurrent upload.
 - **Root cause:** the active-upload guard in
-  `src/web_api.py::upload_meeting_import` is process-local. When
+  `src/api/meeting_import_routes.py::upload_import` is process-local. When
   `begin_receiving` rejects the second request, the conflict handler calls
   `MeetingImportStore.mark_failed`; that method may transition any nonterminal
   state through `finalizing` to `failed`. The handler can then remove the first

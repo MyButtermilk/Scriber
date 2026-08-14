@@ -64,7 +64,15 @@ module against lightweight stubs, then locally pin its complete structural port
 against the real controller or service, including boundary-critical route-owned
 DTO return types. The shared fixture contains only signature-reflection
 mechanics: method/property allowlists remain in their owning domain test, so
-there is no central port catalogue. Upload-policy tests separately cover the
+there is no central port catalogue. Outlook Calendar has no controller port but
+still pins one for its calendar collaborator; Meeting Import has no port at all
+and guards its wiring instead, building the real app around a minimal stub and
+asserting that composition resolves every declared dependency. A renamed
+controller attribute therefore fails at test time rather than as a request-time
+`AttributeError` on whichever route happens to need it. Meeting-import tests
+run against the real `MeetingImportStore` because the assertion that matters is
+which durable state a job is left in after a replayed PUT, a size mismatch, or
+a cancel. Upload-policy tests separately cover the
 180 UTF-16-code-unit filename bound, Windows reserved-device names and invalid
 surrogates, accepted media extensions, and human-readable limit labels used by
 both File transcription and Meeting imports.

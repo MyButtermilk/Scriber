@@ -42,6 +42,7 @@ from src.api.http_security import (
 )
 from src.api.local_polishing_routes import register_local_polishing_routes
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
+from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
 from src.api.onnx_routes import register_onnx_routes
 from src.api.outlook_calendar_routes import register_outlook_calendar_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
@@ -144,7 +145,6 @@ from src.data.latency_metrics_store import LatencyMetricsStore
 from src.data.meeting_import_store import (
     InvalidMeetingImportTransition,
     MeetingImportConflict,
-    MeetingImportNotFound,
     MeetingImportStatus,
     MeetingImportStore,
 )
@@ -16549,332 +16549,38 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "finishedAt": payload["finishedAt"],
         }
 
-    async def list_meeting_imports(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = max(1, min(50, int(request.query.get("limit", "24"))))
-        except ValueError:
-            return web.json_response({"message": "Meeting import limit must be a whole number."}, status=400)
-        records = await asyncio.to_thread(
-            ctl._meeting_import_store.list_inbox,
-            limit=limit,
-            recent_terminal_limit=6,
-        )
-        items = [meeting_import_inbox_payload(record) for record in records]
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "items": items,
-                "total": len(items),
-                "limit": limit,
-            }
-        )
+    def _task_registry(attribute: str) -> dict[str, asyncio.Task]:
+        registry = getattr(controller, attribute, None)
+        if registry is None:
+            registry = {}
+            setattr(controller, attribute, registry)
+        return registry
 
-    async def create_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            safe_filename = safe_upload_filename(str(raw.get("filename") or "meeting-recording"))
-            extension = Path(safe_filename).suffix.lower()
-            if extension not in ALLOWED_UPLOAD_EXTENSIONS:
-                raise ValueError(f"Unsupported meeting recording type: {extension}")
-            expected_bytes = int(raw.get("byteSize") or 0)
-            if expected_bytes <= 0:
-                raise ValueError("Meeting recording size must be greater than zero.")
-            provider = Config.MEETING_FINAL_PROVIDER
-            _validate_provider_ready(provider)
-            max_bytes = (
-                _get_video_max_bytes() if extension in VIDEO_EXTENSIONS else _get_audio_ingest_max_bytes(provider)
-            )
-            if expected_bytes > max_bytes:
-                return web.json_response(
-                    {"message": f"Meeting recording is too large (max {format_upload_limit(max_bytes)})."},
-                    status=413,
-                )
-            profile = {
-                "id": str(raw.get("profileId") or "default")[:96],
-                "language": str(raw.get("language") or Config.LANGUAGE or "auto")[:32],
-                "finalProvider": provider,
-                "analysisModel": Config.MEETING_ANALYSIS_MODEL,
-                "audioRetentionDays": Config.MEETING_AUDIO_RETENTION_DAYS,
-                "autoAnalyze": Config.MEETING_AUTO_ANALYZE,
-            }
-            record = await asyncio.to_thread(
-                ctl._meeting_import_store.create,
-                source_filename=safe_filename,
-                expected_bytes=expected_bytes,
-                profile_snapshot=profile,
-                metadata={"title": str(raw.get("title") or Path(safe_filename).stem)[:500], "origin": "imported"},
-            )
-            return web.json_response(
-                meeting_import_payload(record, upload_url=f"/api/meeting-imports/{record.id}/content"),
-                status=201,
-            )
-        except (ValueError, RuntimeError) as exc:
-            return web.json_response({"message": redact_text(str(exc))[:240]}, status=400)
+    def meeting_import_deps() -> MeetingImportDeps:
+        """Resolve the durable import dependencies for one request.
 
-    async def get_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            record = await asyncio.to_thread(ctl._meeting_import_store.require, request.match_info.get("importId", ""))
-            return web.json_response(meeting_import_payload(record))
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
+        Every lookup is deliberately late.  The store and the task registries are
+        assigned to the controller after ``create_app`` returns, ``data_dir`` and
+        the upload limits are patched per test, and the shutdown flag has to
+        answer for the moment cancellation lands rather than for app startup.
 
-    async def upload_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        import_id = request.match_info.get("importId", "")
-        part_path: Path | None = None
-        job_root: Path | None = None
-        receiving_claimed = False
-        source_committed = False
-        current_task = asyncio.current_task()
-        upload_tasks = getattr(ctl, "_meeting_import_upload_tasks", None)
-        if upload_tasks is None:
-            upload_tasks = {}
-            ctl._meeting_import_upload_tasks = upload_tasks
-        existing_upload = upload_tasks.get(import_id)
-        if existing_upload is not None and not existing_upload.done():
-            return web.json_response(
-                {"message": "A Meeting recording upload is already active for this job."},
-                status=409,
-            )
-        if current_task is not None:
-            upload_tasks[import_id] = current_task
-        try:
-            record = await to_thread_cancellation_barrier(ctl._meeting_import_store.begin_receiving, import_id)
-            receiving_claimed = True
-            storage_root = data_dir().resolve()
-            imports_root = (storage_root / "meeting-imports").resolve()
-            if imports_root.parent != storage_root:
-                raise ValueError("Meeting import storage root is invalid.")
-            job_root = (imports_root / record.id).resolve()
-            if job_root.parent != imports_root:
-                raise ValueError("Meeting import upload path is invalid.")
-            job_root.mkdir(parents=True, exist_ok=True)
-            part_path = job_root / "source.part"
-            digest = hashlib.sha256()
-            received = 0
-            last_reported = 0
-            with part_path.open("wb") as handle:
-                async for chunk in request.content.iter_chunked(1024 * 1024):
-                    if not chunk:
-                        continue
-                    received += len(chunk)
-                    if record.expected_bytes is not None and received > record.expected_bytes:
-                        raise ValueError("Meeting recording exceeds its declared size.")
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    if received - last_reported >= 1024 * 1024:
-                        record = await to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.update_receive_progress, import_id, received
-                        )
-                        fraction = received / max(1, record.expected_bytes or received)
-                        await ctl._broadcast_meeting_import(record, min(0.85, fraction * 0.85), "Uploading recording")
-                        last_reported = received
-
-                def flush_and_sync() -> None:
-                    handle.flush()
-                    os.fsync(handle.fileno())
-
-                flush_task = asyncio.create_task(asyncio.to_thread(flush_and_sync))
-                try:
-                    await asyncio.shield(flush_task)
-                except asyncio.CancelledError:
-                    # Do not close/delete the file while the worker thread still
-                    # owns its handle.  DELETE waits on this handler task.
-                    await asyncio.shield(flush_task)
-                    raise
-            if record.expected_bytes is not None and received != record.expected_bytes:
-                raise ValueError("Uploaded byte count does not match the declared size.")
-            committed_path = job_root / f"source{Path(record.source_filename).suffix.lower()}"
-            # The rename is a short atomic syscall.  Keeping it on this task
-            # avoids a canceled to_thread continuing after DELETE removes the
-            # staging directory.
-            os.replace(part_path, committed_path)
-            record = await to_thread_cancellation_barrier(
-                ctl._meeting_import_store.mark_received,
-                import_id,
-                relative_path=committed_path.relative_to(storage_root).as_posix(),
-                byte_count=received,
-                sha256=digest.hexdigest(),
-            )
-            source_committed = True
-            try:
-                ctl.schedule_meeting_import(import_id)
-                await ctl._broadcast_meeting_import(record, 0.86, "Upload safely stored")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Scheduling/progress are repairable bookkeeping after the
-                # durable source commit. Startup recovery owns RECEIVED jobs;
-                # never turn a safely accepted upload into data loss here.
-                logger.exception("Accepted Meeting import bookkeeping will be repaired on recovery")
-            return web.json_response(meeting_import_payload(record), status=202)
-        except asyncio.CancelledError:
-            cleanup_incomplete_upload = True
-            try:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                    record = await to_thread_cancellation_barrier(ctl._meeting_import_store.mark_canceled, import_id)
-                    await ctl._broadcast_meeting_import(record, 0.0, "Meeting import canceled")
-                elif record.status in {
-                    MeetingImportStatus.CREATED,
-                    MeetingImportStatus.RECEIVING,
-                }:
-                    if not getattr(ctl, "_shutting_down", False):
-                        record = await to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.mark_failed,
-                            import_id,
-                            error_code="upload_interrupted",
-                            error_message="The Meeting recording upload was interrupted.",
-                        )
-                        await ctl._broadcast_meeting_import(record, 1.0, "Meeting import upload failed")
-                else:
-                    # The source commit is authoritative from RECEIVED onward.
-                    # Cancellation can arrive after mark_received while a
-                    # progress response is in flight; never delete an accepted,
-                    # restart-recoverable source directory in that window.
-                    cleanup_incomplete_upload = False
-            except Exception:
-                logger.exception("Meeting import upload cancellation could not be persisted")
-            if cleanup_incomplete_upload:
-                if part_path is not None:
-                    part_path.unlink(missing_ok=True)
-                if job_root is not None:
-                    await remove_tree_if_exists(job_root)
-            raise
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
-        except (MeetingImportConflict, InvalidMeetingImportTransition, ValueError) as exc:
-            if source_committed:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                return web.json_response(meeting_import_payload(record), status=202)
-            if not receiving_claimed:
-                # This request never won the durable upload generation. A
-                # duplicate/replayed PUT is observational only: it must not
-                # fail the winning worker or remove files owned by that worker.
-                try:
-                    record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                except MeetingImportNotFound:
-                    return web.json_response({"message": "Meeting import not found"}, status=404)
-                if record.status not in {
-                    MeetingImportStatus.CREATED,
-                    MeetingImportStatus.RECEIVING,
-                    MeetingImportStatus.CANCEL_REQUESTED,
-                }:
-                    return web.json_response(meeting_import_payload(record), status=202)
-                return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
-            try:
-                await to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.mark_failed,
-                    import_id,
-                    error_code=type(exc).__name__,
-                    error_message=redact_text(str(exc))[:240],
-                )
-            except Exception as mark_exc:
-                logger.debug("Meeting import failure-state persistence failed: {}", type(mark_exc).__name__)
-            if part_path is not None:
-                part_path.unlink(missing_ok=True)
-            if job_root is not None:
-                await remove_tree_if_exists(job_root)
-            return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
-        except Exception:
-            logger.exception("Meeting import upload failed")
-            if source_committed:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                return web.json_response(meeting_import_payload(record), status=202)
-            try:
-                await to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.mark_failed,
-                    import_id,
-                    error_code="upload_interrupted",
-                    error_message="The Meeting recording upload was interrupted.",
-                )
-            except Exception:
-                logger.exception("Interrupted Meeting upload state could not be persisted")
-            if part_path is not None:
-                part_path.unlink(missing_ok=True)
-            if job_root is not None:
-                await remove_tree_if_exists(job_root)
-            return web.json_response({"message": "The Meeting recording upload was interrupted."}, status=500)
-        finally:
-            if current_task is not None and upload_tasks.get(import_id) is current_task:
-                upload_tasks.pop(import_id, None)
-
-    async def cancel_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        import_id = request.match_info.get("importId", "")
-        try:
-            record = await asyncio.to_thread(ctl._meeting_import_store.request_cancel, import_id)
-            if record.status in {
-                MeetingImportStatus.COMPLETED,
-                MeetingImportStatus.FAILED,
-            }:
-                return web.json_response(
-                    {
-                        "message": "This Meeting import has already finished.",
-                        "meetingId": record.meeting_id or None,
-                    },
-                    status=409,
-                )
-            tasks = {
-                task
-                for task in (
-                    getattr(ctl, "_meeting_import_upload_tasks", {}).get(import_id),
-                    ctl._meeting_import_tasks.get(import_id),
-                )
-                if task is not None and not task.done()
-            }
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-                except asyncio.CancelledError, TimeoutError:
-                    pass
-                except Exception:
-                    logger.exception("Meeting import task failed while cancellation was draining")
-            record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-            if record.status == MeetingImportStatus.CANCEL_REQUESTED and all(task.done() for task in tasks):
-                record = await asyncio.to_thread(ctl._meeting_import_store.mark_canceled, import_id)
-            if record.status == MeetingImportStatus.CANCELED:
-                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
-            await ctl._broadcast_meeting_import(
-                record,
-                0.0,
-                "Meeting import canceled"
-                if record.status == MeetingImportStatus.CANCELED
-                else "Canceling Meeting import",
-            )
-            return web.json_response(
-                meeting_import_payload(record),
-                status=202 if record.status == MeetingImportStatus.CANCEL_REQUESTED else 200,
-            )
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
-        except MeetingImportConflict as exc:
-            try:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                meeting_id = record.meeting_id or None
-            except MeetingImportNotFound:
-                meeting_id = None
-            return web.json_response({"message": str(exc), "meetingId": meeting_id}, status=409)
-
-    async def import_meeting_file(request: web.Request):
-        """Retired one-request import; durable imports use create + binary PUT."""
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "message": (
-                    "The legacy multipart Meeting import was retired. Create a durable import "
-                    "with POST /api/meeting-imports, then upload to its returned uploadUrl."
-                ),
-                "createUrl": "/api/meeting-imports",
-            },
-            status=410,
+        Both registries are created on demand.  Reading a job never needed them,
+        so requiring them here would make listing an import fail on a controller
+        that only owns the durable store -- and the registry has to be attached
+        rather than handed over, because the upload registers itself in one
+        request and cancellation looks it up in another.
+        """
+        return MeetingImportDeps(
+            store=controller._meeting_import_store,
+            broadcast=controller._broadcast_meeting_import,
+            schedule=controller.schedule_meeting_import,
+            processing_tasks=_task_registry("_meeting_import_tasks"),
+            upload_tasks=_task_registry("_meeting_import_upload_tasks"),
+            storage_root=data_dir(),
+            is_shutting_down=lambda: bool(getattr(controller, "_shutting_down", False)),
+            validate_provider_ready=lambda provider: _validate_provider_ready(provider),
+            audio_max_bytes=lambda provider: _get_audio_ingest_max_bytes(provider),
+            video_max_bytes=lambda: _get_video_max_bytes(),
         )
 
     async def start_meeting(request: web.Request):
@@ -19551,12 +19257,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_get("/api/meetings/diarization-component", diarization_component_status)
     app.router.add_post("/api/meetings/diarization-component", install_diarization_component)
     app.router.add_delete("/api/meetings/diarization-component", delete_diarization_component)
-    app.router.add_get("/api/meeting-imports", list_meeting_imports)
-    app.router.add_post("/api/meeting-imports", create_meeting_import)
-    app.router.add_get("/api/meeting-imports/{importId}", get_meeting_import)
-    app.router.add_put("/api/meeting-imports/{importId}/content", upload_meeting_import)
-    app.router.add_delete("/api/meeting-imports/{importId}", cancel_meeting_import)
-    app.router.add_post("/api/meetings/import", import_meeting_file)
+    register_meeting_import_routes(
+        app,
+        deps=meeting_import_deps,
+        record_payload=meeting_import_payload,
+        inbox_payload=meeting_import_inbox_payload,
+    )
     app.router.add_post("/api/meetings", start_meeting)
     app.router.add_get("/api/meetings/{id}", meeting_detail)
     app.router.add_patch("/api/meetings/{id}", patch_meeting)
