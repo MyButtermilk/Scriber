@@ -10,6 +10,7 @@ from aiohttp import FormData, WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
+from src.api import youtube_routes
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
@@ -61,17 +62,17 @@ def test_origin_allowed_wildcard(monkeypatch):
 
 def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
     assert (
-        web_api._safe_youtube_thumbnail_url("https://i.ytimg.com/vi/abc123/hqdefault.jpg")
+        youtube_routes.safe_thumbnail_url("https://i.ytimg.com/vi/abc123/hqdefault.jpg")
         == "https://i.ytimg.com/vi/abc123/hqdefault.jpg"
     )
     assert (
-        web_api._safe_youtube_thumbnail_url("https://img.youtube.com/vi/abc123/mqdefault.jpg")
+        youtube_routes.safe_thumbnail_url("https://img.youtube.com/vi/abc123/mqdefault.jpg")
         == "https://img.youtube.com/vi/abc123/mqdefault.jpg"
     )
-    assert web_api._safe_youtube_thumbnail_url("http://i.ytimg.com/vi/abc123/hqdefault.jpg") is None
-    assert web_api._safe_youtube_thumbnail_url("https://evil.example/vi/abc123/hqdefault.jpg") is None
-    assert web_api._safe_youtube_thumbnail_url("https://user:pass@i.ytimg.com/vi/abc123/hqdefault.jpg") is None
-    assert web_api._safe_youtube_thumbnail_url("https://i.ytimg.com:8443/vi/abc123/hqdefault.jpg") is None
+    assert youtube_routes.safe_thumbnail_url("http://i.ytimg.com/vi/abc123/hqdefault.jpg") is None
+    assert youtube_routes.safe_thumbnail_url("https://evil.example/vi/abc123/hqdefault.jpg") is None
+    assert youtube_routes.safe_thumbnail_url("https://user:pass@i.ytimg.com/vi/abc123/hqdefault.jpg") is None
+    assert youtube_routes.safe_thumbnail_url("https://i.ytimg.com:8443/vi/abc123/hqdefault.jpg") is None
 
 
 def test_work_directory_component_cannot_escape_parent():
@@ -125,8 +126,8 @@ async def test_youtube_search_resolves_live_url_as_direct_video(monkeypatch, tmp
     async def fail_search_youtube_videos(*args, **kwargs):
         raise AssertionError("direct YouTube URLs must not be sent to search")
 
-    monkeypatch.setattr(web_api, "get_video_by_id", fake_get_video_by_id)
-    monkeypatch.setattr(web_api, "search_youtube_videos", fail_search_youtube_videos)
+    monkeypatch.setattr(youtube_routes, "get_video_by_id", fake_get_video_by_id)
+    monkeypatch.setattr(youtube_routes, "search_youtube_videos", fail_search_youtube_videos)
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     app = web_api.create_app(ctl)
@@ -156,7 +157,7 @@ async def test_youtube_search_rejects_unknown_youtube_url_shape(monkeypatch, tmp
     async def fail_search_youtube_videos(*args, **kwargs):
         raise AssertionError("unsupported YouTube URL shapes must not be sent to search")
 
-    monkeypatch.setattr(web_api, "search_youtube_videos", fail_search_youtube_videos)
+    monkeypatch.setattr(youtube_routes, "search_youtube_videos", fail_search_youtube_videos)
 
     ctl = ScriberWebController(asyncio.get_running_loop())
     app = web_api.create_app(ctl)

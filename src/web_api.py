@@ -18,13 +18,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
 from loguru import logger
 
 from src import database as db
+from src.api.app_keys import APP_HTTP_SESSION
 from src.api.http_security import (
     SESSION_TOKEN_ENV,
     SESSION_TOKEN_HEADER,
@@ -39,7 +40,9 @@ from src.api.http_security import (
     validate_server_bind_security,
 )
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
+from src.api.onnx_routes import register_onnx_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
+from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
@@ -254,11 +257,7 @@ from src.transcript_artifacts import (
 from src.version import app_version
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
-    YouTubeApiError,
-    extract_youtube_video_id,
-    get_video_by_id,
     is_youtube_url_like,
-    search_youtube_videos,
 )
 from src.youtube_download import (
     YouTubeDownloadError,
@@ -566,8 +565,6 @@ _DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
 _DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
 _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network"
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
-_YOUTUBE_THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
-_YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
 _allowed_origins_cache_lock = threading.Lock()
 _allowed_origins_cache_raw: str | None = None
 _allowed_origins_cache: tuple[str, ...] = ()
@@ -1297,48 +1294,6 @@ def _origin_allowed(origin: str) -> bool:
     if not host:
         return False
     return host in _DEFAULT_ALLOWED_HOSTS
-
-
-def _safe_youtube_thumbnail_url(raw_url: str) -> str | None:
-    value = (raw_url or "").strip()
-    if not value:
-        return None
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https":
-        return None
-    if parsed.username or parsed.password:
-        return None
-    if host not in _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS:
-        return None
-    try:
-        if parsed.port not in (None, 443):
-            return None
-    except ValueError:
-        return None
-    return parsed.geturl()
-
-
-async def _read_limited_response_body(content: Any, max_bytes: int) -> bytes:
-    body = bytearray()
-    total = 0
-    chunk_size = 64 * 1024
-
-    while True:
-        remaining = max_bytes + 1 - total
-        if remaining <= 0:
-            raise ValueError("response too large")
-
-        chunk = await content.read(min(chunk_size, remaining))
-        if not chunk:
-            break
-
-        body.extend(chunk)
-        total += len(chunk)
-        if total > max_bytes:
-            raise ValueError("response too large")
-
-    return bytes(body)
 
 
 def _validate_mode(raw_mode: str) -> str:
@@ -14610,7 +14565,6 @@ class ScriberWebController:
 
 
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
-APP_HTTP_SESSION: web.AppKey[ClientSession] = web.AppKey("http_session", ClientSession)
 APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
     "provider_replay",
     ProviderReplayRegistry,
@@ -15569,217 +15523,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not rec:
             return web.json_response({"message": "Not found"}, status=404)
         return web.json_response(rec)
-
-    async def youtube_search(request: web.Request):
-        q = (request.query.get("q") or "").strip()
-        if not q:
-            return web.json_response({"message": "Missing query parameter: q"}, status=400)
-        if len(q) > 500:
-            return web.json_response({"message": "Search query is too long"}, status=400)
-
-        api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
-        if not api_key.strip():
-            return web.json_response(
-                {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
-            )
-
-        raw_max = (request.query.get("maxResults") or "").strip()
-        try:
-            max_results = int(raw_max) if raw_max else 10
-        except Exception:
-            max_results = 10
-
-        page_token = (request.query.get("pageToken") or "").strip() or None
-        if page_token and len(page_token) > 512:
-            return web.json_response({"message": "Page token is too long"}, status=400)
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        direct_video_id = extract_youtube_video_id(q)
-        if direct_video_id:
-            logger.info("YouTube search query resolved as direct video URL: {}", direct_video_id)
-            try:
-                video = await get_video_by_id(
-                    api_key,
-                    direct_video_id,
-                    session=session,
-                    timeout=ClientTimeout(total=30),
-                )
-            except ValueError as exc:
-                return web.json_response({"message": str(exc)}, status=400)
-            except YouTubeApiError as exc:
-                logger.warning("YouTube direct URL lookup failed: status={} video_id={}", exc.status, direct_video_id)
-                return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-            except Exception:
-                logger.exception("YouTube direct URL lookup failed")
-                return web.json_response({"message": "YouTube video fetch failed"}, status=500)
-
-            if not video:
-                logger.warning("YouTube direct URL lookup returned no item for video_id={}", direct_video_id)
-                return web.json_response({"message": "Video not found", "code": "youtube_video_not_found"}, status=404)
-
-            return web.json_response(
-                {
-                    "query": q,
-                    "nextPageToken": "",
-                    "prevPageToken": "",
-                    "totalResults": 1 if video else 0,
-                    "resultsPerPage": 1 if video else 0,
-                    "items": [video] if video else [],
-                }
-            )
-
-        if is_youtube_url_like(q):
-            logger.warning("Unsupported YouTube URL format sent to search endpoint")
-            return web.json_response(
-                {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
-                status=400,
-            )
-
-        try:
-            payload = await search_youtube_videos(
-                api_key,
-                q,
-                max_results=max_results,
-                page_token=page_token,
-                session=session,
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except YouTubeApiError as exc:
-            return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-        except Exception:
-            logger.exception("YouTube search failed")
-            return web.json_response({"message": "YouTube search failed"}, status=500)
-
-        return web.json_response(payload)
-
-    async def youtube_video(request: web.Request):
-        """Fetch video details by video ID or URL."""
-        video_id = (request.query.get("id") or "").strip()
-        url_param = (request.query.get("url") or "").strip()
-
-        # If URL provided, extract video ID from it
-        if url_param and not video_id:
-            video_id = extract_youtube_video_id(url_param) or ""
-            if not video_id and is_youtube_url_like(url_param):
-                logger.warning("Unsupported YouTube URL format sent to video endpoint")
-                return web.json_response(
-                    {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
-                    status=400,
-                )
-
-        if not video_id:
-            return web.json_response({"message": "Missing video ID or URL parameter"}, status=400)
-
-        api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
-        if not api_key.strip():
-            return web.json_response(
-                {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
-            )
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        try:
-            video = await get_video_by_id(
-                api_key,
-                video_id,
-                session=session,
-                timeout=ClientTimeout(total=30),
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except YouTubeApiError as exc:
-            return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-        except Exception:
-            logger.exception("YouTube video fetch failed")
-            return web.json_response({"message": "YouTube video fetch failed"}, status=500)
-
-        if not video:
-            logger.warning("YouTube video lookup returned no item for video_id={}", video_id)
-            return web.json_response({"message": "Video not found"}, status=404)
-
-        return web.json_response(video)
-
-    async def youtube_thumbnail(request: web.Request):
-        url = _safe_youtube_thumbnail_url(request.query.get("url") or "")
-        if not url:
-            return web.json_response({"message": "Invalid YouTube thumbnail URL"}, status=400)
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        try:
-            current_url = url
-            body: bytes | None = None
-            content_type = ""
-            for _redirect_count in range(4):
-                async with session.get(
-                    current_url,
-                    timeout=ClientTimeout(total=10),
-                    allow_redirects=False,
-                ) as resp:
-                    if 300 <= resp.status < 400:
-                        location = (resp.headers.get("Location") or "").strip()
-                        redirected_url = _safe_youtube_thumbnail_url(urljoin(current_url, location))
-                        if not location or not redirected_url:
-                            return web.json_response(
-                                {"message": "Unsafe thumbnail redirect"},
-                                status=502,
-                            )
-                        current_url = redirected_url
-                        continue
-                    if resp.status >= 400:
-                        return web.json_response({"message": "Thumbnail fetch failed"}, status=resp.status)
-                    content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                    if not content_type.startswith("image/"):
-                        return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
-                    try:
-                        content_length = int(resp.headers.get("Content-Length") or 0)
-                    except TypeError, ValueError:
-                        content_length = 0
-                    if content_length > _YOUTUBE_THUMBNAIL_MAX_BYTES:
-                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
-                    try:
-                        body = await _read_limited_response_body(resp.content, _YOUTUBE_THUMBNAIL_MAX_BYTES)
-                    except ValueError:
-                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
-                    break
-            if body is None:
-                return web.json_response({"message": "Too many thumbnail redirects"}, status=502)
-        except TimeoutError:
-            return web.json_response({"message": "Thumbnail fetch timed out"}, status=504)
-        except Exception:
-            logger.exception("YouTube thumbnail proxy failed")
-            return web.json_response({"message": "Thumbnail fetch failed"}, status=502)
-
-        return web.Response(
-            body=body,
-            content_type=content_type or "image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-
-    async def youtube_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Invalid JSON"}, status=400)
-
-        try:
-            rec = await ctl.start_youtube_transcription(payload if isinstance(payload, dict) else {})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            logger.exception("Failed to start YouTube transcription")
-            return web.json_response({"message": str(exc) or "Failed to start YouTube transcription"}, status=500)
-
-        return web.json_response(rec.to_public(include_content=True))
 
     async def file_transcribe(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -20253,271 +19996,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_delete("/api/meetings/{id}", discard_meeting)
     app.router.add_post("/api/meetings/{id}/discard", discard_meeting)
 
-    app.router.add_get("/api/youtube/search", youtube_search)
-    app.router.add_get("/api/youtube/video", youtube_video)
-    app.router.add_get("/api/youtube/thumbnail", youtube_thumbnail)
-    app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
+    register_youtube_routes(app, controller=controller)
     app.router.add_post("/api/file/transcribe", file_transcribe)
 
-    # ==========================================================================
-    # ONNX Local Models API
-    # ==========================================================================
-
-    async def onnx_list_models(request: web.Request):
-        """List available ONNX models with download status."""
-        try:
-
-            def _load_onnx_models() -> dict[str, Any]:
-                from src.onnx_stt import is_onnx_available, list_available_models
-
-                if not is_onnx_available():
-                    return {
-                        "available": False,
-                        "message": "onnx-asr library not installed. Run: pip install onnx-asr[cpu,hub]",
-                        "models": [],
-                    }
-
-                models = list_available_models(quantization=Config.ONNX_QUANTIZATION)
-                return {
-                    "available": True,
-                    "models": models,
-                    "currentModel": Config.ONNX_MODEL,
-                    "quantization": Config.ONNX_QUANTIZATION,
-                }
-
-            payload = await asyncio.to_thread(_load_onnx_models)
-            return web.json_response(payload)
-        except ImportError as e:
-            return web.json_response(
-                {
-                    "available": False,
-                    "message": str(e),
-                    "models": [],
-                }
-            )
-        except Exception as e:
-            logger.exception("Failed to list ONNX models")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_model_status(request: web.Request):
-        """Get status of a specific ONNX model."""
-        model_id = request.match_info.get("model_id", "")
-        if not model_id:
-            return web.json_response({"message": "Missing model ID"}, status=400)
-        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-
-        try:
-
-            def load_status() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-                from src.onnx_stt import get_model_info, get_model_status
-
-                info = get_model_info(model_id)
-                if not info:
-                    return None, None
-                return info, get_model_status(model_id, quantization=quantization)
-
-            info, status = await asyncio.to_thread(load_status)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-            assert status is not None
-
-            return web.json_response(
-                {
-                    "id": model_id,
-                    "name": info["name"],
-                    "description": info["description"],
-                    "languages": info["languages"],
-                    "runtime": info.get("runtime", "onnx_asr"),
-                    "hfRepo": info.get("hf_repo", ""),
-                    "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
-                    "localDirName": info.get("local_dir_name", ""),
-                    "sizeMb": info["size_mb"],
-                    "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
-                    "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
-                    "downloaded": status["downloaded"],
-                    "status": status["status"],
-                    "progress": status["progress"],
-                    "message": status["message"],
-                }
-            )
-        except Exception as e:
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_download_model(request: web.Request):
-        """Download an ONNX model from Hugging Face."""
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-        model_id = body.get("modelId", "")
-        quantization = body.get("quantization") or Config.ONNX_QUANTIZATION
-        if not model_id:
-            return web.json_response({"message": "Missing modelId"}, status=400)
-
-        try:
-            from src.onnx_stt import download_model, get_model_status
-
-            def download_preflight() -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
-                from src.onnx_stt import get_model_info, is_model_downloading
-
-                info = get_model_info(model_id)
-                if not info:
-                    return None, None, False
-                status = get_model_status(model_id, quantization=quantization)
-                return info, status, is_model_downloading(model_id)
-
-            info, status, downloading = await asyncio.to_thread(download_preflight)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-
-            assert status is not None
-            if status.get("downloaded"):
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model already downloaded",
-                        "modelId": model_id,
-                    }
-                )
-
-            if downloading:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "message": "Download already in progress",
-                        "modelId": model_id,
-                    },
-                    status=409,
-                )
-
-            ctl: ScriberWebController = request.app[APP_CONTROLLER]
-            loop = asyncio.get_running_loop()
-
-            def on_progress(progress: float, message: str) -> None:
-                status_value = "downloading"
-                if progress < 0:
-                    status_value = "error"
-                elif progress >= 100:
-                    status_value = "ready"
-
-                payload = {
-                    "type": "onnx_download_progress",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                    "progress": progress,
-                    "status": status_value,
-                    "message": message,
-                }
-                loop.call_soon_threadsafe(lambda: asyncio.create_task(ctl.broadcast(payload)))
-
-            logger.info(f"Starting ONNX model download: {model_id}")
-            success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
-
-            final_status = await asyncio.to_thread(
-                get_model_status,
-                model_id,
-                quantization=quantization,
-            )
-            await ctl.broadcast(
-                {
-                    "type": "onnx_download_progress",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                    "progress": final_status.get("progress", 0.0),
-                    "status": final_status.get("status", "error" if not success else "ready"),
-                    "message": final_status.get("message", ""),
-                }
-            )
-
-            if success:
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model downloaded successfully",
-                        "modelId": model_id,
-                        "quantization": quantization,
-                    }
-                )
-            return web.json_response(
-                {
-                    "success": False,
-                    "message": "Download failed",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                },
-                status=500,
-            )
-
-        except ValueError as e:
-            return web.json_response({"message": str(e)}, status=400)
-        except Exception as e:
-            logger.exception(f"Failed to download model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_delete_model(request: web.Request):
-        """Delete a downloaded ONNX model from cache."""
-        model_id = request.match_info.get("model_id", "")
-        if not model_id:
-            return web.json_response({"message": "Missing model ID"}, status=400)
-        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-
-        try:
-
-            def delete_local_model() -> tuple[str, bool]:
-                from src.onnx_stt import delete_model, get_model_info, is_model_downloading
-
-                info = get_model_info(model_id)
-                if not info:
-                    return "unknown", False
-                if is_model_downloading(model_id):
-                    return "downloading", False
-                return "deleted", delete_model(model_id, quantization=quantization)
-
-            delete_state, success = await asyncio.to_thread(delete_local_model)
-            if delete_state == "unknown":
-                return web.json_response({"message": "Unknown model"}, status=404)
-            if delete_state == "downloading":
-                return web.json_response(
-                    {"message": "Cannot delete a model while it is downloading"},
-                    status=409,
-                )
-
-            if success:
-                logger.info(f"Deleted ONNX model: {model_id}")
-                await request.app[APP_CONTROLLER].broadcast(
-                    {
-                        "type": "onnx_models_updated",
-                        "modelId": model_id,
-                    }
-                )
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model deleted",
-                        "modelId": model_id,
-                    }
-                )
-            else:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "message": "Model not found in cache",
-                        "modelId": model_id,
-                    },
-                    status=404,
-                )
-
-        except ValueError as e:
-            return web.json_response({"message": str(e)}, status=400)
-        except Exception as e:
-            logger.exception(f"Failed to delete model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
-    app.router.add_get("/api/onnx/models", onnx_list_models)
-    app.router.add_get("/api/onnx/models/{model_id}", onnx_model_status)
-    app.router.add_post("/api/onnx/download", onnx_download_model)
-    app.router.add_delete("/api/onnx/models/{model_id}", onnx_delete_model)
+    register_onnx_routes(app, controller=controller)
 
     app.router.add_get("/{tail:.*}", frontend_static)
 
