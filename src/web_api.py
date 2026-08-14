@@ -47,6 +47,15 @@ from src.api.outlook_calendar_routes import register_outlook_calendar_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.api.settings_routes import register_settings_routes
 from src.api.transcript_routes import register_transcript_routes
+from src.api.upload_policy import (
+    ALLOWED_UPLOAD_EXTENSIONS,
+    AUDIO_EXTENSIONS,
+    MAX_UPLOAD_FILENAME_CHARS,
+    VIDEO_EXTENSIONS,
+    WINDOWS_RESERVED_NAMES,
+    format_upload_limit,
+    safe_upload_filename,
+)
 from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
@@ -626,9 +635,9 @@ _attachment_content_disposition = attachment_content_disposition
 
 
 # Video file extensions that require audio extraction
-_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
-_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"}
-_ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
+_VIDEO_EXTENSIONS = VIDEO_EXTENSIONS
+_AUDIO_EXTENSIONS = AUDIO_EXTENSIONS
+_ALLOWED_UPLOAD_EXTENSIONS = ALLOWED_UPLOAD_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
@@ -888,33 +897,9 @@ def _meeting_stt_cost_estimate(provider: str, mode: str) -> dict[str, Any]:
     }
 
 
-_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_MAX_UPLOAD_FILENAME_CHARS = 180
+_MAX_UPLOAD_FILENAME_CHARS = MAX_UPLOAD_FILENAME_CHARS
 _MAX_DELETED_TRANSCRIPT_TOMBSTONES = 4096
-_WINDOWS_RESERVED_NAMES = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    "COM1",
-    "COM2",
-    "COM3",
-    "COM4",
-    "COM5",
-    "COM6",
-    "COM7",
-    "COM8",
-    "COM9",
-    "LPT1",
-    "LPT2",
-    "LPT3",
-    "LPT4",
-    "LPT5",
-    "LPT6",
-    "LPT7",
-    "LPT8",
-    "LPT9",
-}
+_WINDOWS_RESERVED_NAMES = WINDOWS_RESERVED_NAMES
 
 
 def _normalize_input_warning_actions(actions: list[dict[str, Any]] | None) -> list[dict[str, str]]:
@@ -944,21 +929,7 @@ def _input_warning_actions_for_code(code: str) -> list[dict[str, str]]:
     return [dict(action) for action in template]
 
 
-def _safe_upload_filename(name: str) -> str:
-    raw = (name or "").strip()
-    base = Path(raw).name
-    base = _INVALID_FILENAME_CHARS.sub("_", base).rstrip(" .")
-    if not base or base in {".", ".."}:
-        return "uploaded_file"
-    if len(base) > _MAX_UPLOAD_FILENAME_CHARS:
-        path = Path(base)
-        suffix = path.suffix
-        stem_limit = max(1, _MAX_UPLOAD_FILENAME_CHARS - len(suffix))
-        base = f"{path.stem[:stem_limit]}{suffix}"
-    stem = Path(base).stem
-    if stem.upper() in _WINDOWS_RESERVED_NAMES:
-        base = f"_{base}"
-    return base
+_safe_upload_filename = safe_upload_filename
 
 
 def _safe_work_directory_component(value: str) -> str:
@@ -1500,13 +1471,7 @@ def _get_audio_upload_limit_label(provider: str | None = None) -> str:
     return str(_get_default_audio_upload_limit(provider)["label"])
 
 
-def _format_upload_limit(limit_bytes: int) -> str:
-    if limit_bytes >= 1024 * 1024 * 1024:
-        whole_gb, remainder = divmod(limit_bytes, 1024 * 1024 * 1024)
-        if remainder == 0:
-            return f"{whole_gb}GB"
-        return f"{limit_bytes / (1024 * 1024 * 1024):.1f}GB"
-    return f"{limit_bytes / (1024 * 1024):.0f}MB"
+_format_upload_limit = format_upload_limit
 
 
 def _multipart_request_is_definitely_oversized(
