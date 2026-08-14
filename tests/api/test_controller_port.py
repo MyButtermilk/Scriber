@@ -1,7 +1,7 @@
-"""Guard the route ports against controller drift.
+"""Guard the domain-local route ports against controller drift.
 
-The ports in src.api.controller_port are structural, so nothing forces
-ScriberWebController to keep matching them. mypy does not catch it either:
+The ports are structural, so nothing forces ScriberWebController to keep
+matching them. mypy does not catch it either:
 web_api is outside the typechecked tranche, so the register_*_routes call
 sites are unchecked. Renaming a controller method would leave the ports
 compiling happily and fail at runtime on the first request.
@@ -16,14 +16,15 @@ from typing import Protocol, get_type_hints
 
 import pytest
 
-from src.api import controller_port
+from src.api.onnx_routes import OnnxControllerPort
+from src.api.runtime_routes import RuntimeControllerPort
+from src.api.youtube_routes import PublicRecordPort, YoutubeControllerPort
 from src.web_api import ScriberWebController, TranscriptRecord
 
 PORTS = [
-    controller_port.BroadcastPort,
-    controller_port.RuntimeControllerPort,
-    controller_port.OnnxControllerPort,
-    controller_port.YoutubeControllerPort,
+    RuntimeControllerPort,
+    OnnxControllerPort,
+    YoutubeControllerPort,
 ]
 
 
@@ -66,7 +67,7 @@ def test_port_signatures_match_the_controller(port):
 
 def test_transcript_record_satisfies_the_public_record_port():
     """start_youtube_transcription's return value is typed through this port."""
-    declared = inspect.signature(controller_port.PublicRecordPort.to_public)
+    declared = inspect.signature(PublicRecordPort.to_public)
     actual = inspect.signature(TranscriptRecord.to_public)
     assert list(declared.parameters) == list(actual.parameters)
     assert get_type_hints(TranscriptRecord.to_public)["include_content"] is bool
@@ -74,7 +75,7 @@ def test_transcript_record_satisfies_the_public_record_port():
 
 def test_ports_stay_narrow():
     """A port that mirrors the whole controller has stopped being a contract."""
-    runtime_members = _declared_methods(controller_port.RuntimeControllerPort)
+    runtime_members = _declared_methods(RuntimeControllerPort)
     controller_methods = {
         name for name, value in vars(ScriberWebController).items() if not name.startswith("_") and callable(value)
     }

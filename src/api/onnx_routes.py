@@ -2,21 +2,30 @@
 
 Second domain lifted out of ``web_api.create_app``, following the shape of
 :mod:`src.api.runtime_routes`. ``src.onnx_stt`` stays behind function-local
-imports so listing models never drags onnxruntime into a process that only
-serves cloud providers.
+imports so cloud-only startup does not load onnxruntime unless an ONNX route is
+actually requested.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator, Awaitable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from aiohttp import web
 from loguru import logger
 
-from src.api.controller_port import OnnxControllerPort
 from src.config import Config
+from src.runtime.task_supervisor import AsyncTaskSupervisor
+
+_PROGRESS_BROADCAST_DRAIN_SECONDS = 2.0
+
+
+class OnnxControllerPort(Protocol):
+    """Only the WebSocket broadcast seam consumed by ONNX routes."""
+
+    async def broadcast(self, payload: dict[str, Any]) -> None: ...
 
 
 @dataclass
@@ -24,10 +33,23 @@ class OnnxRoutesService:
     """Dependencies the ONNX domain needs from the surrounding app."""
 
     controller: OnnxControllerPort
-    # Download progress is broadcast from the worker thread through
-    # call_soon_threadsafe. asyncio keeps only a weak reference to the tasks
-    # that creates, so they are held here until they finish.
-    broadcast_tasks: set[asyncio.Task] = field(default_factory=set)
+    progress_scopes: set[AsyncTaskSupervisor] = field(default_factory=set)
+    accepting_downloads: bool = True
+
+    def open_progress_scope(self, *, model_id: str) -> AsyncTaskSupervisor | None:
+        """Create request-local ownership while the application is accepting work."""
+
+        if not self.accepting_downloads:
+            return None
+        scope = AsyncTaskSupervisor(owner=f"ONNX download ({model_id})")
+        self.progress_scopes.add(scope)
+        return scope
+
+    def release_progress_scope(self, scope: AsyncTaskSupervisor) -> None:
+        """Release an empty scope; pending tasks stay strongly owned by the app."""
+
+        if scope.pending_count == 0:
+            self.progress_scopes.discard(scope)
 
 
 APP_ONNX_SERVICE: web.AppKey[OnnxRoutesService] = web.AppKey(
@@ -125,10 +147,13 @@ async def model_status(request: web.Request) -> web.Response:
 async def download_model_route(request: web.Request) -> web.Response:
     """Download an ONNX model from Hugging Face."""
     service = _service(request)
+    progress_tasks: AsyncTaskSupervisor | None = None
     try:
         body = await request.json()
     except Exception:
         body = {}
+    if not isinstance(body, dict):
+        return web.json_response({"message": "JSON body must be an object"}, status=400)
 
     model_id = body.get("modelId", "")
     quantization = body.get("quantization") or Config.ONNX_QUANTIZATION
@@ -173,6 +198,12 @@ async def download_model_route(request: web.Request) -> web.Response:
 
         controller = service.controller
         loop = asyncio.get_running_loop()
+        progress_tasks = service.open_progress_scope(model_id=model_id)
+        if progress_tasks is None:
+            return web.json_response(
+                {"message": "ONNX model service is shutting down"},
+                status=503,
+            )
 
         def on_progress(progress: float, message: str) -> None:
             status_value = "downloading"
@@ -190,15 +221,33 @@ async def download_model_route(request: web.Request) -> web.Response:
                 "message": message,
             }
 
-            def schedule_broadcast() -> None:
-                task = asyncio.ensure_future(controller.broadcast(payload))
-                service.broadcast_tasks.add(task)
-                task.add_done_callback(service.broadcast_tasks.discard)
+            def broadcast_progress() -> Awaitable[None]:
+                return controller.broadcast(payload)
 
-            loop.call_soon_threadsafe(schedule_broadcast)
+            progress_tasks.submit(
+                loop,
+                broadcast_progress,
+                name="onnx_download_progress_broadcast",
+            )
 
         logger.info(f"Starting ONNX model download: {model_id}")
         success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
+
+        # Progress callbacks originate on the download worker and hop onto this
+        # loop. Join them before the authoritative final event so a slow client
+        # cannot observe "ready" followed by stale "downloading" state.
+        progress_pending = await progress_tasks.close(
+            timeout_seconds=_PROGRESS_BROADCAST_DRAIN_SECONDS,
+        )
+        if progress_pending:
+            logger.warning(
+                "Cancelling {} stalled ONNX progress broadcast(s) before final status",
+                progress_pending,
+            )
+            await progress_tasks.drain(
+                timeout_seconds=_PROGRESS_BROADCAST_DRAIN_SECONDS,
+                cancel=True,
+            )
 
         final_status = await asyncio.to_thread(
             get_model_status,
@@ -240,6 +289,18 @@ async def download_model_route(request: web.Request) -> web.Response:
     except Exception as e:
         logger.exception(f"Failed to download model {model_id}")
         return web.json_response({"message": str(e)}, status=500)
+    finally:
+        if progress_tasks is not None:
+            remaining = await progress_tasks.close(
+                timeout_seconds=_PROGRESS_BROADCAST_DRAIN_SECONDS,
+                cancel=True,
+            )
+            if remaining:
+                logger.warning(
+                    "ONNX download cleanup left {} progress broadcast task(s) pending",
+                    remaining,
+                )
+            service.release_progress_scope(progress_tasks)
 
 
 async def delete_model_route(request: web.Request) -> web.Response:
@@ -302,10 +363,36 @@ async def delete_model_route(request: web.Request) -> web.Response:
         return web.json_response({"message": str(e)}, status=500)
 
 
+async def _progress_task_lifecycle(app: web.Application) -> AsyncIterator[None]:
+    yield
+    service = app[APP_ONNX_SERVICE]
+    service.accepting_downloads = False
+    scopes = tuple(service.progress_scopes)
+    if scopes:
+        results = await asyncio.gather(
+            *(
+                scope.close(
+                    timeout_seconds=_PROGRESS_BROADCAST_DRAIN_SECONDS,
+                    cancel=True,
+                )
+                for scope in scopes
+            )
+        )
+        pending = sum(results)
+        for scope in scopes:
+            service.release_progress_scope(scope)
+        if pending:
+            logger.warning(
+                "ONNX route cleanup left {} progress broadcast task(s) pending",
+                pending,
+            )
+
+
 def register_onnx_routes(app: web.Application, *, controller: OnnxControllerPort) -> None:
     """Register the ONNX model domain without web_api closure coupling."""
 
     app[APP_ONNX_SERVICE] = OnnxRoutesService(controller=controller)
+    app.cleanup_ctx.append(_progress_task_lifecycle)
 
     app.router.add_get("/api/onnx/models", list_models)
     app.router.add_get("/api/onnx/models/{model_id}", model_status)

@@ -459,6 +459,125 @@ async def test_soniox_meeting_stream_reports_live_queue_backpressure_immediately
 
 
 @pytest.mark.asyncio
+async def test_stop_cancels_an_inflight_backpressure_callback_before_start():
+    callback_started = asyncio.Event()
+    callback_cancelled = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def blocking_gap_callback(_source, _reason):
+        callback_started.set()
+        try:
+            await release_callback.wait()
+        except asyncio.CancelledError:
+            callback_cancelled.set()
+            raise
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-backpressure-before-start",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=blocking_gap_callback,
+        queue_frames=16,
+        stop_timeout_s=0.08,
+    )
+
+    for _ in range(40):
+        stream.enqueue(b"\0\0" * 160)
+    await asyncio.wait_for(callback_started.wait(), timeout=1.0)
+    backpressure_task = stream._backpressure_task
+    assert backpressure_task is not None
+
+    try:
+        await asyncio.wait_for(stream.stop(), timeout=0.5)
+        await asyncio.sleep(0)
+
+        assert backpressure_task.done()
+        assert callback_cancelled.is_set()
+        assert stream._backpressure_task is None
+    finally:
+        release_callback.set()
+        if not backpressure_task.done():
+            backpressure_task.cancel()
+        await asyncio.gather(backpressure_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_stop_retries_cancellation_when_backpressure_callback_swallows_the_first_cancel():
+    callback_started = asyncio.Event()
+    first_cancel_swallowed = asyncio.Event()
+    second_cancel_received = asyncio.Event()
+
+    async def cancellation_resistant_gap_callback(_source, _reason):
+        callback_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            first_cancel_swallowed.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            second_cancel_received.set()
+            raise
+
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-backpressure-repeated-cancel",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=cancellation_resistant_gap_callback,
+        queue_frames=16,
+        stop_timeout_s=0.2,
+    )
+
+    for _ in range(40):
+        stream.enqueue(b"\0\0" * 160)
+    await asyncio.wait_for(callback_started.wait(), timeout=1.0)
+    backpressure_task = stream._backpressure_task
+    assert backpressure_task is not None
+
+    try:
+        await asyncio.wait_for(stream.stop(), timeout=0.5)
+        assert first_cancel_swallowed.is_set()
+        assert second_cancel_received.is_set()
+        assert backpressure_task.done()
+        assert stream._backpressure_task is None
+    finally:
+        if not backpressure_task.done():
+            backpressure_task.cancel()
+        await asyncio.gather(backpressure_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_enqueue_ignores_frames_after_stream_stop():
+    stream = SonioxMeetingStream(
+        meeting_id="meeting-frames-after-stop",
+        source="system",
+        api_key="secret",
+        model="stt-rt-v5",
+        language="en",
+        diarization=True,
+        on_segment=lambda segment: _append([], segment),
+        on_gap=lambda source, reason: _append([], (source, reason)),
+        queue_frames=16,
+        stop_timeout_s=0.08,
+    )
+
+    await stream.stop()
+    for _ in range(40):
+        stream.enqueue(b"\0\0" * 160)
+
+    assert stream._backpressure_task is None
+    assert stream.queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_stop_is_bounded_when_full_preview_queue_and_websocket_send_stalls():
     websocket = GatedFirstAudioWebSocket()
     gaps = []

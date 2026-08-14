@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-01
+Last verified: 2026-08-14
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -22,7 +22,7 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
-scripts\project-python.cmd -m mypy src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
@@ -37,9 +37,20 @@ does not depend on a developer `.env`, local media tools, or real API keys.
 Ruff remains an independent, lightweight Ubuntu gate that installs only
 `ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Lint
 and formatting are enforced without a debt baseline across all maintained
-Python in `src`, `tests`, and `scripts`; mypy expands in reviewed tranches. CI
+Python in `src`, `tests`, and `scripts`; mypy currently covers `src/api`,
+`src/core`, `src/runtime`, and `src/data` and expands only in reviewed tranches. CI
 also pins the pip resolver version and validates the complete test environment
 with `pip check`.
+
+Ruff's `RUF006` catches a bare discarded `asyncio.create_task(...)` result, but
+cannot prove ownership when task creation is hidden inside scheduler callbacks.
+Intentionally concurrent runtime work must therefore use
+`src.runtime.task_supervisor.AsyncTaskSupervisor`; its focused tests cover
+retention, exception observation, cancellation before the first scheduler step,
+zero-budget cancellation, worker-thread admission, and the sealing shutdown
+barrier in addition to the static Ruff gate. ONNX route tests additionally keep
+parallel download scopes isolated and reject worker progress arriving after app
+cleanup.
 
 Frontend:
 

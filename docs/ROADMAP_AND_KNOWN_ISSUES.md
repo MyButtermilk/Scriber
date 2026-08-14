@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-08-01
+Last verified: 2026-08-14
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -127,7 +127,9 @@ Meetings:
 - The eager Meetings tab now owns a durable capture-to-analysis state machine,
   recovery, canonical/live revisions, notes, editable action items, cited chat,
   exports, playback, retention, and webhook delivery surfaces.
-- Meeting delivery routes are the first domain extracted from `create_app`.
+- Meeting delivery was the first domain extracted from `create_app`; Runtime,
+  ONNX model management, and YouTube routes now follow the same module-level
+  registration shape with domain-local controller ports.
   Webhook targets are HTTPS-only, DNS-validated and socket-pinned; confirmation
   tokens are single-use and durable so retries cannot duplicate a delivery.
   Meeting notes use a serialized, coalescing save lane with retry and

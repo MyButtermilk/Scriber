@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-05
+Last verified: 2026-08-14
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -49,8 +49,17 @@ the user explicitly asks for a temporary investigation note.
 
 Backend and runtime:
 
-- `src/web_api.py`: main aiohttp controller, routes, WebSocket server, settings,
-  jobs, transcript history, mic control, uploads, logs, support bundles.
+- `src/web_api.py`: main aiohttp application composition and controller,
+  WebSocket server, settings, jobs, transcript history, mic control, uploads,
+  and the routes not yet split into domain modules.
+- `src/api/`: module-level Runtime, ONNX, YouTube, and Meeting Delivery route
+  domains, shared aiohttp app keys and HTTP security helpers. Each route module
+  owns its narrow structural controller port beside the handlers that consume
+  it; do not recreate a central controller-port catalogue. Runtime routes own
+  debug logs and support bundles. Each ONNX download owns a request-local
+  progress scope so parallel requests cannot drain one another; final state
+  follows its admitted progress work, and aiohttp cleanup seals every active
+  scope before cancellation.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
@@ -85,6 +94,13 @@ Backend and runtime:
   audio frame-pipe protocol.
 - `src/runtime/provider_http.py`: event-loop-owned reusable aiohttp provider
   transport, bounded DNS/connection pooling, and privacy-safe request timing.
+- `src/runtime/task_supervisor.py`: event-loop-local ownership for intentionally
+  concurrent asyncio work. It retains tasks, observes every result, reports
+  failures through the loop handler, reserves thread-safe submissions before
+  they reach the loop, and exposes bounded drain/cancel plus a sealing close
+  barrier. Do not schedule fire-and-forget work through hidden `create_task()`
+  lambdas; use the owning module's supervisor so shutdown can account for work
+  accepted immediately before the barrier and reject work offered afterwards.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
 - `src/local_polishing/`: public, immutable Hugging Face GGUF catalog,
@@ -1830,7 +1846,7 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
-scripts\project-python.cmd -m mypy src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 CI keeps Ruff as a lightweight Ubuntu job pinned to `ruff==0.15.22`. The full
@@ -1840,8 +1856,8 @@ own `venv`, restore and validate the locked Profile B FFmpeg artifact, and run
 with inert provider credential sentinels installed by `tests/conftest.py`;
 never make the suite depend on a developer `.env`, real API keys, or untracked
 AutoResearch session files. Keep both static gates limited to `src/core`,
-`src/runtime`, and `src/data` until a separately reviewed branch expands the
-baseline.
+`src/api`, `src/core`, `src/runtime`, and `src/data` until a separately reviewed
+branch expands the baseline.
 
 ```powershell
 cd Frontend

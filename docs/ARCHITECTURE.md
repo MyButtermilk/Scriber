@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-05
+Last verified: 2026-08-14
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -870,8 +870,19 @@ items.
 
 Key modules:
 
-- `src/web_api.py`: REST/WebSocket app, controller state, jobs, settings,
-  runtime logs, support bundles, and explicit dev/test frontend fallback.
+- `src/web_api.py`: aiohttp application composition, WebSocket/controller state,
+  jobs, settings, and explicit dev/test frontend fallback.
+- `src/api/runtime_routes.py`, `src/api/onnx_routes.py`, and
+  `src/api/youtube_routes.py`: module-level handlers for the extracted Runtime,
+  ONNX, and YouTube domains. Runtime owns debug logs and support bundles. ONNX
+  owns request-local progress scopes: one download cannot drain another,
+  admitted progress precedes final state, and aiohttp cleanup seals all active
+  scopes before cancellation. Their narrow structural controller ports live
+  beside the consuming handlers so a route module's dependency surface stays
+  local.
+- `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP security
+  policy and identity-stable aiohttp application keys used across composition
+  and extracted route modules.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
@@ -890,6 +901,14 @@ Key modules:
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
 - `src/runtime/provider_http.py`: app-owned, event-loop-bound aiohttp provider
   pool and privacy-safe connection/request timing.
+- `src/runtime/task_supervisor.py`: the common lifecycle module for
+  intentionally concurrent asyncio work. Its `spawn`/`submit`/`close` interface
+  retains tasks, consumes every result, forwards failures to the loop exception
+  handler, reserves worker-thread submissions before scheduling, and seals new
+  admission before a bounded drain/cancel. Controller callbacks, ONNX progress,
+  Meeting backpressure, and analyzer-cache cleanup use this seam; shutdown
+  therefore accounts for work accepted immediately before its barrier and
+  never relies on an unowned `create_task()` hidden inside a scheduler callback.
 - `src/local_polishing/`: immutable public-artifact catalog, anonymous model
   downloader, verified model lifecycle, conservative transcript-output safety
   checks, and the loopback-only bundled llama.cpp adapter.

@@ -12,12 +12,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from aiohttp import web
 from loguru import logger
 
-from src.api.controller_port import RuntimeControllerPort
 from src.api.http_security import (
     attachment_content_disposition,
     configured_session_token,
@@ -34,6 +33,39 @@ from src.core.rest_contracts import (
 from src.core.ws_contracts import frontend_performance_flush_event
 from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
 from src.runtime.support_bundle import create_support_bundle
+
+
+class RuntimeControllerPort(Protocol):
+    """Only the controller behaviour consumed by this route module."""
+
+    async def broadcast(self, payload: dict[str, Any]) -> None: ...
+
+    def get_health(self) -> dict[str, Any]: ...
+
+    def get_state(self) -> dict[str, Any]: ...
+
+    def get_runtime_info(self) -> dict[str, Any]: ...
+
+    def get_frontend_ready(self) -> dict[str, Any]: ...
+
+    def record_frontend_ready(self, payload: dict[str, Any], request: web.Request) -> dict[str, Any]: ...
+
+    def get_frontend_performance(
+        self,
+        *,
+        after_sequence: int | None = None,
+        source_instance_id: str | None = None,
+    ) -> dict[str, Any]: ...
+
+    def record_frontend_performance(self, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+    def request_frontend_performance_flush(self, source_instance_id: str) -> dict[str, Any] | None: ...
+
+    def get_audio_diagnostics(self) -> dict[str, Any]: ...
+
+    def get_post_processing_diagnostics(self, *, limit: int = 20) -> dict[str, Any]: ...
+
+    def get_hot_path_metrics(self, *, limit: int = 50, include_active: bool = False) -> dict[str, Any]: ...
 
 
 @dataclass(frozen=True)
@@ -69,7 +101,7 @@ async def _json_object_body(request: web.Request) -> dict[str, Any] | web.Respon
     return payload
 
 
-def _bounded_int_query(request: web.Request, key: str, default: int) -> int:
+def _int_query(request: web.Request, key: str, default: int) -> int:
     try:
         return int(request.query.get(key, str(default)))
     except ValueError:
@@ -185,12 +217,12 @@ async def get_audio_diagnostics(request: web.Request) -> web.Response:
 
 
 async def get_post_processing_diagnostics(request: web.Request) -> web.Response:
-    limit = _bounded_int_query(request, "limit", 20)
+    limit = _int_query(request, "limit", 20)
     return web.json_response(_controller(request).get_post_processing_diagnostics(limit=limit))
 
 
 async def get_runtime_logs(request: web.Request) -> web.Response:
-    limit = _bounded_int_query(request, "limit", 500)
+    limit = _int_query(request, "limit", 500)
     try:
         payload = await asyncio.to_thread(collect_debug_logs, limit=limit)
     except Exception:
@@ -256,7 +288,7 @@ async def create_runtime_support_bundle(request: web.Request) -> web.StreamRespo
 
 
 async def get_hot_path_metrics(request: web.Request) -> web.Response:
-    limit = _bounded_int_query(request, "limit", 50)
+    limit = _int_query(request, "limit", 50)
     include_active = str(request.query.get("includeActive", "")).strip().lower() in {
         "1",
         "true",

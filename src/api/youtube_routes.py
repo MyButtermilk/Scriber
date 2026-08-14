@@ -13,14 +13,13 @@ with the handler, since nothing else used them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 from urllib.parse import urljoin, urlparse
 
 from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src.api.app_keys import APP_HTTP_SESSION
-from src.api.controller_port import YoutubeControllerPort
 from src.config import Config
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
@@ -34,6 +33,18 @@ from src.youtube_api import (
 THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
 THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
 _MISSING_API_KEY_MESSAGE = "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."
+
+
+class PublicRecordPort(Protocol):
+    """A transcript record as the REST layer serialises it."""
+
+    def to_public(self, *, include_content: bool) -> dict[str, Any]: ...
+
+
+class YoutubeControllerPort(Protocol):
+    """Only the scheduling seam consumed by YouTube routes."""
+
+    async def start_youtube_transcription(self, payload: dict[str, Any]) -> PublicRecordPort: ...
 
 
 @dataclass(frozen=True)

@@ -20,6 +20,7 @@ from websockets.asyncio.client import connect as websocket_connect
 
 from src.runtime.pcm_audio import pcm16le_meets_rms_threshold
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
+from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import soniox_realtime_websocket_url
 
 SONIOX_REALTIME_URL = soniox_realtime_websocket_url("us")
@@ -129,10 +130,8 @@ class SonioxMeetingStream:
         self._stop_sentinel_queued = False
         self._stop_timeout_s = min(30.0, max(0.05, float(stop_timeout_s)))
         self._backpressure_reported = False
-        # asyncio keeps only a weak reference to a running task. Holding the
-        # backpressure report here stops it from being collected before the
-        # degraded-status callback has run.
-        self._backpressure_task: asyncio.Task | None = None
+        self._background_tasks = AsyncTaskSupervisor(owner=f"meeting live STT ({source})")
+        self._backpressure_task: asyncio.Future[None] | None = None
         self._turn_emitted = False
         self._connection_timeline_offset_ms = self.timeline_offset_ms
         self._next_timeline_ms = float(self.timeline_offset_ms)
@@ -190,6 +189,8 @@ class SonioxMeetingStream:
         return websocket
 
     def enqueue(self, pcm: bytes) -> None:
+        if self._background_tasks.sealed:
+            return
         if not pcm:
             return
         if self.smart_turn_analyzer is not None:
@@ -218,13 +219,15 @@ class SonioxMeetingStream:
             self.dropped_frames += 1
         if self.dropped_frames and not self._backpressure_reported:
             self._backpressure_reported = True
-            self._backpressure_task = asyncio.create_task(
-                self._report_backpressure(),
+            backpressure_task = self._background_tasks.spawn(
+                self._report_backpressure_safely(),
                 name=f"meeting-live-backpressure-{self.source}",
             )
-            self._backpressure_task.add_done_callback(self._clear_backpressure_task)
+            if backpressure_task is not None:
+                self._backpressure_task = backpressure_task
+                backpressure_task.add_done_callback(self._clear_backpressure_task)
 
-    def _clear_backpressure_task(self, task: asyncio.Task) -> None:
+    def _clear_backpressure_task(self, task: asyncio.Future[None]) -> None:
         if self._backpressure_task is task:
             self._backpressure_task = None
 
@@ -232,6 +235,14 @@ class SonioxMeetingStream:
         await self.on_gap(self.source, "live_stt_backpressure")
         if self.on_status is not None:
             await self.on_status(self.source, "degraded", self.reconnect_count)
+
+    async def _report_backpressure_safely(self) -> None:
+        try:
+            await self._report_backpressure()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("Meeting live-STT backpressure reporting failed: {}", type(exc).__name__)
 
     def _enqueue_stop_sentinel(self) -> None:
         """Request preview shutdown without ever waiting on a full audio queue.
@@ -300,6 +311,15 @@ class SonioxMeetingStream:
     async def stop(self) -> None:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._stop_timeout_s
+        backpressure_pending = await self._background_tasks.close(
+            timeout_seconds=min(0.25, max(0.0, deadline - loop.time())),
+            cancel=True,
+        )
+        if backpressure_pending:
+            logger.debug(
+                "Meeting live-STT stop left {} backpressure task(s) pending",
+                backpressure_pending,
+            )
         # Keep part of the one total stop budget for forced task cancellation
         # and WebSocket closure if graceful provider finalization stalls. Very
         # small diagnostic/test budgets still need enough scheduler time for a

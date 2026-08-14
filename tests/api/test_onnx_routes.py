@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import threading
 import types
 
 import pytest
@@ -118,13 +119,33 @@ async def test_download_requires_a_model_id(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [[], "parakeet", 7])
+async def test_download_rejects_json_values_that_are_not_objects(monkeypatch, payload):
+    _install_onnx_stub(monkeypatch)
+    client = await _client(_StubController())
+    try:
+        response = await client.post("/api/onnx/download", json=payload)
+        assert response.status == 400
+        assert (await response.json())["message"] == "JSON body must be an object"
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_download_progress_broadcasts_are_held_until_they_complete(monkeypatch):
-    """A progress task with no strong reference can be collected mid-flight."""
-    released = asyncio.Event()
+    """Progress must finish before the authoritative final status is emitted."""
+    progress_started = asyncio.Event()
+    release_progress = asyncio.Event()
+
+    class BlockingController(_StubController):
+        async def broadcast(self, event: dict) -> None:
+            if event["progress"] == 42.0:
+                progress_started.set()
+                await release_progress.wait()
+            self.events.append(event)
 
     async def fake_download(_model_id, *, quantization, on_progress):
         on_progress(42.0, "halfway")
-        await released.wait()
         return True
 
     _install_onnx_stub(
@@ -138,19 +159,23 @@ async def test_download_progress_broadcasts_are_held_until_they_complete(monkeyp
         },
     )
 
-    controller = _StubController()
+    controller = BlockingController()
     app = web.Application()
     register_onnx_routes(app, controller=controller)
     client = TestClient(TestServer(app))
     await client.start_server()
     try:
         request = asyncio.ensure_future(client.post("/api/onnx/download", json={"modelId": "parakeet"}))
-        # The progress callback hops threads via call_soon_threadsafe.
-        for _ in range(50):
-            await asyncio.sleep(0)
-            if app[APP_ONNX_SERVICE].broadcast_tasks or controller.events:
-                break
-        released.set()
+        await asyncio.wait_for(progress_started.wait(), timeout=1.0)
+        service = app[APP_ONNX_SERVICE]
+        assert len(service.progress_scopes) == 1
+        assert sum(scope.pending_count for scope in service.progress_scopes) == 1
+        await asyncio.sleep(0.02)
+        if request.done():
+            early_response = await request
+            pytest.fail(f"request completed early ({early_response.status}): {await early_response.text()}")
+
+        release_progress.set()
         response = await request
         assert response.status == 200
     finally:
@@ -158,8 +183,168 @@ async def test_download_progress_broadcasts_are_held_until_they_complete(monkeyp
 
     progress_events = [event for event in controller.events if event["progress"] == 42.0]
     assert progress_events and progress_events[0]["status"] == "downloading"
-    # Every held reference is dropped once the task finishes.
-    assert app[APP_ONNX_SERVICE].broadcast_tasks == set()
+    assert app[APP_ONNX_SERVICE].progress_scopes == set()
+
+
+@pytest.mark.asyncio
+async def test_app_cleanup_cancels_pending_progress_broadcasts():
+    progress_started = asyncio.Event()
+    progress_cancelled = asyncio.Event()
+    release_progress = asyncio.Event()
+
+    class BlockingController(_StubController):
+        async def broadcast(self, event: dict) -> None:
+            if event["progress"] != 42.0:
+                self.events.append(event)
+                return
+            progress_started.set()
+            try:
+                await release_progress.wait()
+            except asyncio.CancelledError:
+                progress_cancelled.set()
+                raise
+
+    controller = BlockingController()
+    app = web.Application()
+    register_onnx_routes(app, controller=controller)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    service = app[APP_ONNX_SERVICE]
+    scope = service.open_progress_scope(model_id="cleanup-test")
+    assert scope is not None
+    task = scope.spawn(
+        controller.broadcast({"progress": 42.0}),
+        name="onnx_cleanup_test_broadcast",
+    )
+    assert task is not None
+    try:
+        await asyncio.wait_for(progress_started.wait(), timeout=1.0)
+        await client.close()
+
+        assert progress_cancelled.is_set()
+        assert service.progress_scopes == set()
+        assert service.accepting_downloads is False
+    finally:
+        release_progress.set()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_parallel_downloads_do_not_cancel_each_others_progress(monkeypatch):
+    monkeypatch.setattr("src.api.onnx_routes._PROGRESS_BROADCAST_DRAIN_SECONDS", 0.02)
+    b_progress_started = asyncio.Event()
+    b_progress_cancelled = asyncio.Event()
+    release_b_progress = asyncio.Event()
+    release_b_download = asyncio.Event()
+
+    class BlockingController(_StubController):
+        async def broadcast(self, event: dict) -> None:
+            if event["quantization"] == "int8" and event["progress"] == 42.0:
+                b_progress_started.set()
+                try:
+                    await release_b_progress.wait()
+                except asyncio.CancelledError:
+                    b_progress_cancelled.set()
+                    raise
+            self.events.append(event)
+
+    async def fake_download(_model_id, *, quantization, on_progress):
+        on_progress(42.0, "halfway")
+        if quantization == "int8":
+            await release_b_download.wait()
+        else:
+            await b_progress_started.wait()
+        return True
+
+    _install_onnx_stub(
+        monkeypatch,
+        download_model=fake_download,
+        get_model_status=lambda _model_id, **_kwargs: {
+            "downloaded": False,
+            "status": "ready",
+            "progress": 100.0,
+            "message": "done",
+        },
+    )
+    controller = BlockingController()
+    app = web.Application()
+    register_onnx_routes(app, controller=controller)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    request_b = asyncio.create_task(
+        client.post(
+            "/api/onnx/download",
+            json={"modelId": "parakeet", "quantization": "int8"},
+        )
+    )
+    request_a = None
+    try:
+        await asyncio.wait_for(b_progress_started.wait(), timeout=1.0)
+        request_a = asyncio.create_task(
+            client.post(
+                "/api/onnx/download",
+                json={"modelId": "parakeet", "quantization": "fp32"},
+            )
+        )
+        response_a = await asyncio.wait_for(request_a, timeout=1.0)
+        assert response_a.status == 200
+        assert not b_progress_cancelled.is_set()
+        assert not request_b.done()
+
+        release_b_progress.set()
+        release_b_download.set()
+        response_b = await asyncio.wait_for(request_b, timeout=1.0)
+        assert response_b.status == 200
+    finally:
+        release_b_progress.set()
+        release_b_download.set()
+        request_b.cancel()
+        if request_a is not None:
+            request_a.cancel()
+        await asyncio.gather(
+            request_b,
+            *(tuple() if request_a is None else (request_a,)),
+            return_exceptions=True,
+        )
+        await client.close()
+
+
+@pytest.mark.asyncio
+async def test_app_cleanup_rejects_late_worker_progress_callbacks(monkeypatch):
+    callback_ready = asyncio.Event()
+    callbacks = []
+
+    async def fake_download(_model_id, *, quantization, on_progress):
+        callbacks.append(on_progress)
+        callback_ready.set()
+        await asyncio.Event().wait()
+
+    _install_onnx_stub(monkeypatch, download_model=fake_download)
+    controller = _StubController()
+    app = web.Application()
+    register_onnx_routes(app, controller=controller)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    request = asyncio.create_task(client.post("/api/onnx/download", json={"modelId": "parakeet"}))
+    try:
+        await asyncio.wait_for(callback_ready.wait(), timeout=1.0)
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        await client.close()
+
+        worker = threading.Thread(target=lambda: callbacks[0](42.0, "late"))
+        worker.start()
+        worker.join(timeout=1.0)
+        assert not worker.is_alive()
+        await asyncio.sleep(0)
+
+        assert controller.events == []
+        assert app[APP_ONNX_SERVICE].progress_scopes == set()
+    finally:
+        request.cancel()
+        await client.close()
 
 
 @pytest.mark.asyncio

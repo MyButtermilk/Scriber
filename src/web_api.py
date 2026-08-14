@@ -230,6 +230,7 @@ from src.runtime.shell_ipc import (
 )
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
 from src.runtime.support_bundle import redact_text
+from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import (
     normalize_soniox_region,
     soniox_realtime_websocket_url,
@@ -3545,10 +3546,7 @@ class ScriberWebController:
         self._local_polishing_close_task: asyncio.Task | None = None
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
-        # Fire-and-forget work still needs an owner. Without a strong reference
-        # the event loop only keeps a weak one, so a task can be garbage
-        # collected mid-await and silently drop the work it was scheduled for.
-        self._detached_tasks: set[asyncio.Task] = set()
+        self._detached_task_supervisor = AsyncTaskSupervisor(owner="web controller")
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
         self._job_concurrency_limit = _env_int(
             "SCRIBER_JOB_CONCURRENCY",
@@ -6782,30 +6780,29 @@ class ScriberWebController:
             self._hot_path_tracers.pop(session_id, None)
             self._hot_path_reports_emitted.discard(session_id)
 
-    def _spawn_detached(self, coro: Awaitable[Any], *, name: str) -> asyncio.Task:
-        """Schedule fire-and-forget work while holding a reference to the task.
+    def _spawn_detached(self, coro: Awaitable[Any], *, name: str) -> asyncio.Future[Any] | None:
+        """Schedule work whose lifetime is owned by the controller."""
 
-        asyncio only keeps a weak reference to running tasks, so a task nobody
-        stores can be collected before it finishes. Callers that do not await
-        the result use this helper to keep the work alive until completion.
-        """
-        task = asyncio.ensure_future(coro)
-        task.set_name(name)
-        self._detached_tasks.add(task)
-        task.add_done_callback(self._detached_tasks.discard)
-        return task
+        return self._detached_task_supervisor.spawn(coro, name=name)
+
+    def _spawn_detached_threadsafe(
+        self,
+        factory: Callable[[], Awaitable[Any]],
+        *,
+        name: str,
+    ) -> bool:
+        """Submit owned work from either the controller loop or a worker thread."""
+
+        return self._detached_task_supervisor.submit(
+            self._loop,
+            factory,
+            name=name,
+        )
 
     async def _wait_for_detached_tasks(self, timeout_seconds: float = 2.0) -> int:
-        tasks = {task for task in self._detached_tasks if not task.done()}
-        if not tasks:
-            return 0
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=max(0.0, float(timeout_seconds)),
+        return await self._detached_task_supervisor.drain(
+            timeout_seconds=timeout_seconds,
         )
-        if done:
-            await asyncio.gather(*done, return_exceptions=True)
-        return len(pending)
 
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
@@ -8203,9 +8200,9 @@ class ScriberWebController:
                 },
             )
 
-            # Broadcast error to frontend
-            self._loop.call_soon_threadsafe(
-                lambda payload=error_payload: asyncio.create_task(_broadcast_error(payload))
+            self._spawn_detached_threadsafe(
+                lambda payload=error_payload: _broadcast_error(payload),
+                name="pipeline_error_broadcast",
             )
 
             failed_current = None
@@ -8220,14 +8217,16 @@ class ScriberWebController:
                 if failed_current.content_text().strip():
                     self._add_to_history(failed_current)
                     self._schedule_transcript_save(failed_current)
-                    self._loop.call_soon_threadsafe(
-                        lambda: asyncio.create_task(
-                            self._broadcast_history_updated(record=failed_current, reason="pipeline_failed")
-                        )
+                    self._spawn_detached_threadsafe(
+                        lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
+                        name="pipeline_failure_history_broadcast",
                     )
         finally:
             # Schedule safe cleanup on the event loop
-            self._loop.call_soon_threadsafe(lambda: asyncio.create_task(_safe_cleanup()))
+            self._spawn_detached_threadsafe(
+                _safe_cleanup,
+                name="pipeline_completion_cleanup",
+            )
 
     async def _inject_live_transcript_text(
         self,
@@ -8509,7 +8508,10 @@ class ScriberWebController:
                 delay = self._history_broadcast_interval - (now - self._history_broadcast_last)
                 self._history_broadcast_handle = self._loop.call_later(
                     delay,
-                    lambda: asyncio.create_task(self._broadcast_history_updated(force=True)),
+                    lambda: self._spawn_detached(
+                        self._broadcast_history_updated(force=True),
+                        name="history_broadcast_flush",
+                    ),
                 )
             return
         self._history_broadcast_last = now
@@ -8540,8 +8542,9 @@ class ScriberWebController:
 
     def _touch_history(self, record: TranscriptRecord | None = None, *, reason: str = "") -> None:
         """Thread-safe schedule for history update broadcast."""
-        self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._broadcast_history_updated(record=record, reason=reason))
+        self._spawn_detached_threadsafe(
+            lambda: self._broadcast_history_updated(record=record, reason=reason),
+            name="history_broadcast_touch",
         )
 
     def _begin_transcript_artifact(
@@ -9617,8 +9620,9 @@ class ScriberWebController:
                     return
                 rec.step = step
                 rec.updated_at = datetime.now().isoformat()
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+                self._spawn_detached_threadsafe(
+                    lambda: self._broadcast_history_updated(record=rec, reason="progress"),
+                    name="youtube_transcription_progress_broadcast",
                 )
 
             rec.step = "Transcribing..."
@@ -10115,8 +10119,9 @@ class ScriberWebController:
         def on_progress(step: str) -> None:
             rec.step = step
             rec.updated_at = datetime.now().isoformat()
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+            self._spawn_detached_threadsafe(
+                lambda: self._broadcast_history_updated(record=rec, reason="progress"),
+                name="file_transcription_progress_broadcast",
             )
 
         pipeline: Any | None = None
@@ -11924,8 +11929,9 @@ class ScriberWebController:
             return
         self._last_hotkey_dispatch_at = now
         try:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._handle_hotkey_toggle(), name="hotkey_toggle")
+            self._spawn_detached_threadsafe(
+                self._handle_hotkey_toggle,
+                name="hotkey_toggle",
             )
         except Exception as exc:
             logger.error(f"Failed to dispatch hotkey event: {exc}")
@@ -11936,11 +11942,9 @@ class ScriberWebController:
             return
         self._last_hotkey_dispatch_at = now
         try:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(
-                    self._handle_post_processing_hotkey_toggle(),
-                    name="post_processing_hotkey_toggle",
-                )
+            self._spawn_detached_threadsafe(
+                self._handle_post_processing_hotkey_toggle,
+                name="post_processing_hotkey_toggle",
             )
         except Exception as exc:
             logger.error(f"Failed to dispatch post-processing hotkey event: {exc}")
@@ -13434,6 +13438,16 @@ class ScriberWebController:
     ) -> int:
         """Cancel controller-owned work and wait briefly for resource cleanup."""
         self.begin_shutdown()
+        replay_execution, self._provider_replay_execution = (
+            self._provider_replay_execution,
+            None,
+        )
+        if replay_execution is not None:
+            replay_execution.fail("shutdown")
+            self._spawn_detached(
+                replay_execution.close(),
+                name="provider_replay_shutdown_cleanup",
+            )
         current = asyncio.current_task()
         tasks = {
             task
@@ -13524,12 +13538,50 @@ class ScriberWebController:
                 "Timed out waiting for {} metric write(s) during shutdown",
                 metric_pending,
             )
-        detached_pending = await self._wait_for_detached_tasks(max(0.0, min(2.0, float(timeout_seconds))))
+        detached_pending = await self._detached_task_supervisor.close(
+            timeout_seconds=max(0.0, min(2.0, float(timeout_seconds))),
+        )
         if detached_pending:
             logger.warning(
                 "Timed out waiting for {} detached task(s) during shutdown",
                 detached_pending,
             )
+            still_pending = await self._detached_task_supervisor.drain(
+                timeout_seconds=max(0.0, min(0.25, float(timeout_seconds))),
+                cancel=True,
+            )
+            if still_pending:
+                logger.warning(
+                    "Controller shutdown left {} cancelled detached task(s) pending",
+                    still_pending,
+                )
+        analyzer_cleanup_pending = 0
+        if ScriberPipeline is not None:
+            try:
+                from src.pipeline import _AnalyzerCache
+
+                analyzer_cleanup_pending = await _AnalyzerCache.drain_pending_cleanup_tasks(
+                    timeout_seconds=max(0.0, min(2.0, float(timeout_seconds)))
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Analyzer cleanup drain failed during shutdown: {}",
+                    type(exc).__name__,
+                )
+        if analyzer_cleanup_pending:
+            logger.warning(
+                "Timed out waiting for {} analyzer cleanup task(s) during shutdown",
+                analyzer_cleanup_pending,
+            )
+            still_pending = await _AnalyzerCache.drain_pending_cleanup_tasks(
+                timeout_seconds=max(0.0, min(0.25, float(timeout_seconds))),
+                cancel=True,
+            )
+            if still_pending:
+                logger.warning(
+                    "Controller shutdown left {} cancelled analyzer cleanup task(s) pending",
+                    still_pending,
+                )
         recorders, self._meeting_recorders = list(self._meeting_recorders.values()), {}
         if recorders:
             await asyncio.gather(
@@ -13552,7 +13604,7 @@ class ScriberWebController:
                 "Provider HTTP transport shutdown warning: {}",
                 type(exc).__name__,
             )
-        return len(pending) + transcript_write_pending + metric_pending
+        return len(pending) + transcript_write_pending + metric_pending + detached_pending + analyzer_cleanup_pending
 
     def shutdown(self) -> None:
         self.begin_shutdown()
@@ -13563,10 +13615,11 @@ class ScriberWebController:
         if replay_execution is not None:
             replay_execution.fail("shutdown")
             if not self._loop.is_closed():
-                self._loop.create_task(
-                    replay_execution.close(),
+                self._spawn_detached_threadsafe(
+                    replay_execution.close,
                     name="provider_replay_shutdown_cleanup",
                 )
+        self._detached_task_supervisor.seal()
         for task in (
             *self._running_tasks.values(),
             *self._summary_tasks.values(),

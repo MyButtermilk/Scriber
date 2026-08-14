@@ -4466,6 +4466,116 @@ async def test_shutdown_drain_joins_active_live_mic_stop_without_cancelling_it()
 
 
 @pytest.mark.asyncio
+async def test_shutdown_drain_reports_a_pending_detached_task():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    task_started = asyncio.Event()
+    release_task = asyncio.Event()
+
+    async def blocked_work() -> None:
+        task_started.set()
+        await release_task.wait()
+
+    task = ctl._spawn_detached(blocked_work(), name="shutdown-pending-regression")
+    await asyncio.wait_for(task_started.wait(), timeout=1.0)
+    try:
+        pending = await ctl.drain_background_tasks_for_shutdown(timeout_seconds=0.01)
+        assert pending == 1
+        assert task.cancelled()
+    finally:
+        release_task.set()
+        await asyncio.gather(task, return_exceptions=True)
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_hotkey_dispatch_is_owned_by_the_controller_task_lifecycle():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    task_started = asyncio.Event()
+    release_task = asyncio.Event()
+
+    async def blocked_hotkey() -> None:
+        task_started.set()
+        await release_task.wait()
+
+    ctl._handle_hotkey_toggle = blocked_hotkey  # type: ignore[method-assign]
+    ctl._dispatch_hotkey_toggle()
+    await asyncio.wait_for(task_started.wait(), timeout=1.0)
+    try:
+        assert await ctl._wait_for_detached_tasks(timeout_seconds=0.0) == 1
+    finally:
+        release_task.set()
+        hotkey_tasks = [task for task in asyncio.all_tasks() if task.get_name() == "hotkey_toggle"]
+        if hotkey_tasks:
+            await asyncio.gather(*hotkey_tasks, return_exceptions=True)
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_controller_accepts_owned_background_work_from_a_worker_thread():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    task_started = asyncio.Event()
+    release_task = asyncio.Event()
+
+    async def blocked_work() -> None:
+        task_started.set()
+        await release_task.wait()
+
+    submitted: list[bool] = []
+    thread = threading.Thread(
+        target=lambda: submitted.append(
+            ctl._spawn_detached_threadsafe(
+                blocked_work,
+                name="worker-thread-regression",
+            )
+        ),
+    )
+    thread.start()
+    thread.join(timeout=1.0)
+    assert not thread.is_alive()
+    try:
+        assert submitted == [True]
+        # The worker submission is already admitted even though its loop
+        # callback cannot run until this test yields.
+        assert await ctl._wait_for_detached_tasks(timeout_seconds=0.0) == 1
+        await asyncio.wait_for(task_started.wait(), timeout=1.0)
+        assert await ctl._wait_for_detached_tasks(timeout_seconds=0.0) == 1
+    finally:
+        release_task.set()
+        await ctl._wait_for_detached_tasks(timeout_seconds=1.0)
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_analyzer_cleanup_after_the_grace_period(monkeypatch):
+    from src.pipeline import _AnalyzerCache
+
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+
+    class BlockingAnalyzer:
+        async def cleanup(self) -> None:
+            cleanup_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_cancelled.set()
+                raise
+
+    monkeypatch.setattr(web_api, "ScriberPipeline", object())
+    _AnalyzerCache._cleanup_unclaimed(BlockingAnalyzer(), label="shutdown regression")
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+    try:
+        pending = await ctl.drain_background_tasks_for_shutdown(timeout_seconds=0.01)
+        assert pending == 1
+        assert cleanup_cancelled.is_set()
+        assert await _AnalyzerCache.drain_pending_cleanup_tasks(timeout_seconds=0.0) == 0
+    finally:
+        await _AnalyzerCache.drain_pending_cleanup_tasks(timeout_seconds=1.0, cancel=True)
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enabled(monkeypatch):
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", True)
@@ -4575,15 +4685,17 @@ async def test_start_listening_passes_temporary_prewarm_when_always_on_disabled(
 async def test_dispatch_hotkey_toggle_debounces_rapid_events():
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
-    ctl._loop = MagicMock()
     ctl._hotkey_dispatch_debounce_seconds = 0.5
 
-    with patch("src.web_api.time.monotonic", side_effect=[10.0, 10.1, 10.8]):
+    with (
+        patch.object(ctl, "_spawn_detached_threadsafe", return_value=True) as submit,
+        patch("src.web_api.time.monotonic", side_effect=[10.0, 10.1, 10.8]),
+    ):
         ctl._dispatch_hotkey_toggle()
         ctl._dispatch_hotkey_toggle()
         ctl._dispatch_hotkey_toggle()
 
-    assert ctl._loop.call_soon_threadsafe.call_count == 2
+    assert submit.call_count == 2
 
 
 @pytest.mark.asyncio

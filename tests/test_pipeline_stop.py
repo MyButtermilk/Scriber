@@ -431,6 +431,36 @@ def test_analyzer_warmup_refills_with_new_unclaimed_instances(monkeypatch):
     assert next_smart_turn is not used_smart_turn
 
 
+@pytest.mark.asyncio
+async def test_analyzer_cleanup_tasks_have_a_bounded_shutdown_drain():
+    cleanup_started = asyncio.Event()
+    cleanup_cancelled = asyncio.Event()
+
+    class AsyncCleanupAnalyzer:
+        async def cleanup(self) -> None:
+            cleanup_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cleanup_cancelled.set()
+                raise
+
+    _AnalyzerCache._cleanup_unclaimed(AsyncCleanupAnalyzer(), label="test analyzer")
+    await asyncio.wait_for(cleanup_started.wait(), timeout=1.0)
+    try:
+        assert await _AnalyzerCache.drain_pending_cleanup_tasks(timeout_seconds=0.01) == 1
+        assert (
+            await _AnalyzerCache.drain_pending_cleanup_tasks(
+                timeout_seconds=1.0,
+                cancel=True,
+            )
+            == 0
+        )
+        assert cleanup_cancelled.is_set()
+    finally:
+        await _AnalyzerCache.drain_pending_cleanup_tasks(timeout_seconds=1.0, cancel=True)
+
+
 def test_vad_discard_invalidates_analyzer_constructing_outside_cache_lock(monkeypatch):
     construction_started = threading.Event()
     allow_construction = threading.Event()

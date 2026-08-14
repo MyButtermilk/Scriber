@@ -17,9 +17,7 @@
       "Bash(python -m py_compile:*)",
       "Bash(grep:*)",
       "Bash(tree:*)",
-      "WebFetch(domain:soniox.com)",
-      "mcp__Claude_Code_Remote__subscribe_pr_activity",
-      "mcp__Claude_Code_Remote__send_later"
+      "WebFetch(domain:soniox.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
