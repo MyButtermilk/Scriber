@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import { meetingDeviceTestPassed } from "./lib/meeting_device_test_gate.mjs";
 
 const require = createRequire(import.meta.url);
 let activePhase = "bootstrap";
@@ -584,13 +585,7 @@ async function run(options) {
         playTestTone: false,
       },
     );
-    if (
-      meetingDeviceTest?.available !== true ||
-      meetingDeviceTest?.audioPersisted !== false ||
-      meetingDeviceTest?.audioSentToProvider !== false ||
-      typeof meetingDeviceTest?.sources !== "object" ||
-      meetingDeviceTest?.sources === null
-    ) {
+    if (!meetingDeviceTestPassed(meetingDeviceTest)) {
       throw new Error("Meeting device test did not settle its privacy-safe probe");
     }
 

@@ -54,6 +54,40 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert "meetingCatalogDiscardVerified: true" in driver
 
 
+def test_meeting_device_test_gate_requires_all_three_active_sources() -> None:
+    script = """
+import { meetingDeviceTestPassed } from './scripts/lib/meeting_device_test_gate.mjs';
+const active = {
+  available: true,
+  audioPersisted: false,
+  audioSentToProvider: false,
+  sources: {
+    microphone: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+    system: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+    mic_clean: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+  },
+};
+const cases = [
+  active,
+  { ...active, sources: {} },
+  { ...active, sources: { ...active.sources, system: { ...active.sources.system, active: false } } },
+  { ...active, sources: { ...active.sources, mic_clean: { ...active.sources.mic_clean, frames: 0 } } },
+];
+process.stdout.write(JSON.stringify(cases.map(meetingDeviceTestPassed)));
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False, False, False]
+
+
 def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
     powershell = _read("scripts/smoke_meeting_tts_puppeteer.ps1")
     generator = _read("scripts/generate_meeting_tts_fixture.py")
