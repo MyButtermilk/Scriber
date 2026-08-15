@@ -2967,17 +2967,27 @@ async def test_uncertain_exact_read_retry_remains_armed_without_queued_jobs(monk
 
     monkeypatch.setattr(store, "get", unavailable)
     ctl._job_retry_base_seconds = 0.1
+    rearm_count = 0
+    second_rearm = asyncio.Event()
+    real_rearm = ctl._rearm_uncertain_job_reconciliation
+
+    def observe_rearm(transcript_id: str) -> None:
+        nonlocal rearm_count
+        real_rearm(transcript_id)
+        rearm_count += 1
+        if rearm_count >= 2:
+            second_rearm.set()
+
+    monkeypatch.setattr(ctl, "_rearm_uncertain_job_reconciliation", observe_rearm)
 
     await ctl.resume_pending_jobs()
 
     assert reads == 1
     assert ctl._retry_scheduler.due_monotonic is not None
-    deadline = asyncio.get_running_loop().time() + 1.0
-    while (reads < 2 or ctl._retry_scheduler.due_monotonic is None) and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.02)
-    await asyncio.sleep(0)
+    await asyncio.wait_for(second_rearm.wait(), timeout=5.0)
 
     assert reads >= 2
+    assert rearm_count >= 2
     assert ctl._retry_scheduler.due_monotonic is not None
     assert ctl._uncertain_job_commits[rec.id] == rec.id
     ctl._retry_scheduler.cancel(cancel_running=True)
