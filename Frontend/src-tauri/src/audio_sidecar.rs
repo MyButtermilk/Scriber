@@ -6569,32 +6569,47 @@ mod tests {
                             Err(_) => thread::sleep(Duration::from_millis(5)),
                         }
                     };
-                    let mut header = [0u8; AUDIO_FRAME_HEADER_LEN];
-                    file.read_exact(&mut header).unwrap();
-                    let decoded = AudioFrameHeader::decode(&header).unwrap();
-                    let mut payload = vec![0u8; decoded.payload_len as usize];
-                    file.read_exact(&mut payload).unwrap();
-                    let peak = payload
-                        .chunks_exact(2)
-                        .map(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs())
-                        .max()
-                        .unwrap_or(0);
-                    (decoded, payload, peak)
+                    (0..8)
+                        .map(|_| {
+                            let mut header = [0u8; AUDIO_FRAME_HEADER_LEN];
+                            file.read_exact(&mut header).unwrap();
+                            let decoded = AudioFrameHeader::decode(&header).unwrap();
+                            let mut payload = vec![0u8; decoded.payload_len as usize];
+                            file.read_exact(&mut payload).unwrap();
+                            let peak = payload
+                                .chunks_exact(2)
+                                .map(|sample| {
+                                    i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs()
+                                })
+                                .max()
+                                .unwrap_or(0);
+                            (decoded, payload.len(), peak)
+                        })
+                        .collect::<Vec<_>>()
                 })
             })
             .collect();
         let mut received = Vec::new();
         for reader in readers {
-            let (header, payload, peak) = reader.join().unwrap();
-            assert_eq!(header.frame_count, 160);
-            assert_eq!(payload.len(), 320);
-            assert!(peak > 0, "synthetic Meeting source must carry a signal");
-            received.push(header);
+            let frames = reader.join().unwrap();
+            assert_eq!(frames.len(), 8);
+            for (header, payload_len, _) in &frames {
+                assert_eq!(header.frame_count, 160);
+                assert_eq!(*payload_len, 320);
+            }
+            assert!(
+                frames.iter().any(|(_, _, peak)| *peak > 0),
+                "synthetic Meeting source must carry a signal"
+            );
+            received.push(frames);
         }
-        assert!(received.windows(2).all(|pair| {
-            pair[0].sequence == pair[1].sequence
-                && pair[0].timestamp_micros == pair[1].timestamp_micros
-        }));
+        for frame_index in 0..8 {
+            assert!(received.windows(2).all(|pair| {
+                pair[0][frame_index].0.sequence == pair[1][frame_index].0.sequence
+                    && pair[0][frame_index].0.timestamp_micros
+                        == pair[1][frame_index].0.timestamp_micros
+            }));
+        }
         let capture_id = response["payload"]["meetingCaptureId"].as_str().unwrap();
         let stop = json!({
             "protocolVersion": SIDECAR_PROTOCOL_VERSION,
