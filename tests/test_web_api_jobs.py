@@ -5803,10 +5803,12 @@ async def test_youtube_scheduler_does_not_reclassify_handled_download_failure(mo
     )
     job = store.enqueue(
         transcript_id=rec.id,
+        job_id=rec.id,
         job_type=web_api.JobType.YOUTUBE,
         payload={"url": rec.source_url},
     )
     ctl._remember_job_id(rec.id, job.id)
+    _install_durable_parent_harness(monkeypatch, ctl, rec)
 
     async def handled_download_failure(record, *, provider):
         record._youtube_stt_provider_used = provider
@@ -5835,6 +5837,7 @@ async def test_youtube_scheduler_does_not_reclassify_handled_download_failure(mo
 
 @pytest.mark.asyncio
 async def test_file_scheduler_does_not_double_count_handled_provider_failure(
+    monkeypatch,
     tmp_path,
 ):
     store = JobStore(db_path=tmp_path / "jobs.db")
@@ -5853,10 +5856,12 @@ async def test_file_scheduler_does_not_double_count_handled_provider_failure(
     )
     job = store.enqueue(
         transcript_id=rec.id,
+        job_id=rec.id,
         job_type=web_api.JobType.FILE,
         payload={"path": str(file_path)},
     )
     ctl._remember_job_id(rec.id, job.id)
+    _install_durable_parent_harness(monkeypatch, ctl, rec)
 
     async def handled_provider_failure(record, _file_path, *, provider):
         ctl._record_provider_failure(provider, "provider failed")

@@ -400,16 +400,18 @@ async def test_resume_missing_owned_file_cleans_stale_upload_directory(isolated_
 
 
 @pytest.mark.asyncio
-async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(tmp_path):
-    store = JobStore(db_path=tmp_path / "jobs.db")
+async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(isolated_recovery_database):
+    runtime_dir = isolated_recovery_database.parent
+    store = JobStore(db_path=runtime_dir / "jobs.db")
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
-    ctl._downloads_dir = tmp_path / "downloads"
+    ctl._downloads_dir = runtime_dir / "downloads"
     upload_dir = ctl._downloads_dir / "files" / "completed-upload"
     upload_dir.mkdir(parents=True)
     file_path = upload_dir / "sample.wav"
     file_path.write_bytes(b"RIFF....WAVEfmt ")
     job = store.enqueue(
         transcript_id="tx-resume-terminal-file",
+        job_id="tx-resume-terminal-file",
         job_type=JobType.FILE,
         payload={"path": str(file_path), "title": "Completed file"},
     )
@@ -425,6 +427,7 @@ async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(tmp_p
         content="Done",
     )
     ctl._add_to_history(rec)
+    database.save_transcript(rec)
 
     resumed = await ctl.resume_pending_jobs(limit=10)
 
