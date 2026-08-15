@@ -6,13 +6,17 @@ import { AppErrorBoundary } from "./AppErrorBoundary";
 import { LANGUAGE_STORAGE_KEY, LocaleProvider, useI18n } from "@/i18n";
 
 function GermanLocale({ children }: { children: ReactNode }) {
-  const { setLocale } = useI18n();
+  const { locale, setLocale } = useI18n();
 
   useEffect(() => {
     setLocale("de");
   }, [setLocale]);
 
-  return children;
+  // `setLocale("de")` publishes the locale only after its lazy catalog is
+  // loaded. Do not throw the test route under the English fallback first: on a
+  // loaded CI runner that transient render can outlive waitFor's default
+  // timeout even though production bootstrap awaits the same catalog.
+  return locale === "de" ? children : null;
 }
 
 describe("AppErrorBoundary", () => {
@@ -34,14 +38,14 @@ describe("AppErrorBoundary", () => {
 
     render(
       <LocaleProvider>
-        <GermanLocale>
-          <div data-testid="app-shell">
-            <nav>Persistent navigation</nav>
+        <div data-testid="app-shell">
+          <nav>Persistent navigation</nav>
+          <GermanLocale>
             <AppErrorBoundary variant="route" resetKey="/settings" onNavigateHome={navigateHome}>
               <RouteContent />
             </AppErrorBoundary>
-          </div>
-        </GermanLocale>
+          </GermanLocale>
+        </div>
       </LocaleProvider>,
     );
 
