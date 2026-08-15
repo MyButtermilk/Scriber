@@ -28,6 +28,11 @@ from loguru import logger
 from src import database as db
 from src.api.app_keys import APP_HTTP_SESSION
 from src.api.device_routes import register_device_routes
+from src.api.file_transcription_routes import (
+    UPLOAD_COMPRESSION_THRESHOLD_BYTES,
+    FileUploadPlan,
+    register_file_transcription_routes,
+)
 from src.api.http_security import (
     SESSION_TOKEN_ENV,
     SESSION_TOKEN_HEADER,
@@ -55,10 +60,8 @@ from src.api.transcript_routes import (
     register_transcript_routes,
 )
 from src.api.upload_policy import (
-    ALLOWED_UPLOAD_EXTENSIONS,
-    VIDEO_EXTENSIONS,
+    file_upload_limits,
     format_upload_limit,
-    safe_upload_filename,
 )
 from src.api.voice_component_routes import (
     VoiceCaptureRuntime,
@@ -218,7 +221,7 @@ from src.runtime.cancellation import (
 )
 from src.runtime.env_values import env_float as _safe_env_float
 from src.runtime.env_values import env_int as _safe_env_int
-from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.paths import data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.pcm_audio import pcm16le_rms
@@ -487,15 +490,6 @@ def discard_vad_cache_without_importing_pipeline() -> None:
 
 
 _ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
-_UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
-_UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
-_DEFAULT_UPLOAD_MAX_MB = 200
-_DEFAULT_AUDIO_INGEST_MAX_MB = 2048
-_DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted)
-_MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES = 1024 * 1024
-_UPLOAD_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024
-_EXTRACTED_AUDIO_BITRATE = "64k"
-_COMPRESSED_AUDIO_BITRATE = "32k"
 _API_VERSION = REST_API_VERSION
 _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
@@ -616,39 +610,6 @@ _INPUT_WARNING_ACTIONS_BY_CODE: dict[str, tuple[dict[str, str], ...]] = {
             "uri": _SETTINGS_URI_SOUND,
         },
     )
-}
-
-_DEFAULT_AUDIO_INGEST_MAX_BYTES = _DEFAULT_AUDIO_INGEST_MAX_MB * 1024 * 1024
-_PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
-    # Soniox REST files API documents 524288000 bytes max on POST /v1/files.
-    "soniox": {"max_bytes": 524_288_000, "label": "500MB"},
-    "soniox_async": {"max_bytes": 524_288_000, "label": "500MB"},
-    # Gemini File API supports larger uploads, but Scriber reads the upload once
-    # for the direct STT request. Keep the app-side limit conservative.
-    "gemini_stt": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
-    # Mistral documents 512 MB max on POST /v1/files; its audio transcription
-    # endpoint accepts the same File object and file_id from /v1/files.
-    "mistral": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
-    "mistral_async": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
-    # Smallest AI Pulse pre-recorded REST API documents a 25 MB max file size.
-    "smallest": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    "smallest_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    # MAI Transcribe LLM Speech API documents a 300 MB audio-file limit.
-    "azure_mai": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
-    # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
-    "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
-    # Deepgram pre-recorded transcription documents a 2-GB file boundary and
-    # no audio-duration ceiling.
-    "deepgram_async": {"max_bytes": 2_000_000_000, "label": "2GB"},
-    # OpenAI audio transcriptions accept relatively small direct uploads.
-    "openai_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    # OpenRouter's base64 JSON STT path avoids the 25-MB multipart boundary.
-    # Keep Scriber's local body spool bounded to the upstream MAI file ceiling
-    # without claiming that the route is verified for five-hour processing.
-    "openrouter_stt": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
-    # Modulate multilingual batch accepts complete files up to 100 MB.
-    "modulate": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
-    "modulate_async": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
 }
 
 _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
@@ -1345,102 +1306,12 @@ def _configured_file_upload_provider() -> str:
     return provider
 
 
-def _get_upload_limit_override_bytes() -> int | None:
-    raw_bytes = os.getenv(_UPLOAD_MAX_BYTES_ENV, "").strip()
-    if raw_bytes:
-        try:
-            value = int(raw_bytes)
-            if value > 0:
-                return value
-        except Exception:
-            pass
-    raw_mb = os.getenv(_UPLOAD_MAX_MB_ENV, "").strip()
-    if raw_mb:
-        try:
-            value = float(raw_mb)
-            if value > 0:
-                return int(value * 1024 * 1024)
-        except Exception:
-            pass
-    return None
-
-
-def _get_default_audio_upload_limit(provider: str | None) -> dict[str, Any]:
-    key = _normalize_upload_provider(provider)
-    provider_limit = _PROVIDER_AUDIO_UPLOAD_LIMITS.get(key)
-    if provider_limit:
-        return dict(provider_limit)
-    if not supports_direct_file_upload(key):
-        return {
-            "max_bytes": _DEFAULT_AUDIO_INGEST_MAX_BYTES,
-            "label": format_upload_limit(_DEFAULT_AUDIO_INGEST_MAX_BYTES),
-        }
-    fallback_bytes = _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
-    return {
-        "max_bytes": fallback_bytes,
-        "label": format_upload_limit(fallback_bytes),
-    }
-
-
-def _get_upload_max_bytes() -> int:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return override
-    return _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
-
-
-def _get_audio_upload_max_bytes(provider: str | None = None) -> int:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return override
-    return int(_get_default_audio_upload_limit(provider)["max_bytes"])
-
-
-def _get_audio_upload_limit_label(provider: str | None = None) -> str:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return format_upload_limit(override)
-    return str(_get_default_audio_upload_limit(provider)["label"])
-
-
-def _multipart_request_is_definitely_oversized(
-    content_length: int | None,
-    *,
-    file_limit: int,
-) -> bool:
-    """Pre-reject only when multipart framing cannot explain the excess bytes."""
-    if content_length is None:
-        return False
-    return content_length > file_limit + _MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES
-
-
-def _get_video_max_bytes() -> int:
-    """Get maximum bytes allowed for video file uploads (audio will be extracted)."""
-    return _DEFAULT_VIDEO_MAX_MB * 1024 * 1024
-
-
-def _get_audio_ingest_max_bytes(provider: str | None = None) -> int:
-    """Get maximum bytes allowed for raw audio uploads before optional compression."""
-    return max(_DEFAULT_AUDIO_INGEST_MAX_BYTES, _get_audio_upload_max_bytes(provider))
-
-
-def _get_audio_ingest_limit_label(provider: str | None = None) -> str:
-    ingest_limit = _get_audio_ingest_max_bytes(provider)
-    final_limit = _get_audio_upload_max_bytes(provider)
-    if ingest_limit == final_limit and ingest_limit > _DEFAULT_AUDIO_INGEST_MAX_BYTES:
-        return _get_audio_upload_limit_label(provider)
-    return format_upload_limit(ingest_limit)
-
-
-def _get_audio_max_bytes(provider: str | None = None) -> int:
-    """Get maximum bytes allowed for audio files (after extraction from video)."""
-    return _get_audio_upload_max_bytes(provider)
-
-
 def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
     resolved_provider = _normalize_upload_provider(provider) or _configured_file_upload_provider()
-    audio_max_bytes = _get_audio_upload_max_bytes(resolved_provider)
-    compression_threshold_bytes = min(_UPLOAD_COMPRESSION_THRESHOLD_BYTES, audio_max_bytes)
+    audio_limits = file_upload_limits(resolved_provider, source_is_video=False)
+    video_limits = file_upload_limits(resolved_provider, source_is_video=True)
+    audio_max_bytes = audio_limits.final_audio.max_bytes
+    compression_threshold_bytes = min(UPLOAD_COMPRESSION_THRESHOLD_BYTES, audio_max_bytes)
     return {
         "provider": resolved_provider,
         "providerLabel": Config.SERVICE_LABELS.get(
@@ -1449,177 +1320,14 @@ def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
         ),
         "usesDirectProviderLimit": supports_direct_file_upload(resolved_provider),
         "audioMaxBytes": audio_max_bytes,
-        "audioMaxLabel": _get_audio_upload_limit_label(resolved_provider),
-        "rawAudioIngestMaxBytes": _get_audio_ingest_max_bytes(resolved_provider),
-        "rawAudioIngestMaxLabel": _get_audio_ingest_limit_label(resolved_provider),
-        "videoMaxBytes": _get_video_max_bytes(),
-        "videoMaxLabel": format_upload_limit(_get_video_max_bytes()),
+        "audioMaxLabel": audio_limits.final_audio.label,
+        "rawAudioIngestMaxBytes": audio_limits.ingest.max_bytes,
+        "rawAudioIngestMaxLabel": audio_limits.ingest.label,
+        "videoMaxBytes": video_limits.ingest.max_bytes,
+        "videoMaxLabel": video_limits.ingest.label,
         "compressionThresholdBytes": compression_threshold_bytes,
         "compressionThresholdLabel": format_upload_limit(compression_threshold_bytes),
     }
-
-
-def _build_webm_audio_output_path(source_path: Path, *, label: str = "audio") -> Path:
-    if source_path.suffix.lower() == ".webm":
-        return source_path.with_name(f"{source_path.stem}.{label}.webm")
-    return source_path.with_suffix(".webm")
-
-
-async def _transcode_media_to_webm_audio(
-    source_path: Path,
-    target_path: Path,
-    *,
-    bitrate: str,
-) -> Path:
-    ffmpeg = require_media_tool("ffmpeg")
-
-    cmd = webm_opus_transcode_args(ffmpeg, source_path, target_path, bitrate=bitrate)
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        **hidden_subprocess_kwargs(),
-    )
-
-    _, stderr = await communicate_or_kill_on_cancel(
-        proc,
-        max_stdout_bytes=64 * 1024,
-        max_stderr_bytes=1024 * 1024,
-    )
-
-    if proc.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        friendly = classify_ffmpeg_stderr(err_msg)
-        raise RuntimeError(f"ffmpeg audio transcode failed: {friendly or f'exit code {proc.returncode}'}")
-
-    if not target_path.exists():
-        raise RuntimeError("Audio transcode completed but output file not found.")
-
-    return target_path
-
-
-async def _maybe_compress_audio_upload(upload_path: Path, *, max_bytes: int | None = None) -> Path:
-    if not upload_path.exists():
-        raise ValueError("Audio upload not found")
-
-    original_size = upload_path.stat().st_size
-    compression_threshold = _UPLOAD_COMPRESSION_THRESHOLD_BYTES
-    if max_bytes and max_bytes > 0:
-        compression_threshold = min(compression_threshold, max_bytes)
-    if original_size <= compression_threshold:
-        return upload_path
-
-    compressed_path = _build_webm_audio_output_path(upload_path, label="compressed")
-    try:
-        await _transcode_media_to_webm_audio(
-            upload_path,
-            compressed_path,
-            bitrate=_COMPRESSED_AUDIO_BITRATE,
-        )
-        compressed_size = compressed_path.stat().st_size
-    except Exception as exc:
-        compressed_path.unlink(missing_ok=True)
-        logger.warning(f"Automatic upload compression skipped for {upload_path.name}: {exc}")
-        return upload_path
-
-    if compressed_size >= original_size:
-        compressed_path.unlink(missing_ok=True)
-        logger.info(
-            f"Upload compression not beneficial for {upload_path.name}: "
-            f"{compressed_size / (1024 * 1024):.1f}MB >= {original_size / (1024 * 1024):.1f}MB"
-        )
-        return upload_path
-
-    if upload_path.suffix.lower() == ".webm":
-        upload_path.unlink(missing_ok=True)
-        compressed_path.replace(upload_path)
-        final_path = upload_path
-    else:
-        upload_path.unlink(missing_ok=True)
-        final_path = compressed_path
-
-    logger.info(
-        f"Compressed upload {upload_path.name}: "
-        f"{original_size / (1024 * 1024):.1f}MB -> {final_path.stat().st_size / (1024 * 1024):.1f}MB"
-    )
-    return final_path
-
-
-async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
-    """
-    Extract audio from a video file using ffmpeg.
-
-    Returns the path to the extracted audio file (WebM/Opus format).
-    Raises RuntimeError if extraction fails.
-    """
-    # Output as audio-only WebM/Opus for efficient upload across STT providers.
-    audio_filename = _build_webm_audio_output_path(video_path).name
-    audio_path = output_dir / audio_filename
-
-    logger.debug(f"Extracting audio from video: {video_path.name}")
-    try:
-        await _transcode_media_to_webm_audio(
-            video_path,
-            audio_path,
-            bitrate=_EXTRACTED_AUDIO_BITRATE,
-        )
-    except RuntimeError as exc:
-        raise RuntimeError(f"ffmpeg audio extraction failed: {exc}") from exc
-
-    logger.debug(f"Audio extracted: {audio_path.name} ({audio_path.stat().st_size / (1024 * 1024):.1f}MB)")
-    return audio_path
-
-
-async def _write_upload_stream_to_disk(
-    file_field: Any,
-    save_path: Path,
-    *,
-    max_bytes: int,
-    chunk_size: int = 1024 * 1024,
-    write_batch_size: int = 8 * 1024 * 1024,
-) -> tuple[int, bool]:
-    bytes_read = 0
-    too_large = False
-    pending = bytearray()
-    pending_cancel: asyncio.CancelledError | None = None
-    effective_batch_size = max(chunk_size, int(write_batch_size))
-    file_obj, pending_cancel = await await_with_delayed_cancellation(asyncio.to_thread(open, save_path, "wb"))
-    try:
-        while pending_cancel is None:
-            try:
-                chunk = await file_field.read_chunk(size=chunk_size)
-            except asyncio.CancelledError as exc:
-                pending_cancel = exc
-                break
-            if not chunk:
-                break
-            bytes_read += len(chunk)
-            if bytes_read > max_bytes:
-                too_large = True
-                break
-            pending.extend(chunk)
-            if len(pending) >= effective_batch_size:
-                batch = bytes(pending)
-                pending.clear()
-                _, write_cancel = await await_with_delayed_cancellation(asyncio.to_thread(file_obj.write, batch))
-                if write_cancel is not None:
-                    pending_cancel = write_cancel
-    finally:
-        try:
-            if pending and pending_cancel is None:
-                batch = bytes(pending)
-                pending.clear()
-                _, write_cancel = await await_with_delayed_cancellation(asyncio.to_thread(file_obj.write, batch))
-                if write_cancel is not None:
-                    pending_cancel = write_cancel
-        finally:
-            _, close_cancel = await await_with_delayed_cancellation(asyncio.to_thread(file_obj.close))
-            if close_cancel is not None:
-                pending_cancel = close_cancel
-    if pending_cancel is not None:
-        raise pending_cancel
-    return bytes_read, too_large
 
 
 async def _await_cleanup_barrier(awaitable: Awaitable[Any]) -> Any:
@@ -2143,72 +1851,6 @@ class TranscriptRecord:
 
 class TranscriptPersistenceError(RuntimeError):
     """Raised when a critical transcript save cannot be confirmed."""
-
-
-@dataclass(frozen=True, slots=True)
-class FileUploadPlan:
-    """One immutable admission decision carried through durable job creation."""
-
-    route: FrozenTranscriptionRoute
-    source_is_video: bool
-    ingest_max_bytes: int
-    ingest_limit_label: str
-    final_audio_max_bytes: int
-    final_audio_limit_label: str
-
-    def __post_init__(self) -> None:
-        if self.route.workload != "file":
-            raise ValueError("File upload plans require a file transcription route")
-        if self.ingest_max_bytes <= 0 or self.final_audio_max_bytes <= 0:
-            raise ValueError("File upload plans require positive byte limits")
-        if not self.ingest_limit_label or not self.final_audio_limit_label:
-            raise ValueError("File upload plans require bounded public limit labels")
-
-    def durable_evidence(self) -> dict[str, Any]:
-        return {
-            "schemaVersion": 1,
-            "sourceKind": "video" if self.source_is_video else "audio",
-            "provider": self.route.provider,
-            "ingestMaxBytes": self.ingest_max_bytes,
-            "finalAudioMaxBytes": self.final_audio_max_bytes,
-        }
-
-    @classmethod
-    def from_durable_evidence(
-        cls,
-        *,
-        route: FrozenTranscriptionRoute,
-        evidence: Any,
-    ) -> FileUploadPlan:
-        """Rebuild the exact admitted limits without consulting live config."""
-
-        if not isinstance(evidence, Mapping) or type(evidence.get("schemaVersion")) is not int:
-            raise ValueError("File upload plan evidence is invalid")
-        if evidence["schemaVersion"] != 1:
-            raise ValueError("File upload plan evidence version is unsupported")
-        source_kind = evidence.get("sourceKind")
-        if source_kind not in {"audio", "video"}:
-            raise ValueError("File upload plan source kind is invalid")
-        provider = str(evidence.get("provider") or "").strip().lower()
-        if provider != route.provider:
-            raise ValueError("File upload plan provider does not match its frozen route")
-
-        def positive_bytes(key: str) -> int:
-            value = evidence.get(key)
-            if type(value) is not int or value <= 0:
-                raise ValueError(f"File upload plan {key} is invalid")
-            return value
-
-        ingest_max_bytes = positive_bytes("ingestMaxBytes")
-        final_audio_max_bytes = positive_bytes("finalAudioMaxBytes")
-        return cls(
-            route=route,
-            source_is_video=source_kind == "video",
-            ingest_max_bytes=ingest_max_bytes,
-            ingest_limit_label=format_upload_limit(ingest_max_bytes),
-            final_audio_max_bytes=final_audio_max_bytes,
-            final_audio_limit_label=format_upload_limit(final_audio_max_bytes),
-        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -10654,7 +10296,7 @@ class ScriberWebController:
                         provider=route.provider,
                         model=route.model,
                         work_dir=out_dir,
-                        max_bytes=_get_audio_upload_max_bytes(provider),
+                        max_bytes=file_upload_limits(provider, source_is_video=False).final_audio.max_bytes,
                         frozen_selection=frozen_audio_selection,
                     )
                 )
@@ -11022,6 +10664,12 @@ class ScriberWebController:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup YouTube download: {cleanup_err}")
 
+    @property
+    def file_upload_root(self) -> Path:
+        """Root owned by the File ingest domain before durable job hand-off."""
+
+        return self._downloads_dir / "files"
+
     def plan_file_upload(self, *, source_is_video: bool) -> FileUploadPlan:
         """Select one provider route and every byte limit used by this upload."""
 
@@ -11032,16 +10680,9 @@ class ScriberWebController:
             provider=provider,
             language=Config.LANGUAGE or "auto",
         )
-        ingest_max_bytes = _get_video_max_bytes() if source_is_video else _get_audio_ingest_max_bytes(provider)
         return FileUploadPlan(
             route=route,
-            source_is_video=source_is_video,
-            ingest_max_bytes=ingest_max_bytes,
-            ingest_limit_label=(
-                format_upload_limit(ingest_max_bytes) if source_is_video else _get_audio_ingest_limit_label(provider)
-            ),
-            final_audio_max_bytes=_get_audio_upload_max_bytes(provider),
-            final_audio_limit_label=_get_audio_upload_limit_label(provider),
+            limits=file_upload_limits(provider, source_is_video=source_is_video),
         )
 
     async def _persisted_file_upload_plan(
@@ -11277,7 +10918,9 @@ class ScriberWebController:
                 raise ValueError("The frozen provider/model route has no verified batch audio capability.")
             upload_plan = await self._persisted_file_upload_plan(rec, route)
             final_audio_max_bytes = (
-                upload_plan.final_audio_max_bytes if upload_plan is not None else _get_audio_upload_max_bytes(provider)
+                upload_plan.final_audio_max_bytes
+                if upload_plan is not None
+                else file_upload_limits(provider, source_is_video=False).final_audio.max_bytes
             )
             async with prepare_provider_audio_file(
                 file_path,
@@ -16778,169 +16421,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return await start_live_request(request, post_process=True)
 
-    async def file_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        save_dir: Path | None = None
-        source_owned_by_controller = False
-
-        # Check content type for multipart upload
-        if not request.content_type.startswith("multipart/"):
-            return web.json_response({"message": "Expected multipart/form-data"}, status=400)
-
-        try:
-            reader = await request.multipart()
-            file_field = None
-            original_filename = "uploaded_file"
-
-            async for field in reader:
-                if field.name == "file":
-                    file_field = field
-                    original_filename = field.filename or "uploaded_file"
-                    break
-
-            if file_field is None:
-                return web.json_response({"message": "No file uploaded"}, status=400)
-
-            # Validate file extension
-            safe_filename = safe_upload_filename(original_filename)
-            ext = Path(safe_filename).suffix.lower()
-            if ext not in ALLOWED_UPLOAD_EXTENSIONS:
-                return web.json_response(
-                    {
-                        "message": (
-                            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(ALLOWED_UPLOAD_EXTENSIONS))}"
-                        )
-                    },
-                    status=400,
-                )
-
-            # Determine if this is a video file (needs audio extraction)
-            is_video = ext in VIDEO_EXTENSIONS
-            upload_plan = ctl.plan_file_upload(source_is_video=is_video)
-            ingest_max_bytes = upload_plan.ingest_max_bytes
-            final_audio_limit = upload_plan.final_audio_max_bytes
-            ingest_limit_label = upload_plan.ingest_limit_label
-            final_audio_limit_label = upload_plan.final_audio_limit_label
-
-            # Check content-length header if available
-            if _multipart_request_is_definitely_oversized(
-                request.content_length,
-                file_limit=ingest_max_bytes,
-            ):
-                return web.json_response(
-                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
-                    status=413,
-                )
-
-            # Generate unique ID and save file
-            file_id = uuid4().hex
-            save_dir = ctl._downloads_dir / "files" / file_id
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_path = save_dir / safe_filename
-
-            bytes_read, too_large = await _write_upload_stream_to_disk(
-                file_field,
-                save_path,
-                max_bytes=ingest_max_bytes,
-            )
-
-            if bytes_read == 0:
-                await remove_tree_if_exists(save_dir)
-                return web.json_response({"message": "Uploaded file is empty"}, status=400)
-
-            if too_large:
-                try:
-                    await remove_tree_if_exists(save_dir)
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
-                return web.json_response(
-                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
-                    status=413,
-                )
-
-            # For video files, extract audio using ffmpeg
-            transcribe_path = save_path
-            if is_video:
-                try:
-                    logger.info(f"Extracting audio from video: {safe_filename} ({bytes_read / (1024 * 1024):.1f}MB)")
-                    audio_path = await _extract_audio_from_video(save_path, save_dir)
-                    audio_path = await _maybe_compress_audio_upload(audio_path, max_bytes=final_audio_limit)
-
-                    # Check if extracted audio is within size limit
-                    audio_size = audio_path.stat().st_size
-                    if audio_size > final_audio_limit:
-                        await remove_tree_if_exists(save_dir)
-                        return web.json_response(
-                            {
-                                "message": (
-                                    f"Extracted/compressed audio too large "
-                                    f"({audio_size / (1024 * 1024):.0f}MB, max {final_audio_limit_label})."
-                                )
-                            },
-                            status=413,
-                        )
-
-                    # Delete original video file to save space
-                    try:
-                        save_path.unlink()
-                        logger.debug(f"Deleted original video file: {safe_filename}")
-                    except Exception as del_err:
-                        logger.warning(f"Failed to delete video after extraction: {del_err}")
-
-                    # Use extracted audio for transcription
-                    transcribe_path = audio_path
-                    # Update filename for display
-                    safe_filename = audio_path.name
-                    logger.info(f"Audio extracted successfully: {safe_filename} ({audio_size / (1024 * 1024):.1f}MB)")
-
-                except RuntimeError as extract_err:
-                    await remove_tree_if_exists(save_dir)
-                    logger.error(
-                        "Audio extraction failed (error_type={})",
-                        type(extract_err).__name__,
-                    )
-                    return web.json_response(
-                        {"message": "Failed to extract audio from video."},
-                        status=500,
-                    )
-            else:
-                transcribe_path = await _maybe_compress_audio_upload(save_path, max_bytes=final_audio_limit)
-                compressed_size = transcribe_path.stat().st_size
-                if compressed_size > final_audio_limit:
-                    await remove_tree_if_exists(save_dir)
-                    return web.json_response(
-                        {
-                            "message": (
-                                f"Compressed audio still too large "
-                                f"({compressed_size / (1024 * 1024):.0f}MB, max {final_audio_limit_label})."
-                            )
-                        },
-                        status=413,
-                    )
-
-            # Start transcription
-            # ``start_file_transcription`` owns the source from invocation,
-            # including every cancellation/failure path before durable enqueue.
-            source_owned_by_controller = True
-            rec = await ctl.start_file_transcription(
-                transcribe_path,
-                safe_filename,
-                plan=upload_plan,
-            )
-            return web.json_response(rec.to_public(include_content=True))
-
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception:
-            logger.exception("Failed to process file upload")
-            return web.json_response({"message": "Failed to process file upload"}, status=500)
-        finally:
-            if save_dir is not None and not source_owned_by_controller:
-                try:
-                    await remove_tree_if_exists(save_dir)
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to cleanup incomplete file upload: {cleanup_err}")
-
     async def list_meetings(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         try:
@@ -17959,8 +17439,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             storage_root=data_dir(),
             is_shutting_down=lambda: bool(getattr(controller, "_shutting_down", False)),
             validate_provider_ready=lambda provider: _validate_provider_ready(provider),
-            audio_max_bytes=lambda provider: _get_audio_ingest_max_bytes(provider),
-            video_max_bytes=lambda: _get_video_max_bytes(),
+            upload_limits=file_upload_limits,
         )
 
     async def start_meeting(request: web.Request):
@@ -20296,7 +19775,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_post("/api/meetings/{id}/discard", discard_meeting)
 
     register_youtube_routes(app, controller=controller)
-    app.router.add_post("/api/file/transcribe", file_transcribe)
+    register_file_transcription_routes(app, controller=controller)
 
     register_onnx_routes(app, controller=controller)
 

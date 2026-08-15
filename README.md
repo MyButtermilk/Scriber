@@ -424,6 +424,17 @@ Run the real-browser frontend smoke against its privacy-safe synthetic backend:
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
 
+For the File-ingest vertical slice, run Chrome and the real React/Vite frontend
+against the production `src.web_api.create_app` composition and durable
+`JobStore`:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tmp\real-file-browser-smoke.json
+```
+
+This smoke stops at the durable queued boundary. It does not claim an installed
+Tauri build or an external-provider transcription.
+
 ### Active documentation
 
 - [`AGENTS.md`](AGENTS.md): repository editing guide and non-negotiable contracts

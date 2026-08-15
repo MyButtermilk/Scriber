@@ -10,6 +10,8 @@ from src.api.upload_policy import (
     ALLOWED_UPLOAD_EXTENSIONS,
     MAX_UPLOAD_FILENAME_UTF16_UNITS,
     VIDEO_EXTENSIONS,
+    FileUploadLimits,
+    file_upload_limits,
     format_upload_limit,
     safe_upload_filename,
 )
@@ -160,3 +162,70 @@ def test_the_shared_media_policy_is_immutable():
 )
 def test_limits_are_rendered_for_the_rejection_message(limit_bytes, expected):
     assert format_upload_limit(limit_bytes) == expected
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_bytes", "expected_label"),
+    [
+        ("soniox", 524_288_000, "500MB"),
+        ("soniox_async", 524_288_000, "500MB"),
+        ("mistral", 512 * 1024 * 1024, "512MB"),
+        ("assemblyai", 2_200_000_000, "2.2GB"),
+        ("smallest", 25 * 1024 * 1024, "25MB"),
+        ("azure_mai", 300 * 1024 * 1024, "300MB"),
+        ("openrouter_stt", 300 * 1024 * 1024, "300MB"),
+        ("modulate_async", 100 * 1024 * 1024, "100MB"),
+        ("openai", 2048 * 1024 * 1024, "2GB"),
+    ],
+)
+def test_provider_bound_limits_have_one_authoritative_value_and_label(
+    monkeypatch,
+    provider,
+    expected_bytes,
+    expected_label,
+):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+
+    limits = file_upload_limits(provider, source_is_video=False)
+
+    assert isinstance(limits, FileUploadLimits)
+    assert limits.final_audio.max_bytes == expected_bytes
+    assert limits.final_audio.label == expected_label
+
+
+def test_raw_audio_ingest_can_exceed_the_provider_boundary(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+
+    soniox = file_upload_limits("soniox", source_is_video=False)
+    assemblyai = file_upload_limits("assemblyai", source_is_video=False)
+
+    assert soniox.ingest.max_bytes == 2048 * 1024 * 1024
+    assert assemblyai.ingest.max_bytes == 2_200_000_000
+
+
+def test_environment_override_is_frozen_into_both_limits(monkeypatch):
+    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_BYTES", "123")
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+
+    limits = file_upload_limits("soniox", source_is_video=False)
+
+    assert limits.final_audio.max_bytes == 123
+    assert limits.final_audio.label == "0MB"
+    assert limits.ingest.max_bytes == 2048 * 1024 * 1024
+
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_MB", "300")
+    assert file_upload_limits("soniox", source_is_video=False).final_audio.max_bytes == 300 * 1024 * 1024
+
+
+def test_video_admission_uses_the_shared_raw_boundary(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
+
+    limits = file_upload_limits("smallest", source_is_video=True)
+
+    assert limits.source_is_video is True
+    assert limits.ingest.max_bytes == 2048 * 1024 * 1024
+    assert limits.final_audio.max_bytes == 25 * 1024 * 1024

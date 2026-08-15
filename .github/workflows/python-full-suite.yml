@@ -45,6 +45,17 @@ jobs:
             -r requirements-test.txt
           .\venv\Scripts\python.exe -m pip check
 
+      - name: Set up pinned Node for the real-browser File smoke
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: Frontend/package-lock.json
+
+      - name: Install frontend dependencies for the real-browser File smoke
+        working-directory: Frontend
+        run: npm ci --no-audit --no-fund
+
       - name: Restore locked FFmpeg test runtime
         shell: pwsh
         env:
@@ -74,6 +85,12 @@ jobs:
           .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
             --junitxml build\test-results\python-full-suite.xml
 
+      - name: Run real-browser File upload against production composition
+        shell: pwsh
+        run: >-
+          .\venv\Scripts\python.exe scripts\smoke_real_file_upload_browser.py
+          --output build\test-results\real-file-browser-smoke.json
+
       - name: Typecheck extended Python tranche
         shell: pwsh
         run: >-
@@ -97,6 +114,8 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: python-full-suite-${{ github.run_id }}-${{ github.run_attempt }}
-          path: build/test-results/python-full-suite.xml
+          path: |
+            build/test-results/python-full-suite.xml
+            build/test-results/real-file-browser-smoke.json
           if-no-files-found: warn
           retention-days: 14

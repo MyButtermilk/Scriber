@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock, call, patch
 import pytest
 
 from src import web_api
+from src.api.file_transcription_routes import FileUploadPlan
+from src.api.upload_policy import FileUploadLimits, UploadLimit, file_upload_limits
 from src.config import Config
 from src.data.job_store import JobStatus, JobStore
 from src.pipeline import direct_file_workflow_timeout_seconds
@@ -70,19 +72,15 @@ def _file_upload_plan(
     ctl: ScriberWebController,
     *,
     provider: str = "soniox",
-) -> web_api.FileUploadPlan:
+) -> FileUploadPlan:
     route = ctl._freeze_background_provider_route(
         workload="file",
         provider=provider,
         language="auto",
     )
-    return web_api.FileUploadPlan(
+    return FileUploadPlan(
         route=route,
-        source_is_video=False,
-        ingest_max_bytes=web_api._get_audio_ingest_max_bytes(provider),
-        ingest_limit_label=web_api._get_audio_ingest_limit_label(provider),
-        final_audio_max_bytes=web_api._get_audio_upload_max_bytes(provider),
-        final_audio_limit_label=web_api._get_audio_upload_limit_label(provider),
+        limits=file_upload_limits(provider, source_is_video=False),
     )
 
 
@@ -455,13 +453,13 @@ async def test_restarted_file_job_uses_its_admitted_audio_limit(monkeypatch, tmp
         language="auto",
     )
     admitted_limit = 12_345
-    plan = web_api.FileUploadPlan(
+    plan = FileUploadPlan(
         route=route,
-        source_is_video=False,
-        ingest_max_bytes=54_321,
-        ingest_limit_label="admitted-ingest",
-        final_audio_max_bytes=admitted_limit,
-        final_audio_limit_label="admitted-final",
+        limits=FileUploadLimits(
+            source_is_video=False,
+            ingest=UploadLimit(54_321, "admitted-ingest"),
+            final_audio=UploadLimit(admitted_limit, "admitted-final"),
+        ),
     )
     file_path = tmp_path / "sample.wav"
     file_path.write_bytes(b"RIFF....WAVEfmt ")

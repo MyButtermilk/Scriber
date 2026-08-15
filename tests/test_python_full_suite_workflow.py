@@ -123,8 +123,11 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         "Set up Python",
         "Create isolated test environment",
         "Install Python test dependencies",
+        "Set up pinned Node for the real-browser File smoke",
+        "Install frontend dependencies for the real-browser File smoke",
         "Restore locked FFmpeg test runtime",
         "Run complete Python test suite",
+        "Run real-browser File upload against production composition",
         "Typecheck extended Python tranche",
         "Upload Python test results",
     ]
@@ -133,8 +136,11 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     setup = steps["Set up Python"]
     create_environment = steps["Create isolated test environment"]
     install = steps["Install Python test dependencies"]["run"]
+    setup_node = steps["Set up pinned Node for the real-browser File smoke"]
+    install_frontend = steps["Install frontend dependencies for the real-browser File smoke"]
     restore_ffmpeg = steps["Restore locked FFmpeg test runtime"]
     run = steps["Run complete Python test suite"]["run"]
+    browser_smoke = steps["Run real-browser File upload against production composition"]
     typecheck = steps["Typecheck extended Python tranche"]
     upload = steps["Upload Python test results"]
 
@@ -164,6 +170,11 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     assert "-r requirements-base.txt" in install
     assert "-r requirements-test.txt" in install
     assert ".\\venv\\Scripts\\python.exe -m pip check" in install
+    assert setup_node["uses"] == "actions/setup-node@v6"
+    assert setup_node["with"]["node-version-file"] == ".node-version"
+    assert setup_node["with"]["cache-dependency-path"] == "Frontend/package-lock.json"
+    assert install_frontend["working-directory"] == "Frontend"
+    assert install_frontend["run"] == "npm ci --no-audit --no-fund"
     assert restore_ffmpeg["env"] == {"GH_TOKEN": "${{ github.token }}"}
     assert "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1" in restore_ffmpeg["run"]
     assert "-Tag ffmpeg-profile-b-n7.0-v4" in restore_ffmpeg["run"]
@@ -179,14 +190,22 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
             "--junitxml build\\test-results\\python-full-suite.xml"
         ),
     ]
+    assert browser_smoke["shell"] == "pwsh"
+    assert "scripts\\smoke_real_file_upload_browser.py" in browser_smoke["run"]
+    assert "build\\test-results\\real-file-browser-smoke.json" in browser_smoke["run"]
     assert typecheck["shell"] == "pwsh"
     assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\api src\\core src\\runtime src\\data")
     assert "src\\native_overlay.py" in typecheck["run"]
     assert "src\\meeting_export.py" in typecheck["run"]
     assert step_names.index("Typecheck extended Python tranche") == (
-        step_names.index("Run complete Python test suite") + 1
+        step_names.index("Run real-browser File upload against production composition") + 1
     )
-    assert all(not {"if", "continue-on-error", "working-directory"} & step.keys() for step in ordered_steps[:-1])
+    assert all(not {"if", "continue-on-error"} & step.keys() for step in ordered_steps[:-1])
+    assert all(
+        "working-directory" not in step
+        or step["name"] == "Install frontend dependencies for the real-browser File smoke"
+        for step in ordered_steps[:-1]
+    )
     install_index = step_names.index("Install Python test dependencies")
     later_scripts = "\n".join(str(step.get("run", "")) for step in ordered_steps[install_index + 1 :])
     assert (
@@ -198,6 +217,10 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
     )
     assert upload["if"] == "always()"
     assert upload["uses"] == "actions/upload-artifact@v7"
+    assert upload["with"]["path"].splitlines() == [
+        "build/test-results/python-full-suite.xml",
+        "build/test-results/real-file-browser-smoke.json",
+    ]
     assert upload["with"]["if-no-files-found"] == "warn"
 
 

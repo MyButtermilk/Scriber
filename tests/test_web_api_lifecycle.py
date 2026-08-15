@@ -5,7 +5,6 @@ import json
 import os
 import sys
 import threading
-import time
 import types
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1131,222 +1130,6 @@ async def test_stop_listening_soniox_realtime_keeps_transcribing_hidden(monkeypa
     assert all(payload.get("type") != "transcribing" for payload in broadcasts)
     assert all(payload.get("transcribing") is not True for payload in broadcasts)
     assert record.status == "completed"
-
-
-class _ChunkUploadField:
-    def __init__(self, chunks: list[bytes]):
-        self._chunks = list(chunks)
-
-    async def read_chunk(self, *, size: int) -> bytes:
-        del size
-        if not self._chunks:
-            return b""
-        return self._chunks.pop(0)
-
-
-def test_multipart_content_length_allows_framing_overhead_at_file_limit():
-    file_limit = 25 * 1024 * 1024
-
-    assert (
-        web_api._multipart_request_is_definitely_oversized(
-            file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES,
-            file_limit=file_limit,
-        )
-        is False
-    )
-    assert (
-        web_api._multipart_request_is_definitely_oversized(
-            file_limit + web_api._MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES + 1,
-            file_limit=file_limit,
-        )
-        is True
-    )
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_to_disk_writes_chunks_off_hot_path(tmp_path):
-    target = tmp_path / "upload.bin"
-    field = _ChunkUploadField([b"abc", b"def"])
-
-    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
-        field,
-        target,
-        max_bytes=16,
-    )
-
-    assert bytes_read == 6
-    assert too_large is False
-    assert target.read_bytes() == b"abcdef"
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_to_disk_stops_before_oversized_chunk(tmp_path):
-    target = tmp_path / "upload.bin"
-    field = _ChunkUploadField([b"abc", b"def"])
-
-    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
-        field,
-        target,
-        max_bytes=4,
-    )
-
-    assert bytes_read == 6
-    assert too_large is True
-    assert target.read_bytes() == b"abc"
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path):
-    target = tmp_path / "upload.bin"
-    field = _ChunkUploadField([b"ab"] * 10)
-    real_to_thread = asyncio.to_thread
-    write_calls = 0
-
-    async def tracking_to_thread(func, /, *args, **kwargs):
-        nonlocal write_calls
-        if getattr(func, "__name__", "") == "write":
-            write_calls += 1
-        return await real_to_thread(func, *args, **kwargs)
-
-    monkeypatch.setattr(web_api.asyncio, "to_thread", tracking_to_thread)
-    bytes_read, too_large = await web_api._write_upload_stream_to_disk(
-        field,
-        target,
-        max_bytes=64,
-        chunk_size=2,
-        write_batch_size=6,
-    )
-
-    assert bytes_read == 20
-    assert too_large is False
-    assert target.read_bytes() == b"ab" * 10
-    assert write_calls == 4
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_closes_a_file_opened_after_repeated_cancellation(monkeypatch, tmp_path):
-    open_started = threading.Event()
-    allow_open = threading.Event()
-
-    class TrackedFile:
-        closed = False
-
-        def write(self, data: bytes) -> int:
-            return len(data)
-
-        def close(self) -> None:
-            self.closed = True
-
-    tracked = TrackedFile()
-
-    def delayed_open(*_args, **_kwargs):
-        open_started.set()
-        assert allow_open.wait(timeout=2.0)
-        return tracked
-
-    monkeypatch.setattr(web_api, "open", delayed_open, raising=False)
-    task = asyncio.create_task(
-        web_api._write_upload_stream_to_disk(
-            _ChunkUploadField([]),
-            tmp_path / "upload.bin",
-            max_bytes=16,
-        )
-    )
-    assert await asyncio.to_thread(open_started.wait, 1.0)
-
-    task.cancel()
-    task.cancel()
-    await asyncio.sleep(0)
-    completed_before_open = task.done()
-    allow_open.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert completed_before_open is False
-    assert tracked.closed is True
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_never_closes_while_a_canceled_write_is_running(monkeypatch, tmp_path):
-    write_started = threading.Event()
-    allow_write = threading.Event()
-
-    class TrackedFile:
-        closed = False
-        close_overlapped_write = False
-
-        def write(self, data: bytes) -> int:
-            write_started.set()
-            assert allow_write.wait(timeout=2.0)
-            return len(data)
-
-        def close(self) -> None:
-            self.close_overlapped_write = not allow_write.is_set()
-            self.closed = True
-
-    tracked = TrackedFile()
-    monkeypatch.setattr(web_api, "open", lambda *_args, **_kwargs: tracked, raising=False)
-    task = asyncio.create_task(
-        web_api._write_upload_stream_to_disk(
-            _ChunkUploadField([b"abc"]),
-            tmp_path / "upload.bin",
-            max_bytes=16,
-            chunk_size=1,
-            write_batch_size=1,
-        )
-    )
-    assert await asyncio.to_thread(write_started.wait, 1.0)
-
-    task.cancel()
-    task.cancel()
-    await asyncio.sleep(0.05)
-    completed_during_write = task.done()
-    allow_write.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert completed_during_write is False
-    assert tracked.closed is True
-    assert tracked.close_overlapped_write is False
-
-
-@pytest.mark.asyncio
-async def test_write_upload_stream_waits_for_close_after_repeated_cancellation(monkeypatch, tmp_path):
-    close_started = threading.Event()
-    allow_close = threading.Event()
-
-    class TrackedFile:
-        closed = False
-
-        def write(self, data: bytes) -> int:
-            return len(data)
-
-        def close(self) -> None:
-            close_started.set()
-            assert allow_close.wait(timeout=2.0)
-            self.closed = True
-
-    tracked = TrackedFile()
-    monkeypatch.setattr(web_api, "open", lambda *_args, **_kwargs: tracked, raising=False)
-    task = asyncio.create_task(
-        web_api._write_upload_stream_to_disk(
-            _ChunkUploadField([]),
-            tmp_path / "upload.bin",
-            max_bytes=16,
-        )
-    )
-    assert await asyncio.to_thread(close_started.wait, 1.0)
-
-    task.cancel()
-    task.cancel()
-    await asyncio.sleep(0)
-    completed_during_close = task.done()
-    allow_close.set()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert completed_during_close is False
-    assert tracked.closed is True
 
 
 @pytest.mark.asyncio
@@ -3937,10 +3720,12 @@ async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
     _PrewarmAwarePipeline.instances.clear()
+    overlay_started = threading.Event()
     overlay_release = threading.Event()
 
     def slow_overlay_show() -> None:
-        overlay_release.wait(timeout=0.35)
+        overlay_started.set()
+        assert overlay_release.wait(timeout=2.0)
 
     with (
         patch("src.web_api.ScriberPipeline", _PrewarmAwarePipeline),
@@ -3954,14 +3739,17 @@ async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
         patch("src.web_api.show_transcribing_overlay"),
         patch("src.web_api.hide_recording_overlay"),
     ):
-        started = time.monotonic()
-        await ctl.start_listening()
-        elapsed = time.monotonic() - started
+        start_task = asyncio.create_task(ctl.start_listening())
+        assert await asyncio.to_thread(overlay_started.wait, 1.0)
+        try:
+            await asyncio.wait_for(asyncio.shield(start_task), timeout=1.0)
+        finally:
+            overlay_release.set()
+            if not start_task.done():
+                await start_task
 
-        assert elapsed < 0.2
         assert ctl._pipeline_task is not None
 
-        overlay_release.set()
         if ctl._overlay_tasks:
             await asyncio.wait_for(
                 asyncio.gather(*list(ctl._overlay_tasks), return_exceptions=True),

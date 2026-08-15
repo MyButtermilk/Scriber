@@ -938,10 +938,11 @@ Key modules:
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
   `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
   `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
-  `src/api/meeting_import_routes.py`, and `src/api/voice_component_routes.py`:
+  `src/api/meeting_import_routes.py`, `src/api/voice_component_routes.py`, and
+  `src/api/file_transcription_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
-  Settings, Local Polishing, Device, Outlook Calendar, Meeting Import, and Voice
-  Component domains. Runtime owns debug logs and support bundles. ONNX
+  Settings, Local Polishing, Device, Outlook Calendar, Meeting Import, Voice
+  Component, and File Transcription domains. Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
   scopes before cancellation. Transcript routes hold no transcript state: one
@@ -1004,13 +1005,25 @@ Key modules:
   Each route test pins the real adapter contract or the exact wiring and lazy
   resolution boundary. Shared reflection support contains mechanics only and
   does not form a port catalogue.
+- File Transcription owns the full pre-queue ingest lifecycle: multipart
+  parsing, Windows-safe naming, bounded off-loop writes, ffmpeg extraction and
+  compression, workspace cleanup, and the one ownership hand-off to the
+  durable job controller. Its narrow port exposes the immutable admitted plan,
+  a public File workspace root, and `start_file_transcription`; the route never
+  reaches through composition to `_downloads_dir`.
+  The real-browser File smoke connects the React/Vite page to this production
+  `create_app` path and the durable `JobStore`, then stops deliberately at the
+  queued-provider boundary; installed Tauri and external provider execution
+  remain separate release evidence.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP security
   policy and identity-stable aiohttp application keys used across composition
   and extracted route modules.
 - `src/api/upload_policy.py`: the shared upload-policy module for file
   transcription and Meeting imports. Its interface owns Windows-safe filename
-  normalization, the accepted audio/video extensions, and user-facing byte
-  limit labels; both ingest paths call it directly.
+  normalization, the accepted audio/video extensions, and one immutable
+  provider-bound `FileUploadLimits` value containing raw-ingest and final-audio
+  boundaries with their reviewed public labels; both ingest paths call it
+  directly.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

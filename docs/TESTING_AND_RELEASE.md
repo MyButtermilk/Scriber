@@ -89,10 +89,14 @@ an unreadable ambiguous commit. They require the admitted route/limits and the
 owned source to survive whenever a durable row may exist. The matching YouTube
 test repeats cancellation after enqueue and requires mapping, history,
 artifact-parent creation, and exactly one scheduled task before delivery.
-Upload-policy tests separately cover the
-180 UTF-16-code-unit filename bound, Windows reserved-device names and invalid
-surrogates, accepted media extensions, and human-readable limit labels used by
-both File transcription and Meeting imports.
+File Transcription route tests register that domain alone and exercise the
+public multipart HTTP seam, bounded/repeated-cancel disk writes, media
+preparation, redacted failures, workspace cleanup, the production controller
+port, and the exact admitted provider route. Upload-policy tests separately
+cover the 180 UTF-16-code-unit filename bound, Windows reserved-device names
+and invalid surrogates, accepted media extensions, and immutable
+provider-bound raw/final limits used by both File transcription and Meeting
+imports.
 
 Frontend:
 
@@ -175,6 +179,21 @@ Frontend browser smoke:
 ```powershell
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
+
+Real-browser File-ingest smoke against production backend composition:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tmp\real-file-browser-smoke.json
+```
+
+Unlike the broad synthetic frontend smoke, this narrow vertical slice runs the
+real React/Vite File page in Chrome against `src.web_api.create_app`, the
+extracted File Transcription handler, the real transcript database, and a real
+`JobStore`. It requires the route to persist one exact provider-bound queued job
+and keep the owned source before navigation succeeds. The provider worker is
+deliberately held at that boundary, so the result is not installed-Tauri or
+external-provider evidence. `python-full-suite.yml` runs this smoke and uploads
+its JSON result beside the JUnit report.
 
 Frontend localization gates:
 

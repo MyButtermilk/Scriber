@@ -93,6 +93,22 @@ def test_installed_transcription_workflow_smoke_uses_real_backend_jobs_without_c
     assert '"dataDir": runtime.get' not in script
 
 
+def test_real_browser_file_smoke_crosses_the_production_aiohttp_composition() -> None:
+    script = (REPO_ROOT / "scripts" / "smoke_real_file_upload_browser.py").read_text(encoding="utf-8")
+    workflow = (REPO_ROOT / ".github" / "workflows" / "python-full-suite.yml").read_text(encoding="utf-8")
+
+    assert "web_api.create_app(controller)" in script
+    assert "JobStore(" in script
+    assert "set_file_input_files(" in script
+    assert '"realPythonCreateApp": True' in script
+    assert '"providerWorkerHeldAtQueuedBoundary": True' in script
+    assert 'route_handler_module == "src.api.file_transcription_routes"' in script
+    assert 'browser_state.get("ok") is True' in script
+    assert "from scripts.smoke_frontend_browser import FrontendSmokeBackend" not in script
+    assert "scripts\\smoke_real_file_upload_browser.py" in workflow
+    assert "real-file-browser-smoke.json" in workflow
+
+
 def test_media_preparation_smoke_script_writes_artifact(tmp_path: Path) -> None:
     if not shutil.which("ffmpeg"):
         pytest.skip("ffmpeg is not available on PATH")

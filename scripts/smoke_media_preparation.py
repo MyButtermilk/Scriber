@@ -104,13 +104,15 @@ async def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
     if args.media_tools_dir:
         os.environ["SCRIBER_MEDIA_TOOLS_DIR"] = str(Path(args.media_tools_dir).expanduser().resolve())
 
+    from src.api.file_transcription_routes import (
+        extract_audio_from_video as _extract_audio_from_video,
+    )
+    from src.api.file_transcription_routes import (
+        maybe_compress_audio_upload as _maybe_compress_audio_upload,
+    )
     from src.azure_mai_stt import azure_mai_content_type, prepared_azure_mai_audio_file
     from src.runtime.media_tools import find_media_tool, require_media_tool
-    from src.web_api import (
-        _extract_audio_from_video,
-        _maybe_compress_audio_upload,
-        _probe_media_duration_seconds,
-    )
+    from src.web_api import _probe_media_duration_seconds
     from src.youtube_download import _ensure_audio_only_file
 
     ffmpeg = require_media_tool("ffmpeg")

@@ -41,7 +41,7 @@ from loguru import logger
 from src.api.upload_policy import (
     ALLOWED_UPLOAD_EXTENSIONS,
     VIDEO_EXTENSIONS,
-    format_upload_limit,
+    FileUploadLimits,
     safe_upload_filename,
 )
 from src.config import Config
@@ -140,6 +140,10 @@ class MeetingImportInboxPayload(Protocol):
     def __call__(self, record: MeetingImportRecord) -> dict[str, Any]: ...
 
 
+class MeetingImportUploadLimits(Protocol):
+    def __call__(self, provider: str | None, *, source_is_video: bool) -> FileUploadLimits: ...
+
+
 @dataclass(frozen=True)
 class MeetingImportDeps:
     """Everything the durable import protocol touches outside this module.
@@ -158,8 +162,7 @@ class MeetingImportDeps:
     storage_root: Path
     is_shutting_down: Callable[[], bool]
     validate_provider_ready: Callable[[str], None]
-    audio_max_bytes: Callable[[str], int]
-    video_max_bytes: Callable[[], int]
+    upload_limits: MeetingImportUploadLimits
 
 
 DepsProvider = Callable[[], MeetingImportDeps]
@@ -230,10 +233,11 @@ async def create_import(request: web.Request) -> web.Response:
             raise ValueError("Meeting recording size must be greater than zero.")
         provider = Config.MEETING_FINAL_PROVIDER
         deps.validate_provider_ready(provider)
-        max_bytes = deps.video_max_bytes() if extension in VIDEO_EXTENSIONS else deps.audio_max_bytes(provider)
+        limits = deps.upload_limits(provider, source_is_video=extension in VIDEO_EXTENSIONS)
+        max_bytes = limits.ingest.max_bytes
         if expected_bytes > max_bytes:
             return web.json_response(
-                {"message": f"Meeting recording is too large (max {format_upload_limit(max_bytes)})."},
+                {"message": f"Meeting recording is too large (max {limits.ingest.label})."},
                 status=413,
             )
         profile = {

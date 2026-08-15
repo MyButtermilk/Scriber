@@ -66,13 +66,13 @@ async def measure_upload_streams(
     file_size_bytes: int,
     chunk_size_bytes: int,
 ) -> dict[str, Any]:
-    from src.web_api import _write_upload_stream_to_disk
+    from src.api.file_transcription_routes import write_upload_stream_to_disk
 
     async def run_one(index: int) -> dict[str, Any]:
         field = SyntheticUploadField(file_size_bytes)
         target = temp_dir / f"upload-{index}.bin"
         started = time.perf_counter_ns()
-        bytes_read, too_large = await _write_upload_stream_to_disk(
+        bytes_read, too_large = await write_upload_stream_to_disk(
             field,
             target,
             max_bytes=file_size_bytes + chunk_size_bytes,

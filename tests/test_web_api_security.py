@@ -6,12 +6,11 @@ import types
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from aiohttp import FormData, WSServerHandshakeError
+from aiohttp import WSServerHandshakeError
 from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
 from src.api import youtube_routes
-from src.data.job_store import JobStore
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
@@ -65,114 +64,6 @@ def test_work_directory_component_cannot_escape_parent():
     assert "\\" not in component
     assert len(component) == 32
     assert web_api._safe_work_directory_component("safe-id_123") == "safe-id_123"
-
-
-@pytest.mark.asyncio
-async def test_file_upload_rejects_empty_file_before_scheduling(monkeypatch, tmp_path):
-    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
-    ctl = ScriberWebController(asyncio.get_running_loop())
-    client = TestClient(TestServer(web_api.create_app(ctl)))
-    await client.start_server()
-    try:
-        form = FormData()
-        form.add_field("file", b"", filename="empty.wav", content_type="audio/wav")
-        response = await client.post("/api/file/transcribe", data=form)
-        payload = await response.json()
-    finally:
-        await client.close()
-
-    assert response.status == 400
-    assert payload == {"message": "Uploaded file is empty"}
-    assert ctl._running_tasks == {}
-
-
-@pytest.mark.asyncio
-async def test_file_upload_queues_the_provider_route_used_for_admission(monkeypatch, tmp_path):
-    """A circuit change while bytes arrive must not change the admitted route."""
-
-    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
-    store = JobStore(db_path=tmp_path / "jobs.db")
-    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
-    ctl._downloads_dir = tmp_path / "downloads"
-    selected_providers = iter(("assemblyai", "smallest"))
-    monkeypatch.setattr(ctl, "_select_available_provider", lambda: next(selected_providers))
-    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
-    monkeypatch.setattr(web_api, "_probe_media_duration_seconds", lambda _path: 1.0)
-    monkeypatch.setattr(ctl, "_schedule_file_job", lambda *_args, **_kwargs: None)
-
-    client = TestClient(TestServer(web_api.create_app(ctl)))
-    await client.start_server()
-    try:
-        form = FormData()
-        form.add_field(
-            "file",
-            b"RIFF\x00\x00\x00\x00WAVEfmt ",
-            filename="admitted.wav",
-            content_type="audio/wav",
-        )
-        response = await client.post("/api/file/transcribe", data=form)
-        payload = await response.json()
-        job = store.get_by_transcript_id(str(payload.get("id") or ""))
-    finally:
-        await client.close()
-
-    assert response.status == 200, payload
-    assert job is not None
-    assert job.payload["executionRoute"]["provider"] == "assemblyai"
-
-
-@pytest.mark.asyncio
-async def test_file_upload_redacts_unexpected_start_failure(monkeypatch, tmp_path):
-    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
-    ctl = ScriberWebController(asyncio.get_running_loop())
-    ctl._downloads_dir = tmp_path / "downloads"
-    monkeypatch.setattr(ctl, "_select_available_provider", lambda: "assemblyai")
-    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
-    monkeypatch.setattr(
-        ctl,
-        "start_file_transcription",
-        AsyncMock(side_effect=OSError(r"C:\Users\Alice\private.wav token=top-secret")),
-    )
-
-    client = TestClient(TestServer(web_api.create_app(ctl)))
-    await client.start_server()
-    try:
-        form = FormData()
-        form.add_field("file", b"RIFF-WAVE", filename="private.wav", content_type="audio/wav")
-        response = await client.post("/api/file/transcribe", data=form)
-        payload = await response.json()
-    finally:
-        await client.close()
-
-    assert response.status == 500
-    assert payload == {"message": "Failed to process file upload"}
-
-
-@pytest.mark.asyncio
-async def test_file_upload_redacts_video_extraction_failure(monkeypatch, tmp_path):
-    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
-    ctl = ScriberWebController(asyncio.get_running_loop())
-    ctl._downloads_dir = tmp_path / "downloads"
-    monkeypatch.setattr(ctl, "_select_available_provider", lambda: "assemblyai")
-    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
-    monkeypatch.setattr(
-        web_api,
-        "_extract_audio_from_video",
-        AsyncMock(side_effect=RuntimeError(r"C:\Users\Alice\private.mp4 token=top-secret")),
-    )
-
-    client = TestClient(TestServer(web_api.create_app(ctl)))
-    await client.start_server()
-    try:
-        form = FormData()
-        form.add_field("file", b"video", filename="private.mp4", content_type="video/mp4")
-        response = await client.post("/api/file/transcribe", data=form)
-        payload = await response.json()
-    finally:
-        await client.close()
-
-    assert response.status == 500
-    assert payload == {"message": "Failed to extract audio from video."}
 
 
 @pytest.mark.asyncio
@@ -1411,89 +1302,6 @@ def test_frozen_backend_frontend_candidates_require_explicit_env(monkeypatch, tm
     assert web_api._frontend_dist_candidates() == [frontend.resolve()]
 
 
-def test_upload_max_bytes_env(monkeypatch):
-    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_BYTES", "123")
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_upload_max_bytes() == 123
-
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_MB", "1")
-    assert web_api._get_upload_max_bytes() == 1024 * 1024
-
-
-def test_audio_upload_max_bytes_defaults_to_soniox_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("soniox") == 524_288_000
-    assert web_api._get_audio_upload_max_bytes("soniox_async") == 524_288_000
-
-
-def test_audio_upload_max_bytes_defaults_to_mistral_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("mistral") == 512 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("mistral") == "512MB"
-
-
-def test_audio_upload_max_bytes_defaults_to_assemblyai_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("assemblyai") == 2_200_000_000
-    assert web_api._get_audio_upload_limit_label("assemblyai") == "2.2GB"
-
-
-def test_audio_upload_max_bytes_defaults_to_smallest_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("smallest") == 25 * 1024 * 1024
-    assert web_api._get_audio_upload_max_bytes("smallest_async") == 25 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("smallest") == "25MB"
-
-
-def test_audio_upload_max_bytes_defaults_to_azure_mai_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("azure_mai") == 300 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("azure_mai") == "300MB"
-
-
-def test_audio_upload_max_bytes_bounds_openrouter_base64_stt(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("openrouter_stt") == 300 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("openrouter_stt") == "300MB"
-
-
-def test_audio_upload_max_bytes_defaults_to_modulate_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("modulate") == 100 * 1024 * 1024
-    assert web_api._get_audio_upload_max_bytes("modulate_async") == 100 * 1024 * 1024
-    assert web_api._get_audio_upload_limit_label("modulate_async") == "100MB"
-
-
-def test_audio_upload_max_bytes_uses_generic_default_for_other_providers(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_upload_max_bytes("openai") == 2048 * 1024 * 1024
-
-
-def test_audio_upload_max_bytes_respects_env_override_for_soniox(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_MB", "300")
-    assert web_api._get_audio_upload_max_bytes("soniox") == 300 * 1024 * 1024
-
-
-def test_audio_ingest_max_bytes_allows_precompression_uploads():
-    assert web_api._get_audio_ingest_max_bytes("soniox") == 2048 * 1024 * 1024
-
-
-def test_audio_ingest_max_bytes_expands_for_larger_provider_limit(monkeypatch):
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
-    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
-    assert web_api._get_audio_ingest_max_bytes("assemblyai") == 2_200_000_000
-
-
 def test_build_file_upload_limits_uses_provider_metadata(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
@@ -1510,78 +1318,6 @@ def test_build_file_upload_limits_uses_smallest_compression_threshold(monkeypatc
     assert limits["provider"] == "smallest"
     assert limits["audioMaxLabel"] == "25MB"
     assert limits["compressionThresholdLabel"] == "25MB"
-
-
-@pytest.mark.asyncio
-async def test_maybe_compress_audio_upload_skips_small_files(monkeypatch, tmp_path):
-    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
-    upload_path = tmp_path / "small.mp3"
-    upload_path.write_bytes(b"x" * 1024)
-
-    got = await web_api._maybe_compress_audio_upload(upload_path)
-
-    assert got == upload_path
-
-
-@pytest.mark.asyncio
-async def test_maybe_compress_audio_upload_uses_provider_limit(monkeypatch, tmp_path):
-    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 10_000)
-    upload_path = tmp_path / "over-provider-limit.mp3"
-    upload_path.write_bytes(b"x" * 4096)
-
-    async def _fake_transcode(source_path, target_path, *, bitrate):
-        assert source_path == upload_path
-        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
-        target_path.write_bytes(b"y" * 1024)
-        return target_path
-
-    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
-
-    got = await web_api._maybe_compress_audio_upload(upload_path, max_bytes=2048)
-
-    assert got.suffix == ".webm"
-    assert got.exists()
-
-
-@pytest.mark.asyncio
-async def test_maybe_compress_audio_upload_replaces_large_audio_with_webm(monkeypatch, tmp_path):
-    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
-    upload_path = tmp_path / "large.mp3"
-    upload_path.write_bytes(b"x" * 4096)
-
-    async def _fake_transcode(source_path, target_path, *, bitrate):
-        assert source_path == upload_path
-        assert target_path.suffix == ".webm"
-        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
-        target_path.write_bytes(b"y" * 2048)
-        return target_path
-
-    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
-
-    got = await web_api._maybe_compress_audio_upload(upload_path)
-
-    assert got.suffix == ".webm"
-    assert got.exists()
-    assert not upload_path.exists()
-
-
-@pytest.mark.asyncio
-async def test_maybe_compress_audio_upload_keeps_original_when_not_smaller(monkeypatch, tmp_path):
-    monkeypatch.setattr(web_api, "_UPLOAD_COMPRESSION_THRESHOLD_BYTES", 2048)
-    upload_path = tmp_path / "large.wav"
-    upload_path.write_bytes(b"x" * 4096)
-
-    async def _fake_transcode(_source_path, target_path, *, bitrate):
-        assert bitrate == web_api._COMPRESSED_AUDIO_BITRATE
-        target_path.write_bytes(b"y" * 8192)
-        return target_path
-
-    monkeypatch.setattr(web_api, "_transcode_media_to_webm_audio", _fake_transcode)
-
-    got = await web_api._maybe_compress_audio_upload(upload_path)
-
-    assert got == upload_path
-    assert upload_path.exists()
 
 
 def test_validate_default_stt_service_accepts_known():

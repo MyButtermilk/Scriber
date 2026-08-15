@@ -29,6 +29,7 @@ from src.api.meeting_import_routes import (
     MeetingImportStorePort,
     register_meeting_import_routes,
 )
+from src.api.upload_policy import FileUploadLimits, UploadLimit
 from src.data.meeting_import_store import MeetingImportRecord, MeetingImportStatus, MeetingImportStore
 
 _MEGABYTE = 1024 * 1024
@@ -67,6 +68,8 @@ class _Harness:
         self.schedule_error: Exception | None = None
         self.audio_limit = 32 * _MEGABYTE
         self.video_limit = 64 * _MEGABYTE
+        self.audio_limit_label = "32MB"
+        self.video_limit_label = "64MB"
 
     async def _broadcast(self, record: Any, progress: float, status: str) -> None:
         self.broadcasts.append((record.id, progress, status))
@@ -82,6 +85,15 @@ class _Harness:
             raise self.provider_error
 
     def deps(self) -> MeetingImportDeps:
+        def upload_limits(_provider: str | None, *, source_is_video: bool) -> FileUploadLimits:
+            max_bytes = self.video_limit if source_is_video else self.audio_limit
+            label = self.video_limit_label if source_is_video else self.audio_limit_label
+            return FileUploadLimits(
+                source_is_video=source_is_video,
+                ingest=UploadLimit(max_bytes, label),
+                final_audio=UploadLimit(max_bytes, label),
+            )
+
         return MeetingImportDeps(
             store=self.store,
             broadcast=self._broadcast,
@@ -91,8 +103,7 @@ class _Harness:
             storage_root=self.storage_root,
             is_shutting_down=lambda: self.shutting_down,
             validate_provider_ready=self._validate_provider_ready,
-            audio_max_bytes=lambda _provider: self.audio_limit,
-            video_max_bytes=lambda: self.video_limit,
+            upload_limits=upload_limits,
         )
 
     def complete(self, import_id: str, *, meeting_id: str) -> None:
@@ -224,11 +235,14 @@ async def test_create_reports_a_provider_that_is_not_configured(harness):
 async def test_create_applies_the_video_limit_to_video_and_the_audio_limit_to_audio(harness):
     harness.audio_limit = 1024
     harness.video_limit = 4096
+    harness.audio_limit_label = "reviewed audio label"
     client = await _client(harness)
     try:
         too_large_audio = await client.post("/api/meeting-imports", json={"filename": "a.wav", "byteSize": 2048})
         assert too_large_audio.status == 413
-        assert "too large" in (await too_large_audio.json())["message"]
+        assert (await too_large_audio.json())["message"] == (
+            "Meeting recording is too large (max reviewed audio label)."
+        )
 
         # The same byte count is inside the (larger) video limit.
         accepted_video = await client.post("/api/meeting-imports", json={"filename": "a.mp4", "byteSize": 2048})

@@ -50,12 +50,13 @@ the user explicitly asks for a temporary investigation note.
 Backend and runtime:
 
 - `src/web_api.py`: main aiohttp application composition and controller,
-  WebSocket server, settings, jobs, transcript history, mic control, uploads,
-  and the routes not yet split into domain modules.
+  WebSocket server, settings, jobs, transcript history, mic control, and the
+  routes not yet split into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
-  Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, and
-  Voice Component route domains, shared aiohttp app keys, HTTP security helpers,
-  and the upload policy used by both file transcription and Meeting imports.
+  Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
+  Component, and File Transcription route domains, shared aiohttp app keys,
+  HTTP security helpers, and the upload policy used by both file transcription
+  and Meeting imports.
   Controller-backed route modules own their narrow structural controller port
   beside the handlers that consume it; controller-free domains own local
   collaborator interfaces/providers and a wiring guard instead. Do not recreate
@@ -83,10 +84,15 @@ Backend and runtime:
   request: composition must stay able to build an application whose controller
   never materializes a calendar. Its OAuth callback answers the system browser
   in HTML and records every sync failure before responding, so a degraded
-  connection stays visible in `status()`. `src/api/upload_policy.py` owns the
-  Windows-safe filename, accepted media-extension, and limit-label invariants;
-  ingest handlers consume that interface directly rather than through aliases
-  in `web_api.py`. Voice Component owns the optional speaker model and local
+  connection stays visible in `status()`. File Transcription owns multipart
+  parsing, bounded disk streaming, ffmpeg preparation, workspace cleanup, and
+  the one ownership hand-off to its durable job. Its controller port exposes
+  only the immutable admission plan, a public workspace root, and that hand-off;
+  the route must never read `_downloads_dir` or mutable provider settings.
+  `src/api/upload_policy.py` owns the Windows-safe filename, accepted
+  media-extension, immutable provider-bound byte limits, and limit-label
+  invariants; ingest handlers consume that interface directly rather than
+  through aliases in `web_api.py`. Voice Component owns the optional speaker model and local
   diarizer together with the Voice Library profile collection, opaque preview
   capabilities, native enrollment workflow, and every model/profile mutation
   lock. Keep its enrollment-admission provider separate and lazy: model status
@@ -2026,6 +2032,18 @@ Frontend browser smoke:
 ```powershell
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
+
+Real-browser File-ingest vertical slice:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tmp\real-file-browser-smoke.json
+```
+
+The latter must exercise React/Vite in Chrome through the real
+`src.web_api.create_app`, extracted File route, and durable `JobStore`; the
+Python full-suite CI job runs it after the unit/integration suite. Its boundary
+ends at a durable queued job with the provider worker held. Do not describe it
+as installed-Tauri or external-provider evidence.
 
 Rust audio sidecar short physical smoke:
 
