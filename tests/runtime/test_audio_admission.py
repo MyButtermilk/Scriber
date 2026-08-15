@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -980,13 +979,16 @@ async def test_heartbeat_retries_unconfirmed_native_stop_after_store_recovery(ho
 @pytest.mark.asyncio
 async def test_current_heartbeat_renews_immediately_before_a_third_stop_attempt(host):
     attempts = 0
-    renewal_times: list[float] = []
+    claim_cleared = asyncio.Event()
     foreign = _claim(controller_id="controller-b")
     host.store.acquire_result = _claim(owner_kind="voice_enrollment", owner_id="sample-1")
+    owner: AudioAdmissionOwner
 
     def fail_the_loss_and_first_recovery_renewals(attempt: int) -> None:
-        renewal_times.append(time.monotonic())
         if attempt == 1:
+            # The first scheduled heartbeat starts quickly. Every later retry
+            # must bypass this long normal interval after loss has begun.
+            owner.heartbeat_seconds = 30.0
             host.store.renew_error = AudioAdmissionConflict(foreign)
         elif attempt == 2:
             host.store.renew_error = OSError("database was still busy")
@@ -1001,9 +1003,15 @@ async def test_current_heartbeat_renews_immediately_before_a_third_stop_attempt(
         if attempts <= 2:
             raise RuntimeError("native stop was not confirmed")
 
+    def observe_claim(claim: AudioAdmissionClaim | None) -> None:
+        host._set_claim(claim)
+        if claim is None:
+            claim_cleared.set()
+
     owner = host.owner(
-        heartbeat_seconds=0.20,
-        loss_retry_seconds=0.001,
+        set_claim=observe_claim,
+        heartbeat_seconds=0.001,
+        loss_retry_seconds=0.0,
     )
     await owner.acquire(
         owner_kind="voice_enrollment",
@@ -1012,14 +1020,10 @@ async def test_current_heartbeat_renews_immediately_before_a_third_stop_attempt(
     )
 
     try:
-        async with asyncio.timeout(1.0):
-            while host.claim is not None:
-                await asyncio.sleep(0.005)
+        await asyncio.wait_for(claim_cleared.wait(), timeout=10.0)
 
         assert attempts == 3
-        assert len(renewal_times) == 3
-        assert renewal_times[1] - renewal_times[0] < 0.10
-        assert renewal_times[2] - renewal_times[1] < 0.10
+        assert host.store.renewals == 3
     finally:
         if host.claim is not None:
             await owner.close(task_drain_timeout_seconds=1.0)
