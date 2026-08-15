@@ -19,6 +19,7 @@ from src import database
 
 _SAFE_VALUE = re.compile(r"^[A-Za-z0-9_.:-]{1,160}$")
 _RESOURCE = "native_audio"
+_GENERATION_TABLE = "audio_admission_generations"
 
 
 class AudioAdmissionStoreError(RuntimeError):
@@ -85,7 +86,9 @@ class AudioAdmissionStore:
         return conn
 
     def initialize(self) -> None:
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS audio_admission_claims (
@@ -99,7 +102,49 @@ class AudioAdmissionStore:
                 )
                 """
             )
+            conn.execute(
+                f"""
+                CREATE TABLE IF NOT EXISTS {_GENERATION_TABLE} (
+                    resource TEXT PRIMARY KEY,
+                    last_generation INTEGER NOT NULL CHECK(last_generation >= 0)
+                )
+                """
+            )
+            current = conn.execute(
+                "SELECT state_version FROM audio_admission_claims WHERE resource=?",
+                (_RESOURCE,),
+            ).fetchone()
+            current_generation = int(current["state_version"]) if current is not None else 0
+            conn.execute(
+                f"""
+                INSERT INTO {_GENERATION_TABLE} (resource,last_generation)
+                VALUES (?,?)
+                ON CONFLICT(resource) DO UPDATE SET
+                    last_generation=MAX(last_generation,excluded.last_generation)
+                """,
+                (_RESOURCE, current_generation),
+            )
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _next_generation(conn: sqlite3.Connection, *, floor: int = 0) -> int:
+        row = conn.execute(
+            f"SELECT last_generation FROM {_GENERATION_TABLE} WHERE resource=?",
+            (_RESOURCE,),
+        ).fetchone()
+        if row is None:
+            raise AudioAdmissionStoreError("Native audio admission store is not initialized.")
+        generation = max(int(row["last_generation"]), int(floor)) + 1
+        conn.execute(
+            f"UPDATE {_GENERATION_TABLE} SET last_generation=? WHERE resource=?",
+            (generation, _RESOURCE),
+        )
+        return generation
 
     @staticmethod
     def _from_row(row: sqlite3.Row) -> AudioAdmissionClaim:
@@ -144,7 +189,7 @@ class AudioAdmissionStore:
                 )
                 if current_expiry is not None and current_expiry > now and not same_owner:
                     raise AudioAdmissionConflict(current)
-            version = previous_version + 1
+            version = self._next_generation(conn, floor=previous_version)
             conn.execute(
                 """
                 INSERT INTO audio_admission_claims
@@ -234,15 +279,17 @@ class AudioAdmissionStore:
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            version = self._next_generation(conn, floor=claim.state_version)
             cursor = conn.execute(
                 """
                 UPDATE audio_admission_claims
-                SET owner_id=?,state_version=state_version+1,updated_at=?
+                SET owner_id=?,state_version=?,updated_at=?
                 WHERE resource=? AND owner_kind=? AND owner_id=?
                   AND controller_id=? AND state_version=?
                 """,
                 (
                     owner_id,
+                    version,
                     _iso(now),
                     _RESOURCE,
                     claim.owner_kind,
@@ -266,7 +313,8 @@ class AudioAdmissionStore:
             conn.close()
 
     def release(self, claim: AudioAdmissionClaim) -> bool:
-        with self._connect() as conn:
+        conn = self._connect()
+        try:
             cursor = conn.execute(
                 """
                 DELETE FROM audio_admission_claims
@@ -283,6 +331,11 @@ class AudioAdmissionStore:
             )
             conn.commit()
             return cursor.rowcount == 1
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def active(self) -> AudioAdmissionClaim | None:
         now = self._now().astimezone(UTC)

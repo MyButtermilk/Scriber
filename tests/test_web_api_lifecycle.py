@@ -384,30 +384,65 @@ def test_close_persistence_stores_closes_every_sqlite_owner(monkeypatch):
     close_transcripts.assert_called_once_with()
 
 
-def test_begin_shutdown_releases_persisted_native_audio_claim(tmp_path):
-    ctl = ScriberWebController.__new__(ScriberWebController)
-    ctl._retry_scheduler = MagicMock()
+@pytest.mark.asyncio
+async def test_shutdown_drain_releases_persisted_native_audio_claim(tmp_path):
+    ctl = ScriberWebController(asyncio.get_running_loop())
     ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "shutdown-audio-admission.db")
     ctl._audio_admission_store.initialize()
     ctl._audio_controller_id = "controller-shutdown"
-    ctl._audio_admission_heartbeat_task = None
     ctl._persistent_audio_claim = ctl._audio_admission_store.acquire(
-        owner_kind="meeting",
-        owner_id="meeting-shutdown",
+        owner_kind="live_mic",
+        owner_id="live-mic-shutdown",
         controller_id=ctl._audio_controller_id,
         ttl_seconds=60,
     )
+    ctl._emergency_stop_pipeline = AsyncMock(return_value=True)
 
-    ctl.begin_shutdown()
+    try:
+        await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
 
-    assert ctl._shutting_down is True
-    ctl._retry_scheduler.cancel.assert_called_once_with(cancel_running=True)
-    assert ctl._persistent_audio_claim is None
-    release_thread = ctl._shutdown_audio_release_thread
-    assert release_thread is not None
-    release_thread.join(timeout=1.0)
-    assert not release_thread.is_alive()
-    assert ctl._audio_admission_store.active() is None
+        assert ctl._shutting_down is True
+        assert ctl._persistent_audio_claim is None
+        assert ctl._audio_admission_store.active() is None
+        ctl._emergency_stop_pipeline.assert_awaited_once_with(
+            session_id="live-mic-shutdown",
+            release_audio_claim=False,
+        )
+    finally:
+        ctl.shutdown()
+        ctl.close_persistence_stores()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_drain_fails_when_native_audio_stop_is_unconfirmed(tmp_path):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "shutdown-audio-unconfirmed.db")
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-shutdown-unconfirmed"
+    claim = ctl._audio_admission_store.acquire(
+        owner_kind="live_mic",
+        owner_id="live-mic-shutdown-unconfirmed",
+        controller_id=ctl._audio_controller_id,
+        ttl_seconds=60,
+    )
+    ctl._persistent_audio_claim = claim
+    ctl._emergency_stop_pipeline = AsyncMock(return_value=False)
+
+    try:
+        with pytest.raises(
+            RuntimeError,
+            match="Graceful shutdown could not confirm native-audio cleanup",
+        ):
+            await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+
+        assert ctl._persistent_audio_claim == claim
+        assert ctl._audio_admission_store.active() == claim
+        assert ctl._emergency_stop_pipeline.await_count >= 1
+    finally:
+        ctl._audio_admission_store.release(claim)
+        ctl._persistent_audio_claim = None
+        ctl.shutdown()
+        ctl.close_persistence_stores()
 
 
 @pytest.mark.asyncio
@@ -439,8 +474,6 @@ async def test_cancelled_audio_claim_waits_for_acquire_then_rolls_back(monkeypat
     store = _BlockingStore()
     ctl = types.SimpleNamespace(
         _persistent_audio_claim=None,
-        _audio_admission_heartbeat_task=None,
-        _audio_admission_lost_meetings=set(),
         _shutting_down=False,
     )
     monkeypatch.setattr(
@@ -469,6 +502,127 @@ async def test_cancelled_audio_claim_waits_for_acquire_then_rolls_back(monkeypat
 
 
 @pytest.mark.asyncio
+async def test_default_live_mic_loss_stops_pipeline_before_releasing_lease():
+    timeline: list[str] = []
+
+    class Store:
+        def acquire(self, **kwargs):
+            return web_api.AudioAdmissionClaim(
+                owner_kind=kwargs["owner_kind"],
+                owner_id=kwargs["owner_id"],
+                controller_id=kwargs["controller_id"],
+                state_version=1,
+                lease_expires_at="2099-01-01T00:00:00Z",
+                updated_at="2026-08-14T00:00:00Z",
+            )
+
+        def release(self, _claim):
+            timeline.append("lease_release")
+            return True
+
+    async def emergency_stop(*, session_id, release_audio_claim=True):
+        assert session_id == "live-loss"
+        assert release_audio_claim is False
+        timeline.append("pipeline_stop")
+        return True
+
+    controller = types.SimpleNamespace(
+        _audio_admission_store=Store(),
+        _audio_controller_id="controller-live-loss",
+        _persistent_audio_claim=None,
+        _shutting_down=False,
+        _emergency_stop_pipeline=emergency_stop,
+    )
+    owner = web_api._audio_admission_owner(controller)
+    claim = await owner.acquire(
+        owner_kind="live_mic",
+        owner_id="live-loss",
+        heartbeat=False,
+    )
+
+    await owner.note_loss(claim, reason="superseded")
+
+    assert timeline == ["pipeline_stop", "lease_release"]
+    assert controller._persistent_audio_claim is None
+
+
+@pytest.mark.asyncio
+async def test_default_live_mic_loss_retains_lease_when_pipeline_stop_is_unconfirmed():
+    released = []
+
+    class Store:
+        def acquire(self, **kwargs):
+            return web_api.AudioAdmissionClaim(
+                owner_kind=kwargs["owner_kind"],
+                owner_id=kwargs["owner_id"],
+                controller_id=kwargs["controller_id"],
+                state_version=1,
+                lease_expires_at="2099-01-01T00:00:00Z",
+                updated_at="2026-08-14T00:00:00Z",
+            )
+
+        def release(self, claim):
+            released.append(claim)
+            return True
+
+    async def unconfirmed_stop(**_kwargs):
+        return False
+
+    controller = types.SimpleNamespace(
+        _audio_admission_store=Store(),
+        _audio_controller_id="controller-live-unconfirmed",
+        _persistent_audio_claim=None,
+        _shutting_down=False,
+        _emergency_stop_pipeline=unconfirmed_stop,
+    )
+    owner = web_api._audio_admission_owner(controller)
+    owner.loss_retry_seconds = 0
+    claim = await owner.acquire(
+        owner_kind="live_mic",
+        owner_id="live-unconfirmed",
+        heartbeat=False,
+    )
+
+    with pytest.raises(RuntimeError, match="not confirmed"):
+        await owner.note_loss(claim, reason="superseded")
+
+    assert released == []
+    assert controller._persistent_audio_claim == claim
+
+
+@pytest.mark.asyncio
+async def test_claim_persistent_audio_passes_generation_loss_handler(monkeypatch):
+    captured = {}
+    claim = object()
+
+    class Owner:
+        async def acquire(self, **kwargs):
+            captured.update(kwargs)
+            return claim
+
+    async def loss_handler(_claim, _reason):
+        return None
+
+    monkeypatch.setattr(web_api, "_audio_admission_owner", lambda _controller: Owner())
+
+    result = await web_api._claim_persistent_audio(
+        object(),
+        owner_kind="device_test",
+        owner_id="probe",
+        heartbeat=True,
+        loss_handler=loss_handler,
+    )
+
+    assert result is claim
+    assert captured == {
+        "owner_kind": "device_test",
+        "owner_id": "probe",
+        "heartbeat": True,
+        "loss_handler": loss_handler,
+    }
+
+
+@pytest.mark.asyncio
 async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(monkeypatch, tmp_path):
     ctl = ScriberWebController.__new__(ScriberWebController)
     ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "heartbeat-transfer.db")
@@ -493,7 +647,7 @@ async def test_audio_heartbeat_adopts_concurrent_pending_to_meeting_transfer(mon
     monkeypatch.setattr(web_api.asyncio, "sleep", one_heartbeat_then_cancel)
 
     with pytest.raises(asyncio.CancelledError):
-        await web_api._audio_claim_heartbeat(ctl)
+        await web_api._audio_admission_owner(ctl).run_heartbeat()
 
     assert ctl._persistent_audio_claim == transferred
 
@@ -513,21 +667,28 @@ async def test_live_mic_heartbeat_fails_closed_after_repeated_renewal_errors(mon
         def renew(self, *_args, **_kwargs):
             raise OSError("database unavailable")
 
+        @staticmethod
+        def release(_claim):
+            return True
+
     ctl = ScriberWebController.__new__(ScriberWebController)
     ctl._audio_admission_store = BrokenStore()
     ctl._audio_controller_id = claim.controller_id
     ctl._persistent_audio_claim = claim
-    ctl._emergency_stop_pipeline = AsyncMock()
+    ctl._emergency_stop_pipeline = AsyncMock(return_value=True)
 
     async def no_wait(_seconds):
         return None
 
     monkeypatch.setattr(web_api.asyncio, "sleep", no_wait)
 
-    await web_api._audio_claim_heartbeat(ctl)
+    await web_api._audio_admission_owner(ctl).run_heartbeat()
 
     assert ctl._persistent_audio_claim is None
-    ctl._emergency_stop_pipeline.assert_awaited_once_with(session_id="session-heartbeat")
+    ctl._emergency_stop_pipeline.assert_awaited_once_with(
+        session_id="session-heartbeat",
+        release_audio_claim=False,
+    )
 
 
 class _RunServerControllerStub:
@@ -1060,6 +1221,132 @@ async def test_write_upload_stream_batches_disk_dispatches(monkeypatch, tmp_path
     assert too_large is False
     assert target.read_bytes() == b"ab" * 10
     assert write_calls == 4
+
+
+@pytest.mark.asyncio
+async def test_write_upload_stream_closes_a_file_opened_after_repeated_cancellation(monkeypatch, tmp_path):
+    open_started = threading.Event()
+    allow_open = threading.Event()
+
+    class TrackedFile:
+        closed = False
+
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+        def close(self) -> None:
+            self.closed = True
+
+    tracked = TrackedFile()
+
+    def delayed_open(*_args, **_kwargs):
+        open_started.set()
+        assert allow_open.wait(timeout=2.0)
+        return tracked
+
+    monkeypatch.setattr(web_api, "open", delayed_open, raising=False)
+    task = asyncio.create_task(
+        web_api._write_upload_stream_to_disk(
+            _ChunkUploadField([]),
+            tmp_path / "upload.bin",
+            max_bytes=16,
+        )
+    )
+    assert await asyncio.to_thread(open_started.wait, 1.0)
+
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0)
+    completed_before_open = task.done()
+    allow_open.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert completed_before_open is False
+    assert tracked.closed is True
+
+
+@pytest.mark.asyncio
+async def test_write_upload_stream_never_closes_while_a_canceled_write_is_running(monkeypatch, tmp_path):
+    write_started = threading.Event()
+    allow_write = threading.Event()
+
+    class TrackedFile:
+        closed = False
+        close_overlapped_write = False
+
+        def write(self, data: bytes) -> int:
+            write_started.set()
+            assert allow_write.wait(timeout=2.0)
+            return len(data)
+
+        def close(self) -> None:
+            self.close_overlapped_write = not allow_write.is_set()
+            self.closed = True
+
+    tracked = TrackedFile()
+    monkeypatch.setattr(web_api, "open", lambda *_args, **_kwargs: tracked, raising=False)
+    task = asyncio.create_task(
+        web_api._write_upload_stream_to_disk(
+            _ChunkUploadField([b"abc"]),
+            tmp_path / "upload.bin",
+            max_bytes=16,
+            chunk_size=1,
+            write_batch_size=1,
+        )
+    )
+    assert await asyncio.to_thread(write_started.wait, 1.0)
+
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0.05)
+    completed_during_write = task.done()
+    allow_write.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert completed_during_write is False
+    assert tracked.closed is True
+    assert tracked.close_overlapped_write is False
+
+
+@pytest.mark.asyncio
+async def test_write_upload_stream_waits_for_close_after_repeated_cancellation(monkeypatch, tmp_path):
+    close_started = threading.Event()
+    allow_close = threading.Event()
+
+    class TrackedFile:
+        closed = False
+
+        def write(self, data: bytes) -> int:
+            return len(data)
+
+        def close(self) -> None:
+            close_started.set()
+            assert allow_close.wait(timeout=2.0)
+            self.closed = True
+
+    tracked = TrackedFile()
+    monkeypatch.setattr(web_api, "open", lambda *_args, **_kwargs: tracked, raising=False)
+    task = asyncio.create_task(
+        web_api._write_upload_stream_to_disk(
+            _ChunkUploadField([]),
+            tmp_path / "upload.bin",
+            max_bytes=16,
+        )
+    )
+    assert await asyncio.to_thread(close_started.wait, 1.0)
+
+    task.cancel()
+    task.cancel()
+    await asyncio.sleep(0)
+    completed_during_close = task.done()
+    allow_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert completed_during_close is False
+    assert tracked.closed is True
 
 
 @pytest.mark.asyncio
@@ -3633,13 +3920,14 @@ async def test_stale_emergency_cleanup_releases_only_its_captured_audio_claim():
     await asyncio.wait_for(stop_started.wait(), timeout=1.0)
     assert ctl._is_stopping is True
 
-    # Simulate a stale reference arriving from an external supervisor. The old
-    # cleanup must still target only its captured claim.
+    # Simulate a stale reference arriving from an external supervisor. Owner
+    # release must refuse the captured claim once the controller seam points at
+    # a replacement, rather than touching either lease out of order.
     ctl._persistent_audio_claim = new_claim
     allow_stop.set()
     await asyncio.wait_for(task, timeout=1.0)
 
-    assert store.released == [old_claim]
+    assert store.released == []
     assert ctl._persistent_audio_claim == new_claim
     assert ctl._is_stopping is False
 
@@ -3684,6 +3972,7 @@ async def test_start_listening_does_not_wait_for_overlay_shell_ipc(monkeypatch):
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -3747,6 +4036,7 @@ async def test_live_speechmatics_freezes_exact_production_wav_route(
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -3825,6 +4115,7 @@ async def test_start_listening_passes_idle_prewarm_without_closing_it(monkeypatc
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -3876,6 +4167,7 @@ async def test_mic_watchdog_log_is_compact_while_snapshot_keeps_full_diagnostics
     }
     assert ctl.get_audio_diagnostics()["watchdog"]["lastWarning"]["diagnostics"] == diagnostics
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -3939,6 +4231,7 @@ async def test_first_live_start_confirms_audio_before_pipeline_runtime_import(mo
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -3976,6 +4269,7 @@ async def test_warm_live_start_does_not_submit_runtime_loader_to_threadpool(monk
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4022,6 +4316,7 @@ async def test_cold_runtime_failure_releases_claim_and_stops_unretained_prewarm(
     assert manager.active is False
     assert ctl._persistent_audio_claim is None
     assert ctl._is_listening is False
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4081,6 +4376,7 @@ async def test_early_pipeline_failure_releases_claim_and_temporary_prewarm(
     assert ctl._pipeline is None
     assert ctl._pipeline_task is None
     assert ctl._session_id is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4149,6 +4445,7 @@ async def test_explicit_stop_during_cold_start_aborts_before_provider_activation
     assert ctl._is_listening is False
     assert ctl._is_stopping is False
     assert ctl._session_id is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4191,6 +4488,7 @@ async def test_explicit_stop_during_initial_audio_conflict_lookup_cancels_start(
     assert ctl._pipeline is None
     assert ctl._is_listening is False
     assert ctl._session_id is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4223,6 +4521,7 @@ async def test_live_start_trace_exists_before_first_audio_conflict_lookup():
     ]
     assert ctl._hot_path_tracers == {}
     assert ctl._live_mic_start_in_progress_generation is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4280,6 +4579,7 @@ async def test_explicit_stop_during_audio_claim_cancels_before_pipeline_construc
     assert ctl._pipeline is None
     assert ctl._is_listening is False
     assert ctl._session_id is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4339,6 +4639,7 @@ async def test_second_toggle_during_cold_start_aborts_before_provider_activation
     assert ctl._persistent_audio_claim is None
     assert ctl._is_listening is False
     assert ctl._session_id is None
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4397,6 +4698,7 @@ async def test_shutdown_during_cold_start_drains_transition_without_starting_pip
     assert ctl._live_mic_start_task is None
     assert ctl._live_mic_start_in_progress_generation is None
     assert ctl._is_listening is False
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4462,6 +4764,7 @@ async def test_shutdown_drain_joins_active_live_mic_stop_without_cancelling_it()
     assert background_stop.cancelled() is False
     assert record.status == "completed"
     save_mock.assert_awaited_once_with(record)
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4607,6 +4910,7 @@ async def test_plain_live_start_stays_raw_when_post_processing_feature_is_enable
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4634,6 +4938,7 @@ async def test_dedicated_post_processing_start_marks_session_and_disables_raw_in
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 
@@ -4678,6 +4983,7 @@ async def test_start_listening_passes_temporary_prewarm_when_always_on_disabled(
         pipeline.stop_gate.set()
         await asyncio.wait_for(ctl._pipeline_task, timeout=1.0)
 
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
     ctl.shutdown()
 
 

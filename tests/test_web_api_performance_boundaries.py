@@ -32,12 +32,14 @@ def _shutdown_controller(store) -> web_api.ScriberWebController:
     controller._retry_scheduler = MagicMock()
     controller._audio_admission_store = store
     controller._audio_controller_id = "performance-boundary-controller"
-    controller._audio_admission_heartbeat_task = None
     controller._persistent_audio_claim = _audio_claim()
-    controller._shutdown_audio_release_task = None
-    controller._shutdown_audio_release_thread = None
     controller._live_mic_start_in_progress_generation = None
     controller._live_mic_cancel_start_generation = None
+
+    async def confirm_native_stop(**_kwargs) -> bool:
+        return True
+
+    controller._emergency_stop_pipeline = confirm_native_stop
     return controller
 
 
@@ -118,13 +120,13 @@ async def test_shutdown_audio_release_does_not_stall_event_loop():
 
     store = _BlockingStore()
     controller = _shutdown_controller(store)
+    owner = web_api._audio_admission_owner(controller)
     started = time.perf_counter()
 
     controller.begin_shutdown()
+    release_task = asyncio.create_task(owner.close(task_drain_timeout_seconds=1.0))
 
     begin_shutdown_ms = (time.perf_counter() - started) * 1_000
-    release_task = controller._shutdown_audio_release_task
-    assert release_task is not None
     assert begin_shutdown_ms < 50.0
     for _ in range(150):
         if release_started.is_set():
@@ -138,7 +140,7 @@ async def test_shutdown_audio_release_does_not_stall_event_loop():
     assert not release_task.done()
 
     finish_release.set()
-    assert await asyncio.wait_for(release_task, timeout=1.0) is True
+    assert await asyncio.wait_for(release_task, timeout=1.0) == 0
     assert store.released == [_audio_claim()]
 
 
@@ -159,9 +161,9 @@ async def test_cancelled_shutdown_audio_release_observes_cleanup_boundary():
 
     store = _BlockingStore()
     controller = _shutdown_controller(store)
+    owner = web_api._audio_admission_owner(controller)
     controller.begin_shutdown()
-    release_task = controller._shutdown_audio_release_task
-    assert release_task is not None
+    release_task = asyncio.create_task(owner.close(task_drain_timeout_seconds=1.0))
     for _ in range(150):
         if release_started.is_set():
             break

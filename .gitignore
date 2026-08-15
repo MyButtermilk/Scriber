@@ -69,7 +69,3 @@ tmp/
 /ml/scriber_polishing/data/pilot*/
 /ml/scriber_polishing/artifacts/*
 !/ml/scriber_polishing/artifacts/.gitkeep
-
-# Claude Code writes auto-approved permissions here per machine.
-# Durable project settings belong in .claude/settings.json instead.
-.claude/settings.local.json

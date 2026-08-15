@@ -9,17 +9,27 @@ this module already calls.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import FrozenInstanceError, fields
+import threading
+from contextlib import suppress
+from dataclasses import FrozenInstanceError
 from itertools import pairwise
+from math import isclose
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
-from src.data.meeting_import_store import MeetingImportStatus, MeetingImportStore
+from src.api import meeting_import_routes
+from src.api.meeting_import_routes import (
+    APP_MEETING_IMPORT_SERVICE,
+    MeetingImportDeps,
+    MeetingImportStorePort,
+    register_meeting_import_routes,
+)
+from src.data.meeting_import_store import MeetingImportRecord, MeetingImportStatus, MeetingImportStore
 
 _MEGABYTE = 1024 * 1024
 
@@ -48,8 +58,8 @@ class _Harness:
     def __init__(self, tmp_path: Path) -> None:
         self.store = MeetingImportStore(tmp_path / "imports.db")
         self.storage_root = tmp_path
-        self.processing_tasks: dict[str, asyncio.Task] = {}
-        self.upload_tasks: dict[str, asyncio.Task] = {}
+        self.processing_tasks: dict[str, asyncio.Task[None]] = {}
+        self.upload_tasks: dict[str, asyncio.Task[web.Response]] = {}
         self.broadcasts: list[tuple[str, float, str]] = []
         self.scheduled: list[str] = []
         self.shutting_down = False
@@ -260,6 +270,159 @@ async def test_upload_commits_the_source_before_scheduling_processing(harness):
 
 
 @pytest.mark.asyncio
+async def test_repeated_cancellation_waits_for_fsync_before_discarding_staging(harness, monkeypatch):
+    """The handler must not close or delete a file while fsync still owns it."""
+    record = harness.create_record(expected_bytes=4)
+    started, release, finished = threading.Event(), threading.Event(), threading.Event()
+    real_fsync = meeting_import_routes.os.fsync
+
+    def blocking_fsync(fd: int) -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+        real_fsync(fd)
+        finished.set()
+
+    monkeypatch.setattr(meeting_import_routes.os, "fsync", blocking_fsync)
+    client = await _client(harness)
+    request_task = asyncio.create_task(client.put(f"/api/meeting-imports/{record.id}/content", data=b"abcd"))
+    try:
+        assert await asyncio.to_thread(started.wait, 2.0)
+        handler_task = harness.upload_tasks[record.id]
+        for _ in range(3):
+            handler_task.cancel()
+            await asyncio.sleep(0)
+
+        assert not handler_task.done()
+        assert not finished.is_set()
+        assert (harness.storage_root / "meeting-imports" / record.id).exists()
+    finally:
+        release.set()
+        with suppress(BaseException):
+            await request_task
+        await client.close()
+
+    assert finished.is_set()
+    assert harness.store.require(record.id).status == MeetingImportStatus.FAILED
+    assert not (harness.storage_root / "meeting-imports" / record.id).exists()
+
+
+@pytest.mark.asyncio
+async def test_committed_upload_survives_repeated_cancellation_when_status_reread_fails(
+    harness,
+    monkeypatch,
+):
+    """A completed mark_received call is enough proof to retain its source."""
+    record = harness.create_record(expected_bytes=4)
+    mark_committed = threading.Event()
+    release_mark_return = threading.Event()
+    reread_started = threading.Event()
+    release_reread = threading.Event()
+    original_mark_received = harness.store.mark_received
+    original_require = harness.store.require
+    reread_failures = 0
+
+    def committed_mark_received(import_id: str, **kwargs: Any) -> MeetingImportRecord:
+        persisted = original_mark_received(import_id, **kwargs)
+        mark_committed.set()
+        if not release_mark_return.wait(timeout=3.0):
+            raise TimeoutError("test did not release the committed mark_received call")
+        return persisted
+
+    def failing_status_reread(import_id: str) -> MeetingImportRecord:
+        nonlocal reread_failures
+        if mark_committed.is_set() and reread_failures == 0:
+            reread_started.set()
+            if not release_reread.wait(timeout=3.0):
+                raise TimeoutError("test did not release the uncertain status reread")
+            reread_failures += 1
+            raise OSError("transient status read failure")
+        return original_require(import_id)
+
+    monkeypatch.setattr(harness.store, "mark_received", committed_mark_received)
+    monkeypatch.setattr(harness.store, "require", failing_status_reread)
+    client = await _client(harness)
+    request_task = asyncio.create_task(client.put(f"/api/meeting-imports/{record.id}/content", data=b"abcd"))
+    try:
+        assert await asyncio.to_thread(mark_committed.wait, 2.0)
+        handler_task = harness.upload_tasks[record.id]
+        handler_task.cancel()
+        release_mark_return.set()
+        assert await asyncio.to_thread(reread_started.wait, 2.0)
+
+        for _ in range(2):
+            handler_task.cancel()
+            await asyncio.sleep(0)
+
+        assert handler_task.done() is False
+    finally:
+        release_mark_return.set()
+        release_reread.set()
+        with suppress(BaseException):
+            await request_task
+        await client.close()
+
+    persisted = original_require(record.id)
+    assert reread_failures == 1
+    assert persisted.status == MeetingImportStatus.RECEIVED
+    assert (harness.storage_root / persisted.original_relative_path).read_bytes() == b"abcd"
+    assert harness.upload_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_cannot_abandon_failure_settlement_or_staging(harness):
+    """Failure broadcast may suspend; cleanup still owns the request to completion."""
+    record = harness.create_record(expected_bytes=4)
+    body_started = asyncio.Event()
+    body_release = asyncio.Event()
+    failure_broadcast_started = asyncio.Event()
+    failure_broadcast_release = asyncio.Event()
+
+    async def streaming_body():
+        yield b"ab"
+        body_started.set()
+        await body_release.wait()
+        yield b"cd"
+
+    async def blocking_broadcast(current, progress: float, status: str) -> None:
+        harness.broadcasts.append((current.id, progress, status))
+        if status == "Meeting import upload failed":
+            failure_broadcast_started.set()
+            await failure_broadcast_release.wait()
+
+    harness._broadcast = blocking_broadcast
+    client = await _client(harness)
+    request_task = asyncio.create_task(client.put(f"/api/meeting-imports/{record.id}/content", data=streaming_body()))
+    try:
+        await asyncio.wait_for(body_started.wait(), timeout=2.0)
+        staging = harness.storage_root / "meeting-imports" / record.id / "source.part"
+
+        async def active_handler() -> asyncio.Task[web.Response]:
+            while not staging.exists() or record.id not in harness.upload_tasks:
+                await asyncio.sleep(0.01)
+            return harness.upload_tasks[record.id]
+
+        handler_task = await asyncio.wait_for(active_handler(), timeout=2.0)
+        handler_task.cancel()
+        await asyncio.wait_for(failure_broadcast_started.wait(), timeout=2.0)
+
+        for _ in range(2):
+            handler_task.cancel()
+            await asyncio.sleep(0)
+
+        assert not handler_task.done()
+        assert staging.exists()
+    finally:
+        body_release.set()
+        failure_broadcast_release.set()
+        with suppress(BaseException):
+            await request_task
+        await client.close()
+
+    assert harness.store.require(record.id).status == MeetingImportStatus.FAILED
+    assert not (harness.storage_root / "meeting-imports" / record.id).exists()
+
+
+@pytest.mark.asyncio
 async def test_an_accepted_upload_survives_a_scheduling_failure(harness):
     """The source is committed; the bookkeeping is repaired by startup recovery."""
     record = harness.create_record(expected_bytes=4)
@@ -349,7 +512,8 @@ async def test_upload_reports_progress_once_per_megabyte(harness):
     assert uploading
     assert uploading == sorted(uploading)
     steps = [later - earlier for earlier, later in pairwise(uploading)]
-    assert all(step >= 1 / 3 * 0.85 for step in steps)
+    minimum_step = 1 / 3 * 0.85
+    assert all(step >= minimum_step or isclose(step, minimum_step, rel_tol=0.0, abs_tol=1e-12) for step in steps)
     # 0.85 is reserved for "upload finished"; streaming progress never passes it.
     assert uploading[-1] <= 0.85
 
@@ -364,6 +528,51 @@ async def test_cancel_finishes_a_job_that_has_no_running_task(harness):
         await client.close()
 
     assert harness.store.require(record.id).status == MeetingImportStatus.CANCELED
+    assert harness.broadcasts[-1][2] == "Meeting import canceled"
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_cannot_abandon_committed_cancel_cleanup(harness, monkeypatch):
+    record = harness.create_record()
+    staging = harness.storage_root / "meeting-imports" / record.id
+    staging.mkdir(parents=True)
+    (staging / "source.part").write_bytes(b"private audio")
+    mark_started = threading.Event()
+    release_mark = threading.Event()
+    original_mark_canceled = harness.store.mark_canceled
+
+    def blocked_mark_canceled(import_id: str) -> MeetingImportRecord:
+        mark_started.set()
+        if not release_mark.wait(timeout=3.0):
+            raise TimeoutError("test did not release the canceled-state commit")
+        return original_mark_canceled(import_id)
+
+    monkeypatch.setattr(harness.store, "mark_canceled", blocked_mark_canceled)
+    client = await _client(harness)
+    task = asyncio.create_task(
+        meeting_import_routes.cancel_import(
+            SimpleNamespace(
+                app=client.app,
+                match_info={"importId": record.id},
+            )
+        )
+    )
+    try:
+        assert await asyncio.to_thread(mark_started.wait, 2.0)
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert task.done() is False
+        assert staging.exists()
+    finally:
+        release_mark.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await client.close()
+
+    assert harness.store.require(record.id).status == MeetingImportStatus.CANCELED
+    assert not staging.exists()
     assert harness.broadcasts[-1][2] == "Meeting import canceled"
 
 
@@ -435,31 +644,71 @@ def test_the_deps_bundle_stays_immutable(harness):
         deps.store = object()
 
 
-def test_create_app_supplies_every_dependency_the_protocol_declares(tmp_path, monkeypatch):
-    """Guard the wiring: the bundle is assembled by attribute name in create_app.
-
-    Nothing checks that assembly at import time, so a renamed controller
-    attribute would only surface as a request-time AttributeError, in whichever
-    suite happens to exercise the one route that needs it.
-    """
-    from types import SimpleNamespace
-
-    from src import web_api
-    from src.api.meeting_import_routes import APP_MEETING_IMPORT_SERVICE
-
-    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
-    controller = SimpleNamespace(
-        _meeting_import_store=object(),
-        _broadcast_meeting_import=lambda *_args: None,
-        schedule_meeting_import=lambda _import_id: True,
+def test_the_store_port_matches_the_real_meeting_import_store(assert_protocol_contract):
+    """The route domain names exactly the durable operations it consumes."""
+    assert_protocol_contract(
+        MeetingImportStorePort,
+        MeetingImportStore,
+        methods={
+            "begin_receiving",
+            "create",
+            "list_inbox",
+            "mark_canceled",
+            "mark_failed",
+            "mark_received",
+            "request_cancel",
+            "require",
+            "update_receive_progress",
+        },
+        returns={
+            "begin_receiving": MeetingImportRecord,
+            "create": MeetingImportRecord,
+            "list_inbox": list[MeetingImportRecord],
+            "mark_canceled": MeetingImportRecord,
+            "mark_failed": MeetingImportRecord,
+            "mark_received": MeetingImportRecord,
+            "request_cancel": MeetingImportRecord,
+            "require": MeetingImportRecord,
+            "update_receive_progress": MeetingImportRecord,
+        },
     )
 
-    app = web_api.create_app(controller)
-    deps = app[APP_MEETING_IMPORT_SERVICE].deps()
 
-    assert all(getattr(deps, field.name) is not None for field in fields(MeetingImportDeps))
-    assert deps.storage_root == tmp_path
-    # The registries are created on demand and attached, so the upload and the
-    # cancellation racing it meet in the same dict.
-    assert controller._meeting_import_upload_tasks is deps.upload_tasks
-    assert controller._meeting_import_tasks is deps.processing_tasks
+@pytest.mark.asyncio
+async def test_create_app_serves_an_import_through_the_real_controller_adapter(tmp_path, monkeypatch):
+    """Exercise lazy composition through HTTP, not by inspecting non-null fields."""
+    from src import web_api
+    from src.web_api import ScriberWebController
+
+    monkeypatch.setattr(web_api, "data_dir", lambda: tmp_path)
+    store = MeetingImportStore(tmp_path / "composition-imports.db")
+    record = store.create(
+        source_filename="architecture-review.wav",
+        expected_bytes=8,
+        profile_snapshot={"id": "default", "language": "de"},
+        metadata={"title": "Architecture review"},
+    )
+    controller = object.__new__(ScriberWebController)
+    controller._meeting_import_store = store
+    controller._shutting_down = False
+
+    app = web_api.create_app(controller)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.get(f"/api/meeting-imports/{record.id}")
+        assert response.status == 200
+        body = await response.json()
+        assert body["id"] == record.id
+        assert body["sourceFilename"] == "architecture-review.wav"
+
+        deps = app[APP_MEETING_IMPORT_SERVICE].deps()
+        assert deps.store is store
+        assert deps.storage_root == tmp_path
+        # The registries are created lazily and attached to the real controller,
+        # so upload and cancellation requests rendezvous in the same mappings.
+        assert controller._meeting_import_upload_tasks is deps.upload_tasks
+        assert controller._meeting_import_tasks is deps.processing_tasks
+    finally:
+        await client.close()
+        store.close()

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
+import sys
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -28,6 +31,34 @@ def stores(tmp_path):
     first.initialize()
     second.initialize()
     return clock, first, second
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows keeps open SQLite database files locked")
+def test_initialize_releases_its_sqlite_file_handle(tmp_path):
+    db_path = tmp_path / "initialized-audio-admission.db"
+    store = AudioAdmissionStore(db_path)
+
+    store.initialize()
+
+    db_path.unlink()
+    assert not db_path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows keeps open SQLite database files locked")
+def test_release_releases_its_sqlite_file_handle(tmp_path):
+    db_path = tmp_path / "released-audio-admission.db"
+    store = AudioAdmissionStore(db_path)
+    store.initialize()
+    claim = store.acquire(
+        owner_kind="live_mic",
+        owner_id="session-1",
+        controller_id="controller-a",
+    )
+
+    assert store.release(claim) is True
+
+    db_path.unlink()
+    assert not db_path.exists()
 
 
 def test_active_lease_blocks_a_second_controller(tmp_path):
@@ -61,6 +92,78 @@ def test_expired_lease_can_be_taken_over_atomically(tmp_path):
     assert replacement.state_version == old.state_version + 1
     assert replacement.owner_kind == "meeting"
     assert first.release(old) is False
+
+
+def test_released_claim_cannot_delete_a_fresh_foreign_controller_claim(tmp_path):
+    _clock, first, second = stores(tmp_path)
+    stale = first.acquire(
+        owner_kind="live_mic",
+        owner_id="session-1",
+        controller_id="controller-a",
+    )
+    assert first.release(stale) is True
+    fresh = second.acquire(
+        owner_kind="live_mic",
+        owner_id="session-1",
+        controller_id="controller-b",
+    )
+
+    assert fresh.state_version > stale.state_version
+    assert first.release(stale) is False
+    assert second.active() == fresh
+
+
+def test_initialize_seeds_the_generation_counter_from_an_existing_claim(tmp_path):
+    db_path = tmp_path / "legacy-audio-admission.db"
+    with closing(sqlite3.connect(db_path)) as conn:
+        conn.execute(
+            """
+            CREATE TABLE audio_admission_claims (
+                resource TEXT PRIMARY KEY,
+                owner_kind TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                controller_id TEXT NOT NULL,
+                state_version INTEGER NOT NULL CHECK(state_version >= 1),
+                lease_expires_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO audio_admission_claims
+                (resource,owner_kind,owner_id,controller_id,state_version,
+                 lease_expires_at,updated_at)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            (
+                "native_audio",
+                "meeting",
+                "meeting-legacy",
+                "controller-a",
+                7,
+                "2026-07-13T00:00:00Z",
+                "2026-07-12T00:00:00Z",
+            ),
+        )
+        conn.commit()
+
+    clock = Clock()
+    store = AudioAdmissionStore(db_path, now=clock.now)
+    store.initialize()
+    legacy = store.active()
+    assert legacy is not None
+    assert store.release(legacy) is True
+
+    fresh = store.acquire(
+        owner_kind="meeting",
+        owner_id="meeting-legacy",
+        controller_id="controller-a",
+    )
+
+    assert fresh.state_version == 8
+    assert store.release(legacy) is False
+    assert store.active() == fresh
 
 
 def test_heartbeat_preserves_version_and_extends_ownership(tmp_path):

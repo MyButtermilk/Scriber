@@ -29,13 +29,51 @@ from typing import Any
 from loguru import logger
 
 
+async def _observe_completion(
+    worker: asyncio.Future[Any],
+    *,
+    failure_during_cancellation_message: str,
+) -> tuple[Any, asyncio.CancelledError | None]:
+    """Observe *worker* without creating a cancelable proxy for its result.
+
+    ``asyncio.shield`` keeps the underlying worker alive, but every call also
+    creates a wrapper Future.  If the caller is canceled and the worker later
+    fails, that canceled wrapper can report the worker exception to the event
+    loop even after ``worker.result()`` has observed it.  ``asyncio.wait`` only
+    waits for the supplied Future and never owns or proxies its result.
+
+    A pending caller cancellation wins over a worker failure, matching both
+    public helpers' cleanup contract.  The hidden failure is logged exactly
+    once before cancellation continues.
+    """
+
+    pending_cancel: asyncio.CancelledError | None = None
+    while not worker.done():
+        try:
+            await asyncio.wait((worker,))
+        except asyncio.CancelledError as exc:
+            # Shutdown and explicit user cancellation can race and call
+            # ``Task.cancel`` more than once. Keep observing until the durable
+            # or ownership-changing boundary has really completed.
+            pending_cancel = exc
+
+    try:
+        result = worker.result()
+    except BaseException:
+        if pending_cancel is not None:
+            logger.exception(failure_during_cancellation_message)
+            raise pending_cancel from None
+        raise
+    return result, pending_cancel
+
+
 def remove_tree(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path)
 
 
 async def remove_tree_if_exists(path: Path) -> None:
-    await asyncio.to_thread(remove_tree, path)
+    await to_thread_cancellation_barrier(remove_tree, path)
 
 
 async def to_thread_cancellation_barrier(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
@@ -48,27 +86,10 @@ async def to_thread_cancellation_barrier(function: Callable[..., Any], *args: An
     mutation boundary before cleanup continues.
     """
     worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            # Shutdown and explicit user cancellation can race and call
-            # ``Task.cancel`` more than once.  Keep observing the non-cancelable
-            # thread worker until its durable boundary has really completed.
-            pending_cancel = exc
-        except BaseException:
-            # The worker itself failed.  ``shield`` re-raises that here, but the
-            # failure belongs to ``worker.result()`` below: only there is it
-            # observed, and only there can a pending cancellation still win.
-            break
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            logger.exception("Durable thread mutation failed while its caller was canceling")
-            raise pending_cancel from None
-        raise
+    result, pending_cancel = await _observe_completion(
+        worker,
+        failure_during_cancellation_message=("Durable thread mutation failed while its caller was canceling"),
+    )
     if pending_cancel is not None:
         raise pending_cancel
     return result
@@ -91,21 +112,8 @@ async def await_with_delayed_cancellation(
     # Futures (for example ``asyncio.gather``). ``create_task`` rejects the
     # latter even though this helper's public contract accepts them.
     worker = asyncio.ensure_future(awaitable)
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            pending_cancel = exc
-        except BaseException:
-            # See the barrier above: the worker's failure is observed by
-            # ``worker.result()`` rather than swallowed by this loop.
-            break
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            logger.exception("Ownership-changing await failed while its caller was canceling")
-            raise pending_cancel from None
-        raise
+    result, pending_cancel = await _observe_completion(
+        worker,
+        failure_during_cancellation_message=("Ownership-changing await failed while its caller was canceling"),
+    )
     return result, pending_cancel

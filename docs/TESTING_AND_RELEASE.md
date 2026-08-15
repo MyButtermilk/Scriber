@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-14
+Last verified: 2026-08-15
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -57,7 +57,9 @@ executor cannot abandon: a durable mutation finishes before cancellation is
 delivered, repeated `Task.cancel` still waits for that boundary, and a
 mutation that fails while its caller is cancelling reports `CancelledError`
 with the failure logged rather than letting an unexpected exception escape a
-shutdown path.
+shutdown path. Both helpers install adversarial loop exception handlers in
+tests: cancel plus worker failure, including repeated cancellation, must produce
+zero unobserved `shield`/Future exception contexts.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
@@ -65,19 +67,29 @@ against the real controller or service, including boundary-critical route-owned
 DTO return types. The shared fixture contains only signature-reflection
 mechanics: method/property allowlists remain in their owning domain test, so
 there is no central port catalogue. Outlook Calendar has no controller port but
-still pins one for its calendar collaborator; Meeting Import and Voice Component
-have no port at all and guard their wiring instead, building the real app around
-a minimal stub and asserting that composition resolves every declared
-dependency. A renamed controller attribute therefore fails at test time rather
-than as a request-time `AttributeError` on whichever route happens to need it.
-The Voice Component guard additionally pins the wiring's *granularity*: it
-builds a controller with no diarizer and no settings-persist hook, so a future
-change that collapses the two providers into one bundle — or that resolves the
-persist hook eagerly instead of deferring it to the erase route — fails there
-rather than in whichever suite happens to read the model's status. Meeting-import tests
-run against the real `MeetingImportStore` because the assertion that matters is
-which durable state a job is left in after a replayed PUT, a size mismatch, or
-a cancel. Upload-policy tests separately cover the
+still pins one for its calendar collaborator. Meeting Import and Voice
+Component use request-resolved immutable bundles/providers instead of a broad
+controller port, while each store/model/diarizer/admission collaborator still
+has a domain-local structural Protocol pinned to the real adapter. Their wiring
+guards send real aiohttp requests through `create_app`; renamed attributes,
+sync/async drift, or an invalid dependency shape therefore fails before a
+production request reaches it. The Voice Component guard additionally pins the
+wiring's *granularity*: model status succeeds with no diarizer, enrollment
+adapter, or settings-persist hook materialized. A future change that collapses
+those providers — or resolves the persist hook eagerly instead of deferring it
+to the erase route — fails at the public HTTP seam. Voice tests also exercise a
+complete in-memory enrollment request and verify admission acquire/release,
+native start/stop, profile persistence, capture-buffer clearing, and response
+privacy. Meeting-import tests run against the real `MeetingImportStore` because
+the assertion that matters is which durable state a job is left in after a
+replayed PUT, a size mismatch, a repeated cancel, or an unreadable status after
+the receive commit. File-job tests separately force cancellation before and
+after enqueue, provider/settings changes across restart, commit-then-raise, and
+an unreadable ambiguous commit. They require the admitted route/limits and the
+owned source to survive whenever a durable row may exist. The matching YouTube
+test repeats cancellation after enqueue and requires mapping, history,
+artifact-parent creation, and exactly one scheduled task before delivery.
+Upload-policy tests separately cover the
 180 UTF-16-code-unit filename bound, Windows reserved-device names and invalid
 surrogates, accepted media extensions, and human-readable limit labels used by
 both File transcription and Meeting imports.
@@ -2129,12 +2141,18 @@ and that the optional WeSpeaker model is absent from the installer tree.
 The admission tests additionally use two independent controllers on one SQLite
 database: the losing controller must return 409 before native Shell IPC, an
 expired claim may be replaced, stale release cannot delete its successor,
-pause/resume retains Meeting ownership, and graceful shutdown removes it.
+pause/resume retains Meeting ownership, graceful shutdown removes it, and a
+fresh same-owner reacquisition cannot alias a locally remembered release even
+when SQLite restarts its CAS generation.
 The heartbeat race gate pre-transfers the pending claim before renewal and
-requires adoption of the newer generation; repeated Live Mic renewal failures
-must emergency-stop before the lease TTL can expire, and a lost Meeting claim
-must drive the capture watchdog to `capture_failed` without discarding completed
-chunks.
+requires adoption of the newer generation. Lease-only watchdog tests use the
+store's returned expiry, block renewal beyond the deadline, and require native
+stop before another controller can acquire. Two bounded stop failures trigger
+an immediate renewal before another attempt; a transient renewal failure stays
+on the short retry cadence rather than sleeping for the normal heartbeat.
+Composition race tests block Meeting create/start/resume/reconnect and prove
+loss cleanup never deadlocks with durable marking, while a lost Meeting drives
+the capture watchdog to `capture_failed` without discarding completed chunks.
 
 Long-Meeting deterministic coverage uses exactly 600 30-second intervals, or
 18,000 seconds. Store tests prove schema-v3 base/delta recovery, a full base

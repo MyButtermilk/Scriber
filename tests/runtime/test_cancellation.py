@@ -9,6 +9,7 @@ from contextlib import contextmanager
 import pytest
 from loguru import logger
 
+from src.runtime import cancellation
 from src.runtime.cancellation import (
     await_with_delayed_cancellation,
     remove_tree_if_exists,
@@ -25,6 +26,17 @@ def _captured_loguru():
         yield records
     finally:
         logger.remove(sink_id)
+
+
+@contextmanager
+def _captured_loop_exceptions(loop: asyncio.AbstractEventLoop):
+    contexts: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: contexts.append(context))
+    try:
+        yield contexts
+    finally:
+        loop.set_exception_handler(previous_handler)
 
 
 def _blocking_mutation(started: threading.Event, release: threading.Event, finished: threading.Event):
@@ -139,6 +151,32 @@ async def test_a_swallowed_failure_is_never_silent():
 
 
 @pytest.mark.asyncio
+async def test_barrier_worker_failure_after_repeated_cancel_does_not_escape_to_the_loop():
+    started, release = threading.Event(), threading.Event()
+
+    def explode() -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+        raise OSError("store is closed")
+
+    task = asyncio.create_task(to_thread_cancellation_barrier(explode))
+    assert await asyncio.to_thread(started.wait, 2.0)
+    for _ in range(3):
+        task.cancel()
+        await asyncio.sleep(0)
+
+    loop = asyncio.get_running_loop()
+    with _captured_loop_exceptions(loop) as contexts, _captured_loguru() as records:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert contexts == []
+    assert sum("store is closed" in record for record in records) == 1
+
+
+@pytest.mark.asyncio
 async def test_delayed_cancellation_hands_back_both_the_result_and_the_cancel():
     """The caller records the ownership it just acquired, then unwinds."""
     started, release = threading.Event(), threading.Event()
@@ -202,6 +240,38 @@ async def test_removing_a_tree_is_safe_when_it_is_already_gone(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_removing_a_tree_waits_for_the_filesystem_after_repeated_cancellation(tmp_path, monkeypatch):
+    """Raw Meeting audio must be gone before cancellation can finish."""
+    target = tmp_path / "workspace"
+    target.mkdir()
+    (target / "audio.wav").write_bytes(b"private audio")
+    started, release = threading.Event(), threading.Event()
+    real_rmtree = cancellation.shutil.rmtree
+
+    def blocking_rmtree(path):
+        started.set()
+        assert release.wait(timeout=5.0)
+        real_rmtree(path)
+
+    monkeypatch.setattr(cancellation.shutil, "rmtree", blocking_rmtree)
+    task = asyncio.create_task(remove_tree_if_exists(target))
+    assert await asyncio.to_thread(started.wait, 2.0)
+
+    try:
+        for _ in range(3):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not task.done()
+        assert target.exists()
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
 async def test_delayed_cancellation_also_reports_a_failure_as_cancellation():
     """Same rule as the barrier: the caller asked to stop, so it unwinds that way."""
     started, release = threading.Event(), threading.Event()
@@ -225,3 +295,29 @@ async def test_delayed_cancellation_also_reports_a_failure_as_cancellation():
     with _captured_loguru() as records, pytest.raises(asyncio.CancelledError):
         await task
     assert any("sidecar refused the claim" in record for record in records)
+
+
+@pytest.mark.asyncio
+async def test_delayed_worker_failure_after_repeated_cancel_does_not_escape_to_the_loop():
+    started, release = threading.Event(), threading.Event()
+
+    def explode() -> None:
+        started.set()
+        assert release.wait(timeout=5.0)
+        raise OSError("sidecar refused the claim")
+
+    task = asyncio.create_task(await_with_delayed_cancellation(asyncio.to_thread(explode)))
+    assert await asyncio.to_thread(started.wait, 2.0)
+    for _ in range(3):
+        task.cancel()
+        await asyncio.sleep(0)
+
+    loop = asyncio.get_running_loop()
+    with _captured_loop_exceptions(loop) as contexts, _captured_loguru() as records:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0)
+
+    assert contexts == []
+    assert sum("sidecar refused the claim" in record for record in records) == 1

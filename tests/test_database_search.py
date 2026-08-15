@@ -49,6 +49,67 @@ def test_save_transcript_propagates_storage_failure(monkeypatch):
         database.save_transcript({"id": "must-fail"})
 
 
+def test_terminal_transcript_transition_preserves_first_terminal_winner(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    processing = {
+        "id": "terminal-winner",
+        "title": "Before",
+        "date": "Today",
+        "duration": "00:10",
+        "status": "processing",
+        "type": "youtube",
+        "language": "de",
+        "step": "Transcribing...",
+        "content": "durable partial content",
+        "createdAt": "2026-08-15T00:00:00",
+        "updatedAt": "2026-08-15T00:00:00",
+    }
+    completed = {
+        **processing,
+        "status": "completed",
+        "step": "Completed",
+        "content": "authoritative completed content",
+        "updatedAt": "2026-08-15T00:01:00",
+    }
+
+    try:
+        database.init_database()
+        database.save_transcript(processing)
+
+        assert database.save_transcript_terminal_transition(completed) is True
+        assert (
+            database.save_transcript_terminal_transition(
+                {
+                    **completed,
+                    "content": "late same-status overwrite",
+                    "updatedAt": "2026-08-15T00:02:00",
+                }
+            )
+            is True
+        )
+        assert (
+            database.save_transcript_terminal_transition(
+                {
+                    **completed,
+                    "status": "stopped",
+                    "step": "Stopped by user",
+                    "content": "late cancellation overwrite",
+                }
+            )
+            is False
+        )
+
+        persisted = database.get_transcript(processing["id"])
+        assert persisted is not None
+        assert persisted["status"] == "completed"
+        assert persisted["step"] == "Completed"
+        assert persisted["content"] == "authoritative completed content"
+        assert persisted["updatedAt"] == "2026-08-15T00:01:00"
+    finally:
+        database._close_all_connections()
+
+
 def test_search_results_include_summary_lifecycle_metadata(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")

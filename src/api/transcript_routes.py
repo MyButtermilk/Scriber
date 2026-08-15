@@ -63,6 +63,10 @@ class SummaryOutcome:
     message: str = ""
 
 
+class CancellationPersistenceUnavailable(RuntimeError):
+    """Cancellation stopped locally but could not acquire durable ownership."""
+
+
 class TranscriptsControllerPort(Protocol):
     """The controller surface consumed by the transcript routes."""
 
@@ -227,7 +231,15 @@ async def stop_transcript(request: web.Request) -> web.Response:
     if not transcript_id:
         return web.json_response({"message": "Missing transcript ID"}, status=400)
 
-    if await controller.cancel_transcript(transcript_id):
+    try:
+        canceled = await controller.cancel_transcript(transcript_id)
+    except CancellationPersistenceUnavailable:
+        return web.json_response(
+            {"message": "Cancellation could not be saved. Please try again."},
+            status=503,
+        )
+
+    if canceled:
         return web.json_response({"success": True})
 
     if not controller.has_transcript_record(transcript_id):

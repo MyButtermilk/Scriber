@@ -3473,7 +3473,7 @@ class MeetingStore:
                 "UPDATE meeting_segments SET speaker_label = ? WHERE meeting_id = ? AND speaker_id = ?",
                 (display_name, meeting_id, speaker_id),
             )
-            if current is not None and current["profile_id"]:
+            if current["profile_id"] and self._speaker_library_enabled_conn(conn):
                 # Merely re-submitting an automatically generated placeholder
                 # must not turn it into a trusted/named Voice Library entry.
                 is_meaningful_name = not _is_generated_speaker_profile_name(str(current["profile_id"]), display_name)
@@ -3828,6 +3828,8 @@ class MeetingStore:
         now = _utc_now()
         with db._get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            if not self._speaker_library_enabled_conn(conn):
+                raise VoiceLibraryDisabled("Voice Library is turned off.")
             saved = self._save_speaker_profile_preview_conn(
                 conn,
                 str(profile_id or "").strip(),
@@ -4598,6 +4600,9 @@ class MeetingStore:
             raise ValueError("Speaker profile name must be 120 characters or fewer.")
         now = _utc_now()
         with db._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._speaker_library_enabled_conn(conn):
+                raise VoiceLibraryDisabled("Voice Library is turned off.")
             cursor = conn.execute(
                 "UPDATE speaker_profiles SET display_name=?,is_named=1,updated_at=? WHERE id=?",
                 (name, now, profile_id),
@@ -4680,6 +4685,11 @@ class MeetingStore:
             raise ValueError("Choose two different speaker profiles to merge.")
         now = _utc_now()
         with db._get_connection() as conn:
+            # Serialize the durable consent decision with every profile write.
+            # A different process may opt out while this one is still open.
+            conn.execute("BEGIN IMMEDIATE")
+            if not self._speaker_library_enabled_conn(conn):
+                raise VoiceLibraryDisabled("Voice Library is turned off.")
             target = conn.execute(
                 """SELECT id,display_name,is_named,enrollment_embedding_blob,enrollment_sample_count,
                           enrollment_weight_sum,enrollment_resultant_norm,enrolled_at
@@ -4809,9 +4819,18 @@ class MeetingStore:
         return {"targetProfileId": target_profile_id, "mergedProfileId": source_profile_id}
 
     def split_speaker_profile(self, meeting_id: str, speaker_id: str) -> dict[str, Any]:
-        self.get(meeting_id)
         now = _utc_now()
         with db._get_connection() as conn:
+            # The durable opt-in and every observation/profile mutation share
+            # one write transaction. A concurrent whole-library delete either
+            # runs first and makes this split fail closed, or runs afterwards
+            # and removes the split result; it can never be undone by a stale
+            # read from another process.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute("SELECT 1 FROM meetings WHERE id=?", (meeting_id,)).fetchone() is None:
+                raise MeetingNotFound(f"Meeting not found: {meeting_id}")
+            if not self._speaker_library_enabled_conn(conn):
+                raise VoiceLibraryDisabled("Voice Library is turned off.")
             speaker = conn.execute(
                 """SELECT profile_id,label,display_name_source FROM meeting_speakers
                    WHERE meeting_id=? AND id=?""",

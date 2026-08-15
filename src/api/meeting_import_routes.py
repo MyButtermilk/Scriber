@@ -30,10 +30,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Callable, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from aiohttp import web
 from loguru import logger
@@ -50,9 +50,14 @@ from src.data.meeting_import_store import (
     InvalidMeetingImportTransition,
     MeetingImportConflict,
     MeetingImportNotFound,
+    MeetingImportRecord,
     MeetingImportStatus,
 )
-from src.runtime.cancellation import remove_tree_if_exists, to_thread_cancellation_barrier
+from src.runtime.cancellation import (
+    await_with_delayed_cancellation,
+    remove_tree_if_exists,
+    to_thread_cancellation_barrier,
+)
 from src.runtime.support_bundle import redact_text
 
 _RETIRED_IMPORT_MESSAGE = (
@@ -70,6 +75,71 @@ _CANCELABLE_UPLOAD_STATES = {
 }
 
 
+class MeetingImportStorePort(Protocol):
+    """The durable store operations consumed by the import HTTP protocol."""
+
+    def list_inbox(
+        self,
+        *,
+        limit: int = 24,
+        recent_terminal_limit: int = 6,
+    ) -> list[MeetingImportRecord]: ...
+
+    def create(
+        self,
+        *,
+        source_filename: str,
+        profile_snapshot: dict[str, Any],
+        expected_bytes: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        import_id: str | None = None,
+    ) -> MeetingImportRecord: ...
+
+    def require(self, import_id: str) -> MeetingImportRecord: ...
+
+    def begin_receiving(self, import_id: str) -> MeetingImportRecord: ...
+
+    def update_receive_progress(self, import_id: str, received_bytes: int) -> MeetingImportRecord: ...
+
+    def mark_received(
+        self,
+        import_id: str,
+        *,
+        relative_path: str,
+        byte_count: int,
+        sha256: str,
+    ) -> MeetingImportRecord: ...
+
+    def request_cancel(self, import_id: str) -> MeetingImportRecord: ...
+
+    def mark_canceled(self, import_id: str) -> MeetingImportRecord: ...
+
+    def mark_failed(
+        self,
+        import_id: str,
+        *,
+        error_code: str,
+        error_message: str,
+    ) -> MeetingImportRecord: ...
+
+
+class MeetingImportBroadcast(Protocol):
+    async def __call__(self, record: MeetingImportRecord, progress: float, status: str) -> None: ...
+
+
+class MeetingImportRecordPayload(Protocol):
+    def __call__(
+        self,
+        record: MeetingImportRecord,
+        *,
+        upload_url: str = "",
+    ) -> dict[str, Any]: ...
+
+
+class MeetingImportInboxPayload(Protocol):
+    def __call__(self, record: MeetingImportRecord) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class MeetingImportDeps:
     """Everything the durable import protocol touches outside this module.
@@ -80,11 +150,11 @@ class MeetingImportDeps:
     the moment the upload started.
     """
 
-    store: Any
-    broadcast: Callable[[Any, float, str], Awaitable[None]]
+    store: MeetingImportStorePort
+    broadcast: MeetingImportBroadcast
     schedule: Callable[[str], bool]
-    processing_tasks: MutableMapping[str, Any]
-    upload_tasks: MutableMapping[str, Any]
+    processing_tasks: MutableMapping[str, asyncio.Task[None]]
+    upload_tasks: MutableMapping[str, asyncio.Task[web.Response]]
     storage_root: Path
     is_shutting_down: Callable[[], bool]
     validate_provider_ready: Callable[[str], None]
@@ -103,8 +173,8 @@ class MeetingImportRoutesService:
     # Serialising a record needs the durable store's payload shape, which the
     # Meeting domain owns; both are passed in rather than imported so this module
     # stays independent of that package's layout.
-    record_payload: Callable[..., dict[str, Any]]
-    inbox_payload: Callable[[Any], dict[str, Any]]
+    record_payload: MeetingImportRecordPayload
+    inbox_payload: MeetingImportInboxPayload
 
 
 APP_MEETING_IMPORT_SERVICE: web.AppKey[MeetingImportRoutesService] = web.AppKey(
@@ -258,14 +328,7 @@ async def upload_import(request: web.Request) -> web.Response:
                 handle.flush()
                 os.fsync(handle.fileno())
 
-            flush_task = asyncio.create_task(asyncio.to_thread(flush_and_sync))
-            try:
-                await asyncio.shield(flush_task)
-            except asyncio.CancelledError:
-                # Do not close/delete the file while the worker thread still
-                # owns its handle.  DELETE waits on this handler task.
-                await asyncio.shield(flush_task)
-                raise
+            await to_thread_cancellation_barrier(flush_and_sync)
         if record.expected_bytes is not None and received != record.expected_bytes:
             raise ValueError("Uploaded byte count does not match the declared size.")
         committed_path = job_root / f"source{Path(record.source_filename).suffix.lower()}"
@@ -273,14 +336,18 @@ async def upload_import(request: web.Request) -> web.Response:
         # avoids a canceled to_thread continuing after DELETE removes the
         # staging directory.
         os.replace(part_path, committed_path)
-        record = await to_thread_cancellation_barrier(
-            deps.store.mark_received,
-            import_id,
-            relative_path=committed_path.relative_to(storage_root).as_posix(),
-            byte_count=received,
-            sha256=digest.hexdigest(),
+        record, pending_cancel = await await_with_delayed_cancellation(
+            asyncio.to_thread(
+                deps.store.mark_received,
+                import_id,
+                relative_path=committed_path.relative_to(storage_root).as_posix(),
+                byte_count=received,
+                sha256=digest.hexdigest(),
+            )
         )
         source_committed = True
+        if pending_cancel is not None:
+            raise pending_cancel
         try:
             deps.schedule(import_id)
             await deps.broadcast(record, 0.86, "Upload safely stored")
@@ -292,33 +359,42 @@ async def upload_import(request: web.Request) -> web.Response:
             # never turn a safely accepted upload into data loss here.
             logger.exception("Accepted Meeting import bookkeeping will be repaired on recovery")
         return web.json_response(service.record_payload(record), status=202)
-    except asyncio.CancelledError:
-        cleanup_incomplete_upload = True
-        try:
-            record = await asyncio.to_thread(deps.store.require, import_id)
-            if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                record = await to_thread_cancellation_barrier(deps.store.mark_canceled, import_id)
-                await deps.broadcast(record, 0.0, "Meeting import canceled")
-            elif record.status in _CANCELABLE_UPLOAD_STATES:
-                if not deps.is_shutting_down():
-                    record = await to_thread_cancellation_barrier(
-                        deps.store.mark_failed,
-                        import_id,
-                        error_code="upload_interrupted",
-                        error_message="The Meeting recording upload was interrupted.",
-                    )
-                    await deps.broadcast(record, 1.0, "Meeting import upload failed")
-            else:
-                # The source commit is authoritative from RECEIVED onward.
-                # Cancellation can arrive after mark_received while a
-                # progress response is in flight; never delete an accepted,
-                # restart-recoverable source directory in that window.
-                cleanup_incomplete_upload = False
-        except Exception:
-            logger.exception("Meeting import upload cancellation could not be persisted")
-        if cleanup_incomplete_upload:
-            await _discard_staging(part_path, job_root)
-        raise
+    except asyncio.CancelledError as initial_cancel:
+
+        async def settle_canceled_upload() -> None:
+            # ``mark_received`` returning is direct ownership evidence.  A
+            # later status read may be unavailable, but must never turn that
+            # committed source back into disposable staging.
+            cleanup_incomplete_upload = not source_committed
+            try:
+                record = await asyncio.to_thread(deps.store.require, import_id)
+                if record.status == MeetingImportStatus.CANCEL_REQUESTED:
+                    record = await to_thread_cancellation_barrier(deps.store.mark_canceled, import_id)
+                    await deps.broadcast(record, 0.0, "Meeting import canceled")
+                elif record.status in _CANCELABLE_UPLOAD_STATES:
+                    if not deps.is_shutting_down():
+                        record = await to_thread_cancellation_barrier(
+                            deps.store.mark_failed,
+                            import_id,
+                            error_code="upload_interrupted",
+                            error_message="The Meeting recording upload was interrupted.",
+                        )
+                        await deps.broadcast(record, 1.0, "Meeting import upload failed")
+                else:
+                    # The source commit is authoritative from RECEIVED onward.
+                    # Cancellation can arrive after mark_received while a
+                    # progress response is in flight; never delete an accepted,
+                    # restart-recoverable source directory in that window.
+                    cleanup_incomplete_upload = False
+            except Exception:
+                logger.exception("Meeting import upload cancellation could not be persisted")
+            if cleanup_incomplete_upload:
+                await _discard_staging(part_path, job_root)
+
+        _, repeated_cancel = await await_with_delayed_cancellation(settle_canceled_upload())
+        if repeated_cancel is not None:
+            raise repeated_cancel from None
+        raise initial_cancel from None
     except MeetingImportNotFound:
         return web.json_response({"message": "Meeting import not found"}, status=404)
     except (MeetingImportConflict, InvalidMeetingImportTransition, ValueError) as exc:
@@ -384,8 +460,21 @@ async def cancel_import(request: web.Request) -> web.Response:
     service = _service(request)
     deps = service.deps()
     import_id = _import_id(request)
+    response, pending_cancel = await await_with_delayed_cancellation(_settle_cancel_import(service, deps, import_id))
+    if pending_cancel is not None:
+        raise pending_cancel
+    return response
+
+
+async def _settle_cancel_import(
+    service: MeetingImportRoutesService,
+    deps: MeetingImportDeps,
+    import_id: str,
+) -> web.Response:
+    """Finish durable cancellation and artifact cleanup as one boundary."""
+
     try:
-        record = await asyncio.to_thread(deps.store.request_cancel, import_id)
+        record = await to_thread_cancellation_barrier(deps.store.request_cancel, import_id)
         if record.status in {
             MeetingImportStatus.COMPLETED,
             MeetingImportStatus.FAILED,
@@ -416,7 +505,7 @@ async def cancel_import(request: web.Request) -> web.Response:
                 logger.exception("Meeting import task failed while cancellation was draining")
         record = await asyncio.to_thread(deps.store.require, import_id)
         if record.status == MeetingImportStatus.CANCEL_REQUESTED and all(task.done() for task in tasks):
-            record = await asyncio.to_thread(deps.store.mark_canceled, import_id)
+            record = await to_thread_cancellation_barrier(deps.store.mark_canceled, import_id)
         if record.status == MeetingImportStatus.CANCELED:
             await remove_tree_if_exists(deps.storage_root / "meeting-imports" / record.id)
         await deps.broadcast(
@@ -455,8 +544,8 @@ def register_meeting_import_routes(
     app: web.Application,
     *,
     deps: DepsProvider,
-    record_payload: Callable[..., dict[str, Any]],
-    inbox_payload: Callable[[Any], dict[str, Any]],
+    record_payload: MeetingImportRecordPayload,
+    inbox_payload: MeetingImportInboxPayload,
 ) -> None:
     """Register the Meeting import domain without web_api closure coupling."""
 

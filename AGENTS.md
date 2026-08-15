@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-14
+Last verified: 2026-08-15
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -56,11 +56,13 @@ Backend and runtime:
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, and
   Voice Component route domains, shared aiohttp app keys, HTTP security helpers,
   and the upload policy used by both file transcription and Meeting imports.
-  Each route module owns its narrow structural controller port beside the
-  handlers that consume it; do not recreate a central controller-port
-  catalogue. The matching route test owns the exact adapter-contract assertion,
-  including boundary-critical return types; shared test support may provide
-  reflection mechanics but never a list of application ports. Runtime routes
+  Controller-backed route modules own their narrow structural controller port
+  beside the handlers that consume it; controller-free domains own local
+  collaborator interfaces/providers and a wiring guard instead. Do not recreate
+  a central controller-port catalogue. The matching route test owns the exact
+  adapter or wiring assertion, including boundary-critical return types; shared
+  test support may provide reflection mechanics but never a list of application
+  ports. Runtime routes
   own debug logs and support bundles. Each ONNX
   download owns a request-local progress scope so parallel requests cannot
   drain one another; final state follows its admitted progress work, and
@@ -84,7 +86,13 @@ Backend and runtime:
   connection stays visible in `status()`. `src/api/upload_policy.py` owns the
   Windows-safe filename, accepted media-extension, and limit-label invariants;
   ingest handlers consume that interface directly rather than through aliases
-  in `web_api.py`.
+  in `web_api.py`. Voice Component owns the optional speaker model and local
+  diarizer together with the Voice Library profile collection, opaque preview
+  capabilities, native enrollment workflow, and every model/profile mutation
+  lock. Keep its enrollment-admission provider separate and lazy: model status
+  must not materialize global audio state or a diarizer. The admission adapter
+  is the only place this domain may coordinate Live Mic/Meeting/device-test
+  conflicts, the shared native-audio lease, prewarm, or the global active flag.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
@@ -134,15 +142,24 @@ Backend and runtime:
   accepted immediately before the barrier and reject work offered afterwards.
 - `src/runtime/audio_admission.py`: the single owner of this process's native
   audio lease. Only one capture may hold the device and the exclusion is
-  durable and cross-process, so `AudioAdmissionOwner` holds every rule for
-  keeping one: a heartbeat that never runs twice, adopting this controller's
-  own pending-to-durable Meeting rebinding instead of mistaking its CAS bump
-  for a loss, failing closed against a different controller, letting a Meeting
-  ride out an unavailable store while Live Mic gives up before the TTL lapses,
-  and releasing a lease a worker thread created after cancellation already won.
-  Go through the owner rather than touching `_persistent_audio_claim` and the
-  heartbeat task directly; those attributes are still the storage location, but
-  only as a migration seam.
+  durable and cross-process. `AudioAdmissionOwner` serializes acquire, transfer,
+  durable marking, loss, release, and close; converts the store's authoritative
+  UTC expiry into monotonic stop/expiry deadlines; and privately supervises one
+  heartbeat plus an independent watchdog. A per-capture loss handler must
+  confirm native producer and local persistence cleanup before the owner may
+  release SQLite ownership. Unknown stop or release state retains the claim for
+  retry. Only a current Meeting claim explicitly marked durable after its
+  `recording` row commits may ride out a generic renewal-store outage; pending
+  Meetings, Live Mic, device tests, and Voice enrollment fail closed before
+  expiry. The default ten-second stop margin permits two immediate four-second
+  Shell stop attempts; another attempt requires a successful renewal first.
+  Same-controller Meeting rebinding is adopted, foreign supersession is a loss,
+  and cancellation cannot abandon a committed acquire/transfer/release. Close
+  seals lifecycle admission before synchronization; only its final supervised-
+  task drain is time-bounded. Go through the owner rather than touching
+  `_persistent_audio_claim` directly; that attribute remains only as the
+  controller-storage migration seam. Heartbeat/watchdog tasks and loss state
+  belong exclusively to the owner and must never be mirrored on the controller.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
 - `src/local_polishing/`: public, immutable Hugging Face GGUF catalog,
@@ -1336,7 +1353,20 @@ Packaging and scripts:
   `BEGIN IMMEDIATE`, so a late finalizer cannot recreate deleted voice data;
   model downloads stay in unique verified staging files and may be promoted
   only while that gate remains enabled, with a post-promotion recheck for
-  cross-process deletion;
+  cross-process deletion. Status and profile collection combine the durable
+  gate with the local opt-in before exposing Voice Library state. Preview
+  reads/saves and every mutation that creates, renames, or associates biometric
+  data must consult both gates; enrollment, rename, merge, split, and finalizer
+  registration perform the durable check inside the same `BEGIN IMMEDIATE`
+  transaction as their writes. Individual-profile and whole-library deletion
+  are privacy-reducing erasure operations: keep them available after opt-out
+  without a consent-gate precondition, but map an unknown delete result to a
+  redacted 503. Any unknown gate/read/save/write result likewise fails closed
+  with a redacted 503 and no PCM response. Status and collection report the
+  disabled state without profile data; other gated public operations map a
+  disabled gate to 409. Cancellation
+  during model promotion still completes the post-check and deletes a promoted
+  model when consent is false or unreadable;
   public REST responses,
   exports, logs, diagnostics, and support bundles must not expose PCM,
   embeddings, raw endpoint IDs, frame-pipe names, or local paths.
@@ -1498,22 +1528,54 @@ Packaging and scripts:
   Reject an imported or finalized track above a known hard duration before the
   provider call, and keep the live UI's final-30-minute limit warning wired to
   the same central capability.
-- Live Mic, Meeting start/resume, and Meeting device tests share one admission
-  lock plus persisted singleton audio claim. Claim before prewarm/device awaits
-  and recheck Meeting state under the lock. The persisted claim uses opaque ids,
-  a 60-second expiry, a 15-second heartbeat, and CAS-safe transfer/release.
-  Paused Meetings retain ownership; stop, terminal failure, watchdog failure,
-  and graceful shutdown release it. Do not let startup steal a still-valid
-  claim from another controller, and do not rely on `_is_listening` alone. A
-  heartbeat that races the pending-to-durable Meeting transfer must adopt the
-  newer same-controller generation. Foreign supersession must fail closed by
-  stopping Live Mic or routing the Meeting through its capture watchdog. Live
-  Mic must win the persisted claim before constructing its pipeline, and stop
-  must release the claim before clearing `_is_stopping`; otherwise a queued
-  toggle can leave a never-started pipeline behind.
+- Live Mic, Meeting start/resume/reconnect, Meeting device tests, and Voice
+  enrollment share one admission lock plus the persisted singleton audio claim.
+  Claim before prewarm/device awaits and recheck Meeting state under the lock.
+  The claim uses opaque ids, a 60-second expiry, a 15-second heartbeat, and
+  CAS-safe transfer/release. Paused Meetings retain ownership. A Meeting becomes
+  durable only after its `recording` transition commits; await that owner
+  operation outside the capture setup lock so a concurrent loss handler can use
+  the same lock to stop and settle capture. Stop, terminal failure, watchdog
+  failure, and graceful shutdown release only after native stop and recorder
+  cleanup are confirmed. Do not let startup steal a still-valid claim from
+  another controller, and do not rely on `_is_listening` alone. A heartbeat that
+  races pending-to-Meeting transfer adopts the newer same-controller generation.
+  Foreign supersession invokes the generation-bound loss handler. Live Mic must
+  win the claim before pipeline construction, and stop must release it before
+  clearing `_is_stopping`; otherwise a queued toggle can leave a never-started
+  pipeline behind.
 - Persisted attempt route values are authoritative for language and exact model.
   Batch providers must not read mutable `Config.LANGUAGE` or model defaults for
   queued/retried/recovered work once a RouteSnapshot exists.
+  File ingestion additionally freezes one immutable `FileUploadPlan` before the
+  multipart stream is accepted: exact route/provider, source kind, raw-ingest
+  limit, and prepared-audio limit. Persist that same plan with the queued job
+  and restore it without consulting changed Settings. Source ownership transfers
+  when `start_file_transcription` is invoked. The transcript id is also the exact
+  durable job id. The shared resume lane serializes admission through adoption,
+  exact reconciliation, pending-job scheduling, cancellation settlement, and
+  deletion intent so no queued row can be owned by two runners. A confirmed
+  enqueue commit keeps the source and is adopted; a confirmed miss cleans every
+  admission projection; an unreadable exact state keeps the source, parent,
+  mapping, and retry marker while excluding that row from ordinary pending scans.
+  Never reselect a provider between upload admission and execution. YouTube has
+  no local source at enqueue, but the same post-commit cancellation boundary must
+  finish mapping, history publication, artifact-parent persistence, and
+  exactly-once scheduling before cancellation is delivered. Terminal recovery
+  uses a restart-safe projection protocol. A complete parent is authoritative
+  and is persisted before the exact job moves to its terminal state with
+  `terminal_projection_pending = 1`; failed or stopped work may use that same
+  job flag as a durable no-replay intent while the parent CAS is unavailable.
+  Cleanup releases an owned File source only after those durable states agree
+  and clears the flag last. A CAS loser adopts the authoritative parent instead
+  of saving a stale in-memory record. Startup drains flagged rows with a fair
+  keyset cursor and bounded backoff so one poison page cannot starve later work;
+  schema migration arms legacy terminal rows for the same recovery. If neither
+  the parent nor the job can record a cancellation intent, return the fixed
+  redacted 503 response and never schedule the provider. Transcript deletion
+  first persists `Deleting`, then removes the job row, owned source, and parent
+  in that order. Startup resumes this intent and must never resurrect or schedule
+  the deleted job.
   A recoverable Meeting attempt may be resumed only when workload, source track,
   provider, model, and language all match the Meeting's frozen route. A failed
   full-reprocess provider switch must update or roll back `final_provider` and
@@ -1897,9 +1959,9 @@ runs the same scoped type check after pytest. That reusable job must create its
 own `venv`, restore and validate the locked Profile B FFmpeg artifact, and run
 with inert provider credential sentinels installed by `tests/conftest.py`;
 never make the suite depend on a developer `.env`, real API keys, or untracked
-AutoResearch session files. Keep both static gates limited to `src/core`,
-`src/api`, `src/core`, `src/runtime`, and `src/data` until a separately reviewed
-branch expands the baseline.
+AutoResearch session files. Keep the scoped mypy gate limited to `src/api`,
+`src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
+expands the baseline.
 
 ```powershell
 cd Frontend

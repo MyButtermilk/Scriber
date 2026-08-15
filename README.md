@@ -403,7 +403,7 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
-scripts\project-python.cmd -m mypy src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 ```powershell

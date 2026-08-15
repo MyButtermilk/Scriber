@@ -96,7 +96,11 @@ async def test_file_transcription_uses_fallback_provider_when_primary_circuit_op
         patch("src.web_api.ScriberPipeline", _FallbackPipeline),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
     ):
-        rec = await ctl.start_file_transcription(sample_file, "sample.wav")
+        rec = await ctl.start_file_transcription(
+            sample_file,
+            "sample.wav",
+            plan=ctl.plan_file_upload(source_is_video=False),
+        )
         task = ctl._running_tasks[rec.id]
         await asyncio.gather(task, return_exceptions=True)
 
@@ -126,7 +130,11 @@ async def test_retry_ladder_retries_transient_file_failure(monkeypatch, tmp_path
         patch("src.web_api.ScriberPipeline", _RetryPipeline),
         patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
     ):
-        rec = await ctl.start_file_transcription(sample_file, "sample.wav")
+        rec = await ctl.start_file_transcription(
+            sample_file,
+            "sample.wav",
+            plan=ctl.plan_file_upload(source_is_video=False),
+        )
         deadline = loop.time() + 2.0
         while loop.time() < deadline and (rec.status != "completed" or rec.id in ctl._running_tasks):
             await asyncio.sleep(0.02)

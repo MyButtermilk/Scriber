@@ -272,11 +272,25 @@ async def test_due_job_backlog_refills_without_exceeding_concurrency(monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
+async def test_resume_pending_youtube_job_restarts_and_completes(isolated_recovery_database):
     loop = asyncio.get_running_loop()
-    store = JobStore(db_path=tmp_path / "jobs.db")
+    store = JobStore(db_path=isolated_recovery_database)
+    database.save_transcript(
+        TranscriptRecord(
+            id="tx-resume-youtube",
+            title="Resume Video",
+            date="Today",
+            duration="10:00",
+            status="processing",
+            type="youtube",
+            language="en",
+            step="Queued",
+            source_url="https://youtube.com/watch?v=resume123",
+        )
+    )
     store.enqueue(
         transcript_id="tx-resume-youtube",
+        job_id="tx-resume-youtube",
         job_type=JobType.YOUTUBE,
         payload={
             "url": "https://youtube.com/watch?v=resume123",
@@ -295,6 +309,11 @@ async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
         await release_run.wait()
         rec.status = "completed"
         rec.step = "Completed"
+        await ctl._save_transcript_to_db_async(
+            rec,
+            require_success=True,
+            terminal_parent_transition=True,
+        )
 
     with (
         patch.object(ctl, "_run_youtube_transcription", new=AsyncMock(side_effect=_fake_run)),
@@ -316,14 +335,21 @@ async def test_resume_pending_youtube_job_restarts_and_completes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_file_job_without_source_marks_failed(tmp_path):
+async def test_resume_file_job_without_source_marks_failed(isolated_recovery_database):
     loop = asyncio.get_running_loop()
-    store = JobStore(db_path=tmp_path / "jobs.db")
+    store = JobStore(db_path=isolated_recovery_database)
+    missing_path = isolated_recovery_database.parent / "deleted.wav"
+    _persist_file_projection(
+        transcript_id="tx-resume-file-missing",
+        source_path=missing_path,
+        status="processing",
+    )
     store.enqueue(
         transcript_id="tx-resume-file-missing",
+        job_id="tx-resume-file-missing",
         job_type=JobType.FILE,
         payload={
-            "path": str(tmp_path / "deleted.wav"),
+            "path": str(missing_path),
             "title": "Missing file",
             "language": "de",
         },
@@ -331,10 +357,7 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
 
     ctl = ScriberWebController(loop, job_store=store)
 
-    with (
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock,
-        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
-    ):
+    with patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()) as broadcast_mock:
         resumed = await ctl.resume_pending_jobs(limit=10)
         assert resumed == 0
 
@@ -349,24 +372,27 @@ async def test_resume_file_job_without_source_marks_failed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_resume_missing_owned_file_cleans_stale_upload_directory(tmp_path):
-    store = JobStore(db_path=tmp_path / "jobs.db")
+async def test_resume_missing_owned_file_cleans_stale_upload_directory(isolated_recovery_database):
+    store = JobStore(db_path=isolated_recovery_database)
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
-    ctl._downloads_dir = tmp_path / "downloads"
+    ctl._downloads_dir = isolated_recovery_database.parent / "downloads"
     upload_dir = ctl._downloads_dir / "files" / "stale-upload"
     upload_dir.mkdir(parents=True)
     missing_path = upload_dir / "missing.wav"
     (upload_dir / "leftover.tmp").write_bytes(b"stale")
+    _persist_file_projection(
+        transcript_id="tx-resume-owned-file-missing",
+        source_path=missing_path,
+        status="processing",
+    )
     store.enqueue(
         transcript_id="tx-resume-owned-file-missing",
+        job_id="tx-resume-owned-file-missing",
         job_type=JobType.FILE,
         payload={"path": str(missing_path), "title": "Missing owned file"},
     )
 
-    with (
-        patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
-        patch.object(ctl, "_save_transcript_to_db_async", new=AsyncMock()),
-    ):
+    with patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()):
         resumed = await ctl.resume_pending_jobs(limit=10)
 
     assert resumed == 0
@@ -530,12 +556,19 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
         persisted = database.get_transcript(transcript_id)
         recovered_job = store.get(job.id)
         assert persisted is not None
-        assert persisted["status"] == "completed"
-        assert _DURABLE_TRANSCRIPT_TEXT in persisted["content"]
-        assert "stale projection" not in persisted["content"]
         assert recovered_job is not None
-        assert recovered_job.status == JobStatus.COMPLETED
-        assert recovered_job.payload["executedRoute"] == recovered_job.payload["executionRoute"]
+        if stale_status == "failed":
+            # A durable terminal parent is authoritative. Canonical provider
+            # evidence may be retried locally, but cannot overwrite that winner.
+            assert persisted["status"] == "failed"
+            assert "stale projection" in persisted["content"]
+            assert recovered_job.status == JobStatus.QUEUED
+        else:
+            assert persisted["status"] == "completed"
+            assert _DURABLE_TRANSCRIPT_TEXT in persisted["content"]
+            assert "stale projection" not in persisted["content"]
+            assert recovered_job.status == JobStatus.COMPLETED
+            assert recovered_job.payload["executedRoute"] == recovered_job.payload["executionRoute"]
         assert recovered_job.provider_result_attempt_id == attempt.id
         prepare_audio.assert_not_called()
     finally:

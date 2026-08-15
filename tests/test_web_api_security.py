@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from src import web_api
 from src.api import youtube_routes
+from src.data.job_store import JobStore
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
@@ -83,6 +84,95 @@ async def test_file_upload_rejects_empty_file_before_scheduling(monkeypatch, tmp
     assert response.status == 400
     assert payload == {"message": "Uploaded file is empty"}
     assert ctl._running_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_file_upload_queues_the_provider_route_used_for_admission(monkeypatch, tmp_path):
+    """A circuit change while bytes arrive must not change the admitted route."""
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = tmp_path / "downloads"
+    selected_providers = iter(("assemblyai", "smallest"))
+    monkeypatch.setattr(ctl, "_select_available_provider", lambda: next(selected_providers))
+    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
+    monkeypatch.setattr(web_api, "_probe_media_duration_seconds", lambda _path: 1.0)
+    monkeypatch.setattr(ctl, "_schedule_file_job", lambda *_args, **_kwargs: None)
+
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        form = FormData()
+        form.add_field(
+            "file",
+            b"RIFF\x00\x00\x00\x00WAVEfmt ",
+            filename="admitted.wav",
+            content_type="audio/wav",
+        )
+        response = await client.post("/api/file/transcribe", data=form)
+        payload = await response.json()
+        job = store.get_by_transcript_id(str(payload.get("id") or ""))
+    finally:
+        await client.close()
+
+    assert response.status == 200, payload
+    assert job is not None
+    assert job.payload["executionRoute"]["provider"] == "assemblyai"
+
+
+@pytest.mark.asyncio
+async def test_file_upload_redacts_unexpected_start_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    monkeypatch.setattr(ctl, "_select_available_provider", lambda: "assemblyai")
+    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
+    monkeypatch.setattr(
+        ctl,
+        "start_file_transcription",
+        AsyncMock(side_effect=OSError(r"C:\Users\Alice\private.wav token=top-secret")),
+    )
+
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        form = FormData()
+        form.add_field("file", b"RIFF-WAVE", filename="private.wav", content_type="audio/wav")
+        response = await client.post("/api/file/transcribe", data=form)
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 500
+    assert payload == {"message": "Failed to process file upload"}
+
+
+@pytest.mark.asyncio
+async def test_file_upload_redacts_video_extraction_failure(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    monkeypatch.setattr(ctl, "_select_available_provider", lambda: "assemblyai")
+    monkeypatch.setattr(web_api, "_validate_provider_ready", lambda _provider: None)
+    monkeypatch.setattr(
+        web_api,
+        "_extract_audio_from_video",
+        AsyncMock(side_effect=RuntimeError(r"C:\Users\Alice\private.mp4 token=top-secret")),
+    )
+
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        form = FormData()
+        form.add_field("file", b"video", filename="private.mp4", content_type="video/mp4")
+        response = await client.post("/api/file/transcribe", data=form)
+        payload = await response.json()
+    finally:
+        await client.close()
+
+    assert response.status == 500
+    assert payload == {"message": "Failed to extract audio from video."}
 
 
 @pytest.mark.asyncio
