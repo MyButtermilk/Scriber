@@ -2784,7 +2784,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               <p className="px-2 py-5 text-sm text-destructive">{t("Meeting history could not be loaded.")}</p>
             )}
             {!meetingsQuery.isLoading && !meetingsQuery.isError && meetings.length === 0 && (
-              <div className="meetings-history-empty flex min-w-full items-center gap-3 rounded-[14px] px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-8 min-[1100px]:text-center">
+              <div
+                className="meetings-history-empty flex min-w-full items-center gap-3 rounded-[14px] px-3 py-4 text-left text-sm text-muted-foreground min-[1100px]:block min-[1100px]:py-8 min-[1100px]:text-center"
+                data-testid="meeting-catalog-empty"
+              >
                 <CalendarClock className="h-6 w-6 shrink-0 min-[1100px]:mx-auto min-[1100px]:mb-3 min-[1100px]:h-7 min-[1100px]:w-7" />
                 {t("Your first meeting will appear here.")}
               </div>
@@ -2793,6 +2796,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
               <div
                 key={meeting.id}
                 className={`neu-nav-item group flex min-w-0 items-center rounded-[14px] px-1 py-1 min-[1100px]:w-full ${selectedId === meeting.id ? "neu-nav-active text-foreground" : "text-muted-foreground"}`}
+                data-testid={`meeting-catalog-item-${meeting.id}`}
               >
                 <button
                   type="button"
@@ -2812,6 +2816,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </button>
                 <button
                   type="button"
+                  data-testid={`meeting-catalog-discard-${meeting.id}`}
                   aria-label={t("Delete {{title}}", { title: meeting.title })}
                   title={
                     OPEN_STATES.has(meeting.state) ? t("Stop this meeting before deleting it") : t("Delete meeting")
@@ -4989,6 +4994,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
           <AlertDialogFooter>
             <AlertDialogCancel disabled={deleteMeetingMutation.isPending}>{t("Cancel")}</AlertDialogCancel>
             <AlertDialogAction
+              data-testid="meeting-catalog-discard-confirm"
               disabled={!meetingPendingDelete || deleteMeetingMutation.isPending}
               onClick={(event) => {
                 event.preventDefault();

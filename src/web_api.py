@@ -57,6 +57,12 @@ from src.api.meeting_capture_routes import (
     MeetingStartCommand,
     register_meeting_capture_routes,
 )
+from src.api.meeting_catalog_routes import (
+    MeetingCatalogOutcome,
+    MeetingDetailQuery,
+    MeetingListQuery,
+    register_meeting_catalog_routes,
+)
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
 from src.api.meeting_processing_routes import (
@@ -3605,26 +3611,47 @@ class ScriberWebController:
         """Finish a discard interrupted between its DB tombstone and deletion."""
         try:
             meeting_ids = await asyncio.to_thread(self._meeting_store.discarded_meeting_ids)
-            storage_root = data_dir().resolve()
-            meetings_root = (storage_root / "meetings").resolve()
-            if meetings_root.parent != storage_root:
-                logger.error("Refusing to prune a redirected Meeting storage root")
-                return
             for meeting_id in meeting_ids:
                 if not re.fullmatch(r"[0-9a-f]{32}", meeting_id):
                     logger.error("Refusing to prune a Meeting with an invalid storage ID")
                     continue
-                meeting_root = (meetings_root / meeting_id).resolve()
-                if meeting_root.parent != meetings_root:
+                try:
+                    meeting_root = self._meeting_discard_workspace_path(meeting_id)
+                except ValueError:
+                    logger.error("Refusing to prune a redirected Meeting storage root")
                     continue
-                await remove_tree_if_exists(meeting_root)
-                await asyncio.to_thread(db.delete_transcript, meeting_id)
-                await to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
-                self.clear_meeting_audio_level_state(meeting_id)
+                await self._settle_discarded_meeting_workspace(
+                    meeting_id,
+                    meeting_root=meeting_root,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Discarded Meeting workspace cleanup failed")
+
+    @staticmethod
+    def _meeting_discard_workspace_path(meeting_id: str) -> Path:
+        storage_root = data_dir().resolve()
+        meetings_root = (storage_root / "meetings").resolve()
+        meeting_root = (meetings_root / meeting_id).resolve()
+        if meetings_root.parent != storage_root or meeting_root.parent != meetings_root:
+            raise ValueError("Meeting storage path is invalid.")
+        return meeting_root
+
+    async def _settle_discarded_meeting_workspace(
+        self,
+        meeting_id: str,
+        *,
+        meeting_root: Path,
+    ) -> None:
+        """Finish the one ordered cleanup sequence behind a durable tombstone."""
+
+        await remove_tree_if_exists(meeting_root)
+        await to_thread_cancellation_barrier(db.delete_transcript, meeting_id)
+        await to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
+        clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
+        if callable(clear_level_state):
+            clear_level_state(meeting_id)
 
     async def _prune_expired_meeting_audio(self) -> None:
         try:
@@ -13738,6 +13765,173 @@ class ScriberWebController:
             task=self._meeting_tasks.get(meeting_id),
         )
 
+    async def list_meetings(
+        self,
+        query: MeetingListQuery,
+    ) -> MeetingCatalogOutcome:
+        """Read one durable catalogue page and the independent active Meeting."""
+
+        payload = await asyncio.to_thread(
+            self._meeting_store.list,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        payload["apiVersion"] = REST_API_VERSION
+        payload["activeMeeting"] = await asyncio.to_thread(self._meeting_store.active)
+        return MeetingCatalogOutcome(status=200, payload=payload)
+
+    async def meeting_detail(
+        self,
+        meeting_id: str,
+        query: MeetingDetailQuery,
+    ) -> MeetingCatalogOutcome:
+        """Build the public Meeting detail projection from one durable revision."""
+
+        try:
+            detail = await asyncio.to_thread(
+                self._meeting_store.detail,
+                meeting_id,
+                revision=query.revision,
+            )
+            artifact_store = getattr(self, "_transcript_artifacts", None)
+            final_route: dict[str, Any] | None = None
+            track_results: Sequence[Any] = ()
+            track_derivations: Sequence[Any] = ()
+            if artifact_store is not None:
+
+                def final_route_snapshot() -> tuple[dict[str, Any] | None, str]:
+                    head = artifact_store.get_head(meeting_id)
+                    if head is None:
+                        return None, ""
+                    artifact = artifact_store.get_artifact(head.artifact_id)
+                    if artifact is None:
+                        return None, ""
+                    snapshot = artifact_store.get_route_snapshot(artifact.attempt_id)
+                    if snapshot is None:
+                        return None, ""
+                    route = {
+                        "provider": snapshot.provider,
+                        "model": snapshot.model,
+                        "transport": snapshot.transport,
+                        "language": snapshot.language,
+                        "timestampMode": snapshot.timestamp_mode,
+                        "diarizationMode": snapshot.diarization_mode,
+                    }
+                    return route, str(artifact.attempt_id)
+
+                try:
+                    final_route, attempt_id = await asyncio.to_thread(final_route_snapshot)
+                    detail["finalRoute"] = final_route
+                    if attempt_id:
+                        try:
+                            list_results = getattr(artifact_store, "list_track_stage_results", None)
+                            list_derivations = getattr(artifact_store, "list_track_derivations", None)
+                            if callable(list_results):
+                                track_results = await asyncio.to_thread(list_results, attempt_id)
+                            if callable(list_derivations):
+                                track_derivations = await asyncio.to_thread(list_derivations, attempt_id)
+                        except Exception as exc:
+                            logger.warning(
+                                "Meeting processing evidence unavailable for {}: {}",
+                                meeting_id,
+                                type(exc).__name__,
+                            )
+                            track_results = ()
+                            track_derivations = ()
+                except Exception as exc:
+                    # Historical transcript metadata is informative, not a
+                    # prerequisite for opening the meeting. A damaged or
+                    # partially migrated artifact must not make the entire
+                    # Meeting detail endpoint unavailable.
+                    logger.warning(
+                        "Meeting final-route metadata unavailable for {}: {}",
+                        meeting_id,
+                        type(exc).__name__,
+                    )
+                    detail["finalRoute"] = None
+            detail["processingComponents"] = _meeting_processing_components(
+                detail,
+                final_route=final_route,
+                track_results=track_results,
+                track_derivations=track_derivations,
+            )
+            detail["reprocessing"] = await _meeting_reprocessing_capabilities(
+                self,
+                detail,
+            )
+            detail["apiVersion"] = REST_API_VERSION
+            return MeetingCatalogOutcome(status=200, payload=detail)
+        except MeetingNotFound:
+            return MeetingCatalogOutcome(status=404, payload={"message": "Meeting not found"})
+
+    async def discard_meeting(
+        self,
+        meeting_id: str,
+    ) -> MeetingCatalogOutcome:
+        """Tombstone and completely remove one idle Meeting workspace."""
+
+        async def settle_discard() -> MeetingCatalogOutcome:
+            try:
+                current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                processing_task = getattr(self, "_meeting_tasks", {}).get(meeting_id)
+                import_store = getattr(self, "_meeting_import_store", None)
+                import_job = (
+                    await asyncio.to_thread(import_store.find_by_meeting_id, meeting_id)
+                    if import_store is not None
+                    else None
+                )
+                if (
+                    current["state"] in {"starting", "recording", "paused", "stopping", "finalizing", "analyzing"}
+                    or (processing_task is not None and not processing_task.done())
+                    or (
+                        import_job is not None
+                        and import_job.status
+                        in {
+                            MeetingImportStatus.COMMITTING,
+                            MeetingImportStatus.FINALIZING,
+                        }
+                    )
+                ):
+                    return MeetingCatalogOutcome(
+                        status=409,
+                        payload={
+                            "message": (
+                                "Meeting processing is still running. Wait for it to finish or fail "
+                                "before discarding the workspace."
+                            )
+                        },
+                    )
+                try:
+                    meeting_root = self._meeting_discard_workspace_path(meeting_id)
+                except ValueError as exc:
+                    return MeetingCatalogOutcome(
+                        status=400,
+                        payload={"message": str(exc)},
+                    )
+                discarded = await to_thread_cancellation_barrier(
+                    self._meeting_store.transition,
+                    meeting_id,
+                    "discarded",
+                )
+                await self._settle_discarded_meeting_workspace(
+                    meeting_id,
+                    meeting_root=meeting_root,
+                )
+                await self.broadcast(meeting_state_event(discarded))
+                return MeetingCatalogOutcome(
+                    status=200,
+                    payload={"success": True, "id": meeting_id, "apiVersion": REST_API_VERSION},
+                )
+            except MeetingNotFound:
+                return MeetingCatalogOutcome(status=404, payload={"message": "Meeting not found"})
+            except (InvalidMeetingTransition, MeetingConflict) as exc:
+                return MeetingCatalogOutcome(status=409, payload={"message": str(exc)})
+
+        outcome, pending_cancel = await await_with_delayed_cancellation(settle_discard())
+        if pending_cancel is not None:
+            raise pending_cancel
+        return outcome
+
     async def reprocess_meeting(
         self,
         meeting_id: str,
@@ -18040,18 +18234,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return await start_live_request(request, post_process=True)
 
-    async def list_meetings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "50"))
-            offset = int(request.query.get("offset", "0"))
-        except ValueError:
-            return web.json_response({"message": "limit and offset must be integers"}, status=400)
-        payload = await asyncio.to_thread(ctl._meeting_store.list, limit=limit, offset=offset)
-        payload["apiVersion"] = REST_API_VERSION
-        payload["activeMeeting"] = await asyncio.to_thread(ctl._meeting_store.active)
-        return web.json_response(payload)
-
     async def meeting_capabilities(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         long_session_target_seconds = 5 * 60 * 60
@@ -18714,86 +18896,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Meeting detection not found"}, status=404)
         return web.json_response({"apiVersion": REST_API_VERSION, "dismissed": True})
 
-    async def meeting_detail(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            detail = await asyncio.to_thread(
-                ctl._meeting_store.detail,
-                meeting_id,
-                revision=request.query.get("revision", "canonical"),
-            )
-            artifact_store = getattr(ctl, "_transcript_artifacts", None)
-            final_route: dict[str, Any] | None = None
-            track_results: Sequence[Any] = ()
-            track_derivations: Sequence[Any] = ()
-            if artifact_store is not None:
-
-                def final_route_snapshot() -> tuple[dict[str, Any] | None, str]:
-                    head = artifact_store.get_head(meeting_id)
-                    if head is None:
-                        return None, ""
-                    artifact = artifact_store.get_artifact(head.artifact_id)
-                    if artifact is None:
-                        return None, ""
-                    snapshot = artifact_store.get_route_snapshot(artifact.attempt_id)
-                    if snapshot is None:
-                        return None, ""
-                    route = {
-                        "provider": snapshot.provider,
-                        "model": snapshot.model,
-                        "transport": snapshot.transport,
-                        "language": snapshot.language,
-                        "timestampMode": snapshot.timestamp_mode,
-                        "diarizationMode": snapshot.diarization_mode,
-                    }
-                    return route, str(artifact.attempt_id)
-
-                try:
-                    final_route, attempt_id = await asyncio.to_thread(final_route_snapshot)
-                    detail["finalRoute"] = final_route
-                    if attempt_id:
-                        try:
-                            list_results = getattr(artifact_store, "list_track_stage_results", None)
-                            list_derivations = getattr(artifact_store, "list_track_derivations", None)
-                            if callable(list_results):
-                                track_results = await asyncio.to_thread(list_results, attempt_id)
-                            if callable(list_derivations):
-                                track_derivations = await asyncio.to_thread(list_derivations, attempt_id)
-                        except Exception as exc:
-                            logger.warning(
-                                "Meeting processing evidence unavailable for {}: {}",
-                                meeting_id,
-                                type(exc).__name__,
-                            )
-                            track_results = ()
-                            track_derivations = ()
-                except Exception as exc:
-                    # Historical transcript metadata is informative, not a
-                    # prerequisite for opening the meeting.  A damaged or
-                    # partially migrated artifact must not make the entire
-                    # meeting detail endpoint unavailable.
-                    logger.warning(
-                        "Meeting final-route metadata unavailable for {}: {}",
-                        meeting_id,
-                        type(exc).__name__,
-                    )
-                    detail["finalRoute"] = None
-            detail["processingComponents"] = _meeting_processing_components(
-                detail,
-                final_route=final_route,
-                track_results=track_results,
-                track_derivations=track_derivations,
-            )
-            detail["reprocessing"] = await _meeting_reprocessing_capabilities(
-                ctl,
-                detail,
-            )
-            detail["apiVersion"] = REST_API_VERSION
-            return web.json_response(detail)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
     def meeting_import_payload(record: Any, *, upload_url: str = "") -> dict[str, Any]:
         raw = record.to_public()
         state = str(raw.pop("status"))
@@ -18948,59 +19050,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             validate_provider_ready=lambda provider: _validate_provider_ready(provider),
             upload_limits=file_upload_limits,
         )
-
-    async def discard_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            processing_task = getattr(ctl, "_meeting_tasks", {}).get(meeting_id)
-            import_store = getattr(ctl, "_meeting_import_store", None)
-            import_job = (
-                await asyncio.to_thread(import_store.find_by_meeting_id, meeting_id)
-                if import_store is not None
-                else None
-            )
-            if (
-                current["state"] in {"starting", "recording", "paused", "stopping", "finalizing", "analyzing"}
-                or (processing_task is not None and not processing_task.done())
-                or (
-                    import_job is not None
-                    and import_job.status
-                    in {
-                        MeetingImportStatus.COMMITTING,
-                        MeetingImportStatus.FINALIZING,
-                    }
-                )
-            ):
-                return web.json_response(
-                    {
-                        "message": (
-                            "Meeting processing is still running. Wait for it to finish or fail "
-                            "before discarding the workspace."
-                        )
-                    },
-                    status=409,
-                )
-            storage_root = data_dir().resolve()
-            meetings_root = (storage_root / "meetings").resolve()
-            meeting_root = (meetings_root / meeting_id).resolve()
-            if meetings_root.parent != storage_root or meeting_root.parent != meetings_root:
-                return web.json_response({"message": "Meeting storage path is invalid."}, status=400)
-            discarded = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "discarded")
-            if meeting_root.is_dir():
-                await asyncio.to_thread(shutil.rmtree, meeting_root)
-            await asyncio.to_thread(db.delete_transcript, meeting_id)
-            await asyncio.to_thread(ctl._meeting_store.delete, meeting_id)
-            clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
-            if callable(clear_level_state):
-                clear_level_state(meeting_id)
-            await ctl.broadcast(meeting_state_event(discarded))
-            return web.json_response({"success": True, "id": meeting_id, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
 
     async def meeting_chat_threads(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -19387,7 +19436,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         render_export=_render_transcript_export_async,
     )
 
-    app.router.add_get("/api/meetings", list_meetings)
     app.router.add_get("/api/meetings/capabilities", meeting_capabilities)
     app.router.add_get("/api/meetings/audio-devices", meeting_audio_devices)
     app.router.add_post("/api/meetings/device-test", meeting_device_test)
@@ -19433,7 +19481,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             fallback_language=Config.LANGUAGE,
         ),
     )
-    app.router.add_get("/api/meetings/{id}", meeting_detail)
+    register_meeting_catalog_routes(app, control=controller)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
     app.router.add_get("/api/meetings/{id}/speaker-assignments", meeting_speaker_assignments)
@@ -19451,9 +19499,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         store=getattr(controller, "_meeting_store", None),
         broadcast=getattr(controller, "broadcast", None),
     )
-    app.router.add_delete("/api/meetings/{id}", discard_meeting)
-    app.router.add_post("/api/meetings/{id}/discard", discard_meeting)
-
     register_youtube_routes(app, controller=controller)
     register_file_transcription_routes(app, controller=controller)
 

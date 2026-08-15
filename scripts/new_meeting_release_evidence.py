@@ -142,6 +142,8 @@ def _required_placeholders(
         checks.update(
             microphoneSourceActive=False,
             systemSourceActive=False,
+            conferenceMicrophoneRemainsActive=False,
+            conferenceCameraRemainsActive=False,
             canonicalSegmentsChronological=False,
             canonicalSegmentsClickable=False,
             canonicalSegmentsAudioAligned=False,

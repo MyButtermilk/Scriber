@@ -791,6 +791,24 @@ class FakeController:
     async def analyze_meeting_again(self, meeting_id):
         return await web_api.ScriberWebController.analyze_meeting_again(self, meeting_id)
 
+    async def list_meetings(self, query):
+        return await web_api.ScriberWebController.list_meetings(self, query)
+
+    async def meeting_detail(self, meeting_id, query):
+        return await web_api.ScriberWebController.meeting_detail(self, meeting_id, query)
+
+    async def discard_meeting(self, meeting_id):
+        return await web_api.ScriberWebController.discard_meeting(self, meeting_id)
+
+    _meeting_discard_workspace_path = staticmethod(web_api.ScriberWebController._meeting_discard_workspace_path)
+
+    async def _settle_discarded_meeting_workspace(self, meeting_id, *, meeting_root):
+        return await web_api.ScriberWebController._settle_discarded_meeting_workspace(
+            self,
+            meeting_id,
+            meeting_root=meeting_root,
+        )
+
     def _reserve_meeting_processing(self, meeting_id, schedule):
         return web_api.ScriberWebController._reserve_meeting_processing(
             self,
@@ -1220,7 +1238,9 @@ async def test_meeting_list_limit_one_still_returns_the_independent_active_meeti
         def active():
             return active
 
-    app = web_api.create_app(SimpleNamespace(_meeting_store=Store()))
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._meeting_store = Store()
+    app = web_api.create_app(controller)
     handler = _route_handler(app, "GET", "/api/meetings")
     request = _DirectRequest(app)
     request.query = {"limit": "1", "offset": "0"}
@@ -1648,10 +1668,9 @@ async def test_meeting_detail_exposes_the_immutable_final_route_snapshot():
                 diarization_mode="native_if_evidenced_else_local",
             )
 
-    controller = SimpleNamespace(
-        _meeting_store=Store(),
-        _transcript_artifacts=Artifacts(),
-    )
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._meeting_store = Store()
+    controller._transcript_artifacts = Artifacts()
     app = web_api.create_app(controller)
     handler = _route_handler(app, "GET", "/api/meetings/{id}")
     response = await handler(_DirectRequest(app, meeting_id="meeting-route"))
@@ -1679,10 +1698,9 @@ async def test_meeting_detail_survives_unreadable_final_route_metadata():
         def get_head(_meeting_id):
             raise RuntimeError("corrupt artifact metadata")
 
-    controller = SimpleNamespace(
-        _meeting_store=Store(),
-        _transcript_artifacts=Artifacts(),
-    )
+    controller = object.__new__(web_api.ScriberWebController)
+    controller._meeting_store = Store()
+    controller._transcript_artifacts = Artifacts()
     app = web_api.create_app(controller)
     handler = _route_handler(app, "GET", "/api/meetings/{id}")
     response = await handler(_DirectRequest(app, meeting_id="meeting-corrupt-route"))

@@ -899,6 +899,67 @@ async function run(options) {
         throw new Error("Meeting playback did not honor the private byte-range contract");
       }
     }
+    activePhase = "validate-meeting-catalog";
+    const catalog = await browserJson(page, "GET", "/api/meetings?limit=7&offset=0");
+    if (
+      !Array.isArray(catalog?.items) ||
+      !catalog.items.some((meeting) => String(meeting?.id ?? "") === meetingId)
+    ) {
+      throw new Error("Meeting catalogue omitted the durable Meeting");
+    }
+    const catalogDetail = await browserJson(page, "GET", artifactBase);
+    if (
+      String(catalogDetail?.id ?? "") !== meetingId ||
+      String(catalogDetail?.title ?? "") !== workspaceTitle
+    ) {
+      throw new Error("Meeting catalogue detail omitted the durable projection");
+    }
+
+    activePhase = "discard-meeting-through-ui";
+    const catalogItemSelector = `[data-testid="meeting-catalog-item-${meetingId}"]`;
+    const discardSelector = `[data-testid="meeting-catalog-discard-${meetingId}"]`;
+    await page.waitForSelector(discardSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    await page.hover(catalogItemSelector);
+    await page.click(discardSelector);
+    const confirmSelector = '[data-testid="meeting-catalog-discard-confirm"]';
+    await page.waitForSelector(confirmSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    const discardResponse = page.waitForResponse(
+      (response) => {
+        const request = response.request();
+        try {
+          const url = new URL(response.url());
+          return request.method() === "DELETE" && url.pathname === artifactBase;
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.click(confirmSelector);
+    const discardedResponse = await discardResponse;
+    if (!discardedResponse.ok()) {
+      throw new Error(`Meeting catalogue discard failed with HTTP ${discardedResponse.status()}`);
+    }
+    await page.waitForFunction(
+      (itemSelector) =>
+        window.location.pathname.endsWith("/meetings") &&
+        document.querySelector(itemSelector) == null,
+      { timeout: options.navigationTimeoutMs },
+      catalogItemSelector,
+    );
+    const catalogAfterDiscard = await browserJson(page, "GET", "/api/meetings?limit=7&offset=0");
+    if (
+      !Array.isArray(catalogAfterDiscard?.items) ||
+      catalogAfterDiscard.items.some((meeting) => String(meeting?.id ?? "") === meetingId)
+    ) {
+      throw new Error("Meeting catalogue retained a discarded Meeting");
+    }
     if (diagnostics.pageErrorCount > 0) {
       activePhase = "validate-page-errors";
       throw new Error(
@@ -931,6 +992,9 @@ async function run(options) {
       meetingArtifactDocumentVerified: true,
       meetingArtifactEmailVerified: true,
       meetingArtifactPlaybackVerified: true,
+      meetingCatalogListVerified: true,
+      meetingCatalogDetailVerified: true,
+      meetingCatalogDiscardVerified: true,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
       diagnostics: { ...diagnostics },

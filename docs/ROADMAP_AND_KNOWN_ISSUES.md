@@ -132,8 +132,8 @@ Meetings:
   Device, Outlook Calendar, Meeting Import, Voice Component, File
   Transcription, WebSocket, Meeting Capture start/pause/resume/stop, Meeting
   Workspace title/search/correction/note/action-item routes, and Meeting
-  Processing reprocess/finalize/retry/analyze routes, and Meeting Artifacts
-  playback/export/email routes
+  Processing reprocess/finalize/retry/analyze routes, Meeting Artifacts
+  playback/export/email routes, and Meeting Catalog list/detail/discard routes
   now follow the same module-level
   registration shape with domain-local ports or collaborator interfaces.
   Transcript routes were the first to need controller internals; those became

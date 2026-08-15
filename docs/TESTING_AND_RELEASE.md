@@ -84,6 +84,11 @@ the domain module.
 preview, and RFC 822 draft requests through the isolated aiohttp boundary,
 pins the exact two-read MeetingStore collaborator, and proves all five
 registrations resolve to the controller-free domain module.
+`tests/api/test_meeting_catalog_routes.py` sends list, detail, DELETE, and the
+POST discard alias through the isolated aiohttp boundary, pins the exact
+three-method controller port and outcome type, proves composition wiring, and
+repeatedly cancels discard while workspace removal is blocked to verify that
+every owned cleanup step settles before cancellation is delivered.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
@@ -2169,7 +2174,7 @@ into permanent Markdown unless a concise current result belongs in
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/api/test_meeting_artifact_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/api/test_meeting_artifact_routes.py tests/api/test_meeting_catalog_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
@@ -2302,7 +2307,10 @@ also exercises the extracted Meeting Workspace title, segment edit/search/
 history/undo, and note paths plus the extracted Meeting Artifacts JSON/PDF
 exports, email preview/draft, and private byte-range playback paths through the
 production `create_app`, document renderer, public storage root, and SQLite
-store. Its retained JSON contains hashes,
+store. It finally reads the extracted Meeting Catalog list and enriched detail,
+confirms discard through the visible React dialog, and waits for both the UI
+collection and durable SQLite catalogue to remove the Meeting. Its retained
+JSON contains hashes,
 counts, states, and timings only—never audio, transcript text, credentials,
 URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
 deterministic regression gate; it does not replace physical microphone,
@@ -2443,6 +2451,9 @@ and process recovery, corrupt-chunk and disk-full behavior, both Outlook account
 types and sync failure modes, a 60-minute recording, a two-hour stability soak,
 the held voiceprint corpus, support-bundle privacy, the separate EU voiceprint
 legal/privacy review, the existing regression suite, and signed release assets.
+Every Teams/Zoom/Meet profile must keep the conference client's own microphone
+and camera active while Scriber captures; Scriber's Mic/System checks alone are
+not coexistence evidence.
 It enforces the plan thresholds: start <= 3 seconds, live interim P95 <= 2
 seconds, measurable AEC reduction, no unmarked loss, exactly one gap per
 intentional reconnect/resume, and crash loss <= the open 30-second chunk.

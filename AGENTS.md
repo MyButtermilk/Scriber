@@ -55,7 +55,8 @@ Backend and runtime:
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
   Component, File Transcription, WebSocket, Meeting Capture, Meeting
-  Workspace, Meeting Processing, and Meeting Artifacts route domains,
+  Workspace, Meeting Processing, Meeting Artifacts, and Meeting Catalog route
+  domains,
   shared aiohttp app
   keys, HTTP/WebSocket security helpers, and the upload policy used by both file
   transcription and Meeting imports.
@@ -115,6 +116,11 @@ Backend and runtime:
   bundle per request. Its boundary exposes only exact Meeting reads, the public
   storage root, the document renderer, and the fallback language; never add
   forwarding controller methods or expose private storage paths in responses.
+  Meeting Catalog owns list pagination, enriched detail reads, and both discard
+  aliases behind one three-method controller port. The controller retains
+  artifact/reprocessing projection, task/import admission checks, the durable
+  discard tombstone, and cancellation-safe workspace/transcript/store cleanup;
+  a canceled HTTP request must not abandon any cleanup step after tombstoning.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than
@@ -450,6 +456,10 @@ Packaging and scripts:
   exist and match their SHA-256. Final Meeting promotion must run hybrid
   readiness with `-RequireMeetingReleaseMatrix`; never treat generated drafts,
   partial validation, or unsigned validation as release evidence.
+  Every physical meeting-client profile must additionally prove that the
+  conference client's microphone and camera remain active while Scriber owns
+  its shared-mode Mic/System capture; Scriber-source activity alone is not a
+  coexistence check.
 - Meeting validation areas stay atomic. Support-bundle privacy and automated
   regression evidence may be collected with
   `scripts/collect_meeting_support_bundle_evidence.py` and

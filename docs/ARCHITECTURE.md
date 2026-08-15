@@ -118,7 +118,8 @@ Meetings:
    start surface: `live_final` adds best-effort live text and then a canonical
    final pass; `final_only` records locally and opens no live STT connection.
 2. One crash-isolated Rust audio-sidecar process opens WASAPI microphone and
-   loopback sources at 48 kHz. Pinned `aec3-rs` consumes the loopback render
+   loopback sources at 48 kHz in shared mode; it never opens a camera/video
+   device. Pinned `aec3-rs` consumes the loopback render
    reference and produces a cleaned microphone stream before all three tracks
    are downsampled to 16 kHz and stamped on one monotonic timeline.
    Its private endpoint inventory covers capture and render flows; the
@@ -133,6 +134,9 @@ Meetings:
    evidence, not a perceptual quality score: release calibration uses a
    dedicated remote-only render-active capture session, while double-talk is
    evaluated separately.
+   The physical Teams/Zoom/Meet release profiles must still confirm that each
+   conference client's microphone and camera remain active during capture;
+   shared-mode implementation evidence does not replace coexistence evidence.
 3. Python persists raw mic, AEC-clean mic, and system PCM into 30-second WAV
    chunks. Cross-filesystem publication uses a recoverable two-phase protocol:
    close and fsync a deterministic `.partial.wav`, hash it, persist a `prepared`
@@ -953,13 +957,14 @@ Key modules:
   `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
   `src/api/websocket_routes.py`, `src/api/meeting_capture_routes.py`,
   `src/api/meeting_workspace_routes.py`, and
-  `src/api/meeting_processing_routes.py`, and
-  `src/api/meeting_artifact_routes.py`:
+  `src/api/meeting_processing_routes.py`,
+  `src/api/meeting_artifact_routes.py`, and
+  `src/api/meeting_catalog_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
   Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
-  Capture lifecycle, Meeting Workspace, Meeting Processing, and Meeting
-  Artifacts domains.
+  Capture lifecycle, Meeting Workspace, Meeting Processing, Meeting Artifacts,
+  and Meeting Catalog domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
@@ -1063,6 +1068,13 @@ Key modules:
   `MeetingStore` reads, public storage root, document renderer, and fallback
   language. Byte-range responses stay private and non-cacheable; attachment
   names pass through the shared safe content-disposition boundary.
+- Meeting Catalog owns pagination and revision parsing for list/detail plus the
+  two discard transport aliases. Its three-method controller port returns one
+  route-owned outcome type. The controller remains the single owner of detail
+  enrichment, processing/import admission, the durable `discarded` tombstone,
+  and ordered workspace -> transcript -> Meeting cleanup. That settlement is
+  protected from repeated request cancellation; maintenance can finish a
+  tombstoned discard after a process crash.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
   transport-security policy and identity-stable aiohttp application keys used
   across composition and extracted route modules.
