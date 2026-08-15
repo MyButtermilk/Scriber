@@ -951,12 +951,13 @@ Key modules:
   `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
   `src/api/meeting_delivery_routes.py`, `src/api/meeting_import_routes.py`,
   `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
-  `src/api/websocket_routes.py`, `src/api/meeting_capture_routes.py`, and
-  `src/api/meeting_workspace_routes.py`:
+  `src/api/websocket_routes.py`, `src/api/meeting_capture_routes.py`,
+  `src/api/meeting_workspace_routes.py`, and
+  `src/api/meeting_processing_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
   Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
-  Capture lifecycle, and Meeting Workspace domains.
+  Capture lifecycle, Meeting Workspace, and Meeting Processing domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
@@ -1048,6 +1049,12 @@ Key modules:
   durable `MeetingStore` collaborator and broadcast callback. It is
   controller-free; composition must not grow one forwarding controller method
   per store operation.
+- Meeting Processing owns the HTTP boundary for speaker-identity and full-
+  transcript reprocessing, finalization retries, and analysis reruns. The
+  route module validates immutable commands and maps one route-owned outcome;
+  its three-method controller port deliberately leaves durable task
+  reservation, provider/model changes, state transitions, rollback, and worker
+  gates with the controller that already owns those lifecycle resources.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
   transport-security policy and identity-stable aiohttp application keys used
   across composition and extracted route modules.

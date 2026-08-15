@@ -778,6 +778,26 @@ class FakeController:
     async def stop_meeting_capture(self, meeting_id):
         return await web_api.ScriberWebController.stop_meeting_capture(self, meeting_id)
 
+    async def reprocess_meeting(self, meeting_id, command):
+        return await web_api.ScriberWebController.reprocess_meeting(self, meeting_id, command)
+
+    async def retry_meeting_finalization(self, meeting_id, command):
+        return await web_api.ScriberWebController.retry_meeting_finalization(
+            self,
+            meeting_id,
+            command,
+        )
+
+    async def analyze_meeting_again(self, meeting_id):
+        return await web_api.ScriberWebController.analyze_meeting_again(self, meeting_id)
+
+    def _reserve_meeting_processing(self, meeting_id, schedule):
+        return web_api.ScriberWebController._reserve_meeting_processing(
+            self,
+            meeting_id,
+            schedule,
+        )
+
     def schedule_meeting_finalization(self, meeting_id, **_kwargs):
         self.scheduled.append(meeting_id)
         return True
@@ -7409,7 +7429,7 @@ async def test_speaker_reprocess_returns_accepted_without_waiting_for_local_mode
         def speaker_library_enabled():
             return True
 
-    class Controller:
+    class Controller(web_api.ScriberWebController):
         def __init__(self):
             self._meeting_store = Store()
             self._speaker_model = SimpleNamespace(status=lambda: {"installed": True})
@@ -7470,7 +7490,7 @@ async def test_full_reprocess_reserves_current_settings_and_opens_worker_gate(mo
             reserved.update(meeting_id=_meeting_id, **kwargs)
             return {"id": _meeting_id, "state": "finalizing", "title": "Meeting"}
 
-    class Controller:
+    class Controller(web_api.ScriberWebController):
         def __init__(self):
             self._meeting_store = Store()
             self._speaker_model = SimpleNamespace(status=lambda: {"installed": True})

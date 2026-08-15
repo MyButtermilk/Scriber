@@ -761,6 +761,43 @@ async function run(options) {
     if (audioGaps.length === 0) {
       throw new Error("pause/resume flow did not persist an audio gap");
     }
+    activePhase = "reprocess-meeting-transcript";
+    const reprocess = await browserJson(
+      page,
+      "POST",
+      `/api/meetings/${encodeURIComponent(meetingId)}/reprocess`,
+      { mode: "full_transcript" },
+    );
+    if (
+      String(reprocess?.mode ?? "") !== "full_transcript" ||
+      String(reprocess?.meeting?.state ?? "") !== "finalizing"
+    ) {
+      throw new Error("Meeting reprocess admission did not reserve finalization");
+    }
+    const reprocessedDetail = await waitForMeetingState(
+      access,
+      meetingId,
+      ["ready"],
+      options.finalizationTimeoutMs,
+      observedStates,
+    );
+    const reprocessedTranscript = Array.isArray(reprocessedDetail?.segments)
+      ? reprocessedDetail.segments
+          .map((segment) => String(segment?.text ?? ""))
+          .join(" ")
+          .trim()
+      : "";
+    if (reprocessedTranscript.length < 12) {
+      throw new Error("Meeting reprocess produced no meaningful transcript");
+    }
+    if (
+      options.expectedTokens.length > 0 &&
+      !options.expectedTokens.some((token) =>
+        normalizeText(reprocessedTranscript).includes(token),
+      )
+    ) {
+      throw new Error("Meeting reprocess lost every configured synthetic marker");
+    }
     if (diagnostics.pageErrorCount > 0) {
       activePhase = "validate-page-errors";
       throw new Error(
@@ -788,6 +825,7 @@ async function run(options) {
       workspaceTitleVerified: true,
       workspaceSegmentVerified: true,
       workspaceNoteVerified: true,
+      meetingReprocessVerified: true,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
       diagnostics: { ...diagnostics },

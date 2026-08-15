@@ -35,6 +35,8 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert 'browserJson(\n      page,\n      "PATCH"' in driver
     assert 'activePhase = "save-meeting-workspace-note"' in driver
     assert 'browserJson(\n      page,\n      "PUT"' in driver
+    assert 'activePhase = "reprocess-meeting-transcript"' in driver
+    assert '{ mode: "full_transcript" }' in driver
 
 
 def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
@@ -72,6 +74,7 @@ def test_meeting_speech_smoke_artifacts_are_privacy_minimal() -> None:
         "workspaceTitleVerified",
         "workspaceSegmentVerified",
         "workspaceNoteVerified",
+        "meetingReprocessVerified",
         "diagnostics",
         "meetingDebug",
     ):

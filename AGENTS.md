@@ -54,8 +54,8 @@ Backend and runtime:
   into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
-  Component, File Transcription, WebSocket, Meeting Capture, and Meeting
-  Workspace route domains,
+  Component, File Transcription, WebSocket, Meeting Capture, Meeting
+  Workspace, and Meeting Processing route domains,
   shared aiohttp app
   keys, HTTP/WebSocket security helpers, and the upload policy used by both file
   transcription and Meeting imports.
@@ -105,6 +105,11 @@ Backend and runtime:
   store plus broadcast boundary. Keep its eight store operations behind the
   domain-local collaborator Protocol; do not mirror them as controller
   middle-men.
+  Meeting Processing owns the HTTP boundary for speaker-identity/full-transcript
+  reprocessing, finalization retries, and analysis reruns. Strict immutable
+  commands cross one three-method controller port; the controller remains the
+  single owner of task reservation, durable state transitions, provider/model
+  changes, rollback, and worker-gate ordering.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than

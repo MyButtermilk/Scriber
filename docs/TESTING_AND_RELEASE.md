@@ -75,6 +75,11 @@ handlers.
 workspace operations through the isolated aiohttp boundary, pins the exact
 `MeetingStore` collaborator surface, and proves `create_app` resolves each
 method/path pair to the domain module.
+`tests/api/test_meeting_processing_routes.py` sends reprocess, finalize/retry,
+and analyze commands through the isolated aiohttp boundary, rejects malformed
+command fields before admission, pins the exact three-method controller port
+and its route-owned outcome type, and proves all four registrations resolve to
+the domain module.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
@@ -2155,12 +2160,12 @@ These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
 `README.md` or `docs/PERFORMANCE_AND_PACKAGING.md`.
 
-## Meeting Workspace Gates
+## Meeting Route And Workspace Gates
 
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_workspace_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
@@ -2287,7 +2292,11 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 The runner pins Puppeteer Core in an isolated ignored directory, requires the
 Tauri-supervised runtime, validates the `recording -> paused -> recording ->
 ready` lifecycle plus canonical transcript segments and the persisted pause
-gap, and proves bounded descendant cleanup. Its retained JSON contains hashes,
+gap, then sends `full_transcript` through the extracted Meeting Processing
+route and waits for the second durable `finalizing -> ready` settlement. It
+also exercises the extracted Meeting Workspace title, segment edit/search/
+history/undo, and note paths through the production `create_app` and SQLite
+store. Its retained JSON contains hashes,
 counts, states, and timings only—never audio, transcript text, credentials,
 URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
 deterministic regression gate; it does not replace physical microphone,

@@ -54,6 +54,13 @@ from src.api.meeting_capture_routes import (
 )
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
+from src.api.meeting_processing_routes import (
+    MeetingProcessingOutcome,
+    MeetingReprocessCommand,
+    MeetingReprocessMode,
+    MeetingRetryCommand,
+    register_meeting_processing_routes,
+)
 from src.api.meeting_workspace_routes import (
     MeetingWorkspaceDeps,
     register_meeting_workspace_routes,
@@ -2168,6 +2175,27 @@ def _voice_enrollment_admission(controller: Any) -> _ControllerVoiceEnrollmentAd
         admission = _ControllerVoiceEnrollmentAdmission(controller)
         controller._voice_enrollment_admission = admission
     return admission
+
+
+@dataclass(slots=True)
+class _MeetingProcessingReservation:
+    """One reserved worker whose gate opens only after durable admission."""
+
+    start_gate: asyncio.Event
+    task: asyncio.Task | None
+
+    @property
+    def opened(self) -> bool:
+        return self.start_gate.is_set()
+
+    def open(self) -> None:
+        self.start_gate.set()
+
+    async def cancel_before_start(self) -> None:
+        if self.opened or self.task is None:
+            return
+        self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
 
 
 @dataclass
@@ -13686,6 +13714,408 @@ class ScriberWebController:
         await self.broadcast(meeting_state_event(current))
         return result
 
+    def _reserve_meeting_processing(
+        self,
+        meeting_id: str,
+        schedule: Callable[..., bool],
+    ) -> _MeetingProcessingReservation | None:
+        start_gate = asyncio.Event()
+        if not schedule(meeting_id, start_gate=start_gate):
+            return None
+        return _MeetingProcessingReservation(
+            start_gate=start_gate,
+            task=self._meeting_tasks.get(meeting_id),
+        )
+
+    async def reprocess_meeting(
+        self,
+        meeting_id: str,
+        command: MeetingReprocessCommand,
+    ) -> MeetingProcessingOutcome:
+        """Reserve and start one durable Meeting reprocessing mode."""
+
+        mode = command.mode
+        try:
+            detail = await asyncio.to_thread(self._meeting_store.detail, meeting_id)
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        capabilities = await _meeting_reprocessing_capabilities(self, detail)
+
+        if mode is MeetingReprocessMode.SPEAKER_IDENTITY:
+            if not capabilities["speakerIdentityAvailable"]:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={
+                        "message": capabilities["speakerIdentityUnavailableReason"]
+                        or "Speaker matching is unavailable for this Meeting."
+                    },
+                )
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                self.schedule_meeting_speaker_reprocessing,
+            )
+            if reservation is None:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting processing is already running."},
+                )
+            if reservation.task is None:
+                return MeetingProcessingOutcome(
+                    status=503,
+                    payload={"message": "Speaker matching could not be started."},
+                )
+            reservation.open()
+            meeting = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": meeting,
+                    "mode": mode,
+                },
+            )
+
+        if not capabilities["fullTranscriptAvailable"]:
+            return MeetingProcessingOutcome(
+                status=409,
+                payload={
+                    "message": capabilities["fullTranscriptUnavailableReason"]
+                    or "Full Meeting retranscription is unavailable."
+                },
+            )
+
+        reservation = self._reserve_meeting_processing(
+            meeting_id,
+            self.schedule_meeting_finalization,
+        )
+        if reservation is None:
+            return MeetingProcessingOutcome(
+                status=409,
+                payload={"message": "Meeting processing is already running."},
+            )
+        if reservation.task is None:
+            return MeetingProcessingOutcome(
+                status=503,
+                payload={"message": "Meeting retranscription could not be started."},
+            )
+        try:
+            finalizing, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    self._meeting_store.reserve_full_reprocess,
+                    meeting_id,
+                    final_provider=capabilities["selectedFinalProvider"],
+                    final_model=capabilities["selectedFinalModel"],
+                    analysis_model=(Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL),
+                    voice_library_enabled=bool(capabilities["voiceLibraryEnabledForRun"]),
+                )
+            )
+            reservation.open()
+            if pending_cancel is not None:
+                raise pending_cancel
+            await self.broadcast(meeting_state_event(finalizing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": finalizing,
+                    "mode": mode,
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except (InvalidMeetingTransition, MeetingConflict) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        except ValueError as exc:
+            return MeetingProcessingOutcome(status=400, payload={"message": str(exc)})
+        finally:
+            await reservation.cancel_before_start()
+
+    async def retry_meeting_finalization(
+        self,
+        meeting_id: str,
+        command: MeetingRetryCommand,
+    ) -> MeetingProcessingOutcome:
+        """Reserve a durable finalization or analysis retry."""
+
+        requested_final_provider = command.final_provider
+        requested_analysis_model = command.analysis_model
+        reservation: _MeetingProcessingReservation | None = None
+        reopened_import: Any | None = None
+        original_state = ""
+        retry_state = ""
+        previous_final_provider = ""
+        previous_reprocess_final_model: str | None = None
+        previous_analysis_model = ""
+        changed_final_provider = ""
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            if current["state"] not in {
+                "finalization_failed",
+                "analysis_failed",
+                "interrupted",
+                "capture_failed",
+            }:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting is not waiting for a finalization retry."},
+                )
+            original_state = str(current["state"])
+            retry_state = "analyzing" if current["state"] == "analysis_failed" else "finalizing"
+            previous_analysis_model = str(current.get("analysisModel") or "").strip()
+            analysis_model_for_retry: str | None = None
+            if retry_state == "analyzing":
+                analysis_model_for_retry = _validate_summarization_model(
+                    requested_analysis_model or Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
+                )
+                if not _meeting_llm_model_ready(analysis_model_for_retry):
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={"message": "Configure the API key for the selected Meeting analysis model first."},
+                    )
+            elif requested_analysis_model:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "The Meeting analysis model can change only during an analysis retry."},
+                )
+            if requested_final_provider:
+                if retry_state != "finalizing":
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={
+                            "message": "The final transcription provider cannot change during an analysis-only retry."
+                        },
+                    )
+                if requested_final_provider not in _MEETING_FINAL_STT_PROVIDERS:
+                    return MeetingProcessingOutcome(
+                        status=400,
+                        payload={"message": "Unsupported final meeting transcription provider."},
+                    )
+                readiness_error = _provider_readiness_error(requested_final_provider)
+                if readiness_error:
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={"message": readiness_error},
+                    )
+                current_provider = str(current.get("finalProvider") or "").strip().lower()
+                capture_metadata = current.get("captureMetadata")
+                is_full_reprocess = bool(
+                    isinstance(capture_metadata, dict) and capture_metadata.get("reprocessKind") == "full_transcript"
+                )
+                if is_full_reprocess:
+                    previous_reprocess_final_model = str(capture_metadata.get("reprocessFinalModel") or "").strip()
+                retry_final_model = (
+                    previous_reprocess_final_model
+                    if requested_final_provider == current_provider and previous_reprocess_final_model is not None
+                    else provider_batch_model(requested_final_provider)
+                )
+                provider_duration_limit = meeting_max_duration_seconds(
+                    requested_final_provider,
+                    retry_final_model,
+                )
+                if provider_duration_limit is not None:
+                    durable_timeline_ms = max(
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "microphone",
+                        ),
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "mic_clean",
+                        ),
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "system",
+                        ),
+                    )
+                    if durable_timeline_ms > provider_duration_limit * 1_000:
+                        return MeetingProcessingOutcome(
+                            status=409,
+                            payload={
+                                "message": (
+                                    f"{_service_label(requested_final_provider)} accepts Meeting "
+                                    f"tracks up to {provider_duration_limit // 60} minutes."
+                                )
+                            },
+                        )
+                if requested_final_provider != current_provider:
+                    previous_final_provider = await asyncio.to_thread(
+                        self._meeting_store.change_final_provider_for_retry,
+                        meeting_id,
+                        requested_final_provider,
+                        expected_state=original_state,
+                        expected_final_provider=current_provider,
+                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=retry_final_model,
+                    )
+                    changed_final_provider = requested_final_provider
+            import_job = await asyncio.to_thread(
+                self._meeting_import_store.find_by_meeting_id,
+                meeting_id,
+            )
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                (self.schedule_meeting_analysis if retry_state == "analyzing" else self.schedule_meeting_finalization),
+            )
+            if reservation is None:
+                if changed_final_provider:
+                    await asyncio.to_thread(
+                        self._meeting_store.change_final_provider_for_retry,
+                        meeting_id,
+                        previous_final_provider,
+                        expected_state=original_state,
+                        expected_final_provider=changed_final_provider,
+                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=previous_reprocess_final_model,
+                    )
+                    changed_final_provider = ""
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting processing is already running."},
+                )
+            if import_job is not None and import_job.status == MeetingImportStatus.FAILED:
+                reopened_import = await to_thread_cancellation_barrier(
+                    self._meeting_import_store.transition,
+                    import_job.id,
+                    MeetingImportStatus.FINALIZING,
+                    expected_status=MeetingImportStatus.FAILED,
+                )
+                await self._broadcast_meeting_import(
+                    reopened_import,
+                    0.97,
+                    "Retrying Meeting import finalization",
+                )
+            finalizing = await to_thread_cancellation_barrier(
+                self._meeting_store.transition,
+                meeting_id,
+                retry_state,
+                analysis_model=analysis_model_for_retry,
+            )
+            reservation.open()
+            await self.broadcast(meeting_state_event(finalizing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={**finalizing, "apiVersion": REST_API_VERSION},
+            )
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except ValueError as exc:
+            return MeetingProcessingOutcome(status=400, payload={"message": str(exc)})
+        except (
+            InvalidMeetingTransition,
+            MeetingConflict,
+            InvalidMeetingImportTransition,
+            MeetingImportConflict,
+        ) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        finally:
+            if reservation is not None and not reservation.opened:
+                await reservation.cancel_before_start()
+                if retry_state and original_state:
+                    try:
+                        persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                        if persisted["state"] == retry_state:
+                            rollback_state = (
+                                "finalization_failed" if original_state == "capture_failed" else original_state
+                            )
+                            await to_thread_cancellation_barrier(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                rollback_state,
+                                error_code=str(current.get("errorCode") or "retry_not_started"),
+                                error_message=str(current.get("errorMessage") or "Meeting retry could not be started."),
+                                analysis_model=(previous_analysis_model if retry_state == "analyzing" else None),
+                            )
+                    except Exception:
+                        logger.exception("Meeting retry state reservation could not be rolled back")
+                if reopened_import is not None:
+                    try:
+                        await to_thread_cancellation_barrier(
+                            self._meeting_import_store.mark_failed,
+                            reopened_import.id,
+                            error_code="retry_not_started",
+                            error_message="Meeting retry could not be started.",
+                        )
+                    except Exception:
+                        logger.exception("Meeting import retry reservation could not be rolled back")
+            if reservation is not None and not reservation.opened and changed_final_provider:
+                try:
+                    persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                    if (
+                        persisted.get("state") in {"finalization_failed", "capture_failed", "interrupted"}
+                        and str(persisted.get("finalProvider") or "").strip().lower() == changed_final_provider
+                    ):
+                        await to_thread_cancellation_barrier(
+                            self._meeting_store.change_final_provider_for_retry,
+                            meeting_id,
+                            previous_final_provider,
+                            expected_state=str(persisted["state"]),
+                            expected_final_provider=changed_final_provider,
+                            allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                            final_model=previous_reprocess_final_model,
+                        )
+                except Exception:
+                    logger.exception("Meeting retry provider reservation could not be rolled back")
+
+    async def analyze_meeting_again(self, meeting_id: str) -> MeetingProcessingOutcome:
+        """Reserve one durable Meeting analysis rerun."""
+
+        reservation: _MeetingProcessingReservation | None = None
+        original_state = ""
+        current: dict[str, Any] = {}
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            if current["state"] not in {"ready", "analysis_failed"}:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting is not ready for analysis."},
+                )
+            original_state = str(current["state"])
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                self.schedule_meeting_analysis,
+            )
+            if reservation is None:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting analysis is already running."},
+                )
+            analyzing = await to_thread_cancellation_barrier(
+                self._meeting_store.transition,
+                meeting_id,
+                "analyzing",
+            )
+            reservation.open()
+            await self.broadcast(meeting_state_event(analyzing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={**analyzing, "apiVersion": REST_API_VERSION},
+            )
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except (InvalidMeetingTransition, MeetingConflict) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        finally:
+            if reservation is not None and not reservation.opened:
+                await reservation.cancel_before_start()
+                if original_state:
+                    try:
+                        persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                        if persisted["state"] == "analyzing":
+                            await to_thread_cancellation_barrier(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                original_state,
+                                error_code=str(current.get("errorCode") or ""),
+                                error_message=str(current.get("errorMessage") or ""),
+                            )
+                    except Exception:
+                        logger.exception("Meeting analysis reservation could not be rolled back")
+
     async def _run_meeting_analysis(self, meeting_id: str) -> None:
         from src.meeting_analysis import MEETING_ANALYSIS_SCHEMA_VERSION, analyze_meeting
         from src.summarization import generate_meeting_analysis_text
@@ -18508,362 +18938,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             upload_limits=file_upload_limits,
         )
 
-    async def reprocess_meeting(request: web.Request):
-        """Refresh Voice matches or create a new canonical transcript safely."""
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in {"speaker_identity", "full_transcript"}:
-            return web.json_response({"message": "Choose speaker_identity or full_transcript."}, status=400)
-
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        capabilities = await _meeting_reprocessing_capabilities(ctl, detail)
-
-        if mode == "speaker_identity":
-            if not capabilities["speakerIdentityAvailable"]:
-                return web.json_response(
-                    {
-                        "message": capabilities["speakerIdentityUnavailableReason"]
-                        or "Speaker matching is unavailable for this Meeting."
-                    },
-                    status=409,
-                )
-            start_gate = asyncio.Event()
-            if not ctl.schedule_meeting_speaker_reprocessing(meeting_id, start_gate=start_gate):
-                return web.json_response({"message": "Meeting processing is already running."}, status=409)
-            task = ctl._meeting_tasks.get(meeting_id)
-            if task is None:
-                return web.json_response({"message": "Speaker matching could not be started."}, status=503)
-            start_gate.set()
-            meeting = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meeting": meeting,
-                    "mode": mode,
-                },
-                status=202,
-            )
-
-        if not capabilities["fullTranscriptAvailable"]:
-            return web.json_response(
-                {
-                    "message": capabilities["fullTranscriptUnavailableReason"]
-                    or "Full Meeting retranscription is unavailable."
-                },
-                status=409,
-            )
-
-        start_gate = asyncio.Event()
-        reserved_task: asyncio.Task | None = None
-        if not ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
-            return web.json_response({"message": "Meeting processing is already running."}, status=409)
-        reserved_task = ctl._meeting_tasks.get(meeting_id)
-        if reserved_task is None:
-            return web.json_response({"message": "Meeting retranscription could not be started."}, status=503)
-        try:
-            finalizing, pending_cancel = await await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    ctl._meeting_store.reserve_full_reprocess,
-                    meeting_id,
-                    final_provider=capabilities["selectedFinalProvider"],
-                    final_model=capabilities["selectedFinalModel"],
-                    analysis_model=(Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL),
-                    voice_library_enabled=bool(capabilities["voiceLibraryEnabledForRun"]),
-                )
-            )
-            # The durable state owns this work from here. Open the gate before
-            # delivering a pending request cancellation so a Meeting cannot be
-            # stranded in ``finalizing`` by a closed WebView.
-            start_gate.set()
-            if pending_cancel is not None:
-                raise pending_cancel
-            await ctl.broadcast(meeting_state_event(finalizing))
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meeting": finalizing,
-                    "mode": mode,
-                },
-                status=202,
-            )
-        except asyncio.CancelledError:
-            raise
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        finally:
-            if not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-
-    async def retry_meeting_finalization(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        requested_final_provider = ""
-        requested_analysis_model = ""
-        if request.can_read_body:
-            try:
-                raw_retry = await request.json()
-            except Exception:
-                return web.json_response({"message": "Expected JSON payload"}, status=400)
-            if not isinstance(raw_retry, dict):
-                return web.json_response({"message": "Expected JSON object"}, status=400)
-            requested_final_provider = str(raw_retry.get("finalProvider") or "").strip().lower()
-            requested_analysis_model = str(raw_retry.get("analysisModel") or "").strip()
-        start_gate: asyncio.Event | None = None
-        reserved_task: asyncio.Task | None = None
-        reopened_import: Any | None = None
-        original_state = ""
-        retry_state = ""
-        previous_final_provider = ""
-        previous_reprocess_final_model: str | None = None
-        previous_analysis_model = ""
-        changed_final_provider = ""
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            if current["state"] not in {"finalization_failed", "analysis_failed", "interrupted", "capture_failed"}:
-                return web.json_response({"message": "Meeting is not waiting for a finalization retry."}, status=409)
-            original_state = str(current["state"])
-            retry_state = "analyzing" if current["state"] == "analysis_failed" else "finalizing"
-            previous_analysis_model = str(current.get("analysisModel") or "").strip()
-            analysis_model_for_retry: str | None = None
-            if retry_state == "analyzing":
-                analysis_model_for_retry = _validate_summarization_model(
-                    requested_analysis_model or Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
-                )
-                if not _meeting_llm_model_ready(analysis_model_for_retry):
-                    return web.json_response(
-                        {"message": "Configure the API key for the selected Meeting analysis model first."},
-                        status=409,
-                    )
-            elif requested_analysis_model:
-                return web.json_response(
-                    {"message": "The Meeting analysis model can change only during an analysis retry."},
-                    status=409,
-                )
-            if requested_final_provider:
-                if retry_state != "finalizing":
-                    return web.json_response(
-                        {"message": "The final transcription provider cannot change during an analysis-only retry."},
-                        status=409,
-                    )
-                if requested_final_provider not in _MEETING_FINAL_STT_PROVIDERS:
-                    return web.json_response(
-                        {"message": "Unsupported final meeting transcription provider."},
-                        status=400,
-                    )
-                readiness_error = _provider_readiness_error(requested_final_provider)
-                if readiness_error:
-                    return web.json_response({"message": readiness_error}, status=409)
-                current_provider = str(current.get("finalProvider") or "").strip().lower()
-                capture_metadata = current.get("captureMetadata")
-                is_full_reprocess = bool(
-                    isinstance(capture_metadata, dict) and capture_metadata.get("reprocessKind") == "full_transcript"
-                )
-                if is_full_reprocess:
-                    previous_reprocess_final_model = str(capture_metadata.get("reprocessFinalModel") or "").strip()
-                retry_final_model = (
-                    previous_reprocess_final_model
-                    if requested_final_provider == current_provider and previous_reprocess_final_model is not None
-                    else provider_batch_model(requested_final_provider)
-                )
-                provider_duration_limit = meeting_max_duration_seconds(
-                    requested_final_provider,
-                    retry_final_model,
-                )
-                if provider_duration_limit is not None:
-                    durable_timeline_ms = max(
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "microphone",
-                        ),
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "mic_clean",
-                        ),
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "system",
-                        ),
-                    )
-                    if durable_timeline_ms > provider_duration_limit * 1_000:
-                        return web.json_response(
-                            {
-                                "message": (
-                                    f"{_service_label(requested_final_provider)} accepts Meeting "
-                                    f"tracks up to {provider_duration_limit // 60} minutes."
-                                )
-                            },
-                            status=409,
-                        )
-                if requested_final_provider != current_provider:
-                    previous_final_provider = await asyncio.to_thread(
-                        ctl._meeting_store.change_final_provider_for_retry,
-                        meeting_id,
-                        requested_final_provider,
-                        expected_state=original_state,
-                        expected_final_provider=current_provider,
-                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                        final_model=retry_final_model,
-                    )
-                    changed_final_provider = requested_final_provider
-            import_job = await asyncio.to_thread(ctl._meeting_import_store.find_by_meeting_id, meeting_id)
-            start_gate = asyncio.Event()
-            scheduled = (
-                ctl.schedule_meeting_analysis(meeting_id, start_gate=start_gate)
-                if retry_state == "analyzing"
-                else ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate)
-            )
-            if not scheduled:
-                if changed_final_provider:
-                    await asyncio.to_thread(
-                        ctl._meeting_store.change_final_provider_for_retry,
-                        meeting_id,
-                        previous_final_provider,
-                        expected_state=original_state,
-                        expected_final_provider=changed_final_provider,
-                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                        final_model=previous_reprocess_final_model,
-                    )
-                    changed_final_provider = ""
-                return web.json_response({"message": "Meeting processing is already running."}, status=409)
-            reserved_task = ctl._meeting_tasks.get(meeting_id)
-            if import_job is not None and import_job.status == MeetingImportStatus.FAILED:
-                reopened_import = await to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.transition,
-                    import_job.id,
-                    MeetingImportStatus.FINALIZING,
-                    expected_status=MeetingImportStatus.FAILED,
-                )
-                await ctl._broadcast_meeting_import(reopened_import, 0.97, "Retrying Meeting import finalization")
-            finalizing = await to_thread_cancellation_barrier(
-                ctl._meeting_store.transition,
-                meeting_id,
-                retry_state,
-                analysis_model=analysis_model_for_retry,
-            )
-            start_gate.set()
-            await ctl.broadcast(meeting_state_event(finalizing))
-            return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except (
-            InvalidMeetingTransition,
-            MeetingConflict,
-            InvalidMeetingImportTransition,
-            MeetingImportConflict,
-        ) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        finally:
-            if start_gate is not None and not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-                if retry_state and original_state:
-                    try:
-                        persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                        if persisted["state"] == retry_state:
-                            rollback_state = (
-                                "finalization_failed" if original_state == "capture_failed" else original_state
-                            )
-                            await to_thread_cancellation_barrier(
-                                ctl._meeting_store.transition,
-                                meeting_id,
-                                rollback_state,
-                                error_code=str(current.get("errorCode") or "retry_not_started"),
-                                error_message=str(current.get("errorMessage") or "Meeting retry could not be started."),
-                                analysis_model=(previous_analysis_model if retry_state == "analyzing" else None),
-                            )
-                    except Exception:
-                        logger.exception("Meeting retry state reservation could not be rolled back")
-                if reopened_import is not None:
-                    try:
-                        await to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.mark_failed,
-                            reopened_import.id,
-                            error_code="retry_not_started",
-                            error_message="Meeting retry could not be started.",
-                        )
-                    except Exception:
-                        logger.exception("Meeting import retry reservation could not be rolled back")
-            if start_gate is not None and not start_gate.is_set() and changed_final_provider:
-                try:
-                    persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                    if (
-                        persisted.get("state") in {"finalization_failed", "capture_failed", "interrupted"}
-                        and str(persisted.get("finalProvider") or "").strip().lower() == changed_final_provider
-                    ):
-                        await to_thread_cancellation_barrier(
-                            ctl._meeting_store.change_final_provider_for_retry,
-                            meeting_id,
-                            previous_final_provider,
-                            expected_state=str(persisted["state"]),
-                            expected_final_provider=changed_final_provider,
-                            allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                            final_model=previous_reprocess_final_model,
-                        )
-                except Exception:
-                    logger.exception("Meeting retry provider reservation could not be rolled back")
-
-    async def analyze_meeting_again(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        start_gate: asyncio.Event | None = None
-        reserved_task: asyncio.Task | None = None
-        original_state = ""
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            if current["state"] not in {"ready", "analysis_failed"}:
-                return web.json_response({"message": "Meeting is not ready for analysis."}, status=409)
-            original_state = str(current["state"])
-            start_gate = asyncio.Event()
-            if not ctl.schedule_meeting_analysis(meeting_id, start_gate=start_gate):
-                return web.json_response({"message": "Meeting analysis is already running."}, status=409)
-            reserved_task = ctl._meeting_tasks.get(meeting_id)
-            analyzing = await to_thread_cancellation_barrier(ctl._meeting_store.transition, meeting_id, "analyzing")
-            start_gate.set()
-            await ctl.broadcast(meeting_state_event(analyzing))
-            return web.json_response({**analyzing, "apiVersion": REST_API_VERSION}, status=202)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        finally:
-            if start_gate is not None and not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-                if original_state:
-                    try:
-                        persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                        if persisted["state"] == "analyzing":
-                            await to_thread_cancellation_barrier(
-                                ctl._meeting_store.transition,
-                                meeting_id,
-                                original_state,
-                                error_code=str(current.get("errorCode") or ""),
-                                error_message=str(current.get("errorMessage") or ""),
-                            )
-                    except Exception:
-                        logger.exception("Meeting analysis reservation could not be rolled back")
-
     async def discard_meeting(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
@@ -19473,6 +19547,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         inbox_payload=meeting_import_inbox_payload,
     )
     register_meeting_capture_routes(app, control=controller)
+    register_meeting_processing_routes(app, control=controller)
     register_meeting_workspace_routes(
         app,
         deps=lambda: MeetingWorkspaceDeps(
@@ -19481,10 +19556,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         ),
     )
     app.router.add_get("/api/meetings/{id}", meeting_detail)
-    app.router.add_post("/api/meetings/{id}/reprocess", reprocess_meeting)
-    app.router.add_post("/api/meetings/{id}/finalize", retry_meeting_finalization)
-    app.router.add_post("/api/meetings/{id}/retry", retry_meeting_finalization)
-    app.router.add_post("/api/meetings/{id}/analyze", analyze_meeting_again)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
     app.router.add_get("/api/meetings/{id}/speaker-assignments", meeting_speaker_assignments)
