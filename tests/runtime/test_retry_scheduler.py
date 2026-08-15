@@ -100,3 +100,24 @@ async def test_retry_scheduler_coalesces_requests_while_trigger_is_running():
     release_first.set()
     await asyncio.sleep(0.04)
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_due_monotonic_exposes_retry_deferred_by_running_trigger():
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _trigger() -> None:
+        started.set()
+        await release.wait()
+
+    scheduler = RetryScheduler(loop=loop, trigger=_trigger)
+    scheduler.schedule_in(0)
+    await started.wait()
+
+    scheduler.schedule_in(0.1)
+
+    assert scheduler.due_monotonic is not None
+    release.set()
+    scheduler.cancel(cancel_running=True)
