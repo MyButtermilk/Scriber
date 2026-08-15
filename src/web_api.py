@@ -47,6 +47,11 @@ from src.api.http_security import (
     validate_server_bind_security,
 )
 from src.api.local_polishing_routes import register_local_polishing_routes
+from src.api.meeting_artifact_routes import (
+    MeetingArtifactDeps,
+    MeetingDocumentRenderCommand,
+    register_meeting_artifact_routes,
+)
 from src.api.meeting_capture_routes import (
     MeetingCaptureOutcome,
     MeetingStartCommand,
@@ -199,18 +204,6 @@ from src.data.transcript_artifact_store import (
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.local_polishing import LocalPolishing, LocalPolishingError
 from src.meeting_capture import MeetingAudioRecorder, MeetingDeviceLevelProbe
-from src.meeting_export import (
-    build_eml_draft,
-    build_meeting_email,
-    build_meeting_markdown,
-    build_meeting_summary_markdown,
-    build_meeting_transcript_text,
-    meeting_duration_ms,
-    meeting_export_labels,
-)
-from src.meeting_export import (
-    format_offset as format_meeting_offset,
-)
 from src.meeting_finalizer import MeetingFinalizer
 from src.meeting_live_stt import (
     LiveMeetingSegment,
@@ -1373,6 +1366,24 @@ async def _render_transcript_export_async(
         duration=duration,
         document_labels=document_labels,
     )
+
+
+class _MeetingArtifactDocumentRenderer:
+    """Composition adapter from the route command to the shared renderer."""
+
+    async def render(
+        self,
+        command: MeetingDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]:
+        return await _render_transcript_export_async(
+            export_format=command.export_format,
+            title=command.title,
+            content=command.content,
+            summary=command.summary,
+            date=command.date,
+            duration=command.duration,
+            document_labels=command.document_labels,
+        )
 
 
 def _format_duration(seconds: float) -> str:
@@ -18991,148 +19002,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except (InvalidMeetingTransition, MeetingConflict) as exc:
             return web.json_response({"message": str(exc)}, status=409)
 
-    async def meeting_audio(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        source = request.match_info.get("source", "")
-        if source not in {"microphone", "system"}:
-            return web.json_response({"message": "Unknown meeting audio source"}, status=404)
-        try:
-            await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        final_dir = data_dir() / "meetings" / meeting_id / "final"
-        path = final_dir / ("microphone.opus" if source == "microphone" else "system.opus")
-        if not path.is_file():
-            return web.json_response({"message": "Meeting audio is not ready"}, status=404)
-        return web.FileResponse(path, headers={"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"})
-
-    async def meeting_audio_mix(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        path = data_dir() / "meetings" / meeting_id / "final" / "playback.opus"
-        if not path.is_file():
-            return web.json_response({"message": "Meeting playback mix is not ready"}, status=404)
-        return web.FileResponse(
-            path,
-            headers={"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"},
-        )
-
-    async def export_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        export_format = request.match_info.get("format", "json").lower()
-        if export_format not in {"json", "md", "pdf", "docx", "audio"}:
-            return web.json_response(
-                {"message": "Meeting export supports json, md, pdf, docx, or compressed audio"},
-                status=400,
-            )
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", detail["title"]).strip()[:60] or "meeting"
-        if export_format == "audio":
-            # Finalization already creates this bounded 64-kbit/s mono Opus mix
-            # for playback. Reuse that verified derivative instead of encoding
-            # a second share copy or exposing lossless/raw meeting tracks.
-            path = data_dir() / "meetings" / meeting_id / "final" / "playback.opus"
-            if not path.is_file():
-                return web.json_response({"message": "Compressed meeting audio is not ready"}, status=404)
-            return web.FileResponse(
-                path,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "private, no-store",
-                    "Content-Type": "audio/ogg",
-                    "Content-Disposition": _attachment_content_disposition(f"{safe_title} - audio.opus"),
-                },
-            )
-        if export_format == "json":
-            body = json.dumps(detail, ensure_ascii=False, indent=2).encode("utf-8")
-            content_type, extension = "application/json", "json"
-        else:
-            markdown = build_meeting_markdown(detail, fallback_language=Config.LANGUAGE)
-            if export_format == "md":
-                body = markdown.encode("utf-8")
-                content_type, extension = "text/markdown", "md"
-            else:
-                body, content_type, extension = await _render_transcript_export_async(
-                    export_format=export_format,
-                    title=detail["title"],
-                    content=build_meeting_transcript_text(detail, fallback_language=Config.LANGUAGE),
-                    summary=build_meeting_summary_markdown(detail, fallback_language=Config.LANGUAGE),
-                    date=detail.get("startedAt") or detail.get("createdAt") or "",
-                    duration=format_meeting_offset(meeting_duration_ms(detail)),
-                    document_labels=meeting_export_labels(detail, fallback_language=Config.LANGUAGE),
-                )
-        return web.Response(
-            body=body,
-            content_type=content_type,
-            headers={"Content-Disposition": _attachment_content_disposition(f"{safe_title}.{extension}")},
-        )
-
-    async def meeting_email_preview(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, request.match_info.get("id", ""))
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                **build_meeting_email(detail, fallback_language=Config.LANGUAGE),
-            }
-        )
-
-    async def export_meeting_email(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        attachment_format = request.query.get("attachment", "").strip().lower()
-        if attachment_format not in {"", "md", "pdf", "docx"}:
-            return web.json_response({"message": "Email attachment supports md, pdf, or docx."}, status=400)
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", detail["title"]).strip()[:60] or "meeting"
-        attachment = None
-        attachment_name = ""
-        attachment_type = "application/octet-stream"
-        if attachment_format:
-            markdown = build_meeting_markdown(detail, fallback_language=Config.LANGUAGE)
-            if attachment_format == "md":
-                attachment = markdown.encode("utf-8")
-                attachment_name = f"{safe_title}.md"
-                attachment_type = "text/markdown"
-            else:
-                attachment, attachment_type, extension = await _render_transcript_export_async(
-                    export_format=attachment_format,
-                    title=detail["title"],
-                    content=build_meeting_transcript_text(detail, fallback_language=Config.LANGUAGE),
-                    summary=build_meeting_summary_markdown(detail, fallback_language=Config.LANGUAGE),
-                    date=detail.get("startedAt") or detail.get("createdAt") or "",
-                    duration=format_meeting_offset(meeting_duration_ms(detail)),
-                    document_labels=meeting_export_labels(detail, fallback_language=Config.LANGUAGE),
-                )
-                attachment_name = f"{safe_title}.{extension}"
-        body = build_eml_draft(
-            detail,
-            attachment=attachment,
-            attachment_name=attachment_name,
-            attachment_type=attachment_type,
-            fallback_language=Config.LANGUAGE,
-        )
-        return web.Response(
-            body=body,
-            content_type="message/rfc822",
-            headers={"Content-Disposition": _attachment_content_disposition(f"{safe_title} - email draft.eml")},
-        )
-
     async def meeting_chat_threads(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
@@ -19555,6 +19424,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
             broadcast=controller.broadcast,
         ),
     )
+    register_meeting_artifact_routes(
+        app,
+        deps=lambda: MeetingArtifactDeps(
+            store=controller._meeting_store,
+            storage_root=data_dir(),
+            renderer=_MeetingArtifactDocumentRenderer(),
+            fallback_language=Config.LANGUAGE,
+        ),
+    )
     app.router.add_get("/api/meetings/{id}", meeting_detail)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
@@ -19573,11 +19451,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         store=getattr(controller, "_meeting_store", None),
         broadcast=getattr(controller, "broadcast", None),
     )
-    app.router.add_get("/api/meetings/{id}/audio", meeting_audio_mix)
-    app.router.add_get("/api/meetings/{id}/audio/{source}", meeting_audio)
-    app.router.add_get("/api/meetings/{id}/export/{format}", export_meeting)
-    app.router.add_get("/api/meetings/{id}/email-preview", meeting_email_preview)
-    app.router.add_get("/api/meetings/{id}/export-email", export_meeting_email)
     app.router.add_delete("/api/meetings/{id}", discard_meeting)
     app.router.add_post("/api/meetings/{id}/discard", discard_meeting)
 

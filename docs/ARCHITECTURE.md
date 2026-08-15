@@ -953,11 +953,13 @@ Key modules:
   `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
   `src/api/websocket_routes.py`, `src/api/meeting_capture_routes.py`,
   `src/api/meeting_workspace_routes.py`, and
-  `src/api/meeting_processing_routes.py`:
+  `src/api/meeting_processing_routes.py`, and
+  `src/api/meeting_artifact_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
   Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
-  Capture lifecycle, Meeting Workspace, and Meeting Processing domains.
+  Capture lifecycle, Meeting Workspace, Meeting Processing, and Meeting
+  Artifacts domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
@@ -1055,6 +1057,12 @@ Key modules:
   its three-method controller port deliberately leaves durable task
   reservation, provider/model changes, state transitions, rollback, and worker
   gates with the controller that already owns those lifecycle resources.
+- Meeting Artifacts owns authenticated source/mix playback, Meeting exports,
+  email previews, and RFC 822 drafts. It is controller-free and resolves one
+  immutable dependency bundle per request containing only the exact
+  `MeetingStore` reads, public storage root, document renderer, and fallback
+  language. Byte-range responses stay private and non-cacheable; attachment
+  names pass through the shared safe content-disposition boundary.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
   transport-security policy and identity-stable aiohttp application keys used
   across composition and extracted route modules.

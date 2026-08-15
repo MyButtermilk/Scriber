@@ -55,7 +55,7 @@ Backend and runtime:
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
   Component, File Transcription, WebSocket, Meeting Capture, Meeting
-  Workspace, and Meeting Processing route domains,
+  Workspace, Meeting Processing, and Meeting Artifacts route domains,
   shared aiohttp app
   keys, HTTP/WebSocket security helpers, and the upload policy used by both file
   transcription and Meeting imports.
@@ -110,6 +110,11 @@ Backend and runtime:
   commands cross one three-method controller port; the controller remains the
   single owner of task reservation, durable state transitions, provider/model
   changes, rollback, and worker-gate ordering.
+  Meeting Artifacts is controller-free: playback, JSON/Markdown/document/audio
+  exports, email previews, and RFC 822 drafts resolve one immutable dependency
+  bundle per request. Its boundary exposes only exact Meeting reads, the public
+  storage root, the document renderer, and the fallback language; never add
+  forwarding controller methods or expose private storage paths in responses.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than

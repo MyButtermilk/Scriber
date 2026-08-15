@@ -80,6 +80,10 @@ and analyze commands through the isolated aiohttp boundary, rejects malformed
 command fields before admission, pins the exact three-method controller port
 and its route-owned outcome type, and proves all four registrations resolve to
 the domain module.
+`tests/api/test_meeting_artifact_routes.py` sends playback, exports, email
+preview, and RFC 822 draft requests through the isolated aiohttp boundary,
+pins the exact two-read MeetingStore collaborator, and proves all five
+registrations resolve to the controller-free domain module.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
@@ -2165,7 +2169,7 @@ into permanent Markdown unless a concise current result belongs in
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/api/test_meeting_artifact_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
@@ -2295,7 +2299,9 @@ ready` lifecycle plus canonical transcript segments and the persisted pause
 gap, then sends `full_transcript` through the extracted Meeting Processing
 route and waits for the second durable `finalizing -> ready` settlement. It
 also exercises the extracted Meeting Workspace title, segment edit/search/
-history/undo, and note paths through the production `create_app` and SQLite
+history/undo, and note paths plus the extracted Meeting Artifacts JSON/PDF
+exports, email preview/draft, and private byte-range playback paths through the
+production `create_app`, document renderer, public storage root, and SQLite
 store. Its retained JSON contains hashes,
 counts, states, and timings only—never audio, transcript text, credentials,
 URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a

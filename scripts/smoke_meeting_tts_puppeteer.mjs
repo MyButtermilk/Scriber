@@ -435,6 +435,40 @@ async function browserJson(page, method, pathname, body = null) {
   return result.payload;
 }
 
+async function browserArtifact(page, pathname, headers = {}) {
+  const result = await page.evaluate(
+    async ({ requestHeaders, requestPath }) => {
+      const baseUrl = window.__SCRIBER_BACKEND_URL__;
+      const token = window.__SCRIBER_SESSION_TOKEN__;
+      if (!baseUrl || !token) {
+        throw new Error("authenticated backend access is unavailable");
+      }
+      const response = await fetch(new URL(requestPath, baseUrl), {
+        method: "GET",
+        headers: {
+          ...requestHeaders,
+          "X-Scriber-Token": token,
+        },
+        cache: "no-store",
+        credentials: "include",
+      });
+      const body = await response.arrayBuffer();
+      return {
+        byteLength: body.byteLength,
+        cacheControl: response.headers.get("cache-control") ?? "",
+        contentType: response.headers.get("content-type") ?? "",
+        ok: response.ok,
+        status: response.status,
+      };
+    },
+    { requestHeaders: headers, requestPath: pathname },
+  );
+  if (!result.ok) {
+    throw new Error(`browser artifact request failed with HTTP ${result.status}`);
+  }
+  return result;
+}
+
 async function run(options) {
   activePhase = "connect-webview2";
   const puppeteerModule = path.join(
@@ -798,6 +832,73 @@ async function run(options) {
     ) {
       throw new Error("Meeting reprocess lost every configured synthetic marker");
     }
+    activePhase = "validate-meeting-artifacts";
+    const artifactBase = `/api/meetings/${encodeURIComponent(meetingId)}`;
+    const artifactPaths = {
+      emailDraft: "/export-email",
+      emailPreview: "/email-preview",
+      exportJson: "/export/json",
+      exportPdf: "/export/pdf",
+    };
+    const artifactJson = await browserJson(
+      page,
+      "GET",
+      `${artifactBase}${artifactPaths.exportJson}`,
+    );
+    if (
+      String(artifactJson?.id ?? "") !== meetingId ||
+      !Array.isArray(artifactJson?.segments) ||
+      artifactJson.segments.length === 0
+    ) {
+      throw new Error("Meeting JSON export omitted durable transcript content");
+    }
+    const artifactPdf = await browserArtifact(
+      page,
+      `${artifactBase}${artifactPaths.exportPdf}`,
+    );
+    if (
+      !artifactPdf.contentType.startsWith("application/pdf") ||
+      artifactPdf.byteLength < 100
+    ) {
+      throw new Error("Meeting document renderer produced no valid PDF artifact");
+    }
+    const emailPreview = await browserJson(
+      page,
+      "GET",
+      `${artifactBase}${artifactPaths.emailPreview}`,
+    );
+    if (
+      String(emailPreview?.apiVersion ?? "") === "" ||
+      String(emailPreview?.subject ?? "") === ""
+    ) {
+      throw new Error("Meeting email preview omitted its public contract");
+    }
+    const emailDraft = await browserArtifact(
+      page,
+      `${artifactBase}${artifactPaths.emailDraft}`,
+    );
+    if (
+      !emailDraft.contentType.startsWith("message/rfc822") ||
+      emailDraft.byteLength < 100
+    ) {
+      throw new Error("Meeting email draft was not a bounded RFC 822 artifact");
+    }
+    for (const audioPath of [
+      `${artifactBase}/audio`,
+      `${artifactBase}/audio/microphone`,
+      `${artifactBase}/audio/system`,
+    ]) {
+      const audio = await browserArtifact(page, audioPath, {
+        "Range": "bytes=0-3",
+      });
+      if (
+        audio.status !== 206 ||
+        audio.byteLength !== 4 ||
+        audio.cacheControl !== "private, no-store"
+      ) {
+        throw new Error("Meeting playback did not honor the private byte-range contract");
+      }
+    }
     if (diagnostics.pageErrorCount > 0) {
       activePhase = "validate-page-errors";
       throw new Error(
@@ -826,6 +927,10 @@ async function run(options) {
       workspaceSegmentVerified: true,
       workspaceNoteVerified: true,
       meetingReprocessVerified: true,
+      meetingArtifactJsonVerified: true,
+      meetingArtifactDocumentVerified: true,
+      meetingArtifactEmailVerified: true,
+      meetingArtifactPlaybackVerified: true,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
       diagnostics: { ...diagnostics },

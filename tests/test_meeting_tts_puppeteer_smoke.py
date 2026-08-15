@@ -37,6 +37,12 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert 'browserJson(\n      page,\n      "PUT"' in driver
     assert 'activePhase = "reprocess-meeting-transcript"' in driver
     assert '{ mode: "full_transcript" }' in driver
+    assert 'activePhase = "validate-meeting-artifacts"' in driver
+    assert '"/export/json"' in driver
+    assert '"/export/pdf"' in driver
+    assert '"/email-preview"' in driver
+    assert '"/export-email"' in driver
+    assert '"Range": "bytes=0-3"' in driver
 
 
 def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
@@ -75,6 +81,10 @@ def test_meeting_speech_smoke_artifacts_are_privacy_minimal() -> None:
         "workspaceSegmentVerified",
         "workspaceNoteVerified",
         "meetingReprocessVerified",
+        "meetingArtifactJsonVerified",
+        "meetingArtifactDocumentVerified",
+        "meetingArtifactEmailVerified",
+        "meetingArtifactPlaybackVerified",
         "diagnostics",
         "meetingDebug",
     ):
