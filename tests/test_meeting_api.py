@@ -39,8 +39,8 @@ def test_meeting_device_test_duration_override_is_bounded_and_fail_closed(monkey
 
 def test_resume_connects_durable_readers_before_starting_live_stt():
     text = Path(web_api.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def _resume_interrupted_meeting_claimed")
-    interrupted = text[start : text.index("    async def resume_meeting", start)]
+    start = text.index("    async def _resume_interrupted_meeting_capture")
+    interrupted = text[start : text.index("    async def _settle_meeting_capture_command", start)]
     assert interrupted.index("recorder.start(sources)") < interrupted.index(
         "await _start_meeting_live_preview_best_effort"
     )
@@ -768,6 +768,15 @@ class FakeController:
 
     async def start_meeting_capture(self, command):
         return await web_api.ScriberWebController.start_meeting_capture(self, command)
+
+    async def pause_meeting_capture(self, meeting_id):
+        return await web_api.ScriberWebController.pause_meeting_capture(self, meeting_id)
+
+    async def resume_meeting_capture(self, meeting_id):
+        return await web_api.ScriberWebController.resume_meeting_capture(self, meeting_id)
+
+    async def stop_meeting_capture(self, meeting_id):
+        return await web_api.ScriberWebController.stop_meeting_capture(self, meeting_id)
 
     def schedule_meeting_finalization(self, meeting_id, **_kwargs):
         self.scheduled.append(meeting_id)

@@ -954,8 +954,8 @@ Key modules:
   `src/api/websocket_routes.py`, and `src/api/meeting_capture_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
-  Meeting Import, Voice Component, File Transcription, WebSocket, and the
-  initial Meeting Capture admission domains.
+  Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
+  Capture lifecycle domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
@@ -1035,12 +1035,12 @@ Key modules:
   `create_app` path and the durable `JobStore`, then stops deliberately at the
   queued-provider boundary; installed Tauri and external provider execution
   remain separate release evidence.
-- Meeting Capture owns the HTTP input boundary for `POST /api/meetings`: it
-  rejects unsupported shapes before admission and passes one normalized,
-  immutable `MeetingStartCommand` through a narrow controller port. The
-  controller still owns the audio lease, native shell, recorder, live preview,
-  and durable state transaction; pause/resume/stop remain in composition until
-  that lifecycle is extracted as one coherent follow-up slice.
+- Meeting Capture owns the HTTP input boundary for start, pause, resume, and
+  stop. Start rejects unsupported shapes before admission and passes one
+  normalized, immutable `MeetingStartCommand`; the other commands pass only a
+  Meeting ID through the same four-method controller port. The controller owns
+  the audio lease, native shell, recorder, live preview, finalizer reservation,
+  repeated-cancellation settlement, and durable state transitions.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
   transport-security policy and identity-stable aiohttp application keys used
   across composition and extracted route modules.

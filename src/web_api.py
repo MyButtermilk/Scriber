@@ -2365,6 +2365,36 @@ def _merge_meeting_live_processing_aggregate(
     }
 
 
+def _meeting_native_stop_snapshot(native_payload: dict[str, Any]) -> dict[str, Any]:
+    sidecar = native_payload.get("sidecar")
+    if not isinstance(sidecar, dict):
+        return {}
+    relay = sidecar.get("relay")
+    if not isinstance(relay, dict):
+        relay = sidecar
+    snapshot: dict[str, Any] = {}
+    for key in ("framesProcessed", "bytesForwarded", "sidecarUptimeMs"):
+        value = relay.get(key)
+        if isinstance(value, int) and value >= 0:
+            snapshot[key] = value
+    snapshot["relayHealthy"] = not bool(relay.get("relayError"))
+    raw_metrics = relay.get("aecMetrics")
+    if isinstance(raw_metrics, dict):
+        metrics: dict[str, Any] = {
+            "measurement": "render-active-raw-to-clean-energy-ratio",
+        }
+        for key in ("renderActiveFrames", "renderActiveDurationMs"):
+            value = raw_metrics.get(key)
+            if isinstance(value, int) and value >= 0:
+                metrics[key] = value
+        for key in ("renderEnergy", "rawMicEnergy", "cleanMicEnergy", "echoReductionDb"):
+            value = raw_metrics.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metrics[key] = round(float(value), 6)
+        snapshot["aecMetrics"] = metrics
+    return snapshot
+
+
 def _meeting_processing_components(
     detail: dict[str, Any],
     *,
@@ -14265,6 +14295,858 @@ class ScriberWebController:
                 )
             return await start_claimed()
 
+    async def pause_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        async with _audio_admission_lock(self):
+            return await ScriberWebController._settle_meeting_capture_command(
+                self,
+                meeting_id,
+                command="audioMeetingPause",
+                target_state="paused",
+            )
+
+    async def stop_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        start_gate = asyncio.Event()
+        if not self.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={"message": "Meeting finalization could not be reserved."},
+            )
+
+        deferred_cancellation: list[asyncio.CancelledError] = []
+        try:
+            async with _audio_admission_lock(self):
+                outcome = await ScriberWebController._settle_meeting_capture_command(
+                    self,
+                    meeting_id,
+                    command="audioMeetingStop",
+                    target_state="stopping",
+                    deferred_cancellation=deferred_cancellation,
+                )
+            if outcome.status >= 400:
+                if deferred_cancellation:
+                    raise deferred_cancellation[0]
+                return outcome
+
+            async def settle_stop() -> dict[str, Any]:
+                finalizing = await asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+                self._meeting_recorders.pop(meeting_id, None)
+                clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
+                if callable(clear_level_state):
+                    clear_level_state(meeting_id)
+                start_gate.set()
+                await self.broadcast(meeting_state_event(finalizing))
+                return finalizing
+
+            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
+            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
+            if pending_cancel is not None:
+                raise pending_cancel
+            return MeetingCaptureOutcome(
+                status=202,
+                payload={**finalizing, "apiVersion": REST_API_VERSION},
+            )
+        finally:
+            if not start_gate.is_set():
+                tasks = getattr(self, "_meeting_tasks", {})
+                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
+                if reserved_task is not None:
+                    reserved_task.cancel()
+                    await asyncio.gather(reserved_task, return_exceptions=True)
+
+    async def resume_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+        except MeetingNotFound:
+            return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+        if current.get("state") not in {"paused", "interrupted"}:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
+            )
+
+        async with _audio_admission_lock(self):
+            if self._is_listening or self._is_stopping:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Stop Live Mic before resuming this meeting."},
+                )
+            if self._meeting_device_test_active:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Meeting device test to finish."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            if await _active_meeting_audio_conflict(self, allow_meeting_id=meeting_id) is not None:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before resuming this one."},
+                )
+            try:
+                current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            except MeetingNotFound:
+                return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+            current_state = str(current.get("state") or "unknown")
+            if current_state not in {"paused", "interrupted"}:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": f"Meeting can no longer resume from {current_state}."},
+                )
+            registry = _meeting_capture_ownership_registry(self)
+            ownership = registry.get(meeting_id)
+            if ownership is None or ownership.cleanup_complete:
+                ownership = _MeetingCaptureOwnership(
+                    failure_state="interrupted",
+                    meeting_id=meeting_id,
+                )
+                ownership.identity_settled.set()
+                registry[meeting_id] = ownership
+            try:
+                await _claim_persistent_audio(
+                    self,
+                    owner_kind="meeting",
+                    owner_id=meeting_id,
+                    loss_handler=_meeting_audio_loss_handler(self, ownership),
+                )
+            except AudioAdmissionConflict:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            if current_state == "paused":
+                return await ScriberWebController._resume_paused_meeting_capture(
+                    self,
+                    meeting_id,
+                    current,
+                    ownership,
+                )
+            return await ScriberWebController._resume_interrupted_meeting_capture(
+                self,
+                meeting_id,
+                current,
+                ownership,
+            )
+
+    async def _resume_paused_meeting_capture(
+        self,
+        meeting_id: str,
+        current: dict[str, Any],
+        ownership: _MeetingCaptureOwnership,
+    ) -> MeetingCaptureOutcome:
+        ownership.failure_state = "interrupted"
+        ownership.capture_id = ""
+        ownership.native_capture_started = False
+        ownership.recorder = None
+        ownership.live_transcriber = None
+        ownership.resume_prewarm = True
+        ownership.cleanup_complete = False
+        ownership.identity_settled.set()
+        capture_metadata = dict(current.get("captureMetadata", {}))
+        selection = capture_metadata.get("deviceSelection", {})
+        if not isinstance(selection, dict):
+            selection = {}
+        try:
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume.",
+                    )
+                response, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingResume",
+                        {
+                            "meetingId": meeting_id,
+                            "captureId": capture_metadata.get("captureId"),
+                            "aecEnabled": bool(current.get("aecEnabled", True)),
+                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
+                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
+                        },
+                        timeout_seconds=4.0,
+                    )
+                )
+                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                if response.get("success"):
+                    ownership.native_capture_started = True
+                    ownership.capture_id = str(native_payload.get("captureId") or "")
+            if pending_cancel is not None:
+                raise pending_cancel
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting resume.",
+                )
+            if not response.get("success"):
+                ownership.resume_prewarm = False
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": str(response.get("fallbackReason") or "Meeting capture resume failed")},
+                )
+
+            ownership.capture_id, sources = _validated_meeting_native_capture_payload(native_payload)
+            pause_start_ms = int(capture_metadata.get("pauseStartedAtMs") or 0)
+            pause_started_raw = str(capture_metadata.get("pauseStartedAtUtc") or "")
+            try:
+                pause_started = datetime.fromisoformat(pause_started_raw.replace("Z", "+00:00"))
+                gap_duration_ms = max(
+                    0,
+                    round((datetime.now(UTC) - pause_started.astimezone(UTC)).total_seconds() * 1000),
+                )
+            except TypeError, ValueError:
+                gap_duration_ms = 0
+            gap_end_ms = pause_start_ms + gap_duration_ms
+            await to_thread_cancellation_barrier(
+                self._meeting_store.add_audio_gap,
+                meeting_id,
+                source="all",
+                started_at_ms=pause_start_ms,
+                ended_at_ms=gap_end_ms,
+                reason="pause",
+            )
+            for source in sources:
+                if isinstance(source, dict):
+                    source["timelineOffsetMs"] = max(int(source.get("timelineOffsetMs", 0) or 0), gap_end_ms)
+
+            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+
+            def recorder_callback(source, pcm, _header):
+                return self.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
+
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume persistence.",
+                    )
+                recorder = self._meeting_recorders.get(meeting_id)
+                if recorder is None:
+                    recorder = MeetingAudioRecorder(
+                        meeting_id,
+                        data_dir() / "meetings",
+                        self._meeting_store,
+                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                        on_pcm=recorder_callback,
+                        on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint),
+                    )
+                else:
+                    recorder.on_pcm = recorder_callback
+                ownership.recorder = recorder
+                try:
+                    recorder.start(sources)
+                except Exception as exc:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="frame_recorder_resume_failed",
+                        message=f"Meeting audio persistence could not resume ({type(exc).__name__}).",
+                    ) from exc
+                self._meeting_recorders[meeting_id] = recorder
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed after Meeting resume persistence started.",
+                )
+            timeline_started_at_utc = datetime.now(UTC).isoformat()
+            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                self,
+                current,
+                timeline_offsets={"microphone": gap_end_ms, "system": gap_end_ms},
+            )
+            if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting resume preview setup.",
+                )
+            live_preview_ref["transcriber"] = live_preview
+            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
+                if key in native_payload:
+                    capture_metadata[key] = native_payload[key]
+            capture_metadata.pop("pauseStartedAtMs", None)
+            capture_metadata.pop("pauseStartedAtUtc", None)
+            capture_metadata["timelineOffsetMs"] = gap_end_ms
+            capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+            capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume committed.",
+                    )
+                updated, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "recording",
+                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
+                        error_message=(
+                            "Live transcription is unavailable. Durable local audio recording continues."
+                            if live_preview_degraded
+                            else ""
+                        ),
+                        capture_metadata=capture_metadata,
+                    )
+                )
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed while Meeting resume committed.",
+                    )
+            meeting_claim = _meeting_audio_claim(self, meeting_id)
+            if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed before Meeting resume became durable.",
+                )
+            if pending_cancel is not None:
+                raise pending_cancel
+            self.start_meeting_capture_watchdog(meeting_id, str(capture_metadata.get("captureId") or ""))
+            await self.broadcast(meeting_state_event(updated))
+            if live_preview_degraded:
+                for source in ("microphone", "system"):
+                    await self.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
+            return MeetingCaptureOutcome(
+                status=200,
+                payload={**updated, "apiVersion": REST_API_VERSION},
+            )
+        except asyncio.CancelledError:
+            await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_canceled",
+                error_message="Meeting resume was interrupted; saved audio remains available.",
+            )
+            raise
+        except _MeetingCaptureSetupError as exc:
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            return MeetingCaptureOutcome(
+                status=exc.status,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or exc.message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Paused Meeting resume failed")
+            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_failed",
+                error_message=message,
+            )
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+
+    async def _resume_interrupted_meeting_capture(
+        self,
+        meeting_id: str,
+        current: dict[str, Any],
+        ownership: _MeetingCaptureOwnership,
+    ) -> MeetingCaptureOutcome:
+        metadata = dict(current.get("captureMetadata", {}))
+        selection = metadata.get("deviceSelection", {})
+        if not isinstance(selection, dict):
+            selection = {}
+        offset_ms = max(
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "system"),
+        )
+        gap_end_ms = offset_ms + 1
+        ownership.failure_state = "interrupted"
+        ownership.capture_id = ""
+        ownership.native_capture_started = False
+        ownership.recorder = None
+        ownership.live_transcriber = None
+        ownership.resume_prewarm = True
+        ownership.cleanup_complete = False
+        ownership.identity_settled.set()
+        try:
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery.",
+                    )
+                await self._pause_idle_mic_prewarm_for_capture()
+                response, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingResume",
+                        {
+                            "meetingId": meeting_id,
+                            "aecEnabled": bool(current.get("aecEnabled", True)),
+                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
+                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
+                        },
+                        timeout_seconds=4.0,
+                    )
+                )
+                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                if response.get("success"):
+                    ownership.native_capture_started = True
+                    ownership.capture_id = str(native_payload.get("captureId") or "")
+            if pending_cancel is not None:
+                raise pending_cancel
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting recovery.",
+                )
+            if not response.get("success"):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code=str(response.get("errorCode") or "meeting_resume_failed"),
+                    message=str(response.get("fallbackReason") or "Meeting capture resume failed."),
+                )
+            ownership.capture_id, sources = _validated_meeting_native_capture_payload(native_payload)
+            for source in sources:
+                if isinstance(source, dict):
+                    source["timelineOffsetMs"] = gap_end_ms
+            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery persistence.",
+                    )
+                recorder = MeetingAudioRecorder(
+                    meeting_id,
+                    data_dir() / "meetings",
+                    self._meeting_store,
+                    sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                    on_pcm=lambda source, pcm, _header: self.on_meeting_pcm(
+                        meeting_id,
+                        live_preview_ref["transcriber"],
+                        source,
+                        pcm,
+                    ),
+                    on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint),
+                )
+                ownership.recorder = recorder
+                try:
+                    recorder.start(sources)
+                except Exception as exc:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="frame_recorder_resume_failed",
+                        message=f"Meeting audio persistence could not resume ({type(exc).__name__}).",
+                    ) from exc
+                self._meeting_recorders[meeting_id] = recorder
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed after Meeting recovery persistence started.",
+                )
+            timeline_started_at_utc = datetime.now(UTC).isoformat()
+            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                self,
+                current,
+                timeline_offsets={"microphone": gap_end_ms, "system": gap_end_ms},
+            )
+            if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting recovery preview setup.",
+                )
+            live_preview_ref["transcriber"] = live_preview
+            await to_thread_cancellation_barrier(
+                self._meeting_store.add_audio_gap,
+                meeting_id,
+                source="all",
+                started_at_ms=offset_ms,
+                ended_at_ms=gap_end_ms,
+                reason="crash-recovery",
+            )
+            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
+                if key in native_payload:
+                    metadata[key] = native_payload[key]
+            metadata["recoveredCaptureAt"] = datetime.now(UTC).isoformat()
+            metadata.pop("pauseStartedAtMs", None)
+            metadata.pop("pauseStartedAtUtc", None)
+            metadata["timelineOffsetMs"] = gap_end_ms
+            metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+            metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery committed.",
+                    )
+                recording, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "recording",
+                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
+                        error_message=(
+                            "Live transcription is unavailable. Durable local audio recording continues."
+                            if live_preview_degraded
+                            else ""
+                        ),
+                        capture_metadata=metadata,
+                    )
+                )
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed while Meeting recovery committed.",
+                    )
+            meeting_claim = _meeting_audio_claim(self, meeting_id)
+            if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed before Meeting recovery became durable.",
+                )
+            if pending_cancel is not None:
+                raise pending_cancel
+            self.start_meeting_capture_watchdog(meeting_id, str(metadata.get("captureId") or ""))
+            await self.broadcast(meeting_state_event(recording))
+            if live_preview_degraded:
+                for source in ("microphone", "system"):
+                    await self.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
+            return MeetingCaptureOutcome(
+                status=200,
+                payload={**recording, "apiVersion": REST_API_VERSION},
+            )
+        except asyncio.CancelledError:
+            await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_canceled",
+                error_message="Meeting resume was interrupted; saved audio remains available.",
+            )
+            raise
+        except _MeetingCaptureSetupError as exc:
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            return MeetingCaptureOutcome(
+                status=exc.status,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or exc.message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Interrupted Meeting resume failed")
+            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_failed",
+                error_message=message,
+            )
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+
+    async def _settle_meeting_capture_command(
+        self,
+        meeting_id: str,
+        *,
+        command: str,
+        target_state: str,
+        deferred_cancellation: list[asyncio.CancelledError] | None = None,
+    ) -> MeetingCaptureOutcome:
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+        except MeetingNotFound:
+            return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+        allowed_source_states = {
+            "audioMeetingPause": frozenset({"recording"}),
+            "audioMeetingStop": frozenset({"recording", "paused"}),
+        }
+        command_labels = {
+            "audioMeetingPause": "pause",
+            "audioMeetingStop": "stop",
+        }
+        current_state = str(current.get("state") or "unknown")
+        if current_state not in allowed_source_states.get(command, frozenset()):
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": f"Meeting cannot {command_labels.get(command, 'change')} from {current_state}."},
+            )
+        meeting_claim = _meeting_audio_claim(self, meeting_id)
+        if meeting_claim is None:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "This Meeting does not own native audio capture."},
+            )
+        raw_metadata = current.get("captureMetadata")
+        current_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+        def restore_watchdog() -> None:
+            if current_state == "recording":
+                self.start_meeting_capture_watchdog(
+                    meeting_id,
+                    str(current_metadata.get("captureId") or ""),
+                )
+
+        self.stop_meeting_capture_watchdog(meeting_id)
+        ipc_command_payload = {
+            "meetingId": meeting_id,
+            "captureId": current_metadata.get("captureId"),
+        }
+        registry = _meeting_capture_ownership_registry(self)
+        ownership = registry.get(meeting_id)
+        recorder = self._meeting_recorders.get(meeting_id)
+        if ownership is None:
+            ownership = _MeetingCaptureOwnership(
+                failure_state="interrupted",
+                meeting_id=meeting_id,
+                capture_id=str(current_metadata.get("captureId") or ""),
+                native_capture_started=current_state == "recording",
+                recorder=recorder,
+                live_transcriber=self._meeting_live_transcribers.get(meeting_id),
+                resume_prewarm=True,
+            )
+            ownership.identity_settled.set()
+            registry[meeting_id] = ownership
+
+        capture_metadata = dict(current_metadata)
+        pending_cancel: asyncio.CancelledError | None = None
+        recorder_stop_failure: tuple[str, str] | None = None
+        failed: dict[str, Any] | None = None
+        updated: dict[str, Any] | None = None
+
+        def finish(outcome: MeetingCaptureOutcome) -> MeetingCaptureOutcome:
+            if pending_cancel is None:
+                return outcome
+            if deferred_cancellation is not None:
+                deferred_cancellation.append(pending_cancel)
+                return outcome
+            raise pending_cancel
+
+        async with ownership.setup_lock:
+            if ownership.loss_requested:
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native audio ownership changed while Meeting capture was active."},
+                )
+            prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
+            cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
+            disconnect_prepared = callable(prepare_disconnect)
+            if disconnect_prepared:
+                prepare_disconnect()
+            try:
+                response, command_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        command,
+                        ipc_command_payload,
+                        timeout_seconds=4.0,
+                    )
+                )
+                pending_cancel = command_cancel
+            except Exception as exc:
+                if disconnect_prepared and callable(cancel_disconnect):
+                    cancel_disconnect()
+                restore_watchdog()
+                logger.warning(
+                    "Meeting capture command failed before completion: command={} error={}",
+                    command,
+                    type(exc).__name__,
+                )
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native Meeting audio control is temporarily unavailable."},
+                )
+            if not response.get("success"):
+                if disconnect_prepared and callable(cancel_disconnect):
+                    cancel_disconnect()
+                restore_watchdog()
+                return finish(
+                    MeetingCaptureOutcome(
+                        status=503,
+                        payload={"message": str(response.get("fallbackReason") or f"{command} failed")},
+                    )
+                )
+
+            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+            native_stop = _meeting_native_stop_snapshot(native_payload)
+            if native_stop:
+                native_stop_sessions = capture_metadata.get("nativeStopSessions")
+                if not isinstance(native_stop_sessions, list):
+                    native_stop_sessions = []
+                capture_metadata["nativeStopSessions"] = [*native_stop_sessions[-19:], native_stop]
+                if isinstance(native_stop.get("aecMetrics"), dict):
+                    capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
+            ownership.native_capture_started = False
+            ownership.capture_id = ""
+
+            if recorder is not None:
+                try:
+                    persistence, recorder_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(recorder.stop, expected_disconnect=True)
+                    )
+                    pending_cancel = pending_cancel or recorder_cancel
+                except Exception as exc:
+                    try:
+                        snapshot = recorder.snapshot()
+                    except Exception:
+                        snapshot = {}
+                    persistence = snapshot if isinstance(snapshot, dict) else {}
+                    recorder_stop_failure = _meeting_recorder_stop_failure(exc, persistence)
+                    logger.warning(
+                        "Meeting capture command recorder stop failed: command={} error={} code={}",
+                        command,
+                        type(exc).__name__,
+                        recorder_stop_failure[0],
+                    )
+                capture_metadata["persistence"] = persistence
+                persistence_sessions = capture_metadata.get("persistenceSessions")
+                if not isinstance(persistence_sessions, list):
+                    persistence_sessions = []
+                capture_metadata["persistenceSessions"] = [*persistence_sessions[-19:], persistence]
+                if recorder_stop_failure is None:
+                    ownership.recorder = None
+
+            live_transcriber = self._meeting_live_transcribers.pop(meeting_id, None)
+            if live_transcriber is not None:
+                _ignored, live_cancel = await await_with_delayed_cancellation(live_transcriber.stop())
+                pending_cancel = pending_cancel or live_cancel
+                live_snapshot = live_transcriber.snapshot()
+                _merge_meeting_live_processing_aggregate(capture_metadata, live_snapshot)
+                live_sessions = capture_metadata.get("liveTranscriptionSessions")
+                if not isinstance(live_sessions, list):
+                    live_sessions = []
+                capture_metadata["liveTranscriptionSessions"] = [*live_sessions[-19:], live_snapshot]
+            ownership.live_transcriber = None
+
+            if recorder_stop_failure is not None:
+                failure_code, failure_message = recorder_stop_failure
+                try:
+                    failed, transition_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting_id,
+                            "capture_failed",
+                            error_code=failure_code,
+                            error_message=failure_message,
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    pending_cancel = pending_cancel or transition_cancel
+                except (InvalidMeetingTransition, MeetingConflict) as exc:
+                    return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+            else:
+                if command == "audioMeetingPause":
+                    offsets: list[int] = []
+                    for source in ("microphone", "mic_clean", "system"):
+                        offset, offset_cancel = await await_with_delayed_cancellation(
+                            asyncio.to_thread(
+                                self._meeting_store.next_audio_offset_ms,
+                                meeting_id,
+                                source,
+                            )
+                        )
+                        offsets.append(offset)
+                        pending_cancel = pending_cancel or offset_cancel
+                    capture_metadata["pauseStartedAtMs"] = max(offsets)
+                    capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
+                try:
+                    updated, transition_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting_id,
+                            target_state,
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    pending_cancel = pending_cancel or transition_cancel
+                except (InvalidMeetingTransition, MeetingConflict) as exc:
+                    return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+
+        if ownership.loss_requested:
+            await _audio_admission_owner(self).note_loss(meeting_claim, reason="superseded")
+            return finish(
+                MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native audio ownership changed while Meeting capture was active."},
+                )
+            )
+        if recorder_stop_failure is None and command == "audioMeetingStop":
+            await _release_persistent_audio(self, meeting_claim)
+            registry.pop(meeting_id, None)
+            self._resume_idle_mic_prewarm_after_capture()
+
+        if recorder_stop_failure is not None:
+            assert failed is not None
+            _failure_code, failure_message = recorder_stop_failure
+            _ignored, broadcast_cancel = await await_with_delayed_cancellation(
+                self.broadcast(meeting_state_event(failed))
+            )
+            pending_cancel = pending_cancel or broadcast_cancel
+            return finish(
+                MeetingCaptureOutcome(
+                    status=503,
+                    payload={
+                        "message": failure_message,
+                        "meeting": failed,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+            )
+
+        assert updated is not None
+        _ignored, broadcast_cancel = await await_with_delayed_cancellation(self.broadcast(meeting_state_event(updated)))
+        pending_cancel = pending_cancel or broadcast_cancel
+        return finish(
+            MeetingCaptureOutcome(
+                status=200,
+                payload={**updated, "apiVersion": REST_API_VERSION},
+            )
+        )
+
     async def start_meeting_live_transcription(
         self,
         meeting: dict[str, Any],
@@ -17741,954 +18623,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             upload_limits=file_upload_limits,
         )
 
-    def _meeting_native_stop_snapshot(native_payload: dict[str, Any]) -> dict[str, Any]:
-        sidecar = native_payload.get("sidecar")
-        if not isinstance(sidecar, dict):
-            return {}
-        relay = sidecar.get("relay")
-        if not isinstance(relay, dict):
-            relay = sidecar
-        snapshot: dict[str, Any] = {}
-        for key in ("framesProcessed", "bytesForwarded", "sidecarUptimeMs"):
-            value = relay.get(key)
-            if isinstance(value, int) and value >= 0:
-                snapshot[key] = value
-        snapshot["relayHealthy"] = not bool(relay.get("relayError"))
-        raw_metrics = relay.get("aecMetrics")
-        if isinstance(raw_metrics, dict):
-            metrics: dict[str, Any] = {
-                "measurement": "render-active-raw-to-clean-energy-ratio",
-            }
-            for key in ("renderActiveFrames", "renderActiveDurationMs"):
-                value = raw_metrics.get(key)
-                if isinstance(value, int) and value >= 0:
-                    metrics[key] = value
-            for key in ("renderEnergy", "rawMicEnergy", "cleanMicEnergy", "echoReductionDb"):
-                value = raw_metrics.get(key)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    metrics[key] = round(float(value), 6)
-            snapshot["aecMetrics"] = metrics
-        return snapshot
-
-    async def _resume_paused_meeting_claimed(request: web.Request, current: dict[str, Any]) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        if current.get("state") != "paused":
-            return web.json_response(
-                {"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
-                status=409,
-            )
-        registry = _meeting_capture_ownership_registry(ctl)
-        ownership = registry.get(meeting_id)
-        if ownership is None or ownership.cleanup_complete:
-            ownership = _MeetingCaptureOwnership(
-                failure_state="interrupted",
-                meeting_id=meeting_id,
-            )
-            ownership.identity_settled.set()
-            registry[meeting_id] = ownership
-        ownership.failure_state = "interrupted"
-        ownership.capture_id = ""
-        ownership.native_capture_started = False
-        ownership.recorder = None
-        ownership.live_transcriber = None
-        ownership.resume_prewarm = True
-        ownership.cleanup_complete = False
-        ownership.identity_settled.set()
-        capture_metadata = dict(current.get("captureMetadata", {}))
-        selection = capture_metadata.get("deviceSelection", {})
-        if not isinstance(selection, dict):
-            selection = {}
-        try:
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting resume.",
-                    )
-                response, pending_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingResume",
-                        {
-                            "meetingId": meeting_id,
-                            "captureId": capture_metadata.get("captureId"),
-                            "aecEnabled": bool(current.get("aecEnabled", True)),
-                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
-                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
-                        },
-                        timeout_seconds=4.0,
-                    )
-                )
-                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-                if response.get("success"):
-                    ownership.native_capture_started = True
-                    ownership.capture_id = str(native_payload.get("captureId") or "")
-            if pending_cancel is not None:
-                raise pending_cancel
-            if ownership.loss_requested:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed during Meeting resume.",
-                )
-            if not response.get("success"):
-                # No new owner exists. Keep the intentional paused state so a
-                # transient native error can be retried by the user.
-                ownership.resume_prewarm = False
-                return web.json_response(
-                    {"message": str(response.get("fallbackReason") or "Meeting capture resume failed")},
-                    status=503,
-                )
-
-            (
-                ownership.capture_id,
-                sources,
-            ) = _validated_meeting_native_capture_payload(native_payload)
-            pause_start_ms = int(capture_metadata.get("pauseStartedAtMs") or 0)
-            pause_started_raw = str(capture_metadata.get("pauseStartedAtUtc") or "")
-            try:
-                pause_started = datetime.fromisoformat(pause_started_raw.replace("Z", "+00:00"))
-                gap_duration_ms = max(
-                    0,
-                    round((datetime.now(UTC) - pause_started.astimezone(UTC)).total_seconds() * 1000),
-                )
-            except TypeError, ValueError:
-                gap_duration_ms = 0
-            gap_end_ms = pause_start_ms + gap_duration_ms
-            await to_thread_cancellation_barrier(
-                ctl._meeting_store.add_audio_gap,
-                meeting_id,
-                source="all",
-                started_at_ms=pause_start_ms,
-                ended_at_ms=gap_end_ms,
-                reason="pause",
-            )
-            for source in sources:
-                if isinstance(source, dict):
-                    source["timelineOffsetMs"] = max(int(source.get("timelineOffsetMs", 0) or 0), gap_end_ms)
-
-            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-
-            def recorder_callback(source, pcm, _header):
-                return ctl.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
-
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting resume persistence.",
-                    )
-                recorder = ctl._meeting_recorders.get(meeting_id)
-                if recorder is None:
-                    recorder = MeetingAudioRecorder(
-                        meeting_id,
-                        data_dir() / "meetings",
-                        ctl._meeting_store,
-                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                        on_pcm=recorder_callback,
-                        on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting_id, checkpoint),
-                    )
-                else:
-                    recorder.on_pcm = recorder_callback
-                ownership.recorder = recorder
-                try:
-                    recorder.start(sources)
-                except Exception as exc:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="frame_recorder_resume_failed",
-                        message=(f"Meeting audio persistence could not resume ({type(exc).__name__})."),
-                    ) from exc
-                ctl._meeting_recorders[meeting_id] = recorder
-            if ownership.loss_requested:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed after Meeting resume persistence started.",
-                )
-            timeline_started_at_utc = datetime.now(UTC).isoformat()
-
-            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
-                ctl,
-                current,
-                timeline_offsets={
-                    "microphone": gap_end_ms,
-                    "system": gap_end_ms,
-                },
-            )
-            if not await _adopt_meeting_live_preview(ctl, ownership, live_preview):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed during Meeting resume preview setup.",
-                )
-            live_preview_ref["transcriber"] = live_preview
-            for key in (
-                "captureId",
-                "sampleRate",
-                "frameDurationMs",
-                "aecActive",
-                "aecRequested",
-            ):
-                if key in native_payload:
-                    capture_metadata[key] = native_payload[key]
-            capture_metadata.pop("pauseStartedAtMs", None)
-            capture_metadata.pop("pauseStartedAtUtc", None)
-            capture_metadata["timelineOffsetMs"] = gap_end_ms
-            capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            capture_metadata["livePreview"] = _meeting_live_preview_metadata(
-                current,
-                degraded=live_preview_degraded,
-                error_code="live_stt_resume_failed",
-            )
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting resume committed.",
-                    )
-                updated, pending_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        ctl._meeting_store.transition,
-                        meeting_id,
-                        "recording",
-                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
-                        error_message=(
-                            "Live transcription is unavailable. Durable local audio recording continues."
-                            if live_preview_degraded
-                            else ""
-                        ),
-                        capture_metadata=capture_metadata,
-                    )
-                )
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed while Meeting resume committed.",
-                    )
-            meeting_claim = _meeting_audio_claim(ctl, meeting_id)
-            if not await _mark_meeting_capture_durable_if_owned(ctl, ownership, meeting_claim):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message=("Native audio ownership changed before Meeting resume became durable."),
-                )
-            if pending_cancel is not None:
-                raise pending_cancel
-            ctl.start_meeting_capture_watchdog(meeting_id, str(capture_metadata.get("captureId") or ""))
-            await ctl.broadcast(meeting_state_event(updated))
-            if live_preview_degraded:
-                for source in ("microphone", "system"):
-                    await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
-            return web.json_response({**updated, "apiVersion": REST_API_VERSION})
-        except asyncio.CancelledError:
-            await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_canceled",
-                error_message=("Meeting resume was interrupted; saved audio remains available."),
-            )
-            raise
-        except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code=exc.code,
-                error_message=exc.message,
-            )
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or exc.message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=exc.status,
-            )
-        except Exception as exc:
-            logger.exception("Paused Meeting resume failed")
-            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_failed",
-                error_message=message,
-            )
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
-            )
-
-    async def _meeting_capture_command_claimed(
-        request: web.Request,
-        *,
-        command: str,
-        target_state: str,
-        deferred_cancellation: list[asyncio.CancelledError] | None = None,
-    ) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        allowed_source_states = {
-            "audioMeetingPause": frozenset({"recording"}),
-            "audioMeetingResume": frozenset({"paused"}),
-            "audioMeetingStop": frozenset({"recording", "paused"}),
-        }
-        command_labels = {
-            "audioMeetingPause": "pause",
-            "audioMeetingResume": "resume",
-            "audioMeetingStop": "stop",
-        }
-        current_state = str(current.get("state") or "unknown")
-        if current_state not in allowed_source_states.get(command, frozenset()):
-            return web.json_response(
-                {"message": (f"Meeting cannot {command_labels.get(command, 'change')} from {current_state}.")},
-                status=409,
-            )
-        meeting_claim = _meeting_audio_claim(ctl, meeting_id)
-        if meeting_claim is None:
-            return web.json_response(
-                {"message": "This Meeting does not own native audio capture."},
-                status=409,
-            )
-        if command == "audioMeetingResume":
-            return await _resume_paused_meeting_claimed(request, current)
-        raw_metadata = current.get("captureMetadata")
-        current_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-
-        def restore_watchdog() -> None:
-            if current_state == "recording":
-                ctl.start_meeting_capture_watchdog(
-                    meeting_id,
-                    str(current_metadata.get("captureId") or ""),
-                )
-
-        ctl.stop_meeting_capture_watchdog(meeting_id)
-        ipc_command_payload = {
-            "meetingId": meeting_id,
-            "captureId": current_metadata.get("captureId"),
-        }
-        registry = _meeting_capture_ownership_registry(ctl)
-        ownership = registry.get(meeting_id)
-        recorder = ctl._meeting_recorders.get(meeting_id)
-        if ownership is None:
-            ownership = _MeetingCaptureOwnership(
-                failure_state="interrupted",
-                meeting_id=meeting_id,
-                capture_id=str(current_metadata.get("captureId") or ""),
-                native_capture_started=current_state == "recording",
-                recorder=recorder,
-                live_transcriber=ctl._meeting_live_transcribers.get(meeting_id),
-                resume_prewarm=True,
-            )
-            ownership.identity_settled.set()
-            registry[meeting_id] = ownership
-
-        capture_metadata = dict(current_metadata)
-        pending_cancel: asyncio.CancelledError | None = None
-        recorder_stop_failure: tuple[str, str] | None = None
-        failed: dict[str, Any] | None = None
-        updated: dict[str, Any] | None = None
-
-        def finish(response: web.Response) -> web.Response:
-            if pending_cancel is None:
-                return response
-            if deferred_cancellation is not None:
-                deferred_cancellation.append(pending_cancel)
-                return response
-            raise pending_cancel
-
-        async with ownership.setup_lock:
-            if ownership.loss_requested:
-                return web.json_response(
-                    {"message": "Native audio ownership changed while Meeting capture was active."},
-                    status=503,
-                )
-            prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
-            cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
-            disconnect_prepared = callable(prepare_disconnect)
-            if disconnect_prepared:
-                prepare_disconnect()
-            try:
-                response, command_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        call_shell_ipc,
-                        command,
-                        ipc_command_payload,
-                        timeout_seconds=4.0,
-                    )
-                )
-                pending_cancel = command_cancel
-            except Exception as exc:
-                if disconnect_prepared and callable(cancel_disconnect):
-                    cancel_disconnect()
-                restore_watchdog()
-                logger.warning(
-                    "Meeting capture command failed before completion: command={} error={}",
-                    command,
-                    type(exc).__name__,
-                )
-                return web.json_response(
-                    {"message": "Native Meeting audio control is temporarily unavailable."},
-                    status=503,
-                )
-            if not response.get("success"):
-                if disconnect_prepared and callable(cancel_disconnect):
-                    cancel_disconnect()
-                restore_watchdog()
-                return finish(
-                    web.json_response(
-                        {"message": str(response.get("fallbackReason") or f"{command} failed")},
-                        status=503,
-                    )
-                )
-
-            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            native_stop = _meeting_native_stop_snapshot(native_payload)
-            if native_stop:
-                native_stop_sessions = capture_metadata.get("nativeStopSessions")
-                if not isinstance(native_stop_sessions, list):
-                    native_stop_sessions = []
-                capture_metadata["nativeStopSessions"] = [*native_stop_sessions[-19:], native_stop]
-                if isinstance(native_stop.get("aecMetrics"), dict):
-                    capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
-            ownership.native_capture_started = False
-            ownership.capture_id = ""
-
-            if recorder is not None:
-                try:
-                    persistence, recorder_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(recorder.stop, expected_disconnect=True)
-                    )
-                    pending_cancel = pending_cancel or recorder_cancel
-                except Exception as exc:
-                    try:
-                        snapshot = recorder.snapshot()
-                    except Exception:
-                        snapshot = {}
-                    persistence = snapshot if isinstance(snapshot, dict) else {}
-                    recorder_stop_failure = _meeting_recorder_stop_failure(exc, persistence)
-                    logger.warning(
-                        "Meeting capture command recorder stop failed: command={} error={} code={}",
-                        command,
-                        type(exc).__name__,
-                        recorder_stop_failure[0],
-                    )
-                capture_metadata["persistence"] = persistence
-                persistence_sessions = capture_metadata.get("persistenceSessions")
-                if not isinstance(persistence_sessions, list):
-                    persistence_sessions = []
-                capture_metadata["persistenceSessions"] = [*persistence_sessions[-19:], persistence]
-                if recorder_stop_failure is None:
-                    ownership.recorder = None
-
-            live_transcriber = ctl._meeting_live_transcribers.pop(meeting_id, None)
-            if live_transcriber is not None:
-                _ignored, live_cancel = await await_with_delayed_cancellation(live_transcriber.stop())
-                pending_cancel = pending_cancel or live_cancel
-                live_snapshot = live_transcriber.snapshot()
-                _merge_meeting_live_processing_aggregate(capture_metadata, live_snapshot)
-                live_sessions = capture_metadata.get("liveTranscriptionSessions")
-                if not isinstance(live_sessions, list):
-                    live_sessions = []
-                capture_metadata["liveTranscriptionSessions"] = [*live_sessions[-19:], live_snapshot]
-            ownership.live_transcriber = None
-
-            if recorder_stop_failure is not None:
-                failure_code, failure_message = recorder_stop_failure
-                try:
-                    failed, transition_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
-                            ctl._meeting_store.transition,
-                            meeting_id,
-                            "capture_failed",
-                            error_code=failure_code,
-                            error_message=failure_message,
-                            capture_metadata=capture_metadata,
-                        )
-                    )
-                    pending_cancel = pending_cancel or transition_cancel
-                except (InvalidMeetingTransition, MeetingConflict) as exc:
-                    return web.json_response({"message": str(exc)}, status=409)
-            else:
-                if command == "audioMeetingPause":
-                    offsets: list[int] = []
-                    for source in ("microphone", "mic_clean", "system"):
-                        offset, offset_cancel = await await_with_delayed_cancellation(
-                            asyncio.to_thread(
-                                ctl._meeting_store.next_audio_offset_ms,
-                                meeting_id,
-                                source,
-                            )
-                        )
-                        offsets.append(offset)
-                        pending_cancel = pending_cancel or offset_cancel
-                    capture_metadata["pauseStartedAtMs"] = max(offsets)
-                    capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
-                try:
-                    updated, transition_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
-                            ctl._meeting_store.transition,
-                            meeting_id,
-                            target_state,
-                            capture_metadata=capture_metadata,
-                        )
-                    )
-                    pending_cancel = pending_cancel or transition_cancel
-                except (InvalidMeetingTransition, MeetingConflict) as exc:
-                    return web.json_response({"message": str(exc)}, status=409)
-
-        if ownership.loss_requested:
-            await _audio_admission_owner(ctl).note_loss(meeting_claim, reason="superseded")
-            return finish(
-                web.json_response(
-                    {"message": "Native audio ownership changed while Meeting capture was active."},
-                    status=503,
-                )
-            )
-        elif recorder_stop_failure is None and command == "audioMeetingStop":
-            await _release_persistent_audio(ctl, meeting_claim)
-            registry.pop(meeting_id, None)
-            ctl._resume_idle_mic_prewarm_after_capture()
-
-        if recorder_stop_failure is not None:
-            assert failed is not None
-            failure_code, failure_message = recorder_stop_failure
-            _ignored, broadcast_cancel = await await_with_delayed_cancellation(
-                ctl.broadcast(meeting_state_event(failed))
-            )
-            pending_cancel = pending_cancel or broadcast_cancel
-            return finish(
-                web.json_response(
-                    {
-                        "message": failure_message,
-                        "meeting": failed,
-                        "apiVersion": REST_API_VERSION,
-                    },
-                    status=503,
-                )
-            )
-
-        assert updated is not None
-        _ignored, broadcast_cancel = await await_with_delayed_cancellation(ctl.broadcast(meeting_state_event(updated)))
-        pending_cancel = pending_cancel or broadcast_cancel
-        return finish(web.json_response({**updated, "apiVersion": REST_API_VERSION}))
-
-    async def _meeting_capture_command(
-        request: web.Request,
-        *,
-        command: str,
-        target_state: str,
-        deferred_cancellation: list[asyncio.CancelledError] | None = None,
-    ) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        async with _audio_admission_lock(ctl):
-            if command != "audioMeetingResume":
-                return await _meeting_capture_command_claimed(
-                    request,
-                    command=command,
-                    target_state=target_state,
-                    deferred_cancellation=deferred_cancellation,
-                )
-            try:
-                current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            except MeetingNotFound:
-                return web.json_response({"message": "Meeting not found"}, status=404)
-            if current.get("state") != "paused":
-                return web.json_response(
-                    {"message": (f"Meeting cannot resume from {current.get('state', 'unknown')}.")},
-                    status=409,
-                )
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before resuming this meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl, allow_meeting_id=meeting_id) is not None:
-                return web.json_response({"message": "Finish the active meeting before resuming this one."}, status=409)
-            try:
-                registry = _meeting_capture_ownership_registry(ctl)
-                ownership = registry.get(meeting_id)
-                if ownership is None or ownership.cleanup_complete:
-                    ownership = _MeetingCaptureOwnership(
-                        failure_state="interrupted",
-                        meeting_id=meeting_id,
-                    )
-                    ownership.identity_settled.set()
-                    registry[meeting_id] = ownership
-                await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="meeting",
-                    owner_id=meeting_id,
-                    loss_handler=_meeting_audio_loss_handler(ctl, ownership),
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await _meeting_capture_command_claimed(
-                request,
-                command=command,
-                target_state=target_state,
-                deferred_cancellation=deferred_cancellation,
-            )
-
-    async def pause_meeting(request: web.Request):
-        return await _meeting_capture_command(request, command="audioMeetingPause", target_state="paused")
-
-    async def _resume_interrupted_meeting_claimed(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        if current.get("state") != "interrupted":
-            return web.json_response(
-                {"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
-                status=409,
-            )
-        metadata = dict(current.get("captureMetadata", {}))
-        selection = metadata.get("deviceSelection", {})
-        if not isinstance(selection, dict):
-            selection = {}
-        offset_ms = max(
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "system"),
-        )
-        gap_end_ms = offset_ms + 1
-        registry = _meeting_capture_ownership_registry(ctl)
-        ownership = registry.get(meeting_id)
-        if ownership is None or ownership.cleanup_complete:
-            ownership = _MeetingCaptureOwnership(
-                failure_state="interrupted",
-                meeting_id=meeting_id,
-            )
-            ownership.identity_settled.set()
-            registry[meeting_id] = ownership
-        ownership.failure_state = "interrupted"
-        ownership.capture_id = ""
-        ownership.native_capture_started = False
-        ownership.recorder = None
-        ownership.live_transcriber = None
-        ownership.resume_prewarm = True
-        ownership.cleanup_complete = False
-        ownership.identity_settled.set()
-        try:
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting recovery.",
-                    )
-                await ctl._pause_idle_mic_prewarm_for_capture()
-                response, pending_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingResume",
-                        {
-                            "meetingId": meeting_id,
-                            "aecEnabled": bool(current.get("aecEnabled", True)),
-                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
-                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
-                        },
-                        timeout_seconds=4.0,
-                    )
-                )
-                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-                if response.get("success"):
-                    ownership.native_capture_started = True
-                    ownership.capture_id = str(native_payload.get("captureId") or "")
-            if pending_cancel is not None:
-                raise pending_cancel
-            if ownership.loss_requested:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed during Meeting recovery.",
-                )
-            if not response.get("success"):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code=str(response.get("errorCode") or "meeting_resume_failed"),
-                    message=str(response.get("fallbackReason") or "Meeting capture resume failed."),
-                )
-            (
-                ownership.capture_id,
-                sources,
-            ) = _validated_meeting_native_capture_payload(native_payload)
-            for source in sources:
-                if isinstance(source, dict):
-                    source["timelineOffsetMs"] = gap_end_ms
-            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting recovery persistence.",
-                    )
-                recorder = MeetingAudioRecorder(
-                    meeting_id,
-                    data_dir() / "meetings",
-                    ctl._meeting_store,
-                    sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                    on_pcm=lambda source, pcm, _header: ctl.on_meeting_pcm(
-                        meeting_id, live_preview_ref["transcriber"], source, pcm
-                    ),
-                    on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting_id, checkpoint),
-                )
-                ownership.recorder = recorder
-                try:
-                    recorder.start(sources)
-                except Exception as exc:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="frame_recorder_resume_failed",
-                        message=(f"Meeting audio persistence could not resume ({type(exc).__name__})."),
-                    ) from exc
-                ctl._meeting_recorders[meeting_id] = recorder
-            if ownership.loss_requested:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed after Meeting recovery persistence started.",
-                )
-            timeline_started_at_utc = datetime.now(UTC).isoformat()
-            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
-                ctl,
-                current,
-                timeline_offsets={
-                    "microphone": gap_end_ms,
-                    "system": gap_end_ms,
-                },
-            )
-            if not await _adopt_meeting_live_preview(ctl, ownership, live_preview):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message="Native audio ownership changed during Meeting recovery preview setup.",
-                )
-            live_preview_ref["transcriber"] = live_preview
-            await to_thread_cancellation_barrier(
-                ctl._meeting_store.add_audio_gap,
-                meeting_id,
-                source="all",
-                started_at_ms=offset_ms,
-                ended_at_ms=gap_end_ms,
-                reason="crash-recovery",
-            )
-            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
-                if key in native_payload:
-                    metadata[key] = native_payload[key]
-            metadata["recoveredCaptureAt"] = datetime.now(UTC).isoformat()
-            metadata.pop("pauseStartedAtMs", None)
-            metadata.pop("pauseStartedAtUtc", None)
-            metadata["timelineOffsetMs"] = gap_end_ms
-            metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            metadata["livePreview"] = _meeting_live_preview_metadata(
-                current,
-                degraded=live_preview_degraded,
-                error_code="live_stt_resume_failed",
-            )
-            async with ownership.setup_lock:
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed before Meeting recovery committed.",
-                    )
-                recording, pending_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        ctl._meeting_store.transition,
-                        meeting_id,
-                        "recording",
-                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
-                        error_message=(
-                            "Live transcription is unavailable. Durable local audio recording continues."
-                            if live_preview_degraded
-                            else ""
-                        ),
-                        capture_metadata=metadata,
-                    )
-                )
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed while Meeting recovery committed.",
-                    )
-            meeting_claim = _meeting_audio_claim(ctl, meeting_id)
-            if not await _mark_meeting_capture_durable_if_owned(ctl, ownership, meeting_claim):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="audio_admission_lost",
-                    message=("Native audio ownership changed before Meeting recovery became durable."),
-                )
-            if pending_cancel is not None:
-                raise pending_cancel
-            ctl.start_meeting_capture_watchdog(meeting_id, str(metadata.get("captureId") or ""))
-            await ctl.broadcast(meeting_state_event(recording))
-            if live_preview_degraded:
-                for source in ("microphone", "system"):
-                    await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
-            return web.json_response({**recording, "apiVersion": REST_API_VERSION})
-        except asyncio.CancelledError:
-            await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_canceled",
-                error_message=("Meeting resume was interrupted; saved audio remains available."),
-            )
-            raise
-        except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code=exc.code,
-                error_message=exc.message,
-            )
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or exc.message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=exc.status,
-            )
-        except Exception as exc:
-            logger.exception("Interrupted Meeting resume failed")
-            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_and_release_meeting_capture_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_failed",
-                error_message=message,
-            )
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
-            )
-
-    async def resume_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        if current["state"] != "interrupted":
-            return await _meeting_capture_command(request, command="audioMeetingResume", target_state="recording")
-
-        async with _audio_admission_lock(ctl):
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before resuming this meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl, allow_meeting_id=meeting_id) is not None:
-                return web.json_response({"message": "Finish the active meeting before resuming this one."}, status=409)
-
-            # Re-read state after waiting for admission. A concurrent stop or
-            # retry must not be resumed from the stale pre-lock snapshot.
-            try:
-                current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            except MeetingNotFound:
-                return web.json_response({"message": "Meeting not found"}, status=404)
-            if current["state"] != "interrupted":
-                return web.json_response(
-                    {"message": f"Meeting can no longer resume from {current['state']}."},
-                    status=409,
-                )
-            try:
-                registry = _meeting_capture_ownership_registry(ctl)
-                ownership = registry.get(meeting_id)
-                if ownership is None or ownership.cleanup_complete:
-                    ownership = _MeetingCaptureOwnership(
-                        failure_state="interrupted",
-                        meeting_id=meeting_id,
-                    )
-                    ownership.identity_settled.set()
-                    registry[meeting_id] = ownership
-                await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="meeting",
-                    owner_id=meeting_id,
-                    loss_handler=_meeting_audio_loss_handler(ctl, ownership),
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await _resume_interrupted_meeting_claimed(request)
-
-    async def stop_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        start_gate = asyncio.Event()
-        if not ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
-            return web.json_response({"message": "Meeting finalization could not be reserved."}, status=503)
-
-        deferred_cancellation: list[asyncio.CancelledError] = []
-        try:
-            response = await _meeting_capture_command(
-                request,
-                command="audioMeetingStop",
-                target_state="stopping",
-                deferred_cancellation=deferred_cancellation,
-            )
-            if response.status >= 400:
-                if deferred_cancellation:
-                    raise deferred_cancellation[0]
-                return response
-
-            async def settle_stop() -> dict[str, Any]:
-                finalizing = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "finalizing")
-                ctl._meeting_recorders.pop(meeting_id, None)
-                clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
-                if callable(clear_level_state):
-                    clear_level_state(meeting_id)
-                # The durable state now owns finalization. Open the worker gate
-                # before any request cancellation can be delivered.
-                start_gate.set()
-                await ctl.broadcast(meeting_state_event(finalizing))
-                return finalizing
-
-            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
-            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
-            if pending_cancel is not None:
-                raise pending_cancel
-            return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
-        finally:
-            if not start_gate.is_set():
-                tasks = getattr(ctl, "_meeting_tasks", {})
-                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
-                if reserved_task is not None:
-                    reserved_task.cancel()
-                    await asyncio.gather(reserved_task, return_exceptions=True)
-
     async def reprocess_meeting(request: web.Request):
         """Refresh Voice matches or create a new canonical transcript safely."""
 
@@ -19722,9 +19656,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
     app.router.add_patch("/api/meetings/{id}/segments/{segmentId}", patch_meeting_segment)
     app.router.add_post("/api/meetings/{id}/segments/{segmentId}/undo", undo_meeting_segment_edit)
     app.router.add_get("/api/meetings/{id}/segments/{segmentId}/edits", meeting_segment_edits)
-    app.router.add_post("/api/meetings/{id}/pause", pause_meeting)
-    app.router.add_post("/api/meetings/{id}/resume", resume_meeting)
-    app.router.add_post("/api/meetings/{id}/stop", stop_meeting)
     app.router.add_post("/api/meetings/{id}/reprocess", reprocess_meeting)
     app.router.add_post("/api/meetings/{id}/finalize", retry_meeting_finalization)
     app.router.add_post("/api/meetings/{id}/retry", retry_meeting_finalization)

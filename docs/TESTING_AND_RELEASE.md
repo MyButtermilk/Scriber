@@ -66,10 +66,11 @@ HTTP seam: invalid start commands fail before admission; repeated cancellation
 cannot skip cleanup or lease release; and Stop reserves a finalizer before
 native shutdown, commits `finalizing`, opens the worker gate, then delivers the
 pending cancellation.
-`tests/api/test_meeting_capture_routes.py` registers the extracted start route
-alone, proves normalization into one immutable command, pins its controller
-port, and verifies that `create_app` resolves `POST /api/meetings` to the domain
-handler rather than a nested composition handler.
+`tests/api/test_meeting_capture_routes.py` registers the extracted start,
+pause, resume, and stop routes, proves normalization into one immutable start
+command, pins the four-method controller port, and verifies that `create_app`
+resolves all four endpoints to domain handlers rather than nested composition
+handlers.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port

@@ -134,6 +134,12 @@ class MeetingCaptureControllerPort(Protocol):
 
     async def start_meeting_capture(self, command: MeetingStartCommand) -> MeetingCaptureOutcome: ...
 
+    async def pause_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome: ...
+
+    async def resume_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome: ...
+
+    async def stop_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome: ...
+
 
 @dataclass(frozen=True, slots=True)
 class MeetingCaptureRoutes:
@@ -165,6 +171,21 @@ async def start_meeting(request: web.Request) -> web.Response:
     return web.json_response(dict(outcome.payload), status=outcome.status)
 
 
+async def pause_meeting(request: web.Request) -> web.Response:
+    outcome = await _control(request).pause_meeting_capture(request.match_info.get("id", ""))
+    return web.json_response(dict(outcome.payload), status=outcome.status)
+
+
+async def resume_meeting(request: web.Request) -> web.Response:
+    outcome = await _control(request).resume_meeting_capture(request.match_info.get("id", ""))
+    return web.json_response(dict(outcome.payload), status=outcome.status)
+
+
+async def stop_meeting(request: web.Request) -> web.Response:
+    outcome = await _control(request).stop_meeting_capture(request.match_info.get("id", ""))
+    return web.json_response(dict(outcome.payload), status=outcome.status)
+
+
 def register_meeting_capture_routes(
     app: web.Application,
     *,
@@ -172,3 +193,6 @@ def register_meeting_capture_routes(
 ) -> None:
     app[APP_MEETING_CAPTURE_ROUTES] = MeetingCaptureRoutes(control=control)
     app.router.add_post("/api/meetings", start_meeting)
+    app.router.add_post("/api/meetings/{id}/pause", pause_meeting)
+    app.router.add_post("/api/meetings/{id}/resume", resume_meeting)
+    app.router.add_post("/api/meetings/{id}/stop", stop_meeting)
