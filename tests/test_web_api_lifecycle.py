@@ -1231,6 +1231,7 @@ async def test_startup_prompt_migration_persists_json_without_rewriting_env(
     tmp_path,
 ):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "lifecycle.db")
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")
     monkeypatch.setattr(web_api.Config, "VOICEPRINT_LIBRARY_OPT_IN", False, raising=False)
