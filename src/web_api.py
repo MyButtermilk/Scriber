@@ -19,10 +19,9 @@ from datetime import UTC, datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import urlparse
 from uuid import uuid4
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src import database as db
@@ -41,6 +40,7 @@ from src.api.http_security import (
     configured_session_token,
     is_loopback_bind_host,
     is_loopback_request,
+    origin_allowed,
     request_has_valid_session_token,
     request_session_token,
     session_token_required,
@@ -71,6 +71,7 @@ from src.api.voice_component_routes import (
     VoiceLibraryDeps,
     register_voice_component_routes,
 )
+from src.api.websocket_routes import register_websocket_routes
 from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
@@ -489,7 +490,6 @@ def discard_vad_cache_without_importing_pipeline() -> None:
         logger.exception("Silero VAD cache cleanup failed after Settings update")
 
 
-_ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
 _API_VERSION = REST_API_VERSION
 _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
@@ -511,13 +511,8 @@ _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
 _SESSION_TOKEN_ENV = SESSION_TOKEN_ENV
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
-_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
-_DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
 _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network"
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
-_allowed_origins_cache_lock = threading.Lock()
-_allowed_origins_cache_raw: str | None = None
-_allowed_origins_cache: tuple[str, ...] = ()
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pyloudnorm",
@@ -1125,45 +1120,6 @@ def _frontend_file_for_request(frontend_root: Path, request_path: str) -> Path |
     if Path(clean_path).suffix:
         return None
     return root / "index.html"
-
-
-def _parse_allowed_origins() -> tuple[str, ...]:
-    global _allowed_origins_cache_raw, _allowed_origins_cache
-    raw = os.getenv(_ALLOWED_ORIGINS_ENV, "")
-    if raw == _allowed_origins_cache_raw:
-        return _allowed_origins_cache
-    with _allowed_origins_cache_lock:
-        if raw == _allowed_origins_cache_raw:
-            return _allowed_origins_cache
-        cleaned: list[str] = []
-        if raw:
-            for entry in raw.split(","):
-                val = entry.strip().rstrip("/")
-                if val:
-                    cleaned.append(val)
-        _allowed_origins_cache_raw = raw
-        _allowed_origins_cache = tuple(cleaned)
-        return _allowed_origins_cache
-
-
-def _origin_allowed(origin: str) -> bool:
-    origin = (origin or "").strip()
-    if not origin:
-        return False
-    allowed = _parse_allowed_origins()
-    if "*" in allowed:
-        return True
-    if allowed:
-        return origin in allowed
-    if origin.rstrip("/") in _DEFAULT_ALLOWED_CUSTOM_ORIGINS:
-        return True
-    parsed = urlparse(origin)
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    return host in _DEFAULT_ALLOWED_HOSTS
 
 
 def _validate_mode(raw_mode: str) -> str:
@@ -15708,7 +15664,7 @@ def _unexpected_api_error_payload() -> dict[str, Any]:
 @web.middleware
 async def cors_middleware(request: web.Request, handler):
     origin = request.headers.get("Origin")
-    if origin and not _origin_allowed(origin):
+    if origin and not origin_allowed(origin):
         return web.json_response({"message": "Origin not allowed"}, status=403)
 
     if request.method == "OPTIONS":
@@ -15912,34 +15868,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.cleanup_ctx.append(http_session_ctx)
     app.cleanup_ctx.append(provider_replay_activation_ctx)
-
-    async def ws_handler(request: web.Request):
-        origin = request.headers.get("Origin")
-        if origin and not _origin_allowed(origin):
-            return web.json_response({"message": "Origin not allowed"}, status=403)
-
-        ws = web.WebSocketResponse(heartbeat=30)
-        await ws.prepare(request)
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        await ctl.add_client(ws)
-
-        try:
-            initial_sent = await ctl.send_client_text(
-                ws,
-                json.dumps(state_event(ctl.get_state())),
-            )
-            if not initial_sent:
-                return ws
-            async for msg in ws:
-                if msg.type == WSMsgType.TEXT:
-                    # Currently server -> client only. Keep the connection alive.
-                    if msg.data == "ping" and not await ctl.send_client_text(ws, "pong"):
-                        break
-                elif msg.type == WSMsgType.ERROR:
-                    break
-        finally:
-            await ctl.remove_client(ws)
-        return ws
 
     def _provider_replay_contract_error(exc: RESTContractError) -> web.Response:
         status = 404 if "runId does not match this runtime" in str(exc) else 400
@@ -19660,7 +19588,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         return web.FileResponse(frontend_file)
 
     register_runtime_routes(app, controller=controller)
-    app.router.add_get("/ws", ws_handler)
+    register_websocket_routes(app, controller=controller)
     if provider_replay.enabled:
         app.router.add_post(
             f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/prepare",

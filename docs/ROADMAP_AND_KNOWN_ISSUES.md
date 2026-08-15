@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-08-14
+Last verified: 2026-08-15
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -129,8 +129,9 @@ Meetings:
   exports, playback, retention, and webhook delivery surfaces.
 - Meeting delivery was the first domain extracted from `create_app`; Runtime,
   ONNX model management, YouTube, Transcript, Settings, Local Polishing,
-  Device, and Outlook Calendar routes now follow the same module-level
-  registration shape with domain-local ports.
+  Device, Outlook Calendar, Meeting Import, Voice Component, File
+  Transcription, and WebSocket routes now follow the same module-level
+  registration shape with domain-local ports or collaborator interfaces.
   Transcript routes were the first to need controller internals; those became
   public methods shaped by the routes' needs rather than a wider port.
   Webhook targets are HTTPS-only, DNS-validated and socket-pinned; confirmation

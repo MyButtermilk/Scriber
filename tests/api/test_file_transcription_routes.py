@@ -232,6 +232,54 @@ async def test_oversized_upload_stays_413_when_first_cleanup_attempt_fails(monke
 
 
 @pytest.mark.asyncio
+async def test_workspace_cleanup_retries_before_delivering_repeated_cancellation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "incomplete-upload"
+    workspace.mkdir()
+    (workspace / "source.part").write_bytes(b"partial")
+    cleanup_started = threading.Event()
+    allow_cleanup_failure = threading.Event()
+    cleanup_calls = 0
+    real_remove = file_transcription_routes.remove_tree_if_exists
+
+    def blocking_failure() -> None:
+        cleanup_started.set()
+        if not allow_cleanup_failure.wait(timeout=3):
+            raise TimeoutError("cleanup failure gate was not released")
+        raise OSError("workspace is temporarily locked")
+
+    async def fail_once_then_remove(path: Path) -> None:
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+        if cleanup_calls == 1:
+            await file_transcription_routes.await_with_delayed_cancellation(asyncio.to_thread(blocking_failure))
+            return
+        await real_remove(path)
+
+    monkeypatch.setattr(
+        file_transcription_routes,
+        "remove_tree_if_exists",
+        fail_once_then_remove,
+    )
+    cleanup_task = asyncio.create_task(file_transcription_routes._cleanup_unowned_workspace(workspace))
+    assert await asyncio.to_thread(cleanup_started.wait, 3)
+
+    cleanup_task.cancel()
+    cleanup_task.cancel()
+    await asyncio.sleep(0)
+    assert not cleanup_task.done()
+    allow_cleanup_failure.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await cleanup_task
+
+    assert cleanup_calls == 2
+    assert not workspace.exists()
+
+
+@pytest.mark.asyncio
 async def test_compression_uses_the_admitted_provider_limit(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(file_transcription_routes, "UPLOAD_COMPRESSION_THRESHOLD_BYTES", 10_000)
     upload_path = tmp_path / "over-provider-limit.mp3"

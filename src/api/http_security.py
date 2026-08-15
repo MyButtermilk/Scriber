@@ -1,4 +1,4 @@
-"""HTTP transport security helpers shared by every route module.
+"""HTTP and WebSocket transport security shared by every route module.
 
 These live outside ``web_api`` so route domains extracted from ``create_app``
 can enforce the same loopback and session-token rules without importing the
@@ -14,13 +14,16 @@ import hmac
 import ipaddress
 import os
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from aiohttp import web
 
 SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
 SESSION_TOKEN_HEADER = "X-Scriber-Token"
 SESSION_TOKEN_QUERY = "scriberToken"
+ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
+_DEFAULT_ALLOWED_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "tauri.localhost"})
+_DEFAULT_ALLOWED_CUSTOM_ORIGINS = frozenset({"tauri://localhost"})
 
 
 def attachment_content_disposition(filename: str) -> str:
@@ -114,3 +117,22 @@ def request_has_valid_session_token(request: web.Request, token: str | None = No
         return False
     provided = request_session_token(request)
     return bool(provided) and hmac.compare_digest(provided, expected)
+
+
+def origin_allowed(origin: str) -> bool:
+    """Return whether a browser origin may reach the local HTTP/WS server."""
+
+    normalized = str(origin or "").strip()
+    if not normalized:
+        return False
+    configured = tuple(
+        entry.strip().rstrip("/") for entry in os.getenv(ALLOWED_ORIGINS_ENV, "").split(",") if entry.strip()
+    )
+    if "*" in configured:
+        return True
+    if configured:
+        return normalized in configured
+    if normalized.rstrip("/") in _DEFAULT_ALLOWED_CUSTOM_ORIGINS:
+        return True
+    parsed = urlparse(normalized)
+    return bool(parsed.scheme in {"http", "https"} and parsed.hostname in _DEFAULT_ALLOWED_HOSTS)

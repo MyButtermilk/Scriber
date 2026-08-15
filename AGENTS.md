@@ -50,13 +50,13 @@ the user explicitly asks for a temporary investigation note.
 Backend and runtime:
 
 - `src/web_api.py`: main aiohttp application composition and controller,
-  WebSocket server, settings, jobs, transcript history, mic control, and the
-  routes not yet split into domain modules.
+  settings, jobs, transcript history, mic control, and the routes not yet split
+  into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
-  Component, and File Transcription route domains, shared aiohttp app keys,
-  HTTP security helpers, and the upload policy used by both file transcription
-  and Meeting imports.
+  Component, File Transcription, and WebSocket route domains, shared aiohttp app
+  keys, HTTP/WebSocket security helpers, and the upload policy used by both file
+  transcription and Meeting imports.
   Controller-backed route modules own their narrow structural controller port
   beside the handlers that consume it; controller-free domains own local
   collaborator interfaces/providers and a wiring guard instead. Do not recreate
@@ -89,6 +89,10 @@ Backend and runtime:
   the one ownership hand-off to its durable job. Its controller port exposes
   only the immutable admission plan, a public workspace root, and that hand-off;
   the route must never read `_downloads_dir` or mutable provider settings.
+  WebSocket routes own browser-origin validation, initial state delivery, ping
+  handling, and the add/remove-client lifecycle behind a four-member controller
+  port. Every registered connection is removed in `finally`, including when its
+  initial send fails.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than

@@ -14,35 +14,6 @@ from src.api import youtube_routes
 from src.web_api import APP_SHUTDOWN_EVENT, ScriberWebController
 
 
-def test_origin_allowed_defaults(monkeypatch):
-    monkeypatch.delenv("SCRIBER_ALLOWED_ORIGINS", raising=False)
-    assert web_api._origin_allowed("http://localhost:3000")
-    assert web_api._origin_allowed("http://127.0.0.1:1234")
-    assert web_api._origin_allowed("http://[::1]:5173")
-    assert web_api._origin_allowed("http://tauri.localhost")
-    assert web_api._origin_allowed("https://tauri.localhost")
-    assert web_api._origin_allowed("tauri://localhost")
-    assert not web_api._origin_allowed("https://evil.example")
-    assert not web_api._origin_allowed("http://evil.localhost")
-    assert not web_api._origin_allowed("null")
-
-
-def test_origin_allowed_from_env(monkeypatch):
-    monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "https://example.com, http://localhost:3000")
-    assert web_api._origin_allowed("https://example.com")
-    assert web_api._origin_allowed("http://localhost:3000")
-    assert not web_api._origin_allowed("http://localhost:4000")
-
-    monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "https://changed.example")
-    assert web_api._origin_allowed("https://changed.example")
-    assert not web_api._origin_allowed("https://example.com")
-
-
-def test_origin_allowed_wildcard(monkeypatch):
-    monkeypatch.setenv("SCRIBER_ALLOWED_ORIGINS", "*")
-    assert web_api._origin_allowed("https://any.example")
-
-
 def test_safe_youtube_thumbnail_url_allows_only_youtube_thumbnail_hosts():
     assert (
         youtube_routes.safe_thumbnail_url("https://i.ytimg.com/vi/abc123/hqdefault.jpg")

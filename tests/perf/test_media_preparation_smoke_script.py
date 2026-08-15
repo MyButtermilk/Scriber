@@ -103,6 +103,8 @@ def test_real_browser_file_smoke_crosses_the_production_aiohttp_composition() ->
     assert '"realPythonCreateApp": True' in script
     assert '"providerWorkerHeldAtQueuedBoundary": True' in script
     assert 'route_handler_module == "src.api.file_transcription_routes"' in script
+    assert 'websocket_handler_module == "src.api.websocket_routes"' in script
+    assert '"realWebSocketRoute": True' in script
     assert 'browser_state.get("ok") is True' in script
     assert "from scripts.smoke_frontend_browser import FrontendSmokeBackend" not in script
     assert "scripts\\smoke_real_file_upload_browser.py" in workflow

@@ -330,16 +330,21 @@ async def write_upload_stream_to_disk(
 async def _cleanup_unowned_workspace(save_dir: Path) -> None:
     """Best-effort cleanup without changing the already-decided HTTP result."""
 
-    for attempt in range(2):
-        try:
-            await remove_tree_if_exists(save_dir)
-            return
-        except Exception as exc:
-            logger.warning(
-                "Failed to cleanup incomplete file upload (attempt={}): {}",
-                attempt + 1,
-                exc,
-            )
+    async def cleanup_with_retry() -> None:
+        for attempt in range(2):
+            try:
+                await remove_tree_if_exists(save_dir)
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Failed to cleanup incomplete file upload (attempt={}): {}",
+                    attempt + 1,
+                    exc,
+                )
+
+    _, pending_cancel = await await_with_delayed_cancellation(cleanup_with_retry())
+    if pending_cancel is not None:
+        raise pending_cancel
 
 
 async def transcribe_file(request: web.Request) -> web.Response:

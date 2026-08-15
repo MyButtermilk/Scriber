@@ -917,8 +917,8 @@ items.
 
 Key modules:
 
-- `src/web_api.py`: aiohttp application composition, WebSocket/controller state,
-  jobs, settings, and explicit dev/test frontend fallback.
+- `src/web_api.py`: aiohttp application composition, controller state, jobs,
+  settings, and explicit dev/test frontend fallback.
 - `src/runtime/audio_admission.py`: the single owner of this process's native
   audio lease. Only one capture may hold the device, and the exclusion is
   durable and cross-process. The owner serializes every lifecycle mutation,
@@ -938,11 +938,13 @@ Key modules:
   `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
   `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
   `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
-  `src/api/meeting_import_routes.py`, `src/api/voice_component_routes.py`, and
-  `src/api/file_transcription_routes.py`:
+  `src/api/meeting_delivery_routes.py`, `src/api/meeting_import_routes.py`,
+  `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
+  and `src/api/websocket_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
-  Settings, Local Polishing, Device, Outlook Calendar, Meeting Import, Voice
-  Component, and File Transcription domains. Runtime owns debug logs and support bundles. ONNX
+  Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
+  Meeting Import, Voice Component, File Transcription, and WebSocket domains.
+  Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
   scopes before cancellation. Transcript routes hold no transcript state: one
@@ -1005,6 +1007,12 @@ Key modules:
   Each route test pins the real adapter contract or the exact wiring and lazy
   resolution boundary. Shared reflection support contains mechanics only and
   does not form a port catalogue.
+- WebSocket owns the authenticated connection lifecycle after middleware:
+  browser-origin validation, registration, initial state delivery, the small
+  ping/pong keepalive contract, and unconditional removal. Its route-local port
+  exposes only `add_client`, `remove_client`, `send_client_text`, and
+  `get_state`; connection storage and send serialization remain controller
+  concerns.
 - File Transcription owns the full pre-queue ingest lifecycle: multipart
   parsing, Windows-safe naming, bounded off-loop writes, ffmpeg extraction and
   compression, workspace cleanup, and the one ownership hand-off to the
@@ -1015,9 +1023,9 @@ Key modules:
   `create_app` path and the durable `JobStore`, then stops deliberately at the
   queued-provider boundary; installed Tauri and external provider execution
   remain separate release evidence.
-- `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP security
-  policy and identity-stable aiohttp application keys used across composition
-  and extracted route modules.
+- `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
+  transport-security policy and identity-stable aiohttp application keys used
+  across composition and extracted route modules.
 - `src/api/upload_policy.py`: the shared upload-policy module for file
   transcription and Meeting imports. Its interface owns Windows-safe filename
   normalization, the accepted audio/video extensions, and one immutable

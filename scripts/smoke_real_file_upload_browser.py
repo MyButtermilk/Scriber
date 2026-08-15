@@ -76,6 +76,53 @@ async def _start_real_backend(
     return runner, controller, store
 
 
+async def _probe_real_websocket(
+    cdp: CdpClient,
+    *,
+    backend_url: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    websocket_url = backend_url.replace("http://", "ws://", 1) + "/ws"
+    result = await cdp.evaluate(
+        f"""
+new Promise((resolve) => {{
+  const socket = new WebSocket({json.dumps(websocket_url)});
+  let initialType = "";
+  const finish = (value) => {{
+    clearTimeout(timer);
+    socket.close();
+    resolve(value);
+  }};
+  const timer = setTimeout(
+    () => finish({{ ok: false, initialType, pong: false, error: "timeout" }}),
+    5000,
+  );
+  socket.onerror = () => finish({{ ok: false, initialType, pong: false, error: "socket" }});
+  socket.onmessage = (event) => {{
+    if (!initialType) {{
+      try {{
+        initialType = JSON.parse(event.data).type || "";
+      }} catch (_error) {{
+        finish({{ ok: false, initialType: "", pong: false, error: "initial-json" }});
+        return;
+      }}
+      socket.send("ping");
+      return;
+    }}
+    finish({{
+      ok: initialType === "state" && event.data === "pong",
+      initialType,
+      pong: event.data === "pong",
+      error: "",
+    }});
+  }};
+}})
+""",
+        timeout=timeout_sec,
+    )
+    return dict(result) if isinstance(result, dict) else {"ok": False, "error": "invalid-result"}
+
+
 async def run(args: argparse.Namespace) -> dict[str, Any]:
     backend_port = find_free_port()
     frontend_port = find_free_port()
@@ -120,6 +167,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 }))()
 """,
             )
+            websocket_state = await _probe_real_websocket(
+                cdp,
+                backend_url=backend_url,
+                timeout_sec=args.page_timeout_sec,
+            )
             await set_file_input_files(
                 cdp,
                 label="real-file-input",
@@ -161,6 +213,14 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 ),
                 "",
             )
+            websocket_handler_module = next(
+                (
+                    route.handler.__module__
+                    for route in runner.app.router.routes()
+                    if route.method == "GET" and route.resource.canonical == "/ws"
+                ),
+                "",
+            )
             result = {
                 "schemaVersion": 1,
                 "generatedAtUtc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -172,6 +232,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     and source_path.is_file()
                     and browser_state.get("ok") is True
                     and route_handler_module == "src.api.file_transcription_routes"
+                    and websocket_state.get("ok") is True
+                    and websocket_handler_module == "src.api.websocket_routes"
                     and browser_state.get("consoleErrors") == []
                     and browser_state.get("pageErrors") == []
                     and browser_state.get("unhandledRejections") == []
@@ -181,11 +243,13 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "realPythonCreateApp": True,
                     "realFileRoute": True,
                     "realJobStore": True,
+                    "realWebSocketRoute": True,
                     "providerWorkerHeldAtQueuedBoundary": True,
                     "installedTauri": False,
                     "externalProvider": False,
                 },
                 "browser": browser_state,
+                "websocket": websocket_state,
                 "durableJob": {
                     "idMatchesTranscript": bool(job and job.id == transcript_id == job.transcript_id),
                     "status": job.status.value if job else "missing",
@@ -193,6 +257,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "sourceExists": source_path.is_file(),
                 },
                 "routeHandlerModule": route_handler_module,
+                "websocketHandlerModule": websocket_handler_module,
                 "controllerType": type(controller).__name__,
             }
         finally:

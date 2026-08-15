@@ -97,6 +97,9 @@ cover the 180 UTF-16-code-unit filename bound, Windows reserved-device names
 and invalid surrogates, accepted media extensions, and immutable
 provider-bound raw/final limits used by both File transcription and Meeting
 imports.
+WebSocket route tests register that domain alone and exercise the real aiohttp
+upgrade, initial state event, ping/pong path, origin rejection, failed-initial-
+send cleanup, and the exact four-member production controller port.
 
 Frontend:
 
@@ -190,10 +193,13 @@ Unlike the broad synthetic frontend smoke, this narrow vertical slice runs the
 real React/Vite File page in Chrome against `src.web_api.create_app`, the
 extracted File Transcription handler, the real transcript database, and a real
 `JobStore`. It requires the route to persist one exact provider-bound queued job
-and keep the owned source before navigation succeeds. The provider worker is
-deliberately held at that boundary, so the result is not installed-Tauri or
-external-provider evidence. `python-full-suite.yml` runs this smoke and uploads
-its JSON result beside the JUnit report.
+and keep the owned source before navigation succeeds. The same browser run also
+opens the production `/ws` route, requires its initial `state` event, sends
+`ping`, receives `pong`, and verifies that composition resolves the extracted
+WebSocket handler. The provider worker is deliberately held at the queued
+boundary, so the result is not installed-Tauri or external-provider evidence.
+`python-full-suite.yml` runs this smoke and uploads its JSON result beside the
+JUnit report.
 
 Frontend localization gates:
 
