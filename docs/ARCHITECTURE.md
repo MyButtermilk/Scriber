@@ -959,12 +959,13 @@ Key modules:
   `src/api/meeting_workspace_routes.py`, and
   `src/api/meeting_processing_routes.py`,
   `src/api/meeting_artifact_routes.py`, and
-  `src/api/meeting_catalog_routes.py`:
+  `src/api/meeting_catalog_routes.py`, and
+  `src/api/meeting_readiness_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
   Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
   Capture lifecycle, Meeting Workspace, Meeting Processing, Meeting Artifacts,
-  and Meeting Catalog domains.
+  Meeting Catalog, and Meeting Device Readiness domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
   admitted progress precedes final state, and aiohttp cleanup seals all active
@@ -1075,6 +1076,11 @@ Key modules:
   and ordered workspace -> transcript -> Meeting cleanup. That settlement is
   protected from repeated request cancellation; maintenance can finish a
   tombstoned discard after a process crash.
+- Meeting Device Readiness owns capabilities, redacted capture/render endpoint
+  discovery, and the ephemeral device-test HTTP boundary. A strict immutable
+  command crosses its three-method controller port. Native-audio admission,
+  Shell IPC, level probing, prewarm, lease renewal, and repeated-cancellation
+  settlement remain controller-owned; the probe persists and uploads no PCM.
 - `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
   transport-security policy and identity-stable aiohttp application keys used
   across composition and extracted route modules.

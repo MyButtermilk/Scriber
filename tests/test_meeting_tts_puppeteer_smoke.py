@@ -32,6 +32,10 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     for action in ("pause", "resume", "stop"):
         assert f'clickControl(\n      page,\n      meetingId,\n      "{action}"' in driver
     assert 'activePhase = "rename-meeting-workspace"' in driver
+    assert 'activePhase = "validate-meeting-readiness"' in driver
+    assert '"/api/meetings/capabilities"' in driver
+    assert '"/api/meetings/audio-devices"' in driver
+    assert '"/api/meetings/device-test"' in driver
     assert 'browserJson(\n      page,\n      "PATCH"' in driver
     assert 'activePhase = "save-meeting-workspace-note"' in driver
     assert 'browserJson(\n      page,\n      "PUT"' in driver
@@ -82,6 +86,9 @@ def test_meeting_speech_smoke_artifacts_are_privacy_minimal() -> None:
         "segmentCount",
         "transcriptCharacterCount",
         "audioGapCount",
+        "meetingCapabilitiesVerified",
+        "meetingAudioDevicesVerified",
+        "meetingDeviceTestVerified",
         "workspaceTitleVerified",
         "workspaceSegmentVerified",
         "workspaceNoteVerified",

@@ -176,21 +176,138 @@ class VoiceEnrollmentAdmissionPort(Protocol):
     ) -> None: ...
 
 
-@dataclass(frozen=True)
-class VoiceCaptureRuntime:
-    """Owned-remote native capture boundary, replaceable by HTTP tests."""
+class VoiceEnrollmentCapturePort(Protocol):
+    """Bounded in-memory PCM reader owned by one enrollment request."""
 
-    available: Callable[[], bool] = shell_ipc_available
-    call: Callable[..., Any] = call_shell_ipc
-    capture_factory: Callable[..., Any] = VoiceEnrollmentCapture
-    wait: Callable[[int], Awaitable[None]] = lambda duration_ms: asyncio.sleep(duration_ms / 1_000)
-    reference_wav: Callable[..., tuple[bytes, int]] = voice_reference_wav
+    def start(self, frame_pipe: str) -> None: ...
+
+    def stop(self, timeout: float = 3.0) -> dict[str, Any]: ...
+
+    def expect_native_stop(self) -> None: ...
+
+    def pcm16(self) -> bytes: ...
+
+    def clear(self) -> None: ...
+
+
+class VoiceShellCall(Protocol):
+    def __call__(
+        self,
+        command: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]: ...
+
+
+class VoiceCaptureFactory(Protocol):
+    def __call__(
+        self,
+        *,
+        sample_rate: int,
+        max_duration_seconds: float,
+    ) -> VoiceEnrollmentCapturePort: ...
+
+
+class VoiceReferenceWavBuilder(Protocol):
+    def __call__(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+    ) -> tuple[bytes, int]: ...
+
+
+class VoiceCaptureRuntimePort(Protocol):
+    """Exact native-capture interface consumed by Voice enrollment."""
+
+    def is_available(self) -> bool: ...
+
+    def call_shell(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]: ...
+
+    def create_capture(
+        self,
+        *,
+        sample_rate: int,
+        max_duration_seconds: float,
+    ) -> VoiceEnrollmentCapturePort: ...
+
+    async def wait(self, duration_ms: int) -> None: ...
+
+    def build_reference_wav(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+    ) -> tuple[bytes, int]: ...
+
+
+class VoiceCaptureRuntime:
+    """Small exact-callback adapter used by isolated route tests and defaults."""
+
+    def __init__(
+        self,
+        *,
+        available: Callable[[], bool] = shell_ipc_available,
+        call: VoiceShellCall = call_shell_ipc,
+        capture_factory: VoiceCaptureFactory = VoiceEnrollmentCapture,
+        wait: Callable[[int], Awaitable[None]] | None = None,
+        reference_wav: VoiceReferenceWavBuilder = voice_reference_wav,
+    ) -> None:
+        self._available = available
+        self._call = call
+        self._capture_factory = capture_factory
+        self._wait = wait
+        self._reference_wav = reference_wav
+
+    def is_available(self) -> bool:
+        return self._available()
+
+    def call_shell(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return self._call(command, payload, timeout_seconds=timeout_seconds)
+
+    def create_capture(
+        self,
+        *,
+        sample_rate: int,
+        max_duration_seconds: float,
+    ) -> VoiceEnrollmentCapturePort:
+        return self._capture_factory(
+            sample_rate=sample_rate,
+            max_duration_seconds=max_duration_seconds,
+        )
+
+    async def wait(self, duration_ms: int) -> None:
+        if self._wait is None:
+            await asyncio.sleep(duration_ms / 1_000)
+            return
+        await self._wait(duration_ms)
+
+    def build_reference_wav(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+    ) -> tuple[bytes, int]:
+        return self._reference_wav(pcm, sample_rate=sample_rate)
 
 
 class _VoiceEnrollmentCaptureOwnership:
     """Serialize one request's owned-remote native capture lifecycle."""
 
-    def __init__(self, runtime: VoiceCaptureRuntime, *, before_stop: Callable[[], None]) -> None:
+    def __init__(self, runtime: VoiceCaptureRuntimePort, *, before_stop: Callable[[], None]) -> None:
         self._runtime = runtime
         self._before_stop = before_stop
         self._lock = asyncio.Lock()
@@ -205,7 +322,7 @@ class _VoiceEnrollmentCaptureOwnership:
             self._raise_if_lost()
             response, pending_cancel = await await_with_delayed_cancellation(
                 asyncio.to_thread(
-                    self._runtime.call,
+                    self._runtime.call_shell,
                     "audioCaptureStart",
                     payload,
                     timeout_seconds=4.0,
@@ -254,7 +371,7 @@ class _VoiceEnrollmentCaptureOwnership:
             logger.warning("Voice Library reader stop preparation failed: {}", type(exc).__name__)
         stop_response, pending_cancel = await await_with_delayed_cancellation(
             asyncio.to_thread(
-                self._runtime.call,
+                self._runtime.call_shell,
                 "audioCaptureStop",
                 {"streamId": self._stream_id},
                 timeout_seconds=4.0,
@@ -354,7 +471,7 @@ APP_VOICE_LIBRARY_DEPS: web.AppKey[VoiceLibraryProvider] = web.AppKey("voice_lib
 APP_VOICE_ENROLLMENT: web.AppKey[VoiceEnrollmentProvider] = web.AppKey("voice_enrollment_provider")
 APP_DIARIZER: web.AppKey[DiarizerProvider] = web.AppKey("diarizer_provider")
 APP_VOICE_COMPONENT_STATE: web.AppKey[VoiceComponentState] = web.AppKey("voice_component_state")
-APP_VOICE_CAPTURE_RUNTIME: web.AppKey[VoiceCaptureRuntime] = web.AppKey("voice_capture_runtime")
+APP_VOICE_CAPTURE_RUNTIME: web.AppKey[VoiceCaptureRuntimePort] = web.AppKey("voice_capture_runtime")
 
 
 def _deps(request: web.Request) -> VoiceLibraryDeps:
@@ -914,7 +1031,7 @@ async def enroll_speaker_profile(request: web.Request) -> web.Response:
             {"message": "Download the local voice recognition model before recording a voice."},
             status=409,
         )
-    if not runtime.available():
+    if not runtime.is_available():
         return web.json_response({"message": "Native microphone capture is unavailable in this copy."}, status=503)
     try:
         raw = await request.json()
@@ -1023,7 +1140,7 @@ async def enroll_speaker_profile(request: web.Request) -> web.Response:
                 status=503,
             )
         await native_capture.raise_if_lost()
-        capture = runtime.capture_factory(
+        capture = runtime.create_capture(
             sample_rate=16_000,
             max_duration_seconds=(duration_ms + 1_000) / 1_000,
         )
@@ -1062,7 +1179,7 @@ async def enroll_speaker_profile(request: web.Request) -> web.Response:
             if pending_cancel is not None:
                 raise pending_cancel
             await native_capture.raise_if_lost()
-            preview_audio, preview_duration_ms = runtime.reference_wav(pcm, sample_rate=16_000)
+            preview_audio, preview_duration_ms = runtime.build_reference_wav(pcm, sample_rate=16_000)
             pcm = b""
             profile = await to_thread_cancellation_barrier(
                 deps.meeting_store.enroll_speaker_profile,
@@ -1278,7 +1395,7 @@ def register_voice_component_routes(
     voice_library: VoiceLibraryProvider,
     enrollment: VoiceEnrollmentProvider,
     diarizer: DiarizerProvider,
-    capture_runtime: VoiceCaptureRuntime | None = None,
+    capture_runtime: VoiceCaptureRuntimePort | None = None,
 ) -> None:
     """Register the optional voice component domain.
 
@@ -1292,7 +1409,8 @@ def register_voice_component_routes(
     app[APP_VOICE_ENROLLMENT] = enrollment
     app[APP_DIARIZER] = diarizer
     app[APP_VOICE_COMPONENT_STATE] = VoiceComponentState()
-    app[APP_VOICE_CAPTURE_RUNTIME] = capture_runtime or VoiceCaptureRuntime()
+    resolved_capture_runtime: VoiceCaptureRuntimePort = capture_runtime or VoiceCaptureRuntime()
+    app[APP_VOICE_CAPTURE_RUNTIME] = resolved_capture_runtime
 
     app.router.add_get("/api/meetings/speaker-model", speaker_model_status)
     app.router.add_post("/api/meetings/speaker-model", download_speaker_model)

@@ -55,7 +55,8 @@ Backend and runtime:
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
   Component, File Transcription, WebSocket, Meeting Capture, Meeting
-  Workspace, Meeting Processing, Meeting Artifacts, and Meeting Catalog route
+  Workspace, Meeting Processing, Meeting Artifacts, Meeting Catalog, and
+  Meeting Device Readiness route
   domains,
   shared aiohttp app
   keys, HTTP/WebSocket security helpers, and the upload policy used by both file
@@ -121,6 +122,12 @@ Backend and runtime:
   artifact/reprocessing projection, task/import admission checks, the durable
   discard tombstone, and cancellation-safe workspace/transcript/store cleanup;
   a canceled HTTP request must not abandon any cleanup step after tombstoning.
+  Meeting Device Readiness owns strict device-test input parsing plus the
+  capabilities, redacted endpoint inventory, and ephemeral probe HTTP
+  responses. Its three-method controller port leaves native-audio admission,
+  Shell IPC, level-probe ownership, prewarm, lease renewal, and
+  repeated-cancellation cleanup with the controller. The probe persists and
+  uploads no PCM.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than

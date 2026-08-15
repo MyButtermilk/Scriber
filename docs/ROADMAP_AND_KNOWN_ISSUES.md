@@ -133,7 +133,8 @@ Meetings:
   Transcription, WebSocket, Meeting Capture start/pause/resume/stop, Meeting
   Workspace title/search/correction/note/action-item routes, and Meeting
   Processing reprocess/finalize/retry/analyze routes, Meeting Artifacts
-  playback/export/email routes, and Meeting Catalog list/detail/discard routes
+  playback/export/email routes, Meeting Catalog list/detail/discard routes, and
+  Meeting Device Readiness capabilities/audio-device/device-test routes
   now follow the same module-level
   registration shape with domain-local ports or collaborator interfaces.
   Transcript routes were the first to need controller internals; those became

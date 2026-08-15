@@ -98,7 +98,26 @@ class TranscriptsControllerPort(Protocol):
     async def summarize_transcript(self, transcript_id: str) -> SummaryOutcome: ...
 
 
-ExportRenderer = Any
+@dataclass(frozen=True, slots=True)
+class TranscriptDocumentRenderCommand:
+    """Complete immutable input for one transcript document render."""
+
+    export_format: str
+    title: str
+    content: str
+    summary: str
+    summary_format: str
+    date: str
+    duration: str
+
+
+class TranscriptDocumentRendererPort(Protocol):
+    """Exact adapter boundary for the shared PDF/DOCX renderer."""
+
+    async def render(
+        self,
+        command: TranscriptDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]: ...
 
 
 @dataclass(frozen=True)
@@ -108,7 +127,7 @@ class TranscriptRoutesService:
     controller: TranscriptsControllerPort
     # Export rendering stays in web_api: it is shared with the Meeting exports
     # and pulls in reportlab/python-docx, which this module has no other use for.
-    render_export: ExportRenderer
+    renderer: TranscriptDocumentRendererPort
 
 
 APP_TRANSCRIPT_SERVICE: web.AppKey[TranscriptRoutesService] = web.AppKey(
@@ -265,14 +284,16 @@ async def export_transcript(request: web.Request) -> web.StreamResponse:
         return web.json_response({"message": "Transcript has no content to export"}, status=400)
 
     try:
-        data, content_type, ext = await service.render_export(
-            export_format=export_format,
-            title=view.title or "Transcript",
-            content=view.content,
-            summary=view.summary,
-            summary_format=view.summary_format or "markdown",
-            date=view.date,
-            duration=view.duration,
+        data, content_type, ext = await service.renderer.render(
+            TranscriptDocumentRenderCommand(
+                export_format=export_format,
+                title=view.title or "Transcript",
+                content=view.content,
+                summary=view.summary,
+                summary_format=view.summary_format or "markdown",
+                date=view.date,
+                duration=view.duration,
+            )
         )
         safe_title = "".join(c for c in (view.title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
         filename = f"{safe_title or 'transcript'}.{ext}"
@@ -292,13 +313,13 @@ def register_transcript_routes(
     app: web.Application,
     *,
     controller: TranscriptsControllerPort,
-    render_export: ExportRenderer,
+    renderer: TranscriptDocumentRendererPort,
 ) -> None:
     """Register the transcript domain without web_api closure coupling."""
 
     app[APP_TRANSCRIPT_SERVICE] = TranscriptRoutesService(
         controller=controller,
-        render_export=render_export,
+        renderer=renderer,
     )
 
     app.router.add_get("/api/transcripts", list_transcripts)

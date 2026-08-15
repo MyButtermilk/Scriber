@@ -72,6 +72,11 @@ from src.api.meeting_processing_routes import (
     MeetingRetryCommand,
     register_meeting_processing_routes,
 )
+from src.api.meeting_readiness_routes import (
+    MeetingDeviceTestCommand,
+    MeetingReadinessOutcome,
+    register_meeting_readiness_routes,
+)
 from src.api.meeting_workspace_routes import (
     MeetingWorkspaceDeps,
     register_meeting_workspace_routes,
@@ -83,6 +88,7 @@ from src.api.settings_routes import register_settings_routes
 from src.api.transcript_routes import (
     CancellationPersistenceUnavailable,
     SummaryOutcome,
+    TranscriptDocumentRenderCommand,
     TranscriptView,
     register_transcript_routes,
 )
@@ -91,8 +97,8 @@ from src.api.upload_policy import (
     format_upload_limit,
 )
 from src.api.voice_component_routes import (
-    VoiceCaptureRuntime,
     VoiceEnrollmentAdmission,
+    VoiceEnrollmentCapturePort,
     VoiceEnrollmentLossHandler,
     VoiceEnrollmentUnavailable,
     VoiceLibraryDeps,
@@ -1389,6 +1395,24 @@ class _MeetingArtifactDocumentRenderer:
             date=command.date,
             duration=command.duration,
             document_labels=command.document_labels,
+        )
+
+
+class _TranscriptDocumentRenderer:
+    """Composition adapter from transcript export input to the shared renderer."""
+
+    async def render(
+        self,
+        command: TranscriptDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]:
+        return await _render_transcript_export_async(
+            export_format=command.export_format,
+            title=command.title,
+            content=command.content,
+            summary=command.summary,
+            summary_format=command.summary_format,
+            date=command.date,
+            duration=command.duration,
         )
 
 
@@ -3148,6 +3172,44 @@ async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
 async def _wait_for_voice_enrollment(duration_ms: int) -> None:
     """Clock adapter supplied to the extracted native-capture boundary."""
     await asyncio.sleep(max(0, int(duration_ms)) / 1_000)
+
+
+class _VoiceCaptureRuntimeAdapter:
+    """Exact production adapter for native Voice Library enrollment capture."""
+
+    def is_available(self) -> bool:
+        return shell_ipc_available()
+
+    def call_shell(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return call_shell_ipc(command, payload, timeout_seconds=timeout_seconds)
+
+    def create_capture(
+        self,
+        *,
+        sample_rate: int,
+        max_duration_seconds: float,
+    ) -> VoiceEnrollmentCapturePort:
+        return VoiceEnrollmentCapture(
+            sample_rate=sample_rate,
+            max_duration_seconds=max_duration_seconds,
+        )
+
+    async def wait(self, duration_ms: int) -> None:
+        await _wait_for_voice_enrollment(duration_ms)
+
+    def build_reference_wav(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+    ) -> tuple[bytes, int]:
+        return voice_reference_wav(pcm, sample_rate=sample_rate)
 
 
 class ScriberWebController:
@@ -14435,6 +14497,381 @@ class ScriberWebController:
                 )
                 await self._broadcast_meeting_import(import_job, 1.0, "Meeting import analysis failed")
 
+    async def get_meeting_capabilities(self) -> MeetingReadinessOutcome:
+        """Return native-capture and long-session readiness without opening devices."""
+
+        long_session_target_seconds = 5 * 60 * 60
+        long_session_required_bytes = 6 * 1024 * 1024 * 1024
+        capture_bytes_per_second = 16_000 * 2 * 3
+        try:
+            disk_usage = await asyncio.to_thread(shutil.disk_usage, data_dir())
+            available_free_bytes: int | None = int(disk_usage.free)
+        except OSError, ValueError:
+            available_free_bytes = None
+        finalization_reserve_bytes = 2 * 1024 * 1024 * 1024
+        estimated_capture_seconds = (
+            max(0, available_free_bytes - finalization_reserve_bytes) // capture_bytes_per_second
+            if available_free_bytes is not None
+            else None
+        )
+        return MeetingReadinessOutcome(
+            status=200,
+            payload={
+                "apiVersion": REST_API_VERSION,
+                "platform": "windows" if os.name == "nt" else "unsupported",
+                "shellIpcAvailable": shell_ipc_available(),
+                "nativeMeetingCapture": shell_ipc_available(),
+                "liveMicBusy": bool(self._is_listening or self._is_stopping),
+                "activeMeeting": await asyncio.to_thread(self._meeting_store.active),
+                "sources": ["microphone", "system"],
+                "requiresPermissionConfirmation": False,
+                "longSession": {
+                    "targetDurationSeconds": long_session_target_seconds,
+                    "checkpointIntervalSeconds": 30,
+                    "requiredFreeBytes": long_session_required_bytes,
+                    "availableFreeBytes": available_free_bytes,
+                    "estimatedCaptureSeconds": estimated_capture_seconds,
+                    "storageReady": bool(
+                        available_free_bytes is not None and available_free_bytes >= long_session_required_bytes
+                    ),
+                },
+            },
+        )
+
+    async def list_meeting_audio_devices(self) -> MeetingReadinessOutcome:
+        """Return redacted native endpoint choices, with capture-only fallback."""
+
+        grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
+        shell_available = shell_ipc_available()
+        shell_inventory_available = False
+        shell_inventory_present = False
+        reason = ""
+
+        if shell_available:
+            try:
+                response = await asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioEndpointInventory",
+                    {},
+                    timeout_seconds=2.0,
+                )
+            except Exception as exc:
+                reason = "shellIpcRequestFailed"
+                logger.debug(
+                    "Meeting audio endpoint inventory request failed; trying redacted "
+                    f"PyCAW capture fallback ({type(exc).__name__})"
+                )
+            else:
+                payload = response.get("payload") if isinstance(response, dict) else None
+                endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+                grouped = _group_meeting_audio_endpoints(endpoints)
+                shell_inventory_present = bool(grouped["capture"] or grouped["render"])
+                shell_inventory_available = bool(
+                    isinstance(response, dict)
+                    and response.get("success")
+                    and isinstance(payload, dict)
+                    and payload.get("available")
+                )
+                if not shell_inventory_available:
+                    reason = _safe_meeting_audio_inventory_reason(
+                        response.get("errorCode") if isinstance(response, dict) else None,
+                        default="shellInventoryUnavailable",
+                    )
+                elif not grouped["capture"]:
+                    reason = "captureInventoryEmpty"
+        else:
+            reason = "shellIpcUnavailable"
+
+        fallback_used = False
+        if shell_available and not grouped["capture"]:
+            try:
+                fallback_endpoints = await asyncio.to_thread(collect_native_capture_endpoint_inventory)
+            except Exception as exc:
+                logger.debug(f"Redacted PyCAW meeting capture inventory fallback failed ({type(exc).__name__})")
+            else:
+                fallback_grouped = _group_meeting_audio_endpoints(fallback_endpoints)
+                if fallback_grouped["capture"]:
+                    grouped["capture"] = fallback_grouped["capture"]
+                    fallback_used = True
+
+        if fallback_used:
+            source = (
+                "rust-wasapi+pycaw-fallback"
+                if shell_inventory_available or shell_inventory_present
+                else "pycaw-fallback"
+            )
+        elif shell_inventory_available or shell_inventory_present:
+            source = "rust-wasapi"
+        else:
+            source = "unavailable"
+
+        missing_capture = not grouped["capture"]
+        missing_render = not grouped["render"]
+        if not reason:
+            if missing_capture and missing_render:
+                reason = "endpointInventoryEmpty"
+            elif missing_capture:
+                reason = "captureInventoryEmpty"
+            elif missing_render:
+                reason = "renderInventoryEmpty"
+
+        return MeetingReadinessOutcome(
+            status=200,
+            payload={
+                "apiVersion": REST_API_VERSION,
+                "available": bool(shell_available and (grouped["capture"] or grouped["render"])),
+                "capture": grouped["capture"],
+                "render": grouped["render"],
+                "source": source,
+                "partial": bool(fallback_used or missing_capture or missing_render or not shell_inventory_available),
+                "reason": reason,
+            },
+        )
+
+    async def run_meeting_device_test(
+        self,
+        command: MeetingDeviceTestCommand,
+    ) -> MeetingReadinessOutcome:
+        """Run one ephemeral, privacy-minimal native Meeting audio probe."""
+
+        if not shell_ipc_available():
+            return MeetingReadinessOutcome(
+                status=503,
+                payload={"message": "Native meeting audio is unavailable."},
+            )
+
+        admission_lock = _audio_admission_lock(self)
+        device_test_claim: AudioAdmissionClaim | None = None
+        capture_id = ""
+        native_capture_started = False
+        loss_requested = False
+        native_start_settled = asyncio.Event()
+        capture_stop_lock = asyncio.Lock()
+        probe_stop_lock = asyncio.Lock()
+        probe: MeetingDeviceLevelProbe | None = None
+        tone_task: asyncio.Task[bool] | None = None
+        prewarm_paused = False
+
+        async def stop_native_capture(*, reason: str) -> None:
+            nonlocal capture_id, native_capture_started
+            async with capture_stop_lock:
+                if not native_capture_started:
+                    return
+                if not capture_id:
+                    raise RuntimeError("Native meeting device test started without a capture identifier")
+                response = await to_thread_cancellation_barrier(
+                    call_shell_ipc,
+                    "audioMeetingStop",
+                    {"captureId": capture_id, "reason": reason},
+                    timeout_seconds=4.0,
+                )
+                if not isinstance(response, dict) or response.get("success") is not True:
+                    raise RuntimeError("Native meeting device test stop was not confirmed")
+                capture_id = ""
+                native_capture_started = False
+
+        async def stop_probe() -> dict[str, Any] | None:
+            nonlocal probe
+            async with probe_stop_lock:
+                if probe is None:
+                    return None
+                levels = await to_thread_cancellation_barrier(probe.stop)
+                probe = None
+                return levels
+
+        async def settle_device_test_after_loss(
+            _claim: AudioAdmissionClaim,
+            _reason: str,
+        ) -> None:
+            nonlocal loss_requested, prewarm_paused
+            loss_requested = True
+            await native_start_settled.wait()
+            await stop_native_capture(reason="audioAdmissionLost")
+            await stop_probe()
+            async with admission_lock:
+                self._meeting_device_test_active = False
+            if prewarm_paused:
+                self._resume_idle_mic_prewarm_after_capture()
+                prewarm_paused = False
+
+        async with admission_lock:
+            if (
+                getattr(self, "_live_mic_start_in_progress_generation", None) is not None
+                or self._is_listening
+                or self._is_stopping
+            ):
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Stop Live Mic before testing meeting devices."},
+                )
+            if await _active_meeting_audio_conflict(self) is not None:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before testing devices."},
+                )
+            if self._meeting_device_test_active:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "A meeting device test is already running."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            try:
+                device_test_claim = await _claim_persistent_audio(
+                    self,
+                    owner_kind="device_test",
+                    owner_id=f"probe-{uuid4().hex}",
+                    heartbeat=True,
+                    loss_handler=settle_device_test_after_loss,
+                )
+            except AudioAdmissionConflict:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            self._meeting_device_test_active = True
+
+        try:
+            await self._pause_idle_mic_prewarm_for_capture()
+            prewarm_paused = True
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost before device-test start")
+            response, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioMeetingStart",
+                    {
+                        "meetingId": f"device-test-{uuid4().hex}",
+                        "microphoneNativeEndpointIdHash": command.microphone_native_endpoint_id_hash,
+                        "renderNativeEndpointIdHash": command.render_native_endpoint_id_hash,
+                        "aecEnabled": command.aec_enabled,
+                    },
+                    timeout_seconds=4.0,
+                )
+            )
+            if response.get("success"):
+                native_capture_started = True
+            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+            capture_id = str(payload.get("captureId") or "")
+            native_start_settled.set()
+            if pending_cancel is not None:
+                raise pending_cancel
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost during device-test start")
+            if not response.get("success"):
+                return MeetingReadinessOutcome(
+                    status=503,
+                    payload={
+                        "message": str(response.get("fallbackReason") or "Native meeting device test did not start.")
+                    },
+                )
+            sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+            probe = MeetingDeviceLevelProbe()
+            probe.start(sources)
+
+            async def play_test_tone() -> bool:
+                if os.name != "nt" or not command.play_test_tone:
+                    return False
+                await asyncio.sleep(0.4)
+
+                def play() -> bool:
+                    import io
+                    import math
+                    import struct
+                    import wave
+                    import winsound
+
+                    sample_rate = 48_000
+                    duration_seconds = 0.55
+                    frame_count = int(sample_rate * duration_seconds)
+                    pcm = bytearray()
+                    for index in range(frame_count):
+                        phase = index / sample_rate
+                        fade = min(1.0, index / 960, (frame_count - index) / 960)
+                        sample = int(32767 * 0.16 * max(0.0, fade) * math.sin(2 * math.pi * 660 * phase))
+                        pcm.extend(struct.pack("<h", sample))
+                    output = io.BytesIO()
+                    with wave.open(output, "wb") as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(2)
+                        wav.setframerate(sample_rate)
+                        wav.writeframes(pcm)
+                    winsound.PlaySound(
+                        output.getvalue(),
+                        winsound.SND_MEMORY | winsound.SND_NODEFAULT,
+                    )
+                    return True
+
+                try:
+                    return await asyncio.to_thread(play)
+                except Exception as exc:
+                    logger.debug("Meeting device test tone unavailable: {}", type(exc).__name__)
+                    return False
+
+            tone_task = asyncio.create_task(play_test_tone())
+            await asyncio.sleep(command.duration_ms / 1000.0)
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost during device test")
+            test_tone_played = await tone_task
+            tone_task = None
+            await stop_native_capture(reason="deviceTestComplete")
+            levels = await stop_probe()
+            assert levels is not None
+            return MeetingReadinessOutcome(
+                status=200,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "available": True,
+                    "durationMs": command.duration_ms,
+                    "aecActive": bool(payload.get("aecActive")),
+                    "testTonePlayed": test_tone_played,
+                    "sources": levels,
+                    "audioPersisted": False,
+                    "audioSentToProvider": False,
+                },
+            )
+        except TypeError, ValueError:
+            return MeetingReadinessOutcome(
+                status=400,
+                payload={"message": "Invalid meeting device test payload."},
+            )
+        except Exception as exc:
+            logger.warning("Meeting device test failed: {}", type(exc).__name__)
+            return MeetingReadinessOutcome(
+                status=503,
+                payload={"message": f"Meeting device test failed ({type(exc).__name__})."},
+            )
+        finally:
+
+            async def settle_device_test_cleanup() -> None:
+                nonlocal tone_task, prewarm_paused
+                native_start_settled.set()
+                if tone_task is not None and not tone_task.done():
+                    tone_task.cancel()
+                    await asyncio.gather(tone_task, return_exceptions=True)
+                native_capture_released = not native_capture_started
+                if native_capture_started:
+                    try:
+                        await stop_native_capture(reason="deviceTestCleanup")
+                        native_capture_released = True
+                    except Exception as exc:
+                        logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
+                await stop_probe()
+                if native_capture_released:
+                    async with admission_lock:
+                        self._meeting_device_test_active = False
+                    await _release_persistent_audio(self, device_test_claim)
+                    if prewarm_paused:
+                        self._resume_idle_mic_prewarm_after_capture()
+                        prewarm_paused = False
+                else:
+                    logger.error("Meeting device test retained native-audio ownership after unconfirmed stop")
+
+            await _await_cleanup_barrier(settle_device_test_cleanup())
+
     def start_meeting_capture_watchdog(self, meeting_id: str, capture_id: str) -> None:
         self.stop_meeting_capture_watchdog(meeting_id)
         if not capture_id:
@@ -18234,360 +18671,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         return await start_live_request(request, post_process=True)
 
-    async def meeting_capabilities(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        long_session_target_seconds = 5 * 60 * 60
-        long_session_required_bytes = 6 * 1024 * 1024 * 1024
-        capture_bytes_per_second = 16_000 * 2 * 3
-        try:
-            disk_usage = await asyncio.to_thread(shutil.disk_usage, data_dir())
-            available_free_bytes: int | None = int(disk_usage.free)
-        except OSError, ValueError:
-            available_free_bytes = None
-        finalization_reserve_bytes = 2 * 1024 * 1024 * 1024
-        estimated_capture_seconds = (
-            max(0, available_free_bytes - finalization_reserve_bytes) // capture_bytes_per_second
-            if available_free_bytes is not None
-            else None
-        )
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "platform": "windows" if os.name == "nt" else "unsupported",
-                "shellIpcAvailable": shell_ipc_available(),
-                "nativeMeetingCapture": shell_ipc_available(),
-                "liveMicBusy": bool(ctl._is_listening or ctl._is_stopping),
-                "activeMeeting": await asyncio.to_thread(ctl._meeting_store.active),
-                "sources": ["microphone", "system"],
-                "requiresPermissionConfirmation": False,
-                "longSession": {
-                    "targetDurationSeconds": long_session_target_seconds,
-                    "checkpointIntervalSeconds": 30,
-                    "requiredFreeBytes": long_session_required_bytes,
-                    "availableFreeBytes": available_free_bytes,
-                    "estimatedCaptureSeconds": estimated_capture_seconds,
-                    "storageReady": bool(
-                        available_free_bytes is not None and available_free_bytes >= long_session_required_bytes
-                    ),
-                },
-            }
-        )
-
-    async def meeting_audio_devices(_request: web.Request):
-        grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
-        shell_available = shell_ipc_available()
-        shell_inventory_available = False
-        shell_inventory_present = False
-        reason = ""
-
-        if shell_available:
-            try:
-                response = await asyncio.to_thread(call_shell_ipc, "audioEndpointInventory", {}, timeout_seconds=2.0)
-            except Exception as exc:
-                reason = "shellIpcRequestFailed"
-                logger.debug(
-                    "Meeting audio endpoint inventory request failed; trying redacted "
-                    f"PyCAW capture fallback ({type(exc).__name__})"
-                )
-            else:
-                payload = response.get("payload") if isinstance(response, dict) else None
-                endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
-                grouped = _group_meeting_audio_endpoints(endpoints)
-                shell_inventory_present = bool(grouped["capture"] or grouped["render"])
-                shell_inventory_available = bool(
-                    isinstance(response, dict)
-                    and response.get("success")
-                    and isinstance(payload, dict)
-                    and payload.get("available")
-                )
-                if not shell_inventory_available:
-                    reason = _safe_meeting_audio_inventory_reason(
-                        response.get("errorCode") if isinstance(response, dict) else None,
-                        default="shellInventoryUnavailable",
-                    )
-                elif not grouped["capture"]:
-                    reason = "captureInventoryEmpty"
-        else:
-            reason = "shellIpcUnavailable"
-
-        fallback_used = False
-        if shell_available and not grouped["capture"]:
-            try:
-                fallback_endpoints = await asyncio.to_thread(collect_native_capture_endpoint_inventory)
-            except Exception as exc:
-                logger.debug(f"Redacted PyCAW meeting capture inventory fallback failed ({type(exc).__name__})")
-            else:
-                fallback_grouped = _group_meeting_audio_endpoints(fallback_endpoints)
-                if fallback_grouped["capture"]:
-                    grouped["capture"] = fallback_grouped["capture"]
-                    fallback_used = True
-
-        if fallback_used:
-            source = (
-                "rust-wasapi+pycaw-fallback"
-                if shell_inventory_available or shell_inventory_present
-                else "pycaw-fallback"
-            )
-        elif shell_inventory_available or shell_inventory_present:
-            source = "rust-wasapi"
-        else:
-            source = "unavailable"
-
-        missing_capture = not grouped["capture"]
-        missing_render = not grouped["render"]
-        if not reason:
-            if missing_capture and missing_render:
-                reason = "endpointInventoryEmpty"
-            elif missing_capture:
-                reason = "captureInventoryEmpty"
-            elif missing_render:
-                reason = "renderInventoryEmpty"
-
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "available": bool(shell_available and (grouped["capture"] or grouped["render"])),
-                "capture": grouped["capture"],
-                "render": grouped["render"],
-                "source": source,
-                "partial": bool(fallback_used or missing_capture or missing_render or not shell_inventory_available),
-                "reason": reason,
-            }
-        )
-
-    async def meeting_device_test(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if not shell_ipc_available():
-            return web.json_response({"message": "Native meeting audio is unavailable."}, status=503)
-        try:
-            raw = await request.json() if request.can_read_body else {}
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            duration_ms = max(
-                500,
-                min(
-                    _meeting_device_test_max_duration_ms(),
-                    int(raw.get("durationMs", 3_000) or 3_000),
-                ),
-            )
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
-
-        admission_lock = _audio_admission_lock(ctl)
-        device_test_claim: AudioAdmissionClaim | None = None
-        capture_id = ""
-        native_capture_started = False
-        loss_requested = False
-        native_start_settled = asyncio.Event()
-        capture_stop_lock = asyncio.Lock()
-        probe_stop_lock = asyncio.Lock()
-        probe: MeetingDeviceLevelProbe | None = None
-        tone_task: asyncio.Task[bool] | None = None
-        prewarm_paused = False
-
-        async def stop_native_capture(*, reason: str) -> None:
-            nonlocal capture_id, native_capture_started
-            async with capture_stop_lock:
-                if not native_capture_started:
-                    return
-                if not capture_id:
-                    raise RuntimeError("Native meeting device test started without a capture identifier")
-                response = await to_thread_cancellation_barrier(
-                    call_shell_ipc,
-                    "audioMeetingStop",
-                    {"captureId": capture_id, "reason": reason},
-                    timeout_seconds=4.0,
-                )
-                if not isinstance(response, dict) or response.get("success") is not True:
-                    raise RuntimeError("Native meeting device test stop was not confirmed")
-                capture_id = ""
-                native_capture_started = False
-
-        async def stop_probe() -> dict[str, Any] | None:
-            nonlocal probe
-            async with probe_stop_lock:
-                if probe is None:
-                    return None
-                levels = await to_thread_cancellation_barrier(probe.stop)
-                probe = None
-                return levels
-
-        async def settle_device_test_after_loss(
-            _claim: AudioAdmissionClaim,
-            _reason: str,
-        ) -> None:
-            nonlocal loss_requested, prewarm_paused
-            loss_requested = True
-            await native_start_settled.wait()
-            await stop_native_capture(reason="audioAdmissionLost")
-            await stop_probe()
-            async with admission_lock:
-                ctl._meeting_device_test_active = False
-            if prewarm_paused:
-                ctl._resume_idle_mic_prewarm_after_capture()
-                prewarm_paused = False
-
-        async with admission_lock:
-            if (
-                getattr(ctl, "_live_mic_start_in_progress_generation", None) is not None
-                or ctl._is_listening
-                or ctl._is_stopping
-            ):
-                return web.json_response({"message": "Stop Live Mic before testing meeting devices."}, status=409)
-            if await _active_meeting_audio_conflict(ctl) is not None:
-                return web.json_response({"message": "Finish the active meeting before testing devices."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "A meeting device test is already running."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            try:
-                device_test_claim = await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="device_test",
-                    owner_id=f"probe-{uuid4().hex}",
-                    heartbeat=True,
-                    loss_handler=settle_device_test_after_loss,
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            ctl._meeting_device_test_active = True
-
-        try:
-            await ctl._pause_idle_mic_prewarm_for_capture()
-            prewarm_paused = True
-            if loss_requested:
-                raise RuntimeError("Native-audio admission was lost before device-test start")
-            response, pending_cancel = await await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioMeetingStart",
-                    {
-                        "meetingId": f"device-test-{uuid4().hex}",
-                        "microphoneNativeEndpointIdHash": str(raw.get("microphoneNativeEndpointIdHash", "")),
-                        "renderNativeEndpointIdHash": str(raw.get("renderNativeEndpointIdHash", "")),
-                        "aecEnabled": bool(raw.get("aecEnabled", True)),
-                    },
-                    timeout_seconds=4.0,
-                )
-            )
-            if response.get("success"):
-                native_capture_started = True
-            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            capture_id = str(payload.get("captureId") or "")
-            native_start_settled.set()
-            if pending_cancel is not None:
-                raise pending_cancel
-            if loss_requested:
-                raise RuntimeError("Native-audio admission was lost during device-test start")
-            if not response.get("success"):
-                return web.json_response(
-                    {"message": str(response.get("fallbackReason") or "Native meeting device test did not start.")},
-                    status=503,
-                )
-            sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
-            probe = MeetingDeviceLevelProbe()
-            probe.start(sources)
-            test_tone_played = False
-
-            async def play_test_tone() -> bool:
-                if os.name != "nt" or raw.get("playTestTone") is not True:
-                    return False
-                await asyncio.sleep(0.4)
-
-                def play() -> bool:
-                    import io
-                    import math
-                    import struct
-                    import wave
-                    import winsound
-
-                    sample_rate = 48_000
-                    duration_seconds = 0.55
-                    frame_count = int(sample_rate * duration_seconds)
-                    pcm = bytearray()
-                    for index in range(frame_count):
-                        phase = index / sample_rate
-                        fade = min(1.0, index / 960, (frame_count - index) / 960)
-                        sample = int(32767 * 0.16 * max(0.0, fade) * math.sin(2 * math.pi * 660 * phase))
-                        pcm.extend(struct.pack("<h", sample))
-                    output = io.BytesIO()
-                    with wave.open(output, "wb") as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(sample_rate)
-                        wav.writeframes(pcm)
-                    winsound.PlaySound(output.getvalue(), winsound.SND_MEMORY | winsound.SND_NODEFAULT)
-                    return True
-
-                try:
-                    return await asyncio.to_thread(play)
-                except Exception as exc:
-                    logger.debug("Meeting device test tone unavailable: {}", type(exc).__name__)
-                    return False
-
-            tone_task = asyncio.create_task(play_test_tone())
-            await asyncio.sleep(duration_ms / 1000.0)
-            if loss_requested:
-                raise RuntimeError("Native-audio admission was lost during device test")
-            test_tone_played = await tone_task
-            tone_task = None
-            await stop_native_capture(reason="deviceTestComplete")
-            levels = await stop_probe()
-            assert levels is not None
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "available": True,
-                    "durationMs": duration_ms,
-                    "aecActive": bool(payload.get("aecActive")),
-                    "testTonePlayed": test_tone_played,
-                    "sources": levels,
-                    "audioPersisted": False,
-                    "audioSentToProvider": False,
-                }
-            )
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
-        except Exception as exc:
-            logger.warning("Meeting device test failed: {}", type(exc).__name__)
-            return web.json_response(
-                {"message": f"Meeting device test failed ({type(exc).__name__})."},
-                status=503,
-            )
-        finally:
-
-            async def settle_device_test_cleanup() -> None:
-                nonlocal tone_task, prewarm_paused
-                native_start_settled.set()
-                if tone_task is not None and not tone_task.done():
-                    tone_task.cancel()
-                    await asyncio.gather(tone_task, return_exceptions=True)
-                native_capture_released = not native_capture_started
-                if native_capture_started:
-                    try:
-                        await stop_native_capture(reason="deviceTestCleanup")
-                        native_capture_released = True
-                    except Exception as exc:
-                        logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
-                await stop_probe()
-                if native_capture_released:
-                    async with admission_lock:
-                        ctl._meeting_device_test_active = False
-                    await _release_persistent_audio(ctl, device_test_claim)
-                    if prewarm_paused:
-                        ctl._resume_idle_mic_prewarm_after_capture()
-                        prewarm_paused = False
-                else:
-                    logger.error("Meeting device test retained native-audio ownership after unconfirmed stop")
-
-            await _await_cleanup_barrier(settle_device_test_cleanup())
-
     async def meeting_profiles(_request: web.Request):
         soniox_ready = bool(Config.get_api_key("soniox"))
         analysis_model = Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
@@ -19433,12 +19516,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
     register_transcript_routes(
         app,
         controller=controller,
-        render_export=_render_transcript_export_async,
+        renderer=_TranscriptDocumentRenderer(),
     )
 
-    app.router.add_get("/api/meetings/capabilities", meeting_capabilities)
-    app.router.add_get("/api/meetings/audio-devices", meeting_audio_devices)
-    app.router.add_post("/api/meetings/device-test", meeting_device_test)
+    register_meeting_readiness_routes(
+        app,
+        control=controller,
+        max_device_test_duration_ms=_meeting_device_test_max_duration_ms,
+    )
     app.router.add_get("/api/meeting-profiles", meeting_profiles)
     register_outlook_calendar_routes(app, get_calendar=lambda: controller._outlook_calendar)
     app.router.add_post("/api/meetings/hotkey", meeting_hotkey)
@@ -19449,13 +19534,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         voice_library=voice_library_deps,
         enrollment=lambda: _voice_enrollment_admission(controller),
         diarizer=lambda: controller._speaker_diarizer,
-        capture_runtime=VoiceCaptureRuntime(
-            available=lambda: shell_ipc_available(),
-            call=lambda *args, **kwargs: call_shell_ipc(*args, **kwargs),
-            capture_factory=lambda **kwargs: VoiceEnrollmentCapture(**kwargs),
-            wait=lambda duration_ms: _wait_for_voice_enrollment(duration_ms),
-            reference_wav=lambda pcm, **kwargs: voice_reference_wav(pcm, **kwargs),
-        ),
+        capture_runtime=_VoiceCaptureRuntimeAdapter(),
     )
     register_meeting_import_routes(
         app,

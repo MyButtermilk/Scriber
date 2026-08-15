@@ -11,6 +11,8 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from src.api.transcript_routes import (
     SummaryOutcome,
+    TranscriptDocumentRenderCommand,
+    TranscriptDocumentRendererPort,
     TranscriptsControllerPort,
     TranscriptView,
     register_transcript_routes,
@@ -77,13 +79,25 @@ class _StubController:
         return self.outcome
 
 
-async def _render_export(**kwargs):
-    return b"BYTES", "application/pdf", "pdf"
+class _StubRenderer:
+    async def render(
+        self,
+        command: TranscriptDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]:
+        return b"BYTES", "application/pdf", "pdf"
 
 
-async def _client(controller: _StubController, *, render_export=_render_export) -> TestClient:
+async def _client(
+    controller: _StubController,
+    *,
+    renderer: TranscriptDocumentRendererPort | None = None,
+) -> TestClient:
     app = web.Application()
-    register_transcript_routes(app, controller=controller, render_export=render_export)
+    register_transcript_routes(
+        app,
+        controller=controller,
+        renderer=renderer or _StubRenderer(),
+    )
     client = TestClient(TestServer(app))
     await client.start_server()
     return client
@@ -220,10 +234,14 @@ async def test_cancel_separates_unknown_from_idle():
 async def test_export_rejects_an_unsupported_format_before_reading_anything():
     controller = _StubController()
 
-    async def explode(**_kwargs):
-        raise AssertionError("an unsupported format must not reach the renderer")
+    class ExplodingRenderer:
+        async def render(
+            self,
+            command: TranscriptDocumentRenderCommand,
+        ) -> tuple[bytes, str, str]:
+            raise AssertionError("an unsupported format must not reach the renderer")
 
-    client = await _client(controller, render_export=explode)
+    client = await _client(controller, renderer=ExplodingRenderer())
     try:
         response = await client.get("/api/transcripts/t-1/export/txt")
         assert response.status == 400
@@ -266,10 +284,14 @@ async def test_export_sanitises_the_filename_from_the_title():
 async def test_export_reports_a_missing_renderer_dependency_as_500():
     controller = _StubController()
 
-    async def missing_dependency(**_kwargs):
-        raise ImportError("reportlab is not installed")
+    class MissingDependencyRenderer:
+        async def render(
+            self,
+            command: TranscriptDocumentRenderCommand,
+        ) -> tuple[bytes, str, str]:
+            raise ImportError("reportlab is not installed")
 
-    client = await _client(controller, render_export=missing_dependency)
+    client = await _client(controller, renderer=MissingDependencyRenderer())
     try:
         response = await client.get("/api/transcripts/t-1/export/pdf")
         assert response.status == 500
@@ -308,4 +330,15 @@ def test_controller_adapter_matches_the_transcript_port(assert_protocol_contract
             "transcript_view": TranscriptView | None,
             "summarize_transcript": SummaryOutcome,
         },
+    )
+
+
+def test_renderer_adapter_matches_the_transcript_port(assert_protocol_contract):
+    from src.web_api import _TranscriptDocumentRenderer
+
+    assert_protocol_contract(
+        TranscriptDocumentRendererPort,
+        _TranscriptDocumentRenderer,
+        methods={"render"},
+        returns={"render": tuple[bytes, str, str]},
     )

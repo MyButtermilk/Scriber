@@ -800,6 +800,15 @@ class FakeController:
     async def discard_meeting(self, meeting_id):
         return await web_api.ScriberWebController.discard_meeting(self, meeting_id)
 
+    async def get_meeting_capabilities(self):
+        return await web_api.ScriberWebController.get_meeting_capabilities(self)
+
+    async def list_meeting_audio_devices(self):
+        return await web_api.ScriberWebController.list_meeting_audio_devices(self)
+
+    async def run_meeting_device_test(self, command):
+        return await web_api.ScriberWebController.run_meeting_device_test(self, command)
+
     _meeting_discard_workspace_path = staticmethod(web_api.ScriberWebController._meeting_discard_workspace_path)
 
     async def _settle_discarded_meeting_workspace(self, meeting_id, *, meeting_root):
@@ -1507,7 +1516,7 @@ async def test_legacy_calendar_snapshot_gets_opaque_id_that_patch_can_confirm():
 async def test_meeting_audio_devices_falls_back_to_three_redacted_pycaw_captures(
     monkeypatch,
 ):
-    app = web_api.create_app(SimpleNamespace())
+    app = web_api.create_app(object.__new__(web_api.ScriberWebController))
     handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
     raw_ids = [f"private-native-endpoint-{index}" for index in range(3)]
     fallback = [
@@ -1562,7 +1571,7 @@ async def test_meeting_audio_devices_falls_back_to_three_redacted_pycaw_captures
 async def test_meeting_audio_devices_does_not_offer_native_selection_without_shell_ipc(
     monkeypatch,
 ):
-    app = web_api.create_app(SimpleNamespace())
+    app = web_api.create_app(object.__new__(web_api.ScriberWebController))
     handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
     fallback_called = False
 
@@ -1598,7 +1607,7 @@ async def test_meeting_audio_devices_does_not_offer_native_selection_without_she
 async def test_meeting_audio_devices_fills_empty_rust_capture_and_keeps_render(
     monkeypatch,
 ):
-    app = web_api.create_app(SimpleNamespace())
+    app = web_api.create_app(object.__new__(web_api.ScriberWebController))
     handler = _route_handler(app, "GET", "/api/meetings/audio-devices")
     microphone_hash = "a" * 16
     render_hash = "b" * 16
@@ -1758,6 +1767,9 @@ async def test_meeting_capabilities_reports_verified_five_hour_storage(monkeypat
         _meeting_store = Store()
         _is_listening = False
         _is_stopping = False
+
+        async def get_meeting_capabilities(self):
+            return await web_api.ScriberWebController.get_meeting_capabilities(self)
 
     class DiskUsage:
         free = 7 * 1024 * 1024 * 1024

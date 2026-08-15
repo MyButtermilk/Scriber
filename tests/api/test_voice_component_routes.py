@@ -26,8 +26,10 @@ from src.api.voice_component_routes import (
     SpeakerModelPort,
     SpeakerProfilePreviewGrant,
     VoiceCaptureRuntime,
+    VoiceCaptureRuntimePort,
     VoiceEnrollmentAdmission,
     VoiceEnrollmentAdmissionPort,
+    VoiceEnrollmentCapturePort,
     VoiceEnrollmentLossHandler,
     VoiceLibraryDeps,
     VoiceLibraryStorePort,
@@ -2035,6 +2037,7 @@ def test_voice_domain_pins_each_real_collaborator_locally(assert_protocol_contra
     from src import web_api
     from src.data.meeting_store import MeetingStore
     from src.speaker_diarization import SherpaOnnxDiarizer
+    from src.speaker_enrollment import VoiceEnrollmentCapture
     from src.speaker_intelligence import WeSpeakerModel
 
     assert_protocol_contract(
@@ -2091,4 +2094,26 @@ def test_voice_domain_pins_each_real_collaborator_locally(assert_protocol_contra
         web_api._ControllerVoiceEnrollmentAdmission,
         methods={"acquire", "prepare_capture", "release"},
         returns={"acquire": VoiceEnrollmentAdmission},
+    )
+    assert_protocol_contract(
+        VoiceCaptureRuntimePort,
+        web_api._VoiceCaptureRuntimeAdapter,
+        methods={
+            "is_available",
+            "call_shell",
+            "create_capture",
+            "wait",
+            "build_reference_wav",
+        },
+        returns={
+            "call_shell": dict[str, Any],
+            "create_capture": VoiceEnrollmentCapturePort,
+            "build_reference_wav": tuple[bytes, int],
+        },
+    )
+    assert_protocol_contract(
+        VoiceEnrollmentCapturePort,
+        VoiceEnrollmentCapture,
+        methods={"start", "stop", "expect_native_stop", "pcm16", "clear"},
+        returns={"stop": dict[str, Any], "pcm16": bytes},
     )

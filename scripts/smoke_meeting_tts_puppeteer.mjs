@@ -538,6 +538,62 @@ async function run(options) {
       options.navigationTimeoutMs,
     );
 
+    activePhase = "validate-meeting-readiness";
+    const meetingCapabilities = await browserJson(
+      page,
+      "GET",
+      "/api/meetings/capabilities",
+    );
+    if (
+      meetingCapabilities?.nativeMeetingCapture !== true ||
+      meetingCapabilities?.shellIpcAvailable !== true
+    ) {
+      throw new Error("Meeting readiness did not expose native capture");
+    }
+    const meetingAudioDevices = await browserJson(
+      page,
+      "GET",
+      "/api/meetings/audio-devices",
+    );
+    if (
+      meetingAudioDevices?.available !== true ||
+      !Array.isArray(meetingAudioDevices?.capture) ||
+      !Array.isArray(meetingAudioDevices?.render)
+    ) {
+      throw new Error("Meeting readiness returned no usable audio inventory");
+    }
+    const selectedCapture = meetingAudioDevices.capture.find(
+      (endpoint) => endpoint?.isDefault === true,
+    ) ?? meetingAudioDevices.capture[0];
+    const selectedRender = meetingAudioDevices.render.find(
+      (endpoint) => endpoint?.isDefault === true,
+    ) ?? meetingAudioDevices.render[0];
+    const meetingDeviceTest = await browserJson(
+      page,
+      "POST",
+      "/api/meetings/device-test",
+      {
+        durationMs: 500,
+        microphoneNativeEndpointIdHash: String(
+          selectedCapture?.endpointIdHash ?? "",
+        ),
+        renderNativeEndpointIdHash: String(
+          selectedRender?.endpointIdHash ?? "",
+        ),
+        aecEnabled: true,
+        playTestTone: false,
+      },
+    );
+    if (
+      meetingDeviceTest?.available !== true ||
+      meetingDeviceTest?.audioPersisted !== false ||
+      meetingDeviceTest?.audioSentToProvider !== false ||
+      typeof meetingDeviceTest?.sources !== "object" ||
+      meetingDeviceTest?.sources === null
+    ) {
+      throw new Error("Meeting device test did not settle its privacy-safe probe");
+    }
+
     activePhase = "prepare-meeting-form";
     await page.waitForSelector("#meeting-title", { visible: true });
     await page.$eval("#meeting-title", (input) => {
@@ -984,6 +1040,9 @@ async function run(options) {
       expectedTokenCount: options.expectedTokens.length,
       matchedExpectedTokenCount: matchedExpectedTokens.length,
       audioGapCount: audioGaps.length,
+      meetingCapabilitiesVerified: true,
+      meetingAudioDevicesVerified: true,
+      meetingDeviceTestVerified: true,
       workspaceTitleVerified: true,
       workspaceSegmentVerified: true,
       workspaceNoteVerified: true,
