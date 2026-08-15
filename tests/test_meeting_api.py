@@ -843,7 +843,15 @@ class FakeController:
 
 
 @pytest.mark.asyncio
-async def test_device_test_renews_and_retains_lease_when_native_stop_is_unconfirmed(monkeypatch):
+async def test_device_test_renews_and_retains_lease_when_native_stop_is_unconfirmed(
+    monkeypatch,
+    tmp_path,
+    request,
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "device-test-retained-lease.db")
+    request.addfinalizer(database._close_all_connections)
+    database.init_database()
     store = MeetingStore()
     store.initialize()
     controller = FakeController(store)
