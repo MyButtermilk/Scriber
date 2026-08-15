@@ -6129,10 +6129,13 @@ mod tests {
         buffer.lock().unwrap().push(vec![0x11]).unwrap();
         let worker_buffer = Arc::clone(&buffer);
         let (control_tx, control_rx) = mpsc::channel();
+        let (release_worker_tx, release_worker_rx) = mpsc::channel();
+        let (worker_done_tx, worker_done_rx) = mpsc::channel();
         let join_handle = thread::spawn(move || {
             assert!(matches!(control_rx.recv(), Ok(PrewarmWorkerCommand::Stop)));
-            thread::sleep(Duration::from_millis(60));
+            release_worker_rx.recv().unwrap();
             worker_buffer.lock().unwrap().push(vec![0x33]).unwrap();
+            worker_done_tx.send(()).unwrap();
             PrewarmStats::default()
         });
         let mut session =
@@ -6152,7 +6155,8 @@ mod tests {
         // The detached worker still owns the handoff marker. Once it exits its
         // late block remains in the tail; the timed-out call did not falsely
         // finalize or replay an incomplete prefix.
-        thread::sleep(Duration::from_millis(80));
+        release_worker_tx.send(()).unwrap();
+        worker_done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
         assert_eq!(
             buffer.lock().unwrap().finish_handoff().unwrap(),
             vec![vec![0x33]]
