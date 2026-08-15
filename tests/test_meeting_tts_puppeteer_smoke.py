@@ -31,6 +31,10 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert 'activePhase = "validate-page-errors"' in driver
     for action in ("pause", "resume", "stop"):
         assert f'clickControl(\n      page,\n      meetingId,\n      "{action}"' in driver
+    assert 'activePhase = "rename-meeting-workspace"' in driver
+    assert 'browserJson(\n      page,\n      "PATCH"' in driver
+    assert 'activePhase = "save-meeting-workspace-note"' in driver
+    assert 'browserJson(\n      page,\n      "PUT"' in driver
 
 
 def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
@@ -65,6 +69,9 @@ def test_meeting_speech_smoke_artifacts_are_privacy_minimal() -> None:
         "segmentCount",
         "transcriptCharacterCount",
         "audioGapCount",
+        "workspaceTitleVerified",
+        "workspaceSegmentVerified",
+        "workspaceNoteVerified",
         "diagnostics",
         "meetingDebug",
     ):

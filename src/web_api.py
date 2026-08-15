@@ -54,6 +54,10 @@ from src.api.meeting_capture_routes import (
 )
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
+from src.api.meeting_workspace_routes import (
+    MeetingWorkspaceDeps,
+    register_meeting_workspace_routes,
+)
 from src.api.onnx_routes import register_onnx_routes
 from src.api.outlook_calendar_routes import register_outlook_calendar_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
@@ -137,11 +141,9 @@ from src.core.ws_contracts import (
     meeting_detected_event,
     meeting_import_progress_event,
     meeting_live_status_event,
-    meeting_note_event,
     meeting_progress_event,
     meeting_segment_event,
     meeting_state_event,
-    meeting_transcript_edited_event,
     session_finished_event,
     session_started_event,
     state_event,
@@ -18351,123 +18353,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except MeetingNotFound:
             return web.json_response({"message": "Meeting not found"}, status=404)
 
-    async def patch_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            updated = await asyncio.to_thread(ctl._meeting_store.rename, meeting_id, raw.get("title", ""))
-            await ctl.broadcast(meeting_state_event(updated))
-            return web.json_response({**updated, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def search_meeting_transcript(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        query = request.query.get("q", "").strip()
-        if not query:
-            return web.json_response({"apiVersion": REST_API_VERSION, "query": "", "items": []})
-        if len(query.encode("utf-8")) > 512:
-            return web.json_response({"message": "Transcript search query is too long."}, status=400)
-        try:
-            limit = max(1, min(100, int(request.query.get("limit", "40"))))
-        except ValueError:
-            return web.json_response({"message": "Search limit must be a whole number."}, status=400)
-        try:
-            items = await asyncio.to_thread(ctl._meeting_store.search_segments, meeting_id, query, limit=limit)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "query": query,
-                    "items": items,
-                }
-            )
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
-    async def patch_meeting_segment(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.edit_segment,
-                meeting_id,
-                segment_id,
-                str(raw.get("text", "")),
-                expected_edit_version=int(raw.get("expectedEditVersion", -1)),
-            )
-            await ctl.broadcast(
-                meeting_transcript_edited_event(
-                    meeting_id,
-                    result["segment"],
-                    transcript_edit_version=result["transcriptEditVersion"],
-                    outputs_stale=result["outputsStale"],
-                )
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting segment not found"}, status=404)
-        except MeetingConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def undo_meeting_segment_edit(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.undo_segment_edit,
-                meeting_id,
-                segment_id,
-                expected_edit_version=int(raw.get("expectedEditVersion", -1)),
-            )
-            await ctl.broadcast(
-                meeting_transcript_edited_event(
-                    meeting_id,
-                    result["segment"],
-                    transcript_edit_version=result["transcriptEditVersion"],
-                    outputs_stale=result["outputsStale"],
-                )
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting segment not found"}, status=404)
-        except MeetingConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def meeting_segment_edits(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            items = await asyncio.to_thread(ctl._meeting_store.segment_edit_history, meeting_id, segment_id)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meetingId": meeting_id,
-                    "segmentId": segment_id,
-                    "items": items,
-                }
-            )
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
     def meeting_import_payload(record: Any, *, upload_url: str = "") -> dict[str, Any]:
         raw = record.to_public()
         state = str(raw.pop("status"))
@@ -18978,68 +18863,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
                             )
                     except Exception:
                         logger.exception("Meeting analysis reservation could not be rolled back")
-
-    async def add_meeting_note(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            note = await asyncio.to_thread(
-                ctl._meeting_store.add_note,
-                meeting_id,
-                str(raw.get("body", "")),
-                at_ms=int(raw["atMs"]) if raw.get("atMs") is not None else None,
-            )
-            await ctl.broadcast(meeting_note_event(meeting_id, note))
-            return web.json_response({**note, "apiVersion": REST_API_VERSION}, status=201)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def put_meeting_note(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            note = await asyncio.to_thread(
-                ctl._meeting_store.put_note,
-                meeting_id,
-                str(raw.get("id", "workspace")),
-                str(raw.get("body", "")),
-                at_ms=int(raw["atMs"]) if raw.get("atMs") is not None else None,
-                writer_id=raw.get("writerId"),
-                write_generation=raw.get("writeGeneration"),
-            )
-            if note.get("writeApplied") is not False:
-                await ctl.broadcast(meeting_note_event(meeting_id, note))
-            return web.json_response({**note, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def patch_meeting_action_item(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        item_id = request.match_info.get("itemId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            allowed = {key: raw[key] for key in ("text", "owner", "dueDate", "status") if key in raw}
-            if not allowed:
-                raise ValueError("No editable action item fields were supplied.")
-            item = await asyncio.to_thread(ctl._meeting_store.update_action_item, meeting_id, item_id, allowed)
-            return web.json_response({**item, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound as exc:
-            return web.json_response({"message": str(exc)}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
 
     async def discard_meeting(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
@@ -19650,19 +19473,18 @@ def create_app(controller: ScriberWebController) -> web.Application:
         inbox_payload=meeting_import_inbox_payload,
     )
     register_meeting_capture_routes(app, control=controller)
+    register_meeting_workspace_routes(
+        app,
+        deps=lambda: MeetingWorkspaceDeps(
+            store=controller._meeting_store,
+            broadcast=controller.broadcast,
+        ),
+    )
     app.router.add_get("/api/meetings/{id}", meeting_detail)
-    app.router.add_patch("/api/meetings/{id}", patch_meeting)
-    app.router.add_get("/api/meetings/{id}/search", search_meeting_transcript)
-    app.router.add_patch("/api/meetings/{id}/segments/{segmentId}", patch_meeting_segment)
-    app.router.add_post("/api/meetings/{id}/segments/{segmentId}/undo", undo_meeting_segment_edit)
-    app.router.add_get("/api/meetings/{id}/segments/{segmentId}/edits", meeting_segment_edits)
     app.router.add_post("/api/meetings/{id}/reprocess", reprocess_meeting)
     app.router.add_post("/api/meetings/{id}/finalize", retry_meeting_finalization)
     app.router.add_post("/api/meetings/{id}/retry", retry_meeting_finalization)
     app.router.add_post("/api/meetings/{id}/analyze", analyze_meeting_again)
-    app.router.add_post("/api/meetings/{id}/notes", add_meeting_note)
-    app.router.add_put("/api/meetings/{id}/notes", put_meeting_note)
-    app.router.add_patch("/api/meetings/{id}/action-items/{itemId}", patch_meeting_action_item)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
     app.router.add_get("/api/meetings/{id}/speaker-assignments", meeting_speaker_assignments)

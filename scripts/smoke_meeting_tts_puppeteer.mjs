@@ -406,6 +406,35 @@ async function clickControl(page, meetingId, action, timeoutMs) {
   }
 }
 
+async function browserJson(page, method, pathname, body = null) {
+  const result = await page.evaluate(
+    async ({ requestBody, requestMethod, requestPath }) => {
+      const baseUrl = window.__SCRIBER_BACKEND_URL__;
+      const token = window.__SCRIBER_SESSION_TOKEN__;
+      if (!baseUrl || !token) {
+        throw new Error("authenticated backend access is unavailable");
+      }
+      const response = await fetch(new URL(requestPath, baseUrl), {
+        method: requestMethod,
+        headers: {
+          "Content-Type": "application/json",
+          "X-Scriber-Token": token,
+        },
+        body: requestBody == null ? undefined : JSON.stringify(requestBody),
+        cache: "no-store",
+        credentials: "include",
+      });
+      const payload = await response.json().catch(() => null);
+      return { ok: response.ok, payload, status: response.status };
+    },
+    { requestBody: body, requestMethod: method, requestPath: pathname },
+  );
+  if (!result.ok) {
+    throw new Error(`browser backend request failed with HTTP ${result.status}`);
+  }
+  return result.payload;
+}
+
 async function run(options) {
   activePhase = "connect-webview2";
   const puppeteerModule = path.join(
@@ -589,10 +618,120 @@ async function run(options) {
       observedStates,
     );
 
-    activePhase = "validate-transcript-content";
+    const workspaceTitle = `${options.title} workspace verified`;
+    activePhase = "rename-meeting-workspace";
+    const renamed = await browserJson(
+      page,
+      "PATCH",
+      `/api/meetings/${encodeURIComponent(meetingId)}`,
+      { title: workspaceTitle },
+    );
+    if (String(renamed?.title ?? "") !== workspaceTitle) {
+      throw new Error("Meeting workspace title mutation was not durable");
+    }
+    await page.waitForFunction(
+      (expected) =>
+        document
+          .querySelector('[data-testid="meeting-detail-title"]')
+          ?.textContent?.trim() === expected,
+      { timeout: options.navigationTimeoutMs },
+      workspaceTitle,
+    );
+
     const segments = Array.isArray(finalDetail?.segments)
       ? finalDetail.segments
       : [];
+    const firstSegment = segments[0];
+    const segmentId = String(firstSegment?.id ?? "");
+    if (!segmentId) {
+      throw new Error("Meeting workspace E2E needs one transcript segment");
+    }
+    const originalSegmentText = String(firstSegment?.text ?? "").trim();
+    const workspaceMarker = "Workspace route E2E verified.";
+    const editedSegmentText = `${originalSegmentText} ${workspaceMarker}`.trim();
+    activePhase = "edit-meeting-workspace-segment";
+    const edited = await browserJson(
+      page,
+      "PATCH",
+      `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}`,
+      {
+        text: editedSegmentText,
+        expectedEditVersion: Number(finalDetail?.transcriptEditVersion ?? 0),
+      },
+    );
+    await page.waitForFunction(
+      ({ expected, selector }) =>
+        document.querySelector(selector)?.textContent?.includes(expected) === true,
+      { timeout: options.navigationTimeoutMs },
+      {
+        expected: workspaceMarker,
+        selector: `[data-testid="meeting-transcript-segment-${segmentId}"]`,
+      },
+    );
+    activePhase = "search-meeting-workspace-segment";
+    const search = await browserJson(
+      page,
+      "GET",
+      `/api/meetings/${encodeURIComponent(meetingId)}/search?q=${encodeURIComponent(workspaceMarker)}`,
+    );
+    if (!Array.isArray(search?.items) || !search.items.some((item) => String(item?.id ?? "") === segmentId)) {
+      throw new Error("Meeting workspace search did not observe the durable correction");
+    }
+    const history = await browserJson(
+      page,
+      "GET",
+      `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/edits`,
+    );
+    if (!Array.isArray(history?.items) || history.items.length === 0) {
+      throw new Error("Meeting workspace edit history omitted the durable correction");
+    }
+    activePhase = "undo-meeting-workspace-segment";
+    await browserJson(
+      page,
+      "POST",
+      `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/undo`,
+      { expectedEditVersion: Number(edited?.transcriptEditVersion ?? -1) },
+    );
+    await page.waitForFunction(
+      ({ forbidden, selector }) =>
+        document.querySelector(selector)?.textContent?.includes(forbidden) === false,
+      { timeout: options.navigationTimeoutMs },
+      {
+        forbidden: workspaceMarker,
+        selector: `[data-testid="meeting-transcript-segment-${segmentId}"]`,
+      },
+    );
+
+    const workspaceNote = "Meeting workspace E2E note verified.";
+    activePhase = "save-meeting-workspace-note";
+    const note = await browserJson(
+      page,
+      "PUT",
+      `/api/meetings/${encodeURIComponent(meetingId)}/notes`,
+      {
+        id: "workspace",
+        body: workspaceNote,
+        writerId: "meeting_e2e_driver",
+        writeGeneration: Date.now(),
+      },
+    );
+    if (String(note?.body ?? "") !== workspaceNote || note?.writeApplied === false) {
+      throw new Error("Meeting workspace note mutation was not durable");
+    }
+    await page.$eval('[data-testid="meeting-workspace-tab-notes"]', (button) => {
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Meeting notes workspace tab is unavailable");
+      }
+      button.click();
+    });
+    await page.waitForFunction(
+      (expected) =>
+        document.querySelector('[data-testid="meeting-workspace-note"]')?.value === expected,
+      { timeout: options.navigationTimeoutMs },
+      workspaceNote,
+    );
+
+    activePhase = "validate-transcript-content";
     const transcript = segments
       .map((segment) => String(segment?.text ?? ""))
       .join(" ")
@@ -646,6 +785,9 @@ async function run(options) {
       expectedTokenCount: options.expectedTokens.length,
       matchedExpectedTokenCount: matchedExpectedTokens.length,
       audioGapCount: audioGaps.length,
+      workspaceTitleVerified: true,
+      workspaceSegmentVerified: true,
+      workspaceNoteVerified: true,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
       diagnostics: { ...diagnostics },

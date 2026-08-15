@@ -556,6 +556,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
             return (
               <div
                 key={segment.id}
+                data-testid={`meeting-transcript-segment-${segment.id}`}
                 data-index={virtualRow.index}
                 ref={virtualizer.measureElement}
                 className="absolute left-0 top-0 w-full pb-1"
@@ -1086,6 +1087,7 @@ const MeetingWorkspaceTabs = memo(function MeetingWorkspaceTabs({
         {MEETING_WORKSPACE_VIEWS.map(([view, label]) => (
           <button
             key={view}
+            data-testid={`meeting-workspace-tab-${view}`}
             type="button"
             onClick={() => onChange(view)}
             className={`whitespace-nowrap border-b-2 px-3 py-2 text-sm font-medium active:scale-[0.97] ${value === view ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
@@ -3398,7 +3400,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       </form>
                     ) : (
                       <div className="flex min-w-0 items-center gap-1">
-                        <h2 className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]">
+                        <h2
+                          data-testid="meeting-detail-title"
+                          className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]"
+                        >
                           {detail.title}
                         </h2>
                         <Button

@@ -71,6 +71,10 @@ pause, resume, and stop routes, proves normalization into one immutable start
 command, pins the four-method controller port, and verifies that `create_app`
 resolves all four endpoints to domain handlers rather than nested composition
 handlers.
+`tests/api/test_meeting_workspace_routes.py` sends all eight collaborative
+workspace operations through the isolated aiohttp boundary, pins the exact
+`MeetingStore` collaborator surface, and proves `create_app` resolves each
+method/path pair to the domain module.
 
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
@@ -2156,7 +2160,7 @@ into permanent Markdown unless a concise current result belongs in
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_workspace_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts

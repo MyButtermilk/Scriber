@@ -19,6 +19,7 @@ export function MeetingNotesEditor({ autosave, rows = 5, textareaClassName }: Me
   return (
     <div className="mt-3 space-y-2">
       <Textarea
+        data-testid="meeting-workspace-note"
         aria-label={t("Live notes")}
         value={body}
         onChange={(event) => setBody(event.target.value)}
