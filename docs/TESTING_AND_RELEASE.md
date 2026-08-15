@@ -61,6 +61,12 @@ shutdown path. Both helpers install adversarial loop exception handlers in
 tests: cancel plus worker failure, including repeated cancellation, must produce
 zero unobserved `shield`/Future exception contexts.
 
+`tests/test_meeting_api.py` also pins Meeting capture settlement at the public
+HTTP seam: invalid start commands fail before admission; repeated cancellation
+cannot skip cleanup or lease release; and Stop reserves a finalizer before
+native shutdown, commits `finalizing`, opens the worker gate, then delivers the
+pending cancellation.
+
 The focused `tests/api/test_*_routes.py` suites exercise each extracted route
 module against lightweight stubs, then locally pin its complete structural port
 against the real controller or service, including boundary-critical route-owned

@@ -2181,6 +2181,105 @@ class _MeetingCaptureOwnership:
     cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
+@dataclass(frozen=True, slots=True)
+class _MeetingStartCommand:
+    """Validated immutable input for one native Meeting capture admission."""
+
+    title: str
+    language: str
+    transcription_mode: str
+    live_provider: str
+    final_provider: str
+    analysis_model: str
+    aec_enabled: bool
+    voice_library_enabled: bool
+    audio_retention_days: int
+    smart_turn_enabled: bool
+    auto_analyze: bool
+    microphone_device_id: str
+    render_device_id: str
+    microphone_native_endpoint_id_hash: str
+    render_native_endpoint_id_hash: str
+    calendar_event_selected: bool
+    calendar_event_id: str
+
+    @classmethod
+    def parse(cls, raw: Mapping[str, Any]) -> _MeetingStartCommand:
+        def boolean(key: str, default: bool) -> bool:
+            value = raw.get(key, default)
+            if type(value) is not bool:
+                raise ValueError(f"{key} must be a boolean")
+            return value
+
+        retention = raw.get("audioRetentionDays", Config.MEETING_AUDIO_RETENTION_DAYS)
+        if type(retention) is not int:
+            raise ValueError("audioRetentionDays must be an integer")
+        if "processId" in raw:
+            raise ValueError("processId is not a supported Meeting capture field")
+        transcription_mode = str(raw.get("transcriptionMode", Config.MEETING_TRANSCRIPTION_MODE)).strip().lower()
+        if transcription_mode not in _MEETING_TRANSCRIPTION_MODES:
+            raise ValueError("Unsupported meeting transcription mode")
+        return cls(
+            title=str(raw.get("title", "")).strip(),
+            language=str(raw.get("language", "auto")),
+            transcription_mode=transcription_mode,
+            live_provider=str(raw.get("liveProvider", "soniox")),
+            final_provider=str(raw.get("finalProvider", Config.MEETING_FINAL_PROVIDER)),
+            analysis_model=str(raw.get("analysisModel", Config.MEETING_ANALYSIS_MODEL)),
+            aec_enabled=boolean("aecEnabled", bool(Config.MEETING_AEC_ENABLED)),
+            voice_library_enabled=boolean("voiceLibraryEnabled", False),
+            audio_retention_days=max(0, min(3650, retention)),
+            smart_turn_enabled=boolean("smartTurnEnabled", bool(Config.MEETING_SMART_TURN_ENABLED)),
+            auto_analyze=boolean("autoAnalyze", bool(Config.MEETING_AUTO_ANALYZE)),
+            microphone_device_id=str(raw.get("microphoneDeviceId", "")).strip(),
+            render_device_id=str(raw.get("renderDeviceId", "")).strip(),
+            microphone_native_endpoint_id_hash=str(raw.get("microphoneNativeEndpointIdHash", "")).strip(),
+            render_native_endpoint_id_hash=str(raw.get("renderNativeEndpointIdHash", "")).strip(),
+            calendar_event_selected="calendarEventId" in raw,
+            calendar_event_id=str(raw.get("calendarEventId") or "").strip(),
+        )
+
+    def create_request(self, *, calendar_title: str = "") -> MeetingCreate:
+        return MeetingCreate(
+            title=self.title or calendar_title,
+            language=self.language,
+            transcription_mode=self.transcription_mode,
+            live_provider=self.live_provider,
+            final_provider=self.final_provider,
+            analysis_model=self.analysis_model,
+            aec_enabled=self.aec_enabled,
+            voice_library_enabled=self.voice_library_enabled,
+            consent_confirmed=False,
+            origin="captured",
+            audio_retention_days=self.audio_retention_days,
+            smart_turn_enabled=self.smart_turn_enabled,
+            auto_analyze=self.auto_analyze,
+        )
+
+    def native_payload(self, *, meeting_id: str) -> dict[str, Any]:
+        return {
+            "meetingId": meeting_id,
+            "microphoneDeviceId": self.microphone_device_id,
+            "renderDeviceId": self.render_device_id,
+            "microphoneNativeEndpointIdHash": self.microphone_native_endpoint_id_hash,
+            "renderNativeEndpointIdHash": self.render_native_endpoint_id_hash,
+            "aecEnabled": self.aec_enabled,
+            "chunkDurationSeconds": 30,
+        }
+
+    def device_selection(self) -> dict[str, str]:
+        return {
+            "microphoneMode": (
+                "explicit" if self.microphone_device_id or self.microphone_native_endpoint_id_hash else "default"
+            ),
+            "microphoneDeviceId": self.microphone_device_id,
+            "microphoneNativeEndpointIdHash": self.microphone_native_endpoint_id_hash,
+            "renderMode": "explicit" if self.render_device_id or self.render_native_endpoint_id_hash else "default",
+            "renderDeviceId": self.render_device_id,
+            "renderNativeEndpointIdHash": self.render_native_endpoint_id_hash,
+        }
+
+
 class _MeetingCaptureSetupError(RuntimeError):
     def __init__(self, *, status: int, code: str, message: str):
         super().__init__(message)
@@ -2918,6 +3017,29 @@ async def _cleanup_meeting_capture_ownership_barrier(
             error_message=error_message,
         )
     )
+
+
+async def _cleanup_and_release_meeting_capture_barrier(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+    *,
+    error_code: str,
+    error_message: str,
+    claim: AudioAdmissionClaim | None = None,
+) -> dict[str, Any] | None:
+    """Settle capture resources and the matching lease as one cancellation barrier."""
+
+    async def settle() -> dict[str, Any] | None:
+        failed = await _cleanup_meeting_capture_ownership(
+            controller,
+            ownership,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await _release_persistent_audio(controller, claim)
+        return failed
+
+    return await _await_cleanup_barrier(settle())
 
 
 def _meeting_capture_ownership_registry(
@@ -16688,27 +16810,32 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 status=503,
             )
         finally:
-            native_start_settled.set()
-            if tone_task is not None and not tone_task.done():
-                tone_task.cancel()
-                await asyncio.gather(tone_task, return_exceptions=True)
-            native_capture_released = not native_capture_started
-            if native_capture_started:
-                try:
-                    await stop_native_capture(reason="deviceTestCleanup")
-                    native_capture_released = True
-                except Exception as exc:
-                    logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
-            await stop_probe()
-            if native_capture_released:
-                async with admission_lock:
-                    ctl._meeting_device_test_active = False
-                await _release_persistent_audio(ctl, device_test_claim)
-                if prewarm_paused:
-                    ctl._resume_idle_mic_prewarm_after_capture()
-                    prewarm_paused = False
-            else:
-                logger.error("Meeting device test retained native-audio ownership after unconfirmed stop")
+
+            async def settle_device_test_cleanup() -> None:
+                nonlocal tone_task, prewarm_paused
+                native_start_settled.set()
+                if tone_task is not None and not tone_task.done():
+                    tone_task.cancel()
+                    await asyncio.gather(tone_task, return_exceptions=True)
+                native_capture_released = not native_capture_started
+                if native_capture_started:
+                    try:
+                        await stop_native_capture(reason="deviceTestCleanup")
+                        native_capture_released = True
+                    except Exception as exc:
+                        logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
+                await stop_probe()
+                if native_capture_released:
+                    async with admission_lock:
+                        ctl._meeting_device_test_active = False
+                    await _release_persistent_audio(ctl, device_test_claim)
+                    if prewarm_paused:
+                        ctl._resume_idle_mic_prewarm_after_capture()
+                        prewarm_paused = False
+                else:
+                    logger.error("Meeting device test retained native-audio ownership after unconfirmed stop")
+
+            await _await_cleanup_barrier(settle_device_test_cleanup())
 
     async def meeting_profiles(_request: web.Request):
         soniox_ready = bool(Config.get_api_key("soniox"))
@@ -17379,12 +17506,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.json_response({"message": "Expected JSON payload"}, status=400)
         if not isinstance(raw, dict):
             return web.json_response({"message": "Expected JSON object"}, status=400)
-        requested_transcription_mode = (
-            str(raw.get("transcriptionMode", Config.MEETING_TRANSCRIPTION_MODE)).strip().lower()
-        )
-        if requested_transcription_mode not in _MEETING_TRANSCRIPTION_MODES:
-            return web.json_response({"message": "Unsupported meeting transcription mode."}, status=400)
-        requested_voice_library = bool(raw.get("voiceLibraryEnabled", False))
+        try:
+            command = _MeetingStartCommand.parse(raw)
+        except TypeError, ValueError:
+            return web.json_response({"message": "Invalid meeting capture payload."}, status=400)
+        requested_voice_library = command.voice_library_enabled
         if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
             return web.json_response(
                 {"message": "Voice Library requires the explicit biometric-processing opt-in in Settings."},
@@ -17398,11 +17524,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
         # Resolve only against the token-protected local Graph cache. Participant
         # details sent by a WebView are never trusted. The snapshot is frozen now
         # so a concurrent calendar refresh cannot silently change recipients.
-        explicit_calendar_selection = "calendarEventId" in raw
+        explicit_calendar_selection = command.calendar_event_selected
         selected_calendar_event: dict[str, Any] | None = None
         outlook_calendar = getattr(ctl, "_outlook_calendar", None)
         if explicit_calendar_selection:
-            selected_event_id = str(raw.get("calendarEventId") or "").strip()
+            selected_event_id = command.calendar_event_id
             if selected_event_id:
                 selected_calendar_event = (
                     await asyncio.to_thread(outlook_calendar.event_snapshot, selected_event_id)
@@ -17421,23 +17547,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     )
         elif outlook_calendar is not None:
             selected_calendar_event = await asyncio.to_thread(outlook_calendar.current_event)
-        requested_title = str(raw.get("title", "")).strip()
-        create_request = MeetingCreate(
-            title=(requested_title or str((selected_calendar_event or {}).get("subject") or "")),
-            language=str(raw.get("language", "auto")),
-            transcription_mode=requested_transcription_mode,
-            live_provider=str(raw.get("liveProvider", "soniox")),
-            final_provider=str(raw.get("finalProvider", Config.MEETING_FINAL_PROVIDER)),
-            analysis_model=str(raw.get("analysisModel", Config.MEETING_ANALYSIS_MODEL)),
-            aec_enabled=bool(raw.get("aecEnabled", Config.MEETING_AEC_ENABLED)),
-            voice_library_enabled=requested_voice_library,
-            consent_confirmed=False,
-            origin="captured",
-            audio_retention_days=max(
-                0, min(3650, int(raw.get("audioRetentionDays", Config.MEETING_AUDIO_RETENTION_DAYS) or 0))
-            ),
-            smart_turn_enabled=bool(raw.get("smartTurnEnabled", Config.MEETING_SMART_TURN_ENABLED)),
-            auto_analyze=bool(raw.get("autoAnalyze", Config.MEETING_AUTO_ANALYZE)),
+        create_request = command.create_request(
+            calendar_title=str((selected_calendar_event or {}).get("subject") or "")
         )
 
         meeting_claim: AudioAdmissionClaim | None = None
@@ -17469,16 +17580,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 if pending_cancel is not None:
                     raise pending_cancel
 
-                ipc_payload = {
-                    "meetingId": meeting["id"],
-                    "microphoneDeviceId": str(raw.get("microphoneDeviceId", "")),
-                    "renderDeviceId": str(raw.get("renderDeviceId", "")),
-                    "microphoneNativeEndpointIdHash": str(raw.get("microphoneNativeEndpointIdHash", "")),
-                    "renderNativeEndpointIdHash": str(raw.get("renderNativeEndpointIdHash", "")),
-                    "processId": int(raw["processId"]) if raw.get("processId") is not None else None,
-                    "aecEnabled": meeting["aecEnabled"],
-                    "chunkDurationSeconds": 30,
-                }
+                ipc_payload = command.native_payload(meeting_id=str(meeting["id"]))
                 async with ownership.setup_lock:
                     if ownership.loss_requested:
                         raise _MeetingCaptureSetupError(
@@ -17601,18 +17703,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     if selected_calendar_event
                     else "unavailable"
                 )
-                requested_mic_id = str(raw.get("microphoneDeviceId", "")).strip()
-                requested_render_id = str(raw.get("renderDeviceId", "")).strip()
-                mic_hash = str(raw.get("microphoneNativeEndpointIdHash", "")).strip()
-                render_hash = str(raw.get("renderNativeEndpointIdHash", "")).strip()
-                capture_metadata["deviceSelection"] = {
-                    "microphoneMode": "explicit" if requested_mic_id or mic_hash else "default",
-                    "microphoneDeviceId": requested_mic_id,
-                    "microphoneNativeEndpointIdHash": mic_hash,
-                    "renderMode": "explicit" if requested_render_id or render_hash else "default",
-                    "renderDeviceId": requested_render_id,
-                    "renderNativeEndpointIdHash": render_hash,
-                }
+                capture_metadata["deviceSelection"] = command.device_selection()
                 async with ownership.setup_lock:
                     if ownership.loss_requested:
                         raise _MeetingCaptureSetupError(
@@ -17656,22 +17747,22 @@ def create_app(controller: ScriberWebController) -> web.Application:
                         await ctl.broadcast(meeting_live_status_event(meeting["id"], source, "degraded", 0))
                 return web.json_response({**recording, "apiVersion": REST_API_VERSION}, status=201)
             except asyncio.CancelledError:
-                await _cleanup_meeting_capture_ownership_barrier(
+                await _cleanup_and_release_meeting_capture_barrier(
                     ctl,
                     ownership,
                     error_code="meeting_start_canceled",
                     error_message=("Meeting start was interrupted; completed audio chunks were preserved."),
+                    claim=meeting_claim,
                 )
-                await _release_persistent_audio(ctl, meeting_claim)
                 raise
             except _MeetingCaptureSetupError as exc:
-                failed = await _cleanup_meeting_capture_ownership_barrier(
+                failed = await _cleanup_and_release_meeting_capture_barrier(
                     ctl,
                     ownership,
                     error_code=exc.code,
                     error_message=exc.message,
+                    claim=meeting_claim,
                 )
-                await _release_persistent_audio(ctl, meeting_claim)
                 meeting_payload = failed or {
                     "id": ownership.meeting_id,
                     "state": "capture_failed",
@@ -17691,13 +17782,13 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 message = (
                     f"Meeting capture could not start ({type(exc).__name__}); completed audio chunks were preserved."
                 )
-                failed = await _cleanup_meeting_capture_ownership_barrier(
+                failed = await _cleanup_and_release_meeting_capture_barrier(
                     ctl,
                     ownership,
                     error_code="meeting_start_failed",
                     error_message=message,
+                    claim=meeting_claim,
                 )
-                await _release_persistent_audio(ctl, meeting_claim)
                 return web.json_response(
                     {
                         "message": (failed or {}).get("errorMessage") or message,
@@ -17978,22 +18069,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
             return web.json_response({**updated, "apiVersion": REST_API_VERSION})
         except asyncio.CancelledError:
-            await _cleanup_meeting_capture_ownership_barrier(
+            await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code="meeting_resume_canceled",
                 error_message=("Meeting resume was interrupted; saved audio remains available."),
             )
-            await _release_persistent_audio(ctl)
             raise
         except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_meeting_capture_ownership_barrier(
+            failed = await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code=exc.code,
                 error_message=exc.message,
             )
-            await _release_persistent_audio(ctl)
             return web.json_response(
                 {
                     "message": (failed or {}).get("errorMessage") or exc.message,
@@ -18005,13 +18094,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except Exception as exc:
             logger.exception("Paused Meeting resume failed")
             message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_meeting_capture_ownership_barrier(
+            failed = await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code="meeting_resume_failed",
                 error_message=message,
             )
-            await _release_persistent_audio(ctl)
             return web.json_response(
                 {
                     "message": (failed or {}).get("errorMessage") or message,
@@ -18026,6 +18114,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         *,
         command: str,
         target_state: str,
+        deferred_cancellation: list[asyncio.CancelledError] | None = None,
     ) -> web.Response:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
@@ -18094,6 +18183,14 @@ def create_app(controller: ScriberWebController) -> web.Application:
         failed: dict[str, Any] | None = None
         updated: dict[str, Any] | None = None
 
+        def finish(response: web.Response) -> web.Response:
+            if pending_cancel is None:
+                return response
+            if deferred_cancellation is not None:
+                deferred_cancellation.append(pending_cancel)
+                return response
+            raise pending_cancel
+
         async with ownership.setup_lock:
             if ownership.loss_requested:
                 return web.json_response(
@@ -18132,11 +18229,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 if disconnect_prepared and callable(cancel_disconnect):
                     cancel_disconnect()
                 restore_watchdog()
-                if pending_cancel is not None:
-                    raise pending_cancel
-                return web.json_response(
-                    {"message": str(response.get("fallbackReason") or f"{command} failed")},
-                    status=503,
+                return finish(
+                    web.json_response(
+                        {"message": str(response.get("fallbackReason") or f"{command} failed")},
+                        status=503,
+                    )
                 )
 
             native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
@@ -18236,11 +18333,11 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
         if ownership.loss_requested:
             await _audio_admission_owner(ctl).note_loss(meeting_claim, reason="superseded")
-            if pending_cancel is not None:
-                raise pending_cancel
-            return web.json_response(
-                {"message": "Native audio ownership changed while Meeting capture was active."},
-                status=503,
+            return finish(
+                web.json_response(
+                    {"message": "Native audio ownership changed while Meeting capture was active."},
+                    status=503,
+                )
             )
         elif recorder_stop_failure is None and command == "audioMeetingStop":
             await _release_persistent_audio(ctl, meeting_claim)
@@ -18250,35 +18347,43 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if recorder_stop_failure is not None:
             assert failed is not None
             failure_code, failure_message = recorder_stop_failure
-            await ctl.broadcast(meeting_state_event(failed))
-            if pending_cancel is not None:
-                raise pending_cancel
-            return web.json_response(
-                {
-                    "message": failure_message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
+            _ignored, broadcast_cancel = await await_with_delayed_cancellation(
+                ctl.broadcast(meeting_state_event(failed))
+            )
+            pending_cancel = pending_cancel or broadcast_cancel
+            return finish(
+                web.json_response(
+                    {
+                        "message": failure_message,
+                        "meeting": failed,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                    status=503,
+                )
             )
 
         assert updated is not None
-        await ctl.broadcast(meeting_state_event(updated))
-        if pending_cancel is not None:
-            raise pending_cancel
-        return web.json_response({**updated, "apiVersion": REST_API_VERSION})
+        _ignored, broadcast_cancel = await await_with_delayed_cancellation(ctl.broadcast(meeting_state_event(updated)))
+        pending_cancel = pending_cancel or broadcast_cancel
+        return finish(web.json_response({**updated, "apiVersion": REST_API_VERSION}))
 
     async def _meeting_capture_command(
         request: web.Request,
         *,
         command: str,
         target_state: str,
+        deferred_cancellation: list[asyncio.CancelledError] | None = None,
     ) -> web.Response:
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
         async with _audio_admission_lock(ctl):
             if command != "audioMeetingResume":
-                return await _meeting_capture_command_claimed(request, command=command, target_state=target_state)
+                return await _meeting_capture_command_claimed(
+                    request,
+                    command=command,
+                    target_state=target_state,
+                    deferred_cancellation=deferred_cancellation,
+                )
             try:
                 current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
             except MeetingNotFound:
@@ -18317,7 +18422,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     {"message": "Another Scriber controller owns native audio capture."},
                     status=409,
                 )
-            return await _meeting_capture_command_claimed(request, command=command, target_state=target_state)
+            return await _meeting_capture_command_claimed(
+                request,
+                command=command,
+                target_state=target_state,
+                deferred_cancellation=deferred_cancellation,
+            )
 
     async def pause_meeting(request: web.Request):
         return await _meeting_capture_command(request, command="audioMeetingPause", target_state="paused")
@@ -18522,22 +18632,20 @@ def create_app(controller: ScriberWebController) -> web.Application:
                     await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
             return web.json_response({**recording, "apiVersion": REST_API_VERSION})
         except asyncio.CancelledError:
-            await _cleanup_meeting_capture_ownership_barrier(
+            await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code="meeting_resume_canceled",
                 error_message=("Meeting resume was interrupted; saved audio remains available."),
             )
-            await _release_persistent_audio(ctl)
             raise
         except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_meeting_capture_ownership_barrier(
+            failed = await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code=exc.code,
                 error_message=exc.message,
             )
-            await _release_persistent_audio(ctl)
             return web.json_response(
                 {
                     "message": (failed or {}).get("errorMessage") or exc.message,
@@ -18549,13 +18657,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except Exception as exc:
             logger.exception("Interrupted Meeting resume failed")
             message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_meeting_capture_ownership_barrier(
+            failed = await _cleanup_and_release_meeting_capture_barrier(
                 ctl,
                 ownership,
                 error_code="meeting_resume_failed",
                 error_message=message,
             )
-            await _release_persistent_audio(ctl)
             return web.json_response(
                 {
                     "message": (failed or {}).get("errorMessage") or message,
@@ -18620,19 +18727,49 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return await _resume_interrupted_meeting_claimed(request)
 
     async def stop_meeting(request: web.Request):
-        response = await _meeting_capture_command(request, command="audioMeetingStop", target_state="stopping")
-        if response.status >= 400:
-            return response
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         meeting_id = request.match_info.get("id", "")
-        finalizing = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "finalizing")
-        ctl._meeting_recorders.pop(meeting_id, None)
-        clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
-        if callable(clear_level_state):
-            clear_level_state(meeting_id)
-        await ctl.broadcast(meeting_state_event(finalizing))
-        ctl.schedule_meeting_finalization(meeting_id)
-        return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
+        start_gate = asyncio.Event()
+        if not ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
+            return web.json_response({"message": "Meeting finalization could not be reserved."}, status=503)
+
+        deferred_cancellation: list[asyncio.CancelledError] = []
+        try:
+            response = await _meeting_capture_command(
+                request,
+                command="audioMeetingStop",
+                target_state="stopping",
+                deferred_cancellation=deferred_cancellation,
+            )
+            if response.status >= 400:
+                if deferred_cancellation:
+                    raise deferred_cancellation[0]
+                return response
+
+            async def settle_stop() -> dict[str, Any]:
+                finalizing = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "finalizing")
+                ctl._meeting_recorders.pop(meeting_id, None)
+                clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
+                if callable(clear_level_state):
+                    clear_level_state(meeting_id)
+                # The durable state now owns finalization. Open the worker gate
+                # before any request cancellation can be delivered.
+                start_gate.set()
+                await ctl.broadcast(meeting_state_event(finalizing))
+                return finalizing
+
+            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
+            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
+            if pending_cancel is not None:
+                raise pending_cancel
+            return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
+        finally:
+            if not start_gate.is_set():
+                tasks = getattr(ctl, "_meeting_tasks", {})
+                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
+                if reserved_task is not None:
+                    reserved_task.cancel()
+                    await asyncio.gather(reserved_task, return_exceptions=True)
 
     async def reprocess_meeting(request: web.Request):
         """Refresh Voice matches or create a new canonical transcript safely."""

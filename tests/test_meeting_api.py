@@ -857,12 +857,16 @@ async def test_cancelled_device_test_waits_for_late_native_start_then_stops_befo
     timeline: list[str] = []
     controller = FakeController(MeetingStore())
     claim = object()
+    release_entered = asyncio.Event()
+    finish_release = asyncio.Event()
 
     async def claim_audio(_controller, **_kwargs):
         return claim
 
     async def release_audio(_controller, released_claim):
         assert released_claim is claim
+        release_entered.set()
+        await finish_release.wait()
         timeline.append("lease_release")
         return True
 
@@ -895,6 +899,12 @@ async def test_cancelled_device_test_waits_for_late_native_start_then_stops_befo
     await asyncio.sleep(0)
     assert task.done() is False
     finish_start.set()
+
+    await asyncio.wait_for(release_entered.wait(), timeout=2)
+    task.cancel()
+    await asyncio.sleep(0)
+    assert task.done() is False
+    finish_release.set()
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=2)
@@ -1889,6 +1899,49 @@ def _recording_meeting_control_controller(monkeypatch, tmp_path, db_name):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"audioRetentionDays": "nope"},
+        {"aecEnabled": "false"},
+        {"voiceLibraryEnabled": 1},
+        {"processId": 1234},
+    ],
+)
+async def test_meeting_start_rejects_invalid_command_before_admission(
+    monkeypatch,
+    tmp_path,
+    payload,
+):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "invalid-meeting-command.db")
+    monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
+    database.init_database()
+    store = MeetingStore()
+    store.initialize()
+    controller = FakeController(store)
+    shell_calls = []
+    monkeypatch.setattr(
+        web_api,
+        "call_shell_ipc",
+        lambda command, *_args, **_kwargs: shell_calls.append(command),
+    )
+    client = TestClient(TestServer(web_api.create_app(controller)))
+    await client.start_server()
+    try:
+        response = await client.post("/api/meetings", json={"title": "Invalid", **payload})
+
+        assert response.status == 400
+        assert await response.json() == {"message": "Invalid meeting capture payload."}
+        assert store.list(limit=10)["items"] == []
+        assert shell_calls == []
+        assert getattr(controller, "_persistent_audio_claim", None) is None
+    finally:
+        await client.close()
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_saved_speaker_preview_plays_without_retained_meeting_audio(monkeypatch, tmp_path):
     monkeypatch.setattr(voice_component_routes.Config, "VOICEPRINT_LIBRARY_OPT_IN", True)
     database._close_all_connections()
@@ -2036,8 +2089,8 @@ async def test_pause_ipc_exception_restores_watchdog_and_preserves_state_and_cla
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("action", "expected_state", "releases_claim"),
-    [("pause", "paused", False), ("stop", "stopping", True)],
+    ("action", "expected_state", "releases_claim", "finalization_scheduled"),
+    [("pause", "paused", False, False), ("stop", "finalizing", True, True)],
 )
 async def test_cancelled_capture_command_settles_native_stop_and_recorder_before_unwinding(
     monkeypatch,
@@ -2045,6 +2098,7 @@ async def test_cancelled_capture_command_settles_native_stop_and_recorder_before
     action,
     expected_state,
     releases_claim,
+    finalization_scheduled,
 ):
     controller, store, meeting, recorder = _recording_meeting_control_controller(
         monkeypatch,
@@ -2090,6 +2144,39 @@ async def test_cancelled_capture_command_settles_native_stop_and_recorder_before
     assert controller.capture_watchdogs == {}
     assert released == ([claim] if releases_claim else [])
     assert controller._persistent_audio_claim is (None if releases_claim else claim)
+    assert controller.scheduled == ([meeting["id"]] if finalization_scheduled else [])
+    database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_stop_reserves_finalizer_before_committing_finalizing(monkeypatch, tmp_path):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch,
+        tmp_path,
+        "stop-finalizer-reservation.db",
+    )
+    claim = _test_audio_claim("meeting", meeting["id"])
+    controller._persistent_audio_claim = claim
+    controller.schedule_meeting_finalization = lambda *_args, **_kwargs: False
+
+    monkeypatch.setattr(
+        web_api,
+        "call_shell_ipc",
+        lambda command, _payload, **_kwargs: {
+            "success": True,
+            "payload": {"stopped": True},
+        },
+    )
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/stop")
+
+    response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+
+    assert response.status == 503
+    assert json.loads(response.body) == {"message": "Meeting finalization could not be reserved."}
+    assert store.get(meeting["id"])["state"] == "recording"
+    assert recorder.stop_count == 0
+    assert controller._persistent_audio_claim is claim
     database._close_all_connections()
 
 
@@ -3599,6 +3686,54 @@ async def test_meeting_start_cancellation_releases_every_owned_stage(monkeypatch
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         database._close_all_connections()
+
+
+@pytest.mark.asyncio
+async def test_repeated_start_cancellation_waits_for_admission_release(monkeypatch, tmp_path):
+    controller, store, _lives = _capture_cancellation_controller(
+        monkeypatch,
+        tmp_path,
+        "repeated-cancel-start-release.db",
+    )
+    setup_entered = asyncio.Event()
+    finish_setup = asyncio.Event()
+    release_entered = asyncio.Event()
+    finish_release = asyncio.Event()
+
+    async def pause_at_boundary():
+        controller.prewarm_paused = True
+        setup_entered.set()
+        await finish_setup.wait()
+
+    original_release = web_api._release_persistent_audio
+
+    async def gated_release(changed_controller, claim=None):
+        release_entered.set()
+        await finish_release.wait()
+        return await original_release(changed_controller, claim)
+
+    controller._pause_idle_mic_prewarm_for_capture = pause_at_boundary
+    monkeypatch.setattr(web_api, "_release_persistent_audio", gated_release)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings")
+    task = asyncio.create_task(handler(_DirectRequest(app, payload={"title": "Cancel twice"})))
+    await asyncio.wait_for(setup_entered.wait(), timeout=2)
+
+    task.cancel()
+    finish_setup.set()
+    await asyncio.wait_for(release_entered.wait(), timeout=2)
+    task.cancel()
+    await asyncio.sleep(0)
+
+    assert task.done() is False
+    assert controller._audio_admission_store.active() is not None
+    finish_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=3)
+
+    assert controller._audio_admission_store.active() is None
+    assert store.list(limit=10)["items"][0]["state"] == "capture_failed"
+    database._close_all_connections()
 
 
 @pytest.mark.asyncio
@@ -5396,9 +5531,9 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             "/api/meetings",
             json={
                 "title": "Call",
-                "microphoneDeviceId": "usb-selected",
-                "microphoneNativeEndpointIdHash": "mic-hash",
-                "renderNativeEndpointIdHash": "render-hash",
+                "microphoneDeviceId": "  usb-selected  ",
+                "microphoneNativeEndpointIdHash": "  mic-hash  ",
+                "renderNativeEndpointIdHash": "  render-hash  ",
             },
         )
         assert started.status == 201
@@ -5415,10 +5550,19 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert meeting["captureMetadata"]["timelineOffsetMs"] == 0
         assert meeting["captureMetadata"]["timelineStartedAtUtc"]
         assert meeting["captureMetadata"]["deviceSelection"]["microphoneMode"] == "explicit"
+        assert meeting["captureMetadata"]["deviceSelection"]["microphoneDeviceId"] == "usb-selected"
         assert "framePipe" not in str(meeting)
         active_audio_claim = controller._audio_admission_store.active()
         assert active_audio_claim is not None
         assert (active_audio_claim.owner_kind, active_audio_claim.owner_id) == ("meeting", meeting["id"])
+        start_payload = next(
+            payload
+            for command, payload in shell_calls
+            if command == "audioMeetingStart" and payload.get("meetingId") == meeting["id"]
+        )
+        assert start_payload["microphoneDeviceId"] == "usb-selected"
+        assert start_payload["microphoneNativeEndpointIdHash"] == "mic-hash"
+        assert start_payload["renderNativeEndpointIdHash"] == "render-hash"
         active_hotkey = await client.post("/api/meetings/hotkey")
         assert (await active_hotkey.json())["meetingId"] == meeting["id"]
 

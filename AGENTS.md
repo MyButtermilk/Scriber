@@ -1408,6 +1408,12 @@ Packaging and scripts:
   disarm it. Never let resume reuse a deterministic sequence still occupied by
   the preceding pause's partial file. Unexpected reader/storage failures remain
   watchdog failures and must not be reclassified as intentional stops.
+- Parse the complete Meeting-start command before audio admission. Boolean and
+  integer JSON fields are type-strict. Start/resume cleanup and device-test
+  cleanup must settle every native/local owner plus the audio lease inside one
+  repeated-cancellation barrier. Stop reserves a closed finalizer task gate
+  before touching native capture; only a durable `finalizing` commit may open
+  that gate and release a pending request cancellation.
 - Startup recovery must preserve workflow phase: only `starting`, `recording`,
   and `paused` become resumable `interrupted` capture. `stopping` and
   `finalizing` become `finalization_failed`, and `analyzing` becomes

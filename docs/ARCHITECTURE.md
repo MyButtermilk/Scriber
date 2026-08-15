@@ -874,7 +874,11 @@ meeting task slot synchronously, commit the corresponding durable state, then
 open the gate. Cancellation before gate-open must either roll the state back or
 let the matching reserved worker own it; an open `finalizing`/`analyzing` state
 without an owner is forbidden. Done callbacks remove a task only when the map
-still points to that exact task.
+still points to that exact task. Meeting Stop reserves its closed finalizer gate
+before native capture or recorder shutdown begins; a reservation conflict leaves
+the recording and its admission claim untouched. After shutdown, the handler
+commits `finalizing`, opens the gate, and only then delivers a pending request
+cancellation.
 
 Live Mic, Meeting start/resume/reconnect, Meeting device test, Voice enrollment,
 and shutdown share one audio-admission coordinator. The process lock is acquired
@@ -888,6 +892,13 @@ margin; further retries require a successful renewal, so a second controller
 cannot acquire while native capture is still unconfirmed. The loss handler stops
 the native producer and settles local persistence before SQLite release; an
 unknown stop or store-release result retains ownership for retry.
+
+Meeting start and resume treat capture cleanup plus admission release as one
+repeated-cancellation barrier. Device-test cleanup likewise settles its tone
+task, native producer, probe, active flag, lease, and prewarm state before a
+pending cancellation can escape. The Meeting start request is parsed into an
+immutable command before admission; JSON booleans and integer identifiers are
+type-strict rather than coerced with Python truthiness.
 
 Only a current Meeting claim explicitly marked durable after its `recording`
 row commits may ride out a generic renewal-store outage. Pending Meetings,
