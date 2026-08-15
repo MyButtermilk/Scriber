@@ -130,7 +130,8 @@ Meetings:
 - Meeting delivery was the first domain extracted from `create_app`; Runtime,
   ONNX model management, YouTube, Transcript, Settings, Local Polishing,
   Device, Outlook Calendar, Meeting Import, Voice Component, File
-  Transcription, and WebSocket routes now follow the same module-level
+  Transcription, WebSocket, and initial Meeting Capture admission routes now
+  follow the same module-level
   registration shape with domain-local ports or collaborator interfaces.
   Transcript routes were the first to need controller internals; those became
   public methods shaped by the routes' needs rather than a wider port.

@@ -54,7 +54,8 @@ Backend and runtime:
   into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
-  Component, File Transcription, and WebSocket route domains, shared aiohttp app
+  Component, File Transcription, WebSocket, and Meeting Capture route domains,
+  shared aiohttp app
   keys, HTTP/WebSocket security helpers, and the upload policy used by both file
   transcription and Meeting imports.
   Controller-backed route modules own their narrow structural controller port
@@ -93,6 +94,11 @@ Backend and runtime:
   handling, and the add/remove-client lifecycle behind a four-member controller
   port. Every registered connection is removed in `finally`, including when its
   initial send fails.
+  Meeting Capture owns strict parsing and normalization for the initial
+  `POST /api/meetings` admission. Its immutable command crosses one public
+  controller method; claim, native shell, recorder, preview, and durable state
+  orchestration remain controller-owned until pause/resume/stop join the same
+  bounded route slice.
   `src/api/upload_policy.py` owns the Windows-safe filename, accepted
   media-extension, immutable provider-bound byte limits, and limit-label
   invariants; ingest handlers consume that interface directly rather than

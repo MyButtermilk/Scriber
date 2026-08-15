@@ -48,10 +48,10 @@ def test_resume_connects_durable_readers_before_starting_live_stt():
 
 def test_initial_start_connects_durable_readers_before_starting_live_stt():
     text = Path(web_api.__file__).read_text(encoding="utf-8")
-    start = text.index("    async def start_meeting(request")
-    initial = text[start : text.index("    def _meeting_native_stop_snapshot", start)]
+    start = text.index("    async def start_meeting_capture(")
+    initial = text[start : text.index("    async def start_meeting_live_transcription", start)]
     assert initial.index("recorder.start(native_sources)") < initial.index(
-        "await _start_meeting_live_preview_best_effort(ctl, meeting)"
+        "await _start_meeting_live_preview_best_effort("
     )
 
 
@@ -765,6 +765,9 @@ class FakeController:
 
     async def broadcast(self, payload):
         self.events.append(payload)
+
+    async def start_meeting_capture(self, command):
+        return await web_api.ScriberWebController.start_meeting_capture(self, command)
 
     def schedule_meeting_finalization(self, meeting_id, **_kwargs):
         self.scheduled.append(meeting_id)
@@ -2988,8 +2991,12 @@ async def test_meeting_start_rejects_stale_selected_calendar_event_before_captur
         def current_event(self):
             raise AssertionError("explicit selection must not use current_event")
 
+    class Controller(SimpleNamespace):
+        async def start_meeting_capture(self, command):
+            return await web_api.ScriberWebController.start_meeting_capture(self, command)
+
     calendar = Calendar()
-    app = web_api.create_app(SimpleNamespace(_outlook_calendar=calendar))
+    app = web_api.create_app(Controller(_outlook_calendar=calendar))
     handler = _route_handler(app, "POST", "/api/meetings")
     response = await handler(
         _DirectRequest(
@@ -3396,7 +3403,19 @@ async def test_device_reconnect_loss_during_blocked_resume_stops_late_native_cap
 
 
 @pytest.mark.asyncio
-async def test_persisted_audio_claim_blocks_a_second_controller_device_test(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    ("endpoint", "payload"),
+    [
+        ("/api/meetings/device-test", {"durationMs": 500}),
+        ("/api/meetings", {"title": "Blocked by another controller"}),
+    ],
+)
+async def test_persisted_audio_claim_blocks_a_second_controller_capture_route(
+    monkeypatch,
+    tmp_path,
+    endpoint,
+    payload,
+):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "cross-controller-audio.db")
     monkeypatch.delenv("SCRIBER_SESSION_TOKEN", raising=False)
@@ -3423,7 +3442,7 @@ async def test_persisted_audio_claim_blocks_a_second_controller_device_test(monk
     client = TestClient(TestServer(web_api.create_app(contender)))
     await client.start_server()
     try:
-        response = await client.post("/api/meetings/device-test", json={"durationMs": 500})
+        response = await client.post(endpoint, json=payload)
         assert response.status == 409
         assert (await response.json())["message"] == ("Another Scriber controller owns native audio capture.")
         assert shell_calls == []

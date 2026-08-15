@@ -1238,8 +1238,6 @@ async def test_startup_prompt_migration_persists_json_without_rewriting_env(
     # flag makes the constructor schedule a second, full persist that supersedes
     # the JSON-only migration under test.
     web_api.db._close_all_connections()
-    if hasattr(web_api.db._thread_local, "conn"):
-        web_api.db._thread_local.conn = None
     monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "lifecycle.db")
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0")

@@ -47,6 +47,11 @@ from src.api.http_security import (
     validate_server_bind_security,
 )
 from src.api.local_polishing_routes import register_local_polishing_routes
+from src.api.meeting_capture_routes import (
+    MeetingCaptureOutcome,
+    MeetingStartCommand,
+    register_meeting_capture_routes,
+)
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
 from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
 from src.api.onnx_routes import register_onnx_routes
@@ -2179,105 +2184,6 @@ class _MeetingCaptureOwnership:
     identity_settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
-
-
-@dataclass(frozen=True, slots=True)
-class _MeetingStartCommand:
-    """Validated immutable input for one native Meeting capture admission."""
-
-    title: str
-    language: str
-    transcription_mode: str
-    live_provider: str
-    final_provider: str
-    analysis_model: str
-    aec_enabled: bool
-    voice_library_enabled: bool
-    audio_retention_days: int
-    smart_turn_enabled: bool
-    auto_analyze: bool
-    microphone_device_id: str
-    render_device_id: str
-    microphone_native_endpoint_id_hash: str
-    render_native_endpoint_id_hash: str
-    calendar_event_selected: bool
-    calendar_event_id: str
-
-    @classmethod
-    def parse(cls, raw: Mapping[str, Any]) -> _MeetingStartCommand:
-        def boolean(key: str, default: bool) -> bool:
-            value = raw.get(key, default)
-            if type(value) is not bool:
-                raise ValueError(f"{key} must be a boolean")
-            return value
-
-        retention = raw.get("audioRetentionDays", Config.MEETING_AUDIO_RETENTION_DAYS)
-        if type(retention) is not int:
-            raise ValueError("audioRetentionDays must be an integer")
-        if "processId" in raw:
-            raise ValueError("processId is not a supported Meeting capture field")
-        transcription_mode = str(raw.get("transcriptionMode", Config.MEETING_TRANSCRIPTION_MODE)).strip().lower()
-        if transcription_mode not in _MEETING_TRANSCRIPTION_MODES:
-            raise ValueError("Unsupported meeting transcription mode")
-        return cls(
-            title=str(raw.get("title", "")).strip(),
-            language=str(raw.get("language", "auto")),
-            transcription_mode=transcription_mode,
-            live_provider=str(raw.get("liveProvider", "soniox")),
-            final_provider=str(raw.get("finalProvider", Config.MEETING_FINAL_PROVIDER)),
-            analysis_model=str(raw.get("analysisModel", Config.MEETING_ANALYSIS_MODEL)),
-            aec_enabled=boolean("aecEnabled", bool(Config.MEETING_AEC_ENABLED)),
-            voice_library_enabled=boolean("voiceLibraryEnabled", False),
-            audio_retention_days=max(0, min(3650, retention)),
-            smart_turn_enabled=boolean("smartTurnEnabled", bool(Config.MEETING_SMART_TURN_ENABLED)),
-            auto_analyze=boolean("autoAnalyze", bool(Config.MEETING_AUTO_ANALYZE)),
-            microphone_device_id=str(raw.get("microphoneDeviceId", "")).strip(),
-            render_device_id=str(raw.get("renderDeviceId", "")).strip(),
-            microphone_native_endpoint_id_hash=str(raw.get("microphoneNativeEndpointIdHash", "")).strip(),
-            render_native_endpoint_id_hash=str(raw.get("renderNativeEndpointIdHash", "")).strip(),
-            calendar_event_selected="calendarEventId" in raw,
-            calendar_event_id=str(raw.get("calendarEventId") or "").strip(),
-        )
-
-    def create_request(self, *, calendar_title: str = "") -> MeetingCreate:
-        return MeetingCreate(
-            title=self.title or calendar_title,
-            language=self.language,
-            transcription_mode=self.transcription_mode,
-            live_provider=self.live_provider,
-            final_provider=self.final_provider,
-            analysis_model=self.analysis_model,
-            aec_enabled=self.aec_enabled,
-            voice_library_enabled=self.voice_library_enabled,
-            consent_confirmed=False,
-            origin="captured",
-            audio_retention_days=self.audio_retention_days,
-            smart_turn_enabled=self.smart_turn_enabled,
-            auto_analyze=self.auto_analyze,
-        )
-
-    def native_payload(self, *, meeting_id: str) -> dict[str, Any]:
-        return {
-            "meetingId": meeting_id,
-            "microphoneDeviceId": self.microphone_device_id,
-            "renderDeviceId": self.render_device_id,
-            "microphoneNativeEndpointIdHash": self.microphone_native_endpoint_id_hash,
-            "renderNativeEndpointIdHash": self.render_native_endpoint_id_hash,
-            "aecEnabled": self.aec_enabled,
-            "chunkDurationSeconds": 30,
-        }
-
-    def device_selection(self) -> dict[str, str]:
-        return {
-            "microphoneMode": (
-                "explicit" if self.microphone_device_id or self.microphone_native_endpoint_id_hash else "default"
-            ),
-            "microphoneDeviceId": self.microphone_device_id,
-            "microphoneNativeEndpointIdHash": self.microphone_native_endpoint_id_hash,
-            "renderMode": "explicit" if self.render_device_id or self.render_native_endpoint_id_hash else "default",
-            "renderDeviceId": self.render_device_id,
-            "renderNativeEndpointIdHash": self.render_native_endpoint_id_hash,
-        }
 
 
 class _MeetingCaptureSetupError(RuntimeError):
@@ -14021,6 +13927,344 @@ class ScriberWebController:
         except Exception as exc:
             logger.warning("Meeting capture watchdog failed for {}: {}", meeting_id, type(exc).__name__)
 
+    async def start_meeting_capture(
+        self,
+        command: MeetingStartCommand,
+    ) -> MeetingCaptureOutcome:
+        """Start one native Meeting capture behind the route-owned command seam."""
+
+        request_started = time.perf_counter()
+        requested_voice_library = command.voice_library_enabled
+        if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "Voice Library requires the explicit biometric-processing opt-in in Settings."},
+            )
+        if requested_voice_library and not self._speaker_model.status()["installed"]:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "Install the optional WeSpeaker model before enabling Voice Library."},
+            )
+
+        # Resolve only against the token-protected local Graph cache. Participant
+        # details sent by a WebView are never trusted. The snapshot is frozen now
+        # so a concurrent calendar refresh cannot silently change recipients.
+        explicit_calendar_selection = command.calendar_event_selected
+        selected_calendar_event: dict[str, Any] | None = None
+        outlook_calendar = getattr(self, "_outlook_calendar", None)
+        if explicit_calendar_selection:
+            selected_event_id = command.calendar_event_id
+            if selected_event_id:
+                selected_calendar_event = (
+                    await asyncio.to_thread(outlook_calendar.event_snapshot, selected_event_id)
+                    if outlook_calendar is not None
+                    else None
+                )
+                if selected_calendar_event is None:
+                    return MeetingCaptureOutcome(
+                        status=409,
+                        payload={
+                            "message": (
+                                "The selected Outlook event is no longer available. "
+                                "Refresh the calendar and choose it again."
+                            )
+                        },
+                    )
+        elif outlook_calendar is not None:
+            selected_calendar_event = await asyncio.to_thread(outlook_calendar.current_event)
+        create_request = command.create_request(
+            calendar_title=str((selected_calendar_event or {}).get("subject") or "")
+        )
+
+        meeting_claim: AudioAdmissionClaim | None = None
+        ownership = _MeetingCaptureOwnership(failure_state="capture_failed")
+        meeting_loss_handler = _meeting_audio_loss_handler(self, ownership)
+
+        async def start_claimed() -> MeetingCaptureOutcome:
+            nonlocal meeting_claim
+            try:
+                meeting, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(self._meeting_store.create, create_request)
+                )
+            except MeetingConflict as exc:
+                ownership.identity_settled.set()
+                await _release_persistent_audio(self, meeting_claim)
+                return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+            except BaseException:
+                ownership.identity_settled.set()
+                raise
+            try:
+                ownership.meeting_id = str(meeting["id"])
+                _meeting_capture_ownership_registry(self)[ownership.meeting_id] = ownership
+                ownership.identity_settled.set()
+                if meeting_claim is not None:
+                    meeting_claim = await _transfer_persistent_audio_claim(
+                        self,
+                        meeting_claim,
+                        owner_id=ownership.meeting_id,
+                    )
+                ownership.resume_prewarm = True
+                if pending_cancel is not None:
+                    raise pending_cancel
+
+                ipc_payload = command.native_payload(meeting_id=str(meeting["id"]))
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting capture started.",
+                        )
+                    await self._pause_idle_mic_prewarm_for_capture()
+                    response, pending_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            call_shell_ipc,
+                            "audioMeetingStart",
+                            ipc_payload,
+                            timeout_seconds=4.0,
+                        )
+                    )
+                    native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                    if response.get("success"):
+                        ownership.native_capture_started = True
+                        ownership.capture_id = str(native_payload.get("captureId") or "")
+                if pending_cancel is not None:
+                    raise pending_cancel
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed during Meeting capture start.",
+                    )
+                if not response.get("success"):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code=str(response.get("errorCode") or "native_capture_unavailable"),
+                        message=str(response.get("fallbackReason") or "Native meeting capture did not start."),
+                    )
+
+                ownership.capture_id, native_sources = _validated_meeting_native_capture_payload(native_payload)
+                live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting persistence started.",
+                        )
+                    recorder = MeetingAudioRecorder(
+                        meeting["id"],
+                        data_dir() / "meetings",
+                        self._meeting_store,
+                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                        on_pcm=lambda source, pcm, _header: self.on_meeting_pcm(
+                            meeting["id"],
+                            live_preview_ref["transcriber"],
+                            source,
+                            pcm,
+                        ),
+                        on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting["id"], checkpoint),
+                    )
+                    ownership.recorder = recorder
+                    try:
+                        recorder.start(native_sources)
+                    except Exception as exc:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="frame_recorder_start_failed",
+                            message=f"Meeting audio persistence could not start ({type(exc).__name__}).",
+                        ) from exc
+                    self._meeting_recorders[meeting["id"]] = recorder
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed after Meeting persistence started.",
+                    )
+                timeline_started_at_utc = datetime.now(UTC).isoformat()
+
+                # Durable local capture is authoritative. Live transcription is
+                # best-effort and never gates audio already being persisted.
+                live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                    self,
+                    meeting,
+                )
+                if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed during Meeting preview setup.",
+                    )
+                live_preview_ref["transcriber"] = live_preview
+
+                capture_metadata = {
+                    key: native_payload[key]
+                    for key in (
+                        "captureId",
+                        "sampleRate",
+                        "frameDurationMs",
+                        "aecActive",
+                        "aecRequested",
+                    )
+                    if key in native_payload
+                }
+                capture_metadata["sources"] = [
+                    str(item.get("source")) for item in native_sources if isinstance(item, dict) and item.get("source")
+                ]
+                capture_metadata["timelineOffsetMs"] = 0
+                capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+                capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                    meeting,
+                    degraded=live_preview_degraded,
+                    error_code="live_stt_start_failed",
+                )
+                capture_metadata["captureStartLatencyMs"] = round((time.perf_counter() - request_started) * 1000.0, 1)
+                if selected_calendar_event:
+                    capture_metadata["calendarEvent"] = selected_calendar_event
+                capture_metadata["calendarEventSelection"] = (
+                    "explicit"
+                    if explicit_calendar_selection and selected_calendar_event
+                    else "none"
+                    if explicit_calendar_selection
+                    else "automatic"
+                    if selected_calendar_event
+                    else "unavailable"
+                )
+                capture_metadata["deviceSelection"] = command.device_selection()
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting capture committed.",
+                        )
+                    recording, pending_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting["id"],
+                            "recording",
+                            error_code=("live_stt_start_failed" if live_preview_degraded else ""),
+                            error_message=(
+                                "Live transcription is unavailable. Durable local audio recording continues."
+                                if live_preview_degraded
+                                else ""
+                            ),
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed while Meeting capture committed.",
+                        )
+                if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting capture became durable.",
+                    )
+                ownership.failure_state = "interrupted"
+                if pending_cancel is not None:
+                    raise pending_cancel
+                self.start_meeting_capture_watchdog(
+                    meeting["id"],
+                    str(capture_metadata.get("captureId") or ""),
+                )
+                await self.broadcast(meeting_state_event(recording))
+                if live_preview_degraded:
+                    for source in ("microphone", "system"):
+                        await self.broadcast(meeting_live_status_event(meeting["id"], source, "degraded", 0))
+                return MeetingCaptureOutcome(
+                    status=201,
+                    payload={**recording, "apiVersion": REST_API_VERSION},
+                )
+            except asyncio.CancelledError:
+                await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code="meeting_start_canceled",
+                    error_message="Meeting start was interrupted; completed audio chunks were preserved.",
+                    claim=meeting_claim,
+                )
+                raise
+            except _MeetingCaptureSetupError as exc:
+                failed = await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code=exc.code,
+                    error_message=exc.message,
+                    claim=meeting_claim,
+                )
+                meeting_payload = failed or {
+                    "id": ownership.meeting_id,
+                    "state": "capture_failed",
+                    "errorCode": exc.code,
+                    "errorMessage": exc.message,
+                }
+                return MeetingCaptureOutcome(
+                    status=exc.status,
+                    payload={
+                        "message": meeting_payload.get("errorMessage") or exc.message,
+                        "meeting": meeting_payload,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+            except Exception as exc:
+                logger.exception("Meeting capture setup failed")
+                message = (
+                    f"Meeting capture could not start ({type(exc).__name__}); completed audio chunks were preserved."
+                )
+                failed = await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code="meeting_start_failed",
+                    error_message=message,
+                    claim=meeting_claim,
+                )
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={
+                        "message": (failed or {}).get("errorMessage") or message,
+                        "meeting": failed,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+
+        async with _audio_admission_lock(self):
+            if self._is_listening or self._is_stopping:
+                return MeetingCaptureOutcome(
+                    status=409, payload={"message": "Stop Live Mic before starting a meeting."}
+                )
+            if self._meeting_device_test_active:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Meeting device test to finish."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            if await _active_meeting_audio_conflict(self) is not None:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before starting another one."},
+                )
+            try:
+                meeting_claim = await _claim_persistent_audio(
+                    self,
+                    owner_kind="meeting",
+                    owner_id=f"pending-{uuid4().hex}",
+                    loss_handler=meeting_loss_handler,
+                )
+            except AudioAdmissionConflict:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            return await start_claimed()
+
     async def start_meeting_live_transcription(
         self,
         meeting: dict[str, Any],
@@ -17497,332 +17741,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             upload_limits=file_upload_limits,
         )
 
-    async def start_meeting(request: web.Request):
-        request_started = time.perf_counter()
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            command = _MeetingStartCommand.parse(raw)
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid meeting capture payload."}, status=400)
-        requested_voice_library = command.voice_library_enabled
-        if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
-            return web.json_response(
-                {"message": "Voice Library requires the explicit biometric-processing opt-in in Settings."},
-                status=409,
-            )
-        if requested_voice_library and not ctl._speaker_model.status()["installed"]:
-            return web.json_response(
-                {"message": "Install the optional WeSpeaker model before enabling Voice Library."},
-                status=409,
-            )
-        # Resolve only against the token-protected local Graph cache. Participant
-        # details sent by a WebView are never trusted. The snapshot is frozen now
-        # so a concurrent calendar refresh cannot silently change recipients.
-        explicit_calendar_selection = command.calendar_event_selected
-        selected_calendar_event: dict[str, Any] | None = None
-        outlook_calendar = getattr(ctl, "_outlook_calendar", None)
-        if explicit_calendar_selection:
-            selected_event_id = command.calendar_event_id
-            if selected_event_id:
-                selected_calendar_event = (
-                    await asyncio.to_thread(outlook_calendar.event_snapshot, selected_event_id)
-                    if outlook_calendar is not None
-                    else None
-                )
-                if selected_calendar_event is None:
-                    return web.json_response(
-                        {
-                            "message": (
-                                "The selected Outlook event is no longer available. "
-                                "Refresh the calendar and choose it again."
-                            )
-                        },
-                        status=409,
-                    )
-        elif outlook_calendar is not None:
-            selected_calendar_event = await asyncio.to_thread(outlook_calendar.current_event)
-        create_request = command.create_request(
-            calendar_title=str((selected_calendar_event or {}).get("subject") or "")
-        )
-
-        meeting_claim: AudioAdmissionClaim | None = None
-        ownership = _MeetingCaptureOwnership(failure_state="capture_failed")
-        meeting_loss_handler = _meeting_audio_loss_handler(ctl, ownership)
-
-        async def start_claimed() -> web.Response:
-            nonlocal meeting_claim
-            try:
-                meeting, pending_cancel = await await_with_delayed_cancellation(
-                    asyncio.to_thread(ctl._meeting_store.create, create_request)
-                )
-            except MeetingConflict as exc:
-                ownership.identity_settled.set()
-                await _release_persistent_audio(ctl, meeting_claim)
-                return web.json_response({"message": str(exc)}, status=409)
-            except BaseException:
-                ownership.identity_settled.set()
-                raise
-            try:
-                ownership.meeting_id = str(meeting["id"])
-                _meeting_capture_ownership_registry(ctl)[ownership.meeting_id] = ownership
-                ownership.identity_settled.set()
-                if meeting_claim is not None:
-                    meeting_claim = await _transfer_persistent_audio_claim(
-                        ctl, meeting_claim, owner_id=ownership.meeting_id
-                    )
-                ownership.resume_prewarm = True
-                if pending_cancel is not None:
-                    raise pending_cancel
-
-                ipc_payload = command.native_payload(meeting_id=str(meeting["id"]))
-                async with ownership.setup_lock:
-                    if ownership.loss_requested:
-                        raise _MeetingCaptureSetupError(
-                            status=503,
-                            code="audio_admission_lost",
-                            message="Native audio ownership changed before Meeting capture started.",
-                        )
-                    await ctl._pause_idle_mic_prewarm_for_capture()
-                    response, pending_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
-                            call_shell_ipc,
-                            "audioMeetingStart",
-                            ipc_payload,
-                            timeout_seconds=4.0,
-                        )
-                    )
-                    native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-                    if response.get("success"):
-                        ownership.native_capture_started = True
-                        ownership.capture_id = str(native_payload.get("captureId") or "")
-                if pending_cancel is not None:
-                    raise pending_cancel
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed during Meeting capture start.",
-                    )
-                if not response.get("success"):
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code=str(response.get("errorCode") or "native_capture_unavailable"),
-                        message=str(response.get("fallbackReason") or "Native meeting capture did not start."),
-                    )
-
-                (
-                    ownership.capture_id,
-                    native_sources,
-                ) = _validated_meeting_native_capture_payload(native_payload)
-                live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-                async with ownership.setup_lock:
-                    if ownership.loss_requested:
-                        raise _MeetingCaptureSetupError(
-                            status=503,
-                            code="audio_admission_lost",
-                            message="Native audio ownership changed before Meeting persistence started.",
-                        )
-                    recorder = MeetingAudioRecorder(
-                        meeting["id"],
-                        data_dir() / "meetings",
-                        ctl._meeting_store,
-                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                        on_pcm=lambda source, pcm, _header: ctl.on_meeting_pcm(
-                            meeting["id"], live_preview_ref["transcriber"], source, pcm
-                        ),
-                        on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting["id"], checkpoint),
-                    )
-                    ownership.recorder = recorder
-                    try:
-                        recorder.start(native_sources)
-                    except Exception as exc:
-                        raise _MeetingCaptureSetupError(
-                            status=503,
-                            code="frame_recorder_start_failed",
-                            message=(f"Meeting audio persistence could not start ({type(exc).__name__})."),
-                        ) from exc
-                    ctl._meeting_recorders[meeting["id"]] = recorder
-                if ownership.loss_requested:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed after Meeting persistence started.",
-                    )
-                timeline_started_at_utc = datetime.now(UTC).isoformat()
-
-                # Durable local capture is authoritative. Live transcription is
-                # a best-effort preview and must never gate or tear down audio
-                # that is already being persisted. The callback above resolves
-                # the transcriber dynamically, so frames received during a
-                # slow or failed provider connection remain locally durable.
-                live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(ctl, meeting)
-                if not await _adopt_meeting_live_preview(ctl, ownership, live_preview):
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message="Native audio ownership changed during Meeting preview setup.",
-                    )
-                live_preview_ref["transcriber"] = live_preview
-
-                capture_metadata = {
-                    key: native_payload[key]
-                    for key in (
-                        "captureId",
-                        "sampleRate",
-                        "frameDurationMs",
-                        "aecActive",
-                        "aecRequested",
-                    )
-                    if key in native_payload
-                }
-                capture_metadata["sources"] = [
-                    str(item.get("source")) for item in native_sources if isinstance(item, dict) and item.get("source")
-                ]
-                capture_metadata["timelineOffsetMs"] = 0
-                capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-                capture_metadata["livePreview"] = _meeting_live_preview_metadata(
-                    meeting,
-                    degraded=live_preview_degraded,
-                    error_code="live_stt_start_failed",
-                )
-                capture_metadata["captureStartLatencyMs"] = round((time.perf_counter() - request_started) * 1000.0, 1)
-                if selected_calendar_event:
-                    capture_metadata["calendarEvent"] = selected_calendar_event
-                capture_metadata["calendarEventSelection"] = (
-                    "explicit"
-                    if explicit_calendar_selection and selected_calendar_event
-                    else "none"
-                    if explicit_calendar_selection
-                    else "automatic"
-                    if selected_calendar_event
-                    else "unavailable"
-                )
-                capture_metadata["deviceSelection"] = command.device_selection()
-                async with ownership.setup_lock:
-                    if ownership.loss_requested:
-                        raise _MeetingCaptureSetupError(
-                            status=503,
-                            code="audio_admission_lost",
-                            message="Native audio ownership changed before Meeting capture committed.",
-                        )
-                    recording, pending_cancel = await await_with_delayed_cancellation(
-                        asyncio.to_thread(
-                            ctl._meeting_store.transition,
-                            meeting["id"],
-                            "recording",
-                            error_code=("live_stt_start_failed" if live_preview_degraded else ""),
-                            error_message=(
-                                "Live transcription is unavailable. Durable local audio recording continues."
-                                if live_preview_degraded
-                                else ""
-                            ),
-                            capture_metadata=capture_metadata,
-                        )
-                    )
-                    if ownership.loss_requested:
-                        raise _MeetingCaptureSetupError(
-                            status=503,
-                            code="audio_admission_lost",
-                            message="Native audio ownership changed while Meeting capture committed.",
-                        )
-                if not await _mark_meeting_capture_durable_if_owned(ctl, ownership, meeting_claim):
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="audio_admission_lost",
-                        message=("Native audio ownership changed before Meeting capture became durable."),
-                    )
-                ownership.failure_state = "interrupted"
-                if pending_cancel is not None:
-                    raise pending_cancel
-                ctl.start_meeting_capture_watchdog(meeting["id"], str(capture_metadata.get("captureId") or ""))
-                await ctl.broadcast(meeting_state_event(recording))
-                if live_preview_degraded:
-                    for source in ("microphone", "system"):
-                        await ctl.broadcast(meeting_live_status_event(meeting["id"], source, "degraded", 0))
-                return web.json_response({**recording, "apiVersion": REST_API_VERSION}, status=201)
-            except asyncio.CancelledError:
-                await _cleanup_and_release_meeting_capture_barrier(
-                    ctl,
-                    ownership,
-                    error_code="meeting_start_canceled",
-                    error_message=("Meeting start was interrupted; completed audio chunks were preserved."),
-                    claim=meeting_claim,
-                )
-                raise
-            except _MeetingCaptureSetupError as exc:
-                failed = await _cleanup_and_release_meeting_capture_barrier(
-                    ctl,
-                    ownership,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                    claim=meeting_claim,
-                )
-                meeting_payload = failed or {
-                    "id": ownership.meeting_id,
-                    "state": "capture_failed",
-                    "errorCode": exc.code,
-                    "errorMessage": exc.message,
-                }
-                return web.json_response(
-                    {
-                        "message": meeting_payload.get("errorMessage") or exc.message,
-                        "meeting": meeting_payload,
-                        "apiVersion": REST_API_VERSION,
-                    },
-                    status=exc.status,
-                )
-            except Exception as exc:
-                logger.exception("Meeting capture setup failed")
-                message = (
-                    f"Meeting capture could not start ({type(exc).__name__}); completed audio chunks were preserved."
-                )
-                failed = await _cleanup_and_release_meeting_capture_barrier(
-                    ctl,
-                    ownership,
-                    error_code="meeting_start_failed",
-                    error_message=message,
-                    claim=meeting_claim,
-                )
-                return web.json_response(
-                    {
-                        "message": (failed or {}).get("errorMessage") or message,
-                        "meeting": failed,
-                        "apiVersion": REST_API_VERSION,
-                    },
-                    status=503,
-                )
-
-        async with _audio_admission_lock(ctl):
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before starting a meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl) is not None:
-                return web.json_response(
-                    {"message": "Finish the active meeting before starting another one."}, status=409
-                )
-            try:
-                meeting_claim = await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="meeting",
-                    owner_id=f"pending-{uuid4().hex}",
-                    loss_handler=meeting_loss_handler,
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await start_claimed()
-
     def _meeting_native_stop_snapshot(native_payload: dict[str, Any]) -> dict[str, Any]:
         sidecar = native_payload.get("sidecar")
         if not isinstance(sidecar, dict):
@@ -19797,7 +19715,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         record_payload=meeting_import_payload,
         inbox_payload=meeting_import_inbox_payload,
     )
-    app.router.add_post("/api/meetings", start_meeting)
+    register_meeting_capture_routes(app, control=controller)
     app.router.add_get("/api/meetings/{id}", meeting_detail)
     app.router.add_patch("/api/meetings/{id}", patch_meeting)
     app.router.add_get("/api/meetings/{id}/search", search_meeting_transcript)
