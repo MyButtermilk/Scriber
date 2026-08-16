@@ -24,7 +24,6 @@ import { LanguageToggle } from "@/components/language-toggle";
 import { useI18n } from "@/i18n";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
 import { AppOverlayScrollbar } from "@/components/layout/AppOverlayScrollbar";
-import "./app-shell.css";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -113,13 +112,31 @@ export function AppLayout({ children, path }: AppLayoutProps) {
               aria-current={isActive ? "page" : undefined}
               data-active={isActive ? "true" : "false"}
               className={cn(
-                "app-nav-item flex min-h-10 min-w-0 cursor-pointer items-center gap-3 px-3 text-ui-body-sm",
-                "font-medium no-underline outline-none",
-                isActive ? "text-foreground" : "text-muted-foreground",
+                "relative flex min-h-10 min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border",
+                "border-transparent px-3 text-ui-body-sm font-medium no-underline outline-none",
+                "transition-[background-color,border-color,color,transform] duration-[var(--duration-quick)]",
+                "ease-[var(--ease-smooth-out)] hover:bg-foreground/5 hover:text-foreground active:scale-[0.985]",
+                "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+                "motion-reduce:transition-none motion-reduce:active:scale-100",
+                isActive
+                  ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15"
+                  : "text-muted-foreground",
               )}
             >
+              <span
+                className={cn(
+                  "absolute bottom-2.5 left-1 top-2.5 w-[3px] origin-center rounded-full bg-primary",
+                  "transition-[opacity,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)]",
+                  "motion-reduce:transition-none",
+                  isActive ? "scale-y-100 opacity-100" : "scale-y-50 opacity-0",
+                )}
+                aria-hidden="true"
+              />
               <Icon
-                className={cn("h-[18px] w-[18px] shrink-0 stroke-[1.75px]", isActive && "stroke-2")}
+                className={cn(
+                  "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
+                  isActive && "stroke-2 text-primary",
+                )}
                 aria-hidden="true"
               />
               <span className="min-w-0 truncate">{tab.label}</span>
@@ -155,7 +172,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-sidebar md:flex-row">
         {/* Mobile Header */}
         <header
-          className="app-mobile-header flex items-center justify-between border-b border-border/60 px-3 py-2 md:hidden"
+          className="flex items-center justify-between border-b border-border/60 bg-sidebar px-3 py-2 md:hidden"
         >
           <div className="flex min-w-0 items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
@@ -170,7 +187,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="app-sidebar w-[280px] border-r border-border/60 bg-sidebar p-0">
+              <SheetContent side="left" className="w-[280px] border-r border-border/60 bg-sidebar p-0">
                 <SheetTitle className="sr-only">{t("Main navigation")}</SheetTitle>
                 <div className="flex h-full flex-col">
                   <div className="flex items-center gap-2.5 px-4 pb-3 pt-5">
@@ -204,7 +221,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         </header>
 
         {/* Left Sidebar */}
-        <aside className="app-sidebar hidden w-64 shrink-0 flex-col md:flex">
+        <aside className="hidden w-64 shrink-0 flex-col bg-sidebar md:flex">
           <div className="flex items-center gap-2.5 px-4 pb-3 pt-5">
             <BrandMark className="h-9 w-9" />
             <span className="font-heading text-lg font-semibold tracking-tight text-foreground">Scriber</span>
@@ -224,7 +241,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
         {/* Main Content Area */}
         <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col pb-3 md:py-3 md:pr-3">
-          <div className="app-content-surface relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl">
+          <div className="relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl md:border md:border-border/80 md:shadow-sm">
             <div
               ref={scrollContainerRef}
               className="app-scroll-viewport h-full min-w-0 overflow-x-hidden overflow-y-auto"
