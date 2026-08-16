@@ -4568,7 +4568,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 <aside className="border-t border-border/60 bg-muted/35 px-5 py-5 xl:border-l xl:border-t-0">
                   {workspaceView === "transcript" && Boolean(analysis?.executiveSummary) && (
                     <section className="mb-5 border-b border-border/60 pb-5">
-                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">
+                      <p className="text-ui-micro font-semibold uppercase tracking-[0.16em] text-primary">
                         {t("Meeting brief")}
                       </p>
                       <h3 className="mt-1.5 font-heading text-lg font-semibold tracking-[-0.025em]">

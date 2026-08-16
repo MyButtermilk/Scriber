@@ -2125,7 +2125,11 @@ def test_responsive_ui_polish_contracts_are_preserved() -> None:
     assert "window.open(apiUrl(`/api/transcripts/${id}/export/" not in transcript_detail
     assert "summaryTableOfContentsTitle(preparedSummaryHtml.plainText, transcript.language)" in transcript_detail
 
-    assert meetings.count('className="w-32"') == 3
+    assert 'data-testid="meeting-detail-actions"' in meetings
+    assert 'data-testid="meeting-detail-pause"' in meetings
+    assert 'data-testid="meeting-detail-resume"' in meetings
+    assert 'data-testid="meeting-detail-stop"' in meetings
+    assert meetings.count('className="min-w-28"') == 3
 
 
 def test_recording_popup_uses_canvas_waveform_without_react_frame_state() -> None:
@@ -2717,8 +2721,9 @@ def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() 
     assert "meetings-history-rail rounded-[22px]" in meetings
     assert "meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]" in meetings
     assert "min-[1380px]:grid-cols-[minmax(0,1fr)_260px]" in meetings
-    assert "2xl:grid-cols-[minmax(0,1fr)_300px]" in meetings
-    assert "2xl:border-l 2xl:border-t-0" in meetings
+    assert "xl:grid-cols-[minmax(0,1fr)_320px]" in meetings
+    assert "2xl:grid-cols-[minmax(0,1fr)_340px]" in meetings
+    assert "xl:border-l xl:border-t-0" in meetings
 
     assert "app-page-shell" in live_mic
     assert 'data-page-shell="live-mic"' in live_mic
