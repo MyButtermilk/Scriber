@@ -1,5 +1,15 @@
 import { Link, useLocation } from "wouter";
-import { CalendarClock, Mic, Settings, Youtube, FolderOpen, Menu, Search, Terminal } from "lucide-react";
+import {
+  CalendarClock,
+  Mic,
+  Settings,
+  Youtube,
+  FolderOpen,
+  Menu,
+  Search,
+  Terminal,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarSearch } from "@/components/ui/sidebar-search";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -14,6 +24,7 @@ import { LanguageToggle } from "@/components/language-toggle";
 import { useI18n } from "@/i18n";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
 import { AppOverlayScrollbar } from "@/components/layout/AppOverlayScrollbar";
+import "./app-shell.css";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -24,6 +35,12 @@ interface AppLayoutProps {
   children: React.ReactNode;
   path?: string;
 }
+
+type NavigationItem = {
+  href: string;
+  icon: LucideIcon;
+  label: string;
+};
 
 export function AppLayout({ children, path }: AppLayoutProps) {
   const [location] = useLocation();
@@ -67,73 +84,67 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     scrollContainerRef.current?.scrollTo({ top: 0, left: 0, behavior: "auto" });
   }, [currentKey]);
 
-  const tabs = [
+  const primaryTabs: NavigationItem[] = [
     { href: "/", icon: Mic, label: t("Live Mic") },
     { href: "/meetings", icon: CalendarClock, label: t("Meetings") },
     { href: "/youtube", icon: Youtube, label: t("YouTube") },
     { href: "/file", icon: FolderOpen, label: t("File") },
-    { href: "/settings", icon: Settings, label: t("Settings") },
   ];
 
-  const renderNav = (onNavigate?: () => void) => (
-    <nav className="flex-1 px-3 pt-1" aria-label={t("Main navigation")}>
-      <ul className="space-y-1.5">
-        {tabs.map((tab) => {
-          const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
-          const Icon = tab.icon;
+  const utilityTabs: NavigationItem[] = [
+    { href: "/settings", icon: Settings, label: t("Settings") },
+    { href: "/debug", icon: Terminal, label: t("Console") },
+  ];
 
-          return (
-            <li key={tab.href}>
-              <Link
-                href={tab.href}
-                onPointerEnter={() => handleNavIntent(tab.href)}
-                onPointerDown={() => handleNavIntent(tab.href)}
-                onFocus={() => handleNavIntent(tab.href)}
-                onClick={onNavigate}
-                aria-current={isActive ? "page" : undefined}
-                className={cn(
-                  "neu-nav-item flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium cursor-pointer no-underline outline-none",
-                  isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
-                )}
-              >
-                <Icon className={cn("w-5 h-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} />
-                <span>{tab.label}</span>
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
+  const renderTabList = (tabs: NavigationItem[], className?: string, onNavigate?: () => void) => (
+    <ul className={cn("space-y-1", className)}>
+      {tabs.map((tab) => {
+        const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
+        const Icon = tab.icon;
+
+        return (
+          <li key={tab.href}>
+            <Link
+              href={tab.href}
+              onPointerEnter={() => handleNavIntent(tab.href)}
+              onPointerDown={() => handleNavIntent(tab.href)}
+              onFocus={() => handleNavIntent(tab.href)}
+              onClick={onNavigate}
+              aria-current={isActive ? "page" : undefined}
+              data-active={isActive ? "true" : "false"}
+              className={cn(
+                "app-nav-item flex min-h-10 min-w-0 cursor-pointer items-center gap-3 px-3 text-ui-body-sm",
+                "font-medium no-underline outline-none",
+                isActive ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              <Icon
+                className={cn("h-[18px] w-[18px] shrink-0 stroke-[1.75px]", isActive && "stroke-2")}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 truncate">{tab.label}</span>
+            </Link>
+          </li>
+        );
+      })}
+    </ul>
+  );
+
+  const renderNavigation = (onNavigate?: () => void) => (
+    <nav className="flex min-h-0 flex-1 flex-col px-3 pt-1" aria-label={t("Main navigation")}>
+      {renderTabList(primaryTabs, undefined, onNavigate)}
+      {renderTabList(utilityTabs, "mt-auto border-t border-border/60 pt-3", onNavigate)}
     </nav>
   );
 
-  const renderConsoleUtility = (onNavigate?: () => void) => {
-    const isActive = location.startsWith("/debug");
-    return (
-      <div className="px-3">
-        <Link
-          href="/debug"
-          onPointerEnter={() => handleNavIntent("/debug")}
-          onPointerDown={() => handleNavIntent("/debug")}
-          onFocus={() => handleNavIntent("/debug")}
-          onClick={onNavigate}
-          aria-current={isActive ? "page" : undefined}
-          className={cn(
-            "neu-nav-item flex min-h-10 items-center gap-3 rounded-xl border border-transparent px-3 text-sm font-medium no-underline outline-none",
-            isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <Terminal className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
-          <span>{t("Console")}</span>
-        </Link>
-      </div>
-    );
-  };
-
   return (
-    <div className="app-window-frame min-h-[100dvh] md:h-[100dvh] overflow-hidden bg-sidebar font-sans flex flex-col">
+    <div className="app-window-frame flex min-h-[100dvh] flex-col overflow-hidden bg-sidebar font-sans md:h-[100dvh]">
       <a
         href="#main-content"
-        className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60] rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md"
+        className={cn(
+          "sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-[60]",
+          "rounded-md bg-background px-3 py-2 text-sm text-foreground shadow-md",
+        )}
       >
         {t("Skip to main content")}
       </a>
@@ -141,91 +152,82 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       <DesktopTitleBar />
       <ActiveMeetingPill />
 
-      <div className="min-h-0 flex-1 overflow-hidden bg-sidebar flex flex-col md:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-sidebar md:flex-row">
         {/* Mobile Header */}
-        <header className="md:hidden flex items-center justify-between border-b border-border/50 px-3 py-2">
-          <div className="flex items-center gap-1.5">
+        <header
+          className="app-mobile-header flex items-center justify-between border-b border-border/60 px-3 py-2 md:hidden"
+        >
+          <div className="flex min-w-0 items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="min-h-[44px] min-w-[44px]"
+                  className="min-h-[44px] min-w-[44px] rounded-lg"
                   aria-label={t("Open navigation")}
                 >
                   <Menu className="h-5 w-5" />
                 </Button>
               </SheetTrigger>
-              <SheetContent side="left" className="w-[280px] border-r border-border/50 bg-sidebar p-0">
+              <SheetContent side="left" className="app-sidebar w-[280px] border-r border-border/60 bg-sidebar p-0">
                 <SheetTitle className="sr-only">{t("Main navigation")}</SheetTitle>
                 <div className="flex h-full flex-col">
-                  <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
+                  <div className="flex items-center gap-2.5 px-4 pb-3 pt-5">
                     <BrandMark className="h-9 w-9" />
-                    <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
+                    <span className="font-heading text-lg font-semibold tracking-tight text-foreground">Scriber</span>
                   </div>
                   <div className="px-3 pb-3">
                     <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                   </div>
-                  {renderNav(() => setMobileNavOpen(false))}
-                  {renderConsoleUtility(() => setMobileNavOpen(false))}
-                  <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+                  {renderNavigation(() => setMobileNavOpen(false))}
+                  <div className="mx-3 flex items-center gap-2 px-1 pb-5 pt-3">
                     <LanguageToggle />
                     <ThemeToggle align="edge" />
                   </div>
                 </div>
               </SheetContent>
             </Sheet>
-            <BrandMark className="h-8 w-8" decorative />
-            <span className="font-heading text-base font-semibold tracking-tight">Scriber</span>
+            <BrandMark className="h-8 w-8 shrink-0" decorative />
+            <span className="truncate font-heading text-base font-semibold tracking-tight">Scriber</span>
           </div>
-          <div className="flex items-center gap-1">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="min-h-[44px] min-w-[44px]"
-              onClick={handleOpenCommandPalette}
-              aria-label={t("Open command palette")}
-            >
-              <Search className="h-4 w-4" />
-            </Button>
-            <LanguageToggle compact />
-            <ThemeToggle />
-          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="min-h-[44px] min-w-[44px] shrink-0 rounded-lg"
+            onClick={handleOpenCommandPalette}
+            aria-label={t("Open command palette")}
+          >
+            <Search className="h-[18px] w-[18px]" />
+          </Button>
         </header>
 
-        {/* Left Sidebar - extends to screen edges */}
-        <aside className="hidden md:flex w-60 md:w-64 shrink-0 flex-col">
-          {/* Logo and Branding */}
-          <div className="px-4 pt-5 pb-3 flex items-center gap-2.5">
+        {/* Left Sidebar */}
+        <aside className="app-sidebar hidden w-64 shrink-0 flex-col md:flex">
+          <div className="flex items-center gap-2.5 px-4 pb-3 pt-5">
             <BrandMark className="h-9 w-9" />
-            <span className="font-heading font-semibold text-lg text-foreground tracking-tight">Scriber</span>
+            <span className="font-heading text-lg font-semibold tracking-tight text-foreground">Scriber</span>
           </div>
 
-          {/* Search Bar */}
           <div className="px-3 pb-3">
             <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPalette} />
           </div>
 
-          {/* Navigation */}
-          {renderNav()}
-          {renderConsoleUtility()}
+          {renderNavigation()}
 
-          {/* Theme Toggle at bottom */}
-          <div className="mx-3 mt-3 flex items-center gap-2 border-t border-border/60 px-1 pb-5 pt-4">
+          <div className="mx-3 flex items-center gap-2 px-1 pb-5 pt-3">
             <LanguageToggle />
             <ThemeToggle align="edge" />
           </div>
         </aside>
 
         {/* Main Content Area */}
-        <main id="main-content" className="min-h-0 min-w-0 flex-1 flex flex-col pb-3 md:py-3 md:pr-3">
-          {/* Content panel - rounded, inset within the sidebar-colored background */}
-          <div className="relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl md:neu-panel-inset">
+        <main id="main-content" className="flex min-h-0 min-w-0 flex-1 flex-col pb-3 md:py-3 md:pr-3">
+          <div className="app-content-surface relative min-w-0 flex-1 overflow-hidden bg-background md:rounded-xl">
             <div
               ref={scrollContainerRef}
-              className="app-scroll-viewport h-full min-w-0 overflow-y-auto overflow-x-hidden"
+              className="app-scroll-viewport h-full min-w-0 overflow-x-hidden overflow-y-auto"
               data-app-scroll-container="true"
             >
               <div className="min-h-full min-w-0 bg-background">
@@ -239,7 +241,6 @@ export function AppLayout({ children, path }: AppLayoutProps) {
         </main>
       </div>
 
-      {/* Command Palette */}
       <Suspense fallback={null}>
         {commandOpen && <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />}
       </Suspense>

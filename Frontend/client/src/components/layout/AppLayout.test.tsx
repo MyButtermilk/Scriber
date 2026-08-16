@@ -40,7 +40,7 @@ describe("AppLayout navigation", () => {
     });
   });
 
-  it("labels every main navigation and exposes the current page", () => {
+  it("labels every main navigation, groups utilities, and exposes the current page", () => {
     const location = memoryLocation({ path: "/meetings/42" });
     const { container, getAllByRole } = render(
       <Router hook={location.hook}>
@@ -60,8 +60,17 @@ describe("AppLayout navigation", () => {
     expect(windowFrame?.querySelector("[data-app-overlay-scrollbar]")).not.toBeNull();
 
     for (const navigation of navigations) {
-      expect(within(navigation).getByRole("link", { name: "Meetings" })).toHaveAttribute("aria-current", "page");
-      expect(within(navigation).getByRole("link", { name: "YouTube" })).not.toHaveAttribute("aria-current");
+      const meetingLink = within(navigation).getByRole("link", { name: "Meetings" });
+      const youtubeLink = within(navigation).getByRole("link", { name: "YouTube" });
+      const settingsLink = within(navigation).getByRole("link", { name: "Settings" });
+      const consoleLink = within(navigation).getByRole("link", { name: "Console" });
+
+      expect(meetingLink).toHaveAttribute("aria-current", "page");
+      expect(meetingLink).toHaveAttribute("data-active", "true");
+      expect(youtubeLink).not.toHaveAttribute("aria-current");
+      expect(youtubeLink).toHaveAttribute("data-active", "false");
+      expect(settingsLink.closest("ul")).toBe(consoleLink.closest("ul"));
+      expect(settingsLink.closest("ul")).not.toBe(meetingLink.closest("ul"));
     }
   });
 });

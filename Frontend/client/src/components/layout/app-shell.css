@@ -1,0 +1,157 @@
+/*
+ * App-shell hierarchy deliberately stays flatter than the tactile controls in
+ * the workspace. The shell frames the product; it should not make every row
+ * feel like a separate floating card.
+ */
+.app-sidebar {
+  background: hsl(var(--sidebar));
+}
+
+.app-mobile-header {
+  background: hsl(var(--sidebar) / 0.96);
+}
+
+.app-nav-item {
+  position: relative;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition:
+    background-color var(--duration-quick) var(--ease-smooth-out),
+    border-color var(--duration-quick) var(--ease-smooth-out),
+    color var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-micro) var(--ease-out);
+}
+
+.app-nav-item::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 4px;
+  width: 3px;
+  border-radius: 999px;
+  background: hsl(var(--primary));
+  content: "";
+  opacity: 0;
+  transform: scaleY(0.45);
+  transition:
+    opacity var(--duration-quick) var(--ease-smooth-out),
+    transform var(--duration-quick) var(--ease-smooth-out);
+}
+
+.app-nav-item svg {
+  transition: color var(--duration-quick) var(--ease-smooth-out);
+}
+
+.app-nav-item:hover {
+  background: hsl(var(--foreground) / 0.045);
+  color: hsl(var(--foreground));
+}
+
+.app-nav-item[data-active="true"] {
+  border-color: hsl(var(--primary) / 0.14);
+  background: hsl(var(--primary) / 0.1);
+  color: hsl(var(--foreground));
+}
+
+.app-nav-item[data-active="true"]::before {
+  opacity: 1;
+  transform: scaleY(1);
+}
+
+.app-nav-item[data-active="true"] svg {
+  color: hsl(var(--primary));
+}
+
+.app-nav-item:active {
+  transform: scale(0.985);
+}
+
+.app-nav-item:focus-visible,
+.app-sidebar-search:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+.app-sidebar-search {
+  border: 1px solid hsl(var(--border) / 0.9);
+  border-radius: 10px;
+  background: hsl(var(--background) / 0.62);
+  box-shadow: none;
+  transition:
+    background-color var(--duration-quick) var(--ease-smooth-out),
+    border-color var(--duration-quick) var(--ease-smooth-out);
+}
+
+.app-sidebar-search:hover {
+  border-color: hsl(var(--foreground) / 0.16);
+  background: hsl(var(--background) / 0.86);
+}
+
+.app-shortcut {
+  min-width: 2.25rem;
+  justify-content: center;
+  border: 1px solid hsl(var(--border) / 0.9);
+  border-radius: 6px;
+  background: hsl(var(--background) / 0.88);
+  line-height: 1.2;
+}
+
+.app-content-surface {
+  background: hsl(var(--background));
+}
+
+.dark .app-nav-item:hover {
+  background: hsl(var(--foreground) / 0.07);
+}
+
+.dark .app-nav-item[data-active="true"] {
+  border-color: hsl(var(--primary) / 0.22);
+  background: hsl(var(--primary) / 0.16);
+}
+
+.dark .app-sidebar-search {
+  background: hsl(var(--background) / 0.72);
+}
+
+.dark .app-sidebar-search:hover {
+  border-color: hsl(var(--foreground) / 0.22);
+  background: hsl(var(--background) / 0.92);
+}
+
+@media (min-width: 768px) {
+  .app-content-surface {
+    border: 1px solid hsl(var(--border) / 0.78);
+    box-shadow:
+      0 1px 2px hsl(var(--foreground) / 0.04),
+      0 16px 40px hsl(var(--foreground) / 0.035);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-nav-item,
+  .app-nav-item::before,
+  .app-nav-item svg,
+  .app-sidebar-search {
+    transition: none;
+  }
+
+  .app-nav-item:active {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .app-nav-item[data-active="true"] {
+    border-color: Highlight;
+  }
+
+  .app-nav-item[data-active="true"]::before {
+    background: Highlight;
+  }
+
+  .app-sidebar-search,
+  .app-content-surface {
+    border-color: CanvasText;
+  }
+}
