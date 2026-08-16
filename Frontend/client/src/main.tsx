@@ -16,6 +16,9 @@ const resizeObserverErr = (e: ErrorEvent) => {
 };
 window.addEventListener("error", resizeObserverErr);
 
+// Keep type rendering crisp across the WebView2 shell and browser smoke runs.
+document.documentElement.classList.add("antialiased");
+
 const isOverlayWindow = typeof window !== "undefined" && window.location.search.includes("overlay=1");
 const isTrayWindow = typeof window !== "undefined" && window.location.search.includes("tray=1");
 const MainApp = lazy(() => import("./App"));
