@@ -89,10 +89,10 @@ def test_gate_performs_real_two_installer_clean_upgrade_parity() -> None:
 def test_gate_enforces_official_o0_and_zero_cp313_payload() -> None:
     source = _source()
 
-    assert '[string]$policy.python.version -cne "3.14.6"' in source
-    assert 'StartsWith("3.14.6"' not in source
+    assert '[string]$policy.python.version -cne "3.14.7"' in source
+    assert 'StartsWith("3.14.7"' not in source
     for marker in (
-        '"3.14.6"',
+        '"3.14.7"',
         '"cpython-314"',
         '"Official"',
         '"O0"',

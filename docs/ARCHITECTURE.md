@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-05
+Last verified: 2026-08-16
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -118,7 +118,8 @@ Meetings:
    start surface: `live_final` adds best-effort live text and then a canonical
    final pass; `final_only` records locally and opens no live STT connection.
 2. One crash-isolated Rust audio-sidecar process opens WASAPI microphone and
-   loopback sources at 48 kHz. Pinned `aec3-rs` consumes the loopback render
+   loopback sources at 48 kHz in shared mode; it never opens a camera/video
+   device. Pinned `aec3-rs` consumes the loopback render
    reference and produces a cleaned microphone stream before all three tracks
    are downsampled to 16 kHz and stamped on one monotonic timeline.
    Its private endpoint inventory covers capture and render flows; the
@@ -133,6 +134,9 @@ Meetings:
    evidence, not a perceptual quality score: release calibration uses a
    dedicated remote-only render-active capture session, while double-talk is
    evaluated separately.
+   The physical Teams/Zoom/Meet release profiles must still confirm that each
+   conference client's microphone and camera remain active during capture;
+   shared-mode implementation evidence does not replace coexistence evidence.
 3. Python persists raw mic, AEC-clean mic, and system PCM into 30-second WAV
    chunks. Cross-filesystem publication uses a recoverable two-phase protocol:
    close and fsync a deterministic `.partial.wav`, hash it, persist a `prepared`
@@ -524,6 +528,12 @@ and timestamps. It never stores an absolute path. The source body is streamed to
 renames it to `source.<ext>`, and only then persists `received` as the durable
 commit marker. Probe and normalization write new
 `.part` files and use the same commit rule.
+Fsync, state settlement, progress publication, and staging cleanup are repeated-
+cancellation barriers: a second `Task.cancel()` cannot return the handler while
+their thread still owns a file or SQLite mutation. A failed status read after
+`mark_received` is not evidence that the commit failed. Cleanup removes the
+source only when pre-commit ownership is confirmed; uncertain post-commit state
+retains it for the durable job/recovery path.
 
 `waiting_for_workspace -> committing` allocates and persists the final Meeting
 UUID before the Meeting row is inserted or either artifact is moved. That UUID
@@ -765,6 +775,39 @@ by heartbeat without incrementing the workflow state version; recovery claims
 the latest unleased StageResult for that transcript and skips provider work.
 Empty StageResults are terminal invalid evidence rather than recoverable poison.
 
+File ingest freezes an immutable `FileUploadPlan` before it accepts the
+multipart body. The plan binds one provider/route, source kind, raw-ingest byte
+limit, and prepared-audio byte limit; the queued job persists that evidence and
+rebuilds it after restart without rereading changed Settings. The controller
+owns the source from `start_file_transcription` onward. Enqueue uses a
+preallocated id equal to the transcript id, so a post-commit exception can read
+back and adopt the exact row rather than deleting its source or inserting a
+duplicate. The single resume lane serializes enqueue-to-adoption, exact
+reconciliation, pending scans, cancel settlement, and deletion intent. A
+confirmed miss cleans every admission projection; an unreadable exact state
+retains the source, parent, mapping, and bounded retry marker, and that row is
+excluded from ordinary pending scans. Cancellation before enqueue waits for all
+file workers then cleans; cancellation after commit finishes in-process adoption
+and exactly-once scheduling before propagating. YouTube uses the same ownership
+barrier even though it has no local upload source at that point.
+
+Terminal File/YouTube settlement is one restart-safe state machine. The complete
+persisted parent is authoritative. It is committed first, then the exact job is
+moved to the matching terminal state with `terminal_projection_pending = 1` in
+the same job-store transaction. Failed or stopped work may use that flagged job
+state as a durable no-replay intent while its parent CAS is unavailable;
+completed content is never reconstructed from job metadata. Cleanup releases an
+owned File source only after the durable states agree and clears the pending flag
+last. A CAS loser loads the authoritative parent instead of projecting stale
+runtime fields. Startup drains flagged rows with a fair `(created_at, id)` keyset
+cursor and bounded backoff, and schema migration arms legacy terminal rows for
+the same recovery. If both durable cancellation writes are unavailable, the API
+returns a fixed redacted 503 and excludes the job from provider scheduling.
+Deletion persists a `Deleting` parent while holding the resume lane, then removes
+the job row, owned source, and transcript parent in that order. The startup orphan
+sweep resumes the same durable intent after every crash window, so neither a
+queued worker nor deleted source can be resurrected.
+
 Meeting finalization checkpoints each microphone/system provider response in
 `transcription_track_stage_results` before starting the next track. A retry
 claims the partial attempt and invokes only missing tracks, then materializes one
@@ -835,26 +878,45 @@ meeting task slot synchronously, commit the corresponding durable state, then
 open the gate. Cancellation before gate-open must either roll the state back or
 let the matching reserved worker own it; an open `finalizing`/`analyzing` state
 without an owner is forbidden. Done callbacks remove a task only when the map
-still points to that exact task.
+still points to that exact task. Meeting Stop reserves its closed finalizer gate
+before native capture or recorder shutdown begins; a reservation conflict leaves
+the recording and its admission claim untouched. After shutdown, the handler
+commits `finalizing`, opens the gate, and only then delivers a pending request
+cancellation.
 
-Live Mic, Meeting start/resume, Meeting device test, and shutdown share one
-audio-admission coordinator. The process lock is acquired before any prewarm or
-device await, and one SQLite singleton lease records opaque owner kind/id,
-controller id, CAS generation, and expiry. A 15-second heartbeat renews the
-60-second lease while capture is owned. Every path rechecks both the claim and
-Meeting state while holding the lock. Paused Meetings retain ownership by
-product policy; stop, terminal start/resume failures, capture-watchdog failure,
-and graceful shutdown release it. An ungraceful controller death is recovered
-by expiry rather than by a startup process-liveness guess, so a concurrently
-running controller cannot have its valid lease stolen. This prevents both the
-single-process await-window race before `_is_listening` becomes true and the
-same race between two backend controllers. The heartbeat explicitly adopts a
-newer same-controller generation when it races the pending-to-durable Meeting
-transfer. A foreign generation fails closed: Live Mic emergency-stops, while a
-recording Meeting signals its capture watchdog to stop native capture, preserve
-completed chunks, and transition to `capture_failed`. Live Mic claims before
-pipeline construction and releases before `_is_stopping` becomes false, so a
-queued toggle cannot enter between idle publication and lease release.
+Live Mic, Meeting start/resume/reconnect, Meeting device test, Voice enrollment,
+and shutdown share one audio-admission coordinator. The process lock is acquired
+before any prewarm or device await, and one SQLite singleton lease records opaque
+owner kind/id, controller id, CAS generation, and authoritative UTC expiry. A
+15-second heartbeat renews the 60-second lease; an independent monotonic
+watchdog still enforces expiry when renewal is disabled or its store worker is
+blocked. Lease-only captures begin their generation-bound loss handler ten
+seconds before expiry. Two immediate bounded Shell-stop attempts fit inside that
+margin; further retries require a successful renewal, so a second controller
+cannot acquire while native capture is still unconfirmed. The loss handler stops
+the native producer and settles local persistence before SQLite release; an
+unknown stop or store-release result retains ownership for retry.
+
+Meeting start and resume treat capture cleanup plus admission release as one
+repeated-cancellation barrier. Device-test cleanup likewise settles its tone
+task, native producer, probe, active flag, lease, and prewarm state before a
+pending cancellation can escape. The Meeting start request is parsed into an
+immutable command before admission; JSON booleans and integer identifiers are
+type-strict rather than coerced with Python truthiness.
+
+Only a current Meeting claim explicitly marked durable after its `recording`
+row commits may ride out a generic renewal-store outage. Pending Meetings,
+interrupted resumes before that transition, Live Mic, device tests, and Voice
+enrollment remain lease-only. Paused Meetings retain durable ownership by
+product policy. Meeting composition commits under its capture setup lock, then
+marks the lease durable outside that lock; a concurrent loss can therefore take
+the same lock to stop and settle capture instead of deadlocking against the
+owner's lifecycle barrier. A same-controller pending-to-Meeting CAS rebinding is
+adopted; foreign supersession always invokes the loss handler. An ungraceful
+controller death is recovered by expiry rather than process-liveness guessing.
+Live Mic claims before pipeline construction and releases before `_is_stopping`
+becomes false, so a queued toggle cannot enter between idle publication and
+lease release.
 
 Derived projections share the commit of their source generation. In particular,
 an analysis output and its automatic action-item snapshot are one transaction.
@@ -870,8 +932,170 @@ items.
 
 Key modules:
 
-- `src/web_api.py`: REST/WebSocket app, controller state, jobs, settings,
-  runtime logs, support bundles, and explicit dev/test frontend fallback.
+- `src/web_api.py`: aiohttp application composition, controller state, jobs,
+  settings, and explicit dev/test frontend fallback.
+- `src/runtime/audio_admission.py`: the single owner of this process's native
+  audio lease. Only one capture may hold the device, and the exclusion is
+  durable and cross-process. The owner serializes every lifecycle mutation,
+  retains uncertain releases, converts the store expiry to monotonic stop and
+  expiry deadlines, and supervises one heartbeat plus one watchdog. Per-capture
+  loss handlers confirm native/persistence cleanup before release. Only an
+  explicitly marked durable Meeting tolerates generic renewal-store failure;
+  every lease-only capture fails closed before expiry. Same-controller Meeting
+  rebinding is adopted and a foreign generation is a loss. Cancellation waits
+  for committed acquire/transfer/release workers, while `close()` seals new
+  lifecycle admission and synchronizes existing mutations before cleanup. Its
+  `task_drain_timeout_seconds` bounds only the final supervisor drain: native
+  stop and store release are deliberate ownership barriers. The claim remains
+  on the controller behind owner accessors as a narrow storage-migration seam;
+  heartbeat, watchdog, loss, and retry state do not.
+- `src/api/runtime_routes.py`, `src/api/onnx_routes.py`,
+  `src/api/youtube_routes.py`, `src/api/transcript_routes.py`,
+  `src/api/settings_routes.py`, `src/api/local_polishing_routes.py`,
+  `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
+  `src/api/meeting_delivery_routes.py`, `src/api/meeting_import_routes.py`,
+  `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
+  `src/api/websocket_routes.py`, `src/api/live_mic_routes.py`,
+  `src/api/meeting_capture_routes.py`, `src/api/meeting_workspace_routes.py`,
+  `src/api/meeting_processing_routes.py`, `src/api/meeting_artifact_routes.py`,
+  `src/api/meeting_catalog_routes.py`, and
+  `src/api/meeting_readiness_routes.py`:
+  module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
+  Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
+  Meeting Import, Voice Component, File Transcription, WebSocket, Live Mic,
+  Meeting Capture lifecycle, Meeting Workspace, Meeting Processing, Meeting Artifacts,
+  Meeting Catalog, and Meeting Device Readiness domains.
+  Runtime owns debug logs and support bundles. ONNX
+  owns request-local progress scopes: one download cannot drain another,
+  admitted progress precedes final state, and aiohttp cleanup seals all active
+  scopes before cancellation. Transcript routes hold no transcript state: one
+  `transcript_view` read collapses the live-record/durable-row fallback, and
+  `summarize_transcript` owns single-flight registration, the pending /
+  completed / failed transitions, their durable writes, and the history
+  broadcast. The immutable `TranscriptView` and `SummaryOutcome` DTOs belong to
+  the route domain and are returned directly by the controller contract, so
+  value mutability and return types cannot drift behind a looser structural
+  field Protocol. Settings routes stay thin because `update_settings` already
+  owns the settings lock, validation, and persistence behind its public
+  signature.
+  Local Polishing owns a typed failure-code table so each bounded error maps
+  onto its own status and public message. Device routes answer the
+  Tauri-owned autostart contract explicitly rather than 404. Outlook Calendar
+  is controller-free: it depends on the calendar
+  collaborator and resolves it per request, so composition still builds with a
+  controller that never materializes one. Meeting Import owns the whole durable
+  upload protocol -- claiming a receive generation, streaming to staging,
+  reporting progress, committing the source atomically, and leaving a
+  recoverable state on cancellation, on a duplicate PUT, and on failure. It is
+  controller-free for the opposite reason: the
+  protocol needs the durable store, the progress broadcast, both task
+  registries, and the shutdown flag, which composition supplies as loose
+  attributes rather than as a class. Those arrive as an immutable
+  `MeetingImportDeps` bundle assembled per request, because the store is
+  replaced after the app exists and the shutdown flag has to answer for the
+  moment cancellation lands rather than for the moment the upload began. Voice
+  Component owns the two optional local components -- the Voice Library speaker
+  model and the diarization component -- plus profile listing/rename/delete/
+  merge/split, short-lived preview capabilities, and native enrollment. The
+  model/profile mutation locks and download lock are per-application state in
+  that domain rather than controller attributes, so deletion, enrollment, and
+  install promotion share one order. With them it owns the biometric opt-in.
+  That consent flag is durable and cross-process, so it can be withdrawn from
+  another Scriber window while a download is mid-flight; every operation that
+  can create, rename, or associate biometric data re-checks it after any step
+  that could outlive the request and deletes what it just installed if consent
+  is gone. Status and collection reads combine local and durable consent.
+  Preview reads/saves check the gate before and after blob work and never return
+  PCM when the store result is unknown. Enrollment, rename, merge, and split
+  check the gate inside the same `BEGIN IMMEDIATE` transaction as their writes,
+  so an opt-out in another process cannot be undone by a late mutation.
+  Individual-profile and whole-library deletion remain available after opt-out
+  because they only erase biometric data; a failed deletion still maps to a
+  redacted 503. Status and collection report disabled consent without profile
+  data, other gated public operations map it to 409, and unknown persistence
+  maps to a redacted 503. Its two
+  dependency providers are deliberately
+  separate: the Voice Library routes and the diarization routes share no
+  collaborator, so one bundle would make reading the model's status fail on a
+  composition that never built a diarizer. Voice is therefore the third
+  controller-free domain. Enrollment has a separately resolved admission
+  collaborator. It is the only adapter allowed to combine
+  the `AudioAdmissionOwner` with Live Mic/Meeting/device-test conflicts,
+  prewarm, global active state, and state broadcasts; the route keeps native
+  capture, quality, privacy, and persistence behaviour inside the Voice domain.
+  Controller-backed modules keep narrow structural ports beside their handlers;
+  controller-free domains keep collaborator interfaces/providers there instead.
+  Each route test pins the real adapter contract or the exact wiring and lazy
+  resolution boundary. Shared reflection support contains mechanics only and
+  does not form a port catalogue.
+- WebSocket owns the authenticated connection lifecycle after middleware:
+  browser-origin validation, registration, initial state delivery, the small
+  ping/pong keepalive contract, and unconditional removal. Its route-local port
+  exposes only `add_client`, `remove_client`, `send_client_text`, and
+  `get_state`; connection storage and send serialization remain controller
+  concerns.
+- Live Mic owns the six authenticated start, stop, stop-request, and toggle
+  transport paths. It parses the benchmark-only native marker into one
+  immutable command, maps one route-owned outcome, and depends on an exact
+  four-method controller port. The controller retains microphone, pipeline,
+  task, duplicate-toggle, provider-error, and audio-admission ownership.
+  Installed provider replay is a separate exact activation collaborator so
+  benchmark state does not leak into the normal controller port.
+- File Transcription owns the full pre-queue ingest lifecycle: multipart
+  parsing, Windows-safe naming, bounded off-loop writes, ffmpeg extraction and
+  compression, workspace cleanup, and the one ownership hand-off to the
+  durable job controller. Its narrow port exposes the immutable admitted plan,
+  a public File workspace root, and `start_file_transcription`; the route never
+  reaches through composition to `_downloads_dir`.
+  The real-browser File smoke connects the React/Vite page to this production
+  `create_app` path and the durable `JobStore`, then stops deliberately at the
+  queued-provider boundary; installed Tauri and external provider execution
+  remain separate release evidence.
+- Meeting Capture owns the HTTP input boundary for start, pause, resume, and
+  stop. Start rejects unsupported shapes before admission and passes one
+  normalized, immutable `MeetingStartCommand`; the other commands pass only a
+  Meeting ID through the same four-method controller port. The controller owns
+  the audio lease, native shell, recorder, live preview, finalizer reservation,
+  repeated-cancellation settlement, and durable state transitions.
+- Meeting Workspace owns the collaborative edit boundary: Meeting title,
+  transcript search/correction/undo/history, notes, and action-item changes.
+  It resolves one immutable dependency bundle per request containing only the
+  durable `MeetingStore` collaborator and broadcast callback. It is
+  controller-free; composition must not grow one forwarding controller method
+  per store operation.
+- Meeting Processing owns the HTTP boundary for speaker-identity and full-
+  transcript reprocessing, finalization retries, and analysis reruns. The
+  route module validates immutable commands and maps one route-owned outcome;
+  its three-method controller port deliberately leaves durable task
+  reservation, provider/model changes, state transitions, rollback, and worker
+  gates with the controller that already owns those lifecycle resources.
+- Meeting Artifacts owns authenticated source/mix playback, Meeting exports,
+  email previews, and RFC 822 drafts. It is controller-free and resolves one
+  immutable dependency bundle per request containing only the exact
+  `MeetingStore` reads, public storage root, document renderer, and fallback
+  language. Byte-range responses stay private and non-cacheable; attachment
+  names pass through the shared safe content-disposition boundary.
+- Meeting Catalog owns pagination and revision parsing for list/detail plus the
+  two discard transport aliases. Its three-method controller port returns one
+  route-owned outcome type. The controller remains the single owner of detail
+  enrichment, processing/import admission, the durable `discarded` tombstone,
+  and ordered workspace -> transcript -> Meeting cleanup. That settlement is
+  protected from repeated request cancellation; maintenance can finish a
+  tombstoned discard after a process crash.
+- Meeting Device Readiness owns capabilities, redacted capture/render endpoint
+  discovery, and the ephemeral device-test HTTP boundary. A strict immutable
+  command crosses its three-method controller port. Native-audio admission,
+  Shell IPC, level probing, prewarm, lease renewal, and repeated-cancellation
+  settlement remain controller-owned; the probe persists and uploads no PCM.
+- `src/api/http_security.py` and `src/api/app_keys.py`: shared HTTP/WebSocket
+  transport-security policy and identity-stable aiohttp application keys used
+  across composition and extracted route modules.
+- `src/api/upload_policy.py`: the shared upload-policy module for file
+  transcription and Meeting imports. Its interface owns Windows-safe filename
+  normalization, the accepted audio/video extensions, and one immutable
+  provider-bound `FileUploadLimits` value containing raw-ingest and final-audio
+  boundaries with their reviewed public labels; both ingest paths call it
+  directly.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
@@ -890,6 +1114,19 @@ Key modules:
 - `src/runtime/media_tools.py`: ffmpeg/ffprobe resolution.
 - `src/runtime/provider_http.py`: app-owned, event-loop-bound aiohttp provider
   pool and privacy-safe connection/request timing.
+- `src/runtime/cancellation.py`: the boundary module for work an executor
+  cannot abandon, used by durable import commits, workspace cleanup, and
+  ownership-changing audio startup. It is the counterpart to the supervisor
+  below: that module owns the lifetime of work nobody awaits, this one owns
+  the boundary of work that must not be left behind.
+- `src/runtime/task_supervisor.py`: the common lifecycle module for
+  intentionally concurrent asyncio work. Its `spawn`/`submit`/`close` interface
+  retains tasks, consumes every result, forwards failures to the loop exception
+  handler, reserves worker-thread submissions before scheduling, and seals new
+  admission before a bounded drain/cancel. Controller callbacks, ONNX progress,
+  Meeting backpressure, and analyzer-cache cleanup use this seam; shutdown
+  therefore accounts for work accepted immediately before its barrier and
+  never relies on an unowned `create_task()` hidden inside a scheduler callback.
 - `src/local_polishing/`: immutable public-artifact catalog, anonymous model
   downloader, verified model lifecycle, conservative transcript-output safety
   checks, and the loopback-only bundled llama.cpp adapter.
@@ -1599,11 +1836,10 @@ raw `s16le`, `file` and `pipe` protocols, required demuxers/muxers, and local
 media workflow support while excluding unrelated network/GPL/nonfree/hardware
 stacks.
 
-## Legacy Fallback
+## Removed Legacy Desktop Runtime
 
-Legacy Python UI and tray code remain source-only diagnostic fallback. They are
-not part of the standard packaged backend and are not the primary architecture
-for new Windows desktop behavior.
+The legacy Python UI and tray code is removed. `src/main.py` contains only a
+compatibility notice that directs source users to the Tauri desktop runtime.
 
 New desktop lifecycle features should be implemented in Tauri/Rust when they
 belong to shell ownership, or in the Python backend when they belong to app

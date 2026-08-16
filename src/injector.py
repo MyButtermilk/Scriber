@@ -266,7 +266,8 @@ class KEYBDINPUT(ctypes.Structure):
 
 class INPUT(ctypes.Structure):
     class _INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
+        # ctypes reads _fields_ at class creation; it must stay a plain list.
+        _fields_ = [("ki", KEYBDINPUT)]  # noqa: RUF012
 
     _anonymous_ = ("_input",)
     _fields_ = [

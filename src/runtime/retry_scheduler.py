@@ -76,4 +76,12 @@ class RetryScheduler:
 
     @property
     def due_monotonic(self) -> float | None:
-        return self._due_monotonic
+        """Return the earliest retry due, including one deferred by an active trigger."""
+
+        due = self._due_monotonic
+        pending_due = self._pending_due_monotonic
+        if due is None:
+            return pending_due
+        if pending_due is None:
+            return due
+        return min(due, pending_due)

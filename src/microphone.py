@@ -2476,7 +2476,9 @@ class MicrophoneInput(BaseInputTransport):
         if not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
             self._create_audio_task()
         # Wait for queue to be available and start frame delivered downstream
-        while not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:
+        # Polling is intentional: the queue is created by pipecat's
+        # BaseInputTransport, which exposes no readiness event to await.
+        while not hasattr(self, "_audio_in_queue") or self._audio_in_queue is None:  # noqa: ASYNC110
             await asyncio.sleep(0.01)
 
         try:

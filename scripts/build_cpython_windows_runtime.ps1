@@ -182,10 +182,10 @@ if (-not $InputCacheRoot) {
     $InputCacheRoot = Join-Path $repoRoot "build\runtime-input-cache"
 }
 if (-not $ExternalsRoot) {
-    $ExternalsRoot = Join-Path $InputCacheRoot "cpython-3.14.6-externals"
+    $ExternalsRoot = Join-Path $InputCacheRoot "cpython-3.14.7-externals"
 }
 if (-not $HostPythonRoot) {
-    $HostPythonRoot = Join-Path $repoRoot "build\python-3.14.6-official"
+    $HostPythonRoot = Join-Path $repoRoot "build\python-3.14.7-official"
 }
 if (-not $OfficialA13Root) {
     $OfficialA13Root = Join-Path $repoRoot "build\python-3.13.14-official"
@@ -204,8 +204,8 @@ $lock = Get-Content -LiteralPath $LockPath -Raw -Encoding UTF8 | ConvertFrom-Jso
 if (
     [string]$lock.lockContract -cne "ScriberCPythonWindowsRuntimeInputLockV1" -or
     [int]$lock.schemaVersion -ne 1 -or
-    [string]$lock.target.pythonVersion -cne "3.14.6" -or
-    [string]$lock.target.cpythonTag -cne "v3.14.6"
+    [string]$lock.target.pythonVersion -cne "3.14.7" -or
+    [string]$lock.target.cpythonTag -cne "v3.14.7"
 ) {
     throw "The CPython Windows runtime input lock has an unsupported identity."
 }
@@ -537,7 +537,7 @@ print(json.dumps({
                 [string]$buildGitIdentity[1] -cne "" -or
                 [string]$buildGitIdentity[2] -cne ""
             ) {
-                throw "Custom CPython build identity is not the isolated v3.14.6 archive identity."
+                throw "Custom CPython build identity is not the isolated v3.14.7 archive identity."
             }
             $runtimeOutputs = @()
             foreach ($relativePath in $lock.requiredRuntimeOutputs) {
@@ -556,7 +556,7 @@ print(json.dumps({
                 schemaVersion = 1
                 family = [string]$variantLock.family
                 runtimeFlavor = [string]$variantLock.runtimeFlavor
-                pythonVersion = "3.14.6"
+                pythonVersion = "3.14.7"
                 cacheTag = "cpython-314"
                 compiler = "ClangCL 19.1.7 ThinLTO PGO=$($familyPrefix -ne 'K')"
                 tailCallInterpreter = [bool]$variantLock.tailCallInterpreter

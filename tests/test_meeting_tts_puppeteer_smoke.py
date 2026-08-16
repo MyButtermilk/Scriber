@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,10 +28,236 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert 'runtime?.runtimeMode === "tauri-supervised"' in driver
     assert "page.$eval(selector, (button)" in driver
     assert 'page.on("pageerror", (error)' in driver
-    assert "if (diagnostics.pageErrorCount > 0)" in driver
-    assert 'activePhase = "validate-page-errors"' in driver
+    assert "page.goto(" not in driver
+    assert "'a[href=\"/meetings\"]'" in driver
+    assert "diagnostics.consoleErrorCount > 0" in driver
+    assert "diagnostics.pageErrorCount > 0" in driver
+    assert "diagnostics.requestFailureCount > 0" in driver
+    assert 'activePhase = "validate-browser-diagnostics"' in driver
+    assert '"validate-browser-diagnostics": "webview_page_error"' in driver
+    assert '"validate-page-errors"' not in driver
+    assert '"validate-browser-diagnostics", "complete"' in powershell
+    assert '"validate-page-errors"' not in powershell
+    assert "request.resourceType()" in driver
+    assert "request.failure()?.errorText" in driver
+    assert "isExpectedFetchAbort(request, activePhase, expectedAbortCount)" in driver
+    assert "expectedFetchAbortCountsByPhase.set(activePhase, expectedAbortCount + 1)" in driver
+    assert "expectedFetchAbortCount" in driver
+    assert "requestFailureKind(request, activePhase)" in driver
+    assert "requestFailureKinds" in driver
+    assert "let browserDiagnosticsArmed = false;" in driver
+    assert 'data-websocket-connected="true"' in driver
+    meetings_page = _read("Frontend/client/src/pages/Meetings.tsx")
+    websocket_context = _read("Frontend/client/src/contexts/WebSocketContext.tsx")
+    assert 'console.error("WebSocket error:"' not in websocket_context
+    assert 'console.debug("WebSocket transport error; automatic reconnect is pending.")' in websocket_context
+    assert 'data-websocket-connected={meetingWsConnected ? "true" : "false"}' in meetings_page
+    for test_id in ("meeting-title-edit", "meeting-title-input", "meeting-title-save"):
+        assert f'data-testid="{test_id}"' in meetings_page
+        assert f'[data-testid="{test_id}"]' in driver
+    for test_id in (
+        "meeting-segment-edit-${segment.id}",
+        "meeting-segment-edit-input-${segment.id}",
+        "meeting-segment-edit-save-${segment.id}",
+        "meeting-segment-undo-${segment.id}",
+    ):
+        assert f"data-testid={{`{test_id}`}}" in meetings_page
+    for test_id in (
+        "meeting-segment-edit-${segmentId}",
+        "meeting-segment-edit-input-${segmentId}",
+        "meeting-segment-edit-save-${segmentId}",
+        "meeting-segment-undo-${segmentId}",
+    ):
+        assert test_id in driver
+    diagnostics_arm = driver.index("browserDiagnosticsArmed = true;")
+    backend_ready = driver.index("const { health, runtime } = await waitForManagedBackend(")
+    assert diagnostics_arm > backend_ready
     for action in ("pause", "resume", "stop"):
         assert f'clickControl(\n      page,\n      meetingId,\n      "{action}"' in driver
+    assert 'activePhase = "rename-meeting-workspace"' in driver
+    assert 'activePhase = "validate-meeting-readiness"' in driver
+    assert '"/api/meetings/capabilities"' in driver
+    assert '"/api/meetings/audio-devices"' in driver
+    assert '"/api/meetings/device-test"' in driver
+    assert 'response.request().method() === "PATCH"' in driver
+    assert 'activePhase = "save-meeting-workspace-note"' in driver
+    assert 'response.request().method() === "PUT"' in driver
+    assert 'activePhase = "reprocess-meeting-transcript"' in driver
+    assert '{ mode: "full_transcript" }' in driver
+    assert 'activePhase = "validate-meeting-artifacts"' in driver
+    assert 'activePhase = "validate-meeting-catalog"' in driver
+    assert 'activePhase = "discard-meeting-through-ui"' in driver
+    assert 'activePhase = "start-live-mic-through-ui"' in driver
+    assert 'activePhase = "stop-live-mic-through-ui"' in driver
+    assert 'activePhase = "validate-live-mic-transcript"' in driver
+    assert '"/api/live-mic/start"' in driver
+    assert '"/api/live-mic/stop-request"' in driver
+    assert '"/api/transcripts?type=mic&limit=10"' in driver
+    assert '"#live-mic-toggle-button"' in driver
+    assert "'[data-testid=\"live-mic-transcript-output\"]'" in driver
+    assert 'data-testid="live-mic-transcript-output"' in _read("Frontend/client/src/pages/LiveMic.tsx")
+    assert '"/export/json"' in driver
+    assert '"/export/pdf"' in driver
+    assert '"/email-preview"' in driver
+    assert '"/export-email"' in driver
+    assert '"Range": "bytes=0-3"' in driver
+    assert "meetingCatalogListVerified: true" in driver
+    assert "meetingCatalogDetailVerified: true" in driver
+    assert "meetingCatalogDiscardVerified: true" in driver
+    assert "liveMicStartVerified: true" in driver
+    assert "liveMicStopVerified: true" in driver
+    assert "liveMicTranscriptVerified: true" in driver
+    assert '"SCRIBER_DEFAULT_STT" = "onnx_local"' in powershell
+
+
+def test_meeting_device_test_gate_requires_all_three_active_sources() -> None:
+    script = """
+import { meetingDeviceTestPassed } from './scripts/lib/meeting_device_test_gate.mjs';
+const active = {
+  available: true,
+  audioPersisted: false,
+  audioSentToProvider: false,
+  sources: {
+    microphone: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+    system: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+    mic_clean: { frames: 2, audioFrames: 320, active: true, errorCode: '' },
+  },
+};
+const cases = [
+  active,
+  { ...active, sources: {} },
+  { ...active, sources: { ...active.sources, system: { ...active.sources.system, active: false } } },
+  { ...active, sources: { ...active.sources, mic_clean: { ...active.sources.mic_clean, frames: 0 } } },
+];
+process.stdout.write(JSON.stringify(cases.map(meetingDeviceTestPassed)));
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False, False, False]
+
+
+def test_browser_diagnostics_allow_only_bounded_get_aborts_in_known_phases() -> None:
+    script = """
+import { expectedFetchAbortAllowed } from './scripts/lib/browser_diagnostics_gate.mjs';
+const abortedGet = { resourceType: 'fetch', method: 'GET', errorText: 'net::ERR_ABORTED' };
+const cases = [
+  expectedFetchAbortAllowed(abortedGet, 'wait-recording', 0),
+  expectedFetchAbortAllowed(abortedGet, 'bootstrap', 0),
+  expectedFetchAbortAllowed({ ...abortedGet, method: 'POST' }, 'wait-recording', 0),
+  expectedFetchAbortAllowed({ ...abortedGet, errorText: 'net::ERR_FAILED' }, 'wait-recording', 0),
+  expectedFetchAbortAllowed(abortedGet, 'wait-recording', 6),
+];
+process.stdout.write(JSON.stringify(cases));
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, False, False, False, False]
+
+
+def test_browser_diagnostics_allow_only_the_two_exact_discard_404s() -> None:
+    script = """
+import {
+  expectedMeetingDiscardConsoleAllowed,
+  expectedMeetingDiscardNotFoundAllowed,
+} from './scripts/lib/browser_diagnostics_gate.mjs';
+const meetingId = '0123456789abcdef0123456789abcdef';
+const observedPaths = new Set();
+const detail = `/api/meetings/${meetingId}`;
+const assignments = `${detail}/speaker-assignments`;
+const allowedDetail = expectedMeetingDiscardNotFoundAllowed(
+  { status: 404, method: 'GET', path: detail },
+  'discard-meeting-through-ui',
+  observedPaths,
+);
+observedPaths.add(detail);
+const allowedAssignments = expectedMeetingDiscardNotFoundAllowed(
+  { status: 404, method: 'GET', path: assignments },
+  'discard-meeting-through-ui',
+  observedPaths,
+);
+observedPaths.add(assignments);
+const cases = [
+  allowedDetail,
+  allowedAssignments,
+  expectedMeetingDiscardNotFoundAllowed(
+    { status: 404, method: 'GET', path: `${detail}/deliveries` },
+    'discard-meeting-through-ui',
+    new Set(),
+  ),
+  expectedMeetingDiscardNotFoundAllowed(
+    { status: 500, method: 'GET', path: detail },
+    'discard-meeting-through-ui',
+    new Set(),
+  ),
+  expectedMeetingDiscardNotFoundAllowed(
+    { status: 404, method: 'POST', path: detail },
+    'discard-meeting-through-ui',
+    new Set(),
+  ),
+  expectedMeetingDiscardNotFoundAllowed(
+    { status: 404, method: 'GET', path: detail },
+    'validate-meeting-catalog',
+    new Set(),
+  ),
+  expectedMeetingDiscardNotFoundAllowed(
+    { status: 404, method: 'GET', path: detail },
+    'discard-meeting-through-ui',
+    observedPaths,
+  ),
+  expectedMeetingDiscardConsoleAllowed(
+    { type: 'error', text: 'Failed to load resource: the server responded with a status of 404 (Not Found)' },
+    'discard-meeting-through-ui',
+    0,
+  ),
+  expectedMeetingDiscardConsoleAllowed(
+    { type: 'error', text: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)' },
+    'discard-meeting-through-ui',
+    0,
+  ),
+];
+process.stdout.write(JSON.stringify(cases));
+"""
+
+    completed = subprocess.run(
+        ["node", "--input-type=module", "--eval", script],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == [True, True, False, False, False, False, False, True, False]
+
+
+def test_every_driver_phase_is_mapped_and_preserved_by_the_orchestrator() -> None:
+    driver = _read("scripts/smoke_meeting_tts_puppeteer.mjs")
+    powershell = _read("scripts/smoke_meeting_tts_puppeteer.ps1")
+    active_phases = set(re.findall(r'activePhase = "([a-z0-9-]+)"', driver))
+    code_block = driver.split("const codes = {", maxsplit=1)[1].split("};", maxsplit=1)[0]
+    mapped_phases = set(re.findall(r'^\s*(?:"([a-z0-9-]+)"|([a-z0-9-]+)):', code_block, re.MULTILINE))
+    mapped_phases = {quoted or bare for quoted, bare in mapped_phases}
+    allowlist_block = powershell.split("$allowedDriverPhases = @(", maxsplit=1)[1].split("\n        )", maxsplit=1)[0]
+    allowed_phases = set(re.findall(r'"([a-z0-9-]+)"', allowlist_block))
+
+    assert active_phases - {"complete"} <= mapped_phases
+    assert active_phases <= allowed_phases
 
 
 def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
@@ -38,14 +265,20 @@ def test_meeting_speech_smoke_keeps_pcm_in_explicit_synthetic_path() -> None:
     generator = _read("scripts/generate_meeting_tts_fixture.py")
     sidecar = _read("Frontend/src-tauri/src/audio_sidecar.rs")
     fixture_env = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
+    live_mic_fixture_env = "SCRIBER_RUST_AUDIO_SYNTHETIC_LIVE_MIC_PCM_S16LE_16000_MONO_PATH"
 
     assert fixture_env in powershell
     assert fixture_env in sidecar
+    assert live_mic_fixture_env in powershell
+    assert live_mic_fixture_env in sidecar
+    assert '$LiveMicPcmPath = Join-Path $ArtifactDir "live-mic.pcm"' in powershell
+    assert '"-ar", "16000"' in powershell
     assert '"SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE" = "1"' in powershell
     assert '"SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL" = "0"' in powershell
     assert '"SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" = "0"' in powershell
     assert 'request.capture_kind.eq_ignore_ascii_case("microphone")' in sidecar
-    assert "request.sample_rate != 48_000 || request.channels != 1" in sidecar
+    assert "*sample_rate == request.sample_rate" in sidecar
+    assert "request.sample_rate != *expected_sample_rate || request.channels != 1" in sidecar
     assert "if !path.is_absolute()" in sidecar
     assert "const SYNTHETIC_PCM_MAX_BYTES: u64 = 64 * 1024 * 1024" in sidecar
     assert "MAX_FIXTURE_BYTES = 64 * 1024 * 1024" in generator
@@ -65,6 +298,23 @@ def test_meeting_speech_smoke_artifacts_are_privacy_minimal() -> None:
         "segmentCount",
         "transcriptCharacterCount",
         "audioGapCount",
+        "meetingCapabilitiesVerified",
+        "meetingAudioDevicesVerified",
+        "meetingDeviceTestVerified",
+        "workspaceTitleVerified",
+        "workspaceSegmentVerified",
+        "workspaceNoteVerified",
+        "meetingReprocessVerified",
+        "meetingArtifactJsonVerified",
+        "meetingArtifactDocumentVerified",
+        "meetingArtifactEmailVerified",
+        "meetingArtifactPlaybackVerified",
+        "meetingCatalogListVerified",
+        "meetingCatalogDetailVerified",
+        "meetingCatalogDiscardVerified",
+        "liveMicStartVerified",
+        "liveMicStopVerified",
+        "liveMicTranscriptVerified",
         "diagnostics",
         "meetingDebug",
     ):
@@ -97,8 +347,12 @@ def test_driver_bootstrap_failure_emits_bounded_meeting_debug() -> None:
     assert payload["phase"] == "bootstrap"
     assert payload["diagnostics"] == {
         "consoleErrorCount": 0,
+        "expectedFetchAbortCount": 0,
+        "expectedMeetingDiscardConsoleCount": 0,
+        "expectedMeetingDiscardNotFoundCount": 0,
         "pageErrorCount": 0,
         "requestFailureCount": 0,
+        "requestFailureKinds": {},
     }
     assert payload["meetingDebug"] == {
         "providerPhase": "not_started",

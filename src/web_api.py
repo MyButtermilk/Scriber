@@ -4,7 +4,6 @@ import copy
 import hashlib
 import hmac
 import importlib
-import ipaddress
 import json
 import os
 import re
@@ -15,18 +14,103 @@ import time
 import weakref
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from pathlib import Path
 from typing import Any, Literal
-from urllib.parse import quote, urljoin, urlparse
 from uuid import uuid4
 
-from aiohttp import ClientSession, ClientTimeout, WSMsgType, web
+from aiohttp import ClientSession, ClientTimeout, web
 from loguru import logger
 
 from src import database as db
+from src.api.app_keys import APP_HTTP_SESSION
+from src.api.device_routes import register_device_routes
+from src.api.file_transcription_routes import (
+    UPLOAD_COMPRESSION_THRESHOLD_BYTES,
+    FileUploadPlan,
+    register_file_transcription_routes,
+)
+from src.api.http_security import (
+    SESSION_TOKEN_ENV,
+    SESSION_TOKEN_HEADER,
+    SESSION_TOKEN_QUERY,
+    attachment_content_disposition,
+    configured_session_token,
+    is_loopback_bind_host,
+    is_loopback_request,
+    origin_allowed,
+    request_has_valid_session_token,
+    request_session_token,
+    session_token_required,
+    validate_server_bind_security,
+)
+from src.api.live_mic_routes import (
+    LiveMicOutcome,
+    LiveMicStartCommand,
+    register_live_mic_routes,
+)
+from src.api.local_polishing_routes import register_local_polishing_routes
+from src.api.meeting_artifact_routes import (
+    MeetingArtifactDeps,
+    MeetingDocumentRenderCommand,
+    register_meeting_artifact_routes,
+)
+from src.api.meeting_capture_routes import (
+    MeetingCaptureOutcome,
+    MeetingStartCommand,
+    register_meeting_capture_routes,
+)
+from src.api.meeting_catalog_routes import (
+    MeetingCatalogOutcome,
+    MeetingDetailQuery,
+    MeetingListQuery,
+    register_meeting_catalog_routes,
+)
 from src.api.meeting_delivery_routes import register_meeting_delivery_routes
+from src.api.meeting_import_routes import MeetingImportDeps, register_meeting_import_routes
+from src.api.meeting_processing_routes import (
+    MeetingProcessingOutcome,
+    MeetingReprocessCommand,
+    MeetingReprocessMode,
+    MeetingRetryCommand,
+    register_meeting_processing_routes,
+)
+from src.api.meeting_readiness_routes import (
+    MeetingDeviceTestCommand,
+    MeetingReadinessOutcome,
+    register_meeting_readiness_routes,
+)
+from src.api.meeting_workspace_routes import (
+    MeetingWorkspaceDeps,
+    register_meeting_workspace_routes,
+)
+from src.api.onnx_routes import register_onnx_routes
+from src.api.outlook_calendar_routes import register_outlook_calendar_routes
+from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
+from src.api.settings_routes import register_settings_routes
+from src.api.transcript_routes import (
+    CancellationPersistenceUnavailable,
+    SummaryOutcome,
+    TranscriptDocumentRenderCommand,
+    TranscriptView,
+    register_transcript_routes,
+)
+from src.api.upload_policy import (
+    file_upload_limits,
+    format_upload_limit,
+)
+from src.api.voice_component_routes import (
+    VoiceEnrollmentAdmission,
+    VoiceEnrollmentCapturePort,
+    VoiceEnrollmentLossHandler,
+    VoiceEnrollmentUnavailable,
+    VoiceLibraryDeps,
+    register_voice_component_routes,
+)
+from src.api.websocket_routes import register_websocket_routes
+from src.api.youtube_routes import register_youtube_routes
 from src.audio_devices import (
     build_input_endpoint_mappings,
     collect_native_capture_endpoint_inventory,
@@ -67,20 +151,14 @@ from src.core.provider_errors import ProviderUserError, provider_user_error
 from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
-    validate_frontend_performance_flush_request_payload,
-    validate_frontend_performance_request_payload,
-    validate_frontend_ready_request_payload,
     validate_provider_replay_arm_request_payload,
     validate_provider_replay_prepare_request_payload,
     validate_provider_replay_status_query,
-    validate_tauri_activation_marker_request_payload,
-    validate_tauri_hotkey_marker_request_payload,
 )
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
     audio_level_event,
     error_event,
-    frontend_performance_flush_event,
     history_updated_event,
     input_warning_event,
     local_polishing_model_progress_event,
@@ -90,11 +168,9 @@ from src.core.ws_contracts import (
     meeting_detected_event,
     meeting_import_progress_event,
     meeting_live_status_event,
-    meeting_note_event,
     meeting_progress_event,
     meeting_segment_event,
     meeting_state_event,
-    meeting_transcript_edited_event,
     session_finished_event,
     session_started_event,
     state_event,
@@ -121,7 +197,6 @@ from src.data.latency_metrics_store import LatencyMetricsStore
 from src.data.meeting_import_store import (
     InvalidMeetingImportTransition,
     MeetingImportConflict,
-    MeetingImportNotFound,
     MeetingImportStatus,
     MeetingImportStore,
 )
@@ -131,7 +206,6 @@ from src.data.meeting_store import (
     MeetingCreate,
     MeetingNotFound,
     MeetingStore,
-    VoiceLibraryDisabled,
 )
 from src.data.transcript_artifact_store import (
     ArtifactConflict,
@@ -143,20 +217,8 @@ from src.data.transcript_artifact_store import (
     TranscriptArtifactStore,
 )
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
-from src.local_polishing import CatalogError, LocalPolishing, LocalPolishingError
+from src.local_polishing import LocalPolishing, LocalPolishingError
 from src.meeting_capture import MeetingAudioRecorder, MeetingDeviceLevelProbe
-from src.meeting_export import (
-    build_eml_draft,
-    build_meeting_email,
-    build_meeting_markdown,
-    build_meeting_summary_markdown,
-    build_meeting_transcript_text,
-    meeting_duration_ms,
-    meeting_export_labels,
-)
-from src.meeting_export import (
-    format_offset as format_meeting_offset,
-)
 from src.meeting_finalizer import MeetingFinalizer
 from src.meeting_live_stt import (
     LiveMeetingSegment,
@@ -174,10 +236,15 @@ from src.native_overlay import (
 )
 from src.outlook_calendar import OutlookCalendarService
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
-from src.runtime.debug_logs import clear_debug_logs, collect_debug_logs
+from src.runtime.audio_admission import AudioAdmissionLossHandler, AudioAdmissionOwner
+from src.runtime.cancellation import (
+    await_with_delayed_cancellation,
+    remove_tree_if_exists,
+    to_thread_cancellation_barrier,
+)
 from src.runtime.env_values import env_float as _safe_env_float
 from src.runtime.env_values import env_int as _safe_env_int
-from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args, webm_opus_transcode_args
+from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.paths import data_dir, downloads_dir, is_frozen, logs_dir, repo_root
 from src.runtime.pcm_audio import pcm16le_rms
@@ -218,7 +285,8 @@ from src.runtime.shell_ipc import (
     diagnostic_snapshot as shell_ipc_diagnostic_snapshot,
 )
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
-from src.runtime.support_bundle import create_support_bundle, redact_text
+from src.runtime.support_bundle import redact_text
+from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import (
     normalize_soniox_region,
     soniox_realtime_websocket_url,
@@ -230,7 +298,7 @@ from src.speaker_diarization import (
     diarization_component_installed,
     format_speaker_transcript,
 )
-from src.speaker_enrollment import VoiceEnrollmentCapture, assess_voice_sample, voice_reference_wav
+from src.speaker_enrollment import VoiceEnrollmentCapture, voice_reference_wav
 from src.speaker_intelligence import WeSpeakerModel
 from src.transcript_artifacts import (
     FrozenTranscriptionRoute,
@@ -246,11 +314,7 @@ from src.transcript_artifacts import (
 from src.version import app_version
 from src.youtube_api import (
     UNSUPPORTED_YOUTUBE_URL_MESSAGE,
-    YouTubeApiError,
-    extract_youtube_video_id,
-    get_video_by_id,
     is_youtube_url_like,
-    search_youtube_videos,
 )
 from src.youtube_download import (
     YouTubeDownloadError,
@@ -267,9 +331,6 @@ _TRANSCRIPT_PERSIST_RETRY_DELAYS = (0.0, 0.05, 0.2)
 _TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS = 90.0
 _TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS = 30.0
 _TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS = (0.0, 0.1, 0.5)
-_SPEAKER_PROFILE_PREVIEW_TTL_SECONDS = 15 * 60
-_SPEAKER_PROFILE_PREVIEW_MAX_GRANTS = 256
-_SPEAKER_PROFILE_PREVIEW_MAX_BYTES = 384 * 1024
 _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS = 5_000
 _MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS = 60 * 1_000
 
@@ -297,78 +358,6 @@ def _meeting_device_test_max_duration_ms() -> int:
     ):
         return _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS
     return configured
-
-
-@dataclass(frozen=True)
-class SpeakerProfilePreviewGrant:
-    """Process-local capability for one bounded local speaker sample."""
-
-    profile_id: str
-    duration_ms: int
-    expires_at: float
-    source: str
-    meeting_id: str = ""
-    start_ms: int = 0
-
-
-async def _render_speaker_profile_preview(
-    grant: SpeakerProfilePreviewGrant,
-) -> bytes:
-    """Decode only the granted interval; never persist another voice sample."""
-
-    if grant.source not in {"microphone", "system"}:
-        raise ValueError("Unsupported speaker preview source.")
-    if not re.fullmatch(r"[0-9a-f]{32}", grant.meeting_id):
-        raise ValueError("Invalid speaker preview meeting capability.")
-    if not (2_000 <= grant.duration_ms <= 4_000) or grant.start_ms < 0:
-        raise ValueError("Invalid speaker preview interval.")
-    source_name = "microphone.opus" if grant.source == "microphone" else "system.opus"
-    meeting_root = (data_dir() / "meetings").resolve()
-    source_path = (meeting_root / grant.meeting_id / "final" / source_name).resolve()
-    expected_parent = (meeting_root / grant.meeting_id / "final").resolve()
-    if (
-        expected_parent.parent.parent != meeting_root
-        or source_path.parent != expected_parent
-        or not source_path.is_file()
-    ):
-        raise FileNotFoundError("Speaker preview audio is unavailable.")
-
-    ffmpeg = require_media_tool("ffmpeg")
-    process = await asyncio.create_subprocess_exec(
-        ffmpeg,
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-ss",
-        f"{grant.start_ms / 1000.0:.3f}",
-        "-i",
-        str(source_path),
-        "-t",
-        f"{grant.duration_ms / 1000.0:.3f}",
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        "16000",
-        "-c:a",
-        "pcm_s16le",
-        "-f",
-        "wav",
-        "pipe:1",
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        **hidden_subprocess_kwargs(),
-    )
-    stdout, _stderr = await communicate_or_kill_on_cancel(
-        process,
-        max_stdout_bytes=_SPEAKER_PROFILE_PREVIEW_MAX_BYTES,
-        max_stderr_bytes=64 * 1024,
-    )
-    audio = bytes(stdout or b"")
-    if process.returncode != 0 or len(audio) < 44 or not audio.startswith(b"RIFF"):
-        raise RuntimeError("Speaker preview decoding failed.")
-    return audio
 
 
 def _load_scriber_pipeline_runtime() -> Any:
@@ -429,7 +418,7 @@ async def _create_scriber_pipeline_off_loop(*args: Any, **kwargs: Any) -> Any:
     but not-yet-started pipeline before delivering a pending cancellation.
     """
 
-    pipeline, pending_cancel = await _await_with_delayed_cancellation(
+    pipeline, pending_cancel = await await_with_delayed_cancellation(
         asyncio.to_thread(_create_scriber_pipeline, *args, **kwargs)
     )
     if pending_cancel is None:
@@ -523,16 +512,6 @@ def discard_vad_cache_without_importing_pipeline() -> None:
         logger.exception("Silero VAD cache cleanup failed after Settings update")
 
 
-_ALLOWED_ORIGINS_ENV = "SCRIBER_ALLOWED_ORIGINS"
-_UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
-_UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
-_DEFAULT_UPLOAD_MAX_MB = 200
-_DEFAULT_AUDIO_INGEST_MAX_MB = 2048
-_DEFAULT_VIDEO_MAX_MB = 2048  # 2GB limit for raw video uploads (audio extracted)
-_MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES = 1024 * 1024
-_UPLOAD_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024
-_EXTRACTED_AUDIO_BITRATE = "64k"
-_COMPRESSED_AUDIO_BITRATE = "32k"
 _API_VERSION = REST_API_VERSION
 _WORKER_VERSION_ENV = "SCRIBER_WORKER_VERSION"
 _RUNTIME_MODE_ENV = "SCRIBER_RUNTIME_MODE"
@@ -552,17 +531,10 @@ _FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV = "SCRIBER_FORCE_EXIT_AFTER_SHUTDOWN_TIME
 _WEB_HOST_ENV = "SCRIBER_WEB_HOST"
 _WEB_PORT_ENV = "SCRIBER_WEB_PORT"
 _DISABLE_HOTKEYS_ENV = "SCRIBER_DISABLE_HOTKEYS"
-_SESSION_TOKEN_ENV = "SCRIBER_SESSION_TOKEN"
+_SESSION_TOKEN_ENV = SESSION_TOKEN_ENV
 _FRONTEND_DIST_DIR_ENV = "SCRIBER_FRONTEND_DIST_DIR"
-_DEFAULT_ALLOWED_HOSTS = {"localhost", "127.0.0.1", "::1", "tauri.localhost"}
-_DEFAULT_ALLOWED_CUSTOM_ORIGINS = {"tauri://localhost"}
 _PRIVATE_NETWORK_ACCESS_REQUEST_HEADER = "Access-Control-Request-Private-Network"
 _PRIVATE_NETWORK_ACCESS_ALLOW_HEADER = "Access-Control-Allow-Private-Network"
-_YOUTUBE_THUMBNAIL_ALLOWED_HOSTS = {"i.ytimg.com", "img.youtube.com"}
-_YOUTUBE_THUMBNAIL_MAX_BYTES = 2 * 1024 * 1024
-_allowed_origins_cache_lock = threading.Lock()
-_allowed_origins_cache_raw: str | None = None
-_allowed_origins_cache: tuple[str, ...] = ()
 _RUST_AUDIO_PROTOTYPE_AVAILABLE = False
 _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pyloudnorm",
@@ -573,8 +545,8 @@ _AUDIO_DIAGNOSTIC_IMPORTS = (
     "pipecat.audio.turn.smart_turn.local_smart_turn_v3",
 )
 _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
-_SESSION_TOKEN_HEADER = "X-Scriber-Token"
-_SESSION_TOKEN_QUERY = "scriberToken"
+_SESSION_TOKEN_HEADER = SESSION_TOKEN_HEADER
+_SESSION_TOKEN_QUERY = SESSION_TOKEN_QUERY
 _WS_SEND_TIMEOUT_SECONDS = 1.0
 # Shared by the app-owned HTTP session and background Outlook maintenance.
 # A bare aiohttp ClientSession defaults to a roughly five-minute total timeout,
@@ -608,33 +580,12 @@ def _validate_settings_text_lengths(payload: dict[str, Any]) -> None:
             raise ValueError(f"apiKeys.{setting_name} exceeds the {_SETTINGS_SECRET_MAX_BYTES}-byte settings limit")
 
 
-def _attachment_content_disposition(filename: str) -> str:
-    """Build an injection-safe attachment header with a UTF-8 filename."""
-    cleaned = "".join(
-        character
-        for character in str(filename or "")
-        if ord(character) >= 32 and character not in {'"', "\\", "/", "\x7f"}
-    ).strip()
-    if not cleaned:
-        cleaned = "download"
-    raw_suffix = Path(cleaned).suffix
-    ascii_suffix = "".join(
-        character for character in raw_suffix if character.isascii() and (character.isalnum() or character in ".-_")
-    )
-    raw_stem = cleaned[: -len(raw_suffix)] if raw_suffix else cleaned
-    ascii_stem = "".join(
-        character if character.isascii() and (character.isalnum() or character in " .-_") else "_"
-        for character in raw_stem
-    ).strip(" ._")
-    ascii_fallback = f"{ascii_stem or 'download'}{ascii_suffix}"
-    encoded = quote(cleaned, safe="")
-    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{encoded}"
+# Transport security helpers now live in src.api.http_security so extracted
+# route modules can share them. The private aliases keep the many call sites
+# below unchanged.
+_attachment_content_disposition = attachment_content_disposition
 
 
-# Video file extensions that require audio extraction
-_VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".flv", ".wmv", ".m4v"}
-_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"}
-_ALLOWED_UPLOAD_EXTENSIONS = _AUDIO_EXTENSIONS | _VIDEO_EXTENSIONS
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
@@ -676,39 +627,6 @@ _INPUT_WARNING_ACTIONS_BY_CODE: dict[str, tuple[dict[str, str], ...]] = {
             "uri": _SETTINGS_URI_SOUND,
         },
     )
-}
-
-_DEFAULT_AUDIO_INGEST_MAX_BYTES = _DEFAULT_AUDIO_INGEST_MAX_MB * 1024 * 1024
-_PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, dict[str, Any]] = {
-    # Soniox REST files API documents 524288000 bytes max on POST /v1/files.
-    "soniox": {"max_bytes": 524_288_000, "label": "500MB"},
-    "soniox_async": {"max_bytes": 524_288_000, "label": "500MB"},
-    # Gemini File API supports larger uploads, but Scriber reads the upload once
-    # for the direct STT request. Keep the app-side limit conservative.
-    "gemini_stt": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
-    # Mistral documents 512 MB max on POST /v1/files; its audio transcription
-    # endpoint accepts the same File object and file_id from /v1/files.
-    "mistral": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
-    "mistral_async": {"max_bytes": 512 * 1024 * 1024, "label": "512MB"},
-    # Smallest AI Pulse pre-recorded REST API documents a 25 MB max file size.
-    "smallest": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    "smallest_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    # MAI Transcribe LLM Speech API documents a 300 MB audio-file limit.
-    "azure_mai": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
-    # AssemblyAI local uploads go through /v2/upload, documented at 2.2GB.
-    "assemblyai": {"max_bytes": 2_200_000_000, "label": "2.2GB"},
-    # Deepgram pre-recorded transcription documents a 2-GB file boundary and
-    # no audio-duration ceiling.
-    "deepgram_async": {"max_bytes": 2_000_000_000, "label": "2GB"},
-    # OpenAI audio transcriptions accept relatively small direct uploads.
-    "openai_async": {"max_bytes": 25 * 1024 * 1024, "label": "25MB"},
-    # OpenRouter's base64 JSON STT path avoids the 25-MB multipart boundary.
-    # Keep Scriber's local body spool bounded to the upstream MAI file ceiling
-    # without claiming that the route is verified for five-hour processing.
-    "openrouter_stt": {"max_bytes": 300 * 1024 * 1024, "label": "300MB"},
-    # Modulate multilingual batch accepts complete files up to 100 MB.
-    "modulate": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
-    "modulate_async": {"max_bytes": 100 * 1024 * 1024, "label": "100MB"},
 }
 
 _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
@@ -894,33 +812,7 @@ def _meeting_stt_cost_estimate(provider: str, mode: str) -> dict[str, Any]:
     }
 
 
-_INVALID_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
-_MAX_UPLOAD_FILENAME_CHARS = 180
 _MAX_DELETED_TRANSCRIPT_TOMBSTONES = 4096
-_WINDOWS_RESERVED_NAMES = {
-    "CON",
-    "PRN",
-    "AUX",
-    "NUL",
-    "COM1",
-    "COM2",
-    "COM3",
-    "COM4",
-    "COM5",
-    "COM6",
-    "COM7",
-    "COM8",
-    "COM9",
-    "LPT1",
-    "LPT2",
-    "LPT3",
-    "LPT4",
-    "LPT5",
-    "LPT6",
-    "LPT7",
-    "LPT8",
-    "LPT9",
-}
 
 
 def _normalize_input_warning_actions(actions: list[dict[str, Any]] | None) -> list[dict[str, str]]:
@@ -950,23 +842,6 @@ def _input_warning_actions_for_code(code: str) -> list[dict[str, str]]:
     return [dict(action) for action in template]
 
 
-def _safe_upload_filename(name: str) -> str:
-    raw = (name or "").strip()
-    base = Path(raw).name
-    base = _INVALID_FILENAME_CHARS.sub("_", base).rstrip(" .")
-    if not base or base in {".", ".."}:
-        return "uploaded_file"
-    if len(base) > _MAX_UPLOAD_FILENAME_CHARS:
-        path = Path(base)
-        suffix = path.suffix
-        stem_limit = max(1, _MAX_UPLOAD_FILENAME_CHARS - len(suffix))
-        base = f"{path.stem[:stem_limit]}{suffix}"
-    stem = Path(base).stem
-    if stem.upper() in _WINDOWS_RESERVED_NAMES:
-        base = f"_{base}"
-    return base
-
-
 def _safe_work_directory_component(value: str) -> str:
     candidate = str(value or "").strip()
     if re.fullmatch(r"[A-Za-z0-9_-]{1,128}", candidate):
@@ -974,59 +849,12 @@ def _safe_work_directory_component(value: str) -> str:
     return hashlib.sha256(candidate.encode("utf-8", errors="replace")).hexdigest()[:32]
 
 
-def _configured_session_token() -> str:
-    return os.getenv(_SESSION_TOKEN_ENV, "").strip()
-
-
-def _is_loopback_bind_host(host: str) -> bool:
-    normalized = str(host or "").strip().lower()
-    if normalized == "localhost":
-        return True
-    if normalized.startswith("[") and normalized.endswith("]"):
-        normalized = normalized[1:-1]
-    normalized = normalized.split("%", 1)[0]
-    try:
-        address = ipaddress.ip_address(normalized)
-    except ValueError:
-        return False
-    mapped = getattr(address, "ipv4_mapped", None)
-    return bool(address.is_loopback or (mapped and mapped.is_loopback))
-
-
-def _validate_server_bind_security(host: str, session_token: str) -> None:
-    """Fail closed before exposing an unauthenticated non-loopback listener."""
-
-    if _is_loopback_bind_host(host):
-        return
-    token = str(session_token or "").strip()
-    if len(token.encode("utf-8", errors="strict")) < 32:
-        raise RuntimeError(
-            "SCRIBER_SESSION_TOKEN must contain at least 32 bytes when SCRIBER_WEB_HOST is not loopback."
-        )
-
-
-def _request_session_token(request: web.Request) -> str:
-    header_token = request.headers.get(_SESSION_TOKEN_HEADER, "").strip()
-    if header_token:
-        return header_token
-
-    auth = request.headers.get("Authorization", "").strip()
-    if auth.lower().startswith("bearer "):
-        return auth[7:].strip()
-
-    return request.query.get(_SESSION_TOKEN_QUERY, "").strip()
-
-
-def _request_has_valid_session_token(request: web.Request, token: str | None = None) -> bool:
-    expected = (token if token is not None else _configured_session_token()).strip()
-    if not expected:
-        return False
-    provided = _request_session_token(request)
-    return bool(provided) and hmac.compare_digest(provided, expected)
-
-
-def _session_token_required() -> bool:
-    return bool(_configured_session_token())
+_configured_session_token = configured_session_token
+_is_loopback_bind_host = is_loopback_bind_host
+_validate_server_bind_security = validate_server_bind_security
+_request_session_token = request_session_token
+_request_has_valid_session_token = request_has_valid_session_token
+_session_token_required = session_token_required
 
 
 def _audio_engine_feature_flags() -> dict[str, Any]:
@@ -1246,19 +1074,7 @@ def _audio_diagnostic_import_status() -> dict[str, dict[str, Any]]:
     return {name: dict(status) for name, status in statuses.items()}
 
 
-def _is_loopback_request(request: web.Request) -> bool:
-    peername = request.transport.get_extra_info("peername") if request.transport else None
-    if isinstance(peername, tuple) and peername:
-        host = str(peername[0]).split("%", 1)[0].lower()
-        if host == "localhost":
-            return True
-        try:
-            address = ipaddress.ip_address(host)
-        except ValueError:
-            return False
-        mapped = getattr(address, "ipv4_mapped", None)
-        return bool(address.is_loopback or (mapped and mapped.is_loopback))
-    return False
+_is_loopback_request = is_loopback_request
 
 
 def _request_requires_session_token(request: web.Request) -> bool:
@@ -1326,87 +1142,6 @@ def _frontend_file_for_request(frontend_root: Path, request_path: str) -> Path |
     if Path(clean_path).suffix:
         return None
     return root / "index.html"
-
-
-def _parse_allowed_origins() -> tuple[str, ...]:
-    global _allowed_origins_cache_raw, _allowed_origins_cache
-    raw = os.getenv(_ALLOWED_ORIGINS_ENV, "")
-    if raw == _allowed_origins_cache_raw:
-        return _allowed_origins_cache
-    with _allowed_origins_cache_lock:
-        if raw == _allowed_origins_cache_raw:
-            return _allowed_origins_cache
-        cleaned: list[str] = []
-        if raw:
-            for entry in raw.split(","):
-                val = entry.strip().rstrip("/")
-                if val:
-                    cleaned.append(val)
-        _allowed_origins_cache_raw = raw
-        _allowed_origins_cache = tuple(cleaned)
-        return _allowed_origins_cache
-
-
-def _origin_allowed(origin: str) -> bool:
-    origin = (origin or "").strip()
-    if not origin:
-        return False
-    allowed = _parse_allowed_origins()
-    if "*" in allowed:
-        return True
-    if allowed:
-        return origin in allowed
-    if origin.rstrip("/") in _DEFAULT_ALLOWED_CUSTOM_ORIGINS:
-        return True
-    parsed = urlparse(origin)
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    host = parsed.hostname
-    if not host:
-        return False
-    return host in _DEFAULT_ALLOWED_HOSTS
-
-
-def _safe_youtube_thumbnail_url(raw_url: str) -> str | None:
-    value = (raw_url or "").strip()
-    if not value:
-        return None
-    parsed = urlparse(value)
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme != "https":
-        return None
-    if parsed.username or parsed.password:
-        return None
-    if host not in _YOUTUBE_THUMBNAIL_ALLOWED_HOSTS:
-        return None
-    try:
-        if parsed.port not in (None, 443):
-            return None
-    except ValueError:
-        return None
-    return parsed.geturl()
-
-
-async def _read_limited_response_body(content: Any, max_bytes: int) -> bytes:
-    body = bytearray()
-    total = 0
-    chunk_size = 64 * 1024
-
-    while True:
-        remaining = max_bytes + 1 - total
-        if remaining <= 0:
-            raise ValueError("response too large")
-
-        chunk = await content.read(min(chunk_size, remaining))
-        if not chunk:
-            break
-
-        body.extend(chunk)
-        total += len(chunk)
-        if total > max_bytes:
-            raise ValueError("response too large")
-
-    return bytes(body)
 
 
 def _validate_mode(raw_mode: str) -> str:
@@ -1549,111 +1284,12 @@ def _configured_file_upload_provider() -> str:
     return provider
 
 
-def _get_upload_limit_override_bytes() -> int | None:
-    raw_bytes = os.getenv(_UPLOAD_MAX_BYTES_ENV, "").strip()
-    if raw_bytes:
-        try:
-            value = int(raw_bytes)
-            if value > 0:
-                return value
-        except Exception:
-            pass
-    raw_mb = os.getenv(_UPLOAD_MAX_MB_ENV, "").strip()
-    if raw_mb:
-        try:
-            value = float(raw_mb)
-            if value > 0:
-                return int(value * 1024 * 1024)
-        except Exception:
-            pass
-    return None
-
-
-def _get_default_audio_upload_limit(provider: str | None) -> dict[str, Any]:
-    key = _normalize_upload_provider(provider)
-    provider_limit = _PROVIDER_AUDIO_UPLOAD_LIMITS.get(key)
-    if provider_limit:
-        return dict(provider_limit)
-    if not supports_direct_file_upload(key):
-        return {
-            "max_bytes": _DEFAULT_AUDIO_INGEST_MAX_BYTES,
-            "label": _format_upload_limit(_DEFAULT_AUDIO_INGEST_MAX_BYTES),
-        }
-    fallback_bytes = _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
-    return {
-        "max_bytes": fallback_bytes,
-        "label": _format_upload_limit(fallback_bytes),
-    }
-
-
-def _get_upload_max_bytes() -> int:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return override
-    return _DEFAULT_UPLOAD_MAX_MB * 1024 * 1024
-
-
-def _get_audio_upload_max_bytes(provider: str | None = None) -> int:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return override
-    return int(_get_default_audio_upload_limit(provider)["max_bytes"])
-
-
-def _get_audio_upload_limit_label(provider: str | None = None) -> str:
-    override = _get_upload_limit_override_bytes()
-    if override is not None:
-        return _format_upload_limit(override)
-    return str(_get_default_audio_upload_limit(provider)["label"])
-
-
-def _format_upload_limit(limit_bytes: int) -> str:
-    if limit_bytes >= 1024 * 1024 * 1024:
-        whole_gb, remainder = divmod(limit_bytes, 1024 * 1024 * 1024)
-        if remainder == 0:
-            return f"{whole_gb}GB"
-        return f"{limit_bytes / (1024 * 1024 * 1024):.1f}GB"
-    return f"{limit_bytes / (1024 * 1024):.0f}MB"
-
-
-def _multipart_request_is_definitely_oversized(
-    content_length: int | None,
-    *,
-    file_limit: int,
-) -> bool:
-    """Pre-reject only when multipart framing cannot explain the excess bytes."""
-    if content_length is None:
-        return False
-    return content_length > file_limit + _MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES
-
-
-def _get_video_max_bytes() -> int:
-    """Get maximum bytes allowed for video file uploads (audio will be extracted)."""
-    return _DEFAULT_VIDEO_MAX_MB * 1024 * 1024
-
-
-def _get_audio_ingest_max_bytes(provider: str | None = None) -> int:
-    """Get maximum bytes allowed for raw audio uploads before optional compression."""
-    return max(_DEFAULT_AUDIO_INGEST_MAX_BYTES, _get_audio_upload_max_bytes(provider))
-
-
-def _get_audio_ingest_limit_label(provider: str | None = None) -> str:
-    ingest_limit = _get_audio_ingest_max_bytes(provider)
-    final_limit = _get_audio_upload_max_bytes(provider)
-    if ingest_limit == final_limit and ingest_limit > _DEFAULT_AUDIO_INGEST_MAX_BYTES:
-        return _get_audio_upload_limit_label(provider)
-    return _format_upload_limit(ingest_limit)
-
-
-def _get_audio_max_bytes(provider: str | None = None) -> int:
-    """Get maximum bytes allowed for audio files (after extraction from video)."""
-    return _get_audio_upload_max_bytes(provider)
-
-
 def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
     resolved_provider = _normalize_upload_provider(provider) or _configured_file_upload_provider()
-    audio_max_bytes = _get_audio_upload_max_bytes(resolved_provider)
-    compression_threshold_bytes = min(_UPLOAD_COMPRESSION_THRESHOLD_BYTES, audio_max_bytes)
+    audio_limits = file_upload_limits(resolved_provider, source_is_video=False)
+    video_limits = file_upload_limits(resolved_provider, source_is_video=True)
+    audio_max_bytes = audio_limits.final_audio.max_bytes
+    compression_threshold_bytes = min(UPLOAD_COMPRESSION_THRESHOLD_BYTES, audio_max_bytes)
     return {
         "provider": resolved_provider,
         "providerLabel": Config.SERVICE_LABELS.get(
@@ -1662,244 +1298,20 @@ def _build_file_upload_limits(provider: str | None = None) -> dict[str, Any]:
         ),
         "usesDirectProviderLimit": supports_direct_file_upload(resolved_provider),
         "audioMaxBytes": audio_max_bytes,
-        "audioMaxLabel": _get_audio_upload_limit_label(resolved_provider),
-        "rawAudioIngestMaxBytes": _get_audio_ingest_max_bytes(resolved_provider),
-        "rawAudioIngestMaxLabel": _get_audio_ingest_limit_label(resolved_provider),
-        "videoMaxBytes": _get_video_max_bytes(),
-        "videoMaxLabel": _format_upload_limit(_get_video_max_bytes()),
+        "audioMaxLabel": audio_limits.final_audio.label,
+        "rawAudioIngestMaxBytes": audio_limits.ingest.max_bytes,
+        "rawAudioIngestMaxLabel": audio_limits.ingest.label,
+        "videoMaxBytes": video_limits.ingest.max_bytes,
+        "videoMaxLabel": video_limits.ingest.label,
         "compressionThresholdBytes": compression_threshold_bytes,
-        "compressionThresholdLabel": _format_upload_limit(compression_threshold_bytes),
+        "compressionThresholdLabel": format_upload_limit(compression_threshold_bytes),
     }
-
-
-def _build_webm_audio_output_path(source_path: Path, *, label: str = "audio") -> Path:
-    if source_path.suffix.lower() == ".webm":
-        return source_path.with_name(f"{source_path.stem}.{label}.webm")
-    return source_path.with_suffix(".webm")
-
-
-async def _transcode_media_to_webm_audio(
-    source_path: Path,
-    target_path: Path,
-    *,
-    bitrate: str,
-) -> Path:
-    ffmpeg = require_media_tool("ffmpeg")
-
-    cmd = webm_opus_transcode_args(ffmpeg, source_path, target_path, bitrate=bitrate)
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        **hidden_subprocess_kwargs(),
-    )
-
-    _, stderr = await communicate_or_kill_on_cancel(
-        proc,
-        max_stdout_bytes=64 * 1024,
-        max_stderr_bytes=1024 * 1024,
-    )
-
-    if proc.returncode != 0:
-        err_msg = stderr.decode("utf-8", errors="replace").strip() if stderr else ""
-        friendly = classify_ffmpeg_stderr(err_msg)
-        raise RuntimeError(f"ffmpeg audio transcode failed: {friendly or f'exit code {proc.returncode}'}")
-
-    if not target_path.exists():
-        raise RuntimeError("Audio transcode completed but output file not found.")
-
-    return target_path
-
-
-async def _maybe_compress_audio_upload(upload_path: Path, *, max_bytes: int | None = None) -> Path:
-    if not upload_path.exists():
-        raise ValueError("Audio upload not found")
-
-    original_size = upload_path.stat().st_size
-    compression_threshold = _UPLOAD_COMPRESSION_THRESHOLD_BYTES
-    if max_bytes and max_bytes > 0:
-        compression_threshold = min(compression_threshold, max_bytes)
-    if original_size <= compression_threshold:
-        return upload_path
-
-    compressed_path = _build_webm_audio_output_path(upload_path, label="compressed")
-    try:
-        await _transcode_media_to_webm_audio(
-            upload_path,
-            compressed_path,
-            bitrate=_COMPRESSED_AUDIO_BITRATE,
-        )
-        compressed_size = compressed_path.stat().st_size
-    except Exception as exc:
-        compressed_path.unlink(missing_ok=True)
-        logger.warning(f"Automatic upload compression skipped for {upload_path.name}: {exc}")
-        return upload_path
-
-    if compressed_size >= original_size:
-        compressed_path.unlink(missing_ok=True)
-        logger.info(
-            f"Upload compression not beneficial for {upload_path.name}: "
-            f"{compressed_size / (1024 * 1024):.1f}MB >= {original_size / (1024 * 1024):.1f}MB"
-        )
-        return upload_path
-
-    if upload_path.suffix.lower() == ".webm":
-        upload_path.unlink(missing_ok=True)
-        compressed_path.replace(upload_path)
-        final_path = upload_path
-    else:
-        upload_path.unlink(missing_ok=True)
-        final_path = compressed_path
-
-    logger.info(
-        f"Compressed upload {upload_path.name}: "
-        f"{original_size / (1024 * 1024):.1f}MB -> {final_path.stat().st_size / (1024 * 1024):.1f}MB"
-    )
-    return final_path
-
-
-async def _extract_audio_from_video(video_path: Path, output_dir: Path) -> Path:
-    """
-    Extract audio from a video file using ffmpeg.
-
-    Returns the path to the extracted audio file (WebM/Opus format).
-    Raises RuntimeError if extraction fails.
-    """
-    # Output as audio-only WebM/Opus for efficient upload across STT providers.
-    audio_filename = _build_webm_audio_output_path(video_path).name
-    audio_path = output_dir / audio_filename
-
-    logger.debug(f"Extracting audio from video: {video_path.name}")
-    try:
-        await _transcode_media_to_webm_audio(
-            video_path,
-            audio_path,
-            bitrate=_EXTRACTED_AUDIO_BITRATE,
-        )
-    except RuntimeError as exc:
-        raise RuntimeError(f"ffmpeg audio extraction failed: {exc}") from exc
-
-    logger.debug(f"Audio extracted: {audio_path.name} ({audio_path.stat().st_size / (1024 * 1024):.1f}MB)")
-    return audio_path
-
-
-async def _write_upload_stream_to_disk(
-    file_field: Any,
-    save_path: Path,
-    *,
-    max_bytes: int,
-    chunk_size: int = 1024 * 1024,
-    write_batch_size: int = 8 * 1024 * 1024,
-) -> tuple[int, bool]:
-    bytes_read = 0
-    too_large = False
-    pending = bytearray()
-    effective_batch_size = max(chunk_size, int(write_batch_size))
-    file_obj = await asyncio.to_thread(open, save_path, "wb")
-    try:
-        while True:
-            chunk = await file_field.read_chunk(size=chunk_size)
-            if not chunk:
-                break
-            bytes_read += len(chunk)
-            if bytes_read > max_bytes:
-                too_large = True
-                break
-            pending.extend(chunk)
-            if len(pending) >= effective_batch_size:
-                batch = bytes(pending)
-                pending.clear()
-                await asyncio.to_thread(file_obj.write, batch)
-    finally:
-        try:
-            if pending:
-                batch = bytes(pending)
-                pending.clear()
-                await asyncio.to_thread(file_obj.write, batch)
-        finally:
-            await asyncio.to_thread(file_obj.close)
-    return bytes_read, too_large
-
-
-def _remove_tree(path: Path) -> None:
-    import shutil
-
-    if path.exists():
-        shutil.rmtree(path)
-
-
-async def _remove_tree_if_exists(path: Path) -> None:
-    await asyncio.to_thread(_remove_tree, path)
-
-
-async def _to_thread_cancellation_barrier(function: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """Await a thread mutation to completion even when its caller is canceled.
-
-    ``asyncio.to_thread`` cannot stop work already running in the executor.  A
-    task that immediately unwinds on cancellation can therefore close a SQLite
-    store or delete a file while that worker still owns it.  Durable import
-    commit points use this small barrier so shutdown/cancel observes the actual
-    mutation boundary before cleanup continues.
-    """
-    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            # Shutdown and explicit user cancellation can race and call
-            # ``Task.cancel`` more than once.  Keep observing the non-cancelable
-            # thread worker until its durable boundary has really completed.
-            pending_cancel = exc
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            logger.exception("Durable thread mutation failed while its caller was canceling")
-            raise pending_cancel from None
-        raise
-    if pending_cancel is not None:
-        raise pending_cancel
-    return result
-
-
-async def _await_with_delayed_cancellation(
-    awaitable: Awaitable[Any],
-) -> tuple[Any, asyncio.CancelledError | None]:
-    """Finish an ownership-changing await before delivering cancellation.
-
-    Shielding alone is insufficient for ``asyncio.to_thread``: the worker keeps
-    running after its caller is canceled, while the caller loses the mutation's
-    result (for example, the capture id of a newly started audio sidecar).  This
-    helper observes the worker to completion and returns the pending
-    ``CancelledError`` beside its result.  The caller can first record resource
-    ownership, then re-raise cancellation through its normal cleanup path.
-    """
-
-    # ``Awaitable`` includes both coroutine objects and already scheduled
-    # Futures (for example ``asyncio.gather``). ``create_task`` rejects the
-    # latter even though this helper's public contract accepts them.
-    worker = asyncio.ensure_future(awaitable)
-    pending_cancel: asyncio.CancelledError | None = None
-    while not worker.done():
-        try:
-            await asyncio.shield(worker)
-        except asyncio.CancelledError as exc:
-            pending_cancel = exc
-    try:
-        result = worker.result()
-    except BaseException:
-        if pending_cancel is not None:
-            raise pending_cancel from None
-        raise
-    return result, pending_cancel
 
 
 async def _await_cleanup_barrier(awaitable: Awaitable[Any]) -> Any:
     """Let cleanup finish even if another cancellation arrives meanwhile."""
 
-    result, pending_cancel = await _await_with_delayed_cancellation(awaitable)
+    result, pending_cancel = await await_with_delayed_cancellation(awaitable)
     if pending_cancel is not None:
         raise pending_cancel
     return result
@@ -1969,6 +1381,42 @@ async def _render_transcript_export_async(
         duration=duration,
         document_labels=document_labels,
     )
+
+
+class _MeetingArtifactDocumentRenderer:
+    """Composition adapter from the route command to the shared renderer."""
+
+    async def render(
+        self,
+        command: MeetingDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]:
+        return await _render_transcript_export_async(
+            export_format=command.export_format,
+            title=command.title,
+            content=command.content,
+            summary=command.summary,
+            date=command.date,
+            duration=command.duration,
+            document_labels=command.document_labels,
+        )
+
+
+class _TranscriptDocumentRenderer:
+    """Composition adapter from transcript export input to the shared renderer."""
+
+    async def render(
+        self,
+        command: TranscriptDocumentRenderCommand,
+    ) -> tuple[bytes, str, str]:
+        return await _render_transcript_export_async(
+            export_format=command.export_format,
+            title=command.title,
+            content=command.content,
+            summary=command.summary,
+            summary_format=command.summary_format,
+            date=command.date,
+            duration=command.duration,
+        )
 
 
 def _format_duration(seconds: float) -> str:
@@ -2419,6 +1867,18 @@ class TranscriptPersistenceError(RuntimeError):
     """Raised when a critical transcript save cannot be confirmed."""
 
 
+@dataclass(frozen=True, slots=True)
+class _BackgroundJobEnqueueResult:
+    job_id: str
+    commit_state: Literal["committed", "not_committed", "unknown"]
+
+
+class _BackgroundCleanupOutcome(str, Enum):  # noqa: UP042
+    COMPLETE = "complete"
+    DURABLE_PENDING = "durable_pending"
+    FAILED = "failed"
+
+
 class ProviderResultReconciliationRequired(RuntimeError):
     """A completed provider result must not be replayed automatically."""
 
@@ -2521,31 +1981,92 @@ def _audio_admission_lock(controller: Any) -> asyncio.Lock:
     return lock
 
 
-def _voice_library_mutation_lock(controller: Any) -> asyncio.Lock:
-    """Serialize local voice-model/profile mutations across API requests."""
-
-    lock = getattr(controller, "_voice_library_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        controller._voice_library_lock = lock
-    return lock
-
-
-def _speaker_model_download_lock(controller: Any) -> asyncio.Lock:
-    """Deduplicate this controller's optional-model network download."""
-
-    lock = getattr(controller, "_speaker_model_download_lock", None)
-    if lock is None:
-        lock = asyncio.Lock()
-        controller._speaker_model_download_lock = lock
-    return lock
-
-
 _AUDIO_ADMISSION_TTL_SECONDS = 60.0
 _AUDIO_ADMISSION_HEARTBEAT_SECONDS = 15.0
 
 
+def _audio_admission_owner(controller: Any) -> AudioAdmissionOwner:
+    """Return the one owner of this controller's native-audio lease.
+
+    Created lazily for the same reason the admission lock is: a few focused API
+    tests build lightweight controllers without running
+    ``ScriberWebController.__init__``, and they belong on the same admission
+    path rather than on a private fallback.
+
+    Claim storage remains on controller through accessors below. Lease policy,
+    renewal tasks, loss handling, and retries remain private to deep owner.
+    """
+
+    owner = getattr(controller, "_audio_admission", None)
+    if isinstance(owner, AudioAdmissionOwner):
+        return owner
+
+    def _set_claim(claim: AudioAdmissionClaim | None) -> None:
+        controller._persistent_audio_claim = claim
+
+    async def _default_loss_handler(claim: AudioAdmissionClaim, reason: str) -> None:
+        if claim.owner_kind == "live_mic":
+            emergency_stop = getattr(controller, "_emergency_stop_pipeline", None)
+            if not callable(emergency_stop):
+                raise RuntimeError("Live Mic native-audio cleanup is unavailable")
+            stopped = await emergency_stop(
+                session_id=claim.owner_id,
+                release_audio_claim=False,
+            )
+            if stopped is not True:
+                raise RuntimeError("Live Mic pipeline stop was not confirmed")
+            return
+        if claim.owner_kind == "meeting":
+            registry = _meeting_capture_ownership_registry(controller)
+            ownership = registry.get(claim.owner_id)
+            if ownership is None:
+                meeting = await to_thread_cancellation_barrier(
+                    controller._meeting_store.get,
+                    claim.owner_id,
+                )
+                raw_metadata = meeting.get("captureMetadata")
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+                state = str(meeting.get("state") or "")
+                ownership = _MeetingCaptureOwnership(
+                    failure_state="interrupted",
+                    meeting_id=claim.owner_id,
+                    capture_id=str(metadata.get("captureId") or ""),
+                    native_capture_started=state in {"starting", "recording", "stopping"},
+                    recorder=getattr(controller, "_meeting_recorders", {}).get(claim.owner_id),
+                    live_transcriber=getattr(controller, "_meeting_live_transcribers", {}).get(claim.owner_id),
+                    resume_prewarm=True,
+                )
+                ownership.identity_settled.set()
+                registry[claim.owner_id] = ownership
+            await _settle_meeting_capture_after_audio_loss(
+                controller,
+                ownership,
+                reason=reason,
+            )
+            return
+        raise RuntimeError(f"No native-audio loss handler is bound for {claim.owner_kind} ({reason})")
+
+    owner = AudioAdmissionOwner(
+        resolve_admission=lambda: _persistent_audio_admission(controller),
+        get_claim=lambda: getattr(controller, "_persistent_audio_claim", None),
+        set_claim=_set_claim,
+        is_shutting_down=lambda: bool(getattr(controller, "_shutting_down", False)),
+        loss_handler=_default_loss_handler,
+        ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
+        heartbeat_seconds=_AUDIO_ADMISSION_HEARTBEAT_SECONDS,
+    )
+    controller._audio_admission = owner
+    return owner
+
+
 def _persistent_audio_admission(controller: Any) -> tuple[AudioAdmissionStore, str]:
+    """Resolve this controller's lease store and stable controller identity.
+
+    Kept as the primitive rather than folded into the owner: it is the seam
+    focused tests substitute to drive store-level races, and the owner resolves
+    through it on every use so a substitution still takes effect.
+    """
+
     store = getattr(controller, "_audio_admission_store", None)
     if store is None:
         store = AudioAdmissionStore(Path(db._DB_PATH))
@@ -2558,106 +2079,10 @@ def _persistent_audio_admission(controller: Any) -> tuple[AudioAdmissionStore, s
     return store, controller_id
 
 
-def _same_audio_claim(left: AudioAdmissionClaim | None, right: AudioAdmissionClaim) -> bool:
-    return bool(
-        left is not None
-        and left.owner_kind == right.owner_kind
-        and left.owner_id == right.owner_id
-        and left.controller_id == right.controller_id
-        and left.state_version == right.state_version
-    )
-
-
 def _meeting_audio_claim(controller: Any, meeting_id: str) -> AudioAdmissionClaim | None:
     """Return only the process claim owned by this exact Meeting."""
 
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if (
-        isinstance(current, AudioAdmissionClaim)
-        and current.owner_kind == "meeting"
-        and current.owner_id == str(meeting_id or "")
-    ):
-        return current
-    return None
-
-
-async def _handle_persistent_audio_claim_loss(controller: Any, claim: AudioAdmissionClaim, *, reason: str) -> None:
-    """Fail closed when another controller has superseded our audio lease."""
-
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if not _same_audio_claim(current, claim):
-        return
-    controller._persistent_audio_claim = None
-    logger.error(
-        "Persistent native-audio admission lost: owner={} reason={}",
-        claim.owner_kind,
-        reason,
-    )
-    if claim.owner_kind == "live_mic":
-        emergency_stop = getattr(controller, "_emergency_stop_pipeline", None)
-        if callable(emergency_stop):
-            await emergency_stop(session_id=claim.owner_id)
-        return
-    if claim.owner_kind == "meeting" and not claim.owner_id.startswith("pending-"):
-        lost = getattr(controller, "_audio_admission_lost_meetings", None)
-        if not isinstance(lost, set):
-            lost = set()
-            controller._audio_admission_lost_meetings = lost
-        lost.add(claim.owner_id)
-
-
-async def _audio_claim_heartbeat(controller: Any) -> None:
-    consecutive_errors = 0
-    try:
-        while True:
-            await asyncio.sleep(_AUDIO_ADMISSION_HEARTBEAT_SECONDS)
-            claim = getattr(controller, "_persistent_audio_claim", None)
-            if not isinstance(claim, AudioAdmissionClaim):
-                return
-            store, _controller_id = _persistent_audio_admission(controller)
-            try:
-                renewed = await asyncio.to_thread(store.renew, claim, ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS)
-            except AudioAdmissionConflict as exc:
-                active = exc.active
-                current = getattr(controller, "_persistent_audio_claim", None)
-                # Pending->durable Meeting binding intentionally increments the
-                # CAS generation.  If that transfer wins the SQLite race with
-                # an in-flight renewal, adopt the newer claim and keep beating.
-                if (
-                    _same_audio_claim(current, claim)
-                    and active.controller_id == claim.controller_id
-                    and active.owner_kind == claim.owner_kind
-                    and active.state_version > claim.state_version
-                ):
-                    controller._persistent_audio_claim = active
-                    consecutive_errors = 0
-                    continue
-                await _handle_persistent_audio_claim_loss(controller, claim, reason="superseded")
-                return
-            except Exception as exc:
-                consecutive_errors += 1
-                logger.warning(
-                    "Persistent native-audio admission heartbeat retry: error={} attempt={}",
-                    type(exc).__name__,
-                    consecutive_errors,
-                )
-                # Live Mic has no durable workflow row that can exclude a new
-                # controller after lease expiry. Stop before the 60-second TTL
-                # can lapse rather than risk two simultaneous captures.
-                if claim.owner_kind == "live_mic" and consecutive_errors >= 3:
-                    await _handle_persistent_audio_claim_loss(controller, claim, reason="renewal_unavailable")
-                    return
-                continue
-            consecutive_errors = 0
-            if _same_audio_claim(getattr(controller, "_persistent_audio_claim", None), claim):
-                controller._persistent_audio_claim = renewed
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        logger.error(
-            "Persistent native-audio admission heartbeat stopped: {}",
-            type(exc).__name__,
-        )
+    return _audio_admission_owner(controller).meeting_claim(meeting_id)
 
 
 async def _claim_persistent_audio(
@@ -2666,115 +2091,28 @@ async def _claim_persistent_audio(
     owner_kind: str,
     owner_id: str,
     heartbeat: bool = True,
+    loss_handler: AudioAdmissionLossHandler | None = None,
 ) -> AudioAdmissionClaim:
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if isinstance(current, AudioAdmissionClaim):
-        if current.owner_kind == owner_kind and current.owner_id == owner_id:
-            return current
-        raise AudioAdmissionConflict(current)
-    store, controller_id = _persistent_audio_admission(controller)
-    claim, pending_cancel = await _await_with_delayed_cancellation(
-        asyncio.to_thread(
-            store.acquire,
-            owner_kind=owner_kind,
-            owner_id=owner_id,
-            controller_id=controller_id,
-            ttl_seconds=_AUDIO_ADMISSION_TTL_SECONDS,
-        )
+    return await _audio_admission_owner(controller).acquire(
+        owner_kind=owner_kind,
+        owner_id=owner_id,
+        heartbeat=heartbeat,
+        loss_handler=loss_handler,
     )
-    # A SQLite acquisition already running in a worker thread cannot be
-    # cancelled. Never lose the returned ownership record: if shutdown or task
-    # cancellation won the race, release the newly-created lease before
-    # propagating cancellation instead of leaving a 60-second phantom owner.
-    if pending_cancel is not None or getattr(controller, "_shutting_down", False):
-        try:
-            await _await_cleanup_barrier(asyncio.to_thread(store.release, claim))
-        except BaseException as cleanup_exc:
-            logger.warning(
-                "Persistent native-audio claim rollback failed: {}",
-                type(cleanup_exc).__name__,
-            )
-        if pending_cancel is not None:
-            raise pending_cancel
-        raise asyncio.CancelledError("Native audio claim aborted during shutdown")
-    controller._persistent_audio_claim = claim
-    lost_meetings = getattr(controller, "_audio_admission_lost_meetings", None)
-    if isinstance(lost_meetings, set):
-        lost_meetings.discard(owner_id)
-    if heartbeat:
-        task = getattr(controller, "_audio_admission_heartbeat_task", None)
-        if task is None or task.done():
-            controller._audio_admission_heartbeat_task = asyncio.create_task(
-                _audio_claim_heartbeat(controller), name="audio_admission_heartbeat"
-            )
-    return claim
 
 
 async def _transfer_persistent_audio_claim(
     controller: Any, claim: AudioAdmissionClaim, *, owner_id: str
 ) -> AudioAdmissionClaim:
-    store, _controller_id = _persistent_audio_admission(controller)
-    transferred = await asyncio.to_thread(store.transfer, claim, owner_id=owner_id)
-    if _same_audio_claim(getattr(controller, "_persistent_audio_claim", None), claim):
-        controller._persistent_audio_claim = transferred
-    return transferred
+    return await _audio_admission_owner(controller).transfer(claim, owner_id=owner_id)
 
 
 async def _release_persistent_audio(controller: Any, claim: AudioAdmissionClaim | None = None) -> bool:
-    target = claim or getattr(controller, "_persistent_audio_claim", None)
-    if not isinstance(target, AudioAdmissionClaim):
-        return False
-    current = getattr(controller, "_persistent_audio_claim", None)
-    if _same_audio_claim(current, target):
-        controller._persistent_audio_claim = None
-        task = getattr(controller, "_audio_admission_heartbeat_task", None)
-        controller._audio_admission_heartbeat_task = None
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
-    store, _controller_id = _persistent_audio_admission(controller)
-    released, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(store.release, target))
-    if pending_cancel is not None:
-        raise pending_cancel
-    return bool(released)
-
-
-async def _release_shutdown_audio_claim(
-    release_worker: Awaitable[Any],
-) -> bool:
-    """Release a detached shutdown claim without blocking the event loop.
-
-    SQLite work submitted to a thread cannot be interrupted safely.  If the
-    observer task is cancelled, keep observing the worker until the lease is
-    actually released, then deliver the pending cancellation.
-    """
-
-    released, pending_cancel = await _await_with_delayed_cancellation(release_worker)
-    if pending_cancel is not None:
-        raise pending_cancel
-    return bool(released)
-
-
-def _release_shutdown_audio_claim_in_thread(
-    store: Any,
-    claim: AudioAdmissionClaim,
-) -> None:
-    """No-loop fallback for synchronous teardown callers."""
-
-    try:
-        store.release(claim)
-    except Exception as exc:
-        logger.warning(
-            "Persistent native-audio admission release during shutdown failed: {}",
-            type(exc).__name__,
-        )
+    return await _audio_admission_owner(controller).release(claim)
 
 
 async def _foreign_persistent_audio_claim(controller: Any) -> AudioAdmissionClaim | None:
-    store, controller_id = _persistent_audio_admission(controller)
-    active = await asyncio.to_thread(store.active)
-    if active is None or active.controller_id == controller_id:
-        return None
-    return active
+    return await _audio_admission_owner(controller).foreign_claim()
 
 
 async def _active_meeting_audio_conflict(
@@ -2790,6 +2128,120 @@ async def _active_meeting_audio_conflict(
     return active
 
 
+class _ControllerVoiceEnrollmentAdmission:
+    """Adapt global controller state to the Voice Library's two-step lease.
+
+    The route domain owns enrollment behaviour. This adapter owns the one
+    composition concern it cannot: atomically checking every native-audio user,
+    reflecting the active flag, and releasing the durable lease only after the
+    shell has definitely stopped capture.
+    """
+
+    def __init__(self, controller: Any) -> None:
+        self._controller = controller
+
+    async def _settle_local_capture_state(self) -> None:
+        controller = self._controller
+        async with _audio_admission_lock(controller):
+            was_active = bool(getattr(controller, "_voice_enrollment_active", False))
+            controller._voice_enrollment_active = False
+        if not was_active:
+            return
+        controller._resume_idle_mic_prewarm_after_capture()
+        await controller.broadcast(state_event(controller.get_state()))
+
+    async def acquire(
+        self,
+        *,
+        owner_id: str,
+        loss_handler: VoiceEnrollmentLossHandler,
+    ) -> VoiceEnrollmentAdmission:
+        controller = self._controller
+        async with _audio_admission_lock(controller):
+            if controller._is_listening or controller._is_stopping:
+                raise VoiceEnrollmentUnavailable("Stop Live Mic before recording a voice sample.")
+            if await _active_meeting_audio_conflict(controller) is not None:
+                raise VoiceEnrollmentUnavailable("Finish the active meeting before recording a voice sample.")
+            if controller._meeting_device_test_active:
+                raise VoiceEnrollmentUnavailable("Wait for the Meeting device test to finish.")
+            if bool(getattr(controller, "_voice_enrollment_active", False)):
+                raise VoiceEnrollmentUnavailable("A Voice Library sample is already being recorded.")
+
+            async def settle_loss(_claim: AudioAdmissionClaim, reason: str) -> None:
+                await loss_handler(reason)
+                await self._settle_local_capture_state()
+
+            try:
+                claim, pending_cancel = await await_with_delayed_cancellation(
+                    _claim_persistent_audio(
+                        controller,
+                        owner_kind="voice_enrollment",
+                        owner_id=owner_id,
+                        heartbeat=True,
+                        loss_handler=settle_loss,
+                    )
+                )
+            except AudioAdmissionConflict as exc:
+                raise VoiceEnrollmentUnavailable("Another Scriber window is using the microphone.") from exc
+            controller._voice_enrollment_active = True
+            return VoiceEnrollmentAdmission(
+                claim=claim,
+                pending_cancellation=pending_cancel,
+            )
+
+    async def prepare_capture(self) -> None:
+        controller = self._controller
+        await controller.broadcast(state_event(controller.get_state()))
+        await controller._pause_idle_mic_prewarm_for_capture()
+
+    async def release(
+        self,
+        admission: VoiceEnrollmentAdmission,
+        *,
+        native_capture_released: bool,
+    ) -> None:
+        if not native_capture_released:
+            return
+        controller = self._controller
+        try:
+            await self._settle_local_capture_state()
+        except Exception as exc:
+            logger.warning("Voice Library admission cleanup failed: {}", type(exc).__name__)
+        try:
+            await _release_persistent_audio(controller, admission.claim)
+        except Exception as exc:
+            logger.warning("Voice Library lease cleanup failed: {}", type(exc).__name__)
+
+
+def _voice_enrollment_admission(controller: Any) -> _ControllerVoiceEnrollmentAdmission:
+    admission = getattr(controller, "_voice_enrollment_admission", None)
+    if not isinstance(admission, _ControllerVoiceEnrollmentAdmission):
+        admission = _ControllerVoiceEnrollmentAdmission(controller)
+        controller._voice_enrollment_admission = admission
+    return admission
+
+
+@dataclass(slots=True)
+class _MeetingProcessingReservation:
+    """One reserved worker whose gate opens only after durable admission."""
+
+    start_gate: asyncio.Event
+    task: asyncio.Task | None
+
+    @property
+    def opened(self) -> bool:
+        return self.start_gate.is_set()
+
+    def open(self) -> None:
+        self.start_gate.set()
+
+    async def cancel_before_start(self) -> None:
+        if self.opened or self.task is None:
+            return
+        self.task.cancel()
+        await asyncio.gather(self.task, return_exceptions=True)
+
+
 @dataclass
 class _MeetingCaptureOwnership:
     """Resources acquired while a Meeting capture request is not committed."""
@@ -2801,7 +2253,11 @@ class _MeetingCaptureOwnership:
     recorder: Any | None = None
     live_transcriber: Any | None = None
     resume_prewarm: bool = False
-    cleanup_started: bool = False
+    loss_requested: bool = False
+    cleanup_complete: bool = False
+    identity_settled: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
+    setup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    cleanup_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
 
 class _MeetingCaptureSetupError(RuntimeError):
@@ -2810,6 +2266,10 @@ class _MeetingCaptureSetupError(RuntimeError):
         self.status = int(status)
         self.code = str(code)
         self.message = str(message)
+
+
+class _MeetingCaptureCleanupIncomplete(RuntimeError):
+    """Native producer or durable recorder cleanup is not yet confirmed."""
 
 
 _MEETING_NATIVE_CAPTURE_SOURCES = frozenset({"microphone", "system", "mic_clean"})
@@ -2977,6 +2437,36 @@ def _merge_meeting_live_processing_aggregate(
             ),
         },
     }
+
+
+def _meeting_native_stop_snapshot(native_payload: dict[str, Any]) -> dict[str, Any]:
+    sidecar = native_payload.get("sidecar")
+    if not isinstance(sidecar, dict):
+        return {}
+    relay = sidecar.get("relay")
+    if not isinstance(relay, dict):
+        relay = sidecar
+    snapshot: dict[str, Any] = {}
+    for key in ("framesProcessed", "bytesForwarded", "sidecarUptimeMs"):
+        value = relay.get(key)
+        if isinstance(value, int) and value >= 0:
+            snapshot[key] = value
+    snapshot["relayHealthy"] = not bool(relay.get("relayError"))
+    raw_metrics = relay.get("aecMetrics")
+    if isinstance(raw_metrics, dict):
+        metrics: dict[str, Any] = {
+            "measurement": "render-active-raw-to-clean-energy-ratio",
+        }
+        for key in ("renderActiveFrames", "renderActiveDurationMs"):
+            value = raw_metrics.get(key)
+            if isinstance(value, int) and value >= 0:
+                metrics[key] = value
+        for key in ("renderEnergy", "rawMicEnergy", "cleanMicEnergy", "echoReductionDb"):
+            value = raw_metrics.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metrics[key] = round(float(value), 6)
+        snapshot["aecMetrics"] = metrics
+    return snapshot
 
 
 def _meeting_processing_components(
@@ -3374,6 +2864,28 @@ async def _start_meeting_live_preview_best_effort(
         return None, True
 
 
+async def _adopt_meeting_live_preview(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+    live: Any | None,
+) -> bool:
+    """Publish a preview only while its native-capture generation is owned."""
+
+    async with ownership.setup_lock:
+        if not ownership.loss_requested and not ownership.cleanup_complete:
+            ownership.live_transcriber = live
+            return True
+
+    if live is not None:
+        try:
+            await _await_cleanup_barrier(live.stop())
+        finally:
+            meeting_id = ownership.meeting_id
+            if meeting_id and getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id) is live:
+                controller._meeting_live_transcribers.pop(meeting_id, None)
+    return False
+
+
 async def _cleanup_meeting_capture_ownership(
     controller: Any,
     ownership: _MeetingCaptureOwnership,
@@ -3383,94 +2895,90 @@ async def _cleanup_meeting_capture_ownership(
 ) -> dict[str, Any] | None:
     """Release one incomplete capture setup and persist a recoverable state.
 
-    Every operation is best-effort, but the sequence deliberately stops the
-    producer before joining recorder readers.  Successful recorder shutdown
-    flushes and commits already completed/partial chunks; cleanup never deletes
-    the Meeting workspace.
+    Producer stop is fail-closed and precedes reader join. Claim owners may
+    release native-audio admission only after this function returns. A failed
+    producer or recorder stop leaves ownership retryable.
     """
-
-    if ownership.cleanup_started:
-        if not ownership.meeting_id:
+    async with ownership.cleanup_lock:
+        if ownership.cleanup_complete:
+            if not ownership.meeting_id:
+                return None
+            return await to_thread_cancellation_barrier(
+                controller._meeting_store.get,
+                ownership.meeting_id,
+            )
+        meeting_id = ownership.meeting_id
+        if not meeting_id:
+            ownership.cleanup_complete = True
             return None
+        clear_level_state = getattr(
+            controller,
+            "clear_meeting_audio_level_state",
+            None,
+        )
+        if callable(clear_level_state):
+            clear_level_state(meeting_id)
+
+        recorder = ownership.recorder
+
         try:
-            return await asyncio.to_thread(controller._meeting_store.get, ownership.meeting_id)
+            controller.stop_meeting_capture_watchdog(meeting_id)
+        except AttributeError:
+            # Focused structural controllers may not materialize watchdog
+            # storage; there is no task to stop in that case.
+            pass
         except Exception:
-            return None
-    ownership.cleanup_started = True
-    meeting_id = ownership.meeting_id
-    if not meeting_id:
-        return None
-    clear_level_state = getattr(
-        controller,
-        "clear_meeting_audio_level_state",
-        None,
-    )
-    if callable(clear_level_state):
-        clear_level_state(meeting_id)
+            logger.exception("Meeting capture setup watchdog cleanup failed")
 
-    recorder = ownership.recorder
-    mapped_recorder = getattr(controller, "_meeting_recorders", {}).get(meeting_id)
-    if recorder is None:
-        recorder = mapped_recorder
-
-    try:
-        controller.stop_meeting_capture_watchdog(meeting_id)
-    except Exception:
-        logger.exception("Meeting capture setup watchdog cleanup failed")
-
-    if ownership.native_capture_started:
-        try:
+        if ownership.native_capture_started:
             prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
             if callable(prepare_disconnect):
                 prepare_disconnect()
-            await _to_thread_cancellation_barrier(
-                call_shell_ipc,
-                "audioMeetingStop",
-                {"meetingId": meeting_id, "captureId": ownership.capture_id},
-                timeout_seconds=4.0,
-            )
-        except Exception, asyncio.CancelledError:
-            logger.exception("Meeting native capture setup cleanup failed")
-        finally:
+            try:
+                native_stop = await to_thread_cancellation_barrier(
+                    call_shell_ipc,
+                    "audioMeetingStop",
+                    {"meetingId": meeting_id, "captureId": ownership.capture_id},
+                    timeout_seconds=4.0,
+                )
+            except (Exception, asyncio.CancelledError) as exc:
+                raise _MeetingCaptureCleanupIncomplete("Meeting native capture stop was not confirmed") from exc
+            if not isinstance(native_stop, dict) or native_stop.get("success") is not True:
+                raise _MeetingCaptureCleanupIncomplete("Meeting native capture stop was not confirmed")
             ownership.native_capture_started = False
 
-    persistence: dict[str, Any] | None = None
-    if recorder is not None:
-        try:
-            result = await _to_thread_cancellation_barrier(recorder.stop, expected_disconnect=True)
+        persistence: dict[str, Any] | None = None
+        if recorder is not None:
+            try:
+                result = await to_thread_cancellation_barrier(recorder.stop, expected_disconnect=True)
+            except (Exception, asyncio.CancelledError) as exc:
+                logger.exception("Meeting recorder setup cleanup failed")
+                raise _MeetingCaptureCleanupIncomplete("Meeting recorder cleanup did not finish") from exc
             if isinstance(result, dict):
                 persistence = result
             if getattr(controller, "_meeting_recorders", {}).get(meeting_id) is recorder:
                 controller._meeting_recorders.pop(meeting_id, None)
             ownership.recorder = None
-        except Exception, asyncio.CancelledError:
-            # Keep the registry reference when joining the readers failed.  It
-            # is safer to retain an owner for a stopped native source than to
-            # orphan a still-unwinding recorder thread.
-            logger.exception("Meeting recorder setup cleanup failed")
 
-    live = ownership.live_transcriber
-    mapped_live = getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id)
-    if live is None:
-        live = mapped_live
-    if live is not None:
-        try:
-            await live.stop()
-            if getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id) is live:
-                controller._meeting_live_transcribers.pop(meeting_id, None)
-            ownership.live_transcriber = None
-        except Exception, asyncio.CancelledError:
-            logger.exception("Meeting live-transcription setup cleanup failed")
+        live = ownership.live_transcriber
+        mapped_live = getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id)
+        if live is None:
+            live = mapped_live
+        if live is not None:
+            try:
+                await live.stop()
+                if getattr(controller, "_meeting_live_transcribers", {}).get(meeting_id) is live:
+                    controller._meeting_live_transcribers.pop(meeting_id, None)
+                ownership.live_transcriber = None
+            except Exception, asyncio.CancelledError:
+                logger.exception("Meeting live-transcription setup cleanup failed")
 
-    # Producer shutdown may race one final PCM callback after the initial
-    # cleanup above. Clear the throttle state again once every known producer
-    # has been stopped or joined.
-    if callable(clear_level_state):
-        clear_level_state(meeting_id)
+        # Producer shutdown may race one final PCM callback after initial
+        # cleanup. Clear throttle state again after producer and readers stop.
+        if callable(clear_level_state):
+            clear_level_state(meeting_id)
 
-    failed: dict[str, Any] | None = None
-    try:
-        current = await _to_thread_cancellation_barrier(controller._meeting_store.get, meeting_id)
+        current = await to_thread_cancellation_barrier(controller._meeting_store.get, meeting_id)
         if current.get("state") in {
             "starting",
             "recording",
@@ -3483,7 +2991,7 @@ async def _cleanup_meeting_capture_ownership(
                 metadata["captureId"] = ownership.capture_id
             if persistence is not None:
                 metadata["persistence"] = persistence
-            failed = await _to_thread_cancellation_barrier(
+            failed = await to_thread_cancellation_barrier(
                 controller._meeting_store.transition,
                 meeting_id,
                 ownership.failure_state,
@@ -3493,22 +3001,15 @@ async def _cleanup_meeting_capture_ownership(
             )
         else:
             failed = current
-    except Exception, asyncio.CancelledError:
-        logger.exception("Meeting capture setup state cleanup failed")
-    finally:
+
         if ownership.resume_prewarm:
-            try:
-                controller._resume_idle_mic_prewarm_after_capture()
-            except Exception:
-                logger.exception("Meeting capture setup prewarm resume failed")
+            controller._resume_idle_mic_prewarm_after_capture()
             ownership.resume_prewarm = False
 
-    if failed is not None:
-        try:
+        if failed is not None:
             await controller.broadcast(meeting_state_event(failed))
-        except Exception, asyncio.CancelledError:
-            logger.exception("Meeting capture setup cleanup broadcast failed")
-    return failed
+        ownership.cleanup_complete = True
+        return failed
 
 
 async def _cleanup_meeting_capture_ownership_barrier(
@@ -3526,6 +3027,104 @@ async def _cleanup_meeting_capture_ownership_barrier(
             error_message=error_message,
         )
     )
+
+
+async def _cleanup_and_release_meeting_capture_barrier(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+    *,
+    error_code: str,
+    error_message: str,
+    claim: AudioAdmissionClaim | None = None,
+) -> dict[str, Any] | None:
+    """Settle capture resources and the matching lease as one cancellation barrier."""
+
+    async def settle() -> dict[str, Any] | None:
+        failed = await _cleanup_meeting_capture_ownership(
+            controller,
+            ownership,
+            error_code=error_code,
+            error_message=error_message,
+        )
+        await _release_persistent_audio(controller, claim)
+        return failed
+
+    return await _await_cleanup_barrier(settle())
+
+
+def _meeting_capture_ownership_registry(
+    controller: Any,
+) -> dict[str, _MeetingCaptureOwnership]:
+    registry = getattr(controller, "_meeting_capture_ownerships", None)
+    if not isinstance(registry, dict):
+        registry = {}
+        controller._meeting_capture_ownerships = registry
+    return registry
+
+
+async def _settle_meeting_capture_after_audio_loss(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+    *,
+    reason: str,
+) -> None:
+    """Confirm producer stop and persistence before lease owner may release."""
+
+    shutdown = reason == "shutdown"
+    ownership.failure_state = "interrupted" if shutdown else "capture_failed"
+    error_code = "process_interrupted" if shutdown else "audio_admission_lost"
+    error_message = (
+        "Scriber stopped while recording; completed audio chunks were preserved."
+        if shutdown
+        else (
+            "Native audio ownership moved to another Scriber controller. "
+            "Recording stopped and completed chunks were preserved."
+        )
+    )
+    await _cleanup_meeting_capture_ownership_barrier(
+        controller,
+        ownership,
+        error_code=error_code,
+        error_message=error_message,
+    )
+    if ownership.native_capture_started or ownership.recorder is not None:
+        raise _MeetingCaptureCleanupIncomplete("Meeting capture ownership is still active after cleanup")
+    if ownership.meeting_id:
+        registry = _meeting_capture_ownership_registry(controller)
+        if registry.get(ownership.meeting_id) is ownership:
+            registry.pop(ownership.meeting_id, None)
+
+
+def _meeting_audio_loss_handler(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+) -> AudioAdmissionLossHandler:
+    if ownership.meeting_id:
+        ownership.identity_settled.set()
+
+    async def handle(_claim: AudioAdmissionClaim, reason: str) -> None:
+        ownership.loss_requested = True
+        await ownership.identity_settled.wait()
+        async with ownership.setup_lock:
+            await _settle_meeting_capture_after_audio_loss(
+                controller,
+                ownership,
+                reason=reason,
+            )
+
+    return handle
+
+
+async def _mark_meeting_capture_durable_if_owned(
+    controller: Any,
+    ownership: _MeetingCaptureOwnership,
+    claim: AudioAdmissionClaim | None,
+) -> bool:
+    """Latch durability without blocking the setup lock needed by loss cleanup."""
+
+    marked = claim is not None and await _audio_admission_owner(controller).mark_durable(claim)
+    async with ownership.setup_lock:
+        return bool(marked and not ownership.loss_requested)
 
 
 async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
@@ -3574,21 +3173,46 @@ async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
 
 
 async def _wait_for_voice_enrollment(duration_ms: int) -> None:
-    """Small test seam around the fixed local enrollment window."""
-    await asyncio.sleep(max(0, int(duration_ms)) / 1000.0)
+    """Clock adapter supplied to the extracted native-capture boundary."""
+    await asyncio.sleep(max(0, int(duration_ms)) / 1_000)
 
 
-def _voice_enrollment_stop_confirmed(response: Any) -> bool:
-    """Return whether the Tauri shell accepted ownership of capture teardown.
+class _VoiceCaptureRuntimeAdapter:
+    """Exact production adapter for native Voice Library enrollment capture."""
 
-    ``audioCaptureStop`` owns the escalating sidecar shutdown path: once the
-    shell accepts the command it removes the capture from its registry and
-    waits for, or kills, the sidecar.  A transport-level failure is different:
-    the backend cannot know whether the shell received the request, so the
-    enrollment owner must not release its audio lease in that state.
-    """
+    def is_available(self) -> bool:
+        return shell_ipc_available()
 
-    return bool(isinstance(response, dict) and response.get("success") is True)
+    def call_shell(
+        self,
+        command: str,
+        payload: dict[str, Any],
+        *,
+        timeout_seconds: float,
+    ) -> dict[str, Any]:
+        return call_shell_ipc(command, payload, timeout_seconds=timeout_seconds)
+
+    def create_capture(
+        self,
+        *,
+        sample_rate: int,
+        max_duration_seconds: float,
+    ) -> VoiceEnrollmentCapturePort:
+        return VoiceEnrollmentCapture(
+            sample_rate=sample_rate,
+            max_duration_seconds=max_duration_seconds,
+        )
+
+    async def wait(self, duration_ms: int) -> None:
+        await _wait_for_voice_enrollment(duration_ms)
+
+    def build_reference_wav(
+        self,
+        pcm: bytes,
+        *,
+        sample_rate: int,
+    ) -> tuple[bytes, int]:
+        return voice_reference_wav(pcm, sample_rate=sample_rate)
 
 
 class ScriberWebController:
@@ -3638,6 +3262,11 @@ class ScriberWebController:
         # allowlist later in background initialization.
         self._startup_running_job_ids = frozenset(self._job_store.list_running_job_ids())
         self._job_ids_by_transcript: dict[str, str] = {}
+        self._uncertain_job_commits: dict[str, str] = {}
+        self._uncertain_job_reconcile_attempts: dict[str, int] = {}
+        self._terminal_projection_scan_cursor: tuple[str, str] | None = None
+        self._startup_orphan_admissions: dict[str, TranscriptRecord] = {}
+        self._background_job_cancel_requests: set[str] = set()
         # Scheduler-owned immutable routes are handed to the worker without
         # widening the long-standing private runner call signature.  This also
         # keeps test and extension mocks that implement the legacy signature
@@ -3658,6 +3287,7 @@ class ScriberWebController:
         self._local_polishing_close_task: asyncio.Task | None = None
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
+        self._detached_task_supervisor = AsyncTaskSupervisor(owner="web controller")
         self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
         self._job_concurrency_limit = _env_int(
             "SCRIBER_JOB_CONCURRENCY",
@@ -3851,10 +3481,6 @@ class ScriberWebController:
         self._audio_admission_store.initialize()
         self._audio_controller_id = f"controller-{os.getpid()}-{uuid4().hex}"
         self._persistent_audio_claim: AudioAdmissionClaim | None = None
-        self._audio_admission_heartbeat_task: asyncio.Task | None = None
-        self._shutdown_audio_release_task: asyncio.Task | None = None
-        self._shutdown_audio_release_thread: threading.Thread | None = None
-        self._audio_admission_lost_meetings: set[str] = set()
         self._meeting_store = MeetingStore()
         self._meeting_store.initialize(speaker_library_enabled=bool(Config.VOICEPRINT_LIBRARY_OPT_IN))
         durable_voice_library_enabled = self._meeting_store.speaker_library_enabled()
@@ -4050,26 +3676,47 @@ class ScriberWebController:
         """Finish a discard interrupted between its DB tombstone and deletion."""
         try:
             meeting_ids = await asyncio.to_thread(self._meeting_store.discarded_meeting_ids)
-            storage_root = data_dir().resolve()
-            meetings_root = (storage_root / "meetings").resolve()
-            if meetings_root.parent != storage_root:
-                logger.error("Refusing to prune a redirected Meeting storage root")
-                return
             for meeting_id in meeting_ids:
                 if not re.fullmatch(r"[0-9a-f]{32}", meeting_id):
                     logger.error("Refusing to prune a Meeting with an invalid storage ID")
                     continue
-                meeting_root = (meetings_root / meeting_id).resolve()
-                if meeting_root.parent != meetings_root:
+                try:
+                    meeting_root = self._meeting_discard_workspace_path(meeting_id)
+                except ValueError:
+                    logger.error("Refusing to prune a redirected Meeting storage root")
                     continue
-                await _remove_tree_if_exists(meeting_root)
-                await asyncio.to_thread(db.delete_transcript, meeting_id)
-                await _to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
-                self.clear_meeting_audio_level_state(meeting_id)
+                await self._settle_discarded_meeting_workspace(
+                    meeting_id,
+                    meeting_root=meeting_root,
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Discarded Meeting workspace cleanup failed")
+
+    @staticmethod
+    def _meeting_discard_workspace_path(meeting_id: str) -> Path:
+        storage_root = data_dir().resolve()
+        meetings_root = (storage_root / "meetings").resolve()
+        meeting_root = (meetings_root / meeting_id).resolve()
+        if meetings_root.parent != storage_root or meeting_root.parent != meetings_root:
+            raise ValueError("Meeting storage path is invalid.")
+        return meeting_root
+
+    async def _settle_discarded_meeting_workspace(
+        self,
+        meeting_id: str,
+        *,
+        meeting_root: Path,
+    ) -> None:
+        """Finish the one ordered cleanup sequence behind a durable tombstone."""
+
+        await remove_tree_if_exists(meeting_root)
+        await to_thread_cancellation_barrier(db.delete_transcript, meeting_id)
+        await to_thread_cancellation_barrier(self._meeting_store.delete, meeting_id)
+        clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
+        if callable(clear_level_state):
+            clear_level_state(meeting_id)
 
     async def _prune_expired_meeting_audio(self) -> None:
         try:
@@ -4816,7 +4463,7 @@ class ScriberWebController:
 
     async def _pause_idle_mic_prewarm_for_capture(self) -> None:
         self._cancel_post_recording_mic_prewarm_timer()
-        _, pending_cancel = await _await_with_delayed_cancellation(
+        _, pending_cancel = await await_with_delayed_cancellation(
             asyncio.to_thread(self._mic_prewarm.pause_for_active_capture)
         )
         if pending_cancel is not None:
@@ -5033,127 +4680,239 @@ class ScriberWebController:
     ) -> None:
         meeting_id = str(meeting["id"])
         metadata = dict(meeting.get("captureMetadata", {}))
-        self.stop_meeting_capture_watchdog(meeting_id)
-        recorder = self._meeting_recorders.get(meeting_id)
-        prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
-        if callable(prepare_disconnect):
-            prepare_disconnect()
-        try:
-            stop_response = await asyncio.to_thread(
-                call_shell_ipc,
-                "audioMeetingStop",
-                {"meetingId": meeting_id, "captureId": metadata.get("captureId")},
-                timeout_seconds=4.0,
-            )
-        except Exception as exc:
-            stop_response = {
-                "success": False,
-                "fallbackReason": f"{type(exc).__name__}: meeting capture stop failed",
-            }
-        if recorder is not None:
-            metadata["persistence"] = await asyncio.to_thread(recorder.stop, expected_disconnect=True)
-        live = self._meeting_live_transcribers.pop(meeting_id, None)
-        if live is not None:
-            await live.stop()
-        offset_ms = max(
-            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
-            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
-            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "system"),
-        )
-        pause_started = datetime.now(UTC)
-        metadata["pauseStartedAtMs"] = offset_ms
-        metadata["pauseStartedAtUtc"] = pause_started.isoformat()
-        metadata["deviceChangeReason"] = reason
-        error_message = (
-            "The selected microphone disappeared. Choose or reconnect that device before resuming."
-            if not auto_resume
-            else ""
-        )
-        paused = await asyncio.to_thread(
-            self._meeting_store.transition,
-            meeting_id,
-            "paused",
-            error_code="meeting_device_changed" if error_message else "",
-            error_message=error_message,
-            capture_metadata=metadata,
-        )
-        await self.broadcast(meeting_state_event(paused))
-        if not auto_resume:
+        meeting_claim = _meeting_audio_claim(self, meeting_id)
+        if meeting_claim is None:
+            logger.error("Meeting device reconnect refused without native-audio ownership")
             return
-        if not stop_response.get("success"):
-            failed_pause = await asyncio.to_thread(
-                self._meeting_store.transition,
-                meeting_id,
-                "paused",
-                error_code="meeting_device_stop_failed",
-                error_message="The default device changed, but the old meeting capture could not be stopped safely.",
-                capture_metadata=metadata,
+
+        registry = _meeting_capture_ownership_registry(self)
+        recorder = self._meeting_recorders.get(meeting_id)
+        ownership = registry.get(meeting_id)
+        if ownership is None or ownership.cleanup_complete:
+            ownership = _MeetingCaptureOwnership(
+                failure_state="interrupted",
+                meeting_id=meeting_id,
+                capture_id=str(metadata.get("captureId") or ""),
+                native_capture_started=True,
+                recorder=recorder,
+                live_transcriber=self._meeting_live_transcribers.get(meeting_id),
+                resume_prewarm=True,
             )
-            await self.broadcast(meeting_state_event(failed_pause))
+            ownership.identity_settled.set()
+            registry[meeting_id] = ownership
+
+        pending_cancel: asyncio.CancelledError | None = None
+        self.stop_meeting_capture_watchdog(meeting_id)
+        pause_started = datetime.now(UTC)
+        offset_ms = 0
+        paused: dict[str, Any] | None = None
+
+        async with ownership.setup_lock:
+            if ownership.loss_requested:
+                return
+            prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
+            cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
+            if callable(prepare_disconnect):
+                prepare_disconnect()
+            try:
+                stop_response, stop_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingStop",
+                        {"meetingId": meeting_id, "captureId": metadata.get("captureId")},
+                        timeout_seconds=4.0,
+                    )
+                )
+                pending_cancel = stop_cancel
+            except Exception as exc:
+                if callable(cancel_disconnect):
+                    cancel_disconnect()
+                self.start_meeting_capture_watchdog(
+                    meeting_id,
+                    str(metadata.get("captureId") or ""),
+                )
+                logger.warning(
+                    "Meeting device reconnect retained capture after stop error: {}",
+                    type(exc).__name__,
+                )
+                return
+            if not isinstance(stop_response, dict) or stop_response.get("success") is not True:
+                if callable(cancel_disconnect):
+                    cancel_disconnect()
+                self.start_meeting_capture_watchdog(
+                    meeting_id,
+                    str(metadata.get("captureId") or ""),
+                )
+                logger.error("Meeting device reconnect retained capture after unconfirmed native stop")
+                if pending_cancel is not None:
+                    raise pending_cancel
+                return
+
+            ownership.native_capture_started = False
+            ownership.capture_id = ""
+
+            if recorder is not None:
+                try:
+                    persistence, recorder_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(recorder.stop, expected_disconnect=True)
+                    )
+                    pending_cancel = pending_cancel or recorder_cancel
+                except Exception as exc:
+                    logger.error(
+                        "Meeting device reconnect retained admission after recorder stop error: {}",
+                        type(exc).__name__,
+                    )
+                    return
+                metadata["persistence"] = persistence
+                ownership.recorder = None
+                if self._meeting_recorders.get(meeting_id) is recorder:
+                    self._meeting_recorders.pop(meeting_id, None)
+
+            live = self._meeting_live_transcribers.pop(meeting_id, None)
+            if live is not None:
+                _ignored, live_cancel = await await_with_delayed_cancellation(live.stop())
+                pending_cancel = pending_cancel or live_cancel
+            ownership.live_transcriber = None
+
+            offsets: list[int] = []
+            for source in ("microphone", "mic_clean", "system"):
+                offset, offset_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.next_audio_offset_ms,
+                        meeting_id,
+                        source,
+                    )
+                )
+                offsets.append(offset)
+                pending_cancel = pending_cancel or offset_cancel
+            offset_ms = max(offsets)
+            metadata["pauseStartedAtMs"] = offset_ms
+            metadata["pauseStartedAtUtc"] = pause_started.isoformat()
+            metadata["deviceChangeReason"] = reason
+            error_message = (
+                "The selected microphone disappeared. Choose or reconnect that device before resuming."
+                if not auto_resume
+                else ""
+            )
+            paused, pause_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    self._meeting_store.transition,
+                    meeting_id,
+                    "paused",
+                    error_code="meeting_device_changed" if error_message else "",
+                    error_message=error_message,
+                    capture_metadata=metadata,
+                )
+            )
+            pending_cancel = pending_cancel or pause_cancel
+
+        assert paused is not None
+        await self.broadcast(meeting_state_event(paused))
+        if ownership.loss_requested:
+            await _audio_admission_owner(self).note_loss(meeting_claim, reason="superseded")
+            if pending_cancel is not None:
+                raise pending_cancel
+            return
+        if pending_cancel is not None:
+            raise pending_cancel
+        if not auto_resume:
             return
 
         selection = metadata.get("deviceSelection", {})
-        restart_capture_id = ""
-        restarted_live: MeetingLiveTranscriber | None = None
-        recorder_started = False
+        live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
         try:
-            response = await asyncio.to_thread(
-                call_shell_ipc,
-                "audioMeetingResume",
-                {
-                    "meetingId": meeting_id,
-                    "aecEnabled": bool(meeting.get("aecEnabled", True)),
-                    "microphoneNativeEndpointIdHash": str(
-                        selection.get("microphoneNativeEndpointIdHash", "") if isinstance(selection, dict) else ""
-                    ),
-                    "renderNativeEndpointIdHash": str(
-                        selection.get("renderNativeEndpointIdHash", "") if isinstance(selection, dict) else ""
-                    ),
-                },
-                timeout_seconds=4.0,
-            )
-            if not response.get("success"):
-                raise RuntimeError(str(response.get("fallbackReason") or "meeting capture restart failed"))
-            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            restart_capture_id = str(native_payload.get("captureId") or "")
-            sources = native_payload.get("sources") if isinstance(native_payload.get("sources"), list) else []
-            gap_ms = max(1, round((datetime.now(UTC) - pause_started).total_seconds() * 1000))
-            gap_end_ms = offset_ms + gap_ms
-            await asyncio.to_thread(
-                self._meeting_store.add_audio_gap,
-                meeting_id,
-                source="all",
-                started_at_ms=offset_ms,
-                ended_at_ms=gap_end_ms,
-                reason="default-device-reconnect",
-            )
-            for source in sources:
-                if isinstance(source, dict):
-                    source["timelineOffsetMs"] = gap_end_ms
-            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-
-            def recorder_callback(source, pcm, _header):
-                return self.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
-
-            if recorder is None:
-                recorder = MeetingAudioRecorder(
-                    meeting_id,
-                    data_dir() / "meetings",
-                    self._meeting_store,
-                    on_pcm=recorder_callback,
-                    on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint),
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting device reconnect.",
+                    )
+                response, resume_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingResume",
+                        {
+                            "meetingId": meeting_id,
+                            "aecEnabled": bool(meeting.get("aecEnabled", True)),
+                            "microphoneNativeEndpointIdHash": str(
+                                selection.get("microphoneNativeEndpointIdHash", "")
+                                if isinstance(selection, dict)
+                                else ""
+                            ),
+                            "renderNativeEndpointIdHash": str(
+                                selection.get("renderNativeEndpointIdHash", "") if isinstance(selection, dict) else ""
+                            ),
+                        },
+                        timeout_seconds=4.0,
+                    )
                 )
+                pending_cancel = resume_cancel
+                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                if response.get("success"):
+                    ownership.native_capture_started = True
+                    ownership.capture_id = str(native_payload.get("captureId") or "")
+                if response.get("success") is not True:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="meeting_device_reconnect_failed",
+                        message=str(response.get("fallbackReason") or "Meeting capture restart failed."),
+                    )
+                ownership.capture_id, sources = _validated_meeting_native_capture_payload(native_payload)
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed during Meeting device reconnect.",
+                    )
+                gap_ms = max(1, round((datetime.now(UTC) - pause_started).total_seconds() * 1000))
+                gap_end_ms = offset_ms + gap_ms
+                _ignored, gap_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.add_audio_gap,
+                        meeting_id,
+                        source="all",
+                        started_at_ms=offset_ms,
+                        ended_at_ms=gap_end_ms,
+                        reason="default-device-reconnect",
+                    )
+                )
+                pending_cancel = pending_cancel or gap_cancel
+                for source in sources:
+                    if isinstance(source, dict):
+                        source["timelineOffsetMs"] = gap_end_ms
+
+                def recorder_callback(source, pcm, _header):
+                    return self.on_meeting_pcm(
+                        meeting_id,
+                        live_preview_ref["transcriber"],
+                        source,
+                        pcm,
+                    )
+
+                if recorder is None:
+                    recorder = MeetingAudioRecorder(
+                        meeting_id,
+                        data_dir() / "meetings",
+                        self._meeting_store,
+                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                        on_pcm=recorder_callback,
+                        on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(
+                            meeting_id,
+                            checkpoint,
+                        ),
+                    )
+                else:
+                    recorder.on_pcm = recorder_callback
+                    recorder.on_checkpoint = lambda checkpoint: self.on_meeting_checkpoint(
+                        meeting_id,
+                        checkpoint,
+                    )
+                ownership.recorder = recorder
+                recorder.start(sources)
                 self._meeting_recorders[meeting_id] = recorder
-            else:
-                recorder.on_pcm = recorder_callback
-                recorder.on_checkpoint = lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint)
-            recorder.start(sources)
-            recorder_started = True
-            timeline_started_at_utc = datetime.now(UTC).isoformat()
-            (
-                restarted_live,
-                live_preview_degraded,
-            ) = await _start_meeting_live_preview_best_effort(
+
+            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
                 self,
                 meeting,
                 timeline_offsets={
@@ -5161,67 +4920,91 @@ class ScriberWebController:
                     "system": gap_end_ms,
                 },
             )
-            live_preview_ref["transcriber"] = restarted_live
+            if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting reconnect preview setup.",
+                )
+            live_preview_ref["transcriber"] = live_preview
             for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
                 if key in native_payload:
                     metadata[key] = native_payload[key]
             metadata.pop("pauseStartedAtMs", None)
             metadata.pop("pauseStartedAtUtc", None)
             metadata["timelineOffsetMs"] = gap_end_ms
-            metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+            metadata["timelineStartedAtUtc"] = datetime.now(UTC).isoformat()
             metadata["livePreview"] = _meeting_live_preview_metadata(
                 meeting,
                 degraded=live_preview_degraded,
                 error_code="live_stt_resume_failed",
             )
-            recording = await asyncio.to_thread(
-                self._meeting_store.transition,
-                meeting_id,
-                "recording",
-                error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
-                error_message=(
-                    "Live transcription is unavailable. Durable local audio recording continues."
-                    if live_preview_degraded
-                    else ""
-                ),
-                capture_metadata=metadata,
-            )
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting reconnect committed.",
+                    )
+                recording, recording_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "recording",
+                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
+                        error_message=(
+                            "Live transcription is unavailable. Durable local audio recording continues."
+                            if live_preview_degraded
+                            else ""
+                        ),
+                        capture_metadata=metadata,
+                    )
+                )
+                pending_cancel = pending_cancel or recording_cancel
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting reconnect became durable.",
+                    )
+            if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed before Meeting reconnect became durable.",
+                )
             self.start_meeting_capture_watchdog(meeting_id, str(metadata.get("captureId") or ""))
             await self.broadcast(meeting_state_event(recording))
             if live_preview_degraded:
                 for source in ("microphone", "system"):
                     await self.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
-        except Exception as exc:
-            if restart_capture_id:
-                try:
-                    prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
-                    if recorder_started and callable(prepare_disconnect):
-                        prepare_disconnect()
-                    await asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingStop",
-                        {"meetingId": meeting_id, "captureId": restart_capture_id},
-                        timeout_seconds=4.0,
+            if pending_cancel is not None:
+                raise pending_cancel
+        except BaseException as exc:
+            if ownership.loss_requested:
+                await _audio_admission_owner(self).note_loss(meeting_claim, reason="superseded")
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                return
+            ownership.failure_state = "interrupted"
+            try:
+                async with ownership.setup_lock:
+                    await _cleanup_meeting_capture_ownership_barrier(
+                        self,
+                        ownership,
+                        error_code="meeting_device_reconnect_failed",
+                        error_message=(
+                            f"The default microphone changed and automatic reconnect failed ({type(exc).__name__})."
+                        ),
                     )
-                except Exception:
-                    pass
-            if restarted_live is not None:
-                self._meeting_live_transcribers.pop(meeting_id, None)
-                await restarted_live.stop()
-            if recorder_started and recorder is not None:
-                try:
-                    await asyncio.to_thread(recorder.stop, expected_disconnect=True)
-                except Exception:
-                    logger.exception("Meeting recorder cleanup after device reconnect failed")
-            failed_pause = await asyncio.to_thread(
-                self._meeting_store.transition,
-                meeting_id,
-                "paused",
-                error_code="meeting_device_reconnect_failed",
-                error_message=f"The default microphone changed and automatic reconnect failed ({type(exc).__name__}).",
-                capture_metadata=metadata,
-            )
-            await self.broadcast(meeting_state_event(failed_pause))
+            except _MeetingCaptureCleanupIncomplete:
+                logger.exception("Meeting device reconnect cleanup remains unconfirmed")
+            else:
+                await _release_persistent_audio(self, meeting_claim)
+                if registry.get(meeting_id) is ownership:
+                    registry.pop(meeting_id, None)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
 
     def _emit_workflow_event(
         self,
@@ -5291,6 +5074,8 @@ class ScriberWebController:
     def _remember_job_id(self, transcript_id: str, job_id: str) -> None:
         if not transcript_id or not job_id:
             return
+        self._uncertain_job_commits.pop(transcript_id, None)
+        self._uncertain_job_reconcile_attempts.pop(transcript_id, None)
         self._job_ids_by_transcript.pop(transcript_id, None)
         self._scheduled_frozen_routes.pop(transcript_id, None)
         self._job_ids_by_transcript[transcript_id] = job_id
@@ -5353,19 +5138,38 @@ class ScriberWebController:
         self,
         rec: TranscriptRecord,
         *,
+        job_id: str,
         job_type: JobType,
         payload: dict[str, Any],
-    ) -> str:
+    ) -> _BackgroundJobEnqueueResult:
         try:
             job = self._job_store.enqueue(
                 transcript_id=rec.id,
                 job_type=job_type,
                 payload=payload,
+                job_id=job_id,
             )
-            return job.id
+            if job.id != job_id:
+                raise RuntimeError("Job store returned a different job identifier")
+            return _BackgroundJobEnqueueResult(job_id, "committed")
         except Exception as exc:
             logger.error(f"Failed to persist queued job for transcript {rec.id}: {exc}")
-            raise TranscriptPersistenceError("Failed to queue transcription job") from exc
+            try:
+                persisted = self._job_store.get(job_id)
+            except Exception as read_exc:
+                logger.error(
+                    "Could not resolve queued job commit state for transcript {} (error_type={})",
+                    rec.id,
+                    type(read_exc).__name__,
+                )
+                return _BackgroundJobEnqueueResult(job_id, "unknown")
+            if persisted is None:
+                return _BackgroundJobEnqueueResult(job_id, "not_committed")
+            if persisted.transcript_id != rec.id or persisted.job_type != job_type:
+                logger.error("Queued job commit evidence did not match transcript {}", rec.id)
+                return _BackgroundJobEnqueueResult(job_id, "unknown")
+            logger.warning("Adopting queued job {} after post-commit enqueue failure", job_id)
+            return _BackgroundJobEnqueueResult(job_id, "committed")
 
     async def _enqueue_background_job_async(
         self,
@@ -5374,16 +5178,41 @@ class ScriberWebController:
         job_type: JobType,
         payload: dict[str, Any],
     ) -> str:
-        job_id = await asyncio.to_thread(
-            self._enqueue_background_job,
-            rec,
-            job_type=job_type,
-            payload=payload,
+        # The transcript parent is the durable admission record. Reusing its
+        # UUID makes the exact queue row recoverable after a process crash;
+        # startup can distinguish a committed row from an abandoned parent
+        # without relying on volatile in-memory state.
+        reserved_job_id = rec.id
+        outcome, pending_cancel = await await_with_delayed_cancellation(
+            asyncio.to_thread(
+                self._enqueue_background_job,
+                rec,
+                job_id=reserved_job_id,
+                job_type=job_type,
+                payload=payload,
+            )
         )
-        self._remember_job_id(rec.id, job_id)
-        return job_id
+        if outcome.commit_state == "not_committed":
+            if pending_cancel is not None:
+                raise pending_cancel
+            raise TranscriptPersistenceError("Failed to queue transcription job")
 
-    def _set_job_running(self, transcript_id: str) -> None:
+        self._remember_job_id(rec.id, outcome.job_id)
+        if outcome.commit_state == "unknown":
+            self._uncertain_job_commits[rec.id] = outcome.job_id
+            self._uncertain_job_reconcile_attempts[rec.id] = 0
+            if pending_cancel is not None:
+                raise pending_cancel
+            # Ownership is accepted even while the exact read is unavailable.
+            # Returning the processing admission prevents a client retry from
+            # creating duplicate provider work. The serialized reconciler will
+            # either adopt this exact row or remove the abandoned admission.
+            return outcome.job_id
+        if pending_cancel is not None:
+            raise pending_cancel
+        return outcome.job_id
+
+    def _set_job_running(self, transcript_id: str) -> bool:
         job_id = self._job_ids_by_transcript.get(transcript_id)
         if not job_id:
             raise TranscriptPersistenceError("Background job is missing persisted lifecycle state")
@@ -5392,11 +5221,25 @@ class ScriberWebController:
         except Exception as exc:
             logger.error(f"Failed to mark job running for transcript {transcript_id}: {exc}")
             raise TranscriptPersistenceError("Failed to start persisted transcription job") from exc
-        if not updated:
+        if updated:
+            return True
+        try:
+            persisted = self._job_store.get(job_id)
+        except Exception as exc:
+            raise TranscriptPersistenceError("Failed to verify persisted transcription job ownership") from exc
+        if persisted is None:
             raise TranscriptPersistenceError("Background job lifecycle record no longer exists")
+        if persisted.transcript_id != transcript_id:
+            raise TranscriptPersistenceError("Background job lifecycle ownership does not match its transcript")
+        if persisted.status != JobStatus.QUEUED:
+            # Another idempotent scheduler already won the QUEUED -> RUNNING
+            # compare-and-set, or the row became terminal. This worker owns no
+            # provider work and exits quietly.
+            return False
+        raise TranscriptPersistenceError("Failed to claim persisted transcription job")
 
-    async def _set_job_running_async(self, transcript_id: str) -> None:
-        await asyncio.to_thread(self._set_job_running, transcript_id)
+    async def _set_job_running_async(self, transcript_id: str) -> bool:
+        return await asyncio.to_thread(self._set_job_running, transcript_id)
 
     def _background_job_id(self, transcript_id: str) -> str:
         job_id = self._job_ids_by_transcript.get(transcript_id)
@@ -5990,6 +5833,10 @@ class ScriberWebController:
             logger.warning(f"Failed to query next retry delay: {exc}")
             return
         if delay is None:
+            if self._uncertain_job_commits or self._startup_orphan_admissions:
+                # These retry sources live outside the queued-job due index.
+                # Their reconcilers have already armed the coalescing timer.
+                return
             self._retry_scheduler.cancel()
             return
         self._schedule_retry_scan(delay)
@@ -6044,7 +5891,7 @@ class ScriberWebController:
             )
             if not queued:
                 return False
-            retry_label = int(round(delay_seconds))
+            retry_label = round(delay_seconds)
             rec.status = "processing"
             rec.step = f"Retrying local completion in {retry_label}s ({attempts}/{self._job_max_attempts})"
             rec.updated_at = datetime.now().isoformat()
@@ -6073,7 +5920,7 @@ class ScriberWebController:
 
         delay_seconds = self._retry_delay_seconds(attempts)
         retry_at = (datetime.now() + timedelta(seconds=delay_seconds)).isoformat()
-        retry_label = int(round(delay_seconds))
+        retry_label = round(delay_seconds)
         try:
             updated = await asyncio.to_thread(
                 self._job_store.set_retry,
@@ -6103,16 +5950,13 @@ class ScriberWebController:
                 JobStatus.COMPLETED,
                 JobStatus.FAILED,
             }:
-                rec.updated_at = datetime.now().isoformat()
-                if current.status == JobStatus.CANCELED:
-                    rec.status = "stopped"
-                    rec.step = current.last_error or "Stopped by user"
-                elif current.status == JobStatus.COMPLETED:
-                    rec.status = "completed"
-                    rec.step = "Completed"
-                else:
-                    rec.status = "failed"
-                    rec.step = current.last_error or "Transcription failed"
+                outcome = await self._reconcile_terminal_job_projection(
+                    rec,
+                    current,
+                    cleanup_reason="retry_cas_lost",
+                )
+                if outcome == _BackgroundCleanupOutcome.FAILED:
+                    rec._persistence_failed = True
                 # ``True`` means the exception is fully handled: either a retry
                 # was scheduled or another terminal lifecycle writer won.  All
                 # callers already return without projecting a competing failure
@@ -6131,22 +5975,359 @@ class ScriberWebController:
         )
         return True
 
-    def _sync_job_status(self, rec: TranscriptRecord) -> None:
-        job_id = self._job_ids_by_transcript.get(rec.id)
-        if not job_id:
-            return
-        try:
-            if rec.status == "completed":
-                self._job_store.mark_completed(job_id)
-            elif rec.status == "failed":
-                self._job_store.mark_failed(job_id, last_error=rec.step or "Transcription failed")
-            elif rec.status == "stopped":
-                self._job_store.mark_canceled(job_id, last_error=rec.step or "Stopped by user")
-        except Exception as exc:  # pragma: no cover - best effort persistence
-            logger.warning(f"Failed to sync job status for transcript {rec.id}: {exc}")
+    def _retain_uncertain_job_projection(self, transcript_id: str, job_id: str) -> None:
+        self._job_ids_by_transcript[transcript_id] = job_id
+        self._uncertain_job_commits[transcript_id] = job_id
+        self._rearm_uncertain_job_reconciliation(transcript_id)
 
-    async def _sync_job_status_async(self, rec: TranscriptRecord) -> None:
-        await asyncio.to_thread(self._sync_job_status, rec)
+    async def _cleanup_terminal_file_source(
+        self,
+        rec: TranscriptRecord,
+        *,
+        reason: str,
+    ) -> _BackgroundCleanupOutcome:
+        if rec.type != "file":
+            return _BackgroundCleanupOutcome.COMPLETE
+        try:
+            files_root = (self._downloads_dir / "files").resolve()
+            if rec.source_url:
+                source_path = Path(rec.source_url).expanduser().resolve()
+                source_dir = source_path.parent
+            elif rec.step == "Deleting":
+                source_dir = (files_root / _safe_work_directory_component(rec.id)).resolve()
+                source_path = source_dir / "owned-upload"
+            else:
+                return _BackgroundCleanupOutcome.COMPLETE
+        except Exception:
+            return _BackgroundCleanupOutcome.FAILED
+        if source_dir == files_root or source_dir.parent != files_root or not source_dir.exists():
+            return _BackgroundCleanupOutcome.COMPLETE
+        cleaned = await self._cleanup_owned_file_source(
+            source_path,
+            reason=reason,
+            transcript_id=rec.id,
+        )
+        if cleaned or not source_dir.exists():
+            return _BackgroundCleanupOutcome.COMPLETE
+        return _BackgroundCleanupOutcome.FAILED
+
+    async def _commit_transcript_deletion(
+        self,
+        rec: TranscriptRecord,
+    ) -> tuple[TranscriptDeleteStatus, TranscriptRecord]:
+        """Finish one durable deletion intent in restart-safe phase order."""
+
+        transcript_id = rec.id
+        try:
+            await asyncio.to_thread(
+                self._job_store.delete_by_transcript_id,
+                transcript_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to remove persisted jobs for deleted transcript {}: {}",
+                transcript_id,
+                exc,
+            )
+            return "persistence_error", rec
+
+        source_cleanup = await self._cleanup_terminal_file_source(
+            rec,
+            reason="transcript_deleted",
+        )
+        if source_cleanup == _BackgroundCleanupOutcome.FAILED:
+            return "persistence_error", rec
+
+        persistence_lock = self._transcript_persistence_lock(transcript_id)
+        async with persistence_lock:
+            parent_deleted = await asyncio.to_thread(db.delete_transcript, transcript_id)
+        if not parent_deleted:
+            try:
+                parent_still_exists = await asyncio.to_thread(
+                    db.transcript_exists_or_raise,
+                    transcript_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not verify transcript deletion {} (error_type={})",
+                    transcript_id,
+                    type(exc).__name__,
+                )
+                return "persistence_error", rec
+            if parent_still_exists:
+                logger.error(
+                    "Refusing to remove transcript from memory after database deletion failed: {}",
+                    transcript_id,
+                )
+                return "persistence_error", rec
+
+        removed = self._remove_from_history(transcript_id) or rec
+        self._job_ids_by_transcript.pop(transcript_id, None)
+        self._uncertain_job_commits.pop(transcript_id, None)
+        self._uncertain_job_reconcile_attempts.pop(transcript_id, None)
+        self._startup_orphan_admissions.pop(transcript_id, None)
+        self._scheduled_frozen_routes.pop(transcript_id, None)
+        try:
+            await self._broadcast_history_updated(record=removed, reason="deleted")
+        except Exception:
+            logger.exception("Failed to broadcast deleted transcript {}", transcript_id)
+        return "deleted", removed
+
+    async def _reconcile_terminal_job_projection(
+        self,
+        rec: TranscriptRecord,
+        job: JobRecord,
+        *,
+        cleanup_reason: str,
+        cleanup_source: bool = True,
+    ) -> _BackgroundCleanupOutcome:
+        """Settle parent, exact Job, and owned source as one restart-safe protocol."""
+
+        job_id = job.id
+        terminal_job_statuses = {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELED,
+        }
+        parent_to_job = {
+            "completed": JobStatus.COMPLETED,
+            "failed": JobStatus.FAILED,
+            "stopped": JobStatus.CANCELED,
+        }
+        job_to_parent = {value: key for key, value in parent_to_job.items()}
+
+        def adopt_parent(authoritative: TranscriptRecord, exact_job: JobRecord) -> None:
+            if authoritative.type == "file" and not authoritative.source_url:
+                authoritative.source_url = str(exact_job.payload.get("path", "") or "")
+            if not authoritative.processing_started_at:
+                authoritative.processing_started_at = rec.processing_started_at
+            prefer_captions = exact_job.payload.get("preferCaptions")
+            if authoritative.type == "youtube" and isinstance(prefer_captions, bool):
+                authoritative._youtube_prefer_captions = prefer_captions
+            for record_field in fields(TranscriptRecord):
+                setattr(rec, record_field.name, getattr(authoritative, record_field.name))
+            self._add_to_history(rec)
+
+        async def load_parent() -> TranscriptRecord | None:
+            try:
+                persisted = await asyncio.to_thread(db.get_transcript, rec.id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not load transcript parent {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+                return None
+            if not isinstance(persisted, dict):
+                return None
+            return self._record_from_persisted_data(persisted)
+
+        authoritative = await load_parent()
+        parent_projection_deferred = False
+        parent_confirmed_absent = False
+        desired_job_status: JobStatus | None = None
+        if authoritative is None:
+            try:
+                parent_confirmed_absent = not await asyncio.to_thread(
+                    db.transcript_exists_or_raise,
+                    rec.id,
+                )
+            except Exception:
+                parent_confirmed_absent = False
+            if parent_confirmed_absent and job.status in terminal_job_statuses and job.terminal_projection_pending:
+                # There is no completed parent content to reconstruct. Keep
+                # the exact terminal row as cleanup ownership until its owned
+                # source is gone, then remove that row last.
+                desired_job_status = job.status
+                rec.status = job_to_parent[job.status]
+                rec.step = job.last_error or (
+                    "Completed"
+                    if job.status == JobStatus.COMPLETED
+                    else "Stopped by user"
+                    if job.status == JobStatus.CANCELED
+                    else "Transcription failed"
+                )
+                parent_projection_deferred = True
+            elif job.status in {JobStatus.FAILED, JobStatus.CANCELED} and job.terminal_projection_pending:
+                desired_job_status = job.status
+                rec.status = job_to_parent[job.status]
+                rec.step = job.last_error or (
+                    "Stopped by user" if job.status == JobStatus.CANCELED else "Transcription failed"
+                )
+                parent_projection_deferred = True
+            elif rec.status in {"failed", "stopped"} and job.status not in terminal_job_statuses:
+                desired_job_status = parent_to_job[rec.status]
+                parent_projection_deferred = True
+            else:
+                rec._persistence_failed = True
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.FAILED
+        else:
+            parent_status = authoritative.status.strip().lower()
+            desired_job_status = parent_to_job.get(parent_status)
+            if desired_job_status is not None:
+                adopt_parent(authoritative, job)
+                if authoritative.step == "Deleting" and cleanup_source:
+                    # A durable deletion intent exclusively owns the exact
+                    # row and source. The startup deletion sweep preserves its
+                    # required Job -> source -> parent commit order.
+                    self._retain_uncertain_job_projection(rec.id, job_id)
+                    return _BackgroundCleanupOutcome.DURABLE_PENDING
+            elif parent_status == "processing":
+                if job.status in terminal_job_statuses and job.terminal_projection_pending:
+                    if job.status == JobStatus.COMPLETED:
+                        desired_job_status = JobStatus.FAILED
+                        desired_parent_status = "failed"
+                        desired_parent_step = (
+                            "Completed job recovery lacked a durable completed transcript; "
+                            "automatic replay was disabled."
+                        )
+                    else:
+                        desired_job_status = job.status
+                        desired_parent_status = job_to_parent[job.status]
+                        desired_parent_step = job.last_error or (
+                            "Stopped by user" if job.status == JobStatus.CANCELED else "Transcription failed"
+                        )
+                elif rec.status in {"failed", "stopped"} and job.status not in terminal_job_statuses:
+                    desired_job_status = parent_to_job[rec.status]
+                    desired_parent_status = rec.status
+                    desired_parent_step = rec.step
+                else:
+                    self._retain_uncertain_job_projection(rec.id, job_id)
+                    return _BackgroundCleanupOutcome.FAILED
+
+                # A metadata-only history record must never replace full
+                # durable content while projecting a reconstructable terminal.
+                adopt_parent(authoritative, job)
+                rec.status = desired_parent_status
+                rec.step = desired_parent_step
+                rec.updated_at = datetime.now().isoformat()
+                await self._transition_terminal_parent_to_db_async(rec)
+                refreshed_parent = await load_parent()
+                if refreshed_parent is not None and refreshed_parent.status in parent_to_job:
+                    desired_job_status = parent_to_job[refreshed_parent.status]
+                    adopt_parent(refreshed_parent, job)
+                else:
+                    parent_projection_deferred = True
+            else:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.FAILED
+
+        if desired_job_status is None:
+            self._retain_uncertain_job_projection(rec.id, job_id)
+            return _BackgroundCleanupOutcome.FAILED
+
+        projection_write_required = job.status not in terminal_job_statuses or (
+            job.status != desired_job_status and job.terminal_projection_pending
+        )
+        parent_projection_durable = not parent_projection_deferred and not parent_confirmed_absent
+        if projection_write_required:
+            updated = False
+            try:
+                updated = await asyncio.to_thread(
+                    self._job_store.mark_terminal_projection_pending,
+                    job_id,
+                    status=desired_job_status,
+                    last_error=("" if desired_job_status == JobStatus.COMPLETED else rec.step),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not persist terminal job projection for {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+            try:
+                current = await asyncio.to_thread(self._job_store.get, job_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not verify terminal job projection for {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+                current = None
+            if (not updated and current is None) or current is None:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return (
+                    _BackgroundCleanupOutcome.DURABLE_PENDING
+                    if parent_projection_durable
+                    else _BackgroundCleanupOutcome.FAILED
+                )
+            job = current
+
+        if job.status != desired_job_status:
+            self._retain_uncertain_job_projection(rec.id, job_id)
+            return (
+                _BackgroundCleanupOutcome.DURABLE_PENDING
+                if parent_projection_durable
+                else _BackgroundCleanupOutcome.FAILED
+            )
+        if parent_confirmed_absent:
+            if not job.terminal_projection_pending:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.FAILED
+            if rec.type == "file" and not rec.source_url:
+                rec.source_url = str(job.payload.get("path", "") or "")
+            cleanup = await self._cleanup_terminal_file_source(
+                rec,
+                reason="terminal_parent_absent",
+            )
+            if cleanup == _BackgroundCleanupOutcome.FAILED:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.DURABLE_PENDING
+            try:
+                deleted = await asyncio.to_thread(
+                    self._job_store.delete_exact,
+                    job_id,
+                    expected_transcript_id=rec.id,
+                )
+            except Exception:
+                deleted = False
+            if not deleted:
+                try:
+                    exact_job = await asyncio.to_thread(self._job_store.get, job_id)
+                except Exception:
+                    exact_job = job
+                if exact_job is not None:
+                    self._retain_uncertain_job_projection(rec.id, job_id)
+                    return _BackgroundCleanupOutcome.DURABLE_PENDING
+            self._remove_from_history(rec.id)
+            self._job_ids_by_transcript.pop(rec.id, None)
+            self._uncertain_job_commits.pop(rec.id, None)
+            self._uncertain_job_reconcile_attempts.pop(rec.id, None)
+            return _BackgroundCleanupOutcome.COMPLETE
+        if parent_projection_deferred:
+            if job.terminal_projection_pending:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.DURABLE_PENDING
+            self._retain_uncertain_job_projection(rec.id, job_id)
+            return _BackgroundCleanupOutcome.FAILED
+        if cleanup_source:
+            cleanup = await self._cleanup_terminal_file_source(
+                rec,
+                reason=cleanup_reason,
+            )
+            if cleanup == _BackgroundCleanupOutcome.FAILED:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.DURABLE_PENDING
+        if job.terminal_projection_pending and cleanup_source:
+            try:
+                cleared = await asyncio.to_thread(
+                    self._job_store.clear_terminal_projection_pending,
+                    job_id,
+                    expected_status=job.status,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not acknowledge terminal projection {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+                cleared = False
+            if not cleared:
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.DURABLE_PENDING
+        self._remember_job_id(rec.id, job_id)
+        return _BackgroundCleanupOutcome.COMPLETE
 
     async def _cleanup_owned_file_source(
         self,
@@ -6168,7 +6349,7 @@ class ScriberWebController:
                 return False
             if transcript_id:
                 self._mark_source_assets_purge_pending(transcript_id)
-            await _remove_tree_if_exists(file_dir)
+            await remove_tree_if_exists(file_dir)
             if transcript_id:
                 self._mark_source_assets_purged(transcript_id, reason=f"file_{reason}_task_released")
             logger.debug("Cleaned up uploaded file directory ({}): {}", reason, file_dir)
@@ -6177,23 +6358,94 @@ class ScriberWebController:
             logger.warning("Failed to cleanup uploaded file ({}): {}", reason, exc)
             return False
 
+    async def _settle_terminal_background_job(
+        self,
+        rec: TranscriptRecord,
+        *,
+        cleanup_reason: str,
+    ) -> _BackgroundCleanupOutcome:
+        """Own terminal Job/parent/source projection through cancellation."""
+
+        async def settle_owned() -> _BackgroundCleanupOutcome:
+            if rec.status not in {"completed", "failed", "stopped"}:
+                return _BackgroundCleanupOutcome.COMPLETE
+            job_id = self._job_ids_by_transcript.get(rec.id)
+            if not job_id:
+                saved = await self._save_transcript_to_db_async(rec)
+                if saved is False:
+                    return _BackgroundCleanupOutcome.FAILED
+                return await self._cleanup_terminal_file_source(rec, reason=cleanup_reason)
+            try:
+                job = await asyncio.to_thread(self._job_store.get, job_id)
+            except Exception as exc:
+                logger.warning(
+                    "Could not inspect terminal job {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.FAILED
+            if job is None:
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
+                self._retain_uncertain_job_projection(rec.id, job_id)
+                return _BackgroundCleanupOutcome.FAILED
+            return await self._reconcile_terminal_job_projection(
+                rec,
+                job,
+                cleanup_reason=cleanup_reason,
+            )
+
+        outcome, pending_cancel = await await_with_delayed_cancellation(settle_owned())
+        if pending_cancel is not None:
+            raise pending_cancel
+        return outcome
+
     async def _finalize_canceled_background_job(self, rec: TranscriptRecord) -> None:
         """Persist and publish the terminal state reached after task cancellation."""
         rec.status = "stopped"
         rec.step = "Stopped by user"
         rec.updated_at = datetime.now().isoformat()
-        await self._sync_job_status_async(rec)
-        await self._save_transcript_to_db_async(rec)
+        pending_cancel: asyncio.CancelledError | None = None
+        outcome = _BackgroundCleanupOutcome.FAILED
+        try:
+            outcome = await self._settle_terminal_background_job(rec, cleanup_reason="canceled")
+        except asyncio.CancelledError as exc:
+            pending_cancel = exc
+        if pending_cancel is not None:
+            await self._broadcast_history_updated(record=rec, reason="canceled")
+            raise pending_cancel
+        if outcome == _BackgroundCleanupOutcome.FAILED:
+            # Neither the parent nor the exact Job owns a durable no-replay
+            # intent. Keep the public operation retriable instead of exposing
+            # a terminal in-memory state that a second stop cannot settle.
+            rec.status = "processing"
+            rec.step = "Cancellation pending"
+            rec.updated_at = datetime.now().isoformat()
+            await self._broadcast_history_updated(
+                record=rec,
+                reason="cancel_persistence_failed",
+            )
+            raise CancellationPersistenceUnavailable("Cancellation could not acquire durable lifecycle ownership")
         await self._broadcast_history_updated(record=rec, reason="canceled")
-        if rec.type == "file" and rec.source_url:
-            await self._cleanup_owned_file_source(rec.source_url, reason="canceled", transcript_id=rec.id)
 
-    def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> None:
+    def _schedule_youtube_job(self, rec: TranscriptRecord, *, resumed: bool = False) -> bool:
+        if rec.id in self._running_tasks:
+            return False
+
         async def _runner() -> None:
             provider: str | None = None
             frozen_route: FrozenTranscriptionRoute | None = None
             try:
-                await self._set_job_running_async(rec.id)
+                claimed = await self._set_job_running_async(rec.id)
+                if claimed is False:
+                    return
                 frozen_route = await self._load_or_freeze_background_route(
                     rec,
                     workload="youtube",
@@ -6205,16 +6457,17 @@ class ScriberWebController:
                     await self._finalize_canceled_background_job(rec)
                 raise
             except Exception as exc:
-                try:
-                    if not await self._schedule_retry_if_allowed(rec, exc):
-                        rec.status = "failed"
-                        rec.step = "Failed"
-                        rec.append_final_text(f"[Error] {exc}")
-                    rec.updated_at = datetime.now().isoformat()
-                    await self._save_transcript_to_db_async(rec)
-                    await self._broadcast_history_updated(record=rec, reason="job_failed")
-                finally:
-                    await self._sync_job_status_async(rec)
+                if not await self._schedule_retry_if_allowed(rec, exc):
+                    rec.status = "failed"
+                    rec.step = "Failed"
+                    rec.append_final_text(f"[Error] {exc}")
+                rec.updated_at = datetime.now().isoformat()
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
+                await self._broadcast_history_updated(record=rec, reason="job_failed")
+                await self._settle_terminal_background_job(rec, cleanup_reason="job_failed")
                 return
             try:
                 self._scheduled_frozen_routes[rec.id] = frozen_route
@@ -6236,22 +6489,31 @@ class ScriberWebController:
                     rec.step = "Failed"
                     rec.append_final_text(f"[Error] {exc}")
                 rec.updated_at = datetime.now().isoformat()
-                await self._save_transcript_to_db_async(rec)
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
                 await self._broadcast_history_updated(record=rec, reason="job_failed")
             finally:
                 self._scheduled_frozen_routes.pop(rec.id, None)
                 if rec.status != "stopped":
-                    await self._sync_job_status_async(rec)
+                    await self._settle_terminal_background_job(rec, cleanup_reason=rec.status)
 
         task_name = f"youtube_transcribe_{rec.id}" if not resumed else f"youtube_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
         self._register_task(rec.id, task)
+        return True
 
-    def _schedule_file_job(self, rec: TranscriptRecord, file_path: Path, *, resumed: bool = False) -> None:
+    def _schedule_file_job(self, rec: TranscriptRecord, file_path: Path, *, resumed: bool = False) -> bool:
+        if rec.id in self._running_tasks:
+            return False
+
         async def _runner() -> None:
             frozen_route: FrozenTranscriptionRoute | None = None
             try:
-                await self._set_job_running_async(rec.id)
+                claimed = await self._set_job_running_async(rec.id)
+                if claimed is False:
+                    return
                 frozen_route = await self._load_or_freeze_background_route(
                     rec,
                     workload="file",
@@ -6262,18 +6524,17 @@ class ScriberWebController:
                     await self._finalize_canceled_background_job(rec)
                 raise
             except Exception as exc:
-                try:
-                    if not await self._schedule_retry_if_allowed(rec, exc):
-                        rec.status = "failed"
-                        rec.step = "Failed"
-                        rec.append_final_text(f"[Error] {exc}")
-                    rec.updated_at = datetime.now().isoformat()
-                    await self._save_transcript_to_db_async(rec)
-                    await self._broadcast_history_updated(record=rec, reason="job_failed")
-                finally:
-                    await self._sync_job_status_async(rec)
-                    if rec.status != "processing":
-                        await self._cleanup_owned_file_source(file_path, reason=rec.status, transcript_id=rec.id)
+                if not await self._schedule_retry_if_allowed(rec, exc):
+                    rec.status = "failed"
+                    rec.step = "Failed"
+                    rec.append_final_text(f"[Error] {exc}")
+                rec.updated_at = datetime.now().isoformat()
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
+                await self._broadcast_history_updated(record=rec, reason="job_failed")
+                await self._settle_terminal_background_job(rec, cleanup_reason="job_failed")
                 return
             try:
                 self._scheduled_frozen_routes[rec.id] = frozen_route
@@ -6291,11 +6552,12 @@ class ScriberWebController:
             finally:
                 self._scheduled_frozen_routes.pop(rec.id, None)
                 if rec.status != "stopped":
-                    await self._sync_job_status_async(rec)
+                    await self._settle_terminal_background_job(rec, cleanup_reason=rec.status)
 
         task_name = f"file_transcribe_{rec.id}" if not resumed else f"file_resume_{rec.id}"
         task = asyncio.create_task(_runner(), name=task_name)
         self._register_task(rec.id, task)
+        return True
 
     def _build_processing_record_from_job(self, job: JobRecord) -> TranscriptRecord:
         payload = job.payload or {}
@@ -6344,21 +6606,28 @@ class ScriberWebController:
         return rec
 
     async def _fail_resumed_job(self, rec: TranscriptRecord, message: str) -> None:
+        persisted = await asyncio.to_thread(db.get_transcript, rec.id)
+        if isinstance(persisted, dict) and str(persisted.get("status", "")).lower() == "processing":
+            source_url = rec.source_url
+            processing_started_at = rec.processing_started_at
+            authoritative = self._record_from_persisted_data(persisted)
+            if authoritative.type == "file" and not authoritative.source_url:
+                authoritative.source_url = source_url
+            if not authoritative.processing_started_at:
+                authoritative.processing_started_at = processing_started_at
+            for record_field in fields(TranscriptRecord):
+                setattr(rec, record_field.name, getattr(authoritative, record_field.name))
         rec.status = "failed"
         rec.step = "Failed"
         rec.append_final_text(f"[Error] {message}")
         rec.updated_at = datetime.now().isoformat()
-        await self._sync_job_status_async(rec)
-        await self._save_transcript_to_db_async(rec)
+        await self._transition_terminal_parent_to_db_async(rec)
+        await self._settle_terminal_background_job(rec, cleanup_reason="resume_failed")
         await self._broadcast_history_updated(record=rec, reason="job_failed")
-        if rec.type == "file" and rec.source_url:
-            await self._cleanup_owned_file_source(rec.source_url, reason="resume_failed")
 
     async def _reconcile_terminal_background_job(self, rec: TranscriptRecord) -> None:
         """Finish stale job bookkeeping and cleanup after an interrupted runtime."""
-        await self._sync_job_status_async(rec)
-        if rec.type == "file" and rec.source_url:
-            await self._cleanup_owned_file_source(rec.source_url, reason="terminal_reconciled")
+        await self._settle_terminal_background_job(rec, cleanup_reason="terminal_reconciled")
 
     @staticmethod
     def _timeout_seconds(env_key: str, default_seconds: float) -> float:
@@ -6440,18 +6709,19 @@ class ScriberWebController:
                 persisted_status = (
                     str(persisted.get("status") or "").strip().lower() if isinstance(persisted, dict) else ""
                 )
-                if persisted_status in {"completed", "stopped"}:
-                    if persisted_status == "completed":
-                        await asyncio.to_thread(
-                            self._job_store.mark_completed,
-                            job.id,
-                        )
-                    elif persisted_status == "stopped":
-                        await asyncio.to_thread(
-                            self._job_store.mark_canceled,
-                            job.id,
-                            last_error="Stopped by user",
-                        )
+                if isinstance(persisted, dict) and persisted_status in {"completed", "stopped"}:
+                    rec = self._record_from_persisted_data(persisted)
+                    if rec.type == "file" and not rec.source_url:
+                        rec.source_url = str(job.payload.get("path", "") or "")
+                    self._add_to_history(rec)
+                    self._job_ids_by_transcript[rec.id] = job.id
+                    outcome = await self._reconcile_terminal_job_projection(
+                        rec,
+                        job,
+                        cleanup_reason="startup_terminal_reconciled",
+                    )
+                    if outcome == _BackgroundCleanupOutcome.FAILED:
+                        return reconciled
                     reconciled += 1
                     continue
 
@@ -6478,10 +6748,12 @@ class ScriberWebController:
                         )
                         if repaired:
                             bound_attempt_id = candidate.attempt.id
-                            job = await asyncio.to_thread(
+                            repaired_job = await asyncio.to_thread(
                                 self._job_store.get,
                                 job.id,
                             )
+                            if repaired_job is not None:
+                                job = repaired_job
                 bound_bundle = None
                 if bound_attempt_id:
                     try:
@@ -6510,27 +6782,346 @@ class ScriberWebController:
                     if queued:
                         reconciled += 1
                         continue
-                if persisted_status == "failed":
-                    await asyncio.to_thread(
-                        self._job_store.mark_failed,
-                        job.id,
-                        last_error="Transcription failed",
+                if isinstance(persisted, dict) and persisted_status == "failed":
+                    rec = self._record_from_persisted_data(persisted)
+                    if rec.type == "file" and not rec.source_url:
+                        rec.source_url = str(job.payload.get("path", "") or "")
+                    self._add_to_history(rec)
+                    self._job_ids_by_transcript[rec.id] = job.id
+                    outcome = await self._reconcile_terminal_job_projection(
+                        rec,
+                        job,
+                        cleanup_reason="startup_terminal_reconciled",
                     )
+                    if outcome == _BackgroundCleanupOutcome.FAILED:
+                        return reconciled
                     reconciled += 1
                     continue
-
-                rec = self._get_history_record(job.transcript_id)
-                if rec is None:
-                    rec = self._build_processing_record_from_job(job)
-                    self._add_to_history(rec)
-                self._remember_job_id(rec.id, job.id)
+                history_rec = self._get_history_record(job.transcript_id)
+                if history_rec is None:
+                    history_rec = self._build_processing_record_from_job(job)
+                    self._add_to_history(history_rec)
+                self._remember_job_id(history_rec.id, job.id)
                 await self._fail_resumed_job(
-                    rec,
+                    history_rec,
                     "The provider request outcome is unknown after restart; "
                     "automatic replay was disabled to avoid duplicate provider work.",
                 )
                 reconciled += 1
         return reconciled
+
+    @staticmethod
+    def _job_type_matches_record(job: JobRecord, rec: TranscriptRecord) -> bool:
+        return (job.job_type == JobType.FILE and rec.type == "file") or (
+            job.job_type == JobType.YOUTUBE and rec.type == "youtube"
+        )
+
+    def _rearm_uncertain_job_reconciliation(self, transcript_id: str) -> None:
+        attempt = min(10, self._uncertain_job_reconcile_attempts.get(transcript_id, 0) + 1)
+        self._uncertain_job_reconcile_attempts[transcript_id] = attempt
+        delay_seconds = min(
+            self._job_retry_max_seconds,
+            max(0.1, self._job_retry_base_seconds * (2 ** (attempt - 1))),
+        )
+        try:
+            self._schedule_retry_scan(delay_seconds)
+        except Exception:
+            logger.exception(
+                "Failed to re-arm uncertain job reconciliation for transcript {}",
+                transcript_id,
+            )
+
+    async def _cleanup_abandoned_background_admission(
+        self,
+        rec: TranscriptRecord,
+        *,
+        expected_job_id: str | None,
+        reason: str,
+    ) -> _BackgroundCleanupOutcome:
+        """Remove every projection of an admission proven to have no job."""
+
+        source_cleanup = await self._cleanup_terminal_file_source(rec, reason=reason)
+        if source_cleanup == _BackgroundCleanupOutcome.FAILED:
+            return source_cleanup
+        try:
+            parent_deleted = await asyncio.to_thread(db.delete_transcript, rec.id)
+        except Exception:
+            logger.exception(
+                "Failed to delete abandoned transcript parent {}",
+                rec.id,
+            )
+            return _BackgroundCleanupOutcome.FAILED
+        if not parent_deleted:
+            try:
+                parent_still_exists = await asyncio.to_thread(
+                    db.transcript_exists_or_raise,
+                    rec.id,
+                )
+            except Exception:
+                return _BackgroundCleanupOutcome.FAILED
+            if parent_still_exists:
+                return _BackgroundCleanupOutcome.FAILED
+        self._remove_from_history(rec.id)
+        if expected_job_id is None or self._job_ids_by_transcript.get(rec.id) == expected_job_id:
+            self._job_ids_by_transcript.pop(rec.id, None)
+        if expected_job_id is None or self._uncertain_job_commits.get(rec.id) == expected_job_id:
+            self._uncertain_job_commits.pop(rec.id, None)
+        self._uncertain_job_reconcile_attempts.pop(rec.id, None)
+        self._scheduled_frozen_routes.pop(rec.id, None)
+        try:
+            await self._broadcast_history_updated(record=rec, reason="admission_abandoned")
+        except Exception:
+            logger.exception(
+                "Failed to broadcast abandoned background admission {}",
+                rec.id,
+            )
+        return _BackgroundCleanupOutcome.COMPLETE
+
+    async def _adopt_exact_uncertain_job(
+        self,
+        job: JobRecord,
+    ) -> _BackgroundCleanupOutcome | None:
+        """Adopt and schedule one exact row after an ambiguous enqueue return."""
+
+        rec = self._get_history_record(job.transcript_id)
+        if rec is None:
+            persisted = await asyncio.to_thread(db.get_transcript, job.transcript_id)
+            rec = (
+                self._record_from_persisted_data(persisted)
+                if isinstance(persisted, dict)
+                else self._build_processing_record_from_job(job)
+            )
+            if rec.type == "file" and not rec.source_url:
+                rec.source_url = str(job.payload.get("path", "") or "")
+            self._add_to_history(rec)
+        if not self._job_type_matches_record(job, rec):
+            raise TranscriptPersistenceError("Queued job type does not match its transcript admission")
+
+        if rec.status == "processing" and (
+            rec.step == "Cancellation pending" or rec.id in self._background_job_cancel_requests
+        ):
+            # A failed stop response may leave neither store writable for one
+            # scan. The retained exact-ID admission is still a cancellation
+            # intent, never permission to start provider work.
+            rec.status = "stopped"
+            rec.step = "Stopped by user"
+            rec.updated_at = datetime.now().isoformat()
+            outcome = await self._reconcile_terminal_job_projection(
+                rec,
+                job,
+                cleanup_reason="cancellation_reconciled",
+            )
+            if outcome == _BackgroundCleanupOutcome.FAILED:
+                rec.status = "processing"
+                rec.step = "Cancellation pending"
+                rec.updated_at = datetime.now().isoformat()
+            return outcome
+
+        if job.status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELED} or rec.status in {
+            "completed",
+            "failed",
+            "stopped",
+        }:
+            return await self._reconcile_terminal_job_projection(
+                rec,
+                job,
+                cleanup_reason="terminal_reconciled",
+            )
+
+        # The parent normally predates enqueue. Reasserting it here makes a
+        # matching exact row self-healing after a partially migrated build.
+        await self._ensure_artifact_transcript_row(rec)
+        self._remember_job_id(rec.id, job.id)
+        try:
+            await self._broadcast_history_updated(record=rec, reason="job_reconciled")
+        except Exception:
+            logger.exception(
+                "Failed to broadcast reconciled background job {}",
+                job.id,
+            )
+        if (
+            job.status == JobStatus.QUEUED
+            and rec.status == "processing"
+            and rec.id not in self._background_job_cancel_requests
+        ):
+            if job.job_type == JobType.YOUTUBE:
+                self._schedule_youtube_job(rec, resumed=True)
+            else:
+                file_path = Path(str(job.payload.get("path", "") or rec.source_url))
+                self._schedule_file_job(rec, file_path, resumed=True)
+        return None
+
+    async def _reconcile_durable_terminal_projections(
+        self,
+        jobs: list[JobRecord],
+    ) -> int:
+        """Settle one keyset page without retaining poison rows in memory."""
+
+        completed = 0
+        pending_cancel: asyncio.CancelledError | None = None
+        for job in jobs:
+            self._job_ids_by_transcript[job.transcript_id] = job.id
+            try:
+                outcome, adoption_cancel = await await_with_delayed_cancellation(self._adopt_exact_uncertain_job(job))
+                pending_cancel = adoption_cancel or pending_cancel
+                if outcome == _BackgroundCleanupOutcome.COMPLETE:
+                    completed += 1
+            except asyncio.CancelledError as exc:
+                pending_cancel = exc
+            except Exception as exc:
+                logger.warning(
+                    "Durable terminal projection remains pending for {} (error_type={})",
+                    job.transcript_id,
+                    type(exc).__name__,
+                )
+            finally:
+                if self._uncertain_job_commits.get(job.transcript_id) == job.id:
+                    self._uncertain_job_commits.pop(job.transcript_id, None)
+                    self._uncertain_job_reconcile_attempts.pop(job.transcript_id, None)
+        if pending_cancel is not None:
+            raise pending_cancel
+        return completed
+
+    async def _reconcile_uncertain_job_commits(self) -> frozenset[str]:
+        """Resolve exact IDs without ever guessing whether enqueue committed."""
+
+        reconciled: set[str] = set()
+        pending_cancel: asyncio.CancelledError | None = None
+        for transcript_id, job_id in tuple(self._uncertain_job_commits.items()):
+
+            def read_exact_job(exact_job_id: str = job_id) -> tuple[JobRecord | None, Exception | None]:
+                try:
+                    return self._job_store.get(exact_job_id), None
+                except Exception as exc:
+                    return None, exc
+
+            (job, read_error), read_cancel = await await_with_delayed_cancellation(asyncio.to_thread(read_exact_job))
+            pending_cancel = read_cancel or pending_cancel
+            if read_error is not None:
+                logger.warning(
+                    "Exact queued-job read remains unavailable for transcript {} (error_type={})",
+                    transcript_id,
+                    type(read_error).__name__,
+                )
+                self._rearm_uncertain_job_reconciliation(transcript_id)
+                continue
+            if job is None:
+                rec = self._get_history_record(transcript_id)
+                if rec is None:
+                    persisted = await asyncio.to_thread(db.get_transcript, transcript_id)
+                    if isinstance(persisted, dict):
+                        rec = self._record_from_persisted_data(persisted)
+                if rec is not None:
+                    cleanup, cleanup_cancel = await await_with_delayed_cancellation(
+                        self._cleanup_abandoned_background_admission(
+                            rec,
+                            expected_job_id=job_id,
+                            reason="enqueue_not_committed",
+                        )
+                    )
+                    pending_cancel = cleanup_cancel or pending_cancel
+                    if cleanup == _BackgroundCleanupOutcome.FAILED:
+                        self._rearm_uncertain_job_reconciliation(transcript_id)
+                        continue
+                else:
+                    self._job_ids_by_transcript.pop(transcript_id, None)
+                    self._uncertain_job_commits.pop(transcript_id, None)
+                    self._uncertain_job_reconcile_attempts.pop(transcript_id, None)
+                reconciled.add(transcript_id)
+                continue
+            if job.id != job_id or job.transcript_id != transcript_id:
+                logger.error(
+                    "Exact queued-job evidence does not match transcript {}",
+                    transcript_id,
+                )
+                self._rearm_uncertain_job_reconciliation(transcript_id)
+                continue
+            try:
+                _, adoption_cancel = await await_with_delayed_cancellation(self._adopt_exact_uncertain_job(job))
+                pending_cancel = adoption_cancel or pending_cancel
+            except asyncio.CancelledError as exc:
+                pending_cancel = exc
+            except Exception as exc:
+                logger.warning(
+                    "Exact queued job could not yet be adopted for transcript {} (error_type={})",
+                    transcript_id,
+                    type(exc).__name__,
+                )
+                self._rearm_uncertain_job_reconciliation(transcript_id)
+                continue
+            reconciled.add(transcript_id)
+        if pending_cancel is not None:
+            raise pending_cancel
+        return frozenset(reconciled)
+
+    async def _sweep_startup_background_admission_orphans(self, *, discover: bool) -> int:
+        """Delete crash-left processing parents that have no lifecycle row."""
+
+        if discover:
+            for transcript_type in ("file", "youtube"):
+                offset = 0
+                while True:
+                    page = await asyncio.to_thread(
+                        db.load_transcript_metadata_page,
+                        transcript_type=transcript_type,
+                        offset=offset,
+                        limit=100,
+                        include_incomplete=True,
+                    )
+                    items = list(page.get("items", [])) if isinstance(page, dict) else []
+                    for item in items:
+                        if isinstance(item, dict) and (
+                            (
+                                str(item.get("status", "")).lower() == "processing"
+                                and str(item.get("step", "")).startswith("Queued")
+                            )
+                            or str(item.get("step", "")) == "Deleting"
+                        ):
+                            rec = self._record_from_persisted_data(item)
+                            self._startup_orphan_admissions.setdefault(rec.id, rec)
+                    if not items or not bool(page.get("hasMore")):
+                        break
+                    offset += len(items)
+
+        swept = 0
+        for rec in tuple(self._startup_orphan_admissions.values()):
+            if rec.step == "Deleting":
+                self._mark_transcript_deleted(rec.id)
+                result, pending_cancel = await await_with_delayed_cancellation(self._commit_transcript_deletion(rec))
+                if result[0] == "persistence_error":
+                    self._schedule_retry_scan(self._job_retry_base_seconds)
+                    continue
+                swept += 1
+                if pending_cancel is not None:
+                    raise pending_cancel
+                continue
+            try:
+                job = await asyncio.to_thread(
+                    self._job_store.get_by_transcript_id,
+                    rec.id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not inspect startup admission {} (error_type={})",
+                    rec.id,
+                    type(exc).__name__,
+                )
+                self._schedule_retry_scan(self._job_retry_base_seconds)
+                continue
+            if job is not None:
+                self._startup_orphan_admissions.pop(rec.id, None)
+                continue
+            cleanup = await self._cleanup_abandoned_background_admission(
+                rec,
+                expected_job_id=None,
+                reason="startup_orphan",
+            )
+            if cleanup == _BackgroundCleanupOutcome.FAILED:
+                self._schedule_retry_scan(self._job_retry_base_seconds)
+                continue
+            self._startup_orphan_admissions.pop(rec.id, None)
+            swept += 1
+        return swept
 
     async def resume_pending_jobs(
         self,
@@ -6550,6 +7141,37 @@ class ScriberWebController:
         limit: int,
         recover_running: bool,
     ) -> int:
+        projection_limit = max(100, int(limit))
+        projection_cursor = self._terminal_projection_scan_cursor
+        try:
+            durable_projections = await asyncio.to_thread(
+                self._job_store.list_terminal_projection_pending,
+                limit=projection_limit,
+                after_created_at=(projection_cursor[0] if projection_cursor else ""),
+                after_id=(projection_cursor[1] if projection_cursor else ""),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not list terminal job projections (error_type={})",
+                type(exc).__name__,
+            )
+            durable_projections = []
+            self._schedule_retry_scan(self._job_retry_base_seconds)
+        if len(durable_projections) >= projection_limit:
+            last_projection = durable_projections[-1]
+            self._terminal_projection_scan_cursor = (
+                last_projection.created_at,
+                last_projection.id,
+            )
+        else:
+            self._terminal_projection_scan_cursor = None
+        terminal_projection_count = await self._reconcile_durable_terminal_projections(durable_projections)
+        reconciled_uncertain_ids = await self._reconcile_uncertain_job_commits()
+        startup_orphan_count = (
+            await self._sweep_startup_background_admission_orphans(discover=recover_running)
+            if recover_running or self._startup_orphan_admissions
+            else 0
+        )
         startup_running_job_ids = self._startup_running_job_ids if recover_running else frozenset()
         if recover_running:
             provider_outcome_count = await self._reconcile_running_provider_outcomes(
@@ -6569,6 +7191,8 @@ class ScriberWebController:
         active_count = sum(not task.done() for task in self._running_tasks.values())
         available_slots = max(0, self._job_concurrency_limit - active_count)
         if available_slots <= 0:
+            if durable_projections or projection_cursor is not None:
+                self._schedule_retry_scan(0.0 if terminal_projection_count > 0 else self._job_retry_base_seconds)
             return 0
         query_limit = max(
             1,
@@ -6585,7 +7209,11 @@ class ScriberWebController:
         resumed_count = 0
 
         for job in pending_jobs:
-            if job.transcript_id in self._running_tasks:
+            if (
+                job.transcript_id in reconciled_uncertain_ids
+                or job.transcript_id in self._uncertain_job_commits
+                or job.transcript_id in self._running_tasks
+            ):
                 continue
 
             durable_local_recovery = bool(
@@ -6662,10 +7290,11 @@ class ScriberWebController:
             self._schedule_file_job(rec, file_path, resumed=True)
             resumed_count += 1
 
-        if provider_outcome_count or reset_count or resumed_count:
+        if startup_orphan_count or provider_outcome_count or reset_count or resumed_count:
             await self._broadcast_history_updated()
             logger.info(
-                "Job resume startup scan: provider_outcomes={}, reset_running={}, resumed={}, pending={}",
+                "Job resume startup scan: orphans={}, provider_outcomes={}, reset_running={}, resumed={}, pending={}",
+                startup_orphan_count,
                 provider_outcome_count,
                 reset_count,
                 resumed_count,
@@ -6675,6 +7304,8 @@ class ScriberWebController:
             # The bounded scan may have left immediately due rows behind. Run
             # another scan after scheduled tasks are visible to the active cap.
             self._schedule_retry_scan(0.0)
+        elif durable_projections or projection_cursor is not None:
+            self._schedule_retry_scan(0.0 if terminal_projection_count > 0 else self._job_retry_base_seconds)
         else:
             await self._schedule_next_retry_scan_from_store()
         return resumed_count
@@ -6891,12 +7522,36 @@ class ScriberWebController:
             self._hot_path_tracers.pop(session_id, None)
             self._hot_path_reports_emitted.discard(session_id)
 
+    def _spawn_detached(self, coro: Awaitable[Any], *, name: str) -> asyncio.Future[Any] | None:
+        """Schedule work whose lifetime is owned by the controller."""
+
+        return self._detached_task_supervisor.spawn(coro, name=name)
+
+    def _spawn_detached_threadsafe(
+        self,
+        factory: Callable[[], Awaitable[Any]],
+        *,
+        name: str,
+    ) -> bool:
+        """Submit owned work from either the controller loop or a worker thread."""
+
+        return self._detached_task_supervisor.submit(
+            self._loop,
+            factory,
+            name=name,
+        )
+
+    async def _wait_for_detached_tasks(self, timeout_seconds: float = 2.0) -> int:
+        return await self._detached_task_supervisor.drain(
+            timeout_seconds=timeout_seconds,
+        )
+
     def _get_overlay(self):
         """Get or create the overlay instance and ensure callback is connected."""
 
         # get_overlay will create if needed, or update callback if already exists
         def schedule_stop() -> None:
-            asyncio.create_task(self.stop_listening())
+            self._spawn_detached(self.stop_listening(), name="overlay_stop_listening")
 
         def on_stop() -> None:
             self._loop.call_soon_threadsafe(schedule_stop)
@@ -7052,11 +7707,20 @@ class ScriberWebController:
             self._transcript_persistence_locks[transcript_id] = lock
         return lock
 
+    async def _transition_terminal_parent_to_db_async(self, record: TranscriptRecord) -> bool:
+        """CAS one terminal intent without overwriting a terminal winner."""
+
+        return await self._save_transcript_to_db_async(
+            record,
+            terminal_parent_transition=True,
+        )
+
     async def _save_transcript_to_db_async(
         self,
         record: TranscriptRecord,
         *,
         require_success: bool = False,
+        terminal_parent_transition: bool = False,
     ) -> bool:
         """Persist a transcript off-loop, retrying brief SQLite write failures."""
         last_error: Exception | None = None
@@ -7069,7 +7733,17 @@ class ScriberWebController:
                     await asyncio.sleep(delay)
                 try:
                     snapshot = record.to_public(include_content=True)
-                    await asyncio.to_thread(db.save_transcript, snapshot)
+                    if terminal_parent_transition:
+                        updated = await asyncio.to_thread(
+                            db.save_transcript_terminal_transition,
+                            snapshot,
+                        )
+                        if not updated:
+                            raise TranscriptPersistenceError(
+                                "Terminal transcript parent has a conflicting or missing durable state"
+                            )
+                    else:
+                        await asyncio.to_thread(db.save_transcript, snapshot)
                     record._persistence_failed = False
                     return True
                 except Exception as exc:
@@ -7205,6 +7879,44 @@ class ScriberWebController:
     def _get_history_record(self, transcript_id: str) -> TranscriptRecord | None:
         """Get a transcript by ID from the history index."""
         return self._history_by_id.get(transcript_id)
+
+    def has_transcript_record(self, transcript_id: str) -> bool:
+        """Report whether the in-memory history still knows this transcript."""
+        return self._get_history_record(transcript_id) is not None
+
+    def transcript_was_deleted(self, transcript_id: str) -> bool:
+        """Report whether this transcript was deleted during the current run."""
+        return transcript_id in self._deleted_transcript_ids
+
+    async def transcript_view(self, transcript_id: str) -> TranscriptView | None:
+        """Read a transcript through the live record or its durable row.
+
+        ``get_transcript`` also warms lazily loaded content, so it runs first
+        and the in-memory record is preferred afterwards when both exist.
+        """
+
+        stored = await self.get_transcript(transcript_id)
+        record = self._get_history_record(transcript_id)
+        if record is None and not isinstance(stored, dict):
+            return None
+
+        def field(attribute: str, key: str, default: str = "") -> str:
+            if record is not None:
+                return str(getattr(record, attribute, default) or default)
+            assert isinstance(stored, dict)
+            return str(stored.get(key, default) or default)
+
+        content = record.content_text() if record is not None else str((stored or {}).get("content", "") or "")
+        return TranscriptView(
+            id=transcript_id,
+            title=field("title", "title"),
+            content=content,
+            summary=field("summary", "summary"),
+            summary_format=field("summary_format", "summaryFormat", "markdown") or "markdown",
+            status=field("status", "status"),
+            date=field("date", "date"),
+            duration=field("duration", "duration"),
+        )
 
     def get_state(self) -> dict[str, Any]:
         with self._current_lock:
@@ -8201,24 +8913,29 @@ class ScriberWebController:
                 # The provider may fail before MicrophoneInput is constructed.
                 # In that path the pipeline cannot release either controller
                 # admission or the temporary capture-first prewarm itself.
-                try:
-                    await _release_persistent_audio(self)
-                except BaseException as release_exc:
-                    logger.warning(
-                        "Persistent native-audio admission release after pipeline exit failed: {}",
-                        type(release_exc).__name__,
-                    )
                 # Keep the completed pipeline registered until its temporary
                 # capture-first prewarm is released. Otherwise a new start (or
                 # shutdown) can observe an idle controller while the old
                 # microphone sidecar is still being cleaned up.
+                prewarm_cleanup_confirmed = True
                 try:
                     await self._stop_unretained_mic_prewarm(reason="live_mic_pipeline_ended_before_audio_cleanup")
                 except BaseException as prewarm_cleanup_exc:
+                    prewarm_cleanup_confirmed = False
                     logger.warning(
                         "Temporary microphone prewarm cleanup after pipeline exit failed: {}",
                         type(prewarm_cleanup_exc).__name__,
                     )
+                if prewarm_cleanup_confirmed:
+                    try:
+                        await _release_persistent_audio(self)
+                    except BaseException as release_exc:
+                        logger.warning(
+                            "Persistent native-audio admission release after pipeline exit failed: {}",
+                            type(release_exc).__name__,
+                        )
+                else:
+                    logger.error("Persistent native-audio admission retained after unconfirmed prewarm cleanup")
                 self._is_listening = False
                 self._is_stopping = False
                 self._live_transcribing_visible = False
@@ -8287,9 +9004,9 @@ class ScriberWebController:
                 },
             )
 
-            # Broadcast error to frontend
-            self._loop.call_soon_threadsafe(
-                lambda payload=error_payload: asyncio.create_task(_broadcast_error(payload))
+            self._spawn_detached_threadsafe(
+                lambda payload=error_payload: _broadcast_error(payload),
+                name="pipeline_error_broadcast",
             )
 
             failed_current = None
@@ -8304,14 +9021,16 @@ class ScriberWebController:
                 if failed_current.content_text().strip():
                     self._add_to_history(failed_current)
                     self._schedule_transcript_save(failed_current)
-                    self._loop.call_soon_threadsafe(
-                        lambda: asyncio.create_task(
-                            self._broadcast_history_updated(record=failed_current, reason="pipeline_failed")
-                        )
+                    self._spawn_detached_threadsafe(
+                        lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
+                        name="pipeline_failure_history_broadcast",
                     )
         finally:
             # Schedule safe cleanup on the event loop
-            self._loop.call_soon_threadsafe(lambda: asyncio.create_task(_safe_cleanup()))
+            self._spawn_detached_threadsafe(
+                _safe_cleanup,
+                name="pipeline_completion_cleanup",
+            )
 
     async def _inject_live_transcript_text(
         self,
@@ -8593,7 +9312,10 @@ class ScriberWebController:
                 delay = self._history_broadcast_interval - (now - self._history_broadcast_last)
                 self._history_broadcast_handle = self._loop.call_later(
                     delay,
-                    lambda: asyncio.create_task(self._broadcast_history_updated(force=True)),
+                    lambda: self._spawn_detached(
+                        self._broadcast_history_updated(force=True),
+                        name="history_broadcast_flush",
+                    ),
                 )
             return
         self._history_broadcast_last = now
@@ -8624,8 +9346,9 @@ class ScriberWebController:
 
     def _touch_history(self, record: TranscriptRecord | None = None, *, reason: str = "") -> None:
         """Thread-safe schedule for history update broadcast."""
-        self._loop.call_soon_threadsafe(
-            lambda: asyncio.create_task(self._broadcast_history_updated(record=record, reason=reason))
+        self._spawn_detached_threadsafe(
+            lambda: self._broadcast_history_updated(record=record, reason=reason),
+            name="history_broadcast_touch",
         )
 
     def _begin_transcript_artifact(
@@ -8715,10 +9438,10 @@ class ScriberWebController:
             if recovery_attempt_id
             else asyncio.to_thread(self._begin_transcript_artifact, rec, route)
         )
-        result, pending_cancel = await _await_with_delayed_cancellation(begin_worker)
+        result, pending_cancel = await await_with_delayed_cancellation(begin_worker)
         if pending_cancel is not None:
             attempt, owner, _recovery = result
-            await _to_thread_cancellation_barrier(
+            await to_thread_cancellation_barrier(
                 self._terminate_artifact_attempt_before_result,
                 attempt,
                 owner=owner,
@@ -8902,7 +9625,7 @@ class ScriberWebController:
         owner: str,
         canceled: bool,
     ) -> None:
-        await _to_thread_cancellation_barrier(
+        await to_thread_cancellation_barrier(
             self._terminate_artifact_attempt_before_result,
             attempt,
             owner=owner,
@@ -9010,7 +9733,7 @@ class ScriberWebController:
         **kwargs: Any,
     ) -> str:
         """Observe a started canonical commit through its durable transaction boundary."""
-        rendered, pending_cancel = await _await_with_delayed_cancellation(
+        rendered, pending_cancel = await await_with_delayed_cancellation(
             asyncio.to_thread(self._commit_transcript_artifact, rec, **kwargs)
         )
         # Keep mutable TranscriptRecord ownership on the event-loop thread.
@@ -9050,7 +9773,7 @@ class ScriberWebController:
         self,
         **kwargs: Any,
     ) -> AttemptRecord:
-        return await _to_thread_cancellation_barrier(
+        return await to_thread_cancellation_barrier(
             self._persist_provider_stage_before_local_diarization,
             **kwargs,
         )
@@ -9155,40 +9878,103 @@ class ScriberWebController:
             language=rec.language,
         )
         frozen_route_payload = self._job_execution_route(frozen_route)
-        await self._enqueue_background_job_async(
-            rec,
-            job_type=JobType.YOUTUBE,
-            payload={
-                "url": rec.source_url,
-                "title": rec.title,
-                "channel": rec.channel,
-                "thumbnailUrl": rec.thumbnail_url,
-                "duration": rec.duration,
-                "language": rec.language,
-                "preferCaptions": prefer_captions,
-                **(
-                    {"plannedFallbackRoute": frozen_route_payload}
-                    if prefer_captions
-                    else {"executionRoute": frozen_route_payload}
-                ),
-            },
-        )
-        self._emit_workflow_event(
-            message=f"YouTube job queued: {rec.title}",
-            event="api.job.created",
-            workflow="youtube",
-            stage="job_created",
-            record=rec,
-            milestone=True,
-            outcome="queued",
-        )
-        self._add_to_history(rec)
-        # Artifact attempts reference the compatibility transcript through a
-        # foreign key, so the public history row must be durable before work is
-        # scheduled.
-        await self._ensure_artifact_transcript_row(rec)
-        await self._broadcast_history_updated(record=rec, reason="job_created")
-        self._schedule_youtube_job(rec)
+        job_scheduled = False
+
+        def request_reconciliation(stage: str) -> None:
+            try:
+                self._schedule_retry_scan(0.0)
+            except Exception:
+                logger.exception(
+                    "Failed to request reconciliation for YouTube job {} after {}",
+                    rec.id,
+                    stage,
+                )
+
+        async def adopt_durable_job() -> None:
+            """Publish and schedule one job whose exact queue row is durable."""
+
+            nonlocal job_scheduled
+            self._add_to_history(rec)
+            try:
+                self._emit_workflow_event(
+                    message=f"YouTube job queued: {rec.title}",
+                    event="api.job.created",
+                    workflow="youtube",
+                    stage="job_created",
+                    record=rec,
+                    milestone=True,
+                    outcome="queued",
+                )
+            except Exception:
+                logger.exception("Failed to emit queued event for YouTube job {}", rec.id)
+
+            if not job_scheduled:
+                try:
+                    self._schedule_youtube_job(rec)
+                    job_scheduled = True
+                except Exception:
+                    if rec.id in self._running_tasks:
+                        job_scheduled = True
+                    else:
+                        logger.exception("Failed to schedule durable YouTube job {}", rec.id)
+                        request_reconciliation("task scheduling")
+
+            try:
+                await self._broadcast_history_updated(record=rec, reason="job_created")
+            except Exception:
+                logger.exception("Failed to broadcast durable YouTube job {}", rec.id)
+
+        async with self._resume_jobs_lock:
+            _, parent_cancel = await await_with_delayed_cancellation(self._ensure_artifact_transcript_row(rec))
+            if parent_cancel is not None:
+                await to_thread_cancellation_barrier(db.delete_transcript, rec.id)
+                raise parent_cancel
+            try:
+                await self._enqueue_background_job_async(
+                    rec,
+                    job_type=JobType.YOUTUBE,
+                    payload={
+                        "url": rec.source_url,
+                        "title": rec.title,
+                        "channel": rec.channel,
+                        "thumbnailUrl": rec.thumbnail_url,
+                        "duration": rec.duration,
+                        "language": rec.language,
+                        "preferCaptions": prefer_captions,
+                        **(
+                            {"plannedFallbackRoute": frozen_route_payload}
+                            if prefer_captions
+                            else {"executionRoute": frozen_route_payload}
+                        ),
+                    },
+                )
+            except BaseException:
+                job_id = self._job_ids_by_transcript.get(rec.id)
+                commit_confirmed = bool(job_id and self._uncertain_job_commits.get(rec.id) != job_id)
+                if commit_confirmed:
+                    await await_with_delayed_cancellation(adopt_durable_job())
+                elif job_id:
+                    self._add_to_history(rec)
+                    request_reconciliation("uncertain enqueue commit")
+                else:
+                    await to_thread_cancellation_barrier(db.delete_transcript, rec.id)
+                raise
+
+            if self._uncertain_job_commits.get(rec.id) == self._job_ids_by_transcript.get(rec.id):
+                self._add_to_history(rec)
+                request_reconciliation("uncertain enqueue commit")
+                try:
+                    await self._broadcast_history_updated(record=rec, reason="job_admission_pending")
+                except Exception:
+                    logger.exception(
+                        "Failed to broadcast pending YouTube job admission {}",
+                        rec.id,
+                    )
+                return rec
+
+            _, pending_cancel = await await_with_delayed_cancellation(adopt_durable_job())
+            if pending_cancel is not None:
+                raise pending_cancel
         return rec
 
     async def _finalize_youtube_content(
@@ -9209,7 +9995,11 @@ class ScriberWebController:
         auto_summary_task = self._claim_auto_summary_task(rec, content)
         # Save the transcript before summary generation so slow LLM work never
         # leaves completed content only in memory.
-        await self._save_transcript_to_db_async(rec, require_success=True)
+        await self._save_transcript_to_db_async(
+            rec,
+            require_success=True,
+            terminal_parent_transition=True,
+        )
         await self._broadcast_history_updated(record=rec, reason="transcript_completed")
         self._emit_workflow_event(
             message=("YouTube captions loaded" if source == "captions" else "YouTube transcription completed"),
@@ -9613,7 +10403,10 @@ class ScriberWebController:
                         return
                     rec.step = step
                     rec.updated_at = datetime.now().isoformat()
-                    asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+                    self._spawn_detached(
+                        self._broadcast_history_updated(record=rec, reason="progress"),
+                        name="youtube_download_progress_broadcast",
+                    )
 
                 self._loop.call_soon_threadsafe(apply_progress)
 
@@ -9650,7 +10443,7 @@ class ScriberWebController:
                         provider=route.provider,
                         model=route.model,
                         work_dir=out_dir,
-                        max_bytes=_get_audio_upload_max_bytes(provider),
+                        max_bytes=file_upload_limits(provider, source_is_video=False).final_audio.max_bytes,
                         frozen_selection=frozen_audio_selection,
                     )
                 )
@@ -9698,8 +10491,9 @@ class ScriberWebController:
                     return
                 rec.step = step
                 rec.updated_at = datetime.now().isoformat()
-                self._loop.call_soon_threadsafe(
-                    lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+                self._spawn_detached_threadsafe(
+                    lambda: self._broadcast_history_updated(record=rec, reason="progress"),
+                    name="youtube_transcription_progress_broadcast",
                 )
 
             rec.step = "Transcribing..."
@@ -9999,7 +10793,10 @@ class ScriberWebController:
                 )
             rec.updated_at = datetime.now().isoformat()
             if rec.status != "completed" and not rec._persistence_failed:
-                await self._save_transcript_to_db_async(rec)
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
             await self._broadcast_history_updated(record=rec, reason="job_done")
             # A retry keeps its processing source. Terminal cleanup is a
             # durable two-step lifecycle so the tombstone explains why
@@ -10008,83 +10805,244 @@ class ScriberWebController:
                 try:
                     self._mark_source_assets_purge_pending(rec.id)
                     if out_dir.exists():
-                        await _remove_tree_if_exists(out_dir)
+                        await remove_tree_if_exists(out_dir)
                         logger.debug(f"Cleaned up YouTube download directory: {out_dir}")
                     self._mark_source_assets_purged(rec.id, reason=f"youtube_{rec.status}_task_released")
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup YouTube download: {cleanup_err}")
 
-    async def start_file_transcription(self, file_path: Path, original_filename: str) -> TranscriptRecord:
-        """Start transcription of an uploaded audio/video file."""
-        if not file_path.exists():
-            raise ValueError("Uploaded file not found")
+    @property
+    def file_upload_root(self) -> Path:
+        """Root owned by the File ingest domain before durable job hand-off."""
 
-        frozen_provider = self._select_available_provider()
-        _validate_provider_ready(frozen_provider)
+        return self._downloads_dir / "files"
 
-        title = original_filename or file_path.name
-        duration_seconds = await asyncio.to_thread(_probe_media_duration_seconds, file_path)
-        duration_label = _format_duration(duration_seconds) if duration_seconds is not None else "--:--"
-        # Get file size for display
-        try:
-            file_size_bytes = file_path.stat().st_size
-            if file_size_bytes >= 1_000_000_000:
-                file_size = f"{file_size_bytes / 1_000_000_000:.1f}GB"
-            elif file_size_bytes >= 1_000_000:
-                file_size = f"{file_size_bytes / 1_000_000:.1f}MB"
-            elif file_size_bytes >= 1_000:
-                file_size = f"{file_size_bytes / 1_000:.1f}KB"
-            else:
-                file_size = f"{file_size_bytes}B"
-        except Exception:
-            file_size = ""
+    def plan_file_upload(self, *, source_is_video: bool) -> FileUploadPlan:
+        """Select one provider route and every byte limit used by this upload."""
 
-        started_at = datetime.now()
-        rec = TranscriptRecord(
-            id=uuid4().hex,
-            title=title,
-            date=_format_date_label(started_at),
-            duration=duration_label,
-            status="processing",
-            type="file",
-            language=Config.LANGUAGE or "auto",
-            step="Queued",
-            source_url=str(file_path),
-            processing_started_at=started_at.isoformat(),
-        )
-        # Store file size in content temporarily for display
-        if file_size:
-            rec.channel = file_size  # Reuse channel field for file size display
-        frozen_route = self._freeze_background_provider_route(
+        provider = self._select_available_provider()
+        _validate_provider_ready(provider)
+        route = self._freeze_background_provider_route(
             workload="file",
-            provider=frozen_provider,
-            language=rec.language,
+            provider=provider,
+            language=Config.LANGUAGE or "auto",
         )
-        await self._enqueue_background_job_async(
-            rec,
-            job_type=JobType.FILE,
-            payload={
-                "path": str(file_path),
-                "title": rec.title,
-                "language": rec.language,
-                "originalFilename": original_filename,
-                "executionRoute": self._job_execution_route(frozen_route),
-            },
+        return FileUploadPlan(
+            route=route,
+            limits=file_upload_limits(provider, source_is_video=source_is_video),
         )
-        self._emit_workflow_event(
-            message=f"File job queued: {rec.title}",
-            event="api.job.created",
-            workflow="file",
-            stage="job_created",
-            record=rec,
-            milestone=True,
-            outcome="queued",
-        )
-        self._add_to_history(rec)
-        await self._ensure_artifact_transcript_row(rec)
-        await self._broadcast_history_updated(record=rec, reason="job_created")
-        self._schedule_file_job(rec, file_path)
-        return rec
+
+    async def _persisted_file_upload_plan(
+        self,
+        rec: TranscriptRecord,
+        route: FrozenTranscriptionRoute,
+    ) -> FileUploadPlan | None:
+        """Load exact admission evidence; return ``None`` only for legacy jobs."""
+
+        job_id = self._job_ids_by_transcript.get(rec.id)
+        if not job_id:
+            # Focused internal callers that are not scheduled jobs retain the
+            # legacy live-config path below.
+            return None
+        job = await asyncio.to_thread(self._job_store.get, job_id)
+        if job is None:
+            raise TranscriptPersistenceError("File job is missing its durable upload plan")
+        evidence = job.payload.get("fileUploadPlan")
+        if evidence is None:
+            # Jobs persisted before schema v1 remain resumable.
+            return None
+        try:
+            return FileUploadPlan.from_durable_evidence(
+                route=route,
+                evidence=evidence,
+            )
+        except ValueError as exc:
+            raise TranscriptPersistenceError("File job has invalid durable upload plan evidence") from exc
+
+    async def start_file_transcription(
+        self,
+        file_path: Path,
+        original_filename: str,
+        *,
+        plan: FileUploadPlan,
+    ) -> TranscriptRecord:
+        """Adopt an upload and bind it atomically to one durable queued job.
+
+        Ownership transfers at method entry. Before enqueue, every failure or
+        cancellation removes a Scriber-owned upload. Once enqueue commits, the
+        queued job keeps the source and is published/scheduled before this
+        method can deliver cancellation back to its caller.
+        """
+        rec: TranscriptRecord | None = None
+        history_published = False
+        job_scheduled = False
+        failure_reconciled = False
+
+        def adopt_durable_job() -> None:
+            """Make the in-process projection match an already committed job."""
+
+            nonlocal history_published, job_scheduled
+            if rec is None:
+                return
+            if not history_published:
+                self._add_to_history(rec)
+                history_published = True
+            if job_scheduled:
+                return
+            try:
+                self._schedule_file_job(rec, file_path)
+                job_scheduled = True
+            except Exception:
+                # The durable queue and source remain authoritative. A normal
+                # retry scan or the next process startup can reconcile them.
+                if rec.id in self._running_tasks:
+                    job_scheduled = True
+                    return
+                logger.exception(
+                    "Failed to schedule durable file job {}; queued source retained",
+                    rec.id,
+                )
+                try:
+                    self._schedule_retry_scan(0.0)
+                except Exception:
+                    logger.exception(
+                        "Failed to request reconciliation for durable file job {}",
+                        rec.id,
+                    )
+
+        async def release_unenqueued_source() -> None:
+            await self._cleanup_owned_file_source(file_path, reason="enqueue_failed")
+            if rec is None:
+                return
+            try:
+                await to_thread_cancellation_barrier(db.delete_transcript, rec.id)
+            except Exception:
+                logger.exception(
+                    "Failed to remove transcript parent for unqueued file job {}",
+                    rec.id,
+                )
+
+        try:
+            if not file_path.exists():
+                raise ValueError("Uploaded file not found")
+
+            title = original_filename or file_path.name
+            duration_seconds, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(_probe_media_duration_seconds, file_path)
+            )
+            if pending_cancel is not None:
+                raise pending_cancel
+            duration_label = _format_duration(duration_seconds) if duration_seconds is not None else "--:--"
+            # Get file size for display
+            try:
+                file_size_bytes = file_path.stat().st_size
+                if file_size_bytes >= 1_000_000_000:
+                    file_size = f"{file_size_bytes / 1_000_000_000:.1f}GB"
+                elif file_size_bytes >= 1_000_000:
+                    file_size = f"{file_size_bytes / 1_000_000:.1f}MB"
+                elif file_size_bytes >= 1_000:
+                    file_size = f"{file_size_bytes / 1_000:.1f}KB"
+                else:
+                    file_size = f"{file_size_bytes}B"
+            except Exception:
+                file_size = ""
+
+            started_at = datetime.now()
+            rec = TranscriptRecord(
+                id=uuid4().hex,
+                title=title,
+                date=_format_date_label(started_at),
+                duration=duration_label,
+                status="processing",
+                type="file",
+                language=plan.route.language,
+                step="Queued",
+                source_url=str(file_path),
+                processing_started_at=started_at.isoformat(),
+            )
+            # Store file size in content temporarily for display
+            if file_size:
+                rec.channel = file_size  # Reuse channel field for file size display
+
+            async with self._resume_jobs_lock:
+                try:
+                    _, pending_cancel = await await_with_delayed_cancellation(self._ensure_artifact_transcript_row(rec))
+                    if pending_cancel is not None:
+                        raise pending_cancel
+
+                    await self._enqueue_background_job_async(
+                        rec,
+                        job_type=JobType.FILE,
+                        payload={
+                            "path": str(file_path),
+                            "title": rec.title,
+                            "language": rec.language,
+                            "originalFilename": original_filename,
+                            "executionRoute": self._job_execution_route(plan.route),
+                            "fileUploadPlan": plan.durable_evidence(),
+                        },
+                    )
+                    uncertain_job_id = self._uncertain_job_commits.get(rec.id)
+                    if uncertain_job_id == self._job_ids_by_transcript.get(rec.id):
+                        self._add_to_history(rec)
+                        history_published = True
+                        try:
+                            self._schedule_retry_scan(0.0)
+                        except Exception:
+                            logger.exception(
+                                "Failed to request reconciliation for uncertain file job {}",
+                                rec.id,
+                            )
+                        try:
+                            await self._broadcast_history_updated(
+                                record=rec,
+                                reason="job_admission_pending",
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Failed to broadcast pending file job admission {}",
+                                rec.id,
+                            )
+                        return rec
+
+                    adopt_durable_job()
+                    self._emit_workflow_event(
+                        message=f"File job queued: {rec.title}",
+                        event="api.job.created",
+                        workflow="file",
+                        stage="job_created",
+                        record=rec,
+                        milestone=True,
+                        outcome="queued",
+                    )
+                    await self._broadcast_history_updated(record=rec, reason="job_created")
+                    return rec
+                except BaseException:
+                    uncertain_job_id = self._uncertain_job_commits.get(rec.id)
+                    commit_uncertain = bool(
+                        uncertain_job_id and uncertain_job_id == self._job_ids_by_transcript.get(rec.id)
+                    )
+                    if commit_uncertain:
+                        if not history_published:
+                            self._add_to_history(rec)
+                            history_published = True
+                        try:
+                            self._schedule_retry_scan(0.0)
+                        except Exception:
+                            logger.exception(
+                                "Failed to request reconciliation for uncertain file job {}",
+                                rec.id,
+                            )
+                    elif rec.id in self._job_ids_by_transcript:
+                        adopt_durable_job()
+                    else:
+                        await _await_cleanup_barrier(release_unenqueued_source())
+                    failure_reconciled = True
+                    raise
+        except BaseException:
+            if not failure_reconciled:
+                await _await_cleanup_barrier(release_unenqueued_source())
+            raise
 
     async def _transcribe_file_to_canonical_artifact(
         self,
@@ -10105,11 +11063,17 @@ class ScriberWebController:
         if frozen_route is not None and supports_direct_file_upload(provider):
             if not route.provider_audio_capability_id:
                 raise ValueError("The frozen provider/model route has no verified batch audio capability.")
+            upload_plan = await self._persisted_file_upload_plan(rec, route)
+            final_audio_max_bytes = (
+                upload_plan.final_audio_max_bytes
+                if upload_plan is not None
+                else file_upload_limits(provider, source_is_video=False).final_audio.max_bytes
+            )
             async with prepare_provider_audio_file(
                 file_path,
                 provider=route.provider,
                 model=route.model,
-                max_bytes=_get_audio_upload_max_bytes(provider),
+                max_bytes=final_audio_max_bytes,
             ) as prepared:
                 exact_route = self._freeze_background_provider_route(
                     workload="file",
@@ -10196,8 +11160,9 @@ class ScriberWebController:
         def on_progress(step: str) -> None:
             rec.step = step
             rec.updated_at = datetime.now().isoformat()
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._broadcast_history_updated(record=rec, reason="progress"))
+            self._spawn_detached_threadsafe(
+                lambda: self._broadcast_history_updated(record=rec, reason="progress"),
+                name="file_transcription_progress_broadcast",
             )
 
         pipeline: Any | None = None
@@ -10405,7 +11370,11 @@ class ScriberWebController:
             auto_summary_task = self._claim_auto_summary_task(rec, content)
             # Persist transcript immediately so a stuck/slow summarization
             # cannot keep the transcript in memory-only state.
-            await self._save_transcript_to_db_async(rec, require_success=True)
+            await self._save_transcript_to_db_async(
+                rec,
+                require_success=True,
+                terminal_parent_transition=True,
+            )
             await self._broadcast_history_updated(record=rec, reason="transcript_completed")
             self._emit_workflow_event(
                 message="File transcription completed",
@@ -10616,10 +11585,11 @@ class ScriberWebController:
                 )
             rec.updated_at = datetime.now().isoformat()
             if rec.status != "completed" and not rec._persistence_failed:
-                await self._save_transcript_to_db_async(rec)
+                await self._save_transcript_to_db_async(
+                    rec,
+                    terminal_parent_transition=rec.status in {"failed", "stopped"},
+                )
             await self._broadcast_history_updated(record=rec, reason="job_done")
-            if rec.status != "processing":
-                await self._cleanup_owned_file_source(file_path, reason=rec.status, transcript_id=rec.id)
 
     async def start_listening(
         self,
@@ -10837,9 +11807,15 @@ class ScriberWebController:
 
                 # Broadcast error to frontend and stop the pipeline
                 def schedule_cleanup():
-                    asyncio.create_task(self.broadcast(error_payload))
+                    self._spawn_detached(
+                        self.broadcast(error_payload),
+                        name="provider_error_broadcast",
+                    )
                     # Schedule pipeline stop to clean up properly
-                    asyncio.create_task(self._emergency_stop_pipeline(session_id=session_id))
+                    self._spawn_detached(
+                        self._emergency_stop_pipeline(session_id=session_id),
+                        name="provider_error_emergency_stop",
+                    )
 
                 self._loop.call_soon_threadsafe(schedule_cleanup)
 
@@ -11045,7 +12021,7 @@ class ScriberWebController:
                         minimum=400,
                         maximum=6000,
                     )
-                    prewarm_result, prewarm_pending_cancel = await _await_with_delayed_cancellation(
+                    prewarm_result, prewarm_pending_cancel = await await_with_delayed_cancellation(
                         asyncio.to_thread(
                             self._mic_prewarm.resume_after_active_capture,
                             temporary=True,
@@ -11060,7 +12036,7 @@ class ScriberWebController:
                         raise prewarm_pending_cancel
 
                 if pipeline_runtime_was_cold:
-                    _runtime_result, runtime_pending_cancel = await _await_with_delayed_cancellation(
+                    _runtime_result, runtime_pending_cancel = await await_with_delayed_cancellation(
                         asyncio.to_thread(_load_scriber_pipeline_runtime)
                     )
                     if runtime_pending_cancel is not None:
@@ -11218,24 +12194,29 @@ class ScriberWebController:
                 # competing controller cannot leave an unstarted pipeline
                 # behind. Constructor cancellation/failure must return every
                 # resource claimed before it.
-                try:
-                    await _release_persistent_audio(self)
-                except BaseException as release_exc:
-                    logger.warning(
-                        "Native-audio claim cleanup after pipeline construction failed: {}",
-                        type(release_exc).__name__,
-                    )
                 self._active_provider = None
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
+                prewarm_cleanup_confirmed = True
                 if cold_start_prewarm_started:
                     try:
                         await self._stop_unretained_mic_prewarm(reason="live_mic_cold_start_failed")
                     except BaseException as prewarm_cleanup_exc:
+                        prewarm_cleanup_confirmed = False
                         logger.debug(
                             "Cold-start microphone prebuffer cleanup warning: {}",
                             type(prewarm_cleanup_exc).__name__,
                         )
+                if prewarm_cleanup_confirmed:
+                    try:
+                        await _release_persistent_audio(self)
+                    except BaseException as release_exc:
+                        logger.warning(
+                            "Native-audio claim cleanup after pipeline construction failed: {}",
+                            type(release_exc).__name__,
+                        )
+                else:
+                    logger.error("Native-audio claim retained after unconfirmed cold-start prewarm cleanup")
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
                 self._clear_hot_path_tracer(session_id)
@@ -11317,7 +12298,12 @@ class ScriberWebController:
 
         await self.broadcast(session_payload)
 
-    async def _emergency_stop_pipeline(self, *, session_id: str | None = None) -> None:
+    async def _emergency_stop_pipeline(
+        self,
+        *,
+        session_id: str | None = None,
+        release_audio_claim: bool = True,
+    ) -> bool:
         """Emergency stop for connection errors - doesn't save transcript."""
         logger.warning("Emergency pipeline stop triggered")
         self._emit_workflow_event(
@@ -11336,21 +12322,22 @@ class ScriberWebController:
         audio_claim: AudioAdmissionClaim | None = None
         stop_owner = object()
         owns_stop = False
+        pipeline_stop_confirmed = True
         try:
             async with self._listening_lock:
                 if session_id is not None and session_id != self._session_id:
-                    return
+                    return False
                 # A user stop may already own finalization. Never clear its
                 # references or lower the busy gate while it is running.
                 if getattr(self, "_live_mic_stop_owner", None) is not None:
                     logger.debug("Emergency pipeline stop ignored because a serialized stop is already in progress")
-                    return
+                    return False
 
                 self._live_mic_stop_owner = stop_owner
                 self._is_stopping = True
                 owns_stop = True
                 self._live_transcribing_visible = False
-                candidate_claim = self._persistent_audio_claim
+                candidate_claim = _audio_admission_owner(self).current
                 if isinstance(candidate_claim, AudioAdmissionClaim):
                     audio_claim = candidate_claim
 
@@ -11375,8 +12362,10 @@ class ScriberWebController:
                 try:
                     await asyncio.wait_for(pipeline.stop(), timeout=2.0)
                 except TimeoutError:
+                    pipeline_stop_confirmed = False
                     logger.warning("Emergency stop timeout - forcing cleanup")
                 except Exception as e:
+                    pipeline_stop_confirmed = False
                     logger.debug(f"Emergency stop warning: {e}")
 
             # Cancel previous pipeline task if still running.
@@ -11385,14 +12374,17 @@ class ScriberWebController:
                 with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
         except Exception as e:
+            pipeline_stop_confirmed = False
             logger.error(f"Emergency stop error: {e}")
         finally:
             if owns_stop:
                 # Release only the claim captured by this exact session. A
                 # stale cleanup must never release a later recording's claim.
                 try:
-                    if audio_claim is not None:
+                    if release_audio_claim and audio_claim is not None and pipeline_stop_confirmed:
                         await _release_persistent_audio(self, audio_claim)
+                    elif release_audio_claim and audio_claim is not None:
+                        logger.error("Persistent native-audio admission retained after unconfirmed emergency stop")
                 finally:
                     resume_idle_prewarm = False
                     async with self._listening_lock:
@@ -11411,6 +12403,7 @@ class ScriberWebController:
                         # leaving the next hotkey on a cold WASAPI route and
                         # prone to a first-live-frame timeout.
                         self._resume_idle_mic_prewarm_after_capture()
+        return bool(owns_stop and pipeline_stop_confirmed)
 
     def _live_mic_stop_timeout_seconds(
         self,
@@ -11529,6 +12522,76 @@ class ScriberWebController:
         if session_id is None or replay_execution.session_id is None or not self._is_listening or self._is_stopping:
             raise ProviderReplayConflict("provider replay manual stop session is not active")
         replay_execution.attest_manual_stop_request(session_id)
+
+    async def start_live_mic(self, command: LiveMicStartCommand) -> LiveMicOutcome:
+        """Start one validated Live Mic command and project its public result."""
+
+        start_kwargs: dict[str, Any] = {
+            "tauri_hotkey_marker": command.tauri_hotkey_marker,
+        }
+        if command.post_process:
+            start_kwargs["post_process"] = True
+        start_error = await self.start_listening(**start_kwargs)
+        if start_error is not None:
+            return LiveMicOutcome(
+                status=400,
+                payload=version_event_payload(self._provider_error_event_from_info(start_error)),
+            )
+        return LiveMicOutcome(status=200, payload=self.get_state())
+
+    async def resolve_live_mic_toggle(self) -> LiveMicOutcome | None:
+        """Resolve an active toggle, or return ``None`` when it should start."""
+
+        if not (self._live_mic_start_in_progress_generation is not None or self._is_listening or self._is_stopping):
+            return None
+        if self._should_ignore_duplicate_start_toggle():
+            start_task = self._live_mic_start_task
+            if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
+                await asyncio.shield(start_task)
+            payload = self.get_state()
+            payload["stopAccepted"] = False
+            payload["finalizing"] = False
+            payload["duplicateStartIgnored"] = True
+            return LiveMicOutcome(status=200, payload=payload)
+        accepted = self.request_background_stop_listening()
+        payload = self.get_state()
+        payload["stopAccepted"] = bool(accepted)
+        payload["finalizing"] = True
+        return LiveMicOutcome(status=202, payload=payload)
+
+    async def stop_live_mic(self) -> LiveMicOutcome:
+        """Stop Live Mic and project its public result."""
+
+        stop_error = await self.stop_listening()
+        if stop_error is not None:
+            return LiveMicOutcome(
+                status=400,
+                payload=version_event_payload(self._provider_error_event_from_info(stop_error)),
+            )
+        return LiveMicOutcome(status=200, payload=self.get_state())
+
+    def request_live_mic_stop(self) -> LiveMicOutcome:
+        """Acknowledge one non-blocking Live Mic stop request."""
+
+        replay_execution = self._provider_replay_execution
+        try:
+            self._attest_provider_replay_manual_stop_request()
+        except ProviderReplayError as exc:
+            if replay_execution is not None:
+                replay_execution.fail("manual_stop_missing")
+            self.request_async_stop_listening()
+            return LiveMicOutcome(status=409, payload={"message": str(exc)})
+        outcome = self.request_async_stop_listening()
+        payload = {
+            "apiVersion": REST_API_VERSION,
+            **outcome,
+            "finalizing": bool(outcome["stopScheduled"] or outcome["alreadyFinalizing"]),
+            "sessionId": self._session_id,
+        }
+        return LiveMicOutcome(
+            status=202 if outcome["stopAccepted"] else 503,
+            payload=payload,
+        )
 
     def request_async_stop_listening(self) -> dict[str, bool]:
         """Schedule an explicit Live Mic stop without waiting for finalization.
@@ -11666,9 +12729,7 @@ class ScriberWebController:
                 current = self._current
             session_id = self._session_id
             self._live_mic_stop_owner = stop_owner
-            audio_claim = (
-                self._persistent_audio_claim if isinstance(self._persistent_audio_claim, AudioAdmissionClaim) else None
-            )
+            audio_claim = _audio_admission_owner(self).current
             provider_used = self._active_provider
             provider_replay_execution = (
                 self._provider_replay_execution
@@ -11803,6 +12864,7 @@ class ScriberWebController:
 
         stop_error: Exception | None = None
         stop_error_info: ProviderUserError | None = None
+        pipeline_stop_confirmed = True
         retrigger_hotkey_toggle = False
         try:
             if pipeline:
@@ -11817,6 +12879,7 @@ class ScriberWebController:
                         await pipeline.stop()
                     except Exception as exc:
                         if quiet_recording and _pipeline_stop_timeout_error(exc):
+                            pipeline_stop_confirmed = False
                             logger.info(
                                 "Suppressing async live transcription timeout after quiet recording "
                                 f"(timeout={stop_timeout_secs:g}s, provider={provider_used})"
@@ -11859,6 +12922,7 @@ class ScriberWebController:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
         except Exception as exc:
+            pipeline_stop_confirmed = False
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
             self._record_provider_failure(provider_used or "", exc)
@@ -11891,8 +12955,10 @@ class ScriberWebController:
             # lease is still active. Otherwise a queued toggle can construct a
             # new pipeline and then collide with this controller's old session.
             try:
-                if audio_claim is not None:
+                if audio_claim is not None and pipeline_stop_confirmed:
                     await _release_persistent_audio(self, audio_claim)
+                elif audio_claim is not None:
+                    logger.error("Persistent native-audio admission retained after unconfirmed Live Mic stop")
             except Exception as release_exc:
                 logger.warning(
                     "Persistent native-audio admission release after stop failed: {}",
@@ -11999,8 +13065,9 @@ class ScriberWebController:
             return
         self._last_hotkey_dispatch_at = now
         try:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(self._handle_hotkey_toggle(), name="hotkey_toggle")
+            self._spawn_detached_threadsafe(
+                self._handle_hotkey_toggle,
+                name="hotkey_toggle",
             )
         except Exception as exc:
             logger.error(f"Failed to dispatch hotkey event: {exc}")
@@ -12011,11 +13078,9 @@ class ScriberWebController:
             return
         self._last_hotkey_dispatch_at = now
         try:
-            self._loop.call_soon_threadsafe(
-                lambda: asyncio.create_task(
-                    self._handle_post_processing_hotkey_toggle(),
-                    name="post_processing_hotkey_toggle",
-                )
+            self._spawn_detached_threadsafe(
+                self._handle_post_processing_hotkey_toggle,
+                name="post_processing_hotkey_toggle",
             )
         except Exception as exc:
             logger.error(f"Failed to dispatch post-processing hotkey event: {exc}")
@@ -12188,67 +13253,10 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     def begin_shutdown(self) -> None:
-        """Prevent cancellation handlers from turning resumable jobs terminal."""
+        """Close admission to new work before the asynchronous drain."""
         self._shutting_down = True
         self._cancel_live_mic_start_transition()
         self._retry_scheduler.cancel(cancel_running=True)
-        heartbeat = getattr(self, "_audio_admission_heartbeat_task", None)
-        self._audio_admission_heartbeat_task = None
-        if heartbeat is not None and not heartbeat.done():
-            heartbeat.cancel()
-        claim = getattr(self, "_persistent_audio_claim", None)
-        self._persistent_audio_claim = None
-        if isinstance(claim, AudioAdmissionClaim):
-            try:
-                store, _controller_id = _persistent_audio_admission(self)
-            except Exception as exc:
-                logger.warning(
-                    "Persistent native-audio admission release during shutdown failed: {}",
-                    type(exc).__name__,
-                )
-                return
-
-            try:
-                running_loop = asyncio.get_running_loop()
-            except RuntimeError:
-                running_loop = None
-
-            if running_loop is not None:
-                # ``run_in_executor`` submits immediately. Unlike creating a
-                # task around ``to_thread``, the lease release therefore still
-                # begins when a synchronous compatibility caller returns and
-                # its test/application loop closes without another cycle.
-                release_worker = running_loop.run_in_executor(None, store.release, claim)
-                release_task = running_loop.create_task(
-                    _release_shutdown_audio_claim(release_worker),
-                    name="shutdown_audio_claim_release",
-                )
-                self._shutdown_audio_release_task = release_task
-                release_task.add_done_callback(self._on_shutdown_audio_release_done)
-            else:
-                # Some compatibility callers tear a controller down after its
-                # loop has stopped. Keep that path non-blocking too; a
-                # non-daemon thread preserves the release boundary at process
-                # exit instead of abandoning the lease.
-                release_thread = threading.Thread(
-                    target=_release_shutdown_audio_claim_in_thread,
-                    args=(store, claim),
-                    name="scriber-shutdown-audio-release",
-                    daemon=False,
-                )
-                self._shutdown_audio_release_thread = release_thread
-                release_thread.start()
-
-    def _on_shutdown_audio_release_done(self, task: asyncio.Task) -> None:
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            logger.warning(
-                "Persistent native-audio admission release during shutdown failed: {}",
-                type(exc).__name__,
-            )
 
     def schedule_meeting_import(self, import_id: str) -> bool:
         if getattr(self, "_shutting_down", False):
@@ -12345,7 +13353,7 @@ class ScriberWebController:
             if not staging_exists:
                 raise ValueError("Meeting import workspace artifacts are missing.")
             destination_root.parent.mkdir(parents=True, exist_ok=True)
-            await _to_thread_cancellation_barrier(os.replace, staging_root, destination_root)
+            await to_thread_cancellation_barrier(os.replace, staging_root, destination_root)
 
         async def verify(path: Path, expected_bytes: int | None, expected_sha256: str) -> None:
             if not path.is_file():
@@ -12378,7 +13386,7 @@ class ScriberWebController:
             if meeting["state"] == "finalizing":
                 if not allow_unowned_finalizing:
                     return
-                meeting = await _to_thread_cancellation_barrier(
+                meeting = await to_thread_cancellation_barrier(
                     self._meeting_store.transition,
                     record.meeting_id,
                     "finalization_failed",
@@ -12386,7 +13394,7 @@ class ScriberWebController:
                     error_message="Meeting import failed before finalizer ownership.",
                 )
             try:
-                await _to_thread_cancellation_barrier(self._meeting_store.transition, record.meeting_id, "discarded")
+                await to_thread_cancellation_barrier(self._meeting_store.transition, record.meeting_id, "discarded")
             except InvalidMeetingTransition, MeetingConflict:
                 return
         storage_root = data_dir().resolve()
@@ -12398,9 +13406,9 @@ class ScriberWebController:
         if meeting_root.parent != expected_parent:
             logger.error("Refusing to clean an invalid Meeting import workspace path")
             return
-        await _remove_tree_if_exists(meeting_root)
+        await remove_tree_if_exists(meeting_root)
         if meeting is not None:
-            await _to_thread_cancellation_barrier(self._meeting_store.delete, record.meeting_id)
+            await to_thread_cancellation_barrier(self._meeting_store.delete, record.meeting_id)
 
     async def _run_meeting_import(self, import_id: str) -> None:
         store = self._meeting_import_store
@@ -12413,10 +13421,10 @@ class ScriberWebController:
             }:
                 return
             if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                await _to_thread_cancellation_barrier(store.mark_canceled, import_id)
+                await to_thread_cancellation_barrier(store.mark_canceled, import_id)
                 return
             if record.status == MeetingImportStatus.RECEIVED:
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.PROBING,
@@ -12425,7 +13433,7 @@ class ScriberWebController:
             if record.status == MeetingImportStatus.PROBING:
                 await self._broadcast_meeting_import(record, 0.88, "Inspecting media")
                 original_path = self._meeting_import_staging_path(record.id, record.original_relative_path)
-                duration_seconds = await _to_thread_cancellation_barrier(_probe_media_duration_seconds, original_path)
+                duration_seconds = await to_thread_cancellation_barrier(_probe_media_duration_seconds, original_path)
                 if not duration_seconds or duration_seconds <= 0:
                     raise ValueError("Meeting recording contains no usable audio.")
                 final_provider = str(record.profile_snapshot.get("finalProvider") or Config.MEETING_FINAL_PROVIDER)
@@ -12439,7 +13447,7 @@ class ScriberWebController:
                         f"{provider_duration_limit // 60} minutes. Choose a compatible model "
                         "for this Meeting import."
                     )
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.PREPARING,
@@ -12479,9 +13487,9 @@ class ScriberWebController:
                 if process.returncode != 0 or not normalized_part.is_file():
                     reason = classify_ffmpeg_stderr(stderr.decode("utf-8", errors="replace"))
                     raise ValueError(f"Meeting audio could not be prepared ({reason}).")
-                await _to_thread_cancellation_barrier(os.replace, normalized_part, normalized_path)
-                normalized_hash = await _to_thread_cancellation_barrier(MeetingFinalizer._sha256_file, normalized_path)
-                record = await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(os.replace, normalized_part, normalized_path)
+                normalized_hash = await to_thread_cancellation_barrier(MeetingFinalizer._sha256_file, normalized_path)
+                record = await to_thread_cancellation_barrier(
                     store.mark_prepared,
                     import_id,
                     relative_path=normalized_path.relative_to(data_dir().resolve()).as_posix(),
@@ -12499,7 +13507,7 @@ class ScriberWebController:
                 await asyncio.sleep(1.0)
                 record = await asyncio.to_thread(store.require, import_id)
             if record.status == MeetingImportStatus.WAITING_FOR_WORKSPACE:
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.COMMITTING,
@@ -12530,7 +13538,7 @@ class ScriberWebController:
                         )
                         if not wait_for_capture:
                             try:
-                                meeting = await _to_thread_cancellation_barrier(
+                                meeting = await to_thread_cancellation_barrier(
                                     self._meeting_store.create,
                                     MeetingCreate(
                                         title=str(metadata.get("title") or Path(record.source_filename).stem),
@@ -12574,7 +13582,7 @@ class ScriberWebController:
                     if existing_import_id and existing_import_id != import_id:
                         raise ValueError("Meeting import workspace belongs to another job.")
                     if not existing_import_id:
-                        meeting = await _to_thread_cancellation_barrier(
+                        meeting = await to_thread_cancellation_barrier(
                             self._meeting_store.transition,
                             record.meeting_id,
                             meeting["state"],
@@ -12586,7 +13594,7 @@ class ScriberWebController:
                 runtime_root = data_dir().resolve()
                 meetings_root = (runtime_root / "meetings").resolve()
                 duration_ms = int(record.probe.get("durationMs") or 1)
-                await _to_thread_cancellation_barrier(
+                await to_thread_cancellation_barrier(
                     self._meeting_store.add_audio_chunk,
                     record.meeting_id,
                     source="system",
@@ -12599,13 +13607,13 @@ class ScriberWebController:
                 capture_metadata["originalRelativePath"] = committed_original.relative_to(meetings_root).as_posix()
                 meeting = await asyncio.to_thread(self._meeting_store.get, record.meeting_id)
                 if meeting["state"] in {"starting", "interrupted", "finalization_failed", "capture_failed"}:
-                    meeting = await _to_thread_cancellation_barrier(
+                    meeting = await to_thread_cancellation_barrier(
                         self._meeting_store.transition,
                         record.meeting_id,
                         "finalizing",
                         capture_metadata=capture_metadata,
                     )
-                record = await _to_thread_cancellation_barrier(
+                record = await to_thread_cancellation_barrier(
                     store.transition,
                     import_id,
                     MeetingImportStatus.FINALIZING,
@@ -12621,7 +13629,7 @@ class ScriberWebController:
                 if not chunks:
                     raise ValueError("Committed Meeting import has no durable system audio track.")
                 if meeting["state"] == "ready":
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.transition,
                         import_id,
                         MeetingImportStatus.COMPLETED,
@@ -12630,12 +13638,12 @@ class ScriberWebController:
                     await self._broadcast_meeting_import(record, 1.0, "Meeting import complete")
                     return
                 if meeting["state"] in {"interrupted", "finalization_failed", "capture_failed", "starting"}:
-                    meeting = await _to_thread_cancellation_barrier(
+                    meeting = await to_thread_cancellation_barrier(
                         self._meeting_store.transition, record.meeting_id, "finalizing"
                     )
                 if meeting["state"] == "analysis_failed":
                     error_code, error_message = _persisted_meeting_analysis_failure_details(meeting)
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.mark_failed,
                         import_id,
                         error_code=error_code,
@@ -12644,7 +13652,7 @@ class ScriberWebController:
                     await self._broadcast_meeting_import(record, 1.0, "Meeting analysis is waiting for retry")
                     return
                 if meeting["state"] == "discarded":
-                    record = await _to_thread_cancellation_barrier(
+                    record = await to_thread_cancellation_barrier(
                         store.mark_failed,
                         import_id,
                         error_code="meeting_workspace_discarded",
@@ -12663,8 +13671,8 @@ class ScriberWebController:
                 raise
             record = await asyncio.to_thread(store.require, import_id)
             if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                record = await _to_thread_cancellation_barrier(store.mark_canceled, import_id)
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
+                record = await to_thread_cancellation_barrier(store.mark_canceled, import_id)
+                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
                 await self._broadcast_meeting_import(record, 0.0, "Meeting import canceled")
             raise
         except Exception as exc:
@@ -12683,7 +13691,7 @@ class ScriberWebController:
                     meeting = None
                 if meeting is not None and meeting["state"] == "ready":
                     try:
-                        completed = await _to_thread_cancellation_barrier(
+                        completed = await to_thread_cancellation_barrier(
                             store.transition,
                             import_id,
                             MeetingImportStatus.COMPLETED,
@@ -12701,7 +13709,7 @@ class ScriberWebController:
                         error_code = type(exc).__name__
                         error_message = redact_text(str(exc))[:240]
                     try:
-                        await _to_thread_cancellation_barrier(
+                        await to_thread_cancellation_barrier(
                             self._meeting_store.transition,
                             previous.meeting_id,
                             failed_state,
@@ -12715,7 +13723,7 @@ class ScriberWebController:
             else:
                 import_error_code = type(exc).__name__
                 import_error_message = redact_text(str(exc))[:240]
-            record = await _to_thread_cancellation_barrier(
+            record = await to_thread_cancellation_barrier(
                 store.mark_failed,
                 import_id,
                 error_code=import_error_code,
@@ -12731,7 +13739,7 @@ class ScriberWebController:
                     allow_unowned_finalizing=True,
                 )
             if record.status == MeetingImportStatus.FAILED:
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
+                await remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
             await self._broadcast_meeting_import(record, 1.0, "Meeting import failed")
 
     def schedule_meeting_finalization(self, meeting_id: str, *, start_gate: asyncio.Event | None = None) -> bool:
@@ -12879,6 +13887,575 @@ class ScriberWebController:
         await self.broadcast(meeting_state_event(current))
         return result
 
+    def _reserve_meeting_processing(
+        self,
+        meeting_id: str,
+        schedule: Callable[..., bool],
+    ) -> _MeetingProcessingReservation | None:
+        start_gate = asyncio.Event()
+        if not schedule(meeting_id, start_gate=start_gate):
+            return None
+        return _MeetingProcessingReservation(
+            start_gate=start_gate,
+            task=self._meeting_tasks.get(meeting_id),
+        )
+
+    async def list_meetings(
+        self,
+        query: MeetingListQuery,
+    ) -> MeetingCatalogOutcome:
+        """Read one durable catalogue page and the independent active Meeting."""
+
+        payload = await asyncio.to_thread(
+            self._meeting_store.list,
+            limit=query.limit,
+            offset=query.offset,
+        )
+        payload["apiVersion"] = REST_API_VERSION
+        payload["activeMeeting"] = await asyncio.to_thread(self._meeting_store.active)
+        return MeetingCatalogOutcome(status=200, payload=payload)
+
+    async def meeting_detail(
+        self,
+        meeting_id: str,
+        query: MeetingDetailQuery,
+    ) -> MeetingCatalogOutcome:
+        """Build the public Meeting detail projection from one durable revision."""
+
+        try:
+            detail = await asyncio.to_thread(
+                self._meeting_store.detail,
+                meeting_id,
+                revision=query.revision,
+            )
+            artifact_store = getattr(self, "_transcript_artifacts", None)
+            final_route: dict[str, Any] | None = None
+            track_results: Sequence[Any] = ()
+            track_derivations: Sequence[Any] = ()
+            if artifact_store is not None:
+
+                def final_route_snapshot() -> tuple[dict[str, Any] | None, str]:
+                    head = artifact_store.get_head(meeting_id)
+                    if head is None:
+                        return None, ""
+                    artifact = artifact_store.get_artifact(head.artifact_id)
+                    if artifact is None:
+                        return None, ""
+                    snapshot = artifact_store.get_route_snapshot(artifact.attempt_id)
+                    if snapshot is None:
+                        return None, ""
+                    route = {
+                        "provider": snapshot.provider,
+                        "model": snapshot.model,
+                        "transport": snapshot.transport,
+                        "language": snapshot.language,
+                        "timestampMode": snapshot.timestamp_mode,
+                        "diarizationMode": snapshot.diarization_mode,
+                    }
+                    return route, str(artifact.attempt_id)
+
+                try:
+                    final_route, attempt_id = await asyncio.to_thread(final_route_snapshot)
+                    detail["finalRoute"] = final_route
+                    if attempt_id:
+                        try:
+                            list_results = getattr(artifact_store, "list_track_stage_results", None)
+                            list_derivations = getattr(artifact_store, "list_track_derivations", None)
+                            if callable(list_results):
+                                track_results = await asyncio.to_thread(list_results, attempt_id)
+                            if callable(list_derivations):
+                                track_derivations = await asyncio.to_thread(list_derivations, attempt_id)
+                        except Exception as exc:
+                            logger.warning(
+                                "Meeting processing evidence unavailable for {}: {}",
+                                meeting_id,
+                                type(exc).__name__,
+                            )
+                            track_results = ()
+                            track_derivations = ()
+                except Exception as exc:
+                    # Historical transcript metadata is informative, not a
+                    # prerequisite for opening the meeting. A damaged or
+                    # partially migrated artifact must not make the entire
+                    # Meeting detail endpoint unavailable.
+                    logger.warning(
+                        "Meeting final-route metadata unavailable for {}: {}",
+                        meeting_id,
+                        type(exc).__name__,
+                    )
+                    detail["finalRoute"] = None
+            detail["processingComponents"] = _meeting_processing_components(
+                detail,
+                final_route=final_route,
+                track_results=track_results,
+                track_derivations=track_derivations,
+            )
+            detail["reprocessing"] = await _meeting_reprocessing_capabilities(
+                self,
+                detail,
+            )
+            detail["apiVersion"] = REST_API_VERSION
+            return MeetingCatalogOutcome(status=200, payload=detail)
+        except MeetingNotFound:
+            return MeetingCatalogOutcome(status=404, payload={"message": "Meeting not found"})
+
+    async def discard_meeting(
+        self,
+        meeting_id: str,
+    ) -> MeetingCatalogOutcome:
+        """Tombstone and completely remove one idle Meeting workspace."""
+
+        async def settle_discard() -> MeetingCatalogOutcome:
+            try:
+                current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                processing_task = getattr(self, "_meeting_tasks", {}).get(meeting_id)
+                import_store = getattr(self, "_meeting_import_store", None)
+                import_job = (
+                    await asyncio.to_thread(import_store.find_by_meeting_id, meeting_id)
+                    if import_store is not None
+                    else None
+                )
+                if (
+                    current["state"] in {"starting", "recording", "paused", "stopping", "finalizing", "analyzing"}
+                    or (processing_task is not None and not processing_task.done())
+                    or (
+                        import_job is not None
+                        and import_job.status
+                        in {
+                            MeetingImportStatus.COMMITTING,
+                            MeetingImportStatus.FINALIZING,
+                        }
+                    )
+                ):
+                    return MeetingCatalogOutcome(
+                        status=409,
+                        payload={
+                            "message": (
+                                "Meeting processing is still running. Wait for it to finish or fail "
+                                "before discarding the workspace."
+                            )
+                        },
+                    )
+                try:
+                    meeting_root = self._meeting_discard_workspace_path(meeting_id)
+                except ValueError as exc:
+                    return MeetingCatalogOutcome(
+                        status=400,
+                        payload={"message": str(exc)},
+                    )
+                discarded = await to_thread_cancellation_barrier(
+                    self._meeting_store.transition,
+                    meeting_id,
+                    "discarded",
+                )
+                await self._settle_discarded_meeting_workspace(
+                    meeting_id,
+                    meeting_root=meeting_root,
+                )
+                await self.broadcast(meeting_state_event(discarded))
+                return MeetingCatalogOutcome(
+                    status=200,
+                    payload={"success": True, "id": meeting_id, "apiVersion": REST_API_VERSION},
+                )
+            except MeetingNotFound:
+                return MeetingCatalogOutcome(status=404, payload={"message": "Meeting not found"})
+            except (InvalidMeetingTransition, MeetingConflict) as exc:
+                return MeetingCatalogOutcome(status=409, payload={"message": str(exc)})
+
+        outcome, pending_cancel = await await_with_delayed_cancellation(settle_discard())
+        if pending_cancel is not None:
+            raise pending_cancel
+        return outcome
+
+    async def reprocess_meeting(
+        self,
+        meeting_id: str,
+        command: MeetingReprocessCommand,
+    ) -> MeetingProcessingOutcome:
+        """Reserve and start one durable Meeting reprocessing mode."""
+
+        mode = command.mode
+        try:
+            detail = await asyncio.to_thread(self._meeting_store.detail, meeting_id)
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        capabilities = await _meeting_reprocessing_capabilities(self, detail)
+
+        if mode is MeetingReprocessMode.SPEAKER_IDENTITY:
+            if not capabilities["speakerIdentityAvailable"]:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={
+                        "message": capabilities["speakerIdentityUnavailableReason"]
+                        or "Speaker matching is unavailable for this Meeting."
+                    },
+                )
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                self.schedule_meeting_speaker_reprocessing,
+            )
+            if reservation is None:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting processing is already running."},
+                )
+            if reservation.task is None:
+                return MeetingProcessingOutcome(
+                    status=503,
+                    payload={"message": "Speaker matching could not be started."},
+                )
+            reservation.open()
+            meeting = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": meeting,
+                    "mode": mode,
+                },
+            )
+
+        if not capabilities["fullTranscriptAvailable"]:
+            return MeetingProcessingOutcome(
+                status=409,
+                payload={
+                    "message": capabilities["fullTranscriptUnavailableReason"]
+                    or "Full Meeting retranscription is unavailable."
+                },
+            )
+
+        reservation = self._reserve_meeting_processing(
+            meeting_id,
+            self.schedule_meeting_finalization,
+        )
+        if reservation is None:
+            return MeetingProcessingOutcome(
+                status=409,
+                payload={"message": "Meeting processing is already running."},
+            )
+        if reservation.task is None:
+            return MeetingProcessingOutcome(
+                status=503,
+                payload={"message": "Meeting retranscription could not be started."},
+            )
+        try:
+            finalizing, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    self._meeting_store.reserve_full_reprocess,
+                    meeting_id,
+                    final_provider=capabilities["selectedFinalProvider"],
+                    final_model=capabilities["selectedFinalModel"],
+                    analysis_model=(Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL),
+                    voice_library_enabled=bool(capabilities["voiceLibraryEnabledForRun"]),
+                )
+            )
+            reservation.open()
+            if pending_cancel is not None:
+                raise pending_cancel
+            await self.broadcast(meeting_state_event(finalizing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "meeting": finalizing,
+                    "mode": mode,
+                },
+            )
+        except asyncio.CancelledError:
+            raise
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except (InvalidMeetingTransition, MeetingConflict) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        except ValueError as exc:
+            return MeetingProcessingOutcome(status=400, payload={"message": str(exc)})
+        finally:
+            await reservation.cancel_before_start()
+
+    async def retry_meeting_finalization(
+        self,
+        meeting_id: str,
+        command: MeetingRetryCommand,
+    ) -> MeetingProcessingOutcome:
+        """Reserve a durable finalization or analysis retry."""
+
+        requested_final_provider = command.final_provider
+        requested_analysis_model = command.analysis_model
+        reservation: _MeetingProcessingReservation | None = None
+        reopened_import: Any | None = None
+        original_state = ""
+        retry_state = ""
+        previous_final_provider = ""
+        previous_reprocess_final_model: str | None = None
+        previous_analysis_model = ""
+        changed_final_provider = ""
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            if current["state"] not in {
+                "finalization_failed",
+                "analysis_failed",
+                "interrupted",
+                "capture_failed",
+            }:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting is not waiting for a finalization retry."},
+                )
+            original_state = str(current["state"])
+            retry_state = "analyzing" if current["state"] == "analysis_failed" else "finalizing"
+            previous_analysis_model = str(current.get("analysisModel") or "").strip()
+            analysis_model_for_retry: str | None = None
+            if retry_state == "analyzing":
+                analysis_model_for_retry = _validate_summarization_model(
+                    requested_analysis_model or Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
+                )
+                if not _meeting_llm_model_ready(analysis_model_for_retry):
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={"message": "Configure the API key for the selected Meeting analysis model first."},
+                    )
+            elif requested_analysis_model:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "The Meeting analysis model can change only during an analysis retry."},
+                )
+            if requested_final_provider:
+                if retry_state != "finalizing":
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={
+                            "message": "The final transcription provider cannot change during an analysis-only retry."
+                        },
+                    )
+                if requested_final_provider not in _MEETING_FINAL_STT_PROVIDERS:
+                    return MeetingProcessingOutcome(
+                        status=400,
+                        payload={"message": "Unsupported final meeting transcription provider."},
+                    )
+                readiness_error = _provider_readiness_error(requested_final_provider)
+                if readiness_error:
+                    return MeetingProcessingOutcome(
+                        status=409,
+                        payload={"message": readiness_error},
+                    )
+                current_provider = str(current.get("finalProvider") or "").strip().lower()
+                capture_metadata = current.get("captureMetadata")
+                is_full_reprocess = bool(
+                    isinstance(capture_metadata, dict) and capture_metadata.get("reprocessKind") == "full_transcript"
+                )
+                if is_full_reprocess:
+                    previous_reprocess_final_model = str(capture_metadata.get("reprocessFinalModel") or "").strip()
+                retry_final_model = (
+                    previous_reprocess_final_model
+                    if requested_final_provider == current_provider and previous_reprocess_final_model is not None
+                    else provider_batch_model(requested_final_provider)
+                )
+                provider_duration_limit = meeting_max_duration_seconds(
+                    requested_final_provider,
+                    retry_final_model,
+                )
+                if provider_duration_limit is not None:
+                    durable_timeline_ms = max(
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "microphone",
+                        ),
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "mic_clean",
+                        ),
+                        await asyncio.to_thread(
+                            self._meeting_store.next_audio_offset_ms,
+                            meeting_id,
+                            "system",
+                        ),
+                    )
+                    if durable_timeline_ms > provider_duration_limit * 1_000:
+                        return MeetingProcessingOutcome(
+                            status=409,
+                            payload={
+                                "message": (
+                                    f"{_service_label(requested_final_provider)} accepts Meeting "
+                                    f"tracks up to {provider_duration_limit // 60} minutes."
+                                )
+                            },
+                        )
+                if requested_final_provider != current_provider:
+                    previous_final_provider = await asyncio.to_thread(
+                        self._meeting_store.change_final_provider_for_retry,
+                        meeting_id,
+                        requested_final_provider,
+                        expected_state=original_state,
+                        expected_final_provider=current_provider,
+                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=retry_final_model,
+                    )
+                    changed_final_provider = requested_final_provider
+            import_job = await asyncio.to_thread(
+                self._meeting_import_store.find_by_meeting_id,
+                meeting_id,
+            )
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                (self.schedule_meeting_analysis if retry_state == "analyzing" else self.schedule_meeting_finalization),
+            )
+            if reservation is None:
+                if changed_final_provider:
+                    await asyncio.to_thread(
+                        self._meeting_store.change_final_provider_for_retry,
+                        meeting_id,
+                        previous_final_provider,
+                        expected_state=original_state,
+                        expected_final_provider=changed_final_provider,
+                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                        final_model=previous_reprocess_final_model,
+                    )
+                    changed_final_provider = ""
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting processing is already running."},
+                )
+            if import_job is not None and import_job.status == MeetingImportStatus.FAILED:
+                reopened_import = await to_thread_cancellation_barrier(
+                    self._meeting_import_store.transition,
+                    import_job.id,
+                    MeetingImportStatus.FINALIZING,
+                    expected_status=MeetingImportStatus.FAILED,
+                )
+                await self._broadcast_meeting_import(
+                    reopened_import,
+                    0.97,
+                    "Retrying Meeting import finalization",
+                )
+            finalizing = await to_thread_cancellation_barrier(
+                self._meeting_store.transition,
+                meeting_id,
+                retry_state,
+                analysis_model=analysis_model_for_retry,
+            )
+            reservation.open()
+            await self.broadcast(meeting_state_event(finalizing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={**finalizing, "apiVersion": REST_API_VERSION},
+            )
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except ValueError as exc:
+            return MeetingProcessingOutcome(status=400, payload={"message": str(exc)})
+        except (
+            InvalidMeetingTransition,
+            MeetingConflict,
+            InvalidMeetingImportTransition,
+            MeetingImportConflict,
+        ) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        finally:
+            if reservation is not None and not reservation.opened:
+                await reservation.cancel_before_start()
+                if retry_state and original_state:
+                    try:
+                        persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                        if persisted["state"] == retry_state:
+                            rollback_state = (
+                                "finalization_failed" if original_state == "capture_failed" else original_state
+                            )
+                            await to_thread_cancellation_barrier(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                rollback_state,
+                                error_code=str(current.get("errorCode") or "retry_not_started"),
+                                error_message=str(current.get("errorMessage") or "Meeting retry could not be started."),
+                                analysis_model=(previous_analysis_model if retry_state == "analyzing" else None),
+                            )
+                    except Exception:
+                        logger.exception("Meeting retry state reservation could not be rolled back")
+                if reopened_import is not None:
+                    try:
+                        await to_thread_cancellation_barrier(
+                            self._meeting_import_store.mark_failed,
+                            reopened_import.id,
+                            error_code="retry_not_started",
+                            error_message="Meeting retry could not be started.",
+                        )
+                    except Exception:
+                        logger.exception("Meeting import retry reservation could not be rolled back")
+            if reservation is not None and not reservation.opened and changed_final_provider:
+                try:
+                    persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                    if (
+                        persisted.get("state") in {"finalization_failed", "capture_failed", "interrupted"}
+                        and str(persisted.get("finalProvider") or "").strip().lower() == changed_final_provider
+                    ):
+                        await to_thread_cancellation_barrier(
+                            self._meeting_store.change_final_provider_for_retry,
+                            meeting_id,
+                            previous_final_provider,
+                            expected_state=str(persisted["state"]),
+                            expected_final_provider=changed_final_provider,
+                            allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
+                            final_model=previous_reprocess_final_model,
+                        )
+                except Exception:
+                    logger.exception("Meeting retry provider reservation could not be rolled back")
+
+    async def analyze_meeting_again(self, meeting_id: str) -> MeetingProcessingOutcome:
+        """Reserve one durable Meeting analysis rerun."""
+
+        reservation: _MeetingProcessingReservation | None = None
+        original_state = ""
+        current: dict[str, Any] = {}
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            if current["state"] not in {"ready", "analysis_failed"}:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting is not ready for analysis."},
+                )
+            original_state = str(current["state"])
+            reservation = self._reserve_meeting_processing(
+                meeting_id,
+                self.schedule_meeting_analysis,
+            )
+            if reservation is None:
+                return MeetingProcessingOutcome(
+                    status=409,
+                    payload={"message": "Meeting analysis is already running."},
+                )
+            analyzing = await to_thread_cancellation_barrier(
+                self._meeting_store.transition,
+                meeting_id,
+                "analyzing",
+            )
+            reservation.open()
+            await self.broadcast(meeting_state_event(analyzing))
+            return MeetingProcessingOutcome(
+                status=202,
+                payload={**analyzing, "apiVersion": REST_API_VERSION},
+            )
+        except MeetingNotFound:
+            return MeetingProcessingOutcome(status=404, payload={"message": "Meeting not found"})
+        except (InvalidMeetingTransition, MeetingConflict) as exc:
+            return MeetingProcessingOutcome(status=409, payload={"message": str(exc)})
+        finally:
+            if reservation is not None and not reservation.opened:
+                await reservation.cancel_before_start()
+                if original_state:
+                    try:
+                        persisted = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+                        if persisted["state"] == "analyzing":
+                            await to_thread_cancellation_barrier(
+                                self._meeting_store.transition,
+                                meeting_id,
+                                original_state,
+                                error_code=str(current.get("errorCode") or ""),
+                                error_message=str(current.get("errorMessage") or ""),
+                            )
+                    except Exception:
+                        logger.exception("Meeting analysis reservation could not be rolled back")
+
     async def _run_meeting_analysis(self, meeting_id: str) -> None:
         from src.meeting_analysis import MEETING_ANALYSIS_SCHEMA_VERSION, analyze_meeting
         from src.summarization import generate_meeting_analysis_text
@@ -12993,6 +14570,381 @@ class ScriberWebController:
                 )
                 await self._broadcast_meeting_import(import_job, 1.0, "Meeting import analysis failed")
 
+    async def get_meeting_capabilities(self) -> MeetingReadinessOutcome:
+        """Return native-capture and long-session readiness without opening devices."""
+
+        long_session_target_seconds = 5 * 60 * 60
+        long_session_required_bytes = 6 * 1024 * 1024 * 1024
+        capture_bytes_per_second = 16_000 * 2 * 3
+        try:
+            disk_usage = await asyncio.to_thread(shutil.disk_usage, data_dir())
+            available_free_bytes: int | None = int(disk_usage.free)
+        except OSError, ValueError:
+            available_free_bytes = None
+        finalization_reserve_bytes = 2 * 1024 * 1024 * 1024
+        estimated_capture_seconds = (
+            max(0, available_free_bytes - finalization_reserve_bytes) // capture_bytes_per_second
+            if available_free_bytes is not None
+            else None
+        )
+        return MeetingReadinessOutcome(
+            status=200,
+            payload={
+                "apiVersion": REST_API_VERSION,
+                "platform": "windows" if os.name == "nt" else "unsupported",
+                "shellIpcAvailable": shell_ipc_available(),
+                "nativeMeetingCapture": shell_ipc_available(),
+                "liveMicBusy": bool(self._is_listening or self._is_stopping),
+                "activeMeeting": await asyncio.to_thread(self._meeting_store.active),
+                "sources": ["microphone", "system"],
+                "requiresPermissionConfirmation": False,
+                "longSession": {
+                    "targetDurationSeconds": long_session_target_seconds,
+                    "checkpointIntervalSeconds": 30,
+                    "requiredFreeBytes": long_session_required_bytes,
+                    "availableFreeBytes": available_free_bytes,
+                    "estimatedCaptureSeconds": estimated_capture_seconds,
+                    "storageReady": bool(
+                        available_free_bytes is not None and available_free_bytes >= long_session_required_bytes
+                    ),
+                },
+            },
+        )
+
+    async def list_meeting_audio_devices(self) -> MeetingReadinessOutcome:
+        """Return redacted native endpoint choices, with capture-only fallback."""
+
+        grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
+        shell_available = shell_ipc_available()
+        shell_inventory_available = False
+        shell_inventory_present = False
+        reason = ""
+
+        if shell_available:
+            try:
+                response = await asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioEndpointInventory",
+                    {},
+                    timeout_seconds=2.0,
+                )
+            except Exception as exc:
+                reason = "shellIpcRequestFailed"
+                logger.debug(
+                    "Meeting audio endpoint inventory request failed; trying redacted "
+                    f"PyCAW capture fallback ({type(exc).__name__})"
+                )
+            else:
+                payload = response.get("payload") if isinstance(response, dict) else None
+                endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
+                grouped = _group_meeting_audio_endpoints(endpoints)
+                shell_inventory_present = bool(grouped["capture"] or grouped["render"])
+                shell_inventory_available = bool(
+                    isinstance(response, dict)
+                    and response.get("success")
+                    and isinstance(payload, dict)
+                    and payload.get("available")
+                )
+                if not shell_inventory_available:
+                    reason = _safe_meeting_audio_inventory_reason(
+                        response.get("errorCode") if isinstance(response, dict) else None,
+                        default="shellInventoryUnavailable",
+                    )
+                elif not grouped["capture"]:
+                    reason = "captureInventoryEmpty"
+        else:
+            reason = "shellIpcUnavailable"
+
+        fallback_used = False
+        if shell_available and not grouped["capture"]:
+            try:
+                fallback_endpoints = await asyncio.to_thread(collect_native_capture_endpoint_inventory)
+            except Exception as exc:
+                logger.debug(f"Redacted PyCAW meeting capture inventory fallback failed ({type(exc).__name__})")
+            else:
+                fallback_grouped = _group_meeting_audio_endpoints(fallback_endpoints)
+                if fallback_grouped["capture"]:
+                    grouped["capture"] = fallback_grouped["capture"]
+                    fallback_used = True
+
+        if fallback_used:
+            source = (
+                "rust-wasapi+pycaw-fallback"
+                if shell_inventory_available or shell_inventory_present
+                else "pycaw-fallback"
+            )
+        elif shell_inventory_available or shell_inventory_present:
+            source = "rust-wasapi"
+        else:
+            source = "unavailable"
+
+        missing_capture = not grouped["capture"]
+        missing_render = not grouped["render"]
+        if not reason:
+            if missing_capture and missing_render:
+                reason = "endpointInventoryEmpty"
+            elif missing_capture:
+                reason = "captureInventoryEmpty"
+            elif missing_render:
+                reason = "renderInventoryEmpty"
+
+        return MeetingReadinessOutcome(
+            status=200,
+            payload={
+                "apiVersion": REST_API_VERSION,
+                "available": bool(shell_available and (grouped["capture"] or grouped["render"])),
+                "capture": grouped["capture"],
+                "render": grouped["render"],
+                "source": source,
+                "partial": bool(fallback_used or missing_capture or missing_render or not shell_inventory_available),
+                "reason": reason,
+            },
+        )
+
+    async def run_meeting_device_test(
+        self,
+        command: MeetingDeviceTestCommand,
+    ) -> MeetingReadinessOutcome:
+        """Run one ephemeral, privacy-minimal native Meeting audio probe."""
+
+        if not shell_ipc_available():
+            return MeetingReadinessOutcome(
+                status=503,
+                payload={"message": "Native meeting audio is unavailable."},
+            )
+
+        admission_lock = _audio_admission_lock(self)
+        device_test_claim: AudioAdmissionClaim | None = None
+        capture_id = ""
+        native_capture_started = False
+        loss_requested = False
+        native_start_settled = asyncio.Event()
+        capture_stop_lock = asyncio.Lock()
+        probe_stop_lock = asyncio.Lock()
+        probe: MeetingDeviceLevelProbe | None = None
+        tone_task: asyncio.Task[bool] | None = None
+        prewarm_paused = False
+
+        async def stop_native_capture(*, reason: str) -> None:
+            nonlocal capture_id, native_capture_started
+            async with capture_stop_lock:
+                if not native_capture_started:
+                    return
+                if not capture_id:
+                    raise RuntimeError("Native meeting device test started without a capture identifier")
+                response = await to_thread_cancellation_barrier(
+                    call_shell_ipc,
+                    "audioMeetingStop",
+                    {"captureId": capture_id, "reason": reason},
+                    timeout_seconds=4.0,
+                )
+                if not isinstance(response, dict) or response.get("success") is not True:
+                    raise RuntimeError("Native meeting device test stop was not confirmed")
+                capture_id = ""
+                native_capture_started = False
+
+        async def stop_probe() -> dict[str, Any] | None:
+            nonlocal probe
+            async with probe_stop_lock:
+                if probe is None:
+                    return None
+                levels = await to_thread_cancellation_barrier(probe.stop)
+                probe = None
+                return levels
+
+        async def settle_device_test_after_loss(
+            _claim: AudioAdmissionClaim,
+            _reason: str,
+        ) -> None:
+            nonlocal loss_requested, prewarm_paused
+            loss_requested = True
+            await native_start_settled.wait()
+            await stop_native_capture(reason="audioAdmissionLost")
+            await stop_probe()
+            async with admission_lock:
+                self._meeting_device_test_active = False
+            if prewarm_paused:
+                self._resume_idle_mic_prewarm_after_capture()
+                prewarm_paused = False
+
+        async with admission_lock:
+            if (
+                getattr(self, "_live_mic_start_in_progress_generation", None) is not None
+                or self._is_listening
+                or self._is_stopping
+            ):
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Stop Live Mic before testing meeting devices."},
+                )
+            if await _active_meeting_audio_conflict(self) is not None:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before testing devices."},
+                )
+            if self._meeting_device_test_active:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "A meeting device test is already running."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            try:
+                device_test_claim = await _claim_persistent_audio(
+                    self,
+                    owner_kind="device_test",
+                    owner_id=f"probe-{uuid4().hex}",
+                    heartbeat=True,
+                    loss_handler=settle_device_test_after_loss,
+                )
+            except AudioAdmissionConflict:
+                return MeetingReadinessOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            self._meeting_device_test_active = True
+
+        try:
+            await self._pause_idle_mic_prewarm_for_capture()
+            prewarm_paused = True
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost before device-test start")
+            response, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    call_shell_ipc,
+                    "audioMeetingStart",
+                    {
+                        "meetingId": f"device-test-{uuid4().hex}",
+                        "microphoneNativeEndpointIdHash": command.microphone_native_endpoint_id_hash,
+                        "renderNativeEndpointIdHash": command.render_native_endpoint_id_hash,
+                        "aecEnabled": command.aec_enabled,
+                    },
+                    timeout_seconds=4.0,
+                )
+            )
+            if response.get("success"):
+                native_capture_started = True
+            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+            capture_id = str(payload.get("captureId") or "")
+            native_start_settled.set()
+            if pending_cancel is not None:
+                raise pending_cancel
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost during device-test start")
+            if not response.get("success"):
+                return MeetingReadinessOutcome(
+                    status=503,
+                    payload={
+                        "message": str(response.get("fallbackReason") or "Native meeting device test did not start.")
+                    },
+                )
+            sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
+            probe = MeetingDeviceLevelProbe()
+            probe.start(sources)
+
+            async def play_test_tone() -> bool:
+                if os.name != "nt" or not command.play_test_tone:
+                    return False
+                await asyncio.sleep(0.4)
+
+                def play() -> bool:
+                    import io
+                    import math
+                    import struct
+                    import wave
+                    import winsound
+
+                    sample_rate = 48_000
+                    duration_seconds = 0.55
+                    frame_count = int(sample_rate * duration_seconds)
+                    pcm = bytearray()
+                    for index in range(frame_count):
+                        phase = index / sample_rate
+                        fade = min(1.0, index / 960, (frame_count - index) / 960)
+                        sample = int(32767 * 0.16 * max(0.0, fade) * math.sin(2 * math.pi * 660 * phase))
+                        pcm.extend(struct.pack("<h", sample))
+                    output = io.BytesIO()
+                    with wave.open(output, "wb") as wav:
+                        wav.setnchannels(1)
+                        wav.setsampwidth(2)
+                        wav.setframerate(sample_rate)
+                        wav.writeframes(pcm)
+                    winsound.PlaySound(
+                        output.getvalue(),
+                        winsound.SND_MEMORY | winsound.SND_NODEFAULT,
+                    )
+                    return True
+
+                try:
+                    return await asyncio.to_thread(play)
+                except Exception as exc:
+                    logger.debug("Meeting device test tone unavailable: {}", type(exc).__name__)
+                    return False
+
+            tone_task = asyncio.create_task(play_test_tone())
+            await asyncio.sleep(command.duration_ms / 1000.0)
+            if loss_requested:
+                raise RuntimeError("Native-audio admission was lost during device test")
+            test_tone_played = await tone_task
+            tone_task = None
+            await stop_native_capture(reason="deviceTestComplete")
+            levels = await stop_probe()
+            assert levels is not None
+            return MeetingReadinessOutcome(
+                status=200,
+                payload={
+                    "apiVersion": REST_API_VERSION,
+                    "available": True,
+                    "durationMs": command.duration_ms,
+                    "aecActive": bool(payload.get("aecActive")),
+                    "testTonePlayed": test_tone_played,
+                    "sources": levels,
+                    "audioPersisted": False,
+                    "audioSentToProvider": False,
+                },
+            )
+        except TypeError, ValueError:
+            return MeetingReadinessOutcome(
+                status=400,
+                payload={"message": "Invalid meeting device test payload."},
+            )
+        except Exception as exc:
+            logger.warning("Meeting device test failed: {}", type(exc).__name__)
+            return MeetingReadinessOutcome(
+                status=503,
+                payload={"message": f"Meeting device test failed ({type(exc).__name__})."},
+            )
+        finally:
+
+            async def settle_device_test_cleanup() -> None:
+                nonlocal tone_task, prewarm_paused
+                native_start_settled.set()
+                if tone_task is not None and not tone_task.done():
+                    tone_task.cancel()
+                    await asyncio.gather(tone_task, return_exceptions=True)
+                native_capture_released = not native_capture_started
+                if native_capture_started:
+                    try:
+                        await stop_native_capture(reason="deviceTestCleanup")
+                        native_capture_released = True
+                    except Exception as exc:
+                        logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
+                await stop_probe()
+                if native_capture_released:
+                    async with admission_lock:
+                        self._meeting_device_test_active = False
+                    await _release_persistent_audio(self, device_test_claim)
+                    if prewarm_paused:
+                        self._resume_idle_mic_prewarm_after_capture()
+                        prewarm_paused = False
+                else:
+                    logger.error("Meeting device test retained native-audio ownership after unconfirmed stop")
+
+            await _await_cleanup_barrier(settle_device_test_cleanup())
+
     def start_meeting_capture_watchdog(self, meeting_id: str, capture_id: str) -> None:
         self.stop_meeting_capture_watchdog(meeting_id)
         if not capture_id:
@@ -13030,14 +14982,7 @@ class ScriberWebController:
                     for source, stats in recorder_snapshot.items()
                     if isinstance(stats, dict) and stats.get("errorCode")
                 }
-                lease_lost = meeting_id in getattr(self, "_audio_admission_lost_meetings", set())
-                if lease_lost:
-                    response = {
-                        "success": False,
-                        "errorCode": "audio_admission_lost",
-                    }
-                    payload = {"reason": "audio_admission_lost"}
-                elif recorder_errors:
+                if recorder_errors:
                     disk_full = any(code == "disk_full" for code in recorder_errors.values())
                     try:
                         native_status = await asyncio.to_thread(
@@ -13111,125 +15056,46 @@ class ScriberWebController:
                     if persisted_capture_id and persisted_capture_id != capture_id:
                         return
 
-                    meeting_claim = _meeting_audio_claim(self, meeting_id)
-                    recorder = self._meeting_recorders.get(meeting_id)
-                    prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
-                    if callable(prepare_disconnect):
-                        prepare_disconnect()
-                    try:
-                        stop_response = await asyncio.to_thread(
-                            call_shell_ipc,
-                            "audioMeetingStop",
-                            {"meetingId": meeting_id, "captureId": capture_id},
-                            timeout_seconds=4.0,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "Meeting capture watchdog native stop failed: {}",
-                            type(exc).__name__,
-                        )
-                        stop_response = {
-                            "success": False,
-                            "errorCode": "meeting_capture_stop_failed",
-                            "payload": {},
-                        }
-                    recorder_stop_failure: tuple[str, str] | None = None
-                    recorder_failure_snapshot: dict[str, Any] = {}
-                    if recorder is not None:
-                        try:
-                            await asyncio.to_thread(recorder.stop)
-                        except Exception as exc:
-                            try:
-                                snapshot = recorder.snapshot()
-                            except Exception:
-                                snapshot = {}
-                            recorder_failure_snapshot = snapshot if isinstance(snapshot, dict) else {}
-                            recorder_stop_failure = _meeting_recorder_stop_failure(
-                                exc,
-                                recorder_failure_snapshot,
-                            )
-                            logger.warning(
-                                "Meeting capture watchdog recorder stop failed: error={} code={}",
-                                type(exc).__name__,
-                                recorder_stop_failure[0],
-                            )
-                        else:
-                            if self._meeting_recorders.get(meeting_id) is recorder:
-                                self._meeting_recorders.pop(meeting_id, None)
-                    live = self._meeting_live_transcribers.pop(meeting_id, None)
-                    if live is not None:
-                        try:
-                            await live.stop()
-                        except Exception as exc:
-                            logger.warning(
-                                "Meeting capture watchdog live stop failed: {}",
-                                type(exc).__name__,
-                            )
-                    self.clear_meeting_audio_level_state(meeting_id)
-                    if recorder_errors:
-                        stop_payload = (
-                            stop_response.get("payload") if isinstance(stop_response.get("payload"), dict) else {}
-                        )
-                        stop_sidecar = (
-                            stop_payload.get("sidecar") if isinstance(stop_payload.get("sidecar"), dict) else {}
-                        )
-                        relay = stop_sidecar.get("relay") if isinstance(stop_sidecar.get("relay"), dict) else {}
-                        source_stops = (
-                            stop_sidecar.get("sources") if isinstance(stop_sidecar.get("sources"), list) else []
-                        )
-                        logger.warning(
-                            "Meeting native stop diagnostics: relay_error={} frames={} source_errors={}",
-                            relay.get("relayError"),
-                            relay.get("framesProcessed"),
-                            [
-                                {
-                                    "source": item.get("source"),
-                                    "connected": item.get("connected"),
-                                    "framesWritten": item.get("framesWritten"),
-                                    "writerError": item.get("writerError"),
-                                }
-                                for item in source_stops
-                                if isinstance(item, dict)
-                            ],
-                        )
                     failure_code = str(response.get("errorCode") or payload.get("reason") or "meeting_capture_inactive")
                     failure_message = (
                         "The meeting audio drive is full. Recording stopped and completed chunks were preserved."
                         if response.get("errorCode") == "meeting_storage_full"
-                        else (
-                            "Native audio ownership moved to another Scriber controller. Recording stopped and completed chunks were preserved."
-                            if response.get("errorCode") == "audio_admission_lost"
-                            else "A meeting audio source stopped unexpectedly. The durable audio recorded so far was preserved."
+                        else "A meeting audio source stopped unexpectedly. The durable audio recorded so far was preserved."
+                    )
+                    meeting_claim = _meeting_audio_claim(self, meeting_id)
+                    registry = _meeting_capture_ownership_registry(self)
+                    ownership = registry.get(meeting_id)
+                    if ownership is None:
+                        ownership = _MeetingCaptureOwnership(
+                            failure_state="capture_failed",
+                            meeting_id=meeting_id,
+                            capture_id=capture_id,
+                            native_capture_started=True,
+                            recorder=self._meeting_recorders.get(meeting_id),
+                            live_transcriber=self._meeting_live_transcribers.get(meeting_id),
+                            resume_prewarm=True,
                         )
-                    )
-                    transition_kwargs: dict[str, Any] = {}
-                    if recorder_stop_failure is not None:
-                        failure_code, failure_message = recorder_stop_failure
-                        failure_metadata = dict(capture_metadata if isinstance(capture_metadata, dict) else {})
-                        failure_metadata["persistence"] = recorder_failure_snapshot
-                        persistence_sessions = failure_metadata.get("persistenceSessions")
-                        if not isinstance(persistence_sessions, list):
-                            persistence_sessions = []
-                        failure_metadata["persistenceSessions"] = [
-                            *persistence_sessions[-19:],
-                            recorder_failure_snapshot,
-                        ]
-                        transition_kwargs["capture_metadata"] = failure_metadata
-                    failed = await asyncio.to_thread(
-                        self._meeting_store.transition,
-                        meeting_id,
-                        "capture_failed",
-                        error_code=failure_code,
-                        error_message=failure_message,
-                        **transition_kwargs,
-                    )
-                    lost_meetings = getattr(self, "_audio_admission_lost_meetings", None)
-                    if isinstance(lost_meetings, set):
-                        lost_meetings.discard(meeting_id)
+                        ownership.identity_settled.set()
+                        registry[meeting_id] = ownership
+                    ownership.failure_state = "capture_failed"
+                    try:
+                        async with ownership.setup_lock:
+                            await _cleanup_meeting_capture_ownership_barrier(
+                                self,
+                                ownership,
+                                error_code=failure_code,
+                                error_message=failure_message,
+                            )
+                    except _MeetingCaptureCleanupIncomplete as exc:
+                        logger.error(
+                            "Meeting capture watchdog retained native-audio ownership: {}",
+                            type(exc).__name__,
+                        )
+                        return
                     if meeting_claim is not None:
                         await _release_persistent_audio(self, meeting_claim)
-                    self._resume_idle_mic_prewarm_after_capture()
-                    await self.broadcast(meeting_state_event(failed))
+                    if registry.get(meeting_id) is ownership:
+                        registry.pop(meeting_id, None)
                     return
         except asyncio.CancelledError:
             raise
@@ -13237,6 +15103,1196 @@ class ScriberWebController:
             return
         except Exception as exc:
             logger.warning("Meeting capture watchdog failed for {}: {}", meeting_id, type(exc).__name__)
+
+    async def start_meeting_capture(
+        self,
+        command: MeetingStartCommand,
+    ) -> MeetingCaptureOutcome:
+        """Start one native Meeting capture behind the route-owned command seam."""
+
+        request_started = time.perf_counter()
+        requested_voice_library = command.voice_library_enabled
+        if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "Voice Library requires the explicit biometric-processing opt-in in Settings."},
+            )
+        if requested_voice_library and not self._speaker_model.status()["installed"]:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "Install the optional WeSpeaker model before enabling Voice Library."},
+            )
+
+        # Resolve only against the token-protected local Graph cache. Participant
+        # details sent by a WebView are never trusted. The snapshot is frozen now
+        # so a concurrent calendar refresh cannot silently change recipients.
+        explicit_calendar_selection = command.calendar_event_selected
+        selected_calendar_event: dict[str, Any] | None = None
+        outlook_calendar = getattr(self, "_outlook_calendar", None)
+        if explicit_calendar_selection:
+            selected_event_id = command.calendar_event_id
+            if selected_event_id:
+                selected_calendar_event = (
+                    await asyncio.to_thread(outlook_calendar.event_snapshot, selected_event_id)
+                    if outlook_calendar is not None
+                    else None
+                )
+                if selected_calendar_event is None:
+                    return MeetingCaptureOutcome(
+                        status=409,
+                        payload={
+                            "message": (
+                                "The selected Outlook event is no longer available. "
+                                "Refresh the calendar and choose it again."
+                            )
+                        },
+                    )
+        elif outlook_calendar is not None:
+            selected_calendar_event = await asyncio.to_thread(outlook_calendar.current_event)
+        create_request = command.create_request(
+            calendar_title=str((selected_calendar_event or {}).get("subject") or "")
+        )
+
+        meeting_claim: AudioAdmissionClaim | None = None
+        ownership = _MeetingCaptureOwnership(failure_state="capture_failed")
+        meeting_loss_handler = _meeting_audio_loss_handler(self, ownership)
+
+        async def start_claimed() -> MeetingCaptureOutcome:
+            nonlocal meeting_claim
+            try:
+                meeting, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(self._meeting_store.create, create_request)
+                )
+            except MeetingConflict as exc:
+                ownership.identity_settled.set()
+                await _release_persistent_audio(self, meeting_claim)
+                return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+            except BaseException:
+                ownership.identity_settled.set()
+                raise
+            try:
+                ownership.meeting_id = str(meeting["id"])
+                _meeting_capture_ownership_registry(self)[ownership.meeting_id] = ownership
+                ownership.identity_settled.set()
+                if meeting_claim is not None:
+                    meeting_claim = await _transfer_persistent_audio_claim(
+                        self,
+                        meeting_claim,
+                        owner_id=ownership.meeting_id,
+                    )
+                ownership.resume_prewarm = True
+                if pending_cancel is not None:
+                    raise pending_cancel
+
+                ipc_payload = command.native_payload(meeting_id=str(meeting["id"]))
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting capture started.",
+                        )
+                    await self._pause_idle_mic_prewarm_for_capture()
+                    response, pending_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            call_shell_ipc,
+                            "audioMeetingStart",
+                            ipc_payload,
+                            timeout_seconds=4.0,
+                        )
+                    )
+                    native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                    if response.get("success"):
+                        ownership.native_capture_started = True
+                        ownership.capture_id = str(native_payload.get("captureId") or "")
+                if pending_cancel is not None:
+                    raise pending_cancel
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed during Meeting capture start.",
+                    )
+                if not response.get("success"):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code=str(response.get("errorCode") or "native_capture_unavailable"),
+                        message=str(response.get("fallbackReason") or "Native meeting capture did not start."),
+                    )
+
+                ownership.capture_id, native_sources = _validated_meeting_native_capture_payload(native_payload)
+                live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting persistence started.",
+                        )
+                    recorder = MeetingAudioRecorder(
+                        meeting["id"],
+                        data_dir() / "meetings",
+                        self._meeting_store,
+                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                        on_pcm=lambda source, pcm, _header: self.on_meeting_pcm(
+                            meeting["id"],
+                            live_preview_ref["transcriber"],
+                            source,
+                            pcm,
+                        ),
+                        on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting["id"], checkpoint),
+                    )
+                    ownership.recorder = recorder
+                    try:
+                        recorder.start(native_sources)
+                    except Exception as exc:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="frame_recorder_start_failed",
+                            message=f"Meeting audio persistence could not start ({type(exc).__name__}).",
+                        ) from exc
+                    self._meeting_recorders[meeting["id"]] = recorder
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed after Meeting persistence started.",
+                    )
+                timeline_started_at_utc = datetime.now(UTC).isoformat()
+
+                # Durable local capture is authoritative. Live transcription is
+                # best-effort and never gates audio already being persisted.
+                live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                    self,
+                    meeting,
+                )
+                if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed during Meeting preview setup.",
+                    )
+                live_preview_ref["transcriber"] = live_preview
+
+                capture_metadata = {
+                    key: native_payload[key]
+                    for key in (
+                        "captureId",
+                        "sampleRate",
+                        "frameDurationMs",
+                        "aecActive",
+                        "aecRequested",
+                    )
+                    if key in native_payload
+                }
+                capture_metadata["sources"] = [
+                    str(item.get("source")) for item in native_sources if isinstance(item, dict) and item.get("source")
+                ]
+                capture_metadata["timelineOffsetMs"] = 0
+                capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+                capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                    meeting,
+                    degraded=live_preview_degraded,
+                    error_code="live_stt_start_failed",
+                )
+                capture_metadata["captureStartLatencyMs"] = round((time.perf_counter() - request_started) * 1000.0, 1)
+                if selected_calendar_event:
+                    capture_metadata["calendarEvent"] = selected_calendar_event
+                capture_metadata["calendarEventSelection"] = (
+                    "explicit"
+                    if explicit_calendar_selection and selected_calendar_event
+                    else "none"
+                    if explicit_calendar_selection
+                    else "automatic"
+                    if selected_calendar_event
+                    else "unavailable"
+                )
+                capture_metadata["deviceSelection"] = command.device_selection()
+                async with ownership.setup_lock:
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed before Meeting capture committed.",
+                        )
+                    recording, pending_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting["id"],
+                            "recording",
+                            error_code=("live_stt_start_failed" if live_preview_degraded else ""),
+                            error_message=(
+                                "Live transcription is unavailable. Durable local audio recording continues."
+                                if live_preview_degraded
+                                else ""
+                            ),
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    if ownership.loss_requested:
+                        raise _MeetingCaptureSetupError(
+                            status=503,
+                            code="audio_admission_lost",
+                            message="Native audio ownership changed while Meeting capture committed.",
+                        )
+                if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting capture became durable.",
+                    )
+                ownership.failure_state = "interrupted"
+                if pending_cancel is not None:
+                    raise pending_cancel
+                self.start_meeting_capture_watchdog(
+                    meeting["id"],
+                    str(capture_metadata.get("captureId") or ""),
+                )
+                await self.broadcast(meeting_state_event(recording))
+                if live_preview_degraded:
+                    for source in ("microphone", "system"):
+                        await self.broadcast(meeting_live_status_event(meeting["id"], source, "degraded", 0))
+                return MeetingCaptureOutcome(
+                    status=201,
+                    payload={**recording, "apiVersion": REST_API_VERSION},
+                )
+            except asyncio.CancelledError:
+                await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code="meeting_start_canceled",
+                    error_message="Meeting start was interrupted; completed audio chunks were preserved.",
+                    claim=meeting_claim,
+                )
+                raise
+            except _MeetingCaptureSetupError as exc:
+                failed = await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code=exc.code,
+                    error_message=exc.message,
+                    claim=meeting_claim,
+                )
+                meeting_payload = failed or {
+                    "id": ownership.meeting_id,
+                    "state": "capture_failed",
+                    "errorCode": exc.code,
+                    "errorMessage": exc.message,
+                }
+                return MeetingCaptureOutcome(
+                    status=exc.status,
+                    payload={
+                        "message": meeting_payload.get("errorMessage") or exc.message,
+                        "meeting": meeting_payload,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+            except Exception as exc:
+                logger.exception("Meeting capture setup failed")
+                message = (
+                    f"Meeting capture could not start ({type(exc).__name__}); completed audio chunks were preserved."
+                )
+                failed = await _cleanup_and_release_meeting_capture_barrier(
+                    self,
+                    ownership,
+                    error_code="meeting_start_failed",
+                    error_message=message,
+                    claim=meeting_claim,
+                )
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={
+                        "message": (failed or {}).get("errorMessage") or message,
+                        "meeting": failed,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+
+        async with _audio_admission_lock(self):
+            if self._is_listening or self._is_stopping:
+                return MeetingCaptureOutcome(
+                    status=409, payload={"message": "Stop Live Mic before starting a meeting."}
+                )
+            if self._meeting_device_test_active:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Meeting device test to finish."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            if await _active_meeting_audio_conflict(self) is not None:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before starting another one."},
+                )
+            try:
+                meeting_claim = await _claim_persistent_audio(
+                    self,
+                    owner_kind="meeting",
+                    owner_id=f"pending-{uuid4().hex}",
+                    loss_handler=meeting_loss_handler,
+                )
+            except AudioAdmissionConflict:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            return await start_claimed()
+
+    async def pause_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        async with _audio_admission_lock(self):
+            return await ScriberWebController._settle_meeting_capture_command(
+                self,
+                meeting_id,
+                command="audioMeetingPause",
+                target_state="paused",
+            )
+
+    async def stop_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        start_gate = asyncio.Event()
+        if not self.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={"message": "Meeting finalization could not be reserved."},
+            )
+
+        deferred_cancellation: list[asyncio.CancelledError] = []
+        try:
+            async with _audio_admission_lock(self):
+                outcome = await ScriberWebController._settle_meeting_capture_command(
+                    self,
+                    meeting_id,
+                    command="audioMeetingStop",
+                    target_state="stopping",
+                    deferred_cancellation=deferred_cancellation,
+                )
+            if outcome.status >= 400:
+                if deferred_cancellation:
+                    raise deferred_cancellation[0]
+                return outcome
+
+            async def settle_stop() -> dict[str, Any]:
+                finalizing = await asyncio.to_thread(self._meeting_store.transition, meeting_id, "finalizing")
+                self._meeting_recorders.pop(meeting_id, None)
+                clear_level_state = getattr(self, "clear_meeting_audio_level_state", None)
+                if callable(clear_level_state):
+                    clear_level_state(meeting_id)
+                start_gate.set()
+                await self.broadcast(meeting_state_event(finalizing))
+                return finalizing
+
+            finalizing, settlement_cancel = await await_with_delayed_cancellation(settle_stop())
+            pending_cancel = deferred_cancellation[0] if deferred_cancellation else settlement_cancel
+            if pending_cancel is not None:
+                raise pending_cancel
+            return MeetingCaptureOutcome(
+                status=202,
+                payload={**finalizing, "apiVersion": REST_API_VERSION},
+            )
+        finally:
+            if not start_gate.is_set():
+                tasks = getattr(self, "_meeting_tasks", {})
+                reserved_task = tasks.get(meeting_id) if isinstance(tasks, dict) else None
+                if reserved_task is not None:
+                    reserved_task.cancel()
+                    await asyncio.gather(reserved_task, return_exceptions=True)
+
+    async def resume_meeting_capture(self, meeting_id: str) -> MeetingCaptureOutcome:
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+        except MeetingNotFound:
+            return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+        if current.get("state") not in {"paused", "interrupted"}:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
+            )
+
+        async with _audio_admission_lock(self):
+            if self._is_listening or self._is_stopping:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Stop Live Mic before resuming this meeting."},
+                )
+            if self._meeting_device_test_active:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Meeting device test to finish."},
+                )
+            if bool(getattr(self, "_voice_enrollment_active", False)):
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Wait for the Voice Library sample to finish."},
+                )
+            if await _active_meeting_audio_conflict(self, allow_meeting_id=meeting_id) is not None:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Finish the active meeting before resuming this one."},
+                )
+            try:
+                current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+            except MeetingNotFound:
+                return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+            current_state = str(current.get("state") or "unknown")
+            if current_state not in {"paused", "interrupted"}:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": f"Meeting can no longer resume from {current_state}."},
+                )
+            registry = _meeting_capture_ownership_registry(self)
+            ownership = registry.get(meeting_id)
+            if ownership is None or ownership.cleanup_complete:
+                ownership = _MeetingCaptureOwnership(
+                    failure_state="interrupted",
+                    meeting_id=meeting_id,
+                )
+                ownership.identity_settled.set()
+                registry[meeting_id] = ownership
+            try:
+                await _claim_persistent_audio(
+                    self,
+                    owner_kind="meeting",
+                    owner_id=meeting_id,
+                    loss_handler=_meeting_audio_loss_handler(self, ownership),
+                )
+            except AudioAdmissionConflict:
+                return MeetingCaptureOutcome(
+                    status=409,
+                    payload={"message": "Another Scriber controller owns native audio capture."},
+                )
+            if current_state == "paused":
+                return await ScriberWebController._resume_paused_meeting_capture(
+                    self,
+                    meeting_id,
+                    current,
+                    ownership,
+                )
+            return await ScriberWebController._resume_interrupted_meeting_capture(
+                self,
+                meeting_id,
+                current,
+                ownership,
+            )
+
+    async def _resume_paused_meeting_capture(
+        self,
+        meeting_id: str,
+        current: dict[str, Any],
+        ownership: _MeetingCaptureOwnership,
+    ) -> MeetingCaptureOutcome:
+        ownership.failure_state = "interrupted"
+        ownership.capture_id = ""
+        ownership.native_capture_started = False
+        ownership.recorder = None
+        ownership.live_transcriber = None
+        ownership.resume_prewarm = True
+        ownership.cleanup_complete = False
+        ownership.identity_settled.set()
+        capture_metadata = dict(current.get("captureMetadata", {}))
+        selection = capture_metadata.get("deviceSelection", {})
+        if not isinstance(selection, dict):
+            selection = {}
+        try:
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume.",
+                    )
+                response, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingResume",
+                        {
+                            "meetingId": meeting_id,
+                            "captureId": capture_metadata.get("captureId"),
+                            "aecEnabled": bool(current.get("aecEnabled", True)),
+                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
+                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
+                        },
+                        timeout_seconds=4.0,
+                    )
+                )
+                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                if response.get("success"):
+                    ownership.native_capture_started = True
+                    ownership.capture_id = str(native_payload.get("captureId") or "")
+            if pending_cancel is not None:
+                raise pending_cancel
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting resume.",
+                )
+            if not response.get("success"):
+                ownership.resume_prewarm = False
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": str(response.get("fallbackReason") or "Meeting capture resume failed")},
+                )
+
+            ownership.capture_id, sources = _validated_meeting_native_capture_payload(native_payload)
+            pause_start_ms = int(capture_metadata.get("pauseStartedAtMs") or 0)
+            pause_started_raw = str(capture_metadata.get("pauseStartedAtUtc") or "")
+            try:
+                pause_started = datetime.fromisoformat(pause_started_raw.replace("Z", "+00:00"))
+                gap_duration_ms = max(
+                    0,
+                    round((datetime.now(UTC) - pause_started.astimezone(UTC)).total_seconds() * 1000),
+                )
+            except TypeError, ValueError:
+                gap_duration_ms = 0
+            gap_end_ms = pause_start_ms + gap_duration_ms
+            await to_thread_cancellation_barrier(
+                self._meeting_store.add_audio_gap,
+                meeting_id,
+                source="all",
+                started_at_ms=pause_start_ms,
+                ended_at_ms=gap_end_ms,
+                reason="pause",
+            )
+            for source in sources:
+                if isinstance(source, dict):
+                    source["timelineOffsetMs"] = max(int(source.get("timelineOffsetMs", 0) or 0), gap_end_ms)
+
+            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+
+            def recorder_callback(source, pcm, _header):
+                return self.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
+
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume persistence.",
+                    )
+                recorder = self._meeting_recorders.get(meeting_id)
+                if recorder is None:
+                    recorder = MeetingAudioRecorder(
+                        meeting_id,
+                        data_dir() / "meetings",
+                        self._meeting_store,
+                        sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                        on_pcm=recorder_callback,
+                        on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint),
+                    )
+                else:
+                    recorder.on_pcm = recorder_callback
+                ownership.recorder = recorder
+                try:
+                    recorder.start(sources)
+                except Exception as exc:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="frame_recorder_resume_failed",
+                        message=f"Meeting audio persistence could not resume ({type(exc).__name__}).",
+                    ) from exc
+                self._meeting_recorders[meeting_id] = recorder
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed after Meeting resume persistence started.",
+                )
+            timeline_started_at_utc = datetime.now(UTC).isoformat()
+            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                self,
+                current,
+                timeline_offsets={"microphone": gap_end_ms, "system": gap_end_ms},
+            )
+            if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting resume preview setup.",
+                )
+            live_preview_ref["transcriber"] = live_preview
+            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
+                if key in native_payload:
+                    capture_metadata[key] = native_payload[key]
+            capture_metadata.pop("pauseStartedAtMs", None)
+            capture_metadata.pop("pauseStartedAtUtc", None)
+            capture_metadata["timelineOffsetMs"] = gap_end_ms
+            capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+            capture_metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting resume committed.",
+                    )
+                updated, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "recording",
+                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
+                        error_message=(
+                            "Live transcription is unavailable. Durable local audio recording continues."
+                            if live_preview_degraded
+                            else ""
+                        ),
+                        capture_metadata=capture_metadata,
+                    )
+                )
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed while Meeting resume committed.",
+                    )
+            meeting_claim = _meeting_audio_claim(self, meeting_id)
+            if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed before Meeting resume became durable.",
+                )
+            if pending_cancel is not None:
+                raise pending_cancel
+            self.start_meeting_capture_watchdog(meeting_id, str(capture_metadata.get("captureId") or ""))
+            await self.broadcast(meeting_state_event(updated))
+            if live_preview_degraded:
+                for source in ("microphone", "system"):
+                    await self.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
+            return MeetingCaptureOutcome(
+                status=200,
+                payload={**updated, "apiVersion": REST_API_VERSION},
+            )
+        except asyncio.CancelledError:
+            await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_canceled",
+                error_message="Meeting resume was interrupted; saved audio remains available.",
+            )
+            raise
+        except _MeetingCaptureSetupError as exc:
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            return MeetingCaptureOutcome(
+                status=exc.status,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or exc.message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Paused Meeting resume failed")
+            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_failed",
+                error_message=message,
+            )
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+
+    async def _resume_interrupted_meeting_capture(
+        self,
+        meeting_id: str,
+        current: dict[str, Any],
+        ownership: _MeetingCaptureOwnership,
+    ) -> MeetingCaptureOutcome:
+        metadata = dict(current.get("captureMetadata", {}))
+        selection = metadata.get("deviceSelection", {})
+        if not isinstance(selection, dict):
+            selection = {}
+        offset_ms = max(
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
+            await asyncio.to_thread(self._meeting_store.next_audio_offset_ms, meeting_id, "system"),
+        )
+        gap_end_ms = offset_ms + 1
+        ownership.failure_state = "interrupted"
+        ownership.capture_id = ""
+        ownership.native_capture_started = False
+        ownership.recorder = None
+        ownership.live_transcriber = None
+        ownership.resume_prewarm = True
+        ownership.cleanup_complete = False
+        ownership.identity_settled.set()
+        try:
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery.",
+                    )
+                await self._pause_idle_mic_prewarm_for_capture()
+                response, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        "audioMeetingResume",
+                        {
+                            "meetingId": meeting_id,
+                            "aecEnabled": bool(current.get("aecEnabled", True)),
+                            "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
+                            "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
+                        },
+                        timeout_seconds=4.0,
+                    )
+                )
+                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+                if response.get("success"):
+                    ownership.native_capture_started = True
+                    ownership.capture_id = str(native_payload.get("captureId") or "")
+            if pending_cancel is not None:
+                raise pending_cancel
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting recovery.",
+                )
+            if not response.get("success"):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code=str(response.get("errorCode") or "meeting_resume_failed"),
+                    message=str(response.get("fallbackReason") or "Meeting capture resume failed."),
+                )
+            ownership.capture_id, sources = _validated_meeting_native_capture_payload(native_payload)
+            for source in sources:
+                if isinstance(source, dict):
+                    source["timelineOffsetMs"] = gap_end_ms
+            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery persistence.",
+                    )
+                recorder = MeetingAudioRecorder(
+                    meeting_id,
+                    data_dir() / "meetings",
+                    self._meeting_store,
+                    sample_rate=int(native_payload.get("sampleRate") or 16_000),
+                    on_pcm=lambda source, pcm, _header: self.on_meeting_pcm(
+                        meeting_id,
+                        live_preview_ref["transcriber"],
+                        source,
+                        pcm,
+                    ),
+                    on_checkpoint=lambda checkpoint: self.on_meeting_checkpoint(meeting_id, checkpoint),
+                )
+                ownership.recorder = recorder
+                try:
+                    recorder.start(sources)
+                except Exception as exc:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="frame_recorder_resume_failed",
+                        message=f"Meeting audio persistence could not resume ({type(exc).__name__}).",
+                    ) from exc
+                self._meeting_recorders[meeting_id] = recorder
+            if ownership.loss_requested:
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed after Meeting recovery persistence started.",
+                )
+            timeline_started_at_utc = datetime.now(UTC).isoformat()
+            live_preview, live_preview_degraded = await _start_meeting_live_preview_best_effort(
+                self,
+                current,
+                timeline_offsets={"microphone": gap_end_ms, "system": gap_end_ms},
+            )
+            if not await _adopt_meeting_live_preview(self, ownership, live_preview):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed during Meeting recovery preview setup.",
+                )
+            live_preview_ref["transcriber"] = live_preview
+            await to_thread_cancellation_barrier(
+                self._meeting_store.add_audio_gap,
+                meeting_id,
+                source="all",
+                started_at_ms=offset_ms,
+                ended_at_ms=gap_end_ms,
+                reason="crash-recovery",
+            )
+            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
+                if key in native_payload:
+                    metadata[key] = native_payload[key]
+            metadata["recoveredCaptureAt"] = datetime.now(UTC).isoformat()
+            metadata.pop("pauseStartedAtMs", None)
+            metadata.pop("pauseStartedAtUtc", None)
+            metadata["timelineOffsetMs"] = gap_end_ms
+            metadata["timelineStartedAtUtc"] = timeline_started_at_utc
+            metadata["livePreview"] = _meeting_live_preview_metadata(
+                current,
+                degraded=live_preview_degraded,
+                error_code="live_stt_resume_failed",
+            )
+            async with ownership.setup_lock:
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed before Meeting recovery committed.",
+                    )
+                recording, pending_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        self._meeting_store.transition,
+                        meeting_id,
+                        "recording",
+                        error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
+                        error_message=(
+                            "Live transcription is unavailable. Durable local audio recording continues."
+                            if live_preview_degraded
+                            else ""
+                        ),
+                        capture_metadata=metadata,
+                    )
+                )
+                if ownership.loss_requested:
+                    raise _MeetingCaptureSetupError(
+                        status=503,
+                        code="audio_admission_lost",
+                        message="Native audio ownership changed while Meeting recovery committed.",
+                    )
+            meeting_claim = _meeting_audio_claim(self, meeting_id)
+            if not await _mark_meeting_capture_durable_if_owned(self, ownership, meeting_claim):
+                raise _MeetingCaptureSetupError(
+                    status=503,
+                    code="audio_admission_lost",
+                    message="Native audio ownership changed before Meeting recovery became durable.",
+                )
+            if pending_cancel is not None:
+                raise pending_cancel
+            self.start_meeting_capture_watchdog(meeting_id, str(metadata.get("captureId") or ""))
+            await self.broadcast(meeting_state_event(recording))
+            if live_preview_degraded:
+                for source in ("microphone", "system"):
+                    await self.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
+            return MeetingCaptureOutcome(
+                status=200,
+                payload={**recording, "apiVersion": REST_API_VERSION},
+            )
+        except asyncio.CancelledError:
+            await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_canceled",
+                error_message="Meeting resume was interrupted; saved audio remains available.",
+            )
+            raise
+        except _MeetingCaptureSetupError as exc:
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code=exc.code,
+                error_message=exc.message,
+            )
+            return MeetingCaptureOutcome(
+                status=exc.status,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or exc.message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+        except Exception as exc:
+            logger.exception("Interrupted Meeting resume failed")
+            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
+            failed = await _cleanup_and_release_meeting_capture_barrier(
+                self,
+                ownership,
+                error_code="meeting_resume_failed",
+                error_message=message,
+            )
+            return MeetingCaptureOutcome(
+                status=503,
+                payload={
+                    "message": (failed or {}).get("errorMessage") or message,
+                    "meeting": failed,
+                    "apiVersion": REST_API_VERSION,
+                },
+            )
+
+    async def _settle_meeting_capture_command(
+        self,
+        meeting_id: str,
+        *,
+        command: str,
+        target_state: str,
+        deferred_cancellation: list[asyncio.CancelledError] | None = None,
+    ) -> MeetingCaptureOutcome:
+        try:
+            current = await asyncio.to_thread(self._meeting_store.get, meeting_id)
+        except MeetingNotFound:
+            return MeetingCaptureOutcome(status=404, payload={"message": "Meeting not found"})
+        allowed_source_states = {
+            "audioMeetingPause": frozenset({"recording"}),
+            "audioMeetingStop": frozenset({"recording", "paused"}),
+        }
+        command_labels = {
+            "audioMeetingPause": "pause",
+            "audioMeetingStop": "stop",
+        }
+        current_state = str(current.get("state") or "unknown")
+        if current_state not in allowed_source_states.get(command, frozenset()):
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": f"Meeting cannot {command_labels.get(command, 'change')} from {current_state}."},
+            )
+        meeting_claim = _meeting_audio_claim(self, meeting_id)
+        if meeting_claim is None:
+            return MeetingCaptureOutcome(
+                status=409,
+                payload={"message": "This Meeting does not own native audio capture."},
+            )
+        raw_metadata = current.get("captureMetadata")
+        current_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
+
+        def restore_watchdog() -> None:
+            if current_state == "recording":
+                self.start_meeting_capture_watchdog(
+                    meeting_id,
+                    str(current_metadata.get("captureId") or ""),
+                )
+
+        self.stop_meeting_capture_watchdog(meeting_id)
+        ipc_command_payload = {
+            "meetingId": meeting_id,
+            "captureId": current_metadata.get("captureId"),
+        }
+        registry = _meeting_capture_ownership_registry(self)
+        ownership = registry.get(meeting_id)
+        recorder = self._meeting_recorders.get(meeting_id)
+        if ownership is None:
+            ownership = _MeetingCaptureOwnership(
+                failure_state="interrupted",
+                meeting_id=meeting_id,
+                capture_id=str(current_metadata.get("captureId") or ""),
+                native_capture_started=current_state == "recording",
+                recorder=recorder,
+                live_transcriber=self._meeting_live_transcribers.get(meeting_id),
+                resume_prewarm=True,
+            )
+            ownership.identity_settled.set()
+            registry[meeting_id] = ownership
+
+        capture_metadata = dict(current_metadata)
+        pending_cancel: asyncio.CancelledError | None = None
+        recorder_stop_failure: tuple[str, str] | None = None
+        failed: dict[str, Any] | None = None
+        updated: dict[str, Any] | None = None
+
+        def finish(outcome: MeetingCaptureOutcome) -> MeetingCaptureOutcome:
+            if pending_cancel is None:
+                return outcome
+            if deferred_cancellation is not None:
+                deferred_cancellation.append(pending_cancel)
+                return outcome
+            raise pending_cancel
+
+        async with ownership.setup_lock:
+            if ownership.loss_requested:
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native audio ownership changed while Meeting capture was active."},
+                )
+            prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
+            cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
+            disconnect_prepared = callable(prepare_disconnect)
+            if disconnect_prepared:
+                prepare_disconnect()
+            try:
+                response, command_cancel = await await_with_delayed_cancellation(
+                    asyncio.to_thread(
+                        call_shell_ipc,
+                        command,
+                        ipc_command_payload,
+                        timeout_seconds=4.0,
+                    )
+                )
+                pending_cancel = command_cancel
+            except Exception as exc:
+                if disconnect_prepared and callable(cancel_disconnect):
+                    cancel_disconnect()
+                restore_watchdog()
+                logger.warning(
+                    "Meeting capture command failed before completion: command={} error={}",
+                    command,
+                    type(exc).__name__,
+                )
+                return MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native Meeting audio control is temporarily unavailable."},
+                )
+            if not response.get("success"):
+                if disconnect_prepared and callable(cancel_disconnect):
+                    cancel_disconnect()
+                restore_watchdog()
+                return finish(
+                    MeetingCaptureOutcome(
+                        status=503,
+                        payload={"message": str(response.get("fallbackReason") or f"{command} failed")},
+                    )
+                )
+
+            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
+            native_stop = _meeting_native_stop_snapshot(native_payload)
+            if native_stop:
+                native_stop_sessions = capture_metadata.get("nativeStopSessions")
+                if not isinstance(native_stop_sessions, list):
+                    native_stop_sessions = []
+                capture_metadata["nativeStopSessions"] = [*native_stop_sessions[-19:], native_stop]
+                if isinstance(native_stop.get("aecMetrics"), dict):
+                    capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
+            ownership.native_capture_started = False
+            ownership.capture_id = ""
+
+            if recorder is not None:
+                try:
+                    persistence, recorder_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(recorder.stop, expected_disconnect=True)
+                    )
+                    pending_cancel = pending_cancel or recorder_cancel
+                except Exception as exc:
+                    try:
+                        snapshot = recorder.snapshot()
+                    except Exception:
+                        snapshot = {}
+                    persistence = snapshot if isinstance(snapshot, dict) else {}
+                    recorder_stop_failure = _meeting_recorder_stop_failure(exc, persistence)
+                    logger.warning(
+                        "Meeting capture command recorder stop failed: command={} error={} code={}",
+                        command,
+                        type(exc).__name__,
+                        recorder_stop_failure[0],
+                    )
+                capture_metadata["persistence"] = persistence
+                persistence_sessions = capture_metadata.get("persistenceSessions")
+                if not isinstance(persistence_sessions, list):
+                    persistence_sessions = []
+                capture_metadata["persistenceSessions"] = [*persistence_sessions[-19:], persistence]
+                if recorder_stop_failure is None:
+                    ownership.recorder = None
+
+            live_transcriber = self._meeting_live_transcribers.pop(meeting_id, None)
+            if live_transcriber is not None:
+                _ignored, live_cancel = await await_with_delayed_cancellation(live_transcriber.stop())
+                pending_cancel = pending_cancel or live_cancel
+                live_snapshot = live_transcriber.snapshot()
+                _merge_meeting_live_processing_aggregate(capture_metadata, live_snapshot)
+                live_sessions = capture_metadata.get("liveTranscriptionSessions")
+                if not isinstance(live_sessions, list):
+                    live_sessions = []
+                capture_metadata["liveTranscriptionSessions"] = [*live_sessions[-19:], live_snapshot]
+            ownership.live_transcriber = None
+
+            if recorder_stop_failure is not None:
+                failure_code, failure_message = recorder_stop_failure
+                try:
+                    failed, transition_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting_id,
+                            "capture_failed",
+                            error_code=failure_code,
+                            error_message=failure_message,
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    pending_cancel = pending_cancel or transition_cancel
+                except (InvalidMeetingTransition, MeetingConflict) as exc:
+                    return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+            else:
+                if command == "audioMeetingPause":
+                    offsets: list[int] = []
+                    for source in ("microphone", "mic_clean", "system"):
+                        offset, offset_cancel = await await_with_delayed_cancellation(
+                            asyncio.to_thread(
+                                self._meeting_store.next_audio_offset_ms,
+                                meeting_id,
+                                source,
+                            )
+                        )
+                        offsets.append(offset)
+                        pending_cancel = pending_cancel or offset_cancel
+                    capture_metadata["pauseStartedAtMs"] = max(offsets)
+                    capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
+                try:
+                    updated, transition_cancel = await await_with_delayed_cancellation(
+                        asyncio.to_thread(
+                            self._meeting_store.transition,
+                            meeting_id,
+                            target_state,
+                            capture_metadata=capture_metadata,
+                        )
+                    )
+                    pending_cancel = pending_cancel or transition_cancel
+                except (InvalidMeetingTransition, MeetingConflict) as exc:
+                    return MeetingCaptureOutcome(status=409, payload={"message": str(exc)})
+
+        if ownership.loss_requested:
+            await _audio_admission_owner(self).note_loss(meeting_claim, reason="superseded")
+            return finish(
+                MeetingCaptureOutcome(
+                    status=503,
+                    payload={"message": "Native audio ownership changed while Meeting capture was active."},
+                )
+            )
+        if recorder_stop_failure is None and command == "audioMeetingStop":
+            await _release_persistent_audio(self, meeting_claim)
+            registry.pop(meeting_id, None)
+            self._resume_idle_mic_prewarm_after_capture()
+
+        if recorder_stop_failure is not None:
+            assert failed is not None
+            _failure_code, failure_message = recorder_stop_failure
+            _ignored, broadcast_cancel = await await_with_delayed_cancellation(
+                self.broadcast(meeting_state_event(failed))
+            )
+            pending_cancel = pending_cancel or broadcast_cancel
+            return finish(
+                MeetingCaptureOutcome(
+                    status=503,
+                    payload={
+                        "message": failure_message,
+                        "meeting": failed,
+                        "apiVersion": REST_API_VERSION,
+                    },
+                )
+            )
+
+        assert updated is not None
+        _ignored, broadcast_cancel = await await_with_delayed_cancellation(self.broadcast(meeting_state_event(updated)))
+        pending_cancel = pending_cancel or broadcast_cancel
+        return finish(
+            MeetingCaptureOutcome(
+                status=200,
+                payload={**updated, "apiVersion": REST_API_VERSION},
+            )
+        )
 
     async def start_meeting_live_transcription(
         self,
@@ -13509,6 +16565,16 @@ class ScriberWebController:
     ) -> int:
         """Cancel controller-owned work and wait briefly for resource cleanup."""
         self.begin_shutdown()
+        replay_execution, self._provider_replay_execution = (
+            self._provider_replay_execution,
+            None,
+        )
+        if replay_execution is not None:
+            replay_execution.fail("shutdown")
+            self._spawn_detached(
+                replay_execution.close(),
+                name="provider_replay_shutdown_cleanup",
+            )
         current = asyncio.current_task()
         tasks = {
             task
@@ -13540,9 +16606,8 @@ class ScriberWebController:
             )
             self._local_polishing_close_task = local_polishing_close_task
 
-        # Live Mic finalization and the detached SQLite lease release are
-        # cleanup, not cancellable background work. Observe both within the
-        # same bounded drain window without canceling them. In particular, an
+        # Live Mic finalization is cleanup, not cancellable background work.
+        # Observe it within the same bounded drain window. In particular, an
         # already-running stop owns provider finalization and the transcript
         # commit after it has lowered ``_is_listening``; a second shutdown stop
         # is therefore an idempotent no-op and cannot replace this join.
@@ -13552,14 +16617,6 @@ class ScriberWebController:
         background_stop_task = getattr(self, "_background_stop_task", None)
         if background_stop_task is not None and background_stop_task is not current and not background_stop_task.done():
             wait_tasks.add(background_stop_task)
-        shutdown_audio_release_task = getattr(self, "_shutdown_audio_release_task", None)
-        if (
-            shutdown_audio_release_task is not None
-            and shutdown_audio_release_task is not current
-            and not shutdown_audio_release_task.done()
-        ):
-            wait_tasks.add(shutdown_audio_release_task)
-
         pending: set[asyncio.Task] = set()
         if wait_tasks:
             done, pending = await asyncio.wait(
@@ -13599,16 +16656,105 @@ class ScriberWebController:
                 "Timed out waiting for {} metric write(s) during shutdown",
                 metric_pending,
             )
-        recorders, self._meeting_recorders = list(self._meeting_recorders.values()), {}
+        detached_pending = await self._detached_task_supervisor.close(
+            timeout_seconds=max(0.0, min(2.0, float(timeout_seconds))),
+        )
+        if detached_pending:
+            logger.warning(
+                "Timed out waiting for {} detached task(s) during shutdown",
+                detached_pending,
+            )
+            still_pending = await self._detached_task_supervisor.drain(
+                timeout_seconds=max(0.0, min(0.25, float(timeout_seconds))),
+                cancel=True,
+            )
+            if still_pending:
+                logger.warning(
+                    "Controller shutdown left {} cancelled detached task(s) pending",
+                    still_pending,
+                )
+        analyzer_cleanup_pending = 0
+        if ScriberPipeline is not None:
+            try:
+                from src.pipeline import _AnalyzerCache
+
+                analyzer_cleanup_pending = await _AnalyzerCache.drain_pending_cleanup_tasks(
+                    timeout_seconds=max(0.0, min(2.0, float(timeout_seconds)))
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Analyzer cleanup drain failed during shutdown: {}",
+                    type(exc).__name__,
+                )
+        if analyzer_cleanup_pending:
+            logger.warning(
+                "Timed out waiting for {} analyzer cleanup task(s) during shutdown",
+                analyzer_cleanup_pending,
+            )
+            still_pending = await _AnalyzerCache.drain_pending_cleanup_tasks(
+                timeout_seconds=max(0.0, min(0.25, float(timeout_seconds))),
+                cancel=True,
+            )
+            if still_pending:
+                logger.warning(
+                    "Controller shutdown left {} cancelled analyzer cleanup task(s) pending",
+                    still_pending,
+                )
+        audio_admission_pending = 0
+        audio_admission_error: Exception | None = None
+        try:
+            # Native producer stop belongs to admission loss handler. Run it
+            # before generic reader drains so no producer can write into a
+            # recorder that shutdown already joined.
+            audio_admission_pending = await _audio_admission_owner(self).close(
+                task_drain_timeout_seconds=max(0.0, min(2.0, float(timeout_seconds)))
+            )
+        except Exception as exc:
+            audio_admission_error = exc
+            logger.warning(
+                "Native-audio admission shutdown warning: {}",
+                type(exc).__name__,
+            )
+        if audio_admission_pending:
+            logger.warning(
+                "Timed out waiting for {} native-audio heartbeat task(s) during shutdown",
+                audio_admission_pending,
+            )
+
+        retained_ownerships = tuple(_meeting_capture_ownership_registry(self).values())
+        protected_recorders = {
+            id(ownership.recorder)
+            for ownership in retained_ownerships
+            if ownership.native_capture_started and ownership.recorder is not None
+        }
+        recorders = [
+            recorder for recorder in self._meeting_recorders.values() if id(recorder) not in protected_recorders
+        ]
+        self._meeting_recorders = {
+            meeting_id: recorder
+            for meeting_id, recorder in self._meeting_recorders.items()
+            if id(recorder) in protected_recorders
+        }
         if recorders:
             await asyncio.gather(
                 *(asyncio.to_thread(recorder.stop, min(2.0, timeout_seconds)) for recorder in recorders),
                 return_exceptions=True,
             )
-        live_transcribers, self._meeting_live_transcribers = (
-            list(self._meeting_live_transcribers.values()),
-            {},
-        )
+        protected_live = {
+            id(ownership.live_transcriber)
+            for ownership in retained_ownerships
+            if ownership.native_capture_started and ownership.live_transcriber is not None
+        }
+        live_transcribers = [
+            transcriber
+            for transcriber in self._meeting_live_transcribers.values()
+            if id(transcriber) not in protected_live
+        ]
+        self._meeting_live_transcribers = {
+            meeting_id: transcriber
+            for meeting_id, transcriber in self._meeting_live_transcribers.items()
+            if id(transcriber) in protected_live
+        }
         if live_transcribers:
             await asyncio.gather(
                 *(transcriber.stop() for transcriber in live_transcribers),
@@ -13621,7 +16767,16 @@ class ScriberWebController:
                 "Provider HTTP transport shutdown warning: {}",
                 type(exc).__name__,
             )
-        return len(pending) + transcript_write_pending + metric_pending
+        if audio_admission_error is not None:
+            raise RuntimeError("Graceful shutdown could not confirm native-audio cleanup") from audio_admission_error
+        return (
+            len(pending)
+            + transcript_write_pending
+            + metric_pending
+            + detached_pending
+            + analyzer_cleanup_pending
+            + audio_admission_pending
+        )
 
     def shutdown(self) -> None:
         self.begin_shutdown()
@@ -13632,10 +16787,11 @@ class ScriberWebController:
         if replay_execution is not None:
             replay_execution.fail("shutdown")
             if not self._loop.is_closed():
-                self._loop.create_task(
-                    replay_execution.close(),
+                self._spawn_detached_threadsafe(
+                    replay_execution.close,
                     name="provider_replay_shutdown_cleanup",
                 )
+        self._detached_task_supervisor.seal()
         for task in (
             *self._running_tasks.values(),
             *self._summary_tasks.values(),
@@ -14297,6 +17453,117 @@ class ScriberWebController:
         self._schedule_settings_persist()
         return settings
 
+    async def summarize_transcript(self, transcript_id: str) -> SummaryOutcome:
+        """Run one summary for a transcript and persist every state it passes.
+
+        The whole lifecycle lives here rather than in the route module because
+        it owns transcript state: the single-flight registration, the pending /
+        completed / failed transitions, their durable writes, and the history
+        broadcast that follows each one. A route only maps the outcome onto a
+        response.
+
+        Both storage paths are covered: a live history record, and a durable
+        row whose in-memory record has already been evicted.
+        """
+
+        from src.summarization import summarize_text
+
+        view = await self.transcript_view(transcript_id)
+        record = self._get_history_record(transcript_id)
+        if view is None:
+            return SummaryOutcome(kind="not_found")
+
+        if not view.content.strip():
+            return SummaryOutcome(kind="empty_content")
+        if view.status != "completed":
+            return SummaryOutcome(kind="not_completed")
+
+        summary_task = asyncio.current_task()
+        if summary_task is None or not self._register_summary_task(transcript_id, summary_task):
+            return SummaryOutcome(kind="already_running")
+
+        async def persist_detached_failure(error: str) -> None:
+            try:
+                await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="failed",
+                    error=error,
+                )
+            except Exception as persist_error:
+                logger.error(
+                    "Failed to persist summary failure state for {}: {}",
+                    transcript_id,
+                    persist_error,
+                )
+
+        async def mark_failed(public_message: str | ValueError) -> None:
+            if record is not None:
+                record.mark_summary_failed(public_message)
+                await self._save_transcript_summary_state_async(record)
+                await self._broadcast_history_updated(record=record, reason="summary_failed")
+            else:
+                await persist_detached_failure(str(public_message))
+
+        try:
+            if record is not None:
+                record.mark_summary_pending()
+                await self._save_transcript_summary_state_async(record, require_success=True)
+                await self._broadcast_history_updated(record=record, reason="summary_pending")
+            else:
+                updated = await asyncio.to_thread(
+                    db.update_transcript_summary_state,
+                    transcript_id,
+                    status="pending",
+                )
+                if not updated:
+                    return SummaryOutcome(kind="not_found")
+
+            model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
+            summary = await summarize_text(view.content, model, duration=view.duration)
+            if self.transcript_was_deleted(transcript_id):
+                return SummaryOutcome(
+                    kind="not_found",
+                    message="Transcript was deleted while summarization was running",
+                )
+
+            if record is not None:
+                record.mark_summary_completed(summary)
+                await self._save_transcript_summary_state_async(
+                    record,
+                    include_summary=True,
+                    require_success=True,
+                )
+                await self._broadcast_history_updated(record=record, reason="summary_completed")
+                logger.info(f"Summarized transcript: {record.title} ({len(summary)} chars)")
+            else:
+                updated = await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
+                if not updated:
+                    return SummaryOutcome(kind="not_found")
+                logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
+            return SummaryOutcome(kind="completed", summary=summary)
+        except asyncio.CancelledError:
+            if record is not None:
+                record.mark_summary_failed("Summary canceled")
+                await self._save_transcript_summary_state_async(record)
+                await self._broadcast_history_updated(record=record, reason="summary_canceled")
+            else:
+                await persist_detached_failure("Summary canceled")
+            raise
+        except ValueError as exc:
+            await mark_failed(exc)
+            return SummaryOutcome(kind="rejected", message=str(exc))
+        except Exception as exc:
+            info = provider_user_error(None, exc)
+            public_message = "Could not create the summary. Please try again."
+            logger.error(
+                "Summarization failed (error_type={}, code={})",
+                type(exc).__name__,
+                info.code or "unknown",
+            )
+            await mark_failed(public_message)
+            return SummaryOutcome(kind="failed", message=public_message)
+
     async def cancel_transcript(self, transcript_id: str) -> bool:
         """Cancel a running transcription task."""
         # Find record in history
@@ -14306,16 +17573,61 @@ class ScriberWebController:
             task = self._running_tasks[transcript_id]
             task.cancel()
 
-            if rec and rec.status == "processing":
-                rec.step = "Stopping..."
-                rec.updated_at = datetime.now().isoformat()
-                await self._broadcast_history_updated(record=rec, reason="cancel_requested")
-            return True
+            async def settle_registered_cancel() -> bool:
+                current = self._get_history_record(transcript_id)
+                if current and current.status == "processing":
+                    current.step = "Stopping..."
+                    current.updated_at = datetime.now().isoformat()
+                    await self._broadcast_history_updated(record=current, reason="cancel_requested")
+                task_results = await asyncio.gather(task, return_exceptions=True)
+                for task_result in task_results:
+                    if isinstance(task_result, CancellationPersistenceUnavailable):
+                        raise task_result
+                async with self._resume_jobs_lock:
+                    current = self._get_history_record(transcript_id)
+                    if current and current.status == "processing":
+                        await self._finalize_canceled_background_job(current)
+                return True
+
+            canceled, pending_cancel = await await_with_delayed_cancellation(settle_registered_cancel())
+            if pending_cancel is not None:
+                raise pending_cancel
+            return canceled
 
         # Also check if it's stuck in processing but no task running (e.g. restart)
         if rec and rec.status == "processing":
-            await self._finalize_canceled_background_job(rec)
-            return True
+            self._background_job_cancel_requests.add(transcript_id)
+
+            async def settle_cancel_request() -> bool:
+                async with self._resume_jobs_lock:
+                    current = self._get_history_record(transcript_id)
+                    task = self._running_tasks.get(transcript_id)
+                    if task is not None and not task.done():
+                        task.cancel()
+                        if current and current.status == "processing":
+                            current.step = "Stopping..."
+                            current.updated_at = datetime.now().isoformat()
+                            await self._broadcast_history_updated(record=current, reason="cancel_requested")
+                        task_results = await asyncio.gather(task, return_exceptions=True)
+                        for task_result in task_results:
+                            if isinstance(task_result, CancellationPersistenceUnavailable):
+                                raise task_result
+                        current = self._get_history_record(transcript_id)
+                        if current and current.status == "processing":
+                            await self._finalize_canceled_background_job(current)
+                        return True
+                    if current and current.status == "processing":
+                        await self._finalize_canceled_background_job(current)
+                        return True
+                    return False
+
+            try:
+                canceled, pending_cancel = await await_with_delayed_cancellation(settle_cancel_request())
+            finally:
+                self._background_job_cancel_requests.discard(transcript_id)
+            if pending_cancel is not None:
+                raise pending_cancel
+            return canceled
 
         return False
 
@@ -14325,7 +17637,7 @@ class ScriberWebController:
         *,
         cancellation_timeout_seconds: float = 5.0,
     ) -> tuple[TranscriptDeleteStatus, TranscriptRecord | None]:
-        """Stop active work, delete persistence, then remove a transcript from memory."""
+        """Persist deletion intent, then remove job, source, parent, and memory."""
         rec = self._get_history_record(transcript_id)
         if rec is None:
             persisted = await asyncio.to_thread(db.get_transcript, transcript_id)
@@ -14359,32 +17671,49 @@ class ScriberWebController:
             else:
                 logger.warning(f"Summary task did not stop before transcript deletion: {transcript_id}")
 
-        persistence_lock = self._transcript_persistence_lock(transcript_id)
-        self._mark_transcript_deleted(transcript_id)
-        async with persistence_lock:
-            deleted = await asyncio.to_thread(db.delete_transcript, transcript_id)
-            if not deleted:
-                self._unmark_transcript_deleted(transcript_id)
-        if not deleted:
-            logger.error(f"Refusing to remove transcript from memory after database deletion failed: {transcript_id}")
-            return "persistence_error", rec
+        async def own_and_commit_deletion() -> tuple[TranscriptDeleteStatus, TranscriptRecord]:
+            async with self._resume_jobs_lock:
+                deletion_pending = rec.step == "Deleting"
+                try:
+                    job = await asyncio.to_thread(
+                        self._job_store.get_by_transcript_id,
+                        transcript_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to inspect persisted job before transcript deletion {}: {}",
+                        transcript_id,
+                        exc,
+                    )
+                    return "persistence_error", rec
 
-        if rec.type == "file" and rec.source_url:
-            await self._cleanup_owned_file_source(rec.source_url, reason="transcript_deleted")
+                if not deletion_pending:
+                    if job is not None:
+                        self._job_ids_by_transcript[rec.id] = job.id
+                        terminal = await self._reconcile_terminal_job_projection(
+                            rec,
+                            job,
+                            cleanup_reason="delete_terminalized",
+                            cleanup_source=False,
+                        )
+                        if terminal != _BackgroundCleanupOutcome.COMPLETE:
+                            return "persistence_error", rec
+                    rec.step = "Deleting"
+                    rec.updated_at = datetime.now().isoformat()
+                    deletion_intent_saved = await self._save_transcript_to_db_async(rec)
+                    if deletion_intent_saved is False:
+                        return "persistence_error", rec
 
-        try:
-            await asyncio.to_thread(
-                self._job_store.delete_by_transcript_id,
-                transcript_id,
-            )
-        except Exception as exc:
-            logger.warning(f"Failed to remove persisted jobs for deleted transcript {transcript_id}: {exc}")
+                self._mark_transcript_deleted(transcript_id)
+                self._startup_orphan_admissions[transcript_id] = rec
+                return await self._commit_transcript_deletion(rec)
 
-        removed = self._remove_from_history(transcript_id) or rec
-        self._job_ids_by_transcript.pop(transcript_id, None)
-        self._scheduled_frozen_routes.pop(transcript_id, None)
-        await self._broadcast_history_updated(record=removed, reason="deleted")
-        return "deleted", removed
+        result, pending_cancel = await await_with_delayed_cancellation(own_and_commit_deletion())
+        if result[0] == "persistence_error":
+            self._schedule_retry_scan(self._job_retry_base_seconds)
+        if pending_cancel is not None:
+            raise pending_cancel
+        return result
 
     def list_microphones(self) -> list[dict[str, str]]:
         """List available microphone devices.
@@ -14678,12 +18007,29 @@ class ScriberWebController:
 
 
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)
-APP_HTTP_SESSION: web.AppKey[ClientSession] = web.AppKey("http_session", ClientSession)
-APP_SHUTDOWN_EVENT: web.AppKey[asyncio.Event] = web.AppKey("shutdown_event", asyncio.Event)
 APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
     "provider_replay",
     ProviderReplayRegistry,
 )
+
+
+@dataclass(frozen=True, slots=True)
+class _LiveMicReplayAdapter:
+    pending_activations: Mapping[str, Mapping[str, Any]]
+    activate_replay: Callable[
+        [dict[str, Any]],
+        Awaitable[tuple[ProviderReplayExecution, dict[str, Any]]],
+    ]
+    state: Callable[[], dict[str, Any]]
+
+    @property
+    def pending_activation(self) -> bool:
+        return bool(self.pending_activations)
+
+    async def activate(self, marker: Mapping[str, Any]) -> LiveMicOutcome:
+        await self.activate_replay(dict(marker))
+        return LiveMicOutcome(status=200, payload=self.state())
+
 
 _PROVIDER_REPLAY_ROUTE_PREFIX = "/api/runtime/benchmark/provider-replay"
 
@@ -14705,18 +18051,6 @@ def _provider_replay_audio_preparation_snapshot(provider: str) -> str | None:
     return None
 
 
-def _live_mic_runtime_unavailable_payload() -> dict[str, Any]:
-    """Return a stable public error without exposing runtime internals."""
-
-    return error_event(
-        "Scriber could not load the live microphone runtime. Restart or reinstall Scriber, then try again.",
-        title="Live microphone unavailable",
-        category="runtime_unavailable",
-        code="live_mic_runtime_unavailable",
-        retryable=False,
-    )
-
-
 def _unexpected_api_error_payload() -> dict[str, Any]:
     """Return the generic public boundary for an unexpected API exception."""
 
@@ -14732,7 +18066,7 @@ def _unexpected_api_error_payload() -> dict[str, Any]:
 @web.middleware
 async def cors_middleware(request: web.Request, handler):
     origin = request.headers.get("Origin")
-    if origin and not _origin_allowed(origin):
+    if origin and not origin_allowed(origin):
         return web.json_response({"message": "Origin not allowed"}, status=403)
 
     if request.method == "OPTIONS":
@@ -14824,45 +18158,6 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
     return grouped
 
 
-async def _tauri_activation_marker_from_request(
-    request: web.Request,
-) -> tuple[dict[str, Any] | None, bool]:
-    """Return a native activation marker and whether it claims provider replay.
-
-    Empty bodies and the established generic hotkey body keep their existing
-    behavior. The provider-replay form is strict and cannot silently degrade to
-    a normal Live Mic start when its sample binding is missing.
-    """
-
-    if not request.can_read_body or request.content_length == 0:
-        return None, False
-    if request.content_length is not None and request.content_length > 2048:
-        raise RESTContractError("Live Mic request body exceeds the benchmark marker limit")
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise RESTContractError("Live Mic request body must be JSON") from exc
-    if not isinstance(payload, dict):
-        raise RESTContractError("Live Mic request body must be a dict")
-    if "benchmarkActivationMarker" in payload:
-        marker = validate_tauri_activation_marker_request_payload(
-            payload,
-            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
-            expected_parent_pid=os.getppid(),
-            now_ns=time.perf_counter_ns(),
-        )
-        return marker, True
-    if "benchmarkHotkeyMarker" in payload:
-        marker = validate_tauri_hotkey_marker_request_payload(
-            payload,
-            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
-            expected_parent_pid=os.getppid(),
-            now_ns=time.perf_counter_ns(),
-        )
-        return marker, False
-    return None, False
-
-
 def create_app(controller: ScriberWebController) -> web.Application:
     replay_fixture_duration_ms = provider_replay_fixture_duration_ms_from_environment()
     replay_gate = ProviderReplayRuntimeGate.from_environment()
@@ -14912,15 +18207,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
     # only one non-terminal sample. The target guard is held here between the
     # control-plane arm and the actual native hotkey/button activation.
     pending_provider_replay_activations: dict[str, dict[str, Any]] = {}
-    speaker_preview_grants: dict[str, SpeakerProfilePreviewGrant] = {}
-
-    def prune_speaker_preview_grants(now: float) -> None:
-        for token in [token for token, grant in speaker_preview_grants.items() if grant.expires_at <= now]:
-            speaker_preview_grants.pop(token, None)
-        overflow = len(speaker_preview_grants) - _SPEAKER_PROFILE_PREVIEW_MAX_GRANTS
-        if overflow > 0:
-            for token, _grant in sorted(speaker_preview_grants.items(), key=lambda item: item[1].expires_at)[:overflow]:
-                speaker_preview_grants.pop(token, None)
 
     async def http_session_ctx(app_: web.Application):
         session = ClientSession(timeout=_OUTBOUND_HTTP_TIMEOUT)
@@ -14945,242 +18231,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     app.cleanup_ctx.append(http_session_ctx)
     app.cleanup_ctx.append(provider_replay_activation_ctx)
-
-    async def health(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_health())
-
-    async def ws_handler(request: web.Request):
-        origin = request.headers.get("Origin")
-        if origin and not _origin_allowed(origin):
-            return web.json_response({"message": "Origin not allowed"}, status=403)
-
-        ws = web.WebSocketResponse(heartbeat=30)
-        await ws.prepare(request)
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        await ctl.add_client(ws)
-
-        try:
-            initial_sent = await ctl.send_client_text(
-                ws,
-                json.dumps(state_event(ctl.get_state())),
-            )
-            if not initial_sent:
-                return ws
-            async for msg in ws:
-                if msg.type == WSMsgType.TEXT:
-                    # Currently server -> client only. Keep the connection alive.
-                    if msg.data == "ping" and not await ctl.send_client_text(ws, "pong"):
-                        break
-                elif msg.type == WSMsgType.ERROR:
-                    break
-        finally:
-            await ctl.remove_client(ws)
-        return ws
-
-    async def get_state(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_state())
-
-    async def get_runtime(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_runtime_info())
-
-    async def get_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(ctl.get_frontend_ready())
-
-    async def post_frontend_ready(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_ready_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        return web.json_response(ctl.record_frontend_ready(payload, request))
-
-    async def get_frontend_performance(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        raw_after_sequence = request.query.get("afterSequence")
-        after_sequence: int | None = None
-        if raw_after_sequence is not None:
-            try:
-                after_sequence = int(raw_after_sequence)
-            except ValueError:
-                return web.json_response(
-                    {"message": "afterSequence must be a non-negative integer"},
-                    status=400,
-                )
-            if after_sequence < 0:
-                return web.json_response(
-                    {"message": "afterSequence must be a non-negative integer"},
-                    status=400,
-                )
-        source_instance_id = request.query.get("sourceInstanceId")
-        if source_instance_id is not None and (
-            not source_instance_id
-            or len(source_instance_id) > 64
-            or not all(char.isalnum() or char in "-_" for char in source_instance_id)
-        ):
-            return web.json_response(
-                {"message": "sourceInstanceId must be a bounded opaque identifier"},
-                status=400,
-            )
-        return web.json_response(
-            ctl.get_frontend_performance(
-                after_sequence=after_sequence,
-                source_instance_id=source_instance_id,
-            )
-        )
-
-    async def post_frontend_performance(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_performance_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        return web.json_response(ctl.record_frontend_performance(payload))
-
-    async def request_frontend_performance_flush(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(payload, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            validate_frontend_performance_flush_request_payload(payload)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        flush = ctl.request_frontend_performance_flush(payload["sourceInstanceId"])
-        if flush is None:
-            return web.json_response(
-                {"message": "Frontend performance source changed"},
-                status=409,
-            )
-        await ctl.broadcast(
-            frontend_performance_flush_event(
-                flush["sourceInstanceId"],
-                flush["heartbeatSequence"],
-            )
-        )
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "accepted": True,
-                **flush,
-            },
-            status=202,
-        )
-
-    async def get_audio_diagnostics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload = await asyncio.to_thread(ctl.get_audio_diagnostics)
-        return web.json_response(payload)
-
-    async def get_post_processing_diagnostics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "20"))
-        except ValueError:
-            limit = 20
-        return web.json_response(ctl.get_post_processing_diagnostics(limit=limit))
-
-    async def get_runtime_logs(request: web.Request):
-        try:
-            limit = int(request.query.get("limit", "500"))
-        except ValueError:
-            limit = 500
-        try:
-            payload = await asyncio.to_thread(collect_debug_logs, limit=limit)
-        except Exception:
-            logger.exception("Failed to collect runtime logs")
-            return web.json_response({"message": "Failed to collect runtime logs"}, status=500)
-        return web.json_response(payload)
-
-    async def delete_runtime_logs(request: web.Request):
-        try:
-            payload = await asyncio.to_thread(clear_debug_logs)
-        except Exception:
-            logger.exception("Failed to clear runtime logs")
-            return web.json_response({"message": "Failed to clear runtime logs"}, status=500)
-        status = 200 if payload.get("ok") else 500
-        return web.json_response(payload, status=status)
-
-    async def shutdown_runtime(request: web.Request):
-        if not _is_loopback_request(request):
-            return web.json_response({"message": "Runtime shutdown is only available on loopback"}, status=403)
-
-        token = _configured_session_token()
-        if not token:
-            return web.json_response({"message": "Runtime shutdown token is not configured"}, status=403)
-        if not _request_has_valid_session_token(request, token):
-            return web.json_response({"message": "Session token required"}, status=401)
-
-        stop_event = request.app.get(APP_SHUTDOWN_EVENT)
-        if not isinstance(stop_event, asyncio.Event):
-            return web.json_response({"message": "Runtime shutdown is not available"}, status=503)
-
-        stop_event.set()
-        return web.json_response({"ok": True, "message": "Shutdown requested"})
-
-    async def create_runtime_support_bundle(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        runtime_info = ctl.get_runtime_info()
-        app_state = ctl.get_state()
-        post_processing_diagnostics = ctl.get_post_processing_diagnostics(limit=30)
-
-        def build_bundle() -> Path:
-            return create_support_bundle(
-                runtime_info=runtime_info,
-                app_state=app_state,
-                audio_diagnostics=ctl.get_audio_diagnostics(),
-                post_processing_diagnostics=post_processing_diagnostics,
-            )
-
-        try:
-            bundle_path = await asyncio.to_thread(build_bundle)
-        except Exception:
-            logger.exception("Failed to create support bundle")
-            return web.json_response({"message": "Failed to create support bundle"}, status=500)
-
-        return web.FileResponse(
-            bundle_path,
-            headers={
-                "Content-Disposition": _attachment_content_disposition(bundle_path.name),
-            },
-        )
-
-    async def get_hot_path_metrics(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "50"))
-        except ValueError:
-            limit = 50
-        include_active = str(request.query.get("includeActive", "")).strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        payload = await asyncio.to_thread(
-            ctl.get_hot_path_metrics,
-            limit=limit,
-            include_active=include_active,
-        )
-        return web.json_response(payload)
 
     def _provider_replay_contract_error(exc: RESTContractError) -> web.Response:
         status = 404 if "runId does not match this runtime" in str(exc) else 400
@@ -15529,1218 +18579,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
     async def provider_replay_not_found(_request: web.Request):
         return web.json_response({"message": "Not found"}, status=404)
 
-    async def start_live_request(
-        request: web.Request,
-        *,
-        post_process: bool = False,
-    ) -> web.Response:
-        """Start Live Mic behind one sanitized runtime-error boundary."""
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            tauri_hotkey_marker, provider_replay_activation = await _tauri_activation_marker_from_request(request)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        try:
-            if provider_replay_activation:
-                if post_process or tauri_hotkey_marker is None:
-                    raise ProviderReplayConflict("provider replay activation path is invalid")
-                await activate_provider_replay(tauri_hotkey_marker)
-                return web.json_response(ctl.get_state())
-            if pending_provider_replay_activations:
-                raise ProviderReplayConflict("provider replay requires its armed native activation")
-            start_kwargs: dict[str, Any] = {
-                "tauri_hotkey_marker": tauri_hotkey_marker,
-            }
-            if post_process:
-                start_kwargs["post_process"] = True
-            start_error = await ctl.start_listening(**start_kwargs)
-        except ProviderReplayConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except Exception:
-            # The local log retains the traceback needed to diagnose a broken
-            # frozen runtime.  Never reflect module names, filesystem paths, or
-            # exception text through the public API.
-            logger.exception(
-                "Live microphone runtime failed during {} start",
-                "post-processing" if post_process else "standard",
-            )
-            return web.json_response(
-                _live_mic_runtime_unavailable_payload(),
-                status=503,
-            )
-        if start_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(start_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
-
-    async def start_live(request: web.Request):
-        return await start_live_request(request)
-
-    async def start_live_post_processing(request: web.Request):
-        return await start_live_request(request, post_process=True)
-
-    async def stop_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        stop_error = await ctl.stop_listening()
-        if stop_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(stop_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
-
-    async def toggle_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._live_mic_start_in_progress_generation is not None or ctl._is_listening or ctl._is_stopping:
-            if ctl._should_ignore_duplicate_start_toggle():
-                start_task = ctl._live_mic_start_task
-                if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
-                    await asyncio.shield(start_task)
-                payload = ctl.get_state()
-                payload["stopAccepted"] = False
-                payload["finalizing"] = False
-                payload["duplicateStartIgnored"] = True
-                return web.json_response(payload)
-            accepted = ctl.request_background_stop_listening()
-            payload = ctl.get_state()
-            payload["stopAccepted"] = bool(accepted)
-            payload["finalizing"] = True
-            return web.json_response(payload, status=202)
-
-        return await start_live_request(request)
-
-    async def request_stop_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        replay_execution = ctl._provider_replay_execution
-        try:
-            ctl._attest_provider_replay_manual_stop_request()
-        except ProviderReplayError as exc:
-            if replay_execution is not None:
-                replay_execution.fail("manual_stop_missing")
-            # The rejected benchmark sample must still release microphone and
-            # provider resources; it can never become successful evidence.
-            ctl.request_async_stop_listening()
-            return web.json_response(
-                {"message": str(exc)},
-                status=409,
-            )
-        outcome = ctl.request_async_stop_listening()
-        payload = {
-            "apiVersion": REST_API_VERSION,
-            **outcome,
-            # This is an acceptance acknowledgement, not a completion
-            # response.  State/WebSocket events remain authoritative.
-            "finalizing": bool(outcome["stopScheduled"] or outcome["alreadyFinalizing"]),
-            "sessionId": ctl._session_id,
-        }
-        status = 202 if outcome["stopAccepted"] else 503
-        return web.json_response(payload, status=status)
-
-    async def toggle_live_post_processing(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._live_mic_start_in_progress_generation is not None or ctl._is_listening or ctl._is_stopping:
-            if ctl._should_ignore_duplicate_start_toggle():
-                start_task = ctl._live_mic_start_task
-                if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
-                    # Duplicate Rust hotkey requests return the authoritative
-                    # state of the one accepted start, not an early false idle
-                    # snapshot while that start is still awaiting native work.
-                    await asyncio.shield(start_task)
-                payload = ctl.get_state()
-                payload["stopAccepted"] = False
-                payload["finalizing"] = False
-                payload["duplicateStartIgnored"] = True
-                return web.json_response(payload)
-            accepted = ctl.request_background_stop_listening()
-            payload = ctl.get_state()
-            payload["stopAccepted"] = bool(accepted)
-            payload["finalizing"] = True
-            return web.json_response(payload, status=202)
-
-        return await start_live_request(request, post_process=True)
-
-    async def get_settings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(await asyncio.to_thread(ctl.get_settings))
-
-    async def put_settings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Invalid JSON"}, status=400)
-        try:
-            updated = await ctl.update_settings(payload if isinstance(payload, dict) else {})
-            return web.json_response(updated)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            logger.exception("Failed to update settings")
-            return web.json_response({"message": str(exc) or "Failed to update settings"}, status=500)
-
-    def local_polishing_error_response(exc: Exception) -> web.Response:
-        if isinstance(exc, CatalogError):
-            return web.json_response(
-                {
-                    "success": False,
-                    "code": "catalog_unavailable",
-                    "message": "Local polishing models are not available in this build.",
-                },
-                status=503,
-            )
-        code = exc.code if isinstance(exc, LocalPolishingError) else "local_polishing_unavailable"
-        messages = {
-            "unknown_variant": "This local polishing model is not supported.",
-            "unknown_operation": "This local polishing operation no longer exists.",
-            "selected_model": "Switch away from this local model before removing it.",
-            "model_busy": "Wait for the model download to finish or cancel it first.",
-            "model_in_use": "The local model is currently in use and cannot be removed.",
-            "closed": "Local polishing is shutting down.",
-        }
-        if code == "unknown_operation":
-            status = 404
-        elif code == "unknown_variant":
-            status = 400
-        elif code in {"selected_model", "model_busy", "model_in_use"}:
-            status = 409
-        else:
-            status = 503
-        return web.json_response(
-            {
-                "success": False,
-                "code": code,
-                "message": messages.get(
-                    code,
-                    "Local polishing is temporarily unavailable.",
-                ),
-            },
-            status=status,
-        )
-
-    async def local_polishing_models(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            return web.json_response(ctl.get_local_polishing_models())
-        except Exception:
-            logger.exception("Failed to read local-polishing model state")
-            return local_polishing_error_response(RuntimeError())
-
-    async def install_local_polishing_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        variant = str(request.match_info.get("variant") or "")
-        try:
-            model = await ctl.install_local_polishing_model(variant)
-        except (CatalogError, LocalPolishingError) as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to start local-polishing model installation")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **model}, status=202)
-
-    async def cancel_local_polishing_operation(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        operation_id = str(request.match_info.get("operationId") or "")
-        try:
-            operation = await ctl.cancel_local_polishing_operation(operation_id)
-        except LocalPolishingError as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to cancel local-polishing model installation")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **operation}, status=202)
-
-    async def remove_local_polishing_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        variant = str(request.match_info.get("variant") or "")
-        try:
-            model = await ctl.remove_local_polishing_model(variant)
-        except LocalPolishingError as exc:
-            return local_polishing_error_response(exc)
-        except Exception:
-            logger.exception("Failed to remove local-polishing model")
-            return local_polishing_error_response(RuntimeError())
-        return web.json_response({"success": True, **model})
-
-    async def get_autostart(request: web.Request):
-        """Report unavailable outside the Tauri-owned desktop command surface."""
-        return web.json_response(
-            {
-                "enabled": False,
-                "available": False,
-                "message": "Desktop autostart is managed by the Tauri shell",
-            }
-        )
-
-    async def set_autostart(request: web.Request):
-        """Reject legacy backend mutations; the installed shell owns autostart."""
-        return web.json_response(
-            {
-                "enabled": False,
-                "available": False,
-                "message": "Desktop autostart is managed by the Tauri shell",
-            },
-            status=409,
-        )
-
-    async def microphones(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        devices = await asyncio.to_thread(ctl.list_microphones)
-        return web.json_response({"devices": devices})
-
-    async def refresh_microphones(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload: dict[str, Any] | None = None
-        if request.can_read_body:
-            try:
-                raw_payload = await request.json()
-            except Exception:
-                return web.json_response({"message": "Invalid JSON"}, status=400)
-            if not isinstance(raw_payload, dict):
-                return web.json_response({"message": "Expected JSON object"}, status=400)
-            payload = raw_payload
-        return web.json_response(ctl.request_microphone_refresh(payload))
-
-    async def transcripts(request: web.Request):
-        """List transcripts with optional search, filtering, and pagination.
-
-        Query parameters:
-            q: Search query (searches title, content, channel)
-            type: Filter by transcript type (mic, youtube, file)
-            offset: Number of items to skip (default 0)
-            limit: Maximum number of items to return (default 50, max 100)
-        """
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        query = request.query.get("q", "")
-        transcript_type = request.query.get("type", "")
-
-        # Parse pagination parameters
-        try:
-            offset = int(request.query.get("offset", "0"))
-        except ValueError:
-            offset = 0
-        try:
-            limit = int(request.query.get("limit", "50"))
-        except ValueError:
-            limit = 50
-
-        try:
-            return web.json_response(
-                await ctl.list_transcripts(
-                    include_content=False,
-                    query=query,
-                    transcript_type=transcript_type,
-                    offset=offset,
-                    limit=limit,
-                )
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def transcript_detail(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info["id"]
-        rec = await ctl.get_transcript(transcript_id)
-        if not rec:
-            return web.json_response({"message": "Not found"}, status=404)
-        return web.json_response(rec)
-
-    async def youtube_search(request: web.Request):
-        q = (request.query.get("q") or "").strip()
-        if not q:
-            return web.json_response({"message": "Missing query parameter: q"}, status=400)
-        if len(q) > 500:
-            return web.json_response({"message": "Search query is too long"}, status=400)
-
-        api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
-        if not api_key.strip():
-            return web.json_response(
-                {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
-            )
-
-        raw_max = (request.query.get("maxResults") or "").strip()
-        try:
-            max_results = int(raw_max) if raw_max else 10
-        except Exception:
-            max_results = 10
-
-        page_token = (request.query.get("pageToken") or "").strip() or None
-        if page_token and len(page_token) > 512:
-            return web.json_response({"message": "Page token is too long"}, status=400)
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        direct_video_id = extract_youtube_video_id(q)
-        if direct_video_id:
-            logger.info("YouTube search query resolved as direct video URL: {}", direct_video_id)
-            try:
-                video = await get_video_by_id(
-                    api_key,
-                    direct_video_id,
-                    session=session,
-                    timeout=ClientTimeout(total=30),
-                )
-            except ValueError as exc:
-                return web.json_response({"message": str(exc)}, status=400)
-            except YouTubeApiError as exc:
-                logger.warning("YouTube direct URL lookup failed: status={} video_id={}", exc.status, direct_video_id)
-                return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-            except Exception:
-                logger.exception("YouTube direct URL lookup failed")
-                return web.json_response({"message": "YouTube video fetch failed"}, status=500)
-
-            if not video:
-                logger.warning("YouTube direct URL lookup returned no item for video_id={}", direct_video_id)
-                return web.json_response({"message": "Video not found", "code": "youtube_video_not_found"}, status=404)
-
-            return web.json_response(
-                {
-                    "query": q,
-                    "nextPageToken": "",
-                    "prevPageToken": "",
-                    "totalResults": 1 if video else 0,
-                    "resultsPerPage": 1 if video else 0,
-                    "items": [video] if video else [],
-                }
-            )
-
-        if is_youtube_url_like(q):
-            logger.warning("Unsupported YouTube URL format sent to search endpoint")
-            return web.json_response(
-                {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
-                status=400,
-            )
-
-        try:
-            payload = await search_youtube_videos(
-                api_key,
-                q,
-                max_results=max_results,
-                page_token=page_token,
-                session=session,
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except YouTubeApiError as exc:
-            return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-        except Exception:
-            logger.exception("YouTube search failed")
-            return web.json_response({"message": "YouTube search failed"}, status=500)
-
-        return web.json_response(payload)
-
-    async def youtube_video(request: web.Request):
-        """Fetch video details by video ID or URL."""
-        video_id = (request.query.get("id") or "").strip()
-        url_param = (request.query.get("url") or "").strip()
-
-        # If URL provided, extract video ID from it
-        if url_param and not video_id:
-            video_id = extract_youtube_video_id(url_param) or ""
-            if not video_id and is_youtube_url_like(url_param):
-                logger.warning("Unsupported YouTube URL format sent to video endpoint")
-                return web.json_response(
-                    {"message": UNSUPPORTED_YOUTUBE_URL_MESSAGE, "code": "unsupported_youtube_url"},
-                    status=400,
-                )
-
-        if not video_id:
-            return web.json_response({"message": "Missing video ID or URL parameter"}, status=400)
-
-        api_key = getattr(Config, "YOUTUBE_API_KEY", "") or ""
-        if not api_key.strip():
-            return web.json_response(
-                {"message": "Missing YouTube API key. Set YOUTUBE_API_KEY or save it in Settings."}, status=400
-            )
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        try:
-            video = await get_video_by_id(
-                api_key,
-                video_id,
-                session=session,
-                timeout=ClientTimeout(total=30),
-            )
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except YouTubeApiError as exc:
-            return web.json_response({"message": str(exc), "details": exc.details}, status=exc.status)
-        except Exception:
-            logger.exception("YouTube video fetch failed")
-            return web.json_response({"message": "YouTube video fetch failed"}, status=500)
-
-        if not video:
-            logger.warning("YouTube video lookup returned no item for video_id={}", video_id)
-            return web.json_response({"message": "Video not found"}, status=404)
-
-        return web.json_response(video)
-
-    async def youtube_thumbnail(request: web.Request):
-        url = _safe_youtube_thumbnail_url(request.query.get("url") or "")
-        if not url:
-            return web.json_response({"message": "Invalid YouTube thumbnail URL"}, status=400)
-
-        session: ClientSession | None = request.app.get(APP_HTTP_SESSION)
-        if not session:
-            return web.json_response({"message": "HTTP session not initialized"}, status=500)
-
-        try:
-            current_url = url
-            body: bytes | None = None
-            content_type = ""
-            for _redirect_count in range(4):
-                async with session.get(
-                    current_url,
-                    timeout=ClientTimeout(total=10),
-                    allow_redirects=False,
-                ) as resp:
-                    if 300 <= resp.status < 400:
-                        location = (resp.headers.get("Location") or "").strip()
-                        redirected_url = _safe_youtube_thumbnail_url(urljoin(current_url, location))
-                        if not location or not redirected_url:
-                            return web.json_response(
-                                {"message": "Unsafe thumbnail redirect"},
-                                status=502,
-                            )
-                        current_url = redirected_url
-                        continue
-                    if resp.status >= 400:
-                        return web.json_response({"message": "Thumbnail fetch failed"}, status=resp.status)
-                    content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-                    if not content_type.startswith("image/"):
-                        return web.json_response({"message": "Thumbnail response is not an image"}, status=415)
-                    try:
-                        content_length = int(resp.headers.get("Content-Length") or 0)
-                    except TypeError, ValueError:
-                        content_length = 0
-                    if content_length > _YOUTUBE_THUMBNAIL_MAX_BYTES:
-                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
-                    try:
-                        body = await _read_limited_response_body(resp.content, _YOUTUBE_THUMBNAIL_MAX_BYTES)
-                    except ValueError:
-                        return web.json_response({"message": "Thumbnail response is too large"}, status=413)
-                    break
-            if body is None:
-                return web.json_response({"message": "Too many thumbnail redirects"}, status=502)
-        except TimeoutError:
-            return web.json_response({"message": "Thumbnail fetch timed out"}, status=504)
-        except Exception:
-            logger.exception("YouTube thumbnail proxy failed")
-            return web.json_response({"message": "Thumbnail fetch failed"}, status=502)
-
-        return web.Response(
-            body=body,
-            content_type=content_type or "image/jpeg",
-            headers={"Cache-Control": "public, max-age=86400"},
-        )
-
-    async def youtube_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            payload = await request.json()
-        except Exception:
-            return web.json_response({"message": "Invalid JSON"}, status=400)
-
-        try:
-            rec = await ctl.start_youtube_transcription(payload if isinstance(payload, dict) else {})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            logger.exception("Failed to start YouTube transcription")
-            return web.json_response({"message": str(exc) or "Failed to start YouTube transcription"}, status=500)
-
-        return web.json_response(rec.to_public(include_content=True))
-
-    async def file_transcribe(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        save_dir: Path | None = None
-        transcription_scheduled = False
-
-        # Check content type for multipart upload
-        if not request.content_type.startswith("multipart/"):
-            return web.json_response({"message": "Expected multipart/form-data"}, status=400)
-
-        try:
-            reader = await request.multipart()
-            file_field = None
-            original_filename = "uploaded_file"
-
-            async for field in reader:
-                if field.name == "file":
-                    file_field = field
-                    original_filename = field.filename or "uploaded_file"
-                    break
-
-            if file_field is None:
-                return web.json_response({"message": "No file uploaded"}, status=400)
-
-            # Validate file extension
-            safe_filename = _safe_upload_filename(original_filename)
-            ext = Path(safe_filename).suffix.lower()
-            if ext not in _ALLOWED_UPLOAD_EXTENSIONS:
-                return web.json_response(
-                    {
-                        "message": (
-                            f"Unsupported file type: {ext}. Allowed: {', '.join(sorted(_ALLOWED_UPLOAD_EXTENSIONS))}"
-                        )
-                    },
-                    status=400,
-                )
-
-            # Determine if this is a video file (needs audio extraction)
-            is_video = ext in _VIDEO_EXTENSIONS
-            upload_provider = Config.DEFAULT_STT_SERVICE
-            try:
-                upload_provider = ctl._select_available_provider()
-            except Exception:
-                logger.debug(
-                    f"Falling back to configured provider for upload limit calculation: {Config.DEFAULT_STT_SERVICE}"
-                )
-
-            # Use a generous ingest limit for raw uploads, then enforce provider
-            # limits after optional audio extraction/compression.
-            if is_video:
-                ingest_max_bytes = _get_video_max_bytes()
-                final_audio_limit = _get_audio_max_bytes(upload_provider)
-            else:
-                ingest_max_bytes = _get_audio_ingest_max_bytes(upload_provider)
-                final_audio_limit = _get_audio_upload_max_bytes(upload_provider)
-            ingest_limit_label = (
-                _format_upload_limit(ingest_max_bytes) if is_video else _get_audio_ingest_limit_label(upload_provider)
-            )
-            final_audio_limit_label = _get_audio_upload_limit_label(upload_provider)
-
-            # Check content-length header if available
-            if _multipart_request_is_definitely_oversized(
-                request.content_length,
-                file_limit=ingest_max_bytes,
-            ):
-                return web.json_response(
-                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
-                    status=413,
-                )
-
-            # Generate unique ID and save file
-            file_id = uuid4().hex
-            save_dir = ctl._downloads_dir / "files" / file_id
-            save_dir.mkdir(parents=True, exist_ok=True)
-            save_path = save_dir / safe_filename
-
-            bytes_read, too_large = await _write_upload_stream_to_disk(
-                file_field,
-                save_path,
-                max_bytes=ingest_max_bytes,
-            )
-
-            if bytes_read == 0:
-                await _remove_tree_if_exists(save_dir)
-                return web.json_response({"message": "Uploaded file is empty"}, status=400)
-
-            if too_large:
-                try:
-                    await _remove_tree_if_exists(save_dir)
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to cleanup oversized upload: {cleanup_err}")
-                return web.json_response(
-                    {"message": f"File too large (max raw upload {ingest_limit_label})."},
-                    status=413,
-                )
-
-            # For video files, extract audio using ffmpeg
-            transcribe_path = save_path
-            if is_video:
-                try:
-                    logger.info(f"Extracting audio from video: {safe_filename} ({bytes_read / (1024 * 1024):.1f}MB)")
-                    audio_path = await _extract_audio_from_video(save_path, save_dir)
-                    audio_path = await _maybe_compress_audio_upload(audio_path, max_bytes=final_audio_limit)
-
-                    # Check if extracted audio is within size limit
-                    audio_size = audio_path.stat().st_size
-                    if audio_size > final_audio_limit:
-                        await _remove_tree_if_exists(save_dir)
-                        return web.json_response(
-                            {
-                                "message": (
-                                    f"Extracted/compressed audio too large "
-                                    f"({audio_size / (1024 * 1024):.0f}MB, max {final_audio_limit_label})."
-                                )
-                            },
-                            status=413,
-                        )
-
-                    # Delete original video file to save space
-                    try:
-                        save_path.unlink()
-                        logger.debug(f"Deleted original video file: {safe_filename}")
-                    except Exception as del_err:
-                        logger.warning(f"Failed to delete video after extraction: {del_err}")
-
-                    # Use extracted audio for transcription
-                    transcribe_path = audio_path
-                    # Update filename for display
-                    safe_filename = audio_path.name
-                    logger.info(f"Audio extracted successfully: {safe_filename} ({audio_size / (1024 * 1024):.1f}MB)")
-
-                except RuntimeError as extract_err:
-                    await _remove_tree_if_exists(save_dir)
-                    logger.error(f"Audio extraction failed: {extract_err}")
-                    return web.json_response(
-                        {"message": f"Failed to extract audio from video: {extract_err}"},
-                        status=500,
-                    )
-            else:
-                transcribe_path = await _maybe_compress_audio_upload(save_path, max_bytes=final_audio_limit)
-                compressed_size = transcribe_path.stat().st_size
-                if compressed_size > final_audio_limit:
-                    await _remove_tree_if_exists(save_dir)
-                    return web.json_response(
-                        {
-                            "message": (
-                                f"Compressed audio still too large "
-                                f"({compressed_size / (1024 * 1024):.0f}MB, max {final_audio_limit_label})."
-                            )
-                        },
-                        status=413,
-                    )
-
-            # Start transcription
-            rec = await ctl.start_file_transcription(transcribe_path, safe_filename)
-            transcription_scheduled = True
-            return web.json_response(rec.to_public(include_content=True))
-
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            logger.exception("Failed to process file upload")
-            return web.json_response({"message": str(exc) or "Failed to process file upload"}, status=500)
-        finally:
-            if save_dir is not None and not transcription_scheduled:
-                try:
-                    await _remove_tree_if_exists(save_dir)
-                except Exception as cleanup_err:
-                    logger.warning(f"Failed to cleanup incomplete file upload: {cleanup_err}")
-
-    async def delete_transcript(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        delete_status, found = await ctl.delete_transcript_record(transcript_id)
-        if delete_status == "not_found" or found is None:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-        if delete_status == "busy":
-            return web.json_response(
-                {"message": "Transcript is still stopping; try deleting it again."},
-                status=409,
-            )
-        if delete_status == "persistence_error":
-            return web.json_response(
-                {"message": "Failed to delete transcript from storage"},
-                status=500,
-            )
-        logger.info(f"Deleted transcript: {found.title} ({transcript_id})")
-
-        return web.json_response({"success": True, "id": transcript_id})
-
-    async def summarize_transcript(request: web.Request):
-        """Summarize a transcript using the configured LLM model."""
-        from src.summarization import summarize_text
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        # Ensure full content is loaded (lazy-load safe)
-        full_data = await ctl.get_transcript(transcript_id)
-        rec = ctl._get_history_record(transcript_id)
-
-        if not rec and not full_data:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-
-        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
-        status = rec.status if rec else (full_data.get("status", "") if isinstance(full_data, dict) else "")
-        duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
-
-        if not content or not content.strip():
-            return web.json_response({"message": "Transcript has no content to summarize"}, status=400)
-
-        if status != "completed":
-            return web.json_response({"message": "Transcript is not yet completed"}, status=400)
-
-        summary_task = asyncio.current_task()
-        if summary_task is None or not ctl._register_summary_task(transcript_id, summary_task):
-            return web.json_response(
-                {"message": "A summary is already running for this transcript"},
-                status=409,
-            )
-
-        async def persist_detached_summary_failure(error: str) -> None:
-            try:
-                await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    transcript_id,
-                    status="failed",
-                    error=error,
-                )
-            except Exception as persist_error:
-                logger.error(
-                    "Failed to persist summary failure state for {}: {}",
-                    transcript_id,
-                    persist_error,
-                )
-
-        try:
-            if rec:
-                rec.mark_summary_pending()
-                await ctl._save_transcript_summary_state_async(
-                    rec,
-                    require_success=True,
-                )
-                await ctl._broadcast_history_updated(record=rec, reason="summary_pending")
-            else:
-                updated = await asyncio.to_thread(
-                    db.update_transcript_summary_state,
-                    transcript_id,
-                    status="pending",
-                )
-                if not updated:
-                    return web.json_response({"message": "Transcript not found"}, status=404)
-
-            model = getattr(Config, "SUMMARIZATION_MODEL", "") or Config.DEFAULT_SUMMARIZATION_MODEL
-            summary = await summarize_text(content, model, duration=duration)
-            if transcript_id in ctl._deleted_transcript_ids:
-                return web.json_response(
-                    {"message": "Transcript was deleted while summarization was running"}, status=404
-                )
-            if rec:
-                rec.mark_summary_completed(summary)
-                await ctl._save_transcript_summary_state_async(
-                    rec,
-                    include_summary=True,
-                    require_success=True,
-                )
-                await ctl._broadcast_history_updated(record=rec, reason="summary_completed")
-                logger.info(f"Summarized transcript: {rec.title} ({len(summary)} chars)")
-            else:
-                updated = await asyncio.to_thread(db.update_transcript_summary, transcript_id, summary)
-                if not updated:
-                    return web.json_response({"message": "Transcript not found"}, status=404)
-                logger.info(f"Summarized transcript: {transcript_id} ({len(summary)} chars)")
-            return web.json_response({"success": True, "summary": summary, "summaryFormat": "html"})
-        except asyncio.CancelledError:
-            if rec:
-                rec.mark_summary_failed("Summary canceled")
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_canceled")
-            else:
-                await persist_detached_summary_failure("Summary canceled")
-            raise
-        except ValueError as exc:
-            if rec:
-                rec.mark_summary_failed(exc)
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
-            else:
-                await persist_detached_summary_failure(str(exc))
-            return web.json_response({"message": str(exc)}, status=400)
-        except Exception as exc:
-            info = provider_user_error(None, exc)
-            public_message = "Could not create the summary. Please try again."
-            logger.error(
-                "Summarization failed (error_type={}, code={})",
-                type(exc).__name__,
-                info.code or "unknown",
-            )
-            if rec:
-                rec.mark_summary_failed(public_message)
-                await ctl._save_transcript_summary_state_async(rec)
-                await ctl._broadcast_history_updated(record=rec, reason="summary_failed")
-            else:
-                await persist_detached_summary_failure(public_message)
-            return web.json_response({"message": public_message}, status=500)
-
-    async def stop_transcript(request: web.Request):
-        """Cancel a running transcription task."""
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        success = await ctl.cancel_transcript(transcript_id)
-        if not success:
-            # Check if it exists at all
-            found = ctl._get_history_record(transcript_id) is not None
-            if not found:
-                return web.json_response({"message": "Transcript not found"}, status=404)
-            return web.json_response({"message": "Transcription is not running"}, status=400)
-
-        return web.json_response({"success": True})
-
-    async def export_transcript(request: web.Request):
-        """Export transcript as PDF or DOCX."""
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        transcript_id = request.match_info.get("id", "")
-        export_format = request.match_info.get("format", "pdf").lower()
-
-        if not transcript_id:
-            return web.json_response({"message": "Missing transcript ID"}, status=400)
-
-        if export_format not in ("pdf", "docx"):
-            return web.json_response({"message": "Invalid format. Use 'pdf' or 'docx'"}, status=400)
-
-        # Ensure full content is loaded (lazy-load safe)
-        full_data = await ctl.get_transcript(transcript_id)
-        rec = ctl._get_history_record(transcript_id)
-        if not rec and not full_data:
-            return web.json_response({"message": "Transcript not found"}, status=404)
-
-        content = rec.content_text() if rec else (full_data.get("content", "") if isinstance(full_data, dict) else "")
-        summary = rec.summary if rec else (full_data.get("summary", "") if isinstance(full_data, dict) else "")
-        summary_format = (
-            rec.summary_format
-            if rec
-            else (full_data.get("summaryFormat", "markdown") if isinstance(full_data, dict) else "markdown")
-        )
-        title = rec.title if rec else (full_data.get("title", "") if isinstance(full_data, dict) else "")
-        date = rec.date if rec else (full_data.get("date", "") if isinstance(full_data, dict) else "")
-        duration = rec.duration if rec else (full_data.get("duration", "") if isinstance(full_data, dict) else "")
-
-        if not content:
-            return web.json_response({"message": "Transcript has no content to export"}, status=400)
-
-        try:
-            data, content_type, ext = await _render_transcript_export_async(
-                export_format=export_format,
-                title=title or "Transcript",
-                content=content,
-                summary=summary,
-                summary_format=summary_format or "markdown",
-                date=date,
-                duration=duration,
-            )
-
-            # Sanitize filename
-            safe_title = "".join(c for c in (title or "transcript") if c.isalnum() or c in " -_").strip()[:50]
-            filename = f"{safe_title or 'transcript'}.{ext}"
-
-            return web.Response(
-                body=data,
-                content_type=content_type,
-                headers={
-                    "Content-Disposition": _attachment_content_disposition(filename),
-                },
-            )
-        except ImportError as e:
-            return web.json_response({"message": str(e)}, status=500)
-        except Exception as e:
-            logger.exception(f"Export failed: {e}")
-            return web.json_response({"message": f"Export failed: {e}"}, status=500)
-
-    async def list_meetings(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = int(request.query.get("limit", "50"))
-            offset = int(request.query.get("offset", "0"))
-        except ValueError:
-            return web.json_response({"message": "limit and offset must be integers"}, status=400)
-        payload = await asyncio.to_thread(ctl._meeting_store.list, limit=limit, offset=offset)
-        payload["apiVersion"] = REST_API_VERSION
-        payload["activeMeeting"] = await asyncio.to_thread(ctl._meeting_store.active)
-        return web.json_response(payload)
-
-    async def meeting_capabilities(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        long_session_target_seconds = 5 * 60 * 60
-        long_session_required_bytes = 6 * 1024 * 1024 * 1024
-        capture_bytes_per_second = 16_000 * 2 * 3
-        try:
-            disk_usage = await asyncio.to_thread(shutil.disk_usage, data_dir())
-            available_free_bytes: int | None = int(disk_usage.free)
-        except OSError, ValueError:
-            available_free_bytes = None
-        finalization_reserve_bytes = 2 * 1024 * 1024 * 1024
-        estimated_capture_seconds = (
-            max(0, available_free_bytes - finalization_reserve_bytes) // capture_bytes_per_second
-            if available_free_bytes is not None
-            else None
-        )
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "platform": "windows" if os.name == "nt" else "unsupported",
-                "shellIpcAvailable": shell_ipc_available(),
-                "nativeMeetingCapture": shell_ipc_available(),
-                "liveMicBusy": bool(ctl._is_listening or ctl._is_stopping),
-                "activeMeeting": await asyncio.to_thread(ctl._meeting_store.active),
-                "sources": ["microphone", "system"],
-                "requiresPermissionConfirmation": False,
-                "longSession": {
-                    "targetDurationSeconds": long_session_target_seconds,
-                    "checkpointIntervalSeconds": 30,
-                    "requiredFreeBytes": long_session_required_bytes,
-                    "availableFreeBytes": available_free_bytes,
-                    "estimatedCaptureSeconds": estimated_capture_seconds,
-                    "storageReady": bool(
-                        available_free_bytes is not None and available_free_bytes >= long_session_required_bytes
-                    ),
-                },
-            }
-        )
-
-    async def meeting_audio_devices(_request: web.Request):
-        grouped: dict[str, list[dict[str, Any]]] = {"capture": [], "render": []}
-        shell_available = shell_ipc_available()
-        shell_inventory_available = False
-        shell_inventory_present = False
-        reason = ""
-
-        if shell_available:
-            try:
-                response = await asyncio.to_thread(call_shell_ipc, "audioEndpointInventory", {}, timeout_seconds=2.0)
-            except Exception as exc:
-                reason = "shellIpcRequestFailed"
-                logger.debug(
-                    "Meeting audio endpoint inventory request failed; trying redacted "
-                    f"PyCAW capture fallback ({type(exc).__name__})"
-                )
-            else:
-                payload = response.get("payload") if isinstance(response, dict) else None
-                endpoints = payload.get("endpoints") if isinstance(payload, dict) else None
-                grouped = _group_meeting_audio_endpoints(endpoints)
-                shell_inventory_present = bool(grouped["capture"] or grouped["render"])
-                shell_inventory_available = bool(
-                    isinstance(response, dict)
-                    and response.get("success")
-                    and isinstance(payload, dict)
-                    and payload.get("available")
-                )
-                if not shell_inventory_available:
-                    reason = _safe_meeting_audio_inventory_reason(
-                        response.get("errorCode") if isinstance(response, dict) else None,
-                        default="shellInventoryUnavailable",
-                    )
-                elif not grouped["capture"]:
-                    reason = "captureInventoryEmpty"
-        else:
-            reason = "shellIpcUnavailable"
-
-        fallback_used = False
-        if shell_available and not grouped["capture"]:
-            try:
-                fallback_endpoints = await asyncio.to_thread(collect_native_capture_endpoint_inventory)
-            except Exception as exc:
-                logger.debug(f"Redacted PyCAW meeting capture inventory fallback failed ({type(exc).__name__})")
-            else:
-                fallback_grouped = _group_meeting_audio_endpoints(fallback_endpoints)
-                if fallback_grouped["capture"]:
-                    grouped["capture"] = fallback_grouped["capture"]
-                    fallback_used = True
-
-        if fallback_used:
-            source = (
-                "rust-wasapi+pycaw-fallback"
-                if shell_inventory_available or shell_inventory_present
-                else "pycaw-fallback"
-            )
-        elif shell_inventory_available or shell_inventory_present:
-            source = "rust-wasapi"
-        else:
-            source = "unavailable"
-
-        missing_capture = not grouped["capture"]
-        missing_render = not grouped["render"]
-        if not reason:
-            if missing_capture and missing_render:
-                reason = "endpointInventoryEmpty"
-            elif missing_capture:
-                reason = "captureInventoryEmpty"
-            elif missing_render:
-                reason = "renderInventoryEmpty"
-
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "available": bool(shell_available and (grouped["capture"] or grouped["render"])),
-                "capture": grouped["capture"],
-                "render": grouped["render"],
-                "source": source,
-                "partial": bool(fallback_used or missing_capture or missing_render or not shell_inventory_available),
-                "reason": reason,
-            }
-        )
-
-    async def meeting_device_test(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if not shell_ipc_available():
-            return web.json_response({"message": "Native meeting audio is unavailable."}, status=503)
-        try:
-            raw = await request.json() if request.can_read_body else {}
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        try:
-            duration_ms = max(
-                500,
-                min(
-                    _meeting_device_test_max_duration_ms(),
-                    int(raw.get("durationMs", 3_000) or 3_000),
-                ),
-            )
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
-
-        admission_lock = _audio_admission_lock(ctl)
-        device_test_claim: AudioAdmissionClaim | None = None
-        async with admission_lock:
-            if (
-                getattr(ctl, "_live_mic_start_in_progress_generation", None) is not None
-                or ctl._is_listening
-                or ctl._is_stopping
-            ):
-                return web.json_response({"message": "Stop Live Mic before testing meeting devices."}, status=409)
-            if await _active_meeting_audio_conflict(ctl) is not None:
-                return web.json_response({"message": "Finish the active meeting before testing devices."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "A meeting device test is already running."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            try:
-                device_test_claim = await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="device_test",
-                    owner_id=f"probe-{uuid4().hex}",
-                    heartbeat=duration_ms > _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS,
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            ctl._meeting_device_test_active = True
-
-        capture_id = ""
-        probe: MeetingDeviceLevelProbe | None = None
-        await ctl._pause_idle_mic_prewarm_for_capture()
-        try:
-            response = await asyncio.to_thread(
-                call_shell_ipc,
-                "audioMeetingStart",
-                {
-                    "meetingId": f"device-test-{uuid4().hex}",
-                    "microphoneNativeEndpointIdHash": str(raw.get("microphoneNativeEndpointIdHash", "")),
-                    "renderNativeEndpointIdHash": str(raw.get("renderNativeEndpointIdHash", "")),
-                    "aecEnabled": bool(raw.get("aecEnabled", True)),
-                },
-                timeout_seconds=4.0,
-            )
-            if not response.get("success"):
-                return web.json_response(
-                    {"message": str(response.get("fallbackReason") or "Native meeting device test did not start.")},
-                    status=503,
-                )
-            payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            capture_id = str(payload.get("captureId") or "")
-            sources = payload.get("sources") if isinstance(payload.get("sources"), list) else []
-            probe = MeetingDeviceLevelProbe()
-            probe.start(sources)
-            test_tone_played = False
-
-            async def play_test_tone() -> bool:
-                if os.name != "nt" or raw.get("playTestTone") is not True:
-                    return False
-                await asyncio.sleep(0.4)
-
-                def play() -> bool:
-                    import io
-                    import math
-                    import struct
-                    import wave
-                    import winsound
-
-                    sample_rate = 48_000
-                    duration_seconds = 0.55
-                    frame_count = int(sample_rate * duration_seconds)
-                    pcm = bytearray()
-                    for index in range(frame_count):
-                        phase = index / sample_rate
-                        fade = min(1.0, index / 960, (frame_count - index) / 960)
-                        sample = int(32767 * 0.16 * max(0.0, fade) * math.sin(2 * math.pi * 660 * phase))
-                        pcm.extend(struct.pack("<h", sample))
-                    output = io.BytesIO()
-                    with wave.open(output, "wb") as wav:
-                        wav.setnchannels(1)
-                        wav.setsampwidth(2)
-                        wav.setframerate(sample_rate)
-                        wav.writeframes(pcm)
-                    winsound.PlaySound(output.getvalue(), winsound.SND_MEMORY | winsound.SND_NODEFAULT)
-                    return True
-
-                try:
-                    return await asyncio.to_thread(play)
-                except Exception as exc:
-                    logger.debug("Meeting device test tone unavailable: {}", type(exc).__name__)
-                    return False
-
-            tone_task = asyncio.create_task(play_test_tone())
-            await asyncio.sleep(duration_ms / 1000.0)
-            test_tone_played = await tone_task
-            await asyncio.to_thread(
-                call_shell_ipc,
-                "audioMeetingStop",
-                {"captureId": capture_id, "reason": "deviceTestComplete"},
-                timeout_seconds=4.0,
-            )
-            capture_id = ""
-            levels = await asyncio.to_thread(probe.stop)
-            probe = None
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "available": True,
-                    "durationMs": duration_ms,
-                    "aecActive": bool(payload.get("aecActive")),
-                    "testTonePlayed": test_tone_played,
-                    "sources": levels,
-                    "audioPersisted": False,
-                    "audioSentToProvider": False,
-                }
-            )
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid meeting device test payload."}, status=400)
-        except Exception as exc:
-            logger.warning("Meeting device test failed: {}", type(exc).__name__)
-            return web.json_response(
-                {"message": f"Meeting device test failed ({type(exc).__name__})."},
-                status=503,
-            )
-        finally:
-            if capture_id:
-                try:
-                    await asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingStop",
-                        {"captureId": capture_id, "reason": "deviceTestCleanup"},
-                        timeout_seconds=4.0,
-                    )
-                except Exception as exc:
-                    logger.debug("Meeting device-test cleanup failed: {}", type(exc).__name__)
-            if probe is not None:
-                await asyncio.to_thread(probe.stop)
-            async with admission_lock:
-                ctl._meeting_device_test_active = False
-            await _release_persistent_audio(ctl, device_test_claim)
-            ctl._resume_idle_mic_prewarm_after_capture()
-
     async def meeting_profiles(_request: web.Request):
         soniox_ready = bool(Config.get_api_key("soniox"))
         analysis_model = Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
@@ -17013,109 +18851,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
             }
         )
 
-    async def outlook_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        payload = await ctl._outlook_calendar.status()
-        return web.json_response({"apiVersion": REST_API_VERSION, **payload})
-
-    async def outlook_connect(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json() if request.can_read_body else {}
-            open_browser = not isinstance(raw, dict) or raw.get("openBrowser") is not False
-            payload = ctl._outlook_calendar.begin_connect(open_browser=open_browser)
-            return web.json_response({"apiVersion": REST_API_VERSION, **payload}, status=202)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
-    async def outlook_callback(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if request.query.get("error"):
-            ctl._outlook_calendar.cancel_connect(request.query.get("state", ""))
-            return web.Response(
-                text="<h1>Outlook connection canceled</h1><p>You can close this window.</p>",
-                content_type="text/html",
-                status=400,
-            )
-        try:
-            await ctl._outlook_calendar.complete_connect(request.query.get("state", ""), request.query.get("code", ""))
-            sync_warning = False
-            try:
-                await ctl._outlook_calendar.sync(request.app[APP_HTTP_SESSION])
-            except Exception as sync_exc:
-                sync_warning = True
-                ctl._outlook_calendar.record_sync_error(type(sync_exc).__name__)
-                logger.warning(
-                    "Initial Outlook calendar sync failed after successful authorization: {}", type(sync_exc).__name__
-                )
-            return web.Response(
-                text=(
-                    "<h1>Outlook connected</h1><p>The account is connected, but the first calendar sync failed. "
-                    "Return to Scriber and choose Sync now.</p>"
-                    if sync_warning
-                    else "<h1>Outlook connected</h1><p>You can close this window and return to Scriber.</p>"
-                ),
-                content_type="text/html",
-            )
-        except Exception as exc:
-            logger.warning("Outlook OAuth callback failed: {}", type(exc).__name__)
-            return web.Response(
-                text="<h1>Outlook connection failed</h1><p>Return to Scriber and try again.</p>",
-                content_type="text/html",
-                status=400,
-            )
-
-    async def outlook_sync(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            changed = await ctl._outlook_calendar.sync(request.app[APP_HTTP_SESSION])
-            status = await ctl._outlook_calendar.status()
-            return web.json_response({"apiVersion": REST_API_VERSION, "changed": changed, **status})
-        except ValueError as exc:
-            ctl._outlook_calendar.record_sync_error(type(exc).__name__)
-            return web.json_response({"message": str(exc)}, status=409)
-        except TimeoutError:
-            ctl._outlook_calendar.record_sync_error("TimeoutError")
-            return web.json_response(
-                {"message": "Outlook did not respond in time. Your saved calendar remains available."},
-                status=504,
-            )
-        except Exception as exc:
-            error_type = type(exc).__name__
-            ctl._outlook_calendar.record_sync_error(error_type)
-            logger.warning("Manual Outlook calendar sync failed: {}", error_type)
-            return web.json_response(
-                {"message": "Outlook calendar could not be refreshed. Your saved calendar remains available."},
-                status=502,
-            )
-
-    async def outlook_events(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._outlook_calendar.authorization_pending:
-            return web.json_response(
-                {"message": "Finish the Outlook sign-in before loading calendar events."},
-                status=409,
-            )
-        try:
-            payload = await asyncio.to_thread(
-                ctl._outlook_calendar.events_for_day,
-                day_value=request.query.get("date", ""),
-                time_zone_name=request.query.get("timeZone", ""),
-                start_value=request.query.get("start", ""),
-                end_value=request.query.get("end", ""),
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **payload})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def outlook_disconnect(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            await ctl._outlook_calendar.disconnect()
-            return web.json_response({"apiVersion": REST_API_VERSION, "disconnected": True})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
     async def meeting_hotkey(request: web.Request):
         ctl: ScriberWebController = request.app[APP_CONTROLLER]
         active = await asyncio.to_thread(ctl._meeting_store.active)
@@ -17151,203 +18886,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         if not ctl.dismiss_meeting_detection(detection_id):
             return web.json_response({"message": "Meeting detection not found"}, status=404)
         return web.json_response({"apiVersion": REST_API_VERSION, "dismissed": True})
-
-    async def meeting_detail(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            detail = await asyncio.to_thread(
-                ctl._meeting_store.detail,
-                meeting_id,
-                revision=request.query.get("revision", "canonical"),
-            )
-            artifact_store = getattr(ctl, "_transcript_artifacts", None)
-            final_route: dict[str, Any] | None = None
-            track_results: Sequence[Any] = ()
-            track_derivations: Sequence[Any] = ()
-            if artifact_store is not None:
-
-                def final_route_snapshot() -> tuple[dict[str, Any] | None, str]:
-                    head = artifact_store.get_head(meeting_id)
-                    if head is None:
-                        return None, ""
-                    artifact = artifact_store.get_artifact(head.artifact_id)
-                    if artifact is None:
-                        return None, ""
-                    snapshot = artifact_store.get_route_snapshot(artifact.attempt_id)
-                    if snapshot is None:
-                        return None, ""
-                    route = {
-                        "provider": snapshot.provider,
-                        "model": snapshot.model,
-                        "transport": snapshot.transport,
-                        "language": snapshot.language,
-                        "timestampMode": snapshot.timestamp_mode,
-                        "diarizationMode": snapshot.diarization_mode,
-                    }
-                    return route, str(artifact.attempt_id)
-
-                try:
-                    final_route, attempt_id = await asyncio.to_thread(final_route_snapshot)
-                    detail["finalRoute"] = final_route
-                    if attempt_id:
-                        try:
-                            list_results = getattr(artifact_store, "list_track_stage_results", None)
-                            list_derivations = getattr(artifact_store, "list_track_derivations", None)
-                            if callable(list_results):
-                                track_results = await asyncio.to_thread(list_results, attempt_id)
-                            if callable(list_derivations):
-                                track_derivations = await asyncio.to_thread(list_derivations, attempt_id)
-                        except Exception as exc:
-                            logger.warning(
-                                "Meeting processing evidence unavailable for {}: {}",
-                                meeting_id,
-                                type(exc).__name__,
-                            )
-                            track_results = ()
-                            track_derivations = ()
-                except Exception as exc:
-                    # Historical transcript metadata is informative, not a
-                    # prerequisite for opening the meeting.  A damaged or
-                    # partially migrated artifact must not make the entire
-                    # meeting detail endpoint unavailable.
-                    logger.warning(
-                        "Meeting final-route metadata unavailable for {}: {}",
-                        meeting_id,
-                        type(exc).__name__,
-                    )
-                    detail["finalRoute"] = None
-            detail["processingComponents"] = _meeting_processing_components(
-                detail,
-                final_route=final_route,
-                track_results=track_results,
-                track_derivations=track_derivations,
-            )
-            detail["reprocessing"] = await _meeting_reprocessing_capabilities(
-                ctl,
-                detail,
-            )
-            detail["apiVersion"] = REST_API_VERSION
-            return web.json_response(detail)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
-    async def patch_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            updated = await asyncio.to_thread(ctl._meeting_store.rename, meeting_id, raw.get("title", ""))
-            await ctl.broadcast(meeting_state_event(updated))
-            return web.json_response({**updated, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def search_meeting_transcript(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        query = request.query.get("q", "").strip()
-        if not query:
-            return web.json_response({"apiVersion": REST_API_VERSION, "query": "", "items": []})
-        if len(query.encode("utf-8")) > 512:
-            return web.json_response({"message": "Transcript search query is too long."}, status=400)
-        try:
-            limit = max(1, min(100, int(request.query.get("limit", "40"))))
-        except ValueError:
-            return web.json_response({"message": "Search limit must be a whole number."}, status=400)
-        try:
-            items = await asyncio.to_thread(ctl._meeting_store.search_segments, meeting_id, query, limit=limit)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "query": query,
-                    "items": items,
-                }
-            )
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-
-    async def patch_meeting_segment(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.edit_segment,
-                meeting_id,
-                segment_id,
-                str(raw.get("text", "")),
-                expected_edit_version=int(raw.get("expectedEditVersion", -1)),
-            )
-            await ctl.broadcast(
-                meeting_transcript_edited_event(
-                    meeting_id,
-                    result["segment"],
-                    transcript_edit_version=result["transcriptEditVersion"],
-                    outputs_stale=result["outputsStale"],
-                )
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting segment not found"}, status=404)
-        except MeetingConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def undo_meeting_segment_edit(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.undo_segment_edit,
-                meeting_id,
-                segment_id,
-                expected_edit_version=int(raw.get("expectedEditVersion", -1)),
-            )
-            await ctl.broadcast(
-                meeting_transcript_edited_event(
-                    meeting_id,
-                    result["segment"],
-                    transcript_edit_version=result["transcriptEditVersion"],
-                    outputs_stale=result["outputsStale"],
-                )
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting segment not found"}, status=404)
-        except MeetingConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def meeting_segment_edits(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        segment_id = request.match_info.get("segmentId", "")
-        try:
-            items = await asyncio.to_thread(ctl._meeting_store.segment_edit_history, meeting_id, segment_id)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meetingId": meeting_id,
-                    "segmentId": segment_id,
-                    "items": items,
-                }
-            )
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
 
     def meeting_import_payload(record: Any, *, upload_url: str = "") -> dict[str, Any]:
         raw = record.to_public()
@@ -17457,1943 +18995,51 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "finishedAt": payload["finishedAt"],
         }
 
-    async def list_meeting_imports(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            limit = max(1, min(50, int(request.query.get("limit", "24"))))
-        except ValueError:
-            return web.json_response({"message": "Meeting import limit must be a whole number."}, status=400)
-        records = await asyncio.to_thread(
-            ctl._meeting_import_store.list_inbox,
-            limit=limit,
-            recent_terminal_limit=6,
-        )
-        items = [meeting_import_inbox_payload(record) for record in records]
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "items": items,
-                "total": len(items),
-                "limit": limit,
-            }
+    def voice_library_deps() -> VoiceLibraryDeps:
+        """Resolve the Voice Library collaborators for one request.
+
+        ``persist_settings`` is bound as a call rather than looked up here: only
+        the erase route performs it, and reading the attribute up front would
+        make reading the model's status fail on a composition that never needs
+        to persist anything.
+        """
+        return VoiceLibraryDeps(
+            speaker_model=controller._speaker_model,
+            meeting_store=controller._meeting_store,
+            persist_settings=lambda: controller._schedule_settings_persist(),
         )
 
-    async def create_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            safe_filename = _safe_upload_filename(str(raw.get("filename") or "meeting-recording"))
-            extension = Path(safe_filename).suffix.lower()
-            if extension not in _ALLOWED_UPLOAD_EXTENSIONS:
-                raise ValueError(f"Unsupported meeting recording type: {extension}")
-            expected_bytes = int(raw.get("byteSize") or 0)
-            if expected_bytes <= 0:
-                raise ValueError("Meeting recording size must be greater than zero.")
-            provider = Config.MEETING_FINAL_PROVIDER
-            _validate_provider_ready(provider)
-            max_bytes = (
-                _get_video_max_bytes() if extension in _VIDEO_EXTENSIONS else _get_audio_ingest_max_bytes(provider)
-            )
-            if expected_bytes > max_bytes:
-                return web.json_response(
-                    {"message": f"Meeting recording is too large (max {_format_upload_limit(max_bytes)})."},
-                    status=413,
-                )
-            profile = {
-                "id": str(raw.get("profileId") or "default")[:96],
-                "language": str(raw.get("language") or Config.LANGUAGE or "auto")[:32],
-                "finalProvider": provider,
-                "analysisModel": Config.MEETING_ANALYSIS_MODEL,
-                "audioRetentionDays": Config.MEETING_AUDIO_RETENTION_DAYS,
-                "autoAnalyze": Config.MEETING_AUTO_ANALYZE,
-            }
-            record = await asyncio.to_thread(
-                ctl._meeting_import_store.create,
-                source_filename=safe_filename,
-                expected_bytes=expected_bytes,
-                profile_snapshot=profile,
-                metadata={"title": str(raw.get("title") or Path(safe_filename).stem)[:500], "origin": "imported"},
-            )
-            return web.json_response(
-                meeting_import_payload(record, upload_url=f"/api/meeting-imports/{record.id}/content"),
-                status=201,
-            )
-        except (ValueError, RuntimeError) as exc:
-            return web.json_response({"message": redact_text(str(exc))[:240]}, status=400)
+    def _task_registry(attribute: str) -> dict[str, asyncio.Task]:
+        registry = getattr(controller, attribute, None)
+        if registry is None:
+            registry = {}
+            setattr(controller, attribute, registry)
+        return registry
 
-    async def get_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            record = await asyncio.to_thread(ctl._meeting_import_store.require, request.match_info.get("importId", ""))
-            return web.json_response(meeting_import_payload(record))
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
+    def meeting_import_deps() -> MeetingImportDeps:
+        """Resolve the durable import dependencies for one request.
 
-    async def upload_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        import_id = request.match_info.get("importId", "")
-        part_path: Path | None = None
-        job_root: Path | None = None
-        receiving_claimed = False
-        source_committed = False
-        current_task = asyncio.current_task()
-        upload_tasks = getattr(ctl, "_meeting_import_upload_tasks", None)
-        if upload_tasks is None:
-            upload_tasks = {}
-            ctl._meeting_import_upload_tasks = upload_tasks
-        existing_upload = upload_tasks.get(import_id)
-        if existing_upload is not None and not existing_upload.done():
-            return web.json_response(
-                {"message": "A Meeting recording upload is already active for this job."},
-                status=409,
-            )
-        if current_task is not None:
-            upload_tasks[import_id] = current_task
-        try:
-            record = await _to_thread_cancellation_barrier(ctl._meeting_import_store.begin_receiving, import_id)
-            receiving_claimed = True
-            storage_root = data_dir().resolve()
-            imports_root = (storage_root / "meeting-imports").resolve()
-            if imports_root.parent != storage_root:
-                raise ValueError("Meeting import storage root is invalid.")
-            job_root = (imports_root / record.id).resolve()
-            if job_root.parent != imports_root:
-                raise ValueError("Meeting import upload path is invalid.")
-            job_root.mkdir(parents=True, exist_ok=True)
-            part_path = job_root / "source.part"
-            digest = hashlib.sha256()
-            received = 0
-            last_reported = 0
-            with part_path.open("wb") as handle:
-                async for chunk in request.content.iter_chunked(1024 * 1024):
-                    if not chunk:
-                        continue
-                    received += len(chunk)
-                    if record.expected_bytes is not None and received > record.expected_bytes:
-                        raise ValueError("Meeting recording exceeds its declared size.")
-                    handle.write(chunk)
-                    digest.update(chunk)
-                    if received - last_reported >= 1024 * 1024:
-                        record = await _to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.update_receive_progress, import_id, received
-                        )
-                        fraction = received / max(1, record.expected_bytes or received)
-                        await ctl._broadcast_meeting_import(record, min(0.85, fraction * 0.85), "Uploading recording")
-                        last_reported = received
+        Every lookup is deliberately late.  The store and the task registries are
+        assigned to the controller after ``create_app`` returns, ``data_dir`` and
+        the upload limits are patched per test, and the shutdown flag has to
+        answer for the moment cancellation lands rather than for app startup.
 
-                def flush_and_sync() -> None:
-                    handle.flush()
-                    os.fsync(handle.fileno())
-
-                flush_task = asyncio.create_task(asyncio.to_thread(flush_and_sync))
-                try:
-                    await asyncio.shield(flush_task)
-                except asyncio.CancelledError:
-                    # Do not close/delete the file while the worker thread still
-                    # owns its handle.  DELETE waits on this handler task.
-                    await asyncio.shield(flush_task)
-                    raise
-            if record.expected_bytes is not None and received != record.expected_bytes:
-                raise ValueError("Uploaded byte count does not match the declared size.")
-            committed_path = job_root / f"source{Path(record.source_filename).suffix.lower()}"
-            # The rename is a short atomic syscall.  Keeping it on this task
-            # avoids a canceled to_thread continuing after DELETE removes the
-            # staging directory.
-            os.replace(part_path, committed_path)
-            record = await _to_thread_cancellation_barrier(
-                ctl._meeting_import_store.mark_received,
-                import_id,
-                relative_path=committed_path.relative_to(storage_root).as_posix(),
-                byte_count=received,
-                sha256=digest.hexdigest(),
-            )
-            source_committed = True
-            try:
-                ctl.schedule_meeting_import(import_id)
-                await ctl._broadcast_meeting_import(record, 0.86, "Upload safely stored")
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                # Scheduling/progress are repairable bookkeeping after the
-                # durable source commit. Startup recovery owns RECEIVED jobs;
-                # never turn a safely accepted upload into data loss here.
-                logger.exception("Accepted Meeting import bookkeeping will be repaired on recovery")
-            return web.json_response(meeting_import_payload(record), status=202)
-        except asyncio.CancelledError:
-            cleanup_incomplete_upload = True
-            try:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                if record.status == MeetingImportStatus.CANCEL_REQUESTED:
-                    record = await _to_thread_cancellation_barrier(ctl._meeting_import_store.mark_canceled, import_id)
-                    await ctl._broadcast_meeting_import(record, 0.0, "Meeting import canceled")
-                elif record.status in {
-                    MeetingImportStatus.CREATED,
-                    MeetingImportStatus.RECEIVING,
-                }:
-                    if not getattr(ctl, "_shutting_down", False):
-                        record = await _to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.mark_failed,
-                            import_id,
-                            error_code="upload_interrupted",
-                            error_message="The Meeting recording upload was interrupted.",
-                        )
-                        await ctl._broadcast_meeting_import(record, 1.0, "Meeting import upload failed")
-                else:
-                    # The source commit is authoritative from RECEIVED onward.
-                    # Cancellation can arrive after mark_received while a
-                    # progress response is in flight; never delete an accepted,
-                    # restart-recoverable source directory in that window.
-                    cleanup_incomplete_upload = False
-            except Exception:
-                logger.exception("Meeting import upload cancellation could not be persisted")
-            if cleanup_incomplete_upload:
-                if part_path is not None:
-                    part_path.unlink(missing_ok=True)
-                if job_root is not None:
-                    await _remove_tree_if_exists(job_root)
-            raise
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
-        except (MeetingImportConflict, InvalidMeetingImportTransition, ValueError) as exc:
-            if source_committed:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                return web.json_response(meeting_import_payload(record), status=202)
-            if not receiving_claimed:
-                # This request never won the durable upload generation. A
-                # duplicate/replayed PUT is observational only: it must not
-                # fail the winning worker or remove files owned by that worker.
-                try:
-                    record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                except MeetingImportNotFound:
-                    return web.json_response({"message": "Meeting import not found"}, status=404)
-                if record.status not in {
-                    MeetingImportStatus.CREATED,
-                    MeetingImportStatus.RECEIVING,
-                    MeetingImportStatus.CANCEL_REQUESTED,
-                }:
-                    return web.json_response(meeting_import_payload(record), status=202)
-                return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
-            try:
-                await _to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.mark_failed,
-                    import_id,
-                    error_code=type(exc).__name__,
-                    error_message=redact_text(str(exc))[:240],
-                )
-            except Exception as mark_exc:
-                logger.debug("Meeting import failure-state persistence failed: {}", type(mark_exc).__name__)
-            if part_path is not None:
-                part_path.unlink(missing_ok=True)
-            if job_root is not None:
-                await _remove_tree_if_exists(job_root)
-            return web.json_response({"message": redact_text(str(exc))[:240]}, status=409)
-        except Exception:
-            logger.exception("Meeting import upload failed")
-            if source_committed:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                return web.json_response(meeting_import_payload(record), status=202)
-            try:
-                await _to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.mark_failed,
-                    import_id,
-                    error_code="upload_interrupted",
-                    error_message="The Meeting recording upload was interrupted.",
-                )
-            except Exception:
-                logger.exception("Interrupted Meeting upload state could not be persisted")
-            if part_path is not None:
-                part_path.unlink(missing_ok=True)
-            if job_root is not None:
-                await _remove_tree_if_exists(job_root)
-            return web.json_response({"message": "The Meeting recording upload was interrupted."}, status=500)
-        finally:
-            if current_task is not None and upload_tasks.get(import_id) is current_task:
-                upload_tasks.pop(import_id, None)
-
-    async def cancel_meeting_import(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        import_id = request.match_info.get("importId", "")
-        try:
-            record = await asyncio.to_thread(ctl._meeting_import_store.request_cancel, import_id)
-            if record.status in {
-                MeetingImportStatus.COMPLETED,
-                MeetingImportStatus.FAILED,
-            }:
-                return web.json_response(
-                    {
-                        "message": "This Meeting import has already finished.",
-                        "meetingId": record.meeting_id or None,
-                    },
-                    status=409,
-                )
-            tasks = {
-                task
-                for task in (
-                    getattr(ctl, "_meeting_import_upload_tasks", {}).get(import_id),
-                    ctl._meeting_import_tasks.get(import_id),
-                )
-                if task is not None and not task.done()
-            }
-            for task in tasks:
-                task.cancel()
-            for task in tasks:
-                try:
-                    await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
-                except asyncio.CancelledError, TimeoutError:
-                    pass
-                except Exception:
-                    logger.exception("Meeting import task failed while cancellation was draining")
-            record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-            if record.status == MeetingImportStatus.CANCEL_REQUESTED and all(task.done() for task in tasks):
-                record = await asyncio.to_thread(ctl._meeting_import_store.mark_canceled, import_id)
-            if record.status == MeetingImportStatus.CANCELED:
-                await _remove_tree_if_exists(data_dir() / "meeting-imports" / record.id)
-            await ctl._broadcast_meeting_import(
-                record,
-                0.0,
-                "Meeting import canceled"
-                if record.status == MeetingImportStatus.CANCELED
-                else "Canceling Meeting import",
-            )
-            return web.json_response(
-                meeting_import_payload(record),
-                status=202 if record.status == MeetingImportStatus.CANCEL_REQUESTED else 200,
-            )
-        except MeetingImportNotFound:
-            return web.json_response({"message": "Meeting import not found"}, status=404)
-        except MeetingImportConflict as exc:
-            try:
-                record = await asyncio.to_thread(ctl._meeting_import_store.require, import_id)
-                meeting_id = record.meeting_id or None
-            except MeetingImportNotFound:
-                meeting_id = None
-            return web.json_response({"message": str(exc), "meetingId": meeting_id}, status=409)
-
-    async def import_meeting_file(request: web.Request):
-        """Retired one-request import; durable imports use create + binary PUT."""
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "message": (
-                    "The legacy multipart Meeting import was retired. Create a durable import "
-                    "with POST /api/meeting-imports, then upload to its returned uploadUrl."
-                ),
-                "createUrl": "/api/meeting-imports",
-            },
-            status=410,
-        )
-
-    async def start_meeting(request: web.Request):
-        request_started = time.perf_counter()
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        requested_transcription_mode = (
-            str(raw.get("transcriptionMode", Config.MEETING_TRANSCRIPTION_MODE)).strip().lower()
-        )
-        if requested_transcription_mode not in _MEETING_TRANSCRIPTION_MODES:
-            return web.json_response({"message": "Unsupported meeting transcription mode."}, status=400)
-        requested_voice_library = bool(raw.get("voiceLibraryEnabled", False))
-        if requested_voice_library and not Config.VOICEPRINT_LIBRARY_OPT_IN:
-            return web.json_response(
-                {"message": "Voice Library requires the explicit biometric-processing opt-in in Settings."},
-                status=409,
-            )
-        if requested_voice_library and not ctl._speaker_model.status()["installed"]:
-            return web.json_response(
-                {"message": "Install the optional WeSpeaker model before enabling Voice Library."},
-                status=409,
-            )
-        # Resolve only against the token-protected local Graph cache. Participant
-        # details sent by a WebView are never trusted. The snapshot is frozen now
-        # so a concurrent calendar refresh cannot silently change recipients.
-        explicit_calendar_selection = "calendarEventId" in raw
-        selected_calendar_event: dict[str, Any] | None = None
-        outlook_calendar = getattr(ctl, "_outlook_calendar", None)
-        if explicit_calendar_selection:
-            selected_event_id = str(raw.get("calendarEventId") or "").strip()
-            if selected_event_id:
-                selected_calendar_event = (
-                    await asyncio.to_thread(outlook_calendar.event_snapshot, selected_event_id)
-                    if outlook_calendar is not None
-                    else None
-                )
-                if selected_calendar_event is None:
-                    return web.json_response(
-                        {
-                            "message": (
-                                "The selected Outlook event is no longer available. "
-                                "Refresh the calendar and choose it again."
-                            )
-                        },
-                        status=409,
-                    )
-        elif outlook_calendar is not None:
-            selected_calendar_event = await asyncio.to_thread(outlook_calendar.current_event)
-        requested_title = str(raw.get("title", "")).strip()
-        create_request = MeetingCreate(
-            title=(requested_title or str((selected_calendar_event or {}).get("subject") or "")),
-            language=str(raw.get("language", "auto")),
-            transcription_mode=requested_transcription_mode,
-            live_provider=str(raw.get("liveProvider", "soniox")),
-            final_provider=str(raw.get("finalProvider", Config.MEETING_FINAL_PROVIDER)),
-            analysis_model=str(raw.get("analysisModel", Config.MEETING_ANALYSIS_MODEL)),
-            aec_enabled=bool(raw.get("aecEnabled", Config.MEETING_AEC_ENABLED)),
-            voice_library_enabled=requested_voice_library,
-            consent_confirmed=False,
-            origin="captured",
-            audio_retention_days=max(
-                0, min(3650, int(raw.get("audioRetentionDays", Config.MEETING_AUDIO_RETENTION_DAYS) or 0))
-            ),
-            smart_turn_enabled=bool(raw.get("smartTurnEnabled", Config.MEETING_SMART_TURN_ENABLED)),
-            auto_analyze=bool(raw.get("autoAnalyze", Config.MEETING_AUTO_ANALYZE)),
-        )
-
-        meeting_claim: AudioAdmissionClaim | None = None
-
-        async def start_claimed() -> web.Response:
-            nonlocal meeting_claim
-            ownership = _MeetingCaptureOwnership(failure_state="capture_failed")
-            try:
-                meeting, pending_cancel = await _await_with_delayed_cancellation(
-                    asyncio.to_thread(ctl._meeting_store.create, create_request)
-                )
-            except MeetingConflict as exc:
-                await _release_persistent_audio(ctl, meeting_claim)
-                return web.json_response({"message": str(exc)}, status=409)
-            try:
-                ownership.meeting_id = str(meeting["id"])
-                if meeting_claim is not None:
-                    meeting_claim = await _transfer_persistent_audio_claim(
-                        ctl, meeting_claim, owner_id=ownership.meeting_id
-                    )
-                ownership.resume_prewarm = True
-                if pending_cancel is not None:
-                    raise pending_cancel
-
-                await ctl._pause_idle_mic_prewarm_for_capture()
-                ipc_payload = {
-                    "meetingId": meeting["id"],
-                    "microphoneDeviceId": str(raw.get("microphoneDeviceId", "")),
-                    "renderDeviceId": str(raw.get("renderDeviceId", "")),
-                    "microphoneNativeEndpointIdHash": str(raw.get("microphoneNativeEndpointIdHash", "")),
-                    "renderNativeEndpointIdHash": str(raw.get("renderNativeEndpointIdHash", "")),
-                    "processId": int(raw["processId"]) if raw.get("processId") is not None else None,
-                    "aecEnabled": meeting["aecEnabled"],
-                    "chunkDurationSeconds": 30,
-                }
-                response, pending_cancel = await _await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        call_shell_ipc,
-                        "audioMeetingStart",
-                        ipc_payload,
-                        timeout_seconds=4.0,
-                    )
-                )
-                native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-                if response.get("success"):
-                    ownership.native_capture_started = True
-                    ownership.capture_id = str(native_payload.get("captureId") or "")
-                if pending_cancel is not None:
-                    raise pending_cancel
-                if not response.get("success"):
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code=str(response.get("errorCode") or "native_capture_unavailable"),
-                        message=str(response.get("fallbackReason") or "Native meeting capture did not start."),
-                    )
-
-                (
-                    ownership.capture_id,
-                    native_sources,
-                ) = _validated_meeting_native_capture_payload(native_payload)
-                live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-                recorder = MeetingAudioRecorder(
-                    meeting["id"],
-                    data_dir() / "meetings",
-                    ctl._meeting_store,
-                    sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                    on_pcm=lambda source, pcm, _header: ctl.on_meeting_pcm(
-                        meeting["id"], live_preview_ref["transcriber"], source, pcm
-                    ),
-                    on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting["id"], checkpoint),
-                )
-                ownership.recorder = recorder
-                try:
-                    recorder.start(native_sources)
-                except Exception as exc:
-                    raise _MeetingCaptureSetupError(
-                        status=503,
-                        code="frame_recorder_start_failed",
-                        message=(f"Meeting audio persistence could not start ({type(exc).__name__})."),
-                    ) from exc
-                ctl._meeting_recorders[meeting["id"]] = recorder
-                timeline_started_at_utc = datetime.now(UTC).isoformat()
-
-                # Durable local capture is authoritative. Live transcription is
-                # a best-effort preview and must never gate or tear down audio
-                # that is already being persisted. The callback above resolves
-                # the transcriber dynamically, so frames received during a
-                # slow or failed provider connection remain locally durable.
-                (
-                    ownership.live_transcriber,
-                    live_preview_degraded,
-                ) = await _start_meeting_live_preview_best_effort(ctl, meeting)
-                live_preview_ref["transcriber"] = ownership.live_transcriber
-
-                capture_metadata = {
-                    key: native_payload[key]
-                    for key in (
-                        "captureId",
-                        "sampleRate",
-                        "frameDurationMs",
-                        "aecActive",
-                        "aecRequested",
-                    )
-                    if key in native_payload
-                }
-                capture_metadata["sources"] = [
-                    str(item.get("source")) for item in native_sources if isinstance(item, dict) and item.get("source")
-                ]
-                capture_metadata["timelineOffsetMs"] = 0
-                capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-                capture_metadata["livePreview"] = _meeting_live_preview_metadata(
-                    meeting,
-                    degraded=live_preview_degraded,
-                    error_code="live_stt_start_failed",
-                )
-                capture_metadata["captureStartLatencyMs"] = round((time.perf_counter() - request_started) * 1000.0, 1)
-                if selected_calendar_event:
-                    capture_metadata["calendarEvent"] = selected_calendar_event
-                capture_metadata["calendarEventSelection"] = (
-                    "explicit"
-                    if explicit_calendar_selection and selected_calendar_event
-                    else "none"
-                    if explicit_calendar_selection
-                    else "automatic"
-                    if selected_calendar_event
-                    else "unavailable"
-                )
-                requested_mic_id = str(raw.get("microphoneDeviceId", "")).strip()
-                requested_render_id = str(raw.get("renderDeviceId", "")).strip()
-                mic_hash = str(raw.get("microphoneNativeEndpointIdHash", "")).strip()
-                render_hash = str(raw.get("renderNativeEndpointIdHash", "")).strip()
-                capture_metadata["deviceSelection"] = {
-                    "microphoneMode": "explicit" if requested_mic_id or mic_hash else "default",
-                    "microphoneDeviceId": requested_mic_id,
-                    "microphoneNativeEndpointIdHash": mic_hash,
-                    "renderMode": "explicit" if requested_render_id or render_hash else "default",
-                    "renderDeviceId": requested_render_id,
-                    "renderNativeEndpointIdHash": render_hash,
-                }
-                recording, pending_cancel = await _await_with_delayed_cancellation(
-                    asyncio.to_thread(
-                        ctl._meeting_store.transition,
-                        meeting["id"],
-                        "recording",
-                        error_code=("live_stt_start_failed" if live_preview_degraded else ""),
-                        error_message=(
-                            "Live transcription is unavailable. Durable local audio recording continues."
-                            if live_preview_degraded
-                            else ""
-                        ),
-                        capture_metadata=capture_metadata,
-                    )
-                )
-                if pending_cancel is not None:
-                    raise pending_cancel
-                ctl.start_meeting_capture_watchdog(meeting["id"], str(capture_metadata.get("captureId") or ""))
-                await ctl.broadcast(meeting_state_event(recording))
-                if live_preview_degraded:
-                    for source in ("microphone", "system"):
-                        await ctl.broadcast(meeting_live_status_event(meeting["id"], source, "degraded", 0))
-                return web.json_response({**recording, "apiVersion": REST_API_VERSION}, status=201)
-            except asyncio.CancelledError:
-                await _cleanup_meeting_capture_ownership_barrier(
-                    ctl,
-                    ownership,
-                    error_code="meeting_start_canceled",
-                    error_message=("Meeting start was interrupted; completed audio chunks were preserved."),
-                )
-                await _release_persistent_audio(ctl, meeting_claim)
-                raise
-            except _MeetingCaptureSetupError as exc:
-                failed = await _cleanup_meeting_capture_ownership_barrier(
-                    ctl,
-                    ownership,
-                    error_code=exc.code,
-                    error_message=exc.message,
-                )
-                await _release_persistent_audio(ctl, meeting_claim)
-                meeting_payload = failed or {
-                    "id": ownership.meeting_id,
-                    "state": "capture_failed",
-                    "errorCode": exc.code,
-                    "errorMessage": exc.message,
-                }
-                return web.json_response(
-                    {
-                        "message": meeting_payload.get("errorMessage") or exc.message,
-                        "meeting": meeting_payload,
-                        "apiVersion": REST_API_VERSION,
-                    },
-                    status=exc.status,
-                )
-            except Exception as exc:
-                logger.exception("Meeting capture setup failed")
-                message = (
-                    f"Meeting capture could not start ({type(exc).__name__}); completed audio chunks were preserved."
-                )
-                failed = await _cleanup_meeting_capture_ownership_barrier(
-                    ctl,
-                    ownership,
-                    error_code="meeting_start_failed",
-                    error_message=message,
-                )
-                await _release_persistent_audio(ctl, meeting_claim)
-                return web.json_response(
-                    {
-                        "message": (failed or {}).get("errorMessage") or message,
-                        "meeting": failed,
-                        "apiVersion": REST_API_VERSION,
-                    },
-                    status=503,
-                )
-
-        async with _audio_admission_lock(ctl):
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before starting a meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl) is not None:
-                return web.json_response(
-                    {"message": "Finish the active meeting before starting another one."}, status=409
-                )
-            try:
-                meeting_claim = await _claim_persistent_audio(
-                    ctl,
-                    owner_kind="meeting",
-                    owner_id=f"pending-{uuid4().hex}",
-                )
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await start_claimed()
-
-    def _meeting_native_stop_snapshot(native_payload: dict[str, Any]) -> dict[str, Any]:
-        sidecar = native_payload.get("sidecar")
-        if not isinstance(sidecar, dict):
-            return {}
-        relay = sidecar.get("relay")
-        if not isinstance(relay, dict):
-            relay = sidecar
-        snapshot: dict[str, Any] = {}
-        for key in ("framesProcessed", "bytesForwarded", "sidecarUptimeMs"):
-            value = relay.get(key)
-            if isinstance(value, int) and value >= 0:
-                snapshot[key] = value
-        snapshot["relayHealthy"] = not bool(relay.get("relayError"))
-        raw_metrics = relay.get("aecMetrics")
-        if isinstance(raw_metrics, dict):
-            metrics: dict[str, Any] = {
-                "measurement": "render-active-raw-to-clean-energy-ratio",
-            }
-            for key in ("renderActiveFrames", "renderActiveDurationMs"):
-                value = raw_metrics.get(key)
-                if isinstance(value, int) and value >= 0:
-                    metrics[key] = value
-            for key in ("renderEnergy", "rawMicEnergy", "cleanMicEnergy", "echoReductionDb"):
-                value = raw_metrics.get(key)
-                if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    metrics[key] = round(float(value), 6)
-            snapshot["aecMetrics"] = metrics
-        return snapshot
-
-    async def _resume_paused_meeting_claimed(request: web.Request, current: dict[str, Any]) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        if current.get("state") != "paused":
-            return web.json_response(
-                {"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
-                status=409,
-            )
-        ownership = _MeetingCaptureOwnership(
-            failure_state="interrupted",
-            meeting_id=meeting_id,
-            # A paused Meeting retains the capture/prewarm ownership claim.
-            # Failed resume converts it to interrupted and releases that claim.
-            resume_prewarm=True,
-        )
-        capture_metadata = dict(current.get("captureMetadata", {}))
-        selection = capture_metadata.get("deviceSelection", {})
-        if not isinstance(selection, dict):
-            selection = {}
-        try:
-            response, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioMeetingResume",
-                    {
-                        "meetingId": meeting_id,
-                        "captureId": capture_metadata.get("captureId"),
-                        "aecEnabled": bool(current.get("aecEnabled", True)),
-                        "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
-                        "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
-                    },
-                    timeout_seconds=4.0,
-                )
-            )
-            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            if response.get("success"):
-                ownership.native_capture_started = True
-                ownership.capture_id = str(native_payload.get("captureId") or "")
-            if pending_cancel is not None:
-                raise pending_cancel
-            if not response.get("success"):
-                # No new owner exists. Keep the intentional paused state so a
-                # transient native error can be retried by the user.
-                ownership.resume_prewarm = False
-                return web.json_response(
-                    {"message": str(response.get("fallbackReason") or "Meeting capture resume failed")},
-                    status=503,
-                )
-
-            (
-                ownership.capture_id,
-                sources,
-            ) = _validated_meeting_native_capture_payload(native_payload)
-            pause_start_ms = int(capture_metadata.get("pauseStartedAtMs") or 0)
-            pause_started_raw = str(capture_metadata.get("pauseStartedAtUtc") or "")
-            try:
-                pause_started = datetime.fromisoformat(pause_started_raw.replace("Z", "+00:00"))
-                gap_duration_ms = max(
-                    0,
-                    round((datetime.now(UTC) - pause_started.astimezone(UTC)).total_seconds() * 1000),
-                )
-            except TypeError, ValueError:
-                gap_duration_ms = 0
-            gap_end_ms = pause_start_ms + gap_duration_ms
-            await _to_thread_cancellation_barrier(
-                ctl._meeting_store.add_audio_gap,
-                meeting_id,
-                source="all",
-                started_at_ms=pause_start_ms,
-                ended_at_ms=gap_end_ms,
-                reason="pause",
-            )
-            for source in sources:
-                if isinstance(source, dict):
-                    source["timelineOffsetMs"] = max(int(source.get("timelineOffsetMs", 0) or 0), gap_end_ms)
-
-            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-
-            def recorder_callback(source, pcm, _header):
-                return ctl.on_meeting_pcm(meeting_id, live_preview_ref["transcriber"], source, pcm)
-
-            recorder = ctl._meeting_recorders.get(meeting_id)
-            if recorder is None:
-                recorder = MeetingAudioRecorder(
-                    meeting_id,
-                    data_dir() / "meetings",
-                    ctl._meeting_store,
-                    sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                    on_pcm=recorder_callback,
-                    on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting_id, checkpoint),
-                )
-            else:
-                recorder.on_pcm = recorder_callback
-            ownership.recorder = recorder
-            try:
-                recorder.start(sources)
-            except Exception as exc:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="frame_recorder_resume_failed",
-                    message=(f"Meeting audio persistence could not resume ({type(exc).__name__})."),
-                ) from exc
-            ctl._meeting_recorders[meeting_id] = recorder
-            timeline_started_at_utc = datetime.now(UTC).isoformat()
-
-            (
-                ownership.live_transcriber,
-                live_preview_degraded,
-            ) = await _start_meeting_live_preview_best_effort(
-                ctl,
-                current,
-                timeline_offsets={
-                    "microphone": gap_end_ms,
-                    "system": gap_end_ms,
-                },
-            )
-            live_preview_ref["transcriber"] = ownership.live_transcriber
-            for key in (
-                "captureId",
-                "sampleRate",
-                "frameDurationMs",
-                "aecActive",
-                "aecRequested",
-            ):
-                if key in native_payload:
-                    capture_metadata[key] = native_payload[key]
-            capture_metadata.pop("pauseStartedAtMs", None)
-            capture_metadata.pop("pauseStartedAtUtc", None)
-            capture_metadata["timelineOffsetMs"] = gap_end_ms
-            capture_metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            capture_metadata["livePreview"] = _meeting_live_preview_metadata(
-                current,
-                degraded=live_preview_degraded,
-                error_code="live_stt_resume_failed",
-            )
-            updated, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    ctl._meeting_store.transition,
-                    meeting_id,
-                    "recording",
-                    error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
-                    error_message=(
-                        "Live transcription is unavailable. Durable local audio recording continues."
-                        if live_preview_degraded
-                        else ""
-                    ),
-                    capture_metadata=capture_metadata,
-                )
-            )
-            if pending_cancel is not None:
-                raise pending_cancel
-            ctl.start_meeting_capture_watchdog(meeting_id, str(capture_metadata.get("captureId") or ""))
-            await ctl.broadcast(meeting_state_event(updated))
-            if live_preview_degraded:
-                for source in ("microphone", "system"):
-                    await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
-            return web.json_response({**updated, "apiVersion": REST_API_VERSION})
-        except asyncio.CancelledError:
-            await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_canceled",
-                error_message=("Meeting resume was interrupted; saved audio remains available."),
-            )
-            await _release_persistent_audio(ctl)
-            raise
-        except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code=exc.code,
-                error_message=exc.message,
-            )
-            await _release_persistent_audio(ctl)
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or exc.message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=exc.status,
-            )
-        except Exception as exc:
-            logger.exception("Paused Meeting resume failed")
-            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_failed",
-                error_message=message,
-            )
-            await _release_persistent_audio(ctl)
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
-            )
-
-    async def _meeting_capture_command_claimed(
-        request: web.Request,
-        *,
-        command: str,
-        target_state: str,
-    ) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        allowed_source_states = {
-            "audioMeetingPause": frozenset({"recording"}),
-            "audioMeetingResume": frozenset({"paused"}),
-            "audioMeetingStop": frozenset({"recording", "paused"}),
-        }
-        command_labels = {
-            "audioMeetingPause": "pause",
-            "audioMeetingResume": "resume",
-            "audioMeetingStop": "stop",
-        }
-        current_state = str(current.get("state") or "unknown")
-        if current_state not in allowed_source_states.get(command, frozenset()):
-            return web.json_response(
-                {"message": (f"Meeting cannot {command_labels.get(command, 'change')} from {current_state}.")},
-                status=409,
-            )
-        meeting_claim = _meeting_audio_claim(ctl, meeting_id)
-        if meeting_claim is None:
-            return web.json_response(
-                {"message": "This Meeting does not own native audio capture."},
-                status=409,
-            )
-        if command == "audioMeetingResume":
-            return await _resume_paused_meeting_claimed(request, current)
-        raw_metadata = current.get("captureMetadata")
-        current_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
-
-        def restore_watchdog() -> None:
-            if current_state == "recording":
-                ctl.start_meeting_capture_watchdog(
-                    meeting_id,
-                    str(current_metadata.get("captureId") or ""),
-                )
-
-        ctl.stop_meeting_capture_watchdog(meeting_id)
-        ipc_command_payload = {
-            "meetingId": meeting_id,
-            "captureId": current_metadata.get("captureId"),
-        }
-        recorder = ctl._meeting_recorders.get(meeting_id)
-        prepare_disconnect = getattr(recorder, "prepare_for_expected_disconnect", None)
-        cancel_disconnect = getattr(recorder, "cancel_expected_disconnect", None)
-        disconnect_prepared = bool(
-            command in {"audioMeetingPause", "audioMeetingStop"} and callable(prepare_disconnect)
-        )
-        if disconnect_prepared:
-            prepare_disconnect()
-        try:
-            response = await asyncio.to_thread(
-                call_shell_ipc,
-                command,
-                ipc_command_payload,
-                timeout_seconds=4.0,
-            )
-        except asyncio.CancelledError:
-            if disconnect_prepared and callable(cancel_disconnect):
-                cancel_disconnect()
-            restore_watchdog()
-            raise
-        except Exception as exc:
-            if disconnect_prepared and callable(cancel_disconnect):
-                cancel_disconnect()
-            restore_watchdog()
-            logger.warning(
-                "Meeting capture command failed before completion: command={} error={}",
-                command,
-                type(exc).__name__,
-            )
-            return web.json_response(
-                {"message": "Native Meeting audio control is temporarily unavailable."},
-                status=503,
-            )
-        if not response.get("success"):
-            if disconnect_prepared and callable(cancel_disconnect):
-                cancel_disconnect()
-            restore_watchdog()
-            return web.json_response(
-                {"message": str(response.get("fallbackReason") or f"{command} failed")}, status=503
-            )
-        native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-        capture_metadata = dict(current.get("captureMetadata", {}))
-        if command in {"audioMeetingPause", "audioMeetingStop"}:
-            native_stop = _meeting_native_stop_snapshot(native_payload)
-            if native_stop:
-                native_stop_sessions = capture_metadata.get("nativeStopSessions")
-                if not isinstance(native_stop_sessions, list):
-                    native_stop_sessions = []
-                capture_metadata["nativeStopSessions"] = [*native_stop_sessions[-19:], native_stop]
-                if isinstance(native_stop.get("aecMetrics"), dict):
-                    capture_metadata["aecMetrics"] = native_stop["aecMetrics"]
-        recorder_stop_failure: tuple[str, str] | None = None
-        if command in {"audioMeetingPause", "audioMeetingStop"} and recorder is not None:
-            try:
-                persistence = await asyncio.to_thread(recorder.stop, expected_disconnect=True)
-            except Exception as exc:
-                try:
-                    snapshot = recorder.snapshot()
-                except Exception:
-                    snapshot = {}
-                persistence = snapshot if isinstance(snapshot, dict) else {}
-                recorder_stop_failure = _meeting_recorder_stop_failure(
-                    exc,
-                    persistence,
-                )
-                logger.warning(
-                    "Meeting capture command recorder stop failed: command={} error={} code={}",
-                    command,
-                    type(exc).__name__,
-                    recorder_stop_failure[0],
-                )
-            capture_metadata["persistence"] = persistence
-            persistence_sessions = capture_metadata.get("persistenceSessions")
-            if not isinstance(persistence_sessions, list):
-                persistence_sessions = []
-            capture_metadata["persistenceSessions"] = [*persistence_sessions[-19:], persistence]
-        if command in {"audioMeetingPause", "audioMeetingStop"}:
-            live_transcriber = ctl._meeting_live_transcribers.pop(meeting_id, None)
-            if live_transcriber is not None:
-                await live_transcriber.stop()
-                live_snapshot = live_transcriber.snapshot()
-                _merge_meeting_live_processing_aggregate(
-                    capture_metadata,
-                    live_snapshot,
-                )
-                live_sessions = capture_metadata.get("liveTranscriptionSessions")
-                if not isinstance(live_sessions, list):
-                    live_sessions = []
-                capture_metadata["liveTranscriptionSessions"] = [*live_sessions[-19:], live_snapshot]
-        if recorder_stop_failure is not None:
-            failure_code, failure_message = recorder_stop_failure
-            try:
-                failed = await asyncio.to_thread(
-                    ctl._meeting_store.transition,
-                    meeting_id,
-                    "capture_failed",
-                    error_code=failure_code,
-                    error_message=failure_message,
-                    capture_metadata=capture_metadata,
-                )
-            except (InvalidMeetingTransition, MeetingConflict) as exc:
-                return web.json_response({"message": str(exc)}, status=409)
-            await _release_persistent_audio(ctl, meeting_claim)
-            ctl._resume_idle_mic_prewarm_after_capture()
-            await ctl.broadcast(meeting_state_event(failed))
-            return web.json_response(
-                {
-                    "message": failure_message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
-            )
-        if command == "audioMeetingPause":
-            capture_metadata["pauseStartedAtMs"] = max(
-                await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
-                await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
-                await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "system"),
-            )
-            capture_metadata["pauseStartedAtUtc"] = datetime.now(UTC).isoformat()
-        try:
-            updated = await asyncio.to_thread(
-                ctl._meeting_store.transition,
-                meeting_id,
-                target_state,
-                capture_metadata=capture_metadata,
-            )
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        if command == "audioMeetingStop":
-            await _release_persistent_audio(ctl, meeting_claim)
-            ctl._resume_idle_mic_prewarm_after_capture()
-        await ctl.broadcast(meeting_state_event(updated))
-        return web.json_response({**updated, "apiVersion": REST_API_VERSION})
-
-    async def _meeting_capture_command(
-        request: web.Request,
-        *,
-        command: str,
-        target_state: str,
-    ) -> web.Response:
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        async with _audio_admission_lock(ctl):
-            if command != "audioMeetingResume":
-                return await _meeting_capture_command_claimed(request, command=command, target_state=target_state)
-            try:
-                current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            except MeetingNotFound:
-                return web.json_response({"message": "Meeting not found"}, status=404)
-            if current.get("state") != "paused":
-                return web.json_response(
-                    {"message": (f"Meeting cannot resume from {current.get('state', 'unknown')}.")},
-                    status=409,
-                )
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before resuming this meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl, allow_meeting_id=meeting_id) is not None:
-                return web.json_response({"message": "Finish the active meeting before resuming this one."}, status=409)
-            try:
-                await _claim_persistent_audio(ctl, owner_kind="meeting", owner_id=meeting_id)
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await _meeting_capture_command_claimed(request, command=command, target_state=target_state)
-
-    async def pause_meeting(request: web.Request):
-        return await _meeting_capture_command(request, command="audioMeetingPause", target_state="paused")
-
-    async def _resume_interrupted_meeting_claimed(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        if current.get("state") != "interrupted":
-            return web.json_response(
-                {"message": f"Meeting cannot resume from {current.get('state', 'unknown')}."},
-                status=409,
-            )
-        metadata = dict(current.get("captureMetadata", {}))
-        selection = metadata.get("deviceSelection", {})
-        if not isinstance(selection, dict):
-            selection = {}
-        offset_ms = max(
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "microphone"),
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "mic_clean"),
-            await asyncio.to_thread(ctl._meeting_store.next_audio_offset_ms, meeting_id, "system"),
-        )
-        gap_end_ms = offset_ms + 1
-        ownership = _MeetingCaptureOwnership(
-            failure_state="interrupted",
-            meeting_id=meeting_id,
-            resume_prewarm=True,
-        )
-        try:
-            await ctl._pause_idle_mic_prewarm_for_capture()
-            response, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioMeetingResume",
-                    {
-                        "meetingId": meeting_id,
-                        "aecEnabled": bool(current.get("aecEnabled", True)),
-                        "microphoneNativeEndpointIdHash": str(selection.get("microphoneNativeEndpointIdHash", "")),
-                        "renderNativeEndpointIdHash": str(selection.get("renderNativeEndpointIdHash", "")),
-                    },
-                    timeout_seconds=4.0,
-                )
-            )
-            native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
-            if response.get("success"):
-                ownership.native_capture_started = True
-                ownership.capture_id = str(native_payload.get("captureId") or "")
-            if pending_cancel is not None:
-                raise pending_cancel
-            if not response.get("success"):
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code=str(response.get("errorCode") or "meeting_resume_failed"),
-                    message=str(response.get("fallbackReason") or "Meeting capture resume failed."),
-                )
-            (
-                ownership.capture_id,
-                sources,
-            ) = _validated_meeting_native_capture_payload(native_payload)
-            for source in sources:
-                if isinstance(source, dict):
-                    source["timelineOffsetMs"] = gap_end_ms
-            live_preview_ref: dict[str, MeetingLiveTranscriber | None] = {"transcriber": None}
-            recorder = MeetingAudioRecorder(
-                meeting_id,
-                data_dir() / "meetings",
-                ctl._meeting_store,
-                sample_rate=int(native_payload.get("sampleRate") or 16_000),
-                on_pcm=lambda source, pcm, _header: ctl.on_meeting_pcm(
-                    meeting_id, live_preview_ref["transcriber"], source, pcm
-                ),
-                on_checkpoint=lambda checkpoint: ctl.on_meeting_checkpoint(meeting_id, checkpoint),
-            )
-            ownership.recorder = recorder
-            try:
-                recorder.start(sources)
-            except Exception as exc:
-                raise _MeetingCaptureSetupError(
-                    status=503,
-                    code="frame_recorder_resume_failed",
-                    message=(f"Meeting audio persistence could not resume ({type(exc).__name__})."),
-                ) from exc
-            ctl._meeting_recorders[meeting_id] = recorder
-            timeline_started_at_utc = datetime.now(UTC).isoformat()
-            (
-                ownership.live_transcriber,
-                live_preview_degraded,
-            ) = await _start_meeting_live_preview_best_effort(
-                ctl,
-                current,
-                timeline_offsets={
-                    "microphone": gap_end_ms,
-                    "system": gap_end_ms,
-                },
-            )
-            live_preview_ref["transcriber"] = ownership.live_transcriber
-            await _to_thread_cancellation_barrier(
-                ctl._meeting_store.add_audio_gap,
-                meeting_id,
-                source="all",
-                started_at_ms=offset_ms,
-                ended_at_ms=gap_end_ms,
-                reason="crash-recovery",
-            )
-            for key in ("captureId", "sampleRate", "frameDurationMs", "aecActive", "aecRequested"):
-                if key in native_payload:
-                    metadata[key] = native_payload[key]
-            metadata["recoveredCaptureAt"] = datetime.now(UTC).isoformat()
-            metadata.pop("pauseStartedAtMs", None)
-            metadata.pop("pauseStartedAtUtc", None)
-            metadata["timelineOffsetMs"] = gap_end_ms
-            metadata["timelineStartedAtUtc"] = timeline_started_at_utc
-            metadata["livePreview"] = _meeting_live_preview_metadata(
-                current,
-                degraded=live_preview_degraded,
-                error_code="live_stt_resume_failed",
-            )
-            recording, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    ctl._meeting_store.transition,
-                    meeting_id,
-                    "recording",
-                    error_code=("live_stt_resume_failed" if live_preview_degraded else ""),
-                    error_message=(
-                        "Live transcription is unavailable. Durable local audio recording continues."
-                        if live_preview_degraded
-                        else ""
-                    ),
-                    capture_metadata=metadata,
-                )
-            )
-            if pending_cancel is not None:
-                raise pending_cancel
-            ctl.start_meeting_capture_watchdog(meeting_id, str(metadata.get("captureId") or ""))
-            await ctl.broadcast(meeting_state_event(recording))
-            if live_preview_degraded:
-                for source in ("microphone", "system"):
-                    await ctl.broadcast(meeting_live_status_event(meeting_id, source, "degraded", 0))
-            return web.json_response({**recording, "apiVersion": REST_API_VERSION})
-        except asyncio.CancelledError:
-            await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_canceled",
-                error_message=("Meeting resume was interrupted; saved audio remains available."),
-            )
-            await _release_persistent_audio(ctl)
-            raise
-        except _MeetingCaptureSetupError as exc:
-            failed = await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code=exc.code,
-                error_message=exc.message,
-            )
-            await _release_persistent_audio(ctl)
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or exc.message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=exc.status,
-            )
-        except Exception as exc:
-            logger.exception("Interrupted Meeting resume failed")
-            message = f"Saved meeting audio is intact; capture resume failed ({type(exc).__name__})."
-            failed = await _cleanup_meeting_capture_ownership_barrier(
-                ctl,
-                ownership,
-                error_code="meeting_resume_failed",
-                error_message=message,
-            )
-            await _release_persistent_audio(ctl)
-            return web.json_response(
-                {
-                    "message": (failed or {}).get("errorMessage") or message,
-                    "meeting": failed,
-                    "apiVersion": REST_API_VERSION,
-                },
-                status=503,
-            )
-
-    async def resume_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        if current["state"] != "interrupted":
-            return await _meeting_capture_command(request, command="audioMeetingResume", target_state="recording")
-
-        async with _audio_admission_lock(ctl):
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before resuming this meeting."}, status=409)
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "Wait for the Voice Library sample to finish."}, status=409)
-            if await _active_meeting_audio_conflict(ctl, allow_meeting_id=meeting_id) is not None:
-                return web.json_response({"message": "Finish the active meeting before resuming this one."}, status=409)
-
-            # Re-read state after waiting for admission. A concurrent stop or
-            # retry must not be resumed from the stale pre-lock snapshot.
-            try:
-                current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            except MeetingNotFound:
-                return web.json_response({"message": "Meeting not found"}, status=404)
-            if current["state"] != "interrupted":
-                return web.json_response(
-                    {"message": f"Meeting can no longer resume from {current['state']}."},
-                    status=409,
-                )
-            try:
-                await _claim_persistent_audio(ctl, owner_kind="meeting", owner_id=meeting_id)
-            except AudioAdmissionConflict:
-                return web.json_response(
-                    {"message": "Another Scriber controller owns native audio capture."},
-                    status=409,
-                )
-            return await _resume_interrupted_meeting_claimed(request)
-
-    async def stop_meeting(request: web.Request):
-        response = await _meeting_capture_command(request, command="audioMeetingStop", target_state="stopping")
-        if response.status >= 400:
-            return response
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        finalizing = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "finalizing")
-        ctl._meeting_recorders.pop(meeting_id, None)
-        clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
-        if callable(clear_level_state):
-            clear_level_state(meeting_id)
-        await ctl.broadcast(meeting_state_event(finalizing))
-        ctl.schedule_meeting_finalization(meeting_id)
-        return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
-
-    async def reprocess_meeting(request: web.Request):
-        """Refresh Voice matches or create a new canonical transcript safely."""
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        mode = str(raw.get("mode") or "").strip().lower()
-        if mode not in {"speaker_identity", "full_transcript"}:
-            return web.json_response({"message": "Choose speaker_identity or full_transcript."}, status=400)
-
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        capabilities = await _meeting_reprocessing_capabilities(ctl, detail)
-
-        if mode == "speaker_identity":
-            if not capabilities["speakerIdentityAvailable"]:
-                return web.json_response(
-                    {
-                        "message": capabilities["speakerIdentityUnavailableReason"]
-                        or "Speaker matching is unavailable for this Meeting."
-                    },
-                    status=409,
-                )
-            start_gate = asyncio.Event()
-            if not ctl.schedule_meeting_speaker_reprocessing(meeting_id, start_gate=start_gate):
-                return web.json_response({"message": "Meeting processing is already running."}, status=409)
-            task = ctl._meeting_tasks.get(meeting_id)
-            if task is None:
-                return web.json_response({"message": "Speaker matching could not be started."}, status=503)
-            start_gate.set()
-            meeting = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meeting": meeting,
-                    "mode": mode,
-                },
-                status=202,
-            )
-
-        if not capabilities["fullTranscriptAvailable"]:
-            return web.json_response(
-                {
-                    "message": capabilities["fullTranscriptUnavailableReason"]
-                    or "Full Meeting retranscription is unavailable."
-                },
-                status=409,
-            )
-
-        start_gate = asyncio.Event()
-        reserved_task: asyncio.Task | None = None
-        if not ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate):
-            return web.json_response({"message": "Meeting processing is already running."}, status=409)
-        reserved_task = ctl._meeting_tasks.get(meeting_id)
-        if reserved_task is None:
-            return web.json_response({"message": "Meeting retranscription could not be started."}, status=503)
-        try:
-            finalizing, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    ctl._meeting_store.reserve_full_reprocess,
-                    meeting_id,
-                    final_provider=capabilities["selectedFinalProvider"],
-                    final_model=capabilities["selectedFinalModel"],
-                    analysis_model=(Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL),
-                    voice_library_enabled=bool(capabilities["voiceLibraryEnabledForRun"]),
-                )
-            )
-            # The durable state owns this work from here. Open the gate before
-            # delivering a pending request cancellation so a Meeting cannot be
-            # stranded in ``finalizing`` by a closed WebView.
-            start_gate.set()
-            if pending_cancel is not None:
-                raise pending_cancel
-            await ctl.broadcast(meeting_state_event(finalizing))
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "meeting": finalizing,
-                    "mode": mode,
-                },
-                status=202,
-            )
-        except asyncio.CancelledError:
-            raise
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        finally:
-            if not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-
-    async def retry_meeting_finalization(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        requested_final_provider = ""
-        requested_analysis_model = ""
-        if request.can_read_body:
-            try:
-                raw_retry = await request.json()
-            except Exception:
-                return web.json_response({"message": "Expected JSON payload"}, status=400)
-            if not isinstance(raw_retry, dict):
-                return web.json_response({"message": "Expected JSON object"}, status=400)
-            requested_final_provider = str(raw_retry.get("finalProvider") or "").strip().lower()
-            requested_analysis_model = str(raw_retry.get("analysisModel") or "").strip()
-        start_gate: asyncio.Event | None = None
-        reserved_task: asyncio.Task | None = None
-        reopened_import: Any | None = None
-        original_state = ""
-        retry_state = ""
-        previous_final_provider = ""
-        previous_reprocess_final_model: str | None = None
-        previous_analysis_model = ""
-        changed_final_provider = ""
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            if current["state"] not in {"finalization_failed", "analysis_failed", "interrupted", "capture_failed"}:
-                return web.json_response({"message": "Meeting is not waiting for a finalization retry."}, status=409)
-            original_state = str(current["state"])
-            retry_state = "analyzing" if current["state"] == "analysis_failed" else "finalizing"
-            previous_analysis_model = str(current.get("analysisModel") or "").strip()
-            analysis_model_for_retry: str | None = None
-            if retry_state == "analyzing":
-                analysis_model_for_retry = _validate_summarization_model(
-                    requested_analysis_model or Config.MEETING_ANALYSIS_MODEL or Config.DEFAULT_SUMMARIZATION_MODEL
-                )
-                if not _meeting_llm_model_ready(analysis_model_for_retry):
-                    return web.json_response(
-                        {"message": "Configure the API key for the selected Meeting analysis model first."},
-                        status=409,
-                    )
-            elif requested_analysis_model:
-                return web.json_response(
-                    {"message": "The Meeting analysis model can change only during an analysis retry."},
-                    status=409,
-                )
-            if requested_final_provider:
-                if retry_state != "finalizing":
-                    return web.json_response(
-                        {"message": "The final transcription provider cannot change during an analysis-only retry."},
-                        status=409,
-                    )
-                if requested_final_provider not in _MEETING_FINAL_STT_PROVIDERS:
-                    return web.json_response(
-                        {"message": "Unsupported final meeting transcription provider."},
-                        status=400,
-                    )
-                readiness_error = _provider_readiness_error(requested_final_provider)
-                if readiness_error:
-                    return web.json_response({"message": readiness_error}, status=409)
-                current_provider = str(current.get("finalProvider") or "").strip().lower()
-                capture_metadata = current.get("captureMetadata")
-                is_full_reprocess = bool(
-                    isinstance(capture_metadata, dict) and capture_metadata.get("reprocessKind") == "full_transcript"
-                )
-                if is_full_reprocess:
-                    previous_reprocess_final_model = str(capture_metadata.get("reprocessFinalModel") or "").strip()
-                retry_final_model = (
-                    previous_reprocess_final_model
-                    if requested_final_provider == current_provider and previous_reprocess_final_model is not None
-                    else provider_batch_model(requested_final_provider)
-                )
-                provider_duration_limit = meeting_max_duration_seconds(
-                    requested_final_provider,
-                    retry_final_model,
-                )
-                if provider_duration_limit is not None:
-                    durable_timeline_ms = max(
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "microphone",
-                        ),
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "mic_clean",
-                        ),
-                        await asyncio.to_thread(
-                            ctl._meeting_store.next_audio_offset_ms,
-                            meeting_id,
-                            "system",
-                        ),
-                    )
-                    if durable_timeline_ms > provider_duration_limit * 1_000:
-                        return web.json_response(
-                            {
-                                "message": (
-                                    f"{_service_label(requested_final_provider)} accepts Meeting "
-                                    f"tracks up to {provider_duration_limit // 60} minutes."
-                                )
-                            },
-                            status=409,
-                        )
-                if requested_final_provider != current_provider:
-                    previous_final_provider = await asyncio.to_thread(
-                        ctl._meeting_store.change_final_provider_for_retry,
-                        meeting_id,
-                        requested_final_provider,
-                        expected_state=original_state,
-                        expected_final_provider=current_provider,
-                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                        final_model=retry_final_model,
-                    )
-                    changed_final_provider = requested_final_provider
-            import_job = await asyncio.to_thread(ctl._meeting_import_store.find_by_meeting_id, meeting_id)
-            start_gate = asyncio.Event()
-            scheduled = (
-                ctl.schedule_meeting_analysis(meeting_id, start_gate=start_gate)
-                if retry_state == "analyzing"
-                else ctl.schedule_meeting_finalization(meeting_id, start_gate=start_gate)
-            )
-            if not scheduled:
-                if changed_final_provider:
-                    await asyncio.to_thread(
-                        ctl._meeting_store.change_final_provider_for_retry,
-                        meeting_id,
-                        previous_final_provider,
-                        expected_state=original_state,
-                        expected_final_provider=changed_final_provider,
-                        allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                        final_model=previous_reprocess_final_model,
-                    )
-                    changed_final_provider = ""
-                return web.json_response({"message": "Meeting processing is already running."}, status=409)
-            reserved_task = ctl._meeting_tasks.get(meeting_id)
-            if import_job is not None and import_job.status == MeetingImportStatus.FAILED:
-                reopened_import = await _to_thread_cancellation_barrier(
-                    ctl._meeting_import_store.transition,
-                    import_job.id,
-                    MeetingImportStatus.FINALIZING,
-                    expected_status=MeetingImportStatus.FAILED,
-                )
-                await ctl._broadcast_meeting_import(reopened_import, 0.97, "Retrying Meeting import finalization")
-            finalizing = await _to_thread_cancellation_barrier(
-                ctl._meeting_store.transition,
-                meeting_id,
-                retry_state,
-                analysis_model=analysis_model_for_retry,
-            )
-            start_gate.set()
-            await ctl.broadcast(meeting_state_event(finalizing))
-            return web.json_response({**finalizing, "apiVersion": REST_API_VERSION}, status=202)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        except (
-            InvalidMeetingTransition,
-            MeetingConflict,
-            InvalidMeetingImportTransition,
-            MeetingImportConflict,
-        ) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        finally:
-            if start_gate is not None and not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-                if retry_state and original_state:
-                    try:
-                        persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                        if persisted["state"] == retry_state:
-                            rollback_state = (
-                                "finalization_failed" if original_state == "capture_failed" else original_state
-                            )
-                            await _to_thread_cancellation_barrier(
-                                ctl._meeting_store.transition,
-                                meeting_id,
-                                rollback_state,
-                                error_code=str(current.get("errorCode") or "retry_not_started"),
-                                error_message=str(current.get("errorMessage") or "Meeting retry could not be started."),
-                                analysis_model=(previous_analysis_model if retry_state == "analyzing" else None),
-                            )
-                    except Exception:
-                        logger.exception("Meeting retry state reservation could not be rolled back")
-                if reopened_import is not None:
-                    try:
-                        await _to_thread_cancellation_barrier(
-                            ctl._meeting_import_store.mark_failed,
-                            reopened_import.id,
-                            error_code="retry_not_started",
-                            error_message="Meeting retry could not be started.",
-                        )
-                    except Exception:
-                        logger.exception("Meeting import retry reservation could not be rolled back")
-            if start_gate is not None and not start_gate.is_set() and changed_final_provider:
-                try:
-                    persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                    if (
-                        persisted.get("state") in {"finalization_failed", "capture_failed", "interrupted"}
-                        and str(persisted.get("finalProvider") or "").strip().lower() == changed_final_provider
-                    ):
-                        await _to_thread_cancellation_barrier(
-                            ctl._meeting_store.change_final_provider_for_retry,
-                            meeting_id,
-                            previous_final_provider,
-                            expected_state=str(persisted["state"]),
-                            expected_final_provider=changed_final_provider,
-                            allowed_providers=_MEETING_FINAL_STT_PROVIDERS,
-                            final_model=previous_reprocess_final_model,
-                        )
-                except Exception:
-                    logger.exception("Meeting retry provider reservation could not be rolled back")
-
-    async def analyze_meeting_again(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        start_gate: asyncio.Event | None = None
-        reserved_task: asyncio.Task | None = None
-        original_state = ""
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            if current["state"] not in {"ready", "analysis_failed"}:
-                return web.json_response({"message": "Meeting is not ready for analysis."}, status=409)
-            original_state = str(current["state"])
-            start_gate = asyncio.Event()
-            if not ctl.schedule_meeting_analysis(meeting_id, start_gate=start_gate):
-                return web.json_response({"message": "Meeting analysis is already running."}, status=409)
-            reserved_task = ctl._meeting_tasks.get(meeting_id)
-            analyzing = await _to_thread_cancellation_barrier(ctl._meeting_store.transition, meeting_id, "analyzing")
-            start_gate.set()
-            await ctl.broadcast(meeting_state_event(analyzing))
-            return web.json_response({**analyzing, "apiVersion": REST_API_VERSION}, status=202)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        finally:
-            if start_gate is not None and not start_gate.is_set() and reserved_task is not None:
-                reserved_task.cancel()
-                await asyncio.gather(reserved_task, return_exceptions=True)
-                if original_state:
-                    try:
-                        persisted = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-                        if persisted["state"] == "analyzing":
-                            await _to_thread_cancellation_barrier(
-                                ctl._meeting_store.transition,
-                                meeting_id,
-                                original_state,
-                                error_code=str(current.get("errorCode") or ""),
-                                error_message=str(current.get("errorMessage") or ""),
-                            )
-                    except Exception:
-                        logger.exception("Meeting analysis reservation could not be rolled back")
-
-    async def add_meeting_note(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            note = await asyncio.to_thread(
-                ctl._meeting_store.add_note,
-                meeting_id,
-                str(raw.get("body", "")),
-                at_ms=int(raw["atMs"]) if raw.get("atMs") is not None else None,
-            )
-            await ctl.broadcast(meeting_note_event(meeting_id, note))
-            return web.json_response({**note, "apiVersion": REST_API_VERSION}, status=201)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def put_meeting_note(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            note = await asyncio.to_thread(
-                ctl._meeting_store.put_note,
-                meeting_id,
-                str(raw.get("id", "workspace")),
-                str(raw.get("body", "")),
-                at_ms=int(raw["atMs"]) if raw.get("atMs") is not None else None,
-                writer_id=raw.get("writerId"),
-                write_generation=raw.get("writeGeneration"),
-            )
-            if note.get("writeApplied") is not False:
-                await ctl.broadcast(meeting_note_event(meeting_id, note))
-            return web.json_response({**note, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def patch_meeting_action_item(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        item_id = request.match_info.get("itemId", "")
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            allowed = {key: raw[key] for key in ("text", "owner", "dueDate", "status") if key in raw}
-            if not allowed:
-                raise ValueError("No editable action item fields were supplied.")
-            item = await asyncio.to_thread(ctl._meeting_store.update_action_item, meeting_id, item_id, allowed)
-            return web.json_response({**item, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound as exc:
-            return web.json_response({"message": str(exc)}, status=404)
-        except (TypeError, ValueError) as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def discard_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            current = await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-            processing_task = getattr(ctl, "_meeting_tasks", {}).get(meeting_id)
-            import_store = getattr(ctl, "_meeting_import_store", None)
-            import_job = (
-                await asyncio.to_thread(import_store.find_by_meeting_id, meeting_id)
-                if import_store is not None
-                else None
-            )
-            if (
-                current["state"] in {"starting", "recording", "paused", "stopping", "finalizing", "analyzing"}
-                or (processing_task is not None and not processing_task.done())
-                or (
-                    import_job is not None
-                    and import_job.status
-                    in {
-                        MeetingImportStatus.COMMITTING,
-                        MeetingImportStatus.FINALIZING,
-                    }
-                )
-            ):
-                return web.json_response(
-                    {
-                        "message": (
-                            "Meeting processing is still running. Wait for it to finish or fail "
-                            "before discarding the workspace."
-                        )
-                    },
-                    status=409,
-                )
-            storage_root = data_dir().resolve()
-            meetings_root = (storage_root / "meetings").resolve()
-            meeting_root = (meetings_root / meeting_id).resolve()
-            if meetings_root.parent != storage_root or meeting_root.parent != meetings_root:
-                return web.json_response({"message": "Meeting storage path is invalid."}, status=400)
-            discarded = await asyncio.to_thread(ctl._meeting_store.transition, meeting_id, "discarded")
-            if meeting_root.is_dir():
-                await asyncio.to_thread(shutil.rmtree, meeting_root)
-            await asyncio.to_thread(db.delete_transcript, meeting_id)
-            await asyncio.to_thread(ctl._meeting_store.delete, meeting_id)
-            clear_level_state = getattr(ctl, "clear_meeting_audio_level_state", None)
-            if callable(clear_level_state):
-                clear_level_state(meeting_id)
-            await ctl.broadcast(meeting_state_event(discarded))
-            return web.json_response({"success": True, "id": meeting_id, "apiVersion": REST_API_VERSION})
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        except (InvalidMeetingTransition, MeetingConflict) as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
-    async def meeting_audio(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        source = request.match_info.get("source", "")
-        if source not in {"microphone", "system"}:
-            return web.json_response({"message": "Unknown meeting audio source"}, status=404)
-        try:
-            await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        final_dir = data_dir() / "meetings" / meeting_id / "final"
-        path = final_dir / ("microphone.opus" if source == "microphone" else "system.opus")
-        if not path.is_file():
-            return web.json_response({"message": "Meeting audio is not ready"}, status=404)
-        return web.FileResponse(path, headers={"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"})
-
-    async def meeting_audio_mix(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        try:
-            await asyncio.to_thread(ctl._meeting_store.get, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        path = data_dir() / "meetings" / meeting_id / "final" / "playback.opus"
-        if not path.is_file():
-            return web.json_response({"message": "Meeting playback mix is not ready"}, status=404)
-        return web.FileResponse(
-            path,
-            headers={"Accept-Ranges": "bytes", "Cache-Control": "private, no-store"},
-        )
-
-    async def export_meeting(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        export_format = request.match_info.get("format", "json").lower()
-        if export_format not in {"json", "md", "pdf", "docx", "audio"}:
-            return web.json_response(
-                {"message": "Meeting export supports json, md, pdf, docx, or compressed audio"},
-                status=400,
-            )
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", detail["title"]).strip()[:60] or "meeting"
-        if export_format == "audio":
-            # Finalization already creates this bounded 64-kbit/s mono Opus mix
-            # for playback. Reuse that verified derivative instead of encoding
-            # a second share copy or exposing lossless/raw meeting tracks.
-            path = data_dir() / "meetings" / meeting_id / "final" / "playback.opus"
-            if not path.is_file():
-                return web.json_response({"message": "Compressed meeting audio is not ready"}, status=404)
-            return web.FileResponse(
-                path,
-                headers={
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "private, no-store",
-                    "Content-Type": "audio/ogg",
-                    "Content-Disposition": _attachment_content_disposition(f"{safe_title} - audio.opus"),
-                },
-            )
-        if export_format == "json":
-            body = json.dumps(detail, ensure_ascii=False, indent=2).encode("utf-8")
-            content_type, extension = "application/json", "json"
-        else:
-            markdown = build_meeting_markdown(detail, fallback_language=Config.LANGUAGE)
-            if export_format == "md":
-                body = markdown.encode("utf-8")
-                content_type, extension = "text/markdown", "md"
-            else:
-                body, content_type, extension = await _render_transcript_export_async(
-                    export_format=export_format,
-                    title=detail["title"],
-                    content=build_meeting_transcript_text(detail, fallback_language=Config.LANGUAGE),
-                    summary=build_meeting_summary_markdown(detail, fallback_language=Config.LANGUAGE),
-                    date=detail.get("startedAt") or detail.get("createdAt") or "",
-                    duration=format_meeting_offset(meeting_duration_ms(detail)),
-                    document_labels=meeting_export_labels(detail, fallback_language=Config.LANGUAGE),
-                )
-        return web.Response(
-            body=body,
-            content_type=content_type,
-            headers={"Content-Disposition": _attachment_content_disposition(f"{safe_title}.{extension}")},
-        )
-
-    async def meeting_email_preview(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, request.match_info.get("id", ""))
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                **build_meeting_email(detail, fallback_language=Config.LANGUAGE),
-            }
-        )
-
-    async def export_meeting_email(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        meeting_id = request.match_info.get("id", "")
-        attachment_format = request.query.get("attachment", "").strip().lower()
-        if attachment_format not in {"", "md", "pdf", "docx"}:
-            return web.json_response({"message": "Email attachment supports md, pdf, or docx."}, status=400)
-        try:
-            detail = await asyncio.to_thread(ctl._meeting_store.detail, meeting_id)
-        except MeetingNotFound:
-            return web.json_response({"message": "Meeting not found"}, status=404)
-        safe_title = re.sub(r"[^A-Za-z0-9 _-]", "", detail["title"]).strip()[:60] or "meeting"
-        attachment = None
-        attachment_name = ""
-        attachment_type = "application/octet-stream"
-        if attachment_format:
-            markdown = build_meeting_markdown(detail, fallback_language=Config.LANGUAGE)
-            if attachment_format == "md":
-                attachment = markdown.encode("utf-8")
-                attachment_name = f"{safe_title}.md"
-                attachment_type = "text/markdown"
-            else:
-                attachment, attachment_type, extension = await _render_transcript_export_async(
-                    export_format=attachment_format,
-                    title=detail["title"],
-                    content=build_meeting_transcript_text(detail, fallback_language=Config.LANGUAGE),
-                    summary=build_meeting_summary_markdown(detail, fallback_language=Config.LANGUAGE),
-                    date=detail.get("startedAt") or detail.get("createdAt") or "",
-                    duration=format_meeting_offset(meeting_duration_ms(detail)),
-                    document_labels=meeting_export_labels(detail, fallback_language=Config.LANGUAGE),
-                )
-                attachment_name = f"{safe_title}.{extension}"
-        body = build_eml_draft(
-            detail,
-            attachment=attachment,
-            attachment_name=attachment_name,
-            attachment_type=attachment_type,
-            fallback_language=Config.LANGUAGE,
-        )
-        return web.Response(
-            body=body,
-            content_type="message/rfc822",
-            headers={"Content-Disposition": _attachment_content_disposition(f"{safe_title} - email draft.eml")},
+        Both registries are created on demand.  Reading a job never needed them,
+        so requiring them here would make listing an import fail on a controller
+        that only owns the durable store -- and the registry has to be attached
+        rather than handed over, because the upload registers itself in one
+        request and cancellation looks it up in another.
+        """
+        return MeetingImportDeps(
+            store=controller._meeting_import_store,
+            broadcast=controller._broadcast_meeting_import,
+            schedule=controller.schedule_meeting_import,
+            processing_tasks=_task_registry("_meeting_import_tasks"),
+            upload_tasks=_task_registry("_meeting_import_upload_tasks"),
+            storage_root=data_dir(),
+            is_shutting_down=lambda: bool(getattr(controller, "_shutting_down", False)),
+            validate_provider_ready=lambda provider: _validate_provider_ready(provider),
+            upload_limits=file_upload_limits,
         )
 
     async def meeting_chat_threads(request: web.Request):
@@ -19718,663 +19364,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
         except ValueError as exc:
             return web.json_response({"message": str(exc)}, status=400)
 
-    async def list_speaker_profiles(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        preview_candidates_fn = getattr(ctl._meeting_store, "speaker_profile_preview_candidates", None)
-        stored_previews_fn = getattr(ctl._meeting_store, "speaker_profile_previews", None)
-        pending = [asyncio.to_thread(ctl._meeting_store.speaker_profiles)]
-        pending.append(
-            asyncio.to_thread(preview_candidates_fn) if callable(preview_candidates_fn) else asyncio.sleep(0, result={})
-        )
-        pending.append(
-            asyncio.to_thread(stored_previews_fn) if callable(stored_previews_fn) else asyncio.sleep(0, result={})
-        )
-        items, preview_candidates, stored_previews = await asyncio.gather(*pending)
-        items = [dict(item) for item in items]
-        now = time.monotonic()
-        prune_speaker_preview_grants(now)
-        for item in items:
-            profile_id = str(item.get("id") or "")
-            stored_preview = stored_previews.get(profile_id)
-            candidate = stored_preview or preview_candidates.get(profile_id)
-            if not isinstance(candidate, dict):
-                item["preview"] = None
-                continue
-            source = str(candidate.get("source") or "")
-            duration_ms = max(0, min(4_000, int(candidate.get("durationMs") or 0)))
-            if duration_ms < 2_000:
-                item["preview"] = None
-                continue
-            meeting_id = ""
-            start_ms = 0
-            if stored_preview is None:
-                meeting_id = str(candidate.get("meetingId") or "")
-                source_name = "microphone.opus" if source == "microphone" else "system.opus"
-                source_path = data_dir() / "meetings" / meeting_id / "final" / source_name
-                if (
-                    source not in {"microphone", "system"}
-                    or not re.fullmatch(r"[0-9a-f]{32}", meeting_id)
-                    or not source_path.is_file()
-                ):
-                    item["preview"] = None
-                    continue
-                start_ms = max(0, int(candidate.get("startMs") or 0))
-            token = uuid4().hex
-            speaker_preview_grants[token] = SpeakerProfilePreviewGrant(
-                profile_id=profile_id,
-                duration_ms=duration_ms,
-                expires_at=now + _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS,
-                source=source,
-                meeting_id=meeting_id,
-                start_ms=start_ms,
-            )
-            item["preview"] = {
-                "token": token,
-                "url": f"/api/meetings/speaker-profile-preview/{token}",
-                "startMs": 0,
-                "endMs": duration_ms,
-                "durationMs": duration_ms,
-                "source": source,
-                "expiresInSeconds": _SPEAKER_PROFILE_PREVIEW_TTL_SECONDS,
-            }
-        prune_speaker_preview_grants(now)
-        model_status = ctl._speaker_model.status()
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "enabled": bool(Config.VOICEPRINT_LIBRARY_OPT_IN and model_status["installed"]),
-                "items": items,
-                "message": "Voice Library is local and opt-in; embeddings are excluded from this response.",
-            }
-        )
-
-    async def speaker_profile_preview(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        now = time.monotonic()
-        prune_speaker_preview_grants(now)
-        token = str(request.match_info.get("token") or "")
-        if not re.fullmatch(r"[0-9a-f]{32}", token):
-            return web.json_response({"message": "Speaker preview not found"}, status=404)
-        grant = speaker_preview_grants.get(token)
-        if grant is None or grant.expires_at <= now:
-            speaker_preview_grants.pop(token, None)
-            return web.json_response({"message": "Speaker preview not found"}, status=404)
-
-        stored_preview_fn = getattr(ctl._meeting_store, "speaker_profile_preview", None)
-        stored_preview = (
-            await asyncio.to_thread(stored_preview_fn, grant.profile_id) if callable(stored_preview_fn) else None
-        )
-        if isinstance(stored_preview, dict):
-            audio = bytes(stored_preview.get("audio") or b"")
-            if not audio.startswith(b"RIFF") or len(audio) > _SPEAKER_PROFILE_PREVIEW_MAX_BYTES:
-                logger.warning("Local Voice Library stored preview failed validation")
-                return web.json_response(
-                    {"message": "The local speaker preview could not be played."},
-                    status=503,
-                )
-            return web.Response(
-                body=audio,
-                content_type="audio/wav",
-                headers={
-                    "Cache-Control": "private, no-store",
-                    "Content-Disposition": "inline",
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
-
-        # Deleting a profile or purging its legacy retained Meeting audio
-        # immediately revokes every previously minted process-local capability.
-        candidates_fn = getattr(ctl._meeting_store, "speaker_profile_preview_candidates", None)
-        current_candidates = await asyncio.to_thread(candidates_fn) if callable(candidates_fn) else {}
-        if grant.profile_id not in current_candidates:
-            speaker_preview_grants.pop(token, None)
-            return web.json_response({"message": "Speaker preview not found"}, status=404)
-        try:
-            audio = await _render_speaker_profile_preview(grant)
-            save_preview_fn = getattr(ctl._meeting_store, "save_speaker_profile_preview", None)
-            if callable(save_preview_fn):
-                try:
-                    await asyncio.to_thread(
-                        save_preview_fn,
-                        grant.profile_id,
-                        audio,
-                        duration_ms=grant.duration_ms,
-                        source=grant.source,
-                        replace=False,
-                    )
-                except Exception as exc:
-                    logger.warning("Local Voice Library preview persistence failed: {}", type(exc).__name__)
-        except FileNotFoundError:
-            speaker_preview_grants.pop(token, None)
-            return web.json_response({"message": "Speaker preview not found"}, status=404)
-        except Exception as exc:
-            logger.warning("Local Voice Library preview failed: {}", type(exc).__name__)
-            return web.json_response(
-                {"message": "The local speaker preview could not be played."},
-                status=503,
-            )
-        return web.Response(
-            body=audio,
-            content_type="audio/wav",
-            headers={
-                "Cache-Control": "private, no-store",
-                "Content-Disposition": "inline",
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
-
-    async def enroll_speaker_profile(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if not Config.VOICEPRINT_LIBRARY_OPT_IN:
-            return web.json_response(
-                {"message": "Turn on Voice Library in Settings before recording a voice."},
-                status=409,
-            )
-        if not ctl._speaker_model.status()["installed"]:
-            return web.json_response(
-                {"message": "Download the local voice recognition model before recording a voice."},
-                status=409,
-            )
-        if not shell_ipc_available():
-            return web.json_response({"message": "Native microphone capture is unavailable in this copy."}, status=503)
-        try:
-            raw = await request.json()
-        except Exception:
-            return web.json_response({"message": "Expected JSON payload"}, status=400)
-        if not isinstance(raw, dict):
-            return web.json_response({"message": "Expected JSON object"}, status=400)
-        display_name = " ".join(str(raw.get("displayName", "")).split()).strip()
-        if not display_name:
-            return web.json_response({"message": "Enter the speaker's name first."}, status=400)
-        if len(display_name) > 120:
-            return web.json_response({"message": "Speaker name must be 120 characters or fewer."}, status=400)
-        profile_id = str(raw.get("profileId", "") or "").strip()
-        if profile_id:
-            profiles = await asyncio.to_thread(ctl._meeting_store.speaker_profiles)
-            if not any(str(item.get("id", "")) == profile_id for item in profiles):
-                return web.json_response({"message": "Speaker profile not found"}, status=404)
-        microphone_hash = str(raw.get("microphoneNativeEndpointIdHash", "") or "").strip()
-        if microphone_hash and not re.fullmatch(r"[0-9a-fA-F]{8,128}", microphone_hash):
-            return web.json_response({"message": "Choose a valid microphone."}, status=400)
-        try:
-            duration_ms = max(6_000, min(10_000, int(raw.get("durationMs", 8_000) or 8_000)))
-        except TypeError, ValueError:
-            return web.json_response({"message": "Invalid voice sample duration."}, status=400)
-
-        admission_lock = _audio_admission_lock(ctl)
-        enrollment_claim: AudioAdmissionClaim | None = None
-        claim_cancel: asyncio.CancelledError | None = None
-        async with admission_lock:
-            if ctl._is_listening or ctl._is_stopping:
-                return web.json_response({"message": "Stop Live Mic before recording a voice sample."}, status=409)
-            if await _active_meeting_audio_conflict(ctl) is not None:
-                return web.json_response(
-                    {"message": "Finish the active meeting before recording a voice sample."},
-                    status=409,
-                )
-            if ctl._meeting_device_test_active:
-                return web.json_response({"message": "Wait for the Meeting device test to finish."}, status=409)
-            if bool(getattr(ctl, "_voice_enrollment_active", False)):
-                return web.json_response({"message": "A Voice Library sample is already being recorded."}, status=409)
-            try:
-                claimed_audio, pending_cancel = await _await_with_delayed_cancellation(
-                    _claim_persistent_audio(
-                        ctl,
-                        owner_kind="voice_enrollment",
-                        owner_id=f"enrollment-{uuid4().hex}",
-                        heartbeat=False,
-                    )
-                )
-                # Record ownership before cancellation can unwind this handler.
-                # The persistent acquire runs in a worker thread and may commit
-                # even after its HTTP task was canceled.
-                enrollment_claim = claimed_audio
-                ctl._voice_enrollment_active = True
-                claim_cancel = pending_cancel
-            except AudioAdmissionConflict:
-                return web.json_response({"message": "Another Scriber window is using the microphone."}, status=409)
-
-        capture: VoiceEnrollmentCapture | None = None
-        stream_id = ""
-        handler_cancelled = False
-        try:
-            # Deliver an admission-time cancellation only after entering the
-            # common ownership cleanup boundary above.
-            if claim_cancel is not None:
-                raise claim_cancel
-            await ctl.broadcast(state_event(ctl.get_state()))
-            await ctl._pause_idle_mic_prewarm_for_capture()
-            response, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioCaptureStart",
-                    {
-                        "sampleRate": 16_000,
-                        "channels": 1,
-                        "blockSize": 512,
-                        "devicePreference": "default",
-                        "nativeEndpointIdHash": microphone_hash or None,
-                        "prebufferMs": 0,
-                    },
-                    timeout_seconds=4.0,
-                )
-            )
-            payload = (
-                response.get("payload")
-                if isinstance(response, dict) and isinstance(response.get("payload"), dict)
-                else {}
-            )
-            if isinstance(response, dict) and response.get("success"):
-                stream_id = str(payload.get("streamId") or "")
-            if pending_cancel is not None:
-                raise pending_cancel
-            if not isinstance(response, dict):
-                raise RuntimeError("Native microphone capture returned an invalid response.")
-            if not response.get("success"):
-                error_code = str(response.get("errorCode") or "")
-                if error_code == "transportError":
-                    message = (
-                        "Scriber's microphone service was temporarily busy. Wait a moment and try the sample again."
-                    )
-                else:
-                    message = str(response.get("fallbackReason") or "The selected microphone could not start.")[:240]
-                return web.json_response(
-                    {"message": message},
-                    status=503,
-                )
-            frame_pipe = str(payload.get("framePipe") or "")
-            if not stream_id or not frame_pipe:
-                return web.json_response(
-                    {"message": "Native microphone capture returned an incomplete response."},
-                    status=503,
-                )
-            try:
-                returned_sample_rate = int(payload.get("sampleRate"))
-                returned_channels = int(payload.get("channels"))
-            except TypeError, ValueError:
-                returned_sample_rate = 0
-                returned_channels = 0
-            returned_sample_format = str(payload.get("sampleFormat") or "")
-            if returned_sample_rate != 16_000 or returned_channels != 1 or returned_sample_format != "pcm_i16_le":
-                return web.json_response(
-                    {
-                        "message": (
-                            "Native microphone capture returned an unsupported "
-                            "audio format. Restart Scriber and try again."
-                        )
-                    },
-                    status=503,
-                )
-            capture = VoiceEnrollmentCapture(
-                sample_rate=16_000,
-                max_duration_seconds=(duration_ms + 1_000) / 1_000,
-            )
-            _, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(capture.start, frame_pipe))
-            if pending_cancel is not None:
-                raise pending_cancel
-            await _wait_for_voice_enrollment(duration_ms)
-            expect_native_stop = getattr(capture, "expect_native_stop", None)
-            if callable(expect_native_stop):
-                expect_native_stop()
-            stop_response, pending_cancel = await _await_with_delayed_cancellation(
-                asyncio.to_thread(
-                    call_shell_ipc,
-                    "audioCaptureStop",
-                    {"streamId": stream_id},
-                    timeout_seconds=4.0,
-                )
-            )
-            if _voice_enrollment_stop_confirmed(stop_response):
-                stream_id = ""
-            else:
-                raise RuntimeError("Native microphone capture did not stop cleanly.")
-            if pending_cancel is not None:
-                raise pending_cancel
-            snapshot, pending_cancel = await _await_with_delayed_cancellation(asyncio.to_thread(capture.stop))
-            if pending_cancel is not None:
-                raise pending_cancel
-            quality = assess_voice_sample(snapshot)
-            pcm = capture.pcm16()
-            async with _voice_library_mutation_lock(ctl):
-                if not Config.VOICEPRINT_LIBRARY_OPT_IN:
-                    return web.json_response(
-                        {"message": "Voice Library was turned off before the sample finished."},
-                        status=409,
-                    )
-                if not ctl._speaker_model.status()["installed"]:
-                    return web.json_response(
-                        {"message": "The local voice recognition model is no longer available."},
-                        status=409,
-                    )
-                embedding, pending_cancel = await _await_with_delayed_cancellation(
-                    ctl._speaker_model.extract_pcm16(pcm, sample_rate=16_000)
-                )
-                if pending_cancel is not None:
-                    raise pending_cancel
-                preview_audio, preview_duration_ms = voice_reference_wav(pcm, sample_rate=16_000)
-                pcm = b""
-                profile = await _to_thread_cancellation_barrier(
-                    ctl._meeting_store.enroll_speaker_profile,
-                    display_name,
-                    embedding,
-                    quality=quality,
-                    profile_id=profile_id,
-                    preview_audio=preview_audio,
-                    preview_duration_ms=preview_duration_ms,
-                    preview_source="enrollment",
-                )
-            public_capture = {
-                "durationMs": int(snapshot.get("durationMs", 0) or 0),
-                "rms": round(float(snapshot.get("rms", 0.0) or 0.0), 4),
-                "peak": round(float(snapshot.get("peak", 0.0) or 0.0), 4),
-                "quality": quality,
-            }
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "profile": profile,
-                    "capture": public_capture,
-                    "audioPersisted": True,
-                    "audioSentToProvider": False,
-                },
-                status=201,
-            )
-        except MeetingNotFound:
-            return web.json_response({"message": "Speaker profile not found"}, status=404)
-        except VoiceLibraryDisabled as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=422)
-        except asyncio.CancelledError:
-            handler_cancelled = True
-            raise
-        except Exception as exc:
-            logger.warning("Voice Library enrollment failed: {}", type(exc).__name__)
-            return web.json_response({"message": "The voice sample could not be completed. Try again."}, status=503)
-        finally:
-
-            async def cleanup_enrollment() -> None:
-                nonlocal stream_id
-                native_capture_released = not bool(stream_id)
-                if capture is not None:
-                    expect_native_stop = getattr(capture, "expect_native_stop", None)
-                    if callable(expect_native_stop):
-                        expect_native_stop()
-                if stream_id:
-                    try:
-                        stop_response = await asyncio.to_thread(
-                            call_shell_ipc,
-                            "audioCaptureStop",
-                            {"streamId": stream_id},
-                            timeout_seconds=4.0,
-                        )
-                        if _voice_enrollment_stop_confirmed(stop_response):
-                            stream_id = ""
-                            native_capture_released = True
-                        else:
-                            logger.error("Voice Library native cleanup was not accepted by the shell")
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library native cleanup failed: {}",
-                            type(exc).__name__,
-                        )
-                if capture is not None:
-                    try:
-                        await asyncio.to_thread(capture.stop)
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library reader cleanup failed: {}",
-                            type(exc).__name__,
-                        )
-                    try:
-                        capture.clear()
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library buffer cleanup failed: {}",
-                            type(exc).__name__,
-                        )
-                if native_capture_released:
-                    try:
-                        async with admission_lock:
-                            ctl._voice_enrollment_active = False
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library admission cleanup failed: {}",
-                            type(exc).__name__,
-                        )
-                    try:
-                        await ctl.broadcast(state_event(ctl.get_state()))
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library state cleanup broadcast failed: {}",
-                            type(exc).__name__,
-                        )
-                    try:
-                        await _release_persistent_audio(ctl, enrollment_claim)
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library lease cleanup failed: {}",
-                            type(exc).__name__,
-                        )
-                    try:
-                        ctl._resume_idle_mic_prewarm_after_capture()
-                    except Exception as exc:
-                        logger.warning(
-                            "Voice Library prewarm resume failed: {}",
-                            type(exc).__name__,
-                        )
-                else:
-                    logger.error("Voice Library retained native-audio ownership after unconfirmed cleanup")
-
-            _, cleanup_cancel = await _await_with_delayed_cancellation(cleanup_enrollment())
-            if cleanup_cancel is not None and not handler_cancelled:
-                raise cleanup_cancel
-
-    async def delete_speaker_profile(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        deleted = await asyncio.to_thread(
-            ctl._meeting_store.delete_speaker_profile, request.match_info.get("profileId", "")
-        )
-        if not deleted:
-            return web.json_response({"message": "Speaker profile not found"}, status=404)
-        return web.json_response({"apiVersion": REST_API_VERSION, "success": True})
-
-    async def patch_speaker_profile(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.rename_speaker_profile,
-                request.match_info.get("profileId", ""),
-                str(raw.get("displayName", "")),
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound as exc:
-            return web.json_response({"message": str(exc)}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def merge_speaker_profiles(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            raw = await request.json()
-            if not isinstance(raw, dict):
-                raise ValueError("Expected JSON object")
-            result = await asyncio.to_thread(
-                ctl._meeting_store.merge_speaker_profiles,
-                str(raw.get("targetProfileId", "")),
-                str(raw.get("sourceProfileId", "")),
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound as exc:
-            return web.json_response({"message": str(exc)}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-
-    async def split_speaker_profile(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            result = await asyncio.to_thread(
-                ctl._meeting_store.split_speaker_profile,
-                request.match_info.get("id", ""),
-                request.match_info.get("speakerId", ""),
-            )
-            return web.json_response({"apiVersion": REST_API_VERSION, **result})
-        except MeetingNotFound as exc:
-            return web.json_response({"message": str(exc)}, status=404)
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-
-    async def speaker_model_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "optedIn": bool(Config.VOICEPRINT_LIBRARY_OPT_IN),
-                **ctl._speaker_model.status(),
-            }
-        )
-
-    async def download_speaker_model(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if not Config.VOICEPRINT_LIBRARY_OPT_IN:
-            return web.json_response(
-                {"message": "Confirm the Voice Library biometric-processing opt-in first."}, status=409
-            )
-        durable_enabled = getattr(ctl._meeting_store, "speaker_library_enabled", None)
-        if callable(durable_enabled) and not await asyncio.to_thread(durable_enabled):
-            return web.json_response(
-                {"message": "Voice Library was turned off before the download started."},
-                status=409,
-            )
-        staged = None
-        try:
-            async with _speaker_model_download_lock(ctl):
-                staged = await ctl._speaker_model.stage_download(request.app[APP_HTTP_SESSION])
-                async with _voice_library_mutation_lock(ctl):
-                    durable_enabled = getattr(ctl._meeting_store, "speaker_library_enabled", None)
-                    enabled_before_promotion = bool(
-                        Config.VOICEPRINT_LIBRARY_OPT_IN
-                        and (not callable(durable_enabled) or await asyncio.to_thread(durable_enabled))
-                    )
-                    if not enabled_before_promotion:
-                        return web.json_response(
-                            {"message": ("Voice Library was turned off while the local download was running.")},
-                            status=409,
-                        )
-                    status, promotion_cancel = await _await_with_delayed_cancellation(
-                        asyncio.to_thread(ctl._speaker_model.promote_staged, staged)
-                    )
-                    staged = None
-                    # The SQLite gate is cross-process. Recheck it after the
-                    # atomic replace so an opt-out from another Scriber process
-                    # can never leave the model behind after deletion.
-                    enabled_after_promotion = bool(Config.VOICEPRINT_LIBRARY_OPT_IN)
-                    post_check_cancel = None
-                    if callable(durable_enabled):
-                        durable_after_promotion, post_check_cancel = await _await_with_delayed_cancellation(
-                            asyncio.to_thread(durable_enabled)
-                        )
-                        enabled_after_promotion = bool(enabled_after_promotion and durable_after_promotion)
-                    pending_cancel = promotion_cancel or post_check_cancel
-                    if not enabled_after_promotion:
-                        _, delete_cancel = await _await_with_delayed_cancellation(
-                            asyncio.to_thread(ctl._speaker_model.delete)
-                        )
-                        pending_cancel = pending_cancel or delete_cancel
-                        if pending_cancel is not None:
-                            raise pending_cancel
-                        return web.json_response(
-                            {"message": ("Voice Library was turned off while the local download was finishing.")},
-                            status=409,
-                        )
-                    if pending_cancel is not None:
-                        raise pending_cancel
-            return web.json_response({"apiVersion": REST_API_VERSION, **status})
-        except ValueError as exc:
-            return web.json_response({"message": str(exc)}, status=502)
-        finally:
-            if staged is not None:
-                try:
-                    await asyncio.to_thread(ctl._speaker_model.discard_staged, staged)
-                except OSError:
-                    logger.warning("Voice Library staged model cleanup failed")
-
-    async def delete_speaker_library(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-
-        async def delete_all_voice_data() -> int:
-            deleted = await asyncio.to_thread(ctl._meeting_store.delete_all_speaker_profiles)
-            await asyncio.to_thread(ctl._speaker_model.delete)
-            Config.set_voiceprint_library_opt_in(False)
-            ctl._schedule_settings_persist()
-            return deleted
-
-        async with _voice_library_mutation_lock(ctl):
-            deleted_profiles, pending_cancel = await _await_with_delayed_cancellation(delete_all_voice_data())
-            if pending_cancel is not None:
-                raise pending_cancel
-        return web.json_response({"apiVersion": REST_API_VERSION, "deleted": True, "deletedProfiles": deleted_profiles})
-
-    async def diarization_component_status(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        status_async = getattr(ctl._speaker_diarizer, "status_async", None)
-        status = await status_async() if callable(status_async) else ctl._speaker_diarizer.status()
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                **status,
-            }
-        )
-
-    async def install_diarization_component(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            status = await ctl._speaker_diarizer.install(request.app[APP_HTTP_SESSION])
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                    **status,
-                }
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            return web.json_response(
-                {"message": redact_text(str(exc))[:240] or "Local diarization install failed."},
-                status=502,
-            )
-
-    async def delete_diarization_component(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        delete_async = getattr(ctl._speaker_diarizer, "delete_async", None)
-        if callable(delete_async):
-            deleted = await delete_async()
-        else:
-            await asyncio.to_thread(ctl._speaker_diarizer.delete)
-            deleted = True
-        if not deleted:
-            return web.json_response(
-                {
-                    "apiVersion": REST_API_VERSION,
-                    "deleted": False,
-                    "message": "Local speaker separation is currently in use.",
-                },
-                status=409,
-            )
-        status_async = getattr(ctl._speaker_diarizer, "status_async", None)
-        status = await status_async() if callable(status_async) else ctl._speaker_diarizer.status()
-        return web.json_response(
-            {
-                "apiVersion": REST_API_VERSION,
-                "deleted": True,
-                "enabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
-                **status,
-            }
-        )
-
     async def frontend_static(request: web.Request):
         if (
             request.path == "/api"
@@ -20393,26 +19382,8 @@ def create_app(controller: ScriberWebController) -> web.Application:
             return web.Response(status=404)
         return web.FileResponse(frontend_file)
 
-    app.router.add_get("/api/health", health)
-    app.router.add_get("/ws", ws_handler)
-
-    app.router.add_get("/api/state", get_state)
-    app.router.add_get("/api/runtime", get_runtime)
-    app.router.add_get("/api/runtime/frontend-ready", get_frontend_ready)
-    app.router.add_post("/api/runtime/frontend-ready", post_frontend_ready)
-    app.router.add_get("/api/runtime/frontend-performance", get_frontend_performance)
-    app.router.add_post("/api/runtime/frontend-performance", post_frontend_performance)
-    app.router.add_post(
-        "/api/runtime/frontend-performance/flush-request",
-        request_frontend_performance_flush,
-    )
-    app.router.add_get("/api/runtime/audio-diagnostics", get_audio_diagnostics)
-    app.router.add_get("/api/runtime/post-processing-diagnostics", get_post_processing_diagnostics)
-    app.router.add_get("/api/runtime/logs", get_runtime_logs)
-    app.router.add_delete("/api/runtime/logs", delete_runtime_logs)
-    app.router.add_post("/api/runtime/shutdown", shutdown_runtime)
-    app.router.add_post("/api/runtime/support-bundle", create_runtime_support_bundle)
-    app.router.add_get("/api/metrics/hot-path", get_hot_path_metrics)
+    register_runtime_routes(app, controller=controller)
+    register_websocket_routes(app, controller=controller)
     if provider_replay.enabled:
         app.router.add_post(
             f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/prepare",
@@ -20439,89 +19410,68 @@ def create_app(controller: ScriberWebController) -> web.Application:
         f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/{{tail:.*}}",
         provider_replay_not_found,
     )
-    app.router.add_post("/api/live-mic/start", start_live)
-    app.router.add_post("/api/live-mic/start-post-processing", start_live_post_processing)
-    app.router.add_post("/api/live-mic/stop", stop_live)
-    app.router.add_post("/api/live-mic/stop-request", request_stop_live)
-    app.router.add_post("/api/live-mic/toggle", toggle_live)
-    app.router.add_post("/api/live-mic/toggle-post-processing", toggle_live_post_processing)
-
-    app.router.add_get("/api/settings", get_settings)
-    app.router.add_put("/api/settings", put_settings)
-    app.router.add_get("/api/local-polishing/models", local_polishing_models)
-    app.router.add_post(
-        "/api/local-polishing/models/{variant}/install",
-        install_local_polishing_model,
+    register_live_mic_routes(
+        app,
+        control=controller,
+        replay=_LiveMicReplayAdapter(
+            pending_activations=pending_provider_replay_activations,
+            activate_replay=activate_provider_replay,
+            state=lambda: controller.get_state(),
+        ),
     )
-    app.router.add_delete(
-        "/api/local-polishing/model-operations/{operationId}",
-        cancel_local_polishing_operation,
-    )
-    app.router.add_delete(
-        "/api/local-polishing/models/{variant}",
-        remove_local_polishing_model,
-    )
-    app.router.add_get("/api/autostart", get_autostart)
-    app.router.add_post("/api/autostart", set_autostart)
-    app.router.add_get("/api/microphones", microphones)
-    app.router.add_post("/api/microphones/refresh", refresh_microphones)
 
-    app.router.add_get("/api/transcripts", transcripts)
-    app.router.add_get("/api/transcripts/{id}", transcript_detail)
-    app.router.add_delete("/api/transcripts/{id}", delete_transcript)
-    app.router.add_post("/api/transcripts/{id}/summarize", summarize_transcript)
-    app.router.add_post("/api/transcripts/{id}/cancel", stop_transcript)
-    app.router.add_get("/api/transcripts/{id}/export/{format}", export_transcript)
+    register_settings_routes(app, controller=controller)
+    register_local_polishing_routes(app, controller=controller)
+    register_device_routes(app, controller=controller)
 
-    app.router.add_get("/api/meetings", list_meetings)
-    app.router.add_get("/api/meetings/capabilities", meeting_capabilities)
-    app.router.add_get("/api/meetings/audio-devices", meeting_audio_devices)
-    app.router.add_post("/api/meetings/device-test", meeting_device_test)
+    register_transcript_routes(
+        app,
+        controller=controller,
+        renderer=_TranscriptDocumentRenderer(),
+    )
+
+    register_meeting_readiness_routes(
+        app,
+        control=controller,
+        max_device_test_duration_ms=_meeting_device_test_max_duration_ms,
+    )
     app.router.add_get("/api/meeting-profiles", meeting_profiles)
-    app.router.add_get("/api/calendar/outlook/status", outlook_status)
-    app.router.add_post("/api/calendar/outlook/connect", outlook_connect)
-    app.router.add_get("/api/calendar/outlook/callback", outlook_callback)
-    app.router.add_post("/api/calendar/outlook/sync", outlook_sync)
-    app.router.add_get("/api/calendar/outlook/events", outlook_events)
-    app.router.add_delete("/api/calendar/outlook", outlook_disconnect)
+    register_outlook_calendar_routes(app, get_calendar=lambda: controller._outlook_calendar)
     app.router.add_post("/api/meetings/hotkey", meeting_hotkey)
     app.router.add_get("/api/meetings/detection", get_meeting_detection)
     app.router.add_post("/api/meetings/detection/dismiss", dismiss_meeting_detection)
-    app.router.add_get("/api/meetings/speaker-profiles", list_speaker_profiles)
-    app.router.add_get("/api/meetings/speaker-profile-preview/{token}", speaker_profile_preview)
-    app.router.add_post("/api/meetings/speaker-profiles/enroll", enroll_speaker_profile)
-    app.router.add_post("/api/meetings/speaker-profiles/merge", merge_speaker_profiles)
-    app.router.add_delete("/api/meetings/speaker-profiles/{profileId}", delete_speaker_profile)
-    app.router.add_patch("/api/meetings/speaker-profiles/{profileId}", patch_speaker_profile)
-    app.router.add_get("/api/meetings/speaker-model", speaker_model_status)
-    app.router.add_post("/api/meetings/speaker-model", download_speaker_model)
-    app.router.add_delete("/api/meetings/speaker-library", delete_speaker_library)
-    app.router.add_get("/api/meetings/diarization-component", diarization_component_status)
-    app.router.add_post("/api/meetings/diarization-component", install_diarization_component)
-    app.router.add_delete("/api/meetings/diarization-component", delete_diarization_component)
-    app.router.add_get("/api/meeting-imports", list_meeting_imports)
-    app.router.add_post("/api/meeting-imports", create_meeting_import)
-    app.router.add_get("/api/meeting-imports/{importId}", get_meeting_import)
-    app.router.add_put("/api/meeting-imports/{importId}/content", upload_meeting_import)
-    app.router.add_delete("/api/meeting-imports/{importId}", cancel_meeting_import)
-    app.router.add_post("/api/meetings/import", import_meeting_file)
-    app.router.add_post("/api/meetings", start_meeting)
-    app.router.add_get("/api/meetings/{id}", meeting_detail)
-    app.router.add_patch("/api/meetings/{id}", patch_meeting)
-    app.router.add_get("/api/meetings/{id}/search", search_meeting_transcript)
-    app.router.add_patch("/api/meetings/{id}/segments/{segmentId}", patch_meeting_segment)
-    app.router.add_post("/api/meetings/{id}/segments/{segmentId}/undo", undo_meeting_segment_edit)
-    app.router.add_get("/api/meetings/{id}/segments/{segmentId}/edits", meeting_segment_edits)
-    app.router.add_post("/api/meetings/{id}/pause", pause_meeting)
-    app.router.add_post("/api/meetings/{id}/resume", resume_meeting)
-    app.router.add_post("/api/meetings/{id}/stop", stop_meeting)
-    app.router.add_post("/api/meetings/{id}/reprocess", reprocess_meeting)
-    app.router.add_post("/api/meetings/{id}/finalize", retry_meeting_finalization)
-    app.router.add_post("/api/meetings/{id}/retry", retry_meeting_finalization)
-    app.router.add_post("/api/meetings/{id}/analyze", analyze_meeting_again)
-    app.router.add_post("/api/meetings/{id}/notes", add_meeting_note)
-    app.router.add_put("/api/meetings/{id}/notes", put_meeting_note)
-    app.router.add_patch("/api/meetings/{id}/action-items/{itemId}", patch_meeting_action_item)
+    register_voice_component_routes(
+        app,
+        voice_library=voice_library_deps,
+        enrollment=lambda: _voice_enrollment_admission(controller),
+        diarizer=lambda: controller._speaker_diarizer,
+        capture_runtime=_VoiceCaptureRuntimeAdapter(),
+    )
+    register_meeting_import_routes(
+        app,
+        deps=meeting_import_deps,
+        record_payload=meeting_import_payload,
+        inbox_payload=meeting_import_inbox_payload,
+    )
+    register_meeting_capture_routes(app, control=controller)
+    register_meeting_processing_routes(app, control=controller)
+    register_meeting_workspace_routes(
+        app,
+        deps=lambda: MeetingWorkspaceDeps(
+            store=controller._meeting_store,
+            broadcast=controller.broadcast,
+        ),
+    )
+    register_meeting_artifact_routes(
+        app,
+        deps=lambda: MeetingArtifactDeps(
+            store=controller._meeting_store,
+            storage_root=data_dir(),
+            renderer=_MeetingArtifactDocumentRenderer(),
+            fallback_language=Config.LANGUAGE,
+        ),
+    )
+    register_meeting_catalog_routes(app, control=controller)
     app.router.add_get("/api/meetings/{id}/chat", meeting_chat_threads)
     app.router.add_post("/api/meetings/{id}/chat", meeting_chat)
     app.router.add_get("/api/meetings/{id}/speaker-assignments", meeting_speaker_assignments)
@@ -20534,285 +19484,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
         "/api/meetings/{id}/speakers/{speakerId}/attendee",
         confirm_meeting_speaker_attendee,
     )
-    app.router.add_post("/api/meetings/{id}/speakers/{speakerId}/split-profile", split_speaker_profile)
     register_meeting_delivery_routes(
         app,
         store=getattr(controller, "_meeting_store", None),
         broadcast=getattr(controller, "broadcast", None),
     )
-    app.router.add_get("/api/meetings/{id}/audio", meeting_audio_mix)
-    app.router.add_get("/api/meetings/{id}/audio/{source}", meeting_audio)
-    app.router.add_get("/api/meetings/{id}/export/{format}", export_meeting)
-    app.router.add_get("/api/meetings/{id}/email-preview", meeting_email_preview)
-    app.router.add_get("/api/meetings/{id}/export-email", export_meeting_email)
-    app.router.add_delete("/api/meetings/{id}", discard_meeting)
-    app.router.add_post("/api/meetings/{id}/discard", discard_meeting)
+    register_youtube_routes(app, controller=controller)
+    register_file_transcription_routes(app, controller=controller)
 
-    app.router.add_get("/api/youtube/search", youtube_search)
-    app.router.add_get("/api/youtube/video", youtube_video)
-    app.router.add_get("/api/youtube/thumbnail", youtube_thumbnail)
-    app.router.add_post("/api/youtube/transcribe", youtube_transcribe)
-    app.router.add_post("/api/file/transcribe", file_transcribe)
-
-    # ==========================================================================
-    # ONNX Local Models API
-    # ==========================================================================
-
-    async def onnx_list_models(request: web.Request):
-        """List available ONNX models with download status."""
-        try:
-
-            def _load_onnx_models() -> dict[str, Any]:
-                from src.onnx_stt import is_onnx_available, list_available_models
-
-                if not is_onnx_available():
-                    return {
-                        "available": False,
-                        "message": "onnx-asr library not installed. Run: pip install onnx-asr[cpu,hub]",
-                        "models": [],
-                    }
-
-                models = list_available_models(quantization=Config.ONNX_QUANTIZATION)
-                return {
-                    "available": True,
-                    "models": models,
-                    "currentModel": Config.ONNX_MODEL,
-                    "quantization": Config.ONNX_QUANTIZATION,
-                }
-
-            payload = await asyncio.to_thread(_load_onnx_models)
-            return web.json_response(payload)
-        except ImportError as e:
-            return web.json_response(
-                {
-                    "available": False,
-                    "message": str(e),
-                    "models": [],
-                }
-            )
-        except Exception as e:
-            logger.exception("Failed to list ONNX models")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_model_status(request: web.Request):
-        """Get status of a specific ONNX model."""
-        model_id = request.match_info.get("model_id", "")
-        if not model_id:
-            return web.json_response({"message": "Missing model ID"}, status=400)
-        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-
-        try:
-
-            def load_status() -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-                from src.onnx_stt import get_model_info, get_model_status
-
-                info = get_model_info(model_id)
-                if not info:
-                    return None, None
-                return info, get_model_status(model_id, quantization=quantization)
-
-            info, status = await asyncio.to_thread(load_status)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-            assert status is not None
-
-            return web.json_response(
-                {
-                    "id": model_id,
-                    "name": info["name"],
-                    "description": info["description"],
-                    "languages": info["languages"],
-                    "runtime": info.get("runtime", "onnx_asr"),
-                    "hfRepo": info.get("hf_repo", ""),
-                    "hfRepoByQuantization": info.get("hf_repo_by_quantization", {}),
-                    "localDirName": info.get("local_dir_name", ""),
-                    "sizeMb": info["size_mb"],
-                    "sizeMbByQuantization": info.get("size_mb_by_quantization", {}),
-                    "supportedQuantizations": info.get("supported_quantizations", ["int8", "fp32"]),
-                    "downloaded": status["downloaded"],
-                    "status": status["status"],
-                    "progress": status["progress"],
-                    "message": status["message"],
-                }
-            )
-        except Exception as e:
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_download_model(request: web.Request):
-        """Download an ONNX model from Hugging Face."""
-        try:
-            body = await request.json()
-        except Exception:
-            body = {}
-
-        model_id = body.get("modelId", "")
-        quantization = body.get("quantization") or Config.ONNX_QUANTIZATION
-        if not model_id:
-            return web.json_response({"message": "Missing modelId"}, status=400)
-
-        try:
-            from src.onnx_stt import download_model, get_model_status
-
-            def download_preflight() -> tuple[dict[str, Any] | None, dict[str, Any] | None, bool]:
-                from src.onnx_stt import get_model_info, is_model_downloading
-
-                info = get_model_info(model_id)
-                if not info:
-                    return None, None, False
-                status = get_model_status(model_id, quantization=quantization)
-                return info, status, is_model_downloading(model_id)
-
-            info, status, downloading = await asyncio.to_thread(download_preflight)
-            if not info:
-                return web.json_response({"message": "Unknown model"}, status=404)
-
-            assert status is not None
-            if status.get("downloaded"):
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model already downloaded",
-                        "modelId": model_id,
-                    }
-                )
-
-            if downloading:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "message": "Download already in progress",
-                        "modelId": model_id,
-                    },
-                    status=409,
-                )
-
-            ctl: ScriberWebController = request.app[APP_CONTROLLER]
-            loop = asyncio.get_running_loop()
-
-            def on_progress(progress: float, message: str) -> None:
-                status_value = "downloading"
-                if progress < 0:
-                    status_value = "error"
-                elif progress >= 100:
-                    status_value = "ready"
-
-                payload = {
-                    "type": "onnx_download_progress",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                    "progress": progress,
-                    "status": status_value,
-                    "message": message,
-                }
-                loop.call_soon_threadsafe(lambda: asyncio.create_task(ctl.broadcast(payload)))
-
-            logger.info(f"Starting ONNX model download: {model_id}")
-            success = await download_model(model_id, quantization=quantization, on_progress=on_progress)
-
-            final_status = await asyncio.to_thread(
-                get_model_status,
-                model_id,
-                quantization=quantization,
-            )
-            await ctl.broadcast(
-                {
-                    "type": "onnx_download_progress",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                    "progress": final_status.get("progress", 0.0),
-                    "status": final_status.get("status", "error" if not success else "ready"),
-                    "message": final_status.get("message", ""),
-                }
-            )
-
-            if success:
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model downloaded successfully",
-                        "modelId": model_id,
-                        "quantization": quantization,
-                    }
-                )
-            return web.json_response(
-                {
-                    "success": False,
-                    "message": "Download failed",
-                    "modelId": model_id,
-                    "quantization": quantization,
-                },
-                status=500,
-            )
-
-        except ValueError as e:
-            return web.json_response({"message": str(e)}, status=400)
-        except Exception as e:
-            logger.exception(f"Failed to download model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
-    async def onnx_delete_model(request: web.Request):
-        """Delete a downloaded ONNX model from cache."""
-        model_id = request.match_info.get("model_id", "")
-        if not model_id:
-            return web.json_response({"message": "Missing model ID"}, status=400)
-        quantization = request.query.get("quantization") or Config.ONNX_QUANTIZATION
-
-        try:
-
-            def delete_local_model() -> tuple[str, bool]:
-                from src.onnx_stt import delete_model, get_model_info, is_model_downloading
-
-                info = get_model_info(model_id)
-                if not info:
-                    return "unknown", False
-                if is_model_downloading(model_id):
-                    return "downloading", False
-                return "deleted", delete_model(model_id, quantization=quantization)
-
-            delete_state, success = await asyncio.to_thread(delete_local_model)
-            if delete_state == "unknown":
-                return web.json_response({"message": "Unknown model"}, status=404)
-            if delete_state == "downloading":
-                return web.json_response(
-                    {"message": "Cannot delete a model while it is downloading"},
-                    status=409,
-                )
-
-            if success:
-                logger.info(f"Deleted ONNX model: {model_id}")
-                await request.app[APP_CONTROLLER].broadcast(
-                    {
-                        "type": "onnx_models_updated",
-                        "modelId": model_id,
-                    }
-                )
-                return web.json_response(
-                    {
-                        "success": True,
-                        "message": "Model deleted",
-                        "modelId": model_id,
-                    }
-                )
-            else:
-                return web.json_response(
-                    {
-                        "success": False,
-                        "message": "Model not found in cache",
-                        "modelId": model_id,
-                    },
-                    status=404,
-                )
-
-        except ValueError as e:
-            return web.json_response({"message": str(e)}, status=400)
-        except Exception as e:
-            logger.exception(f"Failed to delete model {model_id}")
-            return web.json_response({"message": str(e)}, status=500)
-
-    app.router.add_get("/api/onnx/models", onnx_list_models)
-    app.router.add_get("/api/onnx/models/{model_id}", onnx_model_status)
-    app.router.add_post("/api/onnx/download", onnx_download_model)
-    app.router.add_delete("/api/onnx/models/{model_id}", onnx_delete_model)
+    register_onnx_routes(app, controller=controller)
 
     app.router.add_get("/{tail:.*}", frontend_static)
 

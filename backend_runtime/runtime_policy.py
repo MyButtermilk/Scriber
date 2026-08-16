@@ -18,7 +18,7 @@ from backend_runtime.contract import (
     PYTHON_RUNTIME_POLICY_SCHEMA_VERSION,
 )
 
-TARGET_PYTHON_VERSION = "3.14.6"
+TARGET_PYTHON_VERSION = "3.14.7"
 TARGET_CACHE_TAG = "cpython-314"
 RUNTIME_FLAVORS = frozenset({"Official", "ClangPgo", "ClangPgoTail"})
 RUNTIME_VARIANTS = {
@@ -131,7 +131,7 @@ def validate_runtime_policy_payload(
         or actual_version != TARGET_PYTHON_VERSION
         or actual_cache_tag != TARGET_CACHE_TAG
     ):
-        raise RuntimePolicyError("Packaged Python must be exactly CPython 3.14.6.")
+        raise RuntimePolicyError("Packaged Python must be exactly CPython 3.14.7.")
 
     dll = python.get("dll")
     if not isinstance(dll, dict):

@@ -340,7 +340,7 @@ For a simple cloud setup, configure a Gemini API key for Gemini STT and summarie
 ### Requirements
 
 - Windows 10 or newer for the primary desktop runtime
-- Python 3.14.6
+- Python 3.14.7
 - Node.js 26.5.0 and npm
 - Stable Rust toolchain
 - Git
@@ -384,7 +384,7 @@ The NSIS installer is written to:
 Frontend\src-tauri\target\release\bundle\nsis\
 ```
 
-Windows releases use exact CPython 3.14.6. The conservative product default is
+Windows releases use exact CPython 3.14.7. The conservative product default is
 the official runtime with JIT disabled; JIT and custom Clang/PGO/tail-call
 variants remain internal, installed-performance experiments and are not user
 settings. The stock PyInstaller 6.20 frozen interpreter currently ignores
@@ -403,7 +403,7 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
-scripts\project-python.cmd -m mypy src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 ```powershell
@@ -423,6 +423,17 @@ Run the real-browser frontend smoke against its privacy-safe synthetic backend:
 ```powershell
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json
 ```
+
+For the File-ingest vertical slice, run Chrome and the real React/Vite frontend
+against the production `src.web_api.create_app` composition and durable
+`JobStore`:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tmp\real-file-browser-smoke.json
+```
+
+This smoke stops at the durable queued boundary. It does not claim an installed
+Tauri build or an external-provider transcription.
 
 ### Active documentation
 

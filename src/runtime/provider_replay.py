@@ -2098,7 +2098,7 @@ class ProviderReplayRegistry:
             "state": sample.state,
             "expiresInMs": max(
                 0,
-                int(round((sample.expires_at_monotonic - now) * 1000)),
+                round((sample.expires_at_monotonic - now) * 1000),
             ),
             "sessionId": sample.session_id,
             "processGenerationFingerprint": fingerprint,

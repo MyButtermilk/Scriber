@@ -1,6 +1,6 @@
-# Fully resolved Windows CPython 3.14.6 release environment.
+# Fully resolved Windows CPython 3.14.7 release environment.
 # This graph is intentionally aligned with requirements-test-constraints.txt.
-# Regenerate and validate both files together in a clean Windows CPython 3.14.6
+# Regenerate and validate both files together in a clean Windows CPython 3.14.7
 # environment with `python -m pip check`.
 aiofiles==25.1.0
 aiohappyeyeballs==2.7.1

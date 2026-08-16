@@ -253,7 +253,7 @@ def _caption_milliseconds(value: Any, *, allow_zero: bool) -> int | None:
         return None
     if not (milliseconds >= 0.0 and milliseconds < float("inf")):
         return None
-    rounded = int(round(milliseconds))
+    rounded = round(milliseconds)
     if rounded < 0 or (rounded == 0 and not allow_zero):
         return None
     return rounded

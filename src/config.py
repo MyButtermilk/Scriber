@@ -4,6 +4,7 @@ import os
 import threading
 from contextlib import suppress
 from pathlib import Path
+from typing import ClassVar
 from uuid import uuid4
 
 from dotenv import dotenv_values, load_dotenv
@@ -211,12 +212,12 @@ class Config:
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
     DEFAULT_SONIOX_REGION = SONIOX_DEFAULT_REGION
-    _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS = {
+    _LEGACY_DEFAULT_SONIOX_ASYNC_MODELS: ClassVar[set[str]] = {
         "stt-async-preview",
         "stt-async-v3",
         "stt-async-v4",
     }
-    _LEGACY_DEFAULT_SONIOX_RT_MODELS = {"stt-rt-v3", "stt-rt-v4"}
+    _LEGACY_DEFAULT_SONIOX_RT_MODELS: ClassVar[set[str]] = {"stt-rt-v3", "stt-rt-v4"}
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
     DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
@@ -295,7 +296,8 @@ class Config:
     PASTE_PRE_DELAY_MS = _env_int("SCRIBER_PASTE_PRE_DELAY_MS", 80, minimum=0, maximum=5000)
     PASTE_RESTORE_DELAY_MS = _env_int("SCRIBER_PASTE_RESTORE_DELAY_MS", 1500, minimum=0, maximum=60_000)
 
-    SERVICE_API_KEY_MAP = {
+    # Local providers map to None: they need no API key.
+    SERVICE_API_KEY_MAP: ClassVar[dict[str, str | None]] = {
         "soniox": "SONIOX_API_KEY",
         "soniox_async": "SONIOX_API_KEY",
         "gemini_stt": "GOOGLE_API_KEY",
@@ -326,7 +328,7 @@ class Config:
         "onnx_local": None,  # No API key needed for local models
     }
 
-    SERVICE_LABELS = {
+    SERVICE_LABELS: ClassVar[dict[str, str]] = {
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
         "gemini_stt": "Gemini STT",
@@ -395,7 +397,7 @@ class Config:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
     DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b"
-    _LEGACY_DEFAULT_POST_PROCESSING_MODELS = {
+    _LEGACY_DEFAULT_POST_PROCESSING_MODELS: ClassVar[set[str]] = {
         "",
         "gpt-5-nano",
         "google/gemini-2.5-flash-lite:nitro",

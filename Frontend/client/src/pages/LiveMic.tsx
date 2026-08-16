@@ -1163,6 +1163,7 @@ export default function LiveMic() {
                 </p>
                 <div
                   ref={transcriptScrollRef}
+                  data-testid="live-mic-transcript-output"
                   className="relative z-10 max-h-[228px] w-full overflow-y-auto overscroll-contain pr-1"
                   aria-label={!hasActiveSession && finalText ? t("Last saved transcript") : t("Live transcript")}
                 >

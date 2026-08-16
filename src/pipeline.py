@@ -73,6 +73,7 @@ from src.runtime.provider_dependencies import import_provider_runtime_module
 from src.runtime.provider_http import ProviderHttpTransport
 from src.runtime.smart_turn_mel import install_smart_turn_mel_acceleration
 from src.runtime.subprocess_utils import communicate_or_kill_on_cancel, hidden_subprocess_kwargs
+from src.runtime.task_supervisor import AsyncTaskSupervisor
 from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_base_url
 
 _SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
@@ -226,6 +227,7 @@ class _AnalyzerCache:
     _refill_in_progress = False
     _vad_generation = 0
     _smart_turn_generation = 0
+    _cleanup_task_supervisor = AsyncTaskSupervisor(owner="analyzer cache")
 
     @staticmethod
     def _cleanup_unclaimed(analyzer: Any, *, label: str) -> None:
@@ -240,13 +242,30 @@ class _AnalyzerCache:
             cleanup_result = cleanup()
             if inspect.isawaitable(cleanup_result):
                 try:
-                    loop = asyncio.get_running_loop()
+                    asyncio.get_running_loop()
                 except RuntimeError:
                     asyncio.run(cleanup_result)
                 else:
-                    loop.create_task(cleanup_result)
+                    _AnalyzerCache._cleanup_task_supervisor.spawn(
+                        cleanup_result,
+                        name=f"analyzer_cleanup_{label}",
+                    )
         except Exception as exc:
             logger.debug(f"Unused {label} analyzer cleanup failed: {exc}")
+
+    @classmethod
+    async def drain_pending_cleanup_tasks(
+        cls,
+        *,
+        timeout_seconds: float,
+        cancel: bool = False,
+    ) -> int:
+        """Bound shutdown waiting for async cleanup of discarded analyzers."""
+
+        return await cls._cleanup_task_supervisor.drain(
+            timeout_seconds=timeout_seconds,
+            cancel=cancel,
+        )
 
     @classmethod
     def prewarm(
@@ -4975,7 +4994,9 @@ class ScriberPipeline:
                         # Wait for websocket to be ready if it's still connecting
                         if websocket:
                             wait_start = asyncio.get_running_loop().time()
-                            while (
+                            # Polling is intentional: websockets exposes
+                            # connection state as an enum, not an event.
+                            while (  # noqa: ASYNC110
                                 websocket.state not in (State.OPEN, State.CLOSED)
                                 and (asyncio.get_running_loop().time() - wait_start) < 2.0
                             ):
@@ -4989,7 +5010,10 @@ class ScriberPipeline:
                                 try:
                                     # Wait up to 0.5s for audio queue to drain
                                     drain_start = asyncio.get_running_loop().time()
-                                    while (
+                                    # Polling is intentional: the provider
+                                    # owns this queue and join() would wait
+                                    # past the deadline.
+                                    while (  # noqa: ASYNC110
                                         not audio_queue.empty()
                                         and (asyncio.get_running_loop().time() - drain_start) < 0.5
                                     ):

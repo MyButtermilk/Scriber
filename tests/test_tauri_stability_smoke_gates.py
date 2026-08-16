@@ -1842,7 +1842,11 @@ def test_installed_smoke_can_gate_exact_one_minute_wasapi_meeting_soak() -> None
     assert '$installerSmokeArgs += "-VerifyUninstall"' in build
 
     assert "_MEETING_DEVICE_TEST_ABSOLUTE_MAX_DURATION_MS = 60 * 1_000" in backend
-    assert "heartbeat=duration_ms > _MEETING_DEVICE_TEST_DEFAULT_MAX_DURATION_MS" in backend
+    assert re.search(
+        r'owner_kind="device_test",\s+owner_id=.*?\s+heartbeat=True,',
+        backend,
+        re.DOTALL,
+    )
 
 
 def test_installed_smoke_rejects_combined_synthetic_meeting_and_live_mic_evidence() -> None:

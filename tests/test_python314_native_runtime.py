@@ -11,7 +11,7 @@ from scripts.check_backend_runtime_imports import check_python314_native_runtime
 
 pytestmark = pytest.mark.skipif(
     sys.platform != "win32" or sys.version_info[:3] != (3, 14, 6),
-    reason="the shipping native-runtime qualification targets Windows CPython 3.14.6",
+    reason="the shipping native-runtime qualification targets Windows CPython 3.14.7",
 )
 
 

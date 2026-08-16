@@ -2416,6 +2416,10 @@ mod tests {
 
     #[test]
     fn production_wav_lease_is_shell_owned_handed_off_and_released() {
+        // The lease registry is process-global. Keep parallel shutdown tests
+        // from draining it between handoff and the explicit release asserted
+        // below.
+        let _lifecycle_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
         let mut payload = json!({
             "sampleRate": 16000,
             "channels": 1,

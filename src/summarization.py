@@ -402,7 +402,7 @@ def _summary_budget_for_text(
     max_words = _env_int("SCRIBER_SUMMARY_MAX_WORDS", 3200, min_value=min_words, max_value=100_000)
     short_input_max_words = _env_int("SCRIBER_SUMMARY_SHORT_INPUT_MAX_WORDS", 2500, min_value=1, max_value=1_000_000)
     short_min_words = _env_int("SCRIBER_SUMMARY_SHORT_MIN_WORDS", 450, min_value=min_words, max_value=max_words)
-    target_words = int(round(input_words * ratio))
+    target_words = round(input_words * ratio)
     target_words = max(min_words, min(max_words, target_words))
     if input_words <= short_input_max_words:
         target_words = max(target_words, short_min_words)
@@ -421,7 +421,7 @@ def _summary_budget_for_text(
     model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model_key, max_tokens)
     budget_cap = max(min_tokens, min(max_tokens, model_cap))
 
-    requested_tokens = int(math.ceil(target_words * token_multiplier)) + token_overhead
+    requested_tokens = math.ceil(target_words * token_multiplier) + token_overhead
     if input_words <= short_input_max_words:
         requested_tokens = max(requested_tokens, short_min_tokens)
     output_tokens = max(min_tokens, min(budget_cap, requested_tokens))
@@ -527,7 +527,7 @@ def _gemini_retry_output_cap(model: str, initial_max_output_tokens: int) -> int:
 
 def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
     growth = _env_float("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRY_GROWTH", 2.0, min_value=1.1)
-    grown = int(math.ceil(current_tokens * growth))
+    grown = math.ceil(current_tokens * growth)
     return min(retry_cap, max(current_tokens + 512, grown))
 
 
@@ -793,7 +793,7 @@ async def _try_openrouter_summary_fallback(
     except TimeoutError as exc:
         if _is_incomplete_summary_error(primary_error):
             raise primary_error from None
-        timeout_display = max(1, int(round(timeout_seconds)))
+        timeout_display = max(1, round(timeout_seconds))
         raise RuntimeError(
             f"{primary_model} summarization failed and OpenRouter fallback timed out after {timeout_display}s."
         ) from exc
@@ -876,7 +876,7 @@ async def summarize_text(
         if not summary:
             raise RuntimeError(f"{model} returned no displayable structured HTML summary.")
     except TimeoutError as exc:
-        timeout_display = max(1, int(round(timeout_seconds)))
+        timeout_display = max(1, round(timeout_seconds))
         logger.error(
             "Summarization timed out after {}s (model={})",
             timeout_seconds,
@@ -935,7 +935,7 @@ async def summarize_text(
                         if not summary:
                             raise RuntimeError(f"{fallback_model} returned no displayable structured HTML summary.")
                     except TimeoutError as timeout_exc:
-                        timeout_display = max(1, int(round(timeout_seconds)))
+                        timeout_display = max(1, round(timeout_seconds))
                         raise RuntimeError(
                             f"Summarization timed out after {timeout_display}s (fallback model: {fallback_model}). Please try again."
                         ) from timeout_exc
@@ -985,7 +985,7 @@ async def generate_text_with_model(
             )
         ).strip()
     except TimeoutError as exc:
-        timeout_display = max(1, int(round(timeout_seconds)))
+        timeout_display = max(1, round(timeout_seconds))
         timeout_error = RuntimeError(f"Text generation timed out after {timeout_display}s. Please try again.")
         fallback = await _try_openrouter_summary_fallback(
             prompt,
@@ -1460,7 +1460,7 @@ def _openrouter_next_output_budget(
     if isinstance(completion_tokens, int) and completion_tokens > current_tokens:
         current_tokens = completion_tokens
     growth = _env_float("SCRIBER_SUMMARY_OPENROUTER_MAX_TOKENS_RETRY_GROWTH", 2.0, min_value=1.1)
-    grown = int(math.ceil(current_tokens * growth))
+    grown = math.ceil(current_tokens * growth)
     return min(retry_cap, max(current_tokens + minimum_increment, grown))
 
 

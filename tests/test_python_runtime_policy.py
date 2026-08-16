@@ -24,7 +24,7 @@ def _payload(root: Path, *, flavor: str = "Official", jit: bool = False) -> dict
         "schemaVersion": 1,
         "name": "scriber-python-runtime-policy",
         "python": {
-            "version": "3.14.6",
+            "version": "3.14.7",
             "cacheTag": "cpython-314",
             "dll": {
                 "path": "_internal/python314.dll",
@@ -55,7 +55,7 @@ def test_runtime_policy_accepts_exact_official_cp314_with_disabled_jit(tmp_path:
         validate_runtime_policy_payload(
             payload,
             tmp_path,
-            python_version="3.14.6",
+            python_version="3.14.7",
             cache_tag="cpython-314",
             compiler="MSC v.1944 64 bit (AMD64)",
             jit_available=True,
@@ -68,7 +68,7 @@ def test_runtime_policy_accepts_exact_official_cp314_with_disabled_jit(tmp_path:
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda payload: payload["python"].update(version="3.14.5"), "exactly CPython 3.14.6"),
+        (lambda payload: payload["python"].update(version="3.14.5"), "exactly CPython 3.14.7"),
         (lambda payload: payload.update(runtimeFlavor="ClangPgoTail"), "tail-call"),
         (lambda payload: payload["jit"].update(active=True), "JIT state"),
         (lambda payload: payload.update(runtimeLockSha256="bad"), "lock checksum"),
@@ -86,7 +86,7 @@ def test_runtime_policy_rejects_identity_drift(
         validate_runtime_policy_payload(
             payload,
             tmp_path,
-            python_version="3.14.6",
+            python_version="3.14.7",
             cache_tag="cpython-314",
             compiler="MSC v.1944 64 bit (AMD64)",
             jit_available=True,
@@ -104,7 +104,7 @@ def test_supervised_runtime_requires_clean_explicit_environment(tmp_path: Path, 
         validate_runtime_policy_payload(
             payload,
             tmp_path,
-            python_version="3.14.6",
+            python_version="3.14.7",
             cache_tag="cpython-314",
             compiler="MSC v.1944 64 bit (AMD64)",
             jit_available=True,
@@ -120,7 +120,7 @@ def test_supervised_runtime_requires_clean_explicit_environment(tmp_path: Path, 
     validate_runtime_policy_payload(
         payload,
         tmp_path,
-        python_version="3.14.6",
+        python_version="3.14.7",
         cache_tag="cpython-314",
         compiler="MSC v.1944 64 bit (AMD64)",
         jit_available=True,
@@ -132,7 +132,7 @@ def test_supervised_runtime_requires_clean_explicit_environment(tmp_path: Path, 
         validate_runtime_policy_payload(
             payload,
             tmp_path,
-            python_version="3.14.6",
+            python_version="3.14.7",
             cache_tag="cpython-314",
             compiler="MSC v.1944 64 bit (AMD64)",
             jit_available=True,

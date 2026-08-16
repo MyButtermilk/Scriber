@@ -122,7 +122,7 @@ def validate_smoke(payload: dict[str, Any]) -> list[str]:
         errors.append("managerAdoption.prewarmIdHash must be present")
     final_source = payload.get("sourceFinal")
     if not isinstance(final_source, dict):
-        return errors + ["sourceFinal must be an object"]
+        return [*errors, "sourceFinal must be an object"]
     adopted = final_source.get("adoptedPrewarm")
     if not isinstance(adopted, dict) or adopted.get("adopted") is not True:
         errors.append("sourceFinal.adoptedPrewarm.adopted must be true")
@@ -402,7 +402,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 prewarm_id = str((adopted or {}).get("prewarmId") or "")
                 if not prewarm_id:
                     payload["error"] = "RustAudioPrewarmManager did not return prewarmId"
-                    payload["cycles"] = cycles + [cycle]
+                    payload["cycles"] = [*cycles, cycle]
                     payload["ipcCalls"] = adapter.calls
                     return payload
 
@@ -439,7 +439,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 source.start()
                 if not manager.commit_active_capture(prewarm_id):
                     payload["error"] = "RustAudioPrewarmManager could not commit the adopted prewarm lease"
-                    payload["cycles"] = cycles + [cycle]
+                    payload["cycles"] = [*cycles, cycle]
                     payload["ipcCalls"] = adapter.calls
                     return payload
                 cycle["sourceStarted"] = source.diagnostic_snapshot()

@@ -54,6 +54,8 @@ def _write_complete_matrix(root: Path) -> list[Path]:
         payload["checks"].update(
             microphoneSourceActive=True,
             systemSourceActive=True,
+            conferenceMicrophoneRemainsActive=True,
+            conferenceCameraRemainsActive=True,
             canonicalSegmentsChronological=True,
             canonicalSegmentsClickable=True,
             canonicalSegmentsAudioAligned=True,
@@ -140,6 +142,22 @@ def test_scenario_thresholds_are_enforced(tmp_path: Path) -> None:
     assert any("captureStartLatencyMs" in failure for failure in failures)
     assert any("liveInterimP95Ms" in failure for failure in failures)
     assert any("aecEchoReductionDb" in failure for failure in failures)
+
+
+def test_meeting_app_profile_requires_microphone_and_camera_coexistence(tmp_path: Path) -> None:
+    paths = _write_complete_matrix(tmp_path)
+    target = next(path for path in paths if "teams-laptop-speakerphone" in path.name)
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    payload["checks"]["conferenceMicrophoneRemainsActive"] = False
+    payload["checks"].pop("conferenceCameraRemainsActive")
+    target.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = validate_matrix(input_dir=tmp_path)
+    failures = next(item["failures"] for item in result["reports"] if item["path"] == str(target))
+
+    assert result["ok"] is False
+    assert any("conferenceMicrophoneRemainsActive" in failure for failure in failures)
+    assert any("conferenceCameraRemainsActive" in failure for failure in failures)
 
 
 def test_tampered_artifact_and_sensitive_content_are_rejected(tmp_path: Path) -> None:

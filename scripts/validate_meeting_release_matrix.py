@@ -347,6 +347,8 @@ def _validate_scenario_requirements(payload: dict[str, Any], coverage: dict[str,
         _require_max(measurements, "captureStartLatencyMs", 3000, failures)
         _require_true(checks, "microphoneSourceActive", failures)
         _require_true(checks, "systemSourceActive", failures)
+        _require_true(checks, "conferenceMicrophoneRemainsActive", failures)
+        _require_true(checks, "conferenceCameraRemainsActive", failures)
         _require_max(measurements, "liveInterimP95Ms", 2000, failures)
         _require_true(checks, "canonicalSegmentsChronological", failures)
         _require_true(checks, "canonicalSegmentsClickable", failures)

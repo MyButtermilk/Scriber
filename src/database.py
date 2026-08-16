@@ -326,6 +326,72 @@ def save_transcript(record: Any) -> None:
         raise
 
 
+def save_transcript_terminal_transition(record: Any) -> bool:
+    """CAS a complete active parent into one terminal state.
+
+    A terminal winner is authoritative: an idempotent same-status call succeeds
+    without rewriting it, while a conflicting winner or missing parent fails.
+    Storage errors propagate.
+    """
+
+    data = dict(record) if isinstance(record, dict) else record.to_public(include_content=True)
+    status = str(data.get("status", "")).strip().lower()
+    if status not in {"completed", "failed", "stopped"}:
+        raise ValueError("terminal transcript transition requires a terminal status")
+    transcript_id = str(data.get("id", "") or "")
+    if not transcript_id:
+        raise ValueError("terminal transcript transition requires an id")
+    preview = data.get("preview", "") or _compute_preview(data.get("content", ""))
+    summary = str(data.get("summary", "") or "")
+    summary_format = str(data.get("summaryFormat", "") or "").strip().lower()
+    if summary_format not in {"html", "markdown"}:
+        summary_format = "markdown"
+    with _get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE transcripts
+            SET title = ?, date = ?, duration = ?, status = ?, type = ?,
+                language = ?, step = ?, source_url = ?, channel = ?,
+                thumbnail_url = ?, content = ?, preview = ?, created_at = ?,
+                updated_at = ?, summary = ?, summary_format = ?,
+                summary_status = ?, summary_error = ?, summary_updated_at = ?
+            WHERE id = ? AND status = 'processing'
+            """,
+            (
+                data.get("title", ""),
+                data.get("date", ""),
+                data.get("duration", ""),
+                status,
+                data.get("type", ""),
+                data.get("language", ""),
+                data.get("step", ""),
+                data.get("sourceUrl", ""),
+                data.get("channel", ""),
+                data.get("thumbnailUrl", ""),
+                data.get("content", ""),
+                preview,
+                data.get("createdAt", datetime.now().isoformat()),
+                data.get("updatedAt", datetime.now().isoformat()),
+                summary,
+                summary_format,
+                data.get("summaryStatus", "completed" if summary else "idle"),
+                data.get("summaryError", ""),
+                data.get("summaryUpdatedAt", ""),
+                transcript_id,
+            ),
+        )
+        if int(cursor.rowcount or 0) == 1:
+            _sync_fts_row(conn, transcript_id)
+            conn.commit()
+            return True
+        row = conn.execute(
+            "SELECT status FROM transcripts WHERE id = ?",
+            (transcript_id,),
+        ).fetchone()
+        conn.rollback()
+        return bool(row is not None and str(row["status"]).strip().lower() == status)
+
+
 def load_all_transcripts() -> list[dict]:
     """Load all transcripts from database, newest first."""
     try:
@@ -558,6 +624,16 @@ def transcript_exists(transcript_id: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to check transcript existence: {e}")
         return False
+
+
+def transcript_exists_or_raise(transcript_id: str) -> bool:
+    """Check exact parent existence without collapsing storage failure into absence."""
+    with _get_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM transcripts WHERE id = ? LIMIT 1",
+            (transcript_id,),
+        ).fetchone()
+        return row is not None
 
 
 def existing_transcript_ids(transcript_ids: list[str]) -> set[str]:

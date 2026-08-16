@@ -323,8 +323,8 @@ export function WebSocketProvider({
         scheduleReconnect();
       };
 
-      ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
+      ws.onerror = () => {
+        console.debug("WebSocket transport error; automatic reconnect is pending.");
       };
 
       wsRef.current = ws;

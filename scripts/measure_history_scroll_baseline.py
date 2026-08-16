@@ -520,7 +520,7 @@ async def run_scenario(
     request_log = list(backend.request_log)
     returned_items = sum(int(entry["returned"]) for entry in request_log)
     offsets = [int(entry["offset"]) for entry in request_log]
-    max_visible_cards = int(round(float(scroll.get("maxVisibleCards") or 0)))
+    max_visible_cards = round(float(scroll.get("maxVisibleCards") or 0))
     ok = (
         bool(scroll.get("virtualized"))
         and max_visible_cards < args.items
@@ -537,7 +537,7 @@ async def run_scenario(
         "frameCount": int(scroll.get("frameCount") or 0),
         "longFrameCount": int(scroll.get("longFrameCount") or 0),
         "maxFrameGapMs": round(float(scroll.get("maxFrameGapMs") or 0), 3),
-        "visibleCards": int(round(float(scroll.get("visibleCards") or 0))),
+        "visibleCards": round(float(scroll.get("visibleCards") or 0)),
         "maxVisibleCards": max_visible_cards,
         "meanVisibleCards": round(float(scroll.get("meanVisibleCards") or 0), 3),
         "scrollY": round(float(scroll.get("scrollY") or 0), 3),

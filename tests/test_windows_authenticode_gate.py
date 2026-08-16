@@ -172,7 +172,7 @@ def test_release_cache_publisher_preserves_and_verifies_hidden_files(tmp_path: P
         encoding="utf-8",
     )
 
-    asset_name = "scriber-python-venv-Windows-3.14.6-test.zip"
+    asset_name = "scriber-python-venv-Windows-3.14.7-test.zip"
     captured_archive = tmp_path / asset_name
     github_output = tmp_path / "github-output.txt"
     result = run_powershell(

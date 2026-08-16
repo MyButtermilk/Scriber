@@ -4,8 +4,33 @@ line-length = 120
 unsafe-fixes = false
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "SIM"]
-ignore = ["E501"]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "ASYNC", "RUF"]
+ignore = [
+    "E501",
+    # ASYNC109 encodes a Trio convention: accept a deadline instead of a
+    # timeout argument. asyncio has no equivalent cancel scope, and `timeout=`
+    # is the idiomatic signature across every provider client here.
+    "ASYNC109",
+    # ASYNC230/ASYNC240 flag blocking filesystem calls inside async functions.
+    # Most hand an open file object to aiohttp for streaming upload, so the
+    # cost is in the subsequent reads rather than the call ruff points at.
+    # Reworking them needs latency measurements on real meeting-length audio
+    # first; keeping them off lets the rest of the gate land now.
+    "ASYNC230",
+    "ASYNC240",
+    # RUF001 flags typographic characters (’, ⁃) that are deliberate in the
+    # localized export and summary templates.
+    "RUF001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests and one-shot scripts poll for state on purpose: there is no shared
+# asyncio.Event to await when the thing under observation is a subprocess, a
+# browser, or the module being tested. RUF043 patterns are regexes by intent,
+# and the remaining codes are style rules that do not earn their keep in test
+# doubles and fixtures.
+"tests/**" = ["ASYNC110", "RUF043", "RUF005", "RUF007", "RUF012", "RUF015", "RUF059"]
+"scripts/**" = ["ASYNC110"]
 
 [tool.mypy]
 python_version = "3.14"
@@ -14,7 +39,7 @@ follow_imports = "silent"
 show_error_codes = true
 warn_unused_ignores = true
 warn_redundant_casts = true
-files = ["src/core", "src/runtime", "src/data"]
+files = ["src/api", "src/core", "src/runtime", "src/data"]
 
 [[tool.mypy.overrides]]
 # onnxruntime does not publish a py.typed marker; SmartTurn still validates its

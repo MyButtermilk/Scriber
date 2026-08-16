@@ -2,10 +2,10 @@
   "lockContract": "ScriberCPythonWindowsRuntimeInputLockV1",
   "schemaVersion": 1,
   "target": {
-    "pythonVersion": "3.14.6",
+    "pythonVersion": "3.14.7",
     "cacheTag": "cpython-314",
     "architecture": "win_amd64",
-    "cpythonTag": "v3.14.6"
+    "cpythonTag": "v3.14.7"
   },
   "officialRuntimes": {
     "A13": {
@@ -19,39 +19,39 @@
       }
     },
     "O": {
-      "version": "3.14.6",
+      "version": "3.14.7",
       "cacheTag": "cpython-314",
       "installer": {
-        "fileName": "python-3.14.6-amd64.exe",
-        "url": "https://www.python.org/ftp/python/3.14.6/python-3.14.6-amd64.exe",
-        "sizeBytes": 30774112,
-        "sha256": "14b3e9a710a3fcf0bd9b55ab6b60412bd91227563f813fc49040cabc0209e0bd"
+        "fileName": "python-3.14.7-amd64.exe",
+        "url": "https://www.python.org/ftp/python/3.14.7/python-3.14.7-amd64.exe",
+        "sizeBytes": 33258168,
+        "sha256": "9d9eb2709ef81bf5cd30db3c2096bdbc4ea10087c22e62f27d356b36f6ae9649"
       },
       "lockedInstalledFiles": [
         {
           "relativePath": "python.exe",
           "sizeBytes": 106208,
-          "sha256": "03168c01b7b7491423350e82c26fee71f35b43694d1319d3c668bda6903a0c38"
+          "sha256": "4942b86a6597e5aee0128daa00050ed79bc21f6e709a78eb19cbfeb0c2f39ac9"
         },
         {
           "relativePath": "python3.dll",
           "sizeBytes": 73952,
-          "sha256": "22c6e46d8bd563cdb072650901461ef68be2ea6cb1e80af859559d9395a27e39"
+          "sha256": "6c45910e7c82617ca6360820de861699cc99f9efee434df290aa4c6e38f39886"
         },
         {
           "relativePath": "python314.dll",
-          "sizeBytes": 6778592,
-          "sha256": "fde89cdb5c2d08ae65de7ef4abca1876c93ba3796002f5ac0bf7e4d4f5a94da0"
+          "sizeBytes": 6785760,
+          "sha256": "0f9857ffdfe010fe6b99328d58c2e3c7472ce75f336bf9c2ad9bd5bca3bce700"
         }
       ]
     }
   },
   "customBuildInputs": {
     "source": {
-      "fileName": "Python-3.14.6.tar.xz",
-      "url": "https://www.python.org/ftp/python/3.14.6/Python-3.14.6.tar.xz",
-      "sizeBytes": 23921184,
-      "sha256": "143b1dddefaec3bd2e21e3b839b34a2b7fb9842272883c576420d605e9f30c63"
+      "fileName": "Python-3.14.7.tar.xz",
+      "url": "https://www.python.org/ftp/python/3.14.7/Python-3.14.7.tar.xz",
+      "sizeBytes": 24053924,
+      "sha256": "3b48dac8fb59f62eaa67ac83c1eb12bda1b7a08406dd286e252c11a66be27f81"
     },
     "llvm": {
       "version": "19.1.7",
@@ -85,23 +85,23 @@
       "servicingVersion": "10.0.26100.6584"
     },
     "hostPython": {
-      "version": "3.14.6",
+      "version": "3.14.7",
       "cacheTag": "cpython-314",
       "files": [
         {
           "relativePath": "python.exe",
           "sizeBytes": 106208,
-          "sha256": "03168c01b7b7491423350e82c26fee71f35b43694d1319d3c668bda6903a0c38"
+          "sha256": "4942b86a6597e5aee0128daa00050ed79bc21f6e709a78eb19cbfeb0c2f39ac9"
         },
         {
           "relativePath": "python3.dll",
           "sizeBytes": 73952,
-          "sha256": "22c6e46d8bd563cdb072650901461ef68be2ea6cb1e80af859559d9395a27e39"
+          "sha256": "6c45910e7c82617ca6360820de861699cc99f9efee434df290aa4c6e38f39886"
         },
         {
           "relativePath": "python314.dll",
-          "sizeBytes": 6778592,
-          "sha256": "fde89cdb5c2d08ae65de7ef4abca1876c93ba3796002f5ac0bf7e4d4f5a94da0"
+          "sizeBytes": 6785760,
+          "sha256": "0f9857ffdfe010fe6b99328d58c2e3c7472ce75f336bf9c2ad9bd5bca3bce700"
         }
       ]
     },
@@ -171,49 +171,49 @@
       "releaseCandidate": false
     },
     "O0": {
-      "family": "official-3.14.6",
+      "family": "official-3.14.7",
       "runtimeFlavor": "Official",
       "jit": false,
       "tailCallInterpreter": false,
       "releaseCandidate": true
     },
     "O1": {
-      "family": "official-3.14.6",
+      "family": "official-3.14.7",
       "runtimeFlavor": "Official",
       "jit": true,
       "tailCallInterpreter": false,
       "releaseCandidate": true
     },
     "C0": {
-      "family": "clang-pgo-3.14.6",
+      "family": "clang-pgo-3.14.7",
       "runtimeFlavor": "ClangPgo",
       "jit": false,
       "tailCallInterpreter": false,
       "releaseCandidate": true
     },
     "C1": {
-      "family": "clang-pgo-3.14.6",
+      "family": "clang-pgo-3.14.7",
       "runtimeFlavor": "ClangPgo",
       "jit": true,
       "tailCallInterpreter": false,
       "releaseCandidate": true
     },
     "T0": {
-      "family": "clang-pgo-tail-3.14.6",
+      "family": "clang-pgo-tail-3.14.7",
       "runtimeFlavor": "ClangPgoTail",
       "jit": false,
       "tailCallInterpreter": true,
       "releaseCandidate": true
     },
     "T1": {
-      "family": "clang-pgo-tail-3.14.6",
+      "family": "clang-pgo-tail-3.14.7",
       "runtimeFlavor": "ClangPgoTail",
       "jit": true,
       "tailCallInterpreter": true,
       "releaseCandidate": true
     },
     "K0": {
-      "family": "clang-calibration-3.14.6",
+      "family": "clang-calibration-3.14.7",
       "runtimeFlavor": "ClangCalibration",
       "jit": false,
       "tailCallInterpreter": false,

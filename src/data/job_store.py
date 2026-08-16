@@ -184,6 +184,7 @@ class JobRecord:
     provider_request_attempt: int = 0
     next_retry_at: str = ""
     last_error: str = ""
+    terminal_projection_pending: bool = False
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -211,6 +212,7 @@ class JobRecord:
             provider_request_attempt=int(row["provider_request_attempt"] or 0),
             next_retry_at=row["next_retry_at"] or "",
             last_error=row["last_error"] or "",
+            terminal_projection_pending=bool(row["terminal_projection_pending"]),
             created_at=row["created_at"] or "",
             updated_at=row["updated_at"] or "",
         )
@@ -288,6 +290,7 @@ class JobStore:
                         provider_request_attempt INTEGER NOT NULL DEFAULT 0,
                         next_retry_at TEXT DEFAULT '',
                         last_error TEXT DEFAULT '',
+                        terminal_projection_pending INTEGER NOT NULL DEFAULT 0,
                         created_at TEXT NOT NULL,
                         updated_at TEXT NOT NULL
                     )
@@ -308,10 +311,13 @@ class JobStore:
             columns = {str(row["name"]) for row in conn.execute("PRAGMA table_info(jobs)").fetchall()}
             provider_state_added = "provider_request_state" not in columns
             provider_attempt_added = "provider_request_attempt" not in columns
+            terminal_projection_added = "terminal_projection_pending" not in columns
             if provider_state_added:
                 conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_state TEXT NOT NULL DEFAULT 'not_started'")
             if provider_attempt_added:
                 conn.execute("ALTER TABLE jobs ADD COLUMN provider_request_attempt INTEGER NOT NULL DEFAULT 0")
+            if terminal_projection_added:
+                conn.execute("ALTER TABLE jobs ADD COLUMN terminal_projection_pending INTEGER NOT NULL DEFAULT 0")
             if provider_state_added or provider_attempt_added:
                 # A pre-migration RUNNING row may already have crossed a
                 # billable remote boundary.  There is no durable evidence
@@ -351,10 +357,32 @@ class JobStore:
                         JobStatus.QUEUED.value,
                     ),
                 )
+            if terminal_projection_added:
+                # Legacy terminal rows have no durable proof that their parent
+                # and owned source were settled. Reconcile every exact row only
+                # after the provider migration has terminalized ambiguous rows.
+                conn.execute(
+                    """
+                        UPDATE jobs
+                        SET terminal_projection_pending = 1
+                        WHERE status IN (?, ?, ?)
+                        """,
+                    (
+                        JobStatus.COMPLETED.value,
+                        JobStatus.FAILED.value,
+                        JobStatus.CANCELED.value,
+                    ),
+                )
             conn.execute(
                 """
                     CREATE INDEX IF NOT EXISTS idx_jobs_status_next_retry_at
                     ON jobs(status, next_retry_at)
+                    """
+            )
+            conn.execute(
+                """
+                    CREATE INDEX IF NOT EXISTS idx_jobs_terminal_projection_pending
+                    ON jobs(terminal_projection_pending, created_at, id)
                     """
             )
             # Older builds could persist offset-aware retry timestamps. Normalize
@@ -602,6 +630,17 @@ class JobStore:
             conn.commit()
             return max(0, int(cursor.rowcount or 0))
 
+    def delete_exact(self, job_id: str, *, expected_transcript_id: str) -> bool:
+        """Delete one exact lifecycle row without widening ownership."""
+
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM jobs WHERE id = ? AND transcript_id = ?",
+                (job_id, expected_transcript_id),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
+
     def list_pending(self, *, limit: int = 100) -> list[JobRecord]:
         now = _now_iso()
         query_limit = max(1, int(limit))
@@ -615,6 +654,45 @@ class JobStore:
                 LIMIT ?
                 """,
                 (JobStatus.QUEUED.value, now, query_limit),
+            ).fetchall()
+        return [JobRecord.from_row(row) for row in rows]
+
+    def list_terminal_projection_pending(
+        self,
+        *,
+        limit: int = 100,
+        after_created_at: str = "",
+        after_id: str = "",
+    ) -> list[JobRecord]:
+        """List terminal rows whose parent/source settlement is not durable."""
+
+        query_limit = max(1, int(limit))
+        terminal_statuses = (
+            JobStatus.COMPLETED.value,
+            JobStatus.FAILED.value,
+            JobStatus.CANCELED.value,
+        )
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM jobs
+                WHERE terminal_projection_pending = 1
+                  AND status IN (?, ?, ?)
+                  AND (
+                    ? = '' OR created_at > ?
+                    OR (created_at = ? AND id > ?)
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (
+                    *terminal_statuses,
+                    after_created_at,
+                    after_created_at,
+                    after_created_at,
+                    after_id,
+                    query_limit,
+                ),
             ).fetchall()
         return [JobRecord.from_row(row) for row in rows]
 
@@ -993,6 +1071,7 @@ class JobStore:
             # preventing a late worker callback from overwriting a terminal
             # cancellation or failure.
             expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.COMPLETED),
+            arm_terminal_projection=True,
         )
 
     def mark_canceled(self, job_id: str, *, last_error: str = "") -> bool:
@@ -1003,6 +1082,7 @@ class JobStore:
             next_retry_at="",
             last_error=last_error,
             expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELED),
+            arm_terminal_projection=True,
         )
 
     def mark_failed(self, job_id: str, *, last_error: str) -> bool:
@@ -1013,7 +1093,91 @@ class JobStore:
             next_retry_at="",
             last_error=last_error,
             expected_statuses=(JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.FAILED),
+            arm_terminal_projection=True,
         )
+
+    def clear_terminal_projection_pending(
+        self,
+        job_id: str,
+        *,
+        expected_status: JobStatus,
+    ) -> bool:
+        """Acknowledge complete parent/source settlement for one terminal row."""
+
+        if expected_status not in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELED,
+        }:
+            raise ValueError("terminal projection can only be cleared for a terminal job")
+        now = _now_iso()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                    UPDATE jobs
+                    SET terminal_projection_pending = 0, updated_at = ?
+                    WHERE id = ? AND status = ? AND terminal_projection_pending = 1
+                    """,
+                (now, job_id, expected_status.value),
+            )
+            if int(cursor.rowcount or 0) == 1:
+                conn.commit()
+                return True
+            row = conn.execute(
+                "SELECT status, terminal_projection_pending FROM jobs WHERE id = ?",
+                (job_id,),
+            ).fetchone()
+            conn.rollback()
+        return bool(
+            row is not None
+            and str(row["status"]) == expected_status.value
+            and not bool(row["terminal_projection_pending"])
+        )
+
+    def mark_terminal_projection_pending(
+        self,
+        job_id: str,
+        *,
+        status: JobStatus,
+        last_error: str = "",
+    ) -> bool:
+        """Persist a reconstructable terminal intent or align a pending one."""
+
+        if status not in {
+            JobStatus.COMPLETED,
+            JobStatus.FAILED,
+            JobStatus.CANCELED,
+        }:
+            raise ValueError("terminal projection intent requires a terminal status")
+        now = _now_iso()
+        with self._lock, self._connect() as conn:
+            cursor = conn.execute(
+                """
+                    UPDATE jobs
+                    SET status = ?, updated_at = ?, next_retry_at = '',
+                        last_error = ?, terminal_projection_pending = 1
+                    WHERE id = ? AND (
+                        status IN (?, ?)
+                        OR (
+                            terminal_projection_pending = 1
+                            AND status IN (?, ?, ?)
+                        )
+                    )
+                    """,
+                (
+                    status.value,
+                    now,
+                    last_error,
+                    job_id,
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.COMPLETED.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELED.value,
+                ),
+            )
+            conn.commit()
+            return int(cursor.rowcount or 0) == 1
 
     def set_retry(self, job_id: str, *, retry_at: str, last_error: str = "") -> bool:
         normalized_retry_at = _normalize_retry_iso(retry_at)
@@ -1055,6 +1219,7 @@ class JobStore:
         last_error: str | None = None,
         extra_sql: str = "",
         expected_statuses: tuple[JobStatus, ...] = (),
+        arm_terminal_projection: bool = False,
     ) -> bool:
         set_parts = ["status = ?", "updated_at = ?"]
         params: list[Any] = [status.value, updated_at]
@@ -1064,6 +1229,13 @@ class JobStore:
         if last_error is not None:
             set_parts.append("last_error = ?")
             params.append(last_error)
+        if arm_terminal_projection:
+            # Evaluate against the old status. Repeating an idempotent terminal
+            # write must never re-arm a projection that was already settled.
+            set_parts.append(
+                "terminal_projection_pending = CASE WHEN status IN (?, ?) THEN 1 ELSE terminal_projection_pending END"
+            )
+            params.extend((JobStatus.QUEUED.value, JobStatus.RUNNING.value))
         sql = f"UPDATE jobs SET {', '.join(set_parts)}{extra_sql} WHERE id = ?"
         params.append(job_id)
         if expected_statuses:

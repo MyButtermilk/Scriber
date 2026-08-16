@@ -230,6 +230,73 @@ def test_job_store_terminal_transitions_are_idempotent_but_not_overwritable(tmp_
     assert store.get(direct.id).status == JobStatus.COMPLETED
 
 
+def test_job_store_terminal_projection_flag_is_atomic_and_not_rearmed(tmp_path):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    job = store.enqueue(
+        transcript_id="tx-terminal-projection",
+        job_type=JobType.YOUTUBE,
+        payload={"url": "https://example.com"},
+    )
+
+    assert store.mark_canceled(job.id, last_error="stopped")
+    pending = store.get(job.id)
+    assert pending is not None
+    assert pending.terminal_projection_pending is True
+    assert [item.id for item in store.list_terminal_projection_pending()] == [job.id]
+
+    assert (
+        store.clear_terminal_projection_pending(
+            job.id,
+            expected_status=JobStatus.COMPLETED,
+        )
+        is False
+    )
+    assert (
+        store.clear_terminal_projection_pending(
+            job.id,
+            expected_status=JobStatus.CANCELED,
+        )
+        is True
+    )
+    assert store.get(job.id).terminal_projection_pending is False
+
+    assert store.mark_canceled(job.id, last_error="stopped")
+    assert store.get(job.id).terminal_projection_pending is False
+    assert store.list_terminal_projection_pending() == []
+
+    # A settled terminal row is immutable, while an unsettled terminal row
+    # may be aligned to the authoritative parent winner.
+    assert (
+        store.mark_terminal_projection_pending(
+            job.id,
+            status=JobStatus.FAILED,
+            last_error="late failure",
+        )
+        is False
+    )
+    settled = store.get(job.id)
+    assert settled is not None
+    assert settled.status == JobStatus.CANCELED
+    assert settled.terminal_projection_pending is False
+
+    conflict = store.enqueue(
+        transcript_id="tx-terminal-conflict",
+        job_type=JobType.YOUTUBE,
+        payload={"url": "https://example.com/conflict"},
+    )
+    assert store.mark_canceled(conflict.id, last_error="stopped")
+    assert store.mark_terminal_projection_pending(
+        conflict.id,
+        status=JobStatus.FAILED,
+        last_error="parent failed",
+    )
+    aligned = store.get(conflict.id)
+    assert aligned is not None
+    assert aligned.status == JobStatus.FAILED
+    assert aligned.last_error == "parent failed"
+    assert aligned.terminal_projection_pending is True
+
+
 def test_job_store_reuses_thread_local_connection(tmp_path):
     store = JobStore(db_path=tmp_path / "jobs.db")
 
@@ -381,6 +448,21 @@ def test_job_store_migrates_legacy_running_job_to_unknown_outcome(tmp_path):
         conn.execute(
             "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
+                "legacy-canceled",
+                "tx-legacy-canceled",
+                JobType.YOUTUBE.value,
+                JobStatus.CANCELED.value,
+                '{"url":"https://example.com/legacy"}',
+                0,
+                "",
+                "Stopped by user",
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
                 "legacy-queued-retry",
                 "tx-legacy-queued-retry",
                 JobType.FILE.value,
@@ -399,6 +481,7 @@ def test_job_store_migrates_legacy_running_job_to_unknown_outcome(tmp_path):
     assert migrated is not None
     assert migrated.provider_request_state == PROVIDER_REQUEST_MAY_BE_COMMITTED
     assert migrated.provider_request_attempt == migrated.attempts == 1
+    assert migrated.terminal_projection_pending is False
     assert store.reset_running_to_queued() == 0
     assert store.get("legacy-running").status == JobStatus.RUNNING
     legacy_retry = store.get("legacy-queued-retry")
@@ -406,7 +489,14 @@ def test_job_store_migrates_legacy_running_job_to_unknown_outcome(tmp_path):
     assert legacy_retry.status == JobStatus.FAILED
     assert legacy_retry.provider_request_state == PROVIDER_REQUEST_MAY_BE_COMMITTED
     assert legacy_retry.provider_request_attempt == legacy_retry.attempts == 2
+    assert legacy_retry.terminal_projection_pending is True
     assert "automatic replay was disabled" in legacy_retry.last_error
+    legacy_canceled = store.get("legacy-canceled")
+    assert legacy_canceled is not None
+    assert legacy_canceled.status == JobStatus.CANCELED
+    assert legacy_canceled.terminal_projection_pending is True
+    columns = {str(row["name"]) for row in store._connect().execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "terminal_projection_pending" in columns
 
 
 def test_job_store_proven_pre_body_failure_can_retry(tmp_path):

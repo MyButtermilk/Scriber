@@ -2654,6 +2654,43 @@ def test_meeting_local_speaker_name_does_not_rename_voice_profile(store: Meeting
     assert profile["displayName"] == "Ada Lovelace"
 
 
+def test_meeting_speaker_rename_does_not_mutate_a_saved_profile_after_voice_opt_out(store: MeetingStore):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "opted-out-meeting-rename",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "startMs": 0,
+                "endMs": 1_000,
+                "text": "Hello",
+                "speakerLabel": "Speaker 3",
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    registered = store.register_speaker_embedding(
+        meeting["id"],
+        speaker["id"],
+        "opted-out-meeting-rename",
+        [1.0] + [0.0] * 255,
+    )
+    store.rename_speaker_profile(registered["profileId"], "Ada Lovelace")
+    store.set_speaker_library_enabled(False)
+
+    assert store.rename_speaker(meeting["id"], speaker["id"], "Meeting alias") == 1
+
+    detail = store.detail(meeting["id"])
+    assert detail["speakers"][0]["displayName"] == "Meeting alias"
+    assert detail["segments"][0]["speakerLabel"] == "Meeting alias"
+    profile = next(item for item in store.speaker_profiles() if item["id"] == registered["profileId"])
+    assert profile["displayName"] == "Ada Lovelace"
+    assert profile["isNamed"] is True
+
+
 def test_audio_retention_removes_only_audio_records(store: MeetingStore):
     meeting = store.create(create_request(audio_retention_days=1))
     store.add_segments(
@@ -3049,6 +3086,25 @@ def test_speaker_profile_keeps_one_private_playable_reference_clip(store: Meetin
         assert reader.getnframes() == 64_000
 
     assert store.delete_speaker_profile(profile["id"]) is True
+    assert store.speaker_profile_preview(profile["id"]) is None
+
+
+def test_disabled_voice_library_cannot_backfill_a_speaker_preview(store: MeetingStore):
+    profile = store.enroll_speaker_profile("Ada Lovelace", [1.0] + [0.0] * 255)
+    audio, duration_ms = voice_reference_wav(
+        b"\0\0" * (4 * 16_000),
+        sample_rate=16_000,
+    )
+    store.set_speaker_library_enabled(False)
+
+    with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+        store.save_speaker_profile_preview(
+            profile["id"],
+            audio,
+            duration_ms=duration_ms,
+            source="system",
+        )
+
     assert store.speaker_profile_preview(profile["id"]) is None
 
 
@@ -3552,8 +3608,17 @@ def test_deleted_voice_library_blocks_late_finalizer_registration_until_reenable
         ],
     )
     speaker = store.detail(meeting["id"])["speakers"][0]
+    linked = store.register_speaker_embedding(
+        meeting["id"],
+        speaker["id"],
+        "late-finalizer-segment",
+        [1.0] + [0.0] * 255,
+    )
+    assert linked["profileId"]
     store.delete_all_speaker_profiles()
     assert store.speaker_profile_preview(existing["id"]) is None
+    with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+        store.split_speaker_profile(meeting["id"], speaker["id"])
 
     skipped = store.register_speaker_embedding(
         meeting["id"],
@@ -3570,3 +3635,203 @@ def test_deleted_voice_library_blocks_late_finalizer_registration_until_reenable
     store.set_speaker_library_enabled(True)
     profile = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
     assert profile["displayName"] == "Alice"
+
+
+def test_cross_process_voice_library_opt_out_wins_against_a_merge_before_its_write(
+    store: MeetingStore,
+    monkeypatch,
+):
+    target = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+    source = store.enroll_speaker_profile("Alicia", [0.0, 1.0] + [0.0] * 254)
+    merge_before_write = Event()
+    allow_merge_write = Event()
+    original_get_connection = database._get_connection
+
+    class PausingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, parameters=()):
+            normalized = " ".join(str(sql).upper().split())
+            # Old code reaches the profile UPDATE after stale reads. The fixed
+            # path pauses before taking the BEGIN IMMEDIATE writer lock.
+            if not merge_before_write.is_set() and (
+                normalized == "BEGIN IMMEDIATE"
+                or normalized.startswith("UPDATE SPEAKER_PROFILES SET ENROLLMENT_EMBEDDING_BLOB")
+            ):
+                merge_before_write.set()
+                if not allow_merge_write.wait(timeout=3):
+                    raise TimeoutError("merge write was not released")
+            return self._connection.execute(sql, parameters)
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._connection.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def get_connection():
+        connection = original_get_connection()
+        if current_thread().name.startswith("voice-merge"):
+            return PausingConnection(connection)
+        return connection
+
+    monkeypatch.setattr(database, "_get_connection", get_connection)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-merge") as executor:
+        future = executor.submit(store.merge_speaker_profiles, target["id"], source["id"])
+        try:
+            assert merge_before_write.wait(timeout=3)
+            other_process = MeetingStore()
+            other_process.set_speaker_library_enabled(False)
+        finally:
+            allow_merge_write.set()
+
+        with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+            future.result(timeout=3)
+
+    assert store.speaker_library_enabled() is False
+    assert {profile["id"] for profile in store.speaker_profiles()} == {target["id"], source["id"]}
+
+
+def test_cross_process_voice_library_opt_out_wins_against_a_rename_before_its_write(
+    store: MeetingStore,
+    monkeypatch,
+):
+    profile = store.enroll_speaker_profile("Alice", [1.0] + [0.0] * 255)
+    rename_before_write = Event()
+    allow_rename_write = Event()
+    original_get_connection = database._get_connection
+
+    class PausingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, parameters=()):
+            normalized = " ".join(str(sql).upper().split())
+            if not rename_before_write.is_set() and (
+                normalized == "BEGIN IMMEDIATE" or normalized.startswith("UPDATE SPEAKER_PROFILES SET DISPLAY_NAME")
+            ):
+                rename_before_write.set()
+                if not allow_rename_write.wait(timeout=3):
+                    raise TimeoutError("rename write was not released")
+            return self._connection.execute(sql, parameters)
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._connection.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def get_connection():
+        connection = original_get_connection()
+        if current_thread().name.startswith("voice-rename"):
+            return PausingConnection(connection)
+        return connection
+
+    monkeypatch.setattr(database, "_get_connection", get_connection)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-rename") as executor:
+        future = executor.submit(store.rename_speaker_profile, profile["id"], "Alicia")
+        try:
+            assert rename_before_write.wait(timeout=3)
+            MeetingStore().set_speaker_library_enabled(False)
+        finally:
+            allow_rename_write.set()
+
+        with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+            future.result(timeout=3)
+
+    assert store.speaker_library_enabled() is False
+    assert store.speaker_profiles()[0]["displayName"] == "Alice"
+
+
+def test_whole_library_delete_wins_against_a_split_that_has_not_started_its_write(
+    store: MeetingStore,
+    monkeypatch,
+):
+    meeting = store.create(create_request())
+    store.add_segments(
+        meeting["id"],
+        [
+            {
+                "id": "split-delete-race-segment",
+                "revision": "canonical",
+                "source": "system",
+                "sequence": 0,
+                "speakerLabel": "Remote 1",
+                "startMs": 0,
+                "endMs": 3_000,
+                "text": "Race sample",
+            }
+        ],
+    )
+    speaker = store.detail(meeting["id"])["speakers"][0]
+    store.register_speaker_embedding(
+        meeting["id"],
+        speaker["id"],
+        "split-delete-race-segment",
+        [1.0] + [0.0] * 255,
+    )
+
+    split_before_write = Event()
+    allow_split_write = Event()
+    original_get_connection = database._get_connection
+
+    class PausingConnection:
+        def __init__(self, connection):
+            self._connection = connection
+
+        def execute(self, sql, parameters=()):
+            normalized = " ".join(str(sql).upper().split())
+            # Old code pauses after stale reads but before INSERT. The fixed
+            # path pauses before it obtains the BEGIN IMMEDIATE writer lock.
+            if not split_before_write.is_set() and (
+                normalized == "BEGIN IMMEDIATE" or normalized.startswith("INSERT INTO SPEAKER_PROFILES")
+            ):
+                split_before_write.set()
+                if not allow_split_write.wait(timeout=3):
+                    raise TimeoutError("split write was not released")
+            return self._connection.execute(sql, parameters)
+
+        def __enter__(self):
+            self._connection.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._connection.__exit__(*args)
+
+        def __getattr__(self, name):
+            return getattr(self._connection, name)
+
+    def get_connection():
+        connection = original_get_connection()
+        if current_thread().name.startswith("voice-split"):
+            return PausingConnection(connection)
+        return connection
+
+    monkeypatch.setattr(database, "_get_connection", get_connection)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="voice-split") as executor:
+        future = executor.submit(
+            store.split_speaker_profile,
+            meeting["id"],
+            speaker["id"],
+        )
+        try:
+            assert split_before_write.wait(timeout=3)
+            assert store.delete_all_speaker_profiles() == 1
+        finally:
+            allow_split_write.set()
+
+        with pytest.raises(VoiceLibraryDisabled, match="Voice Library is turned off"):
+            future.result(timeout=3)
+
+    assert store.speaker_library_enabled() is False
+    assert store.speaker_profiles() == []
+    assert store.detail(meeting["id"])["speakers"][0]["profileId"] is None

@@ -24,7 +24,7 @@ def _identity(variant_id: str, config: dict[str, object]) -> dict[str, object]:
     variant = config["variants"][variant_id]  # type: ignore[index]
     jit = bool(variant["jit"])  # type: ignore[index]
     return {
-        "pythonVersion": "3.13.14" if variant_id == "A13" else "3.14.6",
+        "pythonVersion": "3.13.14" if variant_id == "A13" else "3.14.7",
         "cacheTag": "cpython-313" if variant_id == "A13" else "cpython-314",
         "runtimeFlavor": variant["runtimeFlavor"],  # type: ignore[index]
         "compiler": "test-compiler",
@@ -230,7 +230,7 @@ def _startup_screening() -> dict[str, object]:
         variants[variant_id] = {
             "identity": {
                 "variantId": variant_id,
-                "pythonVersion": "3.14.6",
+                "pythonVersion": "3.14.7",
                 "cacheTag": "cpython-314",
                 "runtimeFlavor": flavour,
                 "compiler": "test-compiler",
@@ -290,7 +290,7 @@ def test_isolated_o0_reference_selects_o0_from_regressing_c0() -> None:
         startup_sha256="b" * 64,
     )
     assert decision["selectedVariant"] == "O0"
-    assert decision["reason"] == "fallback-official-3.14.6-jit-disabled"
+    assert decision["reason"] == "fallback-official-3.14.7-jit-disabled"
     assert decision["productionPromotionAuthorized"] is False
     assert "app-ux-gain-below-threshold" in decision["candidates"][0]["reasons"]
     assert any(

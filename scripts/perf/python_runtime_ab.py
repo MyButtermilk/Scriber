@@ -145,7 +145,7 @@ def _runtime_identity(
     path: str,
 ) -> None:
     identity = _object(variant.get("identity"), f"{path}.identity")
-    expected_version = "3.13.14" if variant_id == "A13" else "3.14.6"
+    expected_version = "3.13.14" if variant_id == "A13" else "3.14.7"
     expected_tag = "cpython-313" if variant_id == "A13" else "cpython-314"
     if _text(identity.get("pythonVersion"), f"{path}.identity.pythonVersion") != expected_version:
         raise EvidenceError(f"{path}.identity.pythonVersion does not match {variant_id}")
@@ -563,7 +563,7 @@ def select_runtime(payload: Mapping[str, Any], config: Mapping[str, Any]) -> dic
     decisions = [evaluate_candidate(candidate, blocks, config) for candidate in RELEASE_CANDIDATES]
     passing = [decision for decision in decisions if decision.passed]
     selected = "O0"
-    selection_reason = "fallback-official-3.14.6-jit-disabled"
+    selection_reason = "fallback-official-3.14.7-jit-disabled"
     if passing:
         passing.sort(
             key=lambda item: (float(item.mean_local_wux or math.inf), _preference_key(item.variant_id, config))
@@ -831,8 +831,8 @@ def _screening_startup(
         identity = _object(measured.get("identity"), f"startup.variants.{variant_id}.identity")
         if identity.get("variantId") != variant_id:
             raise EvidenceError(f"startup identity does not match {variant_id}")
-        if identity.get("pythonVersion") != "3.14.6" or identity.get("cacheTag") != "cpython-314":
-            raise EvidenceError(f"startup {variant_id} is not CPython 3.14.6")
+        if identity.get("pythonVersion") != "3.14.7" or identity.get("cacheTag") != "cpython-314":
+            raise EvidenceError(f"startup {variant_id} is not CPython 3.14.7")
         if identity.get("runtimeFlavor") != configured_variant["runtimeFlavor"]:
             raise EvidenceError(f"startup runtime flavour does not match {variant_id}")
         if identity.get("jitExpected") is not bool(configured_variant["jit"]):
@@ -1064,7 +1064,7 @@ def select_screening_runtime(
 
     passing = [decision for decision in decisions if decision["passedScreening"]]
     selected = "O0"
-    reason = "fallback-official-3.14.6-jit-disabled"
+    reason = "fallback-official-3.14.7-jit-disabled"
     if passing:
         passing.sort(
             key=lambda decision: (

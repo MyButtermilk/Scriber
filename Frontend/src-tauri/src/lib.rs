@@ -4654,8 +4654,8 @@ fn python_runtime_environment(
     if policy.schema_version != 1 || policy.name != "scriber-python-runtime-policy" {
         return Err("Packaged Python runtime policy contract is unsupported.".to_string());
     }
-    if policy.python.version != "3.14.6" || policy.python.cache_tag != "cpython-314" {
-        return Err("Packaged Python runtime must be exactly CPython 3.14.6.".to_string());
+    if policy.python.version != "3.14.7" || policy.python.cache_tag != "cpython-314" {
+        return Err("Packaged Python runtime must be exactly CPython 3.14.7.".to_string());
     }
     let expected_tail = policy.runtime_flavor == "ClangPgoTail";
     if !matches!(
@@ -5387,7 +5387,7 @@ mod tests {
                 "schemaVersion": 1,
                 "name": "scriber-python-runtime-policy",
                 "python": {
-                    "version": "3.14.6",
+                    "version": "3.14.7",
                     "cacheTag": "cpython-314",
                     "dll": {
                         "path": "_internal/python314.dll",

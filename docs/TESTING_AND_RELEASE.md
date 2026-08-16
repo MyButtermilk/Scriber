@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-01
+Last verified: 2026-08-16
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -22,11 +22,11 @@ scripts\project-python.cmd -m pip install ruff==0.15.22
 scripts\project-python.cmd -m pytest -n 4 --dist loadfile -ra
 scripts\project-python.cmd -m ruff check src tests scripts
 scripts\project-python.cmd -m ruff format --check src tests scripts
-scripts\project-python.cmd -m mypy src\core src\runtime src\data
+scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
-Windows CPython 3.14.6 graph through `requirements-test-constraints.txt`. The
+Windows CPython 3.14.7 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
 in that complete Windows environment after pytest. The reusable Windows job
@@ -37,9 +37,108 @@ does not depend on a developer `.env`, local media tools, or real API keys.
 Ruff remains an independent, lightweight Ubuntu gate that installs only
 `ruff==0.15.22` and intentionally stays out of `requirements-test.txt`. Lint
 and formatting are enforced without a debt baseline across all maintained
-Python in `src`, `tests`, and `scripts`; mypy expands in reviewed tranches. CI
+Python in `src`, `tests`, and `scripts`; mypy currently covers `src/api`,
+`src/core`, `src/runtime`, and `src/data` and expands only in reviewed tranches. CI
 also pins the pip resolver version and validates the complete test environment
 with `pip check`.
+
+Ruff's `RUF006` catches a bare discarded `asyncio.create_task(...)` result, but
+cannot prove ownership when task creation is hidden inside scheduler callbacks.
+Intentionally concurrent runtime work must therefore use
+`src.runtime.task_supervisor.AsyncTaskSupervisor`; its focused tests cover
+retention, exception observation, cancellation before the first scheduler step,
+zero-budget cancellation, worker-thread admission, and the sealing shutdown
+barrier in addition to the static Ruff gate. ONNX route tests additionally keep
+parallel download scopes isolated and reject worker progress arriving after app
+cleanup.
+
+`tests/runtime/test_cancellation.py` pins the boundary contract for work an
+executor cannot abandon: a durable mutation finishes before cancellation is
+delivered, repeated `Task.cancel` still waits for that boundary, and a
+mutation that fails while its caller is cancelling reports `CancelledError`
+with the failure logged rather than letting an unexpected exception escape a
+shutdown path. Both helpers install adversarial loop exception handlers in
+tests: cancel plus worker failure, including repeated cancellation, must produce
+zero unobserved `shield`/Future exception contexts.
+
+`tests/test_meeting_api.py` also pins Meeting capture settlement at the public
+HTTP seam: invalid start commands fail before admission; repeated cancellation
+cannot skip cleanup or lease release; and Stop reserves a finalizer before
+native shutdown, commits `finalizing`, opens the worker gate, then delivers the
+pending cancellation.
+`tests/api/test_meeting_capture_routes.py` registers the extracted start,
+pause, resume, and stop routes, proves normalization into one immutable start
+command, pins the four-method controller port, and verifies that `create_app`
+resolves all four endpoints to domain handlers rather than nested composition
+handlers.
+`tests/api/test_meeting_workspace_routes.py` sends all eight collaborative
+workspace operations through the isolated aiohttp boundary, pins the exact
+`MeetingStore` collaborator surface, and proves `create_app` resolves each
+method/path pair to the domain module.
+`tests/api/test_meeting_processing_routes.py` sends reprocess, finalize/retry,
+and analyze commands through the isolated aiohttp boundary, rejects malformed
+command fields before admission, pins the exact three-method controller port
+and its route-owned outcome type, and proves all four registrations resolve to
+the domain module.
+`tests/api/test_meeting_artifact_routes.py` sends playback, exports, email
+preview, and RFC 822 draft requests through the isolated aiohttp boundary,
+pins the exact two-read MeetingStore collaborator, and proves all five
+registrations resolve to the controller-free domain module.
+`tests/api/test_meeting_catalog_routes.py` sends list, detail, DELETE, and the
+POST discard alias through the isolated aiohttp boundary, pins the exact
+three-method controller port and outcome type, proves composition wiring, and
+repeatedly cancels discard while workspace removal is blocked to verify that
+every owned cleanup step settles before cancellation is delivered.
+`tests/api/test_meeting_readiness_routes.py` sends strict device-test input plus
+capabilities and audio-inventory reads through the isolated aiohttp boundary,
+pins the exact three-method controller port and route-owned outcome, and proves
+that `create_app` resolves all three endpoints to the domain module.
+
+The focused `tests/api/test_*_routes.py` suites exercise each extracted route
+module against lightweight stubs, then locally pin its complete structural port
+against the real controller or service, including boundary-critical route-owned
+DTO return types. The shared fixture contains only signature-reflection
+mechanics: method/property allowlists remain in their owning domain test, so
+there is no central port catalogue. Outlook Calendar has no controller port but
+still pins one for its calendar collaborator. Meeting Import and Voice
+Component use request-resolved immutable bundles/providers instead of a broad
+controller port, while each store/model/diarizer/admission collaborator still
+has a domain-local structural Protocol pinned to the real adapter. Their wiring
+guards send real aiohttp requests through `create_app`; renamed attributes,
+sync/async drift, or an invalid dependency shape therefore fails before a
+production request reaches it. The Voice Component guard additionally pins the
+wiring's *granularity*: model status succeeds with no diarizer, enrollment
+adapter, or settings-persist hook materialized. A future change that collapses
+those providers — or resolves the persist hook eagerly instead of deferring it
+to the erase route — fails at the public HTTP seam. Voice tests also exercise a
+complete in-memory enrollment request and verify admission acquire/release,
+native start/stop, profile persistence, capture-buffer clearing, and response
+privacy. Meeting-import tests run against the real `MeetingImportStore` because
+the assertion that matters is which durable state a job is left in after a
+replayed PUT, a size mismatch, a repeated cancel, or an unreadable status after
+the receive commit. File-job tests separately force cancellation before and
+after enqueue, provider/settings changes across restart, commit-then-raise, and
+an unreadable ambiguous commit. They require the admitted route/limits and the
+owned source to survive whenever a durable row may exist. The matching YouTube
+test repeats cancellation after enqueue and requires mapping, history,
+artifact-parent creation, and exactly one scheduled task before delivery.
+File Transcription route tests register that domain alone and exercise the
+public multipart HTTP seam, bounded/repeated-cancel disk writes, media
+preparation, redacted failures, workspace cleanup, the production controller
+port, and the exact admitted provider route. Upload-policy tests separately
+cover the 180 UTF-16-code-unit filename bound, Windows reserved-device names
+and invalid surrogates, accepted media extensions, and immutable
+provider-bound raw/final limits used by both File transcription and Meeting
+imports.
+WebSocket route tests register that domain alone and exercise the real aiohttp
+upgrade, initial state event, ping/pong path, origin rejection, failed-initial-
+send cleanup, and the exact four-member production controller port.
+Live Mic route tests register that domain alone, exercise all six HTTP paths,
+preserve active-toggle body semantics, pin the exact four-method controller and
+provider-replay adapter contracts, and prove `create_app` resolves every path to
+the domain module. Existing security, hotkey-stress, and provider-replay suites
+remain the behavioral integration gates for runtime redaction, duplicate starts,
+manual stop, and native activation binding.
 
 Frontend:
 
@@ -122,6 +221,24 @@ Frontend browser smoke:
 ```powershell
 scripts\project-python.cmd scripts\smoke_frontend_browser.py --output tmp\frontend-browser-smoke.json --fast-tab-switch
 ```
+
+Real-browser File-ingest smoke against production backend composition:
+
+```powershell
+scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tmp\real-file-browser-smoke.json
+```
+
+Unlike the broad synthetic frontend smoke, this narrow vertical slice runs the
+real React/Vite File page in Chrome against `src.web_api.create_app`, the
+extracted File Transcription handler, the real transcript database, and a real
+`JobStore`. It requires the route to persist one exact provider-bound queued job
+and keep the owned source before navigation succeeds. The same browser run also
+opens the production `/ws` route, requires its initial `state` event, sends
+`ping`, receives `pong`, and verifies that composition resolves the extracted
+WebSocket handler. The provider worker is deliberately held at the queued
+boundary, so the result is not installed-Tauri or external-provider evidence.
+`python-full-suite.yml` runs this smoke and uploads its JSON result beside the
+JUnit report.
 
 Frontend localization gates:
 
@@ -377,7 +494,7 @@ Frontend\src-tauri\target\release\backend\scriber-backend.exe `
 ## Python 3.14 runtime selection
 
 The shipping fallback and current production default are the official Windows
-CPython 3.14.6 runtime with JIT disabled (`Official` / `Disabled`). The default
+CPython 3.14.7 runtime with JIT disabled (`Official` / `Disabled`). The default
 is compiled into the release build; it is not a `.env` or Settings option.
 The Tauri supervisor removes inherited `PYTHON_JIT`, `PYTHON_GIL`, and
 `PYTHON_TLBC`, sets the manifest-bound `PYTHON_JIT=0`, and the frozen backend
@@ -387,7 +504,7 @@ state, or JIT expectation differs from the packaged policy.
 The separate `python-runtime-ab-v1` research profile may compare A13, O0/O1,
 C0/C1, T0/T1, and the non-release K0 calibration. Build inputs are bound by
 `packaging/cpython-windows-runtime-input-lock-v1.json`; custom builds are
-offline after provisioning and use the unchanged CPython `v3.14.6` source,
+offline after provisioning and use the unchanged CPython `v3.14.7` source,
 LLVM 19.1.7, ClangCL, ThinLTO, and the upstream PGO job. Run the evaluator
 through `scripts/perf/python_runtime_ab.py`. Never promote JIT, Clang/PGO, or
 the tail-call interpreter from a microbenchmark. A candidate must pass every
@@ -426,7 +543,7 @@ anchor required to promote an optimized runtime.
 
 For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
 closed: PyInstaller's isolated embedded-interpreter configuration ignores
-`PYTHON_JIT`, while CPython 3.14.6 exposes no supported post-initialization JIT
+`PYTHON_JIT`, while CPython 3.14.7 exposes no supported post-initialization JIT
 setter. Do not weaken isolation by enabling every Python environment variable
 or claim that a source-runtime JIT probe represents the packaged app. The
 JIT-off O0/C0/T0 family remains measurable; use
@@ -2062,12 +2179,12 @@ These are evidence artifacts, not durable docs. Do not copy their full contents
 into permanent Markdown unless a concise current result belongs in
 `README.md` or `docs/PERFORMANCE_AND_PACKAGING.md`.
 
-## Meeting Workspace Gates
+## Meeting Route And Workspace Gates
 
 Run the focused deterministic gates before the full suite:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
+.\venv\Scripts\python.exe -m pytest tests/api/test_meeting_capture_routes.py tests/api/test_meeting_workspace_routes.py tests/api/test_meeting_processing_routes.py tests/api/test_meeting_artifact_routes.py tests/api/test_meeting_catalog_routes.py tests/api/test_meeting_readiness_routes.py tests/test_provider_transcript.py tests/test_meeting_finalizer.py tests/test_meeting_analysis.py tests/test_pipeline_stop.py tests/test_outlook_calendar.py tests/test_speaker_intelligence.py tests/data/test_meeting_store.py tests/data/test_audio_admission_store.py tests/test_meeting_api.py tests/test_web_api_lifecycle.py tests/test_meeting_capture.py tests/test_meeting_tts_puppeteer_smoke.py -q
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
@@ -2088,12 +2205,18 @@ and that the optional WeSpeaker model is absent from the installer tree.
 The admission tests additionally use two independent controllers on one SQLite
 database: the losing controller must return 409 before native Shell IPC, an
 expired claim may be replaced, stale release cannot delete its successor,
-pause/resume retains Meeting ownership, and graceful shutdown removes it.
+pause/resume retains Meeting ownership, graceful shutdown removes it, and a
+fresh same-owner reacquisition cannot alias a locally remembered release even
+when SQLite restarts its CAS generation.
 The heartbeat race gate pre-transfers the pending claim before renewal and
-requires adoption of the newer generation; repeated Live Mic renewal failures
-must emergency-stop before the lease TTL can expire, and a lost Meeting claim
-must drive the capture watchdog to `capture_failed` without discarding completed
-chunks.
+requires adoption of the newer generation. Lease-only watchdog tests use the
+store's returned expiry, block renewal beyond the deadline, and require native
+stop before another controller can acquire. Two bounded stop failures trigger
+an immediate renewal before another attempt; a transient renewal failure stays
+on the short retry cadence rather than sleeping for the normal heartbeat.
+Composition race tests block Meeting create/start/resume/reconnect and prove
+loss cleanup never deadlocks with durable marking, while a lost Meeting drives
+the capture watchdog to `capture_failed` without discarding completed chunks.
 
 Long-Meeting deterministic coverage uses exactly 600 30-second intervals, or
 18,000 seconds. Store tests prove schema-v3 base/delta recovery, a full base
@@ -2166,11 +2289,12 @@ hard 60-second ceiling before process launch. Invalid values fail closed to
 five seconds.
 
 The local speech Meeting E2E goes beyond level statistics: Piper generates a
-bounded German 48 kHz mono PCM fixture, the test-only Rust microphone source
-replays it through the real three-pipe Meeting path, and Puppeteer Core drives
-the actual Tauri WebView2 start, pause, resume, and stop controls. Final
-transcription stays on the local ONNX provider. Provision Piper and its voice
-only below ignored `tmp/` paths, then run:
+bounded German 48 kHz mono PCM fixture plus a separate bounded 16 kHz Live Mic
+view of the same speech. The test-only Rust microphone source replays them
+through the real three-pipe Meeting and Live Mic paths, and Puppeteer Core
+drives the actual Tauri WebView2 controls. Final transcription stays on the
+local ONNX provider. Provision Piper and its voice only below ignored `tmp/`
+paths, then run:
 
 ```powershell
 .\venv\Scripts\python.exe -m pip install --target tmp\meeting-tts\piper-runtime piper-tts==1.4.2
@@ -2188,7 +2312,37 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 The runner pins Puppeteer Core in an isolated ignored directory, requires the
 Tauri-supervised runtime, validates the `recording -> paused -> recording ->
 ready` lifecycle plus canonical transcript segments and the persisted pause
-gap, and proves bounded descendant cleanup. Its retained JSON contains hashes,
+gap, then sends `full_transcript` through the extracted Meeting Processing
+route and waits for the second durable `finalizing -> ready` settlement. It
+uses visible SPA navigation, waits for both the managed backend and the shared
+frontend WebSocket before arming its browser-diagnostics window, and fails on
+every page exception, console error, or unexpected request failure. Chromium's
+exact `fetch` + `net::ERR_ABORTED` signal from deliberate React Query
+cancellation is counted separately and is the only allowed request-abort kind.
+That exception is fail-closed to GET requests in the named Meeting/Live-Mic
+mutation and settlement phases and to at most six observations per phase; the
+same signal in bootstrap, diagnostics, or an unlisted phase fails the gate.
+The only allowed HTTP error pair is the detail and speaker-assignment GET that
+can finish with `404` while the visible discard flow removes that exact
+Meeting. Both paths, both generic Chromium console notices, the discard phase,
+and the exact count of two must agree; any other `4xx`/`5xx` console error stays
+fatal.
+It
+first calls the production Meeting Device Readiness capabilities, redacted
+audio-device inventory, and ephemeral device-test routes from the real WebView;
+the probe must report availability while confirming that no PCM was persisted
+or sent to a provider. It
+also exercises the extracted Meeting Workspace title, segment edit/search/
+history/undo, and note paths plus the extracted Meeting Artifacts JSON/PDF
+exports, email preview/draft, and private byte-range playback paths through the
+production `create_app`, document renderer, public storage root, and SQLite
+store. It finally reads the extracted Meeting Catalog list and enriched detail,
+confirms discard through the visible React dialog, and waits for both the UI
+collection and durable SQLite catalogue to remove the Meeting. The same WebView
+then navigates to Live Mic, starts and stops through the visible microphone
+control, requires the production Rust-sidecar and ONNX path to persist a
+completed transcript, and confirms the synthetic marker in the React transcript
+surface. Its retained JSON contains hashes,
 counts, states, and timings only—never audio, transcript text, credentials,
 URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
 deterministic regression gate; it does not replace physical microphone,
@@ -2329,6 +2483,9 @@ and process recovery, corrupt-chunk and disk-full behavior, both Outlook account
 types and sync failure modes, a 60-minute recording, a two-hour stability soak,
 the held voiceprint corpus, support-bundle privacy, the separate EU voiceprint
 legal/privacy review, the existing regression suite, and signed release assets.
+Every Teams/Zoom/Meet profile must keep the conference client's own microphone
+and camera active while Scriber captures; Scriber's Mic/System checks alone are
+not coexistence evidence.
 It enforces the plan thresholds: start <= 3 seconds, live interim P95 <= 2
 seconds, measurable AEC reduction, no unmarked loss, exactly one gap per
 intentional reconnect/resume, and crash loss <= the open 30-second chunk.

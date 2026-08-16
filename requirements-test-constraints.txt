@@ -1,4 +1,4 @@
-# Fully resolved Windows CPython 3.14.6 test environment.
+# Fully resolved Windows CPython 3.14.7 test environment.
 # Regenerate from a clean environment whenever requirements-base.txt or
 # requirements-test.txt changes, then validate with `python -m pip check`.
 aiofiles==25.1.0
