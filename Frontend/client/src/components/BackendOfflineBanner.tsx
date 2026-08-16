@@ -98,14 +98,16 @@ export function BackendOfflineBanner() {
             <p className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-muted-foreground">
               {t("Local service")}
             </p>
-            <h2 className="mb-3 text-2xl font-semibold tracking-tight text-foreground">{t("Starting Scriber")}</h2>
-            <p className="max-w-sm text-sm leading-6 text-muted-foreground">
+            <h2 className="mb-3 text-balance text-2xl font-semibold tracking-tight text-foreground">
+              {t("Starting Scriber")}
+            </h2>
+            <p className="max-w-sm text-pretty text-sm leading-6 text-muted-foreground">
               {t("The desktop backend is coming online. This usually takes a few seconds after launch.")}
             </p>
 
             <div className="mt-7 w-full max-w-sm">
               <WavePhysicsLoader size="panel" label={t("Starting Scriber")} />
-              <div className="mt-3 text-xs font-medium text-muted-foreground" aria-live="polite">
+              <div className="mt-3 text-pretty text-xs font-medium tabular-nums text-muted-foreground" aria-live="polite">
                 {startupDetail}
               </div>
             </div>
@@ -123,9 +125,11 @@ export function BackendOfflineBanner() {
             <AlertCircle className="h-8 w-8 text-destructive" aria-hidden="true" />
           </div>
 
-          <h2 className="mb-3 text-xl font-semibold tracking-tight text-foreground">{t("Backend Not Available")}</h2>
+          <h2 className="mb-3 text-balance text-xl font-semibold tracking-tight text-foreground">
+            {t("Backend Not Available")}
+          </h2>
 
-          <p className="mb-6 leading-6 text-muted-foreground">
+          <p className="mb-6 text-pretty leading-6 text-muted-foreground">
             {error === "Backend is not running" ? (
               <>
                 {t(
@@ -146,19 +150,19 @@ export function BackendOfflineBanner() {
             <Button variant="outline" onClick={checkNow} disabled={isChecking} className="min-w-[140px]">
               {isChecking ? (
                 <>
-                  <WavePhysicsLoader className="mr-2" size="inline" />
+                  <WavePhysicsLoader size="inline" />
                   {t("Checking...")}
                 </>
               ) : (
                 <>
-                  <RefreshCw className="mr-2 h-4 w-4" />
+                  <RefreshCw className="h-4 w-4" />
                   {t("Retry Connection")}
                 </>
               )}
             </Button>
           </div>
 
-          <p className="mt-6 text-xs text-muted-foreground/70">
+          <p className="mt-6 text-pretty text-xs text-muted-foreground/70">
             {t("The app will automatically reconnect when the backend becomes available.")}
           </p>
         </div>
