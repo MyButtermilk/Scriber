@@ -1,0 +1,101 @@
+/*
+ * Cross-page refinements inspired by the Interfaces.dev checklist.
+ * This file is loaded after index.css so shared primitives can improve
+ * without coupling page-specific visual systems back into the global sheet.
+ */
+
+:where(h1, h2, h3, h4) {
+  overflow-wrap: anywhere;
+  text-wrap: balance;
+}
+
+:where(a) {
+  text-decoration-skip-ink: auto;
+  text-decoration-thickness: from-font;
+  text-underline-offset: 0.14em;
+}
+
+:where(time, [role="timer"], [data-ui-numeric="true"], .settings-page) {
+  font-variant-numeric: tabular-nums;
+}
+
+:where([data-ui-long-value="true"]) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ui-pressable {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+.ui-hit-target {
+  min-width: 40px;
+  min-height: 40px;
+}
+
+.ui-field {
+  min-height: 40px;
+  transition:
+    border-color var(--duration-quick) var(--ease-smooth-out),
+    background-color var(--duration-quick) var(--ease-smooth-out),
+    box-shadow var(--duration-quick) var(--ease-smooth-out);
+}
+
+.ui-pressable[aria-busy="true"] {
+  cursor: wait;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ui-hover-muted:hover {
+    background-color: hsl(var(--muted));
+    color: hsl(var(--foreground));
+  }
+
+  .ui-hover-accent:hover {
+    background-color: hsl(var(--accent));
+    color: hsl(var(--accent-foreground));
+  }
+
+  .ui-hover-field:hover {
+    border-color: hsl(var(--foreground) / 0.2);
+    background-color: hsl(var(--background) / 0.92);
+  }
+
+  .ui-hover-underline:hover {
+    text-decoration-line: underline;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .ui-pressable:active:not(:disabled):not([aria-disabled="true"]) {
+    transform: scale(var(--scale-small));
+  }
+}
+
+@media (pointer: coarse) {
+  .ui-hit-target,
+  .ui-field {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-pressable,
+  .ui-field {
+    transition: none !important;
+  }
+
+  .ui-pressable {
+    transform: none !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .ui-pressable:focus-visible,
+  .ui-field:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}

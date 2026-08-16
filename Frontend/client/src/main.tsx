@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import "@fontsource/inter/400.css";
 import "@carrot-kpi/switzer-font/latin-400.css";
 import "./index.css";
+import "./interface-polish.css";
 import { startFrontendLongTaskObserver } from "./lib/frontend-performance";
 import { initializeLocaleCatalog, LocaleProvider } from "./i18n";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
