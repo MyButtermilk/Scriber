@@ -978,6 +978,7 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
             "wait-finalization", "validate-transcript-content", "validate-transcript-marker",
             "validate-audio-gap", "validate-meeting-readiness", "rename-meeting-workspace",
             "edit-meeting-workspace-segment", "undo-meeting-workspace-segment",
+            "review-meeting-transcript", "bookmark-meeting-moment",
             "save-meeting-workspace-note", "search-meeting-workspace-segment",
             "reprocess-meeting-transcript", "validate-meeting-artifacts",
             "validate-meeting-catalog", "discard-meeting-through-ui", "navigate-live-mic",

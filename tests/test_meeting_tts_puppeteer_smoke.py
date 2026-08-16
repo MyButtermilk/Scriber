@@ -55,6 +55,17 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     for test_id in ("meeting-title-edit", "meeting-title-input", "meeting-title-save"):
         assert f'data-testid="{test_id}"' in meetings_page
         assert f'[data-testid="{test_id}"]' in driver
+    review_toolbar = _read("Frontend/client/src/components/meeting/MeetingReviewToolbar.tsx")
+    for test_id in (
+        "meeting-review-search",
+        "meeting-review-match-count",
+        "meeting-review-next",
+        "meeting-review-follow",
+        "meeting-review-bookmark",
+        "meeting-review-timeline",
+    ):
+        assert f'data-testid="{test_id}"' in review_toolbar
+        assert f'[data-testid="{test_id}"]' in driver
     for test_id in (
         "meeting-segment-edit-${segment.id}",
         "meeting-segment-edit-input-${segment.id}",
@@ -81,6 +92,8 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert '"/api/meetings/device-test"' in driver
     assert 'response.request().method() === "PATCH"' in driver
     assert 'activePhase = "save-meeting-workspace-note"' in driver
+    assert 'activePhase = "review-meeting-transcript"' in driver
+    assert 'activePhase = "bookmark-meeting-moment"' in driver
     assert 'response.request().method() === "PUT"' in driver
     assert 'activePhase = "reprocess-meeting-transcript"' in driver
     assert '{ mode: "full_transcript" }' in driver
@@ -104,6 +117,8 @@ def test_meeting_speech_smoke_uses_puppeteer_against_real_webview2() -> None:
     assert "meetingCatalogListVerified: true" in driver
     assert "meetingCatalogDetailVerified: true" in driver
     assert "meetingCatalogDiscardVerified: true" in driver
+    assert "meetingReviewVerified: true" in driver
+    assert "meetingBookmarkVerified: true" in driver
     assert "liveMicStartVerified: true" in driver
     assert "liveMicStopVerified: true" in driver
     assert "liveMicTranscriptVerified: true" in driver

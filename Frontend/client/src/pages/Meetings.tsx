@@ -99,11 +99,19 @@ import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { PageIntro } from "@/components/page-intro";
 import { OutlookMeetingPicker } from "@/components/meeting/OutlookMeetingPicker";
 import { MeetingNotesEditor } from "@/components/meeting/MeetingNotesEditor";
+import { MeetingReviewToolbar } from "@/components/meeting/MeetingReviewToolbar";
 import {
   SpeakerAttendeeAssignments,
   type MeetingSpeakerAssignmentFocusRequest,
 } from "@/components/meeting/SpeakerAttendeeAssignments";
 import { saveWorkspaceMeetingNote, useMeetingNotesAutosave } from "@/components/meeting/useMeetingNotesAutosave";
+import {
+  activeReviewSegmentId,
+  matchingReviewSegmentIds,
+  nextReviewMatchId,
+  reviewTimeRangeBounds,
+  type ReviewTimeRange,
+} from "@/lib/meeting-review-timeline";
 import {
   Dialog,
   DialogContent,
@@ -138,6 +146,7 @@ import type {
   MeetingDeviceTestResponse,
   MeetingImportJob,
   MeetingImportsResponse,
+  MeetingNote,
   MeetingProviderProfile,
   MeetingProcessingProgress,
   MeetingProcessingComponent,
@@ -473,6 +482,10 @@ type DisplayMeetingSegment = MeetingSegment & { label: string };
 const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
   segments,
   search,
+  activeSegmentId,
+  focusSegmentId,
+  followPlayback,
+  onFollowPlaybackChange,
   hasPlayableAudio,
   isLive,
   onPlay,
@@ -485,6 +498,10 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
 }: {
   segments: DisplayMeetingSegment[];
   search: string;
+  activeSegmentId: string | null;
+  focusSegmentId: string | null;
+  followPlayback: boolean;
+  onFollowPlaybackChange: (follow: boolean) => void;
   hasPlayableAudio: boolean;
   isLive: boolean;
   onPlay: (startMs: number) => void;
@@ -497,6 +514,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
 }) {
   const { t, formatNumber } = useI18n();
   const scrollRef = useRef<HTMLDivElement>(null);
+  const programmaticScrollRef = useRef(false);
   const [followLatest, setFollowLatest] = useState(true);
   const [editingId, setEditingId] = useState("");
   const [draft, setDraft] = useState("");
@@ -521,6 +539,20 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
     const viewport = scrollRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
   }, [segments.length, virtualizer]);
+  const scrollToSegment = useCallback(
+    (segmentId: string) => {
+      const index = segments.findIndex((segment) => segment.id === segmentId);
+      if (index < 0) return;
+      programmaticScrollRef.current = true;
+      virtualizer.scrollToIndex(index, { align: "center" });
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          programmaticScrollRef.current = false;
+        });
+      });
+    },
+    [segments, virtualizer],
+  );
   useEffect(() => {
     if (!isLive) setFollowLatest(true);
   }, [isLive]);
@@ -536,6 +568,12 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
       if (settledFrame) window.cancelAnimationFrame(settledFrame);
     };
   }, [editingId, followLatest, isLive, scrollToLatest, search, segments]);
+  useEffect(() => {
+    if (focusSegmentId) scrollToSegment(focusSegmentId);
+  }, [focusSegmentId, scrollToSegment]);
+  useEffect(() => {
+    if (!isLive && followPlayback && activeSegmentId) scrollToSegment(activeSegmentId);
+  }, [activeSegmentId, followPlayback, isLive, scrollToSegment]);
   return (
     <div className="relative">
       <div
@@ -543,6 +581,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
         className="max-h-[520px] overflow-y-auto pr-2"
         aria-label={t("Meeting transcript segments")}
         onScroll={(event) => {
+          if (!isLive && followPlayback && !programmaticScrollRef.current) onFollowPlaybackChange(false);
           if (!isLive || search.trim()) return;
           const element = event.currentTarget;
           const atLatest = element.scrollHeight - element.clientHeight - element.scrollTop <= 40;
@@ -553,17 +592,20 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
           {virtualizer.getVirtualItems().map((virtualRow) => {
             const segment = segments[virtualRow.index];
             if (!segment) return null;
+            const active = segment.id === activeSegmentId;
             return (
               <div
                 key={segment.id}
                 data-testid={`meeting-transcript-segment-${segment.id}`}
+                data-playback-active={active ? "true" : "false"}
                 data-index={virtualRow.index}
                 ref={virtualizer.measureElement}
                 className="absolute left-0 top-0 w-full pb-1"
                 style={{ transform: `translateY(${virtualRow.start}px)` }}
               >
                 <div
-                  className="group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl px-3 py-3 outline-none hover:bg-muted/50 focus-within:bg-muted/35 sm:grid-cols-[128px_minmax(0,1fr)]"
+                  aria-current={active ? "true" : undefined}
+                  className={`group grid w-full grid-cols-[112px_minmax(0,1fr)] gap-3 rounded-xl border-l-2 px-3 py-3 outline-none transition-colors duration-[var(--duration-quick)] motion-reduce:transition-none sm:grid-cols-[128px_minmax(0,1fr)] ${active ? "border-primary bg-primary/[0.07] shadow-[inset_0_1px_0_hsl(var(--background)/0.45)]" : "border-transparent hover:bg-muted/50 focus-within:bg-muted/35"}`}
                   tabIndex={canEdit ? 0 : -1}
                   onKeyDown={(event) => {
                     if (canEdit && event.key.toLocaleLowerCase() === "e" && event.target === event.currentTarget) {
@@ -1171,6 +1213,12 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   );
   const [meetingPendingDelete, setMeetingPendingDelete] = useState<MeetingSummary | null>(null);
   const [transcriptSearch, setTranscriptSearch] = useState("");
+  const [reviewSpeakerId, setReviewSpeakerId] = useState("");
+  const [reviewTimeRange, setReviewTimeRange] = useState<ReviewTimeRange>("all");
+  const [reviewMatchId, setReviewMatchId] = useState<string | null>(null);
+  const [reviewFocusSegmentId, setReviewFocusSegmentId] = useState<string | null>(null);
+  const [followPlayback, setFollowPlayback] = useState(true);
+  const [playbackMeetingTimeMs, setPlaybackMeetingTimeMs] = useState(0);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [reprocessDialogOpen, setReprocessDialogOpen] = useState(false);
   const [reprocessMode, setReprocessMode] = useState<MeetingReprocessMode>("speaker_identity");
@@ -1210,7 +1258,16 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   const meetingWsHasConnectedRef = useRef(false);
   const meetingWsWasConnectedRef = useRef(false);
 
-  useEffect(() => setLastExport(null), [selectedId]);
+  useEffect(() => {
+    setLastExport(null);
+    setTranscriptSearch("");
+    setReviewSpeakerId("");
+    setReviewTimeRange("all");
+    setReviewMatchId(null);
+    setReviewFocusSegmentId(null);
+    setFollowPlayback(true);
+    setPlaybackMeetingTimeMs(0);
+  }, [selectedId]);
 
   const meetingsQuery = useInfiniteQuery<MeetingsResponse, Error>({
     queryKey: MEETING_HISTORY_QUERY_KEY,
@@ -2073,6 +2130,21 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       });
     },
   });
+  const bookmarkMutation = useMutation({
+    mutationFn: async ({ meetingId, atMs }: { meetingId: string; atMs: number }) => {
+      const response = await apiRequest("POST", `/api/meetings/${meetingId}/notes`, {
+        body: t("Bookmark"),
+        atMs,
+      });
+      return response.json() as Promise<MeetingNote>;
+    },
+    onSuccess: (savedNote) => {
+      applyMeetingNoteEvent(queryClient, savedNote.meetingId, savedNote);
+      toast({ title: t("Bookmark saved"), description: t("This moment was added to meeting notes.") });
+    },
+    onError: (error) =>
+      toast({ variant: "destructive", title: t("Bookmark could not be saved"), description: t(error.message) }),
+  });
   const actionItemMutation = useMutation({
     scope: { id: "meeting-action-item-updates" },
     mutationFn: async ({ id, itemId, changes }: { id: string; itemId: string; changes: Record<string, unknown> }) => {
@@ -2438,15 +2510,48 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }),
     [genericSpeakerNames, liveSegments, t],
   );
-  const visibleTranscriptSegments = useMemo(() => {
-    const query = transcriptSearch.trim().toLocaleLowerCase(localeTag);
-    if (!query) return groupedSegments;
-    return groupedSegments.filter(
-      (segment) =>
-        segment.text.toLocaleLowerCase(localeTag).includes(query) ||
-        segment.label.toLocaleLowerCase(localeTag).includes(query),
+  const reviewTimeBounds = useMemo(() => reviewTimeRangeBounds(reviewTimeRange), [reviewTimeRange]);
+  const reviewMatchIds = useMemo(
+    () =>
+      matchingReviewSegmentIds(groupedSegments, {
+        query: transcriptSearch.toLocaleLowerCase(localeTag),
+        speakerId: reviewSpeakerId,
+        ...reviewTimeBounds,
+      }),
+    [groupedSegments, localeTag, reviewSpeakerId, reviewTimeBounds, transcriptSearch],
+  );
+  const reviewMatchIdSet = useMemo(() => new Set(reviewMatchIds), [reviewMatchIds]);
+  const reviewFiltersActive = Boolean(transcriptSearch.trim() || reviewSpeakerId || reviewTimeRange !== "all");
+  const visibleTranscriptSegments = useMemo(
+    () =>
+      reviewFiltersActive ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id)) : groupedSegments,
+    [groupedSegments, reviewFiltersActive, reviewMatchIdSet],
+  );
+  const activePlaybackSegmentId = useMemo(
+    () => activeReviewSegmentId(groupedSegments, playbackMeetingTimeMs),
+    [groupedSegments, playbackMeetingTimeMs],
+  );
+  const reviewMatchIndex = reviewMatchId ? reviewMatchIds.indexOf(reviewMatchId) : -1;
+  const reviewSpeakers = useMemo(() => {
+    const speakers = new Map<string, string>();
+    groupedSegments.forEach((segment) => {
+      if (segment.speakerId && !speakers.has(segment.speakerId)) speakers.set(segment.speakerId, segment.label);
+    });
+    return Array.from(speakers, ([id, label]) => ({ id, label }));
+  }, [groupedSegments]);
+  useEffect(() => {
+    setReviewMatchId((current) =>
+      current && reviewMatchIds.includes(current) ? current : (reviewMatchIds[0] ?? null),
     );
-  }, [groupedSegments, localeTag, transcriptSearch]);
+  }, [reviewMatchIds]);
+  const moveReviewMatch = useCallback(
+    (direction: 1 | -1) => {
+      const nextId = nextReviewMatchId(reviewMatchIds, reviewMatchId, direction);
+      setReviewMatchId(nextId);
+      setReviewFocusSegmentId(nextId);
+    },
+    [reviewMatchId, reviewMatchIds],
+  );
   const analysisOutput = detail?.outputs.find((output) => output.kind === "analysis" && output.status === "completed");
   const currentAnalysisOutput = detail?.outputs.find(
     (output) =>
@@ -2494,6 +2599,48 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   );
   const playbackMixEndMs =
     playbackMix?.durationMs == null ? fallbackPlaybackMixEndMs : playbackMixOriginMs + playbackMix.durationMs;
+  const reviewTimelineMarkers = useMemo(() => {
+    const matchingSegments = reviewFiltersActive
+      ? groupedSegments.filter((segment) => reviewMatchIdSet.has(segment.id))
+      : [];
+    const step = Math.max(1, Math.ceil(matchingSegments.length / 120));
+    const citationSegmentIds = new Set<string>();
+    [analysis?.decisions, analysis?.risks, analysis?.openQuestions].forEach((items) => {
+      if (!Array.isArray(items)) return;
+      items.forEach((raw) => {
+        if (!raw || typeof raw !== "object") return;
+        const segmentIds = (raw as Record<string, unknown>).segmentIds;
+        if (Array.isArray(segmentIds)) segmentIds.forEach((id) => citationSegmentIds.add(String(id)));
+      });
+    });
+    (detail?.actionItems ?? []).forEach((item) => item.segmentIds.forEach((id) => citationSegmentIds.add(id)));
+    return [
+      ...matchingSegments
+        .filter((_, index) => index % step === 0)
+        .map((segment) => ({
+          id: `match-${segment.id}`,
+          atMs: segment.startMs,
+          kind: "match" as const,
+          label: t("Search match"),
+        })),
+      ...(detail?.notes ?? [])
+        .filter((note) => note.id !== "workspace" && note.atMs != null)
+        .map((note) => ({
+          id: `note-${note.id}`,
+          atMs: note.atMs!,
+          kind: "bookmark" as const,
+          label: note.body || t("Bookmark"),
+        })),
+      ...groupedSegments
+        .filter((segment) => citationSegmentIds.has(segment.id))
+        .map((segment) => ({
+          id: `citation-${segment.id}`,
+          atMs: segment.startMs,
+          kind: "citation" as const,
+          label: t("Cited evidence"),
+        })),
+    ];
+  }, [analysis, detail?.actionItems, detail?.notes, groupedSegments, reviewFiltersActive, reviewMatchIdSet, t]);
   const canPlaySpeakerSamples =
     hasPlayableAudio && playbackMixEndMs - playbackMixOriginMs >= MEETING_SPEAKER_SAMPLE_MIN_MS;
   const playableSpeakerIds = useMemo(
@@ -2652,9 +2799,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     void playLoadedAudio(request);
   }, [playLoadedAudio]);
   const handlePlaybackTimeUpdate = useCallback(() => {
+    const playback = captureCurrentPlayback();
+    setPlaybackMeetingTimeMs(Math.max(0, Math.round(playback.meetingTimeMs)));
     const stopAtMs = speakerSnippetEndMsRef.current;
     if (stopAtMs == null) return;
-    if (captureCurrentPlayback().meetingTimeMs < stopAtMs) return;
+    if (playback.meetingTimeMs < stopAtMs) return;
     speakerSnippetEndMsRef.current = null;
     audioRef.current?.pause();
   }, [captureCurrentPlayback]);
@@ -2781,12 +2930,13 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             </div>
             <Button
               type="button"
-              size="icon"
               variant="outline"
+              className="h-9 px-3"
               onClick={() => setLocation("/meetings")}
               aria-label={t("Create meeting")}
             >
               <Plus className="h-4 w-4" />
+              <span>{t("New")}</span>
             </Button>
           </div>
           <MeetingImportInbox
@@ -3376,7 +3526,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             </div>
           ) : (
             <div className="flex h-full min-h-0 flex-col">
-              <header className="flex flex-col gap-4 border-b border-border/60 px-5 py-5 sm:flex-row sm:items-center sm:justify-between md:px-6 lg:px-7">
+              <header className="grid gap-4 border-b border-border/60 px-5 py-5 min-[780px]:grid-cols-[minmax(0,1fr)_auto] min-[780px]:items-center md:px-6 lg:px-7">
                 <div className="min-w-0">
                   <Button
                     type="button"
@@ -3473,137 +3623,148 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     })}
                   </p>
                 </div>
-                {(detail.state === "recording" || detail.state === "paused") && (
-                  <MeetingElapsedTime
-                    startedAt={detail.startedAt}
-                    audioGaps={detail.audioGaps}
-                    paused={detail.state === "paused"}
-                    pausedAtTimelineMs={detail.captureMetadata.pauseStartedAtMs}
-                    pausedAtUtc={detail.captureMetadata.pauseStartedAtUtc}
-                    recordingTimelineOffsetMs={detail.captureMetadata.timelineOffsetMs}
-                    recordingTimelineStartedAtUtc={detail.captureMetadata.timelineStartedAtUtc}
-                    finalProviderMaxDurationSeconds={detailFinalProviderCapability?.maxDurationSeconds}
-                  />
-                )}
-                <div className="flex flex-wrap gap-2">
-                  {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && (
-                    <Button type="button" variant="outline" className="h-9" disabled>
-                      <WavePhysicsLoader className="mr-2" size="inline" />
-                      {detail.reprocessing.speakerIdentityRunning ? t("Refreshing speakers…") : t("Processing…")}
-                    </Button>
+                <div
+                  className="flex flex-wrap items-center gap-3 min-[780px]:justify-end"
+                  data-testid="meeting-detail-actions"
+                  role="group"
+                  aria-label={t("Meeting recording controls")}
+                >
+                  {(detail.state === "recording" || detail.state === "paused") && (
+                    <MeetingElapsedTime
+                      startedAt={detail.startedAt}
+                      audioGaps={detail.audioGaps}
+                      paused={detail.state === "paused"}
+                      pausedAtTimelineMs={detail.captureMetadata.pauseStartedAtMs}
+                      pausedAtUtc={detail.captureMetadata.pauseStartedAtUtc}
+                      recordingTimelineOffsetMs={detail.captureMetadata.timelineOffsetMs}
+                      recordingTimelineStartedAtUtc={detail.captureMetadata.timelineStartedAtUtc}
+                      finalProviderMaxDurationSeconds={detailFinalProviderCapability?.maxDurationSeconds}
+                    />
                   )}
-                  {["ready", "analysis_failed"].includes(detail.state) &&
-                    detail.reprocessing &&
-                    !detail.reprocessing.processingRunning &&
-                    (detail.reprocessing.speakerIdentityAvailable || detail.reprocessing.fullTranscriptAvailable) && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-9 active:scale-[0.97]"
-                        onClick={openReprocessDialog}
-                      >
-                        <RefreshCw className="mr-2 h-3.5 w-3.5" />
-                        {t("Process again")}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {["ready", "analysis_failed"].includes(detail.state) && detail.reprocessing?.processingRunning && (
+                      <Button type="button" variant="outline" className="h-9" disabled>
+                        <WavePhysicsLoader className="mr-2" size="inline" />
+                        {detail.reprocessing.speakerIdentityRunning ? t("Refreshing speakers…") : t("Processing…")}
                       </Button>
                     )}
-                  {detail.state === "ready" && (
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
-                          <Download className="mr-2 h-3.5 w-3.5" />
-                          {t("Save or share")}
-                          <ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end" className="min-w-52">
-                        {(["json", "md", "pdf", "docx"] as const).map((format) => (
-                          <DropdownMenuItem
-                            key={format}
-                            aria-label={t("Export meeting as {{format}}", { format: format.toUpperCase() })}
-                            disabled={exportMutation.isPending}
-                            onSelect={() => {
-                              exportMutation.mutate({
-                                path: `/api/meetings/${detail.id}/export/${format}`,
-                                fallbackName: `${detail.title}.${format}`,
-                              });
-                            }}
-                          >
-                            <FileText className="mr-2 h-3.5 w-3.5" />
-                            {t("Save {{format}}", {
-                              format:
-                                format === "docx"
-                                  ? t("Word document")
-                                  : format === "md"
-                                    ? "Markdown"
-                                    : format.toUpperCase(),
-                            })}
-                          </DropdownMenuItem>
-                        ))}
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem
-                          disabled={exportMutation.isPending || !hasPlayableAudio}
-                          onSelect={() =>
-                            exportMutation.mutate({
-                              path: `/api/meetings/${detail.id}/export/audio`,
-                              fallbackName: `${detail.title} - audio.opus`,
-                            })
-                          }
-                          className="items-start"
+                    {["ready", "analysis_failed"].includes(detail.state) &&
+                      detail.reprocessing &&
+                      !detail.reprocessing.processingRunning &&
+                      (detail.reprocessing.speakerIdentityAvailable || detail.reprocessing.fullTranscriptAvailable) && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-9 active:scale-[0.97]"
+                          onClick={openReprocessDialog}
                         >
-                          <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
-                          <span>
-                            <span className="block">{t("Save compressed audio")}</span>
-                            <span className="mt-0.5 block text-ui-micro leading-4 text-muted-foreground">
-                              {hasPlayableAudio
-                                ? t("Small Opus file for sharing or archiving")
-                                : t("Compressed audio is not retained for this meeting")}
+                          <RefreshCw className="mr-2 h-3.5 w-3.5" />
+                          {t("Process again")}
+                        </Button>
+                      )}
+                    {detail.state === "ready" && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button type="button" variant="outline" className="h-9 active:scale-[0.97]">
+                            <Download className="mr-2 h-3.5 w-3.5" />
+                            {t("Save or share")}
+                            <ChevronDown className="ml-2 h-3.5 w-3.5 text-muted-foreground" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-52">
+                          {(["json", "md", "pdf", "docx"] as const).map((format) => (
+                            <DropdownMenuItem
+                              key={format}
+                              aria-label={t("Export meeting as {{format}}", { format: format.toUpperCase() })}
+                              disabled={exportMutation.isPending}
+                              onSelect={() => {
+                                exportMutation.mutate({
+                                  path: `/api/meetings/${detail.id}/export/${format}`,
+                                  fallbackName: `${detail.title}.${format}`,
+                                });
+                              }}
+                            >
+                              <FileText className="mr-2 h-3.5 w-3.5" />
+                              {t("Save {{format}}", {
+                                format:
+                                  format === "docx"
+                                    ? t("Word document")
+                                    : format === "md"
+                                      ? "Markdown"
+                                      : format.toUpperCase(),
+                              })}
+                            </DropdownMenuItem>
+                          ))}
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            disabled={exportMutation.isPending || !hasPlayableAudio}
+                            onSelect={() =>
+                              exportMutation.mutate({
+                                path: `/api/meetings/${detail.id}/export/audio`,
+                                fallbackName: `${detail.title} - audio.opus`,
+                              })
+                            }
+                            className="items-start"
+                          >
+                            <Headphones className="mr-2 mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            <span>
+                              <span className="block">{t("Save compressed audio")}</span>
+                              <span className="mt-0.5 block text-ui-micro leading-4 text-muted-foreground">
+                                {hasPlayableAudio
+                                  ? t("Small Opus file for sharing or archiving")
+                                  : t("Compressed audio is not retained for this meeting")}
+                              </span>
                             </span>
-                          </span>
-                        </DropdownMenuItem>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem onSelect={() => setEmailDialogOpen(true)}>
-                          <Mail className="mr-2 h-3.5 w-3.5" />
-                          {t("Create email draft")}
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  )}
-                  {detail.state === "recording" && (
-                    <Button
-                      variant="outline"
-                      className="w-32"
-                      disabled={controlMutation.isPending}
-                      onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}
-                    >
-                      <CirclePause className="h-4 w-4" />
-                      {t("Pause")}
-                    </Button>
-                  )}
-                  {detail.state === "paused" && (
-                    <Button
-                      variant="outline"
-                      className="w-32"
-                      disabled={controlMutation.isPending}
-                      onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}
-                    >
-                      <CirclePlay className="h-4 w-4" />
-                      {t("Resume")}
-                    </Button>
-                  )}
-                  {(detail.state === "recording" || detail.state === "paused") && (
-                    <Button
-                      variant="destructive"
-                      className="w-32"
-                      disabled={controlMutation.isPending}
-                      onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}
-                    >
-                      <Square className="h-4 w-4" />
-                      {t("Stop")}
-                    </Button>
-                  )}
-                  {OPEN_STATES.has(detail.state) && controlMutation.isPending && (
-                    <WavePhysicsLoader className="self-center" size="compact" />
-                  )}
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onSelect={() => setEmailDialogOpen(true)}>
+                            <Mail className="mr-2 h-3.5 w-3.5" />
+                            {t("Create email draft")}
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
+                    {(detail.state === "recording" || detail.state === "paused") && (
+                      <div className="flex shrink-0 items-center gap-2">
+                        {detail.state === "recording" ? (
+                          <Button
+                            data-testid="meeting-detail-pause"
+                            variant="outline"
+                            className="min-w-28"
+                            disabled={controlMutation.isPending}
+                            onClick={() => controlMutation.mutate({ id: detail.id, action: "pause" })}
+                          >
+                            <CirclePause className="h-4 w-4" />
+                            {t("Pause")}
+                          </Button>
+                        ) : (
+                          <Button
+                            data-testid="meeting-detail-resume"
+                            variant="outline"
+                            className="min-w-28"
+                            disabled={controlMutation.isPending}
+                            onClick={() => controlMutation.mutate({ id: detail.id, action: "resume" })}
+                          >
+                            <CirclePlay className="h-4 w-4" />
+                            {t("Resume")}
+                          </Button>
+                        )}
+                        <Button
+                          data-testid="meeting-detail-stop"
+                          variant="destructive"
+                          className="min-w-28"
+                          disabled={controlMutation.isPending}
+                          onClick={() => controlMutation.mutate({ id: detail.id, action: "stop" })}
+                        >
+                          <Square className="h-4 w-4" />
+                          {t("Stop")}
+                        </Button>
+                      </div>
+                    )}
+                    {OPEN_STATES.has(detail.state) && controlMutation.isPending && (
+                      <WavePhysicsLoader className="self-center" size="compact" />
+                    )}
+                  </div>
                 </div>
               </header>
 
@@ -3919,7 +4080,18 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
 
               <MeetingWorkspaceTabs value={workspaceView} onChange={setWorkspaceView} />
               {detail.segments.length > 0 && hasPlayableAudio && (
-                <div className="mx-5 mt-3 flex flex-col gap-2 rounded-xl bg-muted/45 px-3 py-2 sm:mx-6 sm:flex-row sm:flex-wrap sm:items-center">
+                <div className="mx-5 mt-3 flex flex-col gap-2 rounded-[16px] bg-muted/40 px-3 py-2.5 shadow-[inset_0_1px_0_hsl(var(--background)/0.55)] sm:mx-6 sm:flex-row sm:flex-wrap sm:items-center">
+                  <div className="flex shrink-0 items-center gap-2 pr-2">
+                    <span className="grid h-8 w-8 place-items-center rounded-[10px] bg-background/75 text-primary">
+                      <Headphones className="h-4 w-4" aria-hidden="true" />
+                    </span>
+                    <div>
+                      <p className="text-xs font-semibold">{t("Playback")}</p>
+                      <p className="font-mono text-ui-micro tabular-nums text-muted-foreground">
+                        {formatOffset(playbackMeetingTimeMs)}
+                      </p>
+                    </div>
+                  </div>
                   <audio
                     ref={audioRef}
                     controls
@@ -3929,7 +4101,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                     onTimeUpdate={handlePlaybackTimeUpdate}
                     onPlay={() => setPlaybackError("")}
                     onError={() => setPlaybackError("The saved meeting audio could not be loaded.")}
-                    className="h-8 w-full sm:ml-auto sm:max-w-md"
+                    className="h-8 w-full sm:ml-auto sm:max-w-lg"
                   />
                   {playbackError && (
                     <p className="text-xs text-destructive sm:basis-full" role="alert">
@@ -3950,8 +4122,8 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
-              <div className="grid min-h-0 flex-1 2xl:grid-cols-[minmax(0,1fr)_300px]">
-                <section className="min-w-0 px-5 py-5 sm:px-6">
+              <div className="mx-3 mb-3 mt-3 grid min-h-0 flex-1 overflow-hidden rounded-[22px] bg-border/55 shadow-[0_18px_44px_-34px_hsl(var(--foreground)/0.4)] sm:mx-4 sm:mb-4 xl:grid-cols-[minmax(0,1fr)_320px] 2xl:grid-cols-[minmax(0,1fr)_340px]">
+                <section className="min-w-0 bg-background/95 px-5 py-5 sm:px-6">
                   {workspaceView !== "transcript" ? (
                     <div className="max-w-3xl">
                       {workspaceView === "chat" ? (
@@ -4148,7 +4320,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           <h3 className="text-sm font-semibold">{t("Transcript")}</h3>
                         </div>
                         <span className="text-xs text-muted-foreground">
-                          {transcriptSearch.trim()
+                          {reviewFiltersActive
                             ? t("{{visible}} of {{total}} parts", {
                                 visible: formatNumber(visibleTranscriptSegments.length),
                                 total: formatNumber(groupedSegments.length),
@@ -4158,154 +4330,189 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                               })}
                         </span>
                       </div>
-                      <label className="relative mb-4 block max-w-xl">
-                        <Search
-                          className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-                          aria-hidden="true"
-                        />
-                        <Input
-                          type="search"
-                          value={transcriptSearch}
-                          onChange={(event) => setTranscriptSearch(event.target.value)}
-                          placeholder={t("Search transcript, speaker, or phrase")}
-                          className="h-9 pl-9 text-sm"
-                          aria-label={t("Search this meeting transcript")}
-                        />
-                      </label>
+                      <MeetingReviewToolbar
+                        searchValue={transcriptSearch}
+                        onSearchChange={(value) => {
+                          setTranscriptSearch(value);
+                          setReviewFocusSegmentId(null);
+                        }}
+                        matchIndex={Math.max(reviewMatchIndex, 0)}
+                        matchCount={reviewMatchIds.length}
+                        onPreviousMatch={() => moveReviewMatch(-1)}
+                        onNextMatch={() => moveReviewMatch(1)}
+                        onPlayCurrentMatch={() => {
+                          const match = groupedSegments.find((segment) => segment.id === reviewMatchId);
+                          if (match) playSegment(match.startMs);
+                        }}
+                        speakers={reviewSpeakers}
+                        speakerId={reviewSpeakerId}
+                        onSpeakerChange={(speakerId) => {
+                          setReviewSpeakerId(speakerId);
+                          setReviewFocusSegmentId(null);
+                        }}
+                        timeRange={reviewTimeRange}
+                        onTimeRangeChange={(range) => {
+                          setReviewTimeRange(range);
+                          setReviewFocusSegmentId(null);
+                        }}
+                        followPlayback={followPlayback}
+                        onFollowPlaybackChange={setFollowPlayback}
+                        currentTimeLabel={formatOffset(playbackMeetingTimeMs)}
+                        canBookmark={hasPlayableAudio && !bookmarkMutation.isPending}
+                        onBookmark={() =>
+                          bookmarkMutation.mutate({ meetingId: detail.id, atMs: playbackMeetingTimeMs })
+                        }
+                        timelineDurationMs={playbackMixEndMs}
+                        timelineCurrentMs={playbackMeetingTimeMs}
+                        timelineMarkers={reviewTimelineMarkers}
+                        onSeek={playSegment}
+                      />
                       {detail.speakers.length > 0 && (
-                        <div className="mb-4 grid gap-2 lg:grid-cols-2">
-                          {detail.speakers.map((speaker) => {
-                            const speakerProfileId = speaker.profileId;
-                            const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
-                            const savedVoiceName = profile?.displayName || "";
-                            const savedVoicePreviewUrl = profile?.preview?.url || "";
-                            const rawMeetingSpeakerName =
-                              genericSpeakerNames.get(speaker.id) || speaker.displayName || speaker.label;
-                            const meetingSpeakerName =
-                              rawMeetingSpeakerName === "Meeting audio" ? t("Meeting audio") : rawMeetingSpeakerName;
-                            const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
-                            const hasSpeakerSnippet =
-                              canPlaySpeakerSamples &&
-                              liveSegments.some(
-                                (segment) => segment.speakerId === speaker.id && segment.endMs > segment.startMs,
-                              );
-                            const renamingProfile =
-                              speakerProfileNameMutation.isPending &&
-                              speakerProfileNameMutation.variables?.profileId === speaker.profileId;
-                            return (
-                              <div
-                                key={speaker.id}
-                                className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs"
-                              >
-                                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                                  <span className="shrink-0 text-muted-foreground">
-                                    {speaker.sourceHint === "microphone" ? t("Mic") : t("Remote")}
-                                  </span>
-                                  <input
-                                    key={`${speaker.id}-${speaker.updatedAt}`}
-                                    defaultValue={meetingSpeakerName}
-                                    aria-label={t("Name in this meeting for {{speaker}}", {
-                                      speaker: meetingSpeakerName,
-                                    })}
-                                    data-testid={`meeting-speaker-name-${speaker.id}`}
-                                    className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
-                                    onBlur={(event) => {
-                                      const displayName = event.target.value.trim();
-                                      if (displayName && displayName !== meetingSpeakerName) {
-                                        speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
-                                      }
-                                    }}
-                                  />
-                                  <button
-                                    type="button"
-                                    disabled={!hasSpeakerSnippet}
-                                    onClick={() => playSpeakerSnippet(speaker.id)}
-                                    className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
-                                    title={
-                                      hasSpeakerSnippet
-                                        ? t("Play a 5 to 8 second sample from this speaker")
-                                        : t("No saved audio sample is available")
-                                    }
-                                  >
-                                    <CirclePlay className="h-3.5 w-3.5" />
-                                    {t("Meeting sample")}
-                                  </button>
-                                </div>
-                                {speakerProfileId && (
-                                  <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/55 pt-2">
-                                    <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
-                                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                                      {t("Saved voice")}
+                        <details className="group mb-4 mt-3 rounded-[16px] border border-border/55 bg-background/45">
+                          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3.5 py-2.5 text-xs font-semibold marker:content-none">
+                            <span className="flex items-center gap-2">
+                              <Users className="h-3.5 w-3.5 text-muted-foreground" />
+                              {t("Speaker names and samples")}
+                            </span>
+                            <span className="flex items-center gap-2 text-ui-micro font-normal text-muted-foreground">
+                              {t("{{count}} speakers", { count: formatNumber(detail.speakers.length) })}
+                              <ChevronDown className="h-3.5 w-3.5 group-open:rotate-180 motion-reduce:transform-none" />
+                            </span>
+                          </summary>
+                          <div className="grid gap-2 border-t border-border/50 p-2.5 lg:grid-cols-2">
+                            {detail.speakers.map((speaker) => {
+                              const speakerProfileId = speaker.profileId;
+                              const profile = speakerProfileId ? speakerProfilesById.get(speakerProfileId) : null;
+                              const savedVoiceName = profile?.displayName || "";
+                              const savedVoicePreviewUrl = profile?.preview?.url || "";
+                              const rawMeetingSpeakerName =
+                                genericSpeakerNames.get(speaker.id) || speaker.displayName || speaker.label;
+                              const meetingSpeakerName =
+                                rawMeetingSpeakerName === "Meeting audio" ? t("Meeting audio") : rawMeetingSpeakerName;
+                              const voiceEvidenceCount = speaker.voiceMatch?.evidenceCount ?? 0;
+                              const hasSpeakerSnippet =
+                                canPlaySpeakerSamples &&
+                                liveSegments.some(
+                                  (segment) => segment.speakerId === speaker.id && segment.endMs > segment.startMs,
+                                );
+                              const renamingProfile =
+                                speakerProfileNameMutation.isPending &&
+                                speakerProfileNameMutation.variables?.profileId === speaker.profileId;
+                              return (
+                                <div
+                                  key={speaker.id}
+                                  className="rounded-xl border border-border/70 bg-muted/25 px-3 py-2.5 text-xs"
+                                >
+                                  <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                    <span className="shrink-0 text-muted-foreground">
+                                      {speaker.sourceHint === "microphone" ? t("Mic") : t("Remote")}
                                     </span>
                                     <input
-                                      key={`${speakerProfileId}-${profile?.updatedAt || "meeting"}`}
-                                      defaultValue={savedVoiceName}
-                                      placeholder={
-                                        speakerProfilesQuery.isLoading
-                                          ? t("Loading name…")
-                                          : t("Saved voice unavailable")
-                                      }
-                                      disabled={!profile || renamingProfile}
-                                      aria-label={t("Saved voice profile name for {{speaker}}", {
-                                        speaker: savedVoiceName || meetingSpeakerName,
+                                      key={`${speaker.id}-${speaker.updatedAt}`}
+                                      defaultValue={meetingSpeakerName}
+                                      aria-label={t("Name in this meeting for {{speaker}}", {
+                                        speaker: meetingSpeakerName,
                                       })}
-                                      className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
+                                      data-testid={`meeting-speaker-name-${speaker.id}`}
+                                      className="min-w-24 flex-1 bg-transparent font-medium outline-none focus-visible:rounded focus-visible:ring-2 focus-visible:ring-ring"
                                       onBlur={(event) => {
                                         const displayName = event.target.value.trim();
-                                        if (profile && displayName && displayName !== savedVoiceName) {
-                                          speakerProfileNameMutation.mutate({
-                                            profileId: speakerProfileId,
-                                            displayName,
-                                          });
+                                        if (displayName && displayName !== meetingSpeakerName) {
+                                          speakerMutation.mutate({ id: detail.id, speakerId: speaker.id, displayName });
                                         }
                                       }}
                                     />
-                                    {renamingProfile && <WavePhysicsLoader size="inline" />}
-                                    {profile && savedVoicePreviewUrl && (
-                                      <button
-                                        type="button"
-                                        onClick={() => void playSavedVoicePreview(profile.id, savedVoicePreviewUrl)}
-                                        className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui-micro font-medium text-muted-foreground hover:bg-background hover:text-foreground"
-                                        title={t("Play the short sample stored for this saved voice")}
-                                      >
-                                        <CirclePlay className="h-3.5 w-3.5" />
-                                        {t("Saved sample")}
-                                      </button>
-                                    )}
-                                    {voiceEvidenceCount > 0 && (
-                                      <span className="text-ui-micro text-muted-foreground">
-                                        {t(
-                                          voiceEvidenceCount === 1
-                                            ? "{{count}} matching sample"
-                                            : "{{count}} matching samples",
-                                          { count: formatNumber(voiceEvidenceCount) },
-                                        )}
-                                      </span>
-                                    )}
-                                    <span className="text-ui-micro text-muted-foreground">
-                                      {profile
-                                        ? t("Updates Settings too")
-                                        : speakerProfilesQuery.isLoading
-                                          ? t("Loading saved profile")
-                                          : t("Profile unavailable")}
-                                    </span>
                                     <button
                                       type="button"
-                                      className="rounded px-1.5 py-1 text-ui-micro text-muted-foreground hover:bg-background hover:text-foreground"
-                                      disabled={splitSpeakerMutation.isPending}
-                                      onClick={() =>
-                                        splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id })
+                                      disabled={!hasSpeakerSnippet}
+                                      onClick={() => playSpeakerSnippet(speaker.id)}
+                                      className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground hover:bg-background hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                                      title={
+                                        hasSpeakerSnippet
+                                          ? t("Play a 5 to 8 second sample from this speaker")
+                                          : t("No saved audio sample is available")
                                       }
-                                      title={t("Do not match this speaker to the saved voice")}
                                     >
-                                      {t("Wrong match")}
+                                      <CirclePlay className="h-3.5 w-3.5" />
+                                      {t("Meeting sample")}
                                     </button>
                                   </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
+                                  {speakerProfileId && (
+                                    <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2 border-t border-border/55 pt-2">
+                                      <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-primary" />
+                                      <span className="shrink-0 text-[11px] text-muted-foreground">
+                                        {t("Saved voice")}
+                                      </span>
+                                      <input
+                                        key={`${speakerProfileId}-${profile?.updatedAt || "meeting"}`}
+                                        defaultValue={savedVoiceName}
+                                        placeholder={
+                                          speakerProfilesQuery.isLoading
+                                            ? t("Loading name…")
+                                            : t("Saved voice unavailable")
+                                        }
+                                        disabled={!profile || renamingProfile}
+                                        aria-label={t("Saved voice profile name for {{speaker}}", {
+                                          speaker: savedVoiceName || meetingSpeakerName,
+                                        })}
+                                        className="min-w-24 flex-1 rounded-md border border-transparent bg-background/65 px-2 py-1 font-medium outline-none hover:border-border focus:border-primary focus:ring-2 focus:ring-primary/15 disabled:opacity-60"
+                                        onBlur={(event) => {
+                                          const displayName = event.target.value.trim();
+                                          if (profile && displayName && displayName !== savedVoiceName) {
+                                            speakerProfileNameMutation.mutate({
+                                              profileId: speakerProfileId,
+                                              displayName,
+                                            });
+                                          }
+                                        }}
+                                      />
+                                      {renamingProfile && <WavePhysicsLoader size="inline" />}
+                                      {profile && savedVoicePreviewUrl && (
+                                        <button
+                                          type="button"
+                                          onClick={() => void playSavedVoicePreview(profile.id, savedVoicePreviewUrl)}
+                                          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-ui-micro font-medium text-muted-foreground hover:bg-background hover:text-foreground"
+                                          title={t("Play the short sample stored for this saved voice")}
+                                        >
+                                          <CirclePlay className="h-3.5 w-3.5" />
+                                          {t("Saved sample")}
+                                        </button>
+                                      )}
+                                      {voiceEvidenceCount > 0 && (
+                                        <span className="text-ui-micro text-muted-foreground">
+                                          {t(
+                                            voiceEvidenceCount === 1
+                                              ? "{{count}} matching sample"
+                                              : "{{count}} matching samples",
+                                            { count: formatNumber(voiceEvidenceCount) },
+                                          )}
+                                        </span>
+                                      )}
+                                      <span className="text-ui-micro text-muted-foreground">
+                                        {profile
+                                          ? t("Updates Settings too")
+                                          : speakerProfilesQuery.isLoading
+                                            ? t("Loading saved profile")
+                                            : t("Profile unavailable")}
+                                      </span>
+                                      <button
+                                        type="button"
+                                        className="rounded px-1.5 py-1 text-ui-micro text-muted-foreground hover:bg-background hover:text-foreground"
+                                        disabled={splitSpeakerMutation.isPending}
+                                        onClick={() =>
+                                          splitSpeakerMutation.mutate({ id: detail.id, speakerId: speaker.id })
+                                        }
+                                        title={t("Do not match this speaker to the saved voice")}
+                                      >
+                                        {t("Wrong match")}
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </details>
                       )}
                       <div>
                         {groupedSegments.length === 0 ? (
@@ -4333,6 +4540,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             key={detail.id}
                             segments={visibleTranscriptSegments}
                             search={transcriptSearch}
+                            activeSegmentId={activePlaybackSegmentId}
+                            focusSegmentId={reviewFocusSegmentId}
+                            followPlayback={followPlayback}
+                            onFollowPlaybackChange={setFollowPlayback}
                             hasPlayableAudio={hasPlayableAudio}
                             isLive={detail.state === "recording" || detail.state === "paused"}
                             onPlay={playSegment}
@@ -4354,7 +4565,30 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   )}
                 </section>
 
-                <aside className="border-t border-border/60 bg-muted/15 px-5 py-5 2xl:border-l 2xl:border-t-0">
+                <aside className="border-t border-border/60 bg-muted/35 px-5 py-5 xl:border-l xl:border-t-0">
+                  {workspaceView === "transcript" && Boolean(analysis?.executiveSummary) && (
+                    <section className="mb-5 border-b border-border/60 pb-5">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-primary">
+                        {t("Meeting brief")}
+                      </p>
+                      <h3 className="mt-1.5 font-heading text-lg font-semibold tracking-[-0.025em]">
+                        {t("What matters now")}
+                      </h3>
+                      <p className="mt-2 text-pretty text-sm leading-6 text-foreground/80">
+                        {String(analysis?.executiveSummary ?? "")}
+                      </p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="mt-2 h-8 -ml-2 px-2 text-xs active:scale-[0.97]"
+                        onClick={() => setWorkspaceView("overview")}
+                      >
+                        {t("Open full brief")}
+                        <ChevronRight className="ml-1.5 h-3.5 w-3.5" />
+                      </Button>
+                    </section>
+                  )}
                   <div className="flex items-center gap-2">
                     <NotebookPen className="h-4 w-4 text-muted-foreground" />
                     <h3 className="text-sm font-semibold">{t("Live notes")}</h3>

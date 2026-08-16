@@ -228,6 +228,13 @@ Frontend and shell:
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
 - `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Settings,
   Debug Console, Transcript Detail.
+- Meeting review keeps its timeline math and deterministic search/filter rules
+  in `Frontend/client/src/lib/meeting-review-timeline.ts`; do not duplicate them
+  in row rendering or transport code. `MeetingReviewToolbar` owns the visible
+  review controls, while `Meetings.tsx` remains the audio element and durable
+  note hand-off owner. Playback may follow the active virtual row only while
+  Follow is enabled; a manual review scroll must turn Follow off rather than
+  fight the user. Keep live Latest-text following as a separate behavior.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.

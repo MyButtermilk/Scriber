@@ -266,6 +266,8 @@ function harnessErrorCodeForPhase(phase) {
     "validate-meeting-readiness": "meeting_readiness_failed",
     "rename-meeting-workspace": "meeting_workspace_failed",
     "edit-meeting-workspace-segment": "meeting_workspace_failed",
+    "review-meeting-transcript": "meeting_workspace_failed",
+    "bookmark-meeting-moment": "meeting_workspace_failed",
     "undo-meeting-workspace-segment": "meeting_workspace_failed",
     "save-meeting-workspace-note": "meeting_workspace_failed",
     "search-meeting-workspace-segment": "meeting_workspace_failed",
@@ -998,6 +1000,109 @@ async function run(options) {
         selector: `[data-testid="meeting-transcript-segment-${segmentId}"]`,
       },
     );
+    activePhase = "review-meeting-transcript";
+    const reviewSearchSelector = '[data-testid="meeting-review-search"]';
+    const reviewCountSelector = '[data-testid="meeting-review-match-count"]';
+    const reviewNextSelector = '[data-testid="meeting-review-next"]';
+    const reviewFollowSelector = '[data-testid="meeting-review-follow"]';
+    const reviewBookmarkSelector = '[data-testid="meeting-review-bookmark"]';
+    await page.waitForSelector('[data-testid="meeting-review-timeline"]', {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    await page.focus(reviewSearchSelector);
+    await page.keyboard.type(workspaceMarker);
+    await page.waitForFunction(
+      ({ countSelector, nextSelector }) => {
+        const count = document.querySelector(countSelector)?.textContent?.trim() ?? "";
+        const next = document.querySelector(nextSelector);
+        return (
+          count.length > 0 &&
+          !count.toLocaleLowerCase().includes("no match") &&
+          next instanceof HTMLButtonElement &&
+          !next.disabled
+        );
+      },
+      { timeout: options.navigationTimeoutMs },
+      { countSelector: reviewCountSelector, nextSelector: reviewNextSelector },
+    );
+    const followWasEnabled = await page.$eval(reviewFollowSelector, (input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Meeting review follow control is unavailable");
+      }
+      return input.checked;
+    });
+    if (!followWasEnabled) {
+      throw new Error("Meeting review did not enable playback following by default");
+    }
+    await page.$eval(reviewFollowSelector, (input) => {
+      if (!(input instanceof HTMLInputElement)) {
+        throw new Error("Meeting review follow control is unavailable");
+      }
+      input.click();
+      input.click();
+    });
+    await page.focus(reviewSearchSelector);
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      (selector) => document.querySelector(selector)?.getAttribute("data-playback-active") === "true",
+      { timeout: options.navigationTimeoutMs },
+      `[data-testid="meeting-transcript-segment-${segmentId}"]`,
+    );
+    activePhase = "bookmark-meeting-moment";
+    const bookmarkResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === `/api/meetings/${encodeURIComponent(meetingId)}/notes`
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.$eval(reviewBookmarkSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting review bookmark control is not actionable");
+      }
+      button.click();
+    });
+    const bookmarkResponse = await bookmarkResponsePromise;
+    const bookmark = await bookmarkResponse.json().catch(() => null);
+    if (!bookmarkResponse.ok() || !String(bookmark?.id ?? "") || typeof bookmark?.atMs !== "number") {
+      throw new Error("Meeting review bookmark was not persisted");
+    }
+    const bookmarkedDetail = await browserJson(page, "GET", `/api/meetings/${encodeURIComponent(meetingId)}`);
+    if (
+      !Array.isArray(bookmarkedDetail?.notes) ||
+      !bookmarkedDetail.notes.some(
+        (note) => String(note?.id ?? "") === String(bookmark.id) && Number(note?.atMs) === Number(bookmark.atMs),
+      )
+    ) {
+      throw new Error("Meeting review bookmark was absent from the durable Meeting detail");
+    }
+    activePhase = "review-meeting-transcript";
+    await page.$eval(reviewFollowSelector, (input) => {
+      if (!(input instanceof HTMLInputElement) || !input.checked) {
+        throw new Error("Meeting review follow state changed unexpectedly");
+      }
+      input.click();
+    });
+    await page.focus(reviewSearchSelector);
+    await page.keyboard.down("Control");
+    await page.keyboard.press("A");
+    await page.keyboard.up("Control");
+    await page.keyboard.press("Backspace");
+    await page.waitForFunction(
+      (selector) => {
+        const input = document.querySelector(selector);
+        return input instanceof HTMLInputElement && input.value === "";
+      },
+      { timeout: options.navigationTimeoutMs },
+      reviewSearchSelector,
+    );
     activePhase = "search-meeting-workspace-segment";
     const search = await browserJson(
       page,
@@ -1452,6 +1557,8 @@ async function run(options) {
       workspaceTitleVerified: true,
       workspaceSegmentVerified: true,
       workspaceNoteVerified: true,
+      meetingReviewVerified: true,
+      meetingBookmarkVerified: true,
       meetingReprocessVerified: true,
       meetingArtifactJsonVerified: true,
       meetingArtifactDocumentVerified: true,

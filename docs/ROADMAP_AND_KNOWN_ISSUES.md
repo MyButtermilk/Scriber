@@ -873,7 +873,7 @@ Priority order:
 | `UX-MTG-04` | P1 | Retranscribe/reprocess from canonical audio | A poor model choice no longer requires reimport or rerecording |
 | `UX-MTG-05` | P1 | Explicit calendar-event selection and participant snapshot (implemented) | The correct event and recipients are attached before recording |
 | `UX-MTG-06` | P1 | Confidence-driven speaker review (core implemented) | Ambiguous speakers can be resolved quickly and safely |
-| `UX-MTG-07` | P1 | Playback follow, match navigation, and bookmarks | Review becomes one synchronized timeline workflow |
+| `UX-MTG-07` | P1 | Playback follow, match navigation, and bookmarks (implemented) | Review is one synchronized timeline workflow |
 | `UX-MTG-08` | P1 | Versioned analysis/output templates | Standups, 1:1s, sales calls, and interviews produce the right output |
 | `UX-MTG-09` | P2 | Rich Ask Meeting and action workspace | Answers and tasks become reusable, cited outcomes |
 | `UX-MTG-10` | P2 | Global Meeting-library search | Users can retrieve evidence across months of meetings |
@@ -892,8 +892,9 @@ overflow. An app-shell capture pill keeps title, elapsed time, Mic/System
 health, Pause/Resume, Stop, and return navigation visible across routes. Ready
 canonical segments support inline correction and undo with optimistic
 concurrency, immutable edit history, FTS refresh, WebSocket cache updates, and
-visibly stale analysis outputs. Automatic playback following, templates, and
-global library search remain unimplemented until usage evidence justifies them.
+visibly stale analysis outputs. Playback following and navigable review search
+are now implemented; templates and global library search remain unimplemented
+until usage evidence justifies them.
 `UX-MTG-05` is implemented with a refreshable all-day Outlook event picker,
 explicit no-event selection, participant details, and an immutable event
 snapshot. `UX-MTG-06` now implements the safe core: Voice/account-first local
@@ -1113,12 +1114,14 @@ and Search without changing the frozen export-recipient set.
 
 #### `UX-MTG-07` - One synchronized review timeline
 
-**Problem**
+**Implemented behavior (2026-08-16)**
 
-Timestamp click-to-seek exists, but playback does not visibly follow and scroll
-the current segment. Local search only filters the list; users cannot navigate
-`3 of 12` matches. Timestamped notes are not presented as a first-class bookmark
-flow.
+The transcript is now the primary review surface in a calm, rounded workspace,
+with a compact Meeting Brief and live notes as its companion column on wide
+screens. A dedicated review toolbar owns navigable search, speaker/time filters,
+playback following, timestamp bookmarks, and one evidence-marker rail. The
+technical and speaker-management controls remain available through progressive
+disclosure instead of competing with the transcript.
 
 **Interaction specification**
 
@@ -1195,6 +1198,90 @@ without a measured semantic-search need. Reindex edits and active-revision
 changes, remove deleted/purged content correctly, and test multilingual tokens,
 pagination, filters, more than 10,000 Meetings, keyboard removal of filter chips,
 and accessible result names.
+
+#### Meetily deep comparison and Codex implementation plan
+
+**Pinned comparison:** Meetily
+[`0281737d`](https://github.com/Zackriya-Solutions/meetily/tree/0281737d87d26352fb0adc78c8c0975f691b23d1)
+(`v0.4.0` source, inspected 2026-08-16) against this Scriber revision. The
+comparison treats Meetily as product and architecture evidence, not as a source
+of code, prompts, assets, or schemas.
+
+| Axis | Meetily evidence | Scriber evidence and decision |
+| --- | --- | --- |
+| Product boundary | Local Whisper/Parakeet transcription, optional local or cloud summary providers, import/retranscription, transcript recovery, templates, and a compact two-pane Meeting view | Scriber already covers bot-free capture, local/cloud transcription, import/reprocessing, recovery, speaker review, Outlook context, notes, Ask, exports, email drafts, and delivery. Preserve that broader workflow; borrow only interactions that shorten review. |
+| Audio capture | One in-process Rust `RecordingManager`, process-global `Mutex<Option<...>>` plus a separate atomic recording flag, CPAL mic/system streams, an unbounded channel, and a simple 50 ms ring-buffer mix ([commands](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/recording_commands.rs), [pipeline](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/pipeline.rs)) | Scriber deliberately keeps physical WASAPI capture in a supervised Rust sidecar, uses one shared clock for raw mic/system/AEC3-clean tracks, and admits it through a durable cross-process lease. Do not replace this with a process-global frontend manager or mixed-only capture. |
+| Lifecycle ownership | Start/stop/pause/resume mutate several globals and listeners; `RecordingManager` contains an `unsafe impl Send` ([manager](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/recording_manager.rs)) | Scriber owns lifecycle in `ScriberWebController`, exposes strict route commands/outcomes, reserves finalization before irreversible stop, and retains native ownership until stop is confirmed. Keep that deep owner; do not move orchestration into React or shallow route adapters. |
+| Crash recovery | The browser mirrors transcript events into IndexedDB while Rust encodes 30-second MP4 files. Recovery later scans filenames, estimates every chunk as 30 seconds, and concatenates them ([incremental saver](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/incremental_saver.rs), [recovery hook](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src/hooks/useTranscriptRecovery.ts)) | Scriber uses prepared/complete audio-chunk commits, hashes, shared-timeline metadata, base/delta transcript checkpoints, durable Meeting states, corruption fallback, and restart recovery in SQLite. The single durable authority is materially stronger than a browser/filesystem join and stays unchanged. |
+| Transcription | Local Whisper and Parakeet engines are first-class and can use platform GPU features; transcript events are buffered and reordered in React | Scriber supports multiple frozen provider routes plus local ONNX, separates live preview from canonical final artifacts, and snapshots route/model evidence. Retain the provider-neutral artifact boundary; a future local GPU route must enter through it rather than fork Meeting semantics. |
+| Review interaction | `useAutoScroll` stops following when the user scrolls away; `VirtualizedTranscriptView` windows rows after ten segments ([auto-scroll](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src/hooks/useAutoScroll.ts), [virtual transcript](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src/components/VirtualizedTranscriptView.tsx)) | Scriber keeps its existing virtualizer and separate live-text following, but now adds canonical active-segment selection, opt-out playback following, ordered match navigation, speaker/time filters, timestamp bookmarks, and evidence markers. The UI adapts Meetily's calm two-pane hierarchy without copying its hook, code, or weaker persistence model. |
+| Summary templates | Built-in, bundled, and user JSON files can override the same mutable template id; validation covers non-empty strings and three format labels. A rendered fingerprint participates in one summary cache ([types](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/summary/templates/types.rs), [loader](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/summary/templates/loader.rs), [service](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/summary/service.rs)) | Template choice is useful, but mutable filesystem ids are insufficient for immutable prior output, schema validation, and screen/email/export parity. Follow with `UX-MTG-08`: versioned durable definitions and an exact template snapshot on every output. |
+| Persistence model | Meetings, transcript rows, summary-process rows, chunks, settings, and one note row are straightforward SQLite repositories; there is no comparable durable capture/finalization state machine or immutable artifact lineage | Scriber pays more complexity for recoverability: explicit state transitions, transcript edit versions, stale-output projection, immutable provider stages, and durable cleanup intents. Keep these invariants and improve their interfaces incrementally instead of adopting Meetily's simpler schema. |
+| Privacy/security | Meetily is local-first but may send summaries to configured cloud providers, ships opt-in PostHog analytics, gives the main WebView broad `$APPDATA`/filesystem permissions, and exposes many Tauri commands directly | Scriber keeps browser access behind a per-run token, resolves privileged work through narrow loopback/shell boundaries, redacts support evidence, and has no product telemetry dependency. Keep least-privilege and explicit provider disclosure; do not equate local capture with an entirely local workflow. |
+| Modularity/testability | Meetily's Rust core contains large command/engine modules, global registries, legacy/backup source files, about 194 Rust unit-test functions, no frontend test script, and no automatic PR test workflow at the pinned revision | Scriber still has large controller/store/page ownership units, but route-local ports, cancellation barriers, supervisors, repository-wide static gates, component tests, real backend browser smoke, and installed Tauri gates provide safer seams. Continue bounded deep-module extraction; do not copy the global-manager shape. |
+| Platform/release | Meetily builds Windows/macOS/Linux variants with several acceleration features and updater artifacts | Scriber is intentionally Windows-first and has stronger exact-runtime, sidecar, updater, signing, upgrade/uninstall, physical-audio, and privacy gates. Cross-platform support is a separate product decision, not an incidental benefit of this comparison. |
+
+**Implemented slice: `UX-MTG-07`, one synchronized review timeline.**
+This was the highest coherent user-visible gain not already implemented, and it
+uses existing durable `MeetingSegment`, `MeetingNote.atMs`, audio-asset,
+analysis-citation, and action-item evidence rather than adding a competing
+store.
+
+Codex implementation sequence and acceptance:
+
+1. Extract pure review-timeline policy from the large Meetings page: canonical
+   active-segment selection over exact/estimated timestamps, deterministic
+   text/speaker/time matching, wrap-around navigation, and normalized marker
+   positions. Its interface is the unit-test surface; React must not rediscover
+   those rules.
+2. Turn the transcript viewport into the interaction owner for playback Follow.
+   The active row is visibly and accessibly marked; playback scrolls it only
+   while Follow is enabled; wheel/touch/manual scroll disables Follow; the
+   explicit control restores it. Live `Latest text` behavior remains separate.
+3. Replace filter-only search with an ordered result workflow: visible match
+   count, current `N of M`, Previous/Next, Enter-to-play, wrap-around, speaker
+   filter, and bounded start/end-time filters. Search continues to work with
+   purged audio while playback controls become unavailable.
+4. Add a timestamp Bookmark action at the authoritative current Meeting clock.
+   Persist through the existing `POST /api/meetings/{id}/notes` boundary, then
+   reconcile the returned note through the existing query/WebSocket event
+   contract. Optional text is bounded and explicit; no generated output can
+   create a bookmark automatically.
+5. Render one accessible marker rail for bookmarks, analysis decisions, action
+   citations, and chapter/section citations when present. Marker clicks use the
+   existing Meeting-clock-to-asset conversion; missing/purged audio leaves the
+   evidence visible but disabled for playback.
+6. Prove the policy with unit tests, the note boundary with real aiohttp plus
+   SQLite, React behavior with component tests (manual-scroll opt-out, keyboard
+   navigation, filters, wrap, active row), and the final vertical slice with a
+   real `create_app` browser flow. Extend the installed Tauri Meeting smoke so
+   audio playback advances through at least two segments, Follow moves the
+   active row, a manual scroll disables it, search navigation seeks, and a
+   bookmark survives reload in SQLite. Include a long virtualized fixture and
+   narrow-width/focus assertions.
+7. Record the final verification boundary and reassess `UX-MTG-08`. Do not
+   claim physical Teams/microphone coexistence from a synthetic audio fixture.
+
+Implementation evidence on the 2026-08-16 worktree: the pure timeline and
+component suites pass inside the complete 93-library/64-component frontend
+run; TypeScript and the production Vite build pass on the pinned Node 26.5.0;
+159 focused Meeting/API/smoke-contract tests pass. The complete Chrome product
+smoke passes 23 interaction flows across 11 routes with zero critical console,
+page, or unhandled-rejection errors and zero mobile overflow; retained result
+SHA-256 is
+`67E8518E33CA05155D5B96A8FE97BA1C6C7B489C7163665E4EA892CD45ABF957`.
+The current Tauri driver verifies search, Enter-to-play, Follow, the marker
+rail, and a durable bookmark. The final fresh Tauri/WebView2 build uses MSVC
+plus the repository-pinned Windows SDK `10.0.26100.6584` from an isolated
+Microsoft C++ NuGet extraction. Its real Rust-sidecar/Python/ONNX/SQLite/React
+run passes `recording -> paused -> recording -> finalizing -> ready ->
+finalizing -> ready`, persists and reads back the bookmark, exercises the
+remaining Workspace/Processing/Artifact/Catalog/Live-Mic path, reports zero
+console/page/request failures, and verifies complete cleanup. Privacy-minimal
+result:
+`tmp/meeting-e2e/runs/8e529a8d51774ff8b71063c72f7d4556/result.json`,
+SHA-256
+`54E1B8AE3DF19A5F7D2F0868F005E1C9C2E7FD6F427E0BE254BEF50A1FDA83CB`.
 
 #### Primary-source research and adaptation rules
 

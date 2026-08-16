@@ -1159,8 +1159,13 @@ Key modules:
   durable elapsed-time presentation, retained last-transcript preview, and
   transcript-excerpt history cards.
 - `Frontend/client/src/pages/Meetings.tsx`: responsive preflight, durable live
-  capture state, long-session readiness, checkpoint freshness, timestamped
-  review, analysis, and delivery workspace.
+  capture state, long-session readiness, checkpoint freshness, synchronized
+  review, analysis, and delivery workspace. Review keeps the virtualized
+  transcript primary and places the Meeting Brief/live notes in a companion
+  column on wide screens. `meeting-review-timeline.ts` owns deterministic
+  active-segment, search/filter, wrap, and marker-position policy;
+  `MeetingReviewToolbar` owns the matching controls without taking audio or
+  persistence ownership from the page/controller boundaries.
 - `Frontend/client/src/pages/Youtube.tsx`: YouTube search, URL workflow,
   explicit loading/empty/start states, recent videos, and thumbnail display.
 - `Frontend/client/src/pages/FileTranscribe.tsx`: file upload and drag/drop,

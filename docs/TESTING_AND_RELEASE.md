@@ -2336,7 +2336,14 @@ also exercises the extracted Meeting Workspace title, segment edit/search/
 history/undo, and note paths plus the extracted Meeting Artifacts JSON/PDF
 exports, email preview/draft, and private byte-range playback paths through the
 production `create_app`, document renderer, public storage root, and SQLite
-store. It finally reads the extracted Meeting Catalog list and enriched detail,
+store. The review portion searches the corrected transcript through the visible
+toolbar, requires a real match counter and enabled navigation, verifies the
+default Follow state, uses Enter to start the matching saved-audio segment,
+requires that segment to become playback-active, and persists a timestamp
+bookmark through the production Meeting Notes route. The marker rail must be
+visible before these actions; its bookmark remains part of the durable Meeting
+detail rather than browser-only state. It finally reads the extracted Meeting
+Catalog list and enriched detail,
 confirms discard through the visible React dialog, and waits for both the UI
 collection and durable SQLite catalogue to remove the Meeting. The same WebView
 then navigates to Live Mic, starts and stops through the visible microphone
