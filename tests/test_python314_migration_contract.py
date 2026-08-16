@@ -32,7 +32,7 @@ def test_release_and_test_constraints_share_one_sorted_pin_block() -> None:
         assert "*" not in specifiers[0].version
 
 
-def test_all_python_and_release_workflows_pin_exact_python3146() -> None:
+def test_all_python_and_release_workflows_pin_exact_python3147() -> None:
     workflow_paths = (
         ".github/workflows/hybrid-pr-checks.yml",
         ".github/workflows/python-full-suite.yml",
@@ -43,11 +43,11 @@ def test_all_python_and_release_workflows_pin_exact_python3146() -> None:
     for relative in workflow_paths:
         raw = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert "3.13.14" not in raw
-        assert "3.14.6" in raw
+        assert "3.14.7" in raw
 
         workflow = yaml.safe_load(raw)
         if relative.endswith(("release-cache-maintenance.yml", "release-windows.yml")):
-            assert workflow["env"]["SCRIBER_RELEASE_PYTHON_VERSION"] == "3.14.6"
+            assert workflow["env"]["SCRIBER_RELEASE_PYTHON_VERSION"] == "3.14.7"
 
 
 def test_static_python_tooling_targets_python314() -> None:
@@ -72,8 +72,8 @@ def test_product_numpy_and_runtime_locks_target_one_cp314_abi() -> None:
     assert artifact["platformTag"] == "win_amd64"
     assert artifact["relativePath"].endswith("-cp314-cp314-win_amd64.whl")
     assert runtime_lock["target"] == {
-        "pythonVersion": "3.14.6",
+        "pythonVersion": "3.14.7",
         "cacheTag": "cpython-314",
         "architecture": "win_amd64",
-        "cpythonTag": "v3.14.6",
+        "cpythonTag": "v3.14.7",
     }

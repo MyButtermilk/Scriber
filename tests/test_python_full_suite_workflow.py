@@ -155,7 +155,7 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         & job.keys()
     )
     assert setup["uses"] == "actions/setup-python@v6"
-    assert setup["with"]["python-version"] == "3.14.6"
+    assert setup["with"]["python-version"] == "3.14.7"
     assert setup["with"]["cache"] == "pip"
     assert setup["with"]["cache-dependency-path"].splitlines() == [
         "requirements-base.txt",

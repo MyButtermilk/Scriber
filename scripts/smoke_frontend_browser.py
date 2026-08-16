@@ -2436,11 +2436,17 @@ async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) 
             label="summary-reading-track",
             timeout_sec=timeout_sec,
             expression=r"""
-(() => {
+(async () => {
   const documentRoot = document.querySelector('.summary-document[data-summary-format="html"]');
   const overview = documentRoot?.querySelector(':scope > .summary-overview');
   const detail = documentRoot?.querySelector(':scope > section:not(.summary-overview)');
-  if (!documentRoot || !overview || !detail) {
+  const appScroller = document.querySelector('[data-app-scroll-container="true"]');
+  const toc = document.querySelector('.summary-toc');
+  const summaryTrigger = document.querySelector(
+    '.transcript-detail-accordion > .neu-recording-row:first-child button',
+  );
+  const stickyHeader = document.querySelector('.transcript-detail-header-sticky');
+  if (!documentRoot || !overview || !detail || !appScroller || !toc || !summaryTrigger || !stickyHeader) {
     return { ok: false, reason: 'summary document sections are not ready' };
   }
   const rootRect = documentRoot.getBoundingClientRect();
@@ -2450,11 +2456,36 @@ async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) 
   const leftDelta = Math.abs(overviewRect.left - detailRect.left);
   const overflowX = Math.max(0, documentRoot.scrollWidth - documentRoot.clientWidth);
   const viewportWidth = window.innerWidth;
+  const previousMinHeight = documentRoot.style.minHeight;
+  documentRoot.style.minHeight = '1600px';
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const initialScrollTop = appScroller.scrollTop;
+  const initialTocTop = toc.getBoundingClientRect().top;
+  const initialTriggerTop = summaryTrigger.getBoundingClientRect().top;
+  const scrollDelta = Math.min(48, Math.max(0, appScroller.scrollHeight - appScroller.clientHeight));
+  appScroller.scrollTop = initialScrollTop + scrollDelta;
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const scrolledTocTop = toc.getBoundingClientRect().top;
+  const scrolledTriggerTop = summaryTrigger.getBoundingClientRect().top;
+  const triggerStyle = getComputedStyle(summaryTrigger);
+  const triggerTopRadius = Math.min(
+    Number.parseFloat(triggerStyle.borderTopLeftRadius) || 0,
+    Number.parseFloat(triggerStyle.borderTopRightRadius) || 0,
+  );
+  const tocDrift = Math.abs(scrolledTocTop - initialTocTop);
+  const triggerDrift = Math.abs(scrolledTriggerTop - initialTriggerTop);
+  appScroller.scrollTop = initialScrollTop;
+  documentRoot.style.minHeight = previousMinHeight;
+  await new Promise((resolve) => requestAnimationFrame(resolve));
   return {
     ok: viewportWidth === __EXPECTED_VIEWPORT_WIDTH__
       && widthDelta <= 1
       && leftDelta <= 1
-      && overflowX <= 1,
+      && overflowX <= 1
+      && scrollDelta > 0
+      && tocDrift <= 1
+      && triggerDrift <= 1
+      && triggerTopRadius >= 16,
     viewportWidth,
     viewportHeight: window.innerHeight,
     rootWidth: rootRect.width,
@@ -2463,6 +2494,14 @@ async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) 
     widthDelta,
     leftDelta,
     overflowX,
+    scrollDelta,
+    initialTocTop,
+    scrolledTocTop,
+    tocDrift,
+    initialTriggerTop,
+    scrolledTriggerTop,
+    triggerDrift,
+    triggerTopRadius,
     snapshotKind: overview.querySelector(':scope > .summary-snapshot--facts')
       ? 'facts'
       : overview.querySelector(':scope > .summary-snapshot--takeaways')

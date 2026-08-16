@@ -9,7 +9,7 @@ _PIPECAT_PIN = re.compile(
     r"^\s*pipecat-ai(?:\[[^\]]+\])?==([^\s;]+)",
     flags=re.IGNORECASE,
 )
-_REQUIRED_PYTHON = (3, 14, 6)
+_REQUIRED_PYTHON = (3, 14, 7)
 _REQUIRED_CACHE_TAG = "cpython-314"
 
 
@@ -27,7 +27,7 @@ def main() -> int:
     if actual_python != _REQUIRED_PYTHON or actual_cache_tag != _REQUIRED_CACHE_TAG:
         print(
             "Scriber project Python is out of date: "
-            "CPython 3.14.6 (cpython-314) is required, but "
+            "CPython 3.14.7 (cpython-314) is required, but "
             f"{sys.version.split()[0]} ({actual_cache_tag}) was found. "
             "Recreate venv with `py -3.14 -m venv venv` before running "
             "Scriber commands.",

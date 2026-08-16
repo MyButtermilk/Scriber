@@ -2,14 +2,23 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createRequire } from "node:module";
+import {
+  expectedFetchAbortAllowed,
+  expectedMeetingDiscardConsoleAllowed,
+  expectedMeetingDiscardNotFoundAllowed,
+} from "./lib/browser_diagnostics_gate.mjs";
 import { meetingDeviceTestPassed } from "./lib/meeting_device_test_gate.mjs";
 
 const require = createRequire(import.meta.url);
 let activePhase = "bootstrap";
 const diagnostics = {
   consoleErrorCount: 0,
+  expectedFetchAbortCount: 0,
+  expectedMeetingDiscardConsoleCount: 0,
+  expectedMeetingDiscardNotFoundCount: 0,
   pageErrorCount: 0,
   requestFailureCount: 0,
+  requestFailureKinds: {},
 };
 const observedStates = [];
 const meetingStates = new Set([
@@ -35,6 +44,30 @@ const meetingDebug = {
   segmentCount: null,
   errorCode: "",
 };
+
+function isExpectedFetchAbort(request, phase, observedCount) {
+  return expectedFetchAbortAllowed(
+    {
+      resourceType: request.resourceType(),
+      method: request.method(),
+      errorText: request.failure()?.errorText,
+    },
+    phase,
+    observedCount,
+  );
+}
+
+function requestFailureKind(request, phase) {
+  const rawPhase = String(phase ?? "unknown").toLowerCase();
+  const phaseName = /^[a-z0-9-]{1,64}$/.test(rawPhase) ? rawPhase : "other";
+  const rawResourceType = String(request.resourceType() ?? "other").toLowerCase();
+  const resourceType = /^[a-z-]{1,24}$/.test(rawResourceType)
+    ? rawResourceType
+    : "other";
+  const rawReason = String(request.failure()?.errorText ?? "other");
+  const reason = /^net::[A-Z0-9_]{1,64}$/.test(rawReason) ? rawReason : "other";
+  return `${phaseName}:${resourceType}:${reason}`;
+}
 
 function parseArguments(argv) {
   const options = {
@@ -216,6 +249,7 @@ function harnessErrorCodeForPhase(phase) {
     "navigate-meetings": "meeting_page_navigation_failed",
     "resolve-backend-access": "backend_access_unavailable",
     "verify-managed-backend": "backend_not_ready",
+    "wait-frontend-websocket": "webview_connection_failed",
     "prepare-meeting-form": "meeting_start_control_unavailable",
     "wait-meeting-start-enabled": "meeting_start_control_unavailable",
     "start-meeting": "meeting_start_failed",
@@ -229,7 +263,21 @@ function harnessErrorCodeForPhase(phase) {
     "validate-transcript-content": "meeting_transcript_empty",
     "validate-transcript-marker": "meeting_marker_missing",
     "validate-audio-gap": "meeting_audio_gap_missing",
-    "validate-page-errors": "webview_page_error",
+    "validate-meeting-readiness": "meeting_readiness_failed",
+    "rename-meeting-workspace": "meeting_workspace_failed",
+    "edit-meeting-workspace-segment": "meeting_workspace_failed",
+    "undo-meeting-workspace-segment": "meeting_workspace_failed",
+    "save-meeting-workspace-note": "meeting_workspace_failed",
+    "search-meeting-workspace-segment": "meeting_workspace_failed",
+    "reprocess-meeting-transcript": "meeting_reprocess_failed",
+    "validate-meeting-artifacts": "meeting_artifact_failed",
+    "validate-meeting-catalog": "meeting_catalog_failed",
+    "discard-meeting-through-ui": "meeting_catalog_failed",
+    "navigate-live-mic": "live_mic_navigation_failed",
+    "start-live-mic-through-ui": "live_mic_start_failed",
+    "stop-live-mic-through-ui": "live_mic_stop_failed",
+    "validate-live-mic-transcript": "live_mic_transcript_failed",
+    "validate-browser-diagnostics": "webview_page_error",
   };
   return codes[phase] ?? "harness_unexpected_error";
 }
@@ -377,6 +425,55 @@ async function waitForMeetingState(
   throw new Error(`meeting state deadline expired after state ${lastState}`);
 }
 
+async function waitForLiveMicState(page, sessionId, acceptedStates, timeoutMs) {
+  const accepted = new Set(acceptedStates);
+  const deadline = Date.now() + timeoutMs;
+  let lastState = "unknown";
+  while (Date.now() < deadline) {
+    const state = await browserJson(page, "GET", "/api/state");
+    lastState = String(state?.recordingState ?? "unknown");
+    if (
+      String(state?.sessionId ?? "") === sessionId &&
+      accepted.has(lastState)
+    ) {
+      return state;
+    }
+    await delay(250);
+  }
+  throw new Error(`Live Mic state deadline expired after state ${lastState}`);
+}
+
+async function waitForLiveMicTranscript(page, sessionId, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  let lastStatus = "missing";
+  while (Date.now() < deadline) {
+    const history = await browserJson(
+      page,
+      "GET",
+      "/api/transcripts?type=mic&limit=10",
+    );
+    const item = Array.isArray(history?.items)
+      ? history.items.find((candidate) => String(candidate?.id ?? "") === sessionId)
+      : null;
+    if (item) {
+      lastStatus = String(item.status ?? "unknown");
+      if (lastStatus === "completed") {
+        const detail = await browserJson(
+          page,
+          "GET",
+          `/api/transcripts/${encodeURIComponent(sessionId)}`,
+        );
+        if (String(detail?.content ?? "").trim()) return detail;
+      }
+      if (["failed", "stopped"].includes(lastStatus)) {
+        throw new Error(`Live Mic transcript entered terminal state ${lastStatus}`);
+      }
+    }
+    await delay(500);
+  }
+  throw new Error(`Live Mic transcript deadline expired after state ${lastStatus}`);
+}
+
 async function clickControl(page, meetingId, action, timeoutMs) {
   const selector = `[data-testid="active-meeting-${action}"]`;
   await page.waitForSelector(selector, { visible: true, timeout: timeoutMs });
@@ -481,6 +578,9 @@ async function run(options) {
   let browser;
   const startedAt = Date.now();
   let firstPageErrorHint = "";
+  let browserDiagnosticsArmed = false;
+  const expectedFetchAbortCountsByPhase = new Map();
+  const expectedMeetingDiscardNotFoundPaths = new Set();
   try {
     browser = await puppeteer.connect({
       browserURL: options.browserUrl,
@@ -492,7 +592,19 @@ async function run(options) {
     page.setDefaultTimeout(options.navigationTimeoutMs);
     page.setDefaultNavigationTimeout(options.navigationTimeoutMs);
     page.on("console", (message) => {
-      if (message.type() === "error") diagnostics.consoleErrorCount += 1;
+      if (browserDiagnosticsArmed && message.type() === "error") {
+        if (
+          expectedMeetingDiscardConsoleAllowed(
+            { type: message.type(), text: message.text() },
+            activePhase,
+            diagnostics.expectedMeetingDiscardConsoleCount,
+          )
+        ) {
+          diagnostics.expectedMeetingDiscardConsoleCount += 1;
+          return;
+        }
+        diagnostics.consoleErrorCount += 1;
+      }
     });
     page.on("pageerror", (error) => {
       diagnostics.pageErrorCount += 1;
@@ -500,17 +612,51 @@ async function run(options) {
         firstPageErrorHint = sanitizeMessage(error).slice(0, 160);
       }
     });
-    page.on("requestfailed", () => {
+    page.on("requestfailed", (request) => {
+      if (!browserDiagnosticsArmed) return;
+      const expectedAbortCount = Number(expectedFetchAbortCountsByPhase.get(activePhase) ?? 0);
+      if (isExpectedFetchAbort(request, activePhase, expectedAbortCount)) {
+        expectedFetchAbortCountsByPhase.set(activePhase, expectedAbortCount + 1);
+        diagnostics.expectedFetchAbortCount += 1;
+        return;
+      }
       diagnostics.requestFailureCount += 1;
+      const kind = requestFailureKind(request, activePhase);
+      diagnostics.requestFailureKinds[kind] =
+        Number(diagnostics.requestFailureKinds[kind] ?? 0) + 1;
     });
-
+    page.on("response", (response) => {
+      if (!browserDiagnosticsArmed || response.status() < 400) return;
+      const path = new URL(response.url()).pathname;
+      if (
+        expectedMeetingDiscardNotFoundAllowed(
+          { status: response.status(), method: response.request().method(), path },
+          activePhase,
+          expectedMeetingDiscardNotFoundPaths,
+        )
+      ) {
+        expectedMeetingDiscardNotFoundPaths.add(path);
+        diagnostics.expectedMeetingDiscardNotFoundCount =
+          expectedMeetingDiscardNotFoundPaths.size;
+      }
+    });
     activePhase = "navigate-meetings";
-    const currentUrl = new URL(page.url());
-    currentUrl.pathname = "/meetings";
-    currentUrl.search = "";
-    currentUrl.hash = "";
-    if (page.url() !== currentUrl.toString()) {
-      await page.goto(currentUrl.toString(), { waitUntil: "domcontentloaded" });
+    const currentPathname = await page.evaluate(() => window.location.pathname);
+    if (currentPathname !== "/meetings") {
+      await page.waitForSelector('a[href="/meetings"]', {
+        visible: true,
+        timeout: options.navigationTimeoutMs,
+      });
+      await page.$eval('a[href="/meetings"]', (link) => {
+        if (!(link instanceof HTMLAnchorElement)) {
+          throw new Error("Meetings navigation link is unavailable");
+        }
+        link.click();
+      });
+      await page.waitForFunction(
+        () => window.location.pathname === "/meetings",
+        { timeout: options.navigationTimeoutMs },
+      );
     }
     await page.waitForSelector('[data-page-shell="meetings"]', {
       visible: true,
@@ -538,6 +684,15 @@ async function run(options) {
       access,
       options.navigationTimeoutMs,
     );
+    activePhase = "wait-frontend-websocket";
+    await page.waitForSelector(
+      '[data-page-shell="meetings"][data-websocket-connected="true"]',
+      {
+        visible: true,
+        timeout: options.navigationTimeoutMs,
+      },
+    );
+    browserDiagnosticsArmed = true;
 
     activePhase = "validate-meeting-readiness";
     const meetingCapabilities = await browserJson(
@@ -705,13 +860,60 @@ async function run(options) {
 
     const workspaceTitle = `${options.title} workspace verified`;
     activePhase = "rename-meeting-workspace";
-    const renamed = await browserJson(
-      page,
-      "PATCH",
-      `/api/meetings/${encodeURIComponent(meetingId)}`,
-      { title: workspaceTitle },
+    const detailTitleSelector = '[data-testid="meeting-detail-title"]';
+    const titleEditSelector = '[data-testid="meeting-title-edit"]';
+    const titleInputSelector = '[data-testid="meeting-title-input"]';
+    const titleSaveSelector = '[data-testid="meeting-title-save"]';
+    await page.waitForSelector(detailTitleSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    await page.$eval(titleEditSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting title edit control is not actionable");
+      }
+      button.click();
+    });
+    await page.waitForSelector(titleInputSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    await page.focus(titleInputSelector);
+    await page.keyboard.down("Control");
+    await page.keyboard.press("A");
+    await page.keyboard.up("Control");
+    await page.keyboard.type(workspaceTitle);
+    await page.waitForFunction(
+      (selector) => {
+        const button = document.querySelector(selector);
+        return button instanceof HTMLButtonElement && !button.disabled;
+      },
+      { timeout: options.navigationTimeoutMs },
+      titleSaveSelector,
     );
-    if (String(renamed?.title ?? "") !== workspaceTitle) {
+    const renameResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "PATCH" &&
+            new URL(response.url()).pathname ===
+              `/api/meetings/${encodeURIComponent(meetingId)}`
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.$eval(titleSaveSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting title save control is not actionable");
+      }
+      button.click();
+    });
+    const renameResponse = await renameResponsePromise;
+    const renamed = await renameResponse.json().catch(() => null);
+    if (!renameResponse.ok() || String(renamed?.title ?? "") !== workspaceTitle) {
       throw new Error("Meeting workspace title mutation was not durable");
     }
     await page.waitForFunction(
@@ -734,16 +936,59 @@ async function run(options) {
     const originalSegmentText = String(firstSegment?.text ?? "").trim();
     const workspaceMarker = "Workspace route E2E verified.";
     const editedSegmentText = `${originalSegmentText} ${workspaceMarker}`.trim();
+    const segmentEditSelector = `[data-testid="meeting-segment-edit-${segmentId}"]`;
+    const segmentEditInputSelector = `[data-testid="meeting-segment-edit-input-${segmentId}"]`;
+    const segmentEditSaveSelector = `[data-testid="meeting-segment-edit-save-${segmentId}"]`;
+    const segmentUndoSelector = `[data-testid="meeting-segment-undo-${segmentId}"]`;
     activePhase = "edit-meeting-workspace-segment";
-    const edited = await browserJson(
-      page,
-      "PATCH",
-      `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}`,
-      {
-        text: editedSegmentText,
-        expectedEditVersion: Number(finalDetail?.transcriptEditVersion ?? 0),
+    await page.$eval(segmentEditSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting segment edit control is not actionable");
+      }
+      button.click();
+    });
+    await page.waitForSelector(segmentEditInputSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    await page.focus(segmentEditInputSelector);
+    await page.keyboard.down("Control");
+    await page.keyboard.press("A");
+    await page.keyboard.up("Control");
+    await page.keyboard.type(editedSegmentText);
+    await page.waitForFunction(
+      (selector) => {
+        const button = document.querySelector(selector);
+        return button instanceof HTMLButtonElement && !button.disabled;
       },
+      { timeout: options.navigationTimeoutMs },
+      segmentEditSaveSelector,
     );
+    const segmentEditResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "PATCH" &&
+            new URL(response.url()).pathname ===
+              `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}`
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.$eval(segmentEditSaveSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting segment save control is not actionable");
+      }
+      button.click();
+    });
+    const segmentEditResponse = await segmentEditResponsePromise;
+    const edited = await segmentEditResponse.json().catch(() => null);
+    if (!segmentEditResponse.ok() || String(edited?.segment?.text ?? "") !== editedSegmentText) {
+      throw new Error("Meeting workspace segment mutation was not durable");
+    }
     await page.waitForFunction(
       ({ expected, selector }) =>
         document.querySelector(selector)?.textContent?.includes(expected) === true,
@@ -771,12 +1016,34 @@ async function run(options) {
       throw new Error("Meeting workspace edit history omitted the durable correction");
     }
     activePhase = "undo-meeting-workspace-segment";
-    await browserJson(
-      page,
-      "POST",
-      `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/undo`,
-      { expectedEditVersion: Number(edited?.transcriptEditVersion ?? -1) },
+    await page.waitForSelector(segmentUndoSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    const segmentUndoResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname ===
+              `/api/meetings/${encodeURIComponent(meetingId)}/segments/${encodeURIComponent(segmentId)}/undo`
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
     );
+    await page.$eval(segmentUndoSelector, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Meeting segment undo control is not actionable");
+      }
+      button.click();
+    });
+    const segmentUndoResponse = await segmentUndoResponsePromise;
+    if (!segmentUndoResponse.ok()) {
+      throw new Error("Meeting workspace undo was not durable");
+    }
     await page.waitForFunction(
       ({ forbidden, selector }) =>
         document.querySelector(selector)?.textContent?.includes(forbidden) === false,
@@ -789,26 +1056,45 @@ async function run(options) {
 
     const workspaceNote = "Meeting workspace E2E note verified.";
     activePhase = "save-meeting-workspace-note";
-    const note = await browserJson(
-      page,
-      "PUT",
-      `/api/meetings/${encodeURIComponent(meetingId)}/notes`,
-      {
-        id: "workspace",
-        body: workspaceNote,
-        writerId: "meeting_e2e_driver",
-        writeGeneration: Date.now(),
-      },
-    );
-    if (String(note?.body ?? "") !== workspaceNote || note?.writeApplied === false) {
-      throw new Error("Meeting workspace note mutation was not durable");
-    }
     await page.$eval('[data-testid="meeting-workspace-tab-notes"]', (button) => {
       if (!(button instanceof HTMLButtonElement)) {
         throw new Error("Meeting notes workspace tab is unavailable");
       }
       button.click();
     });
+    const workspaceNoteSelector = '[data-testid="meeting-workspace-note"]';
+    await page.waitForSelector(workspaceNoteSelector, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    const noteResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "PUT" &&
+            new URL(response.url()).pathname ===
+              `/api/meetings/${encodeURIComponent(meetingId)}/notes`
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.focus(workspaceNoteSelector);
+    await page.keyboard.down("Control");
+    await page.keyboard.press("A");
+    await page.keyboard.up("Control");
+    await page.keyboard.type(workspaceNote);
+    const noteResponse = await noteResponsePromise;
+    const note = await noteResponse.json().catch(() => null);
+    if (
+      !noteResponse.ok() ||
+      String(note?.body ?? "") !== workspaceNote ||
+      note?.writeApplied === false
+    ) {
+      throw new Error("Meeting workspace note mutation was not durable");
+    }
     await page.waitForFunction(
       (expected) =>
         document.querySelector('[data-testid="meeting-workspace-note"]')?.value === expected,
@@ -1011,12 +1297,137 @@ async function run(options) {
     ) {
       throw new Error("Meeting catalogue retained a discarded Meeting");
     }
-    if (diagnostics.pageErrorCount > 0) {
-      activePhase = "validate-page-errors";
+
+    activePhase = "navigate-live-mic";
+    await page.$eval('a[href="/"]', (link) => {
+      if (!(link instanceof HTMLAnchorElement)) {
+        throw new Error("Live Mic navigation link is unavailable");
+      }
+      link.click();
+    });
+    await page.waitForFunction(
+      () =>
+        window.location.pathname === "/" &&
+        document.querySelector('[data-page-shell="live-mic"]') != null,
+      { timeout: options.navigationTimeoutMs },
+    );
+
+    const liveMicButton = "#live-mic-toggle-button";
+    activePhase = "start-live-mic-through-ui";
+    await page.waitForSelector(liveMicButton, {
+      visible: true,
+      timeout: options.navigationTimeoutMs,
+    });
+    const liveMicStartResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === "/api/live-mic/start"
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.$eval(liveMicButton, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Live Mic start control is not actionable");
+      }
+      button.click();
+    });
+    const liveMicStartResponse = await liveMicStartResponsePromise;
+    const liveMicStartPayload = await liveMicStartResponse.json().catch(() => null);
+    if (!liveMicStartResponse.ok()) {
+      throw new Error(
+        `Live Mic start failed with HTTP ${liveMicStartResponse.status()}`,
+      );
+    }
+    const liveMicSessionId = String(liveMicStartPayload?.sessionId ?? "").trim();
+    if (!liveMicSessionId) {
+      throw new Error("Live Mic start returned no session identity");
+    }
+    await waitForLiveMicState(
+      page,
+      liveMicSessionId,
+      ["recording"],
+      options.navigationTimeoutMs,
+    );
+    await page.waitForSelector(".glossy-mic-wrapper.is-recording", {
+      timeout: options.navigationTimeoutMs,
+    });
+    await delay(Math.max(2_000, options.fixtureDurationMs + 500));
+
+    activePhase = "stop-live-mic-through-ui";
+    const liveMicStopResponsePromise = page.waitForResponse(
+      (response) => {
+        try {
+          return (
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === "/api/live-mic/stop-request"
+          );
+        } catch {
+          return false;
+        }
+      },
+      { timeout: options.navigationTimeoutMs },
+    );
+    await page.$eval(liveMicButton, (button) => {
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Live Mic stop control is not actionable");
+      }
+      button.click();
+    });
+    const liveMicStopResponse = await liveMicStopResponsePromise;
+    if (!liveMicStopResponse.ok()) {
+      throw new Error(
+        `Live Mic stop failed with HTTP ${liveMicStopResponse.status()}`,
+      );
+    }
+
+    activePhase = "validate-live-mic-transcript";
+    const liveMicTranscript = await waitForLiveMicTranscript(
+      page,
+      liveMicSessionId,
+      options.finalizationTimeoutMs,
+    );
+    const liveMicText = String(liveMicTranscript?.content ?? "");
+    const normalizedLiveMicText = normalizeText(liveMicText);
+    const liveMicMatchedTokens = options.expectedTokens.filter((token) =>
+      normalizedLiveMicText.includes(token),
+    );
+    if (liveMicMatchedTokens.length === 0) {
+      throw new Error("Live Mic transcript contained no configured synthetic marker");
+    }
+    await page.waitForFunction(
+      (expectedTokens) => {
+        const transcript = document.querySelector(
+          '[data-testid="live-mic-transcript-output"]',
+        );
+        const normalized = String(transcript?.textContent ?? "")
+          .normalize("NFKD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLocaleLowerCase("de-DE")
+          .replace(/[^a-z0-9]+/g, " ")
+          .trim();
+        return expectedTokens.some((token) => normalized.includes(token));
+      },
+      { timeout: options.navigationTimeoutMs },
+      options.expectedTokens,
+    );
+    if (
+      diagnostics.expectedMeetingDiscardConsoleCount !==
+        diagnostics.expectedMeetingDiscardNotFoundCount ||
+      diagnostics.consoleErrorCount > 0 ||
+      diagnostics.pageErrorCount > 0 ||
+      diagnostics.requestFailureCount > 0
+    ) {
+      activePhase = "validate-browser-diagnostics";
       throw new Error(
         firstPageErrorHint
-          ? "WebView page error gate failed after Meeting validation (sanitized hint retained internally)"
-          : "WebView page error gate failed after Meeting validation",
+          ? "WebView browser diagnostics gate failed after Meeting validation (sanitized hint retained internally)"
+          : "WebView browser diagnostics gate failed after Meeting validation",
       );
     }
     activePhase = "complete";
@@ -1049,6 +1460,12 @@ async function run(options) {
       meetingCatalogListVerified: true,
       meetingCatalogDetailVerified: true,
       meetingCatalogDiscardVerified: true,
+      liveMicStartVerified: true,
+      liveMicStopVerified: true,
+      liveMicTranscriptVerified: true,
+      liveMicSessionIdHash: hashHint(liveMicSessionId),
+      liveMicTranscriptCharacterCount: liveMicText.length,
+      liveMicMatchedExpectedTokenCount: liveMicMatchedTokens.length,
       fixtureDurationMs: options.fixtureDurationMs,
       elapsedMs: Date.now() - startedAt,
       diagnostics: { ...diagnostics },

@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-15
+Last verified: 2026-08-16
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -26,7 +26,7 @@ scripts\project-python.cmd -m mypy src\api src\core src\runtime src\data
 ```
 
 Install the CI test tools from `requirements-test.txt` and resolve the complete
-Windows CPython 3.14.6 graph through `requirements-test-constraints.txt`. The
+Windows CPython 3.14.7 graph through `requirements-test-constraints.txt`. The
 constraints file closes all direct and transitive versions used by the full
 suite without changing the broader application dependency policy. `mypy` runs
 in that complete Windows environment after pytest. The reusable Windows job
@@ -133,6 +133,12 @@ imports.
 WebSocket route tests register that domain alone and exercise the real aiohttp
 upgrade, initial state event, ping/pong path, origin rejection, failed-initial-
 send cleanup, and the exact four-member production controller port.
+Live Mic route tests register that domain alone, exercise all six HTTP paths,
+preserve active-toggle body semantics, pin the exact four-method controller and
+provider-replay adapter contracts, and prove `create_app` resolves every path to
+the domain module. Existing security, hotkey-stress, and provider-replay suites
+remain the behavioral integration gates for runtime redaction, duplicate starts,
+manual stop, and native activation binding.
 
 Frontend:
 
@@ -488,7 +494,7 @@ Frontend\src-tauri\target\release\backend\scriber-backend.exe `
 ## Python 3.14 runtime selection
 
 The shipping fallback and current production default are the official Windows
-CPython 3.14.6 runtime with JIT disabled (`Official` / `Disabled`). The default
+CPython 3.14.7 runtime with JIT disabled (`Official` / `Disabled`). The default
 is compiled into the release build; it is not a `.env` or Settings option.
 The Tauri supervisor removes inherited `PYTHON_JIT`, `PYTHON_GIL`, and
 `PYTHON_TLBC`, sets the manifest-bound `PYTHON_JIT=0`, and the frozen backend
@@ -498,7 +504,7 @@ state, or JIT expectation differs from the packaged policy.
 The separate `python-runtime-ab-v1` research profile may compare A13, O0/O1,
 C0/C1, T0/T1, and the non-release K0 calibration. Build inputs are bound by
 `packaging/cpython-windows-runtime-input-lock-v1.json`; custom builds are
-offline after provisioning and use the unchanged CPython `v3.14.6` source,
+offline after provisioning and use the unchanged CPython `v3.14.7` source,
 LLVM 19.1.7, ClangCL, ThinLTO, and the upstream PGO job. Run the evaluator
 through `scripts/perf/python_runtime_ab.py`. Never promote JIT, Clang/PGO, or
 the tail-call interpreter from a microbenchmark. A candidate must pass every
@@ -537,7 +543,7 @@ anchor required to promote an optimized runtime.
 
 For the current PyInstaller 6.20 frozen backend, O1/C1/T1 are expected to fail
 closed: PyInstaller's isolated embedded-interpreter configuration ignores
-`PYTHON_JIT`, while CPython 3.14.6 exposes no supported post-initialization JIT
+`PYTHON_JIT`, while CPython 3.14.7 exposes no supported post-initialization JIT
 setter. Do not weaken isolation by enabling every Python environment variable
 or claim that a source-runtime JIT probe represents the packaged app. The
 JIT-off O0/C0/T0 family remains measurable; use
@@ -2283,11 +2289,12 @@ hard 60-second ceiling before process launch. Invalid values fail closed to
 five seconds.
 
 The local speech Meeting E2E goes beyond level statistics: Piper generates a
-bounded German 48 kHz mono PCM fixture, the test-only Rust microphone source
-replays it through the real three-pipe Meeting path, and Puppeteer Core drives
-the actual Tauri WebView2 start, pause, resume, and stop controls. Final
-transcription stays on the local ONNX provider. Provision Piper and its voice
-only below ignored `tmp/` paths, then run:
+bounded German 48 kHz mono PCM fixture plus a separate bounded 16 kHz Live Mic
+view of the same speech. The test-only Rust microphone source replays them
+through the real three-pipe Meeting and Live Mic paths, and Puppeteer Core
+drives the actual Tauri WebView2 controls. Final transcription stays on the
+local ONNX provider. Provision Piper and its voice only below ignored `tmp/`
+paths, then run:
 
 ```powershell
 .\venv\Scripts\python.exe -m pip install --target tmp\meeting-tts\piper-runtime piper-tts==1.4.2
@@ -2307,6 +2314,20 @@ Tauri-supervised runtime, validates the `recording -> paused -> recording ->
 ready` lifecycle plus canonical transcript segments and the persisted pause
 gap, then sends `full_transcript` through the extracted Meeting Processing
 route and waits for the second durable `finalizing -> ready` settlement. It
+uses visible SPA navigation, waits for both the managed backend and the shared
+frontend WebSocket before arming its browser-diagnostics window, and fails on
+every page exception, console error, or unexpected request failure. Chromium's
+exact `fetch` + `net::ERR_ABORTED` signal from deliberate React Query
+cancellation is counted separately and is the only allowed request-abort kind.
+That exception is fail-closed to GET requests in the named Meeting/Live-Mic
+mutation and settlement phases and to at most six observations per phase; the
+same signal in bootstrap, diagnostics, or an unlisted phase fails the gate.
+The only allowed HTTP error pair is the detail and speaker-assignment GET that
+can finish with `404` while the visible discard flow removes that exact
+Meeting. Both paths, both generic Chromium console notices, the discard phase,
+and the exact count of two must agree; any other `4xx`/`5xx` console error stays
+fatal.
+It
 first calls the production Meeting Device Readiness capabilities, redacted
 audio-device inventory, and ephemeral device-test routes from the real WebView;
 the probe must report availability while confirming that no PCM was persisted
@@ -2317,8 +2338,11 @@ exports, email preview/draft, and private byte-range playback paths through the
 production `create_app`, document renderer, public storage root, and SQLite
 store. It finally reads the extracted Meeting Catalog list and enriched detail,
 confirms discard through the visible React dialog, and waits for both the UI
-collection and durable SQLite catalogue to remove the Meeting. Its retained
-JSON contains hashes,
+collection and durable SQLite catalogue to remove the Meeting. The same WebView
+then navigates to Live Mic, starts and stops through the visible microphone
+control, requires the production Rust-sidecar and ONNX path to persist a
+completed transcript, and confirms the synthetic marker in the React transcript
+surface. Its retained JSON contains hashes,
 counts, states, and timings only—never audio, transcript text, credentials,
 URLs, screenshots, personal paths, or raw process logs. Synthetic speech is a
 deterministic regression gate; it does not replace physical microphone,

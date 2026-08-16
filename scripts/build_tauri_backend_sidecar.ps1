@@ -687,11 +687,11 @@ function Get-PythonRuntimeSelection {
     if (
         [string]$runtimeLockPayload.lockContract -ne "ScriberCPythonWindowsRuntimeInputLockV1" -or
         [int]$runtimeLockPayload.schemaVersion -ne 1 -or
-        [string]$runtimeLockPayload.target.pythonVersion -ne "3.14.6" -or
+        [string]$runtimeLockPayload.target.pythonVersion -ne "3.14.7" -or
         [string]$runtimeLockPayload.target.cacheTag -ne "cpython-314" -or
         [string]$runtimeLockPayload.target.architecture -ne "win_amd64"
     ) {
-        throw "Python runtime lock does not target CPython 3.14.6 for Windows x64."
+        throw "Python runtime lock does not target CPython 3.14.7 for Windows x64."
     }
     $jitValue = if ($JitMode -eq "Enabled") { "1" } else { "0" }
     $savedValues = @{}
@@ -718,8 +718,8 @@ function Get-PythonRuntimeSelection {
         }
     }
 
-    if ([string]$identity.version -ne "3.14.6" -or [string]$identity.cacheTag -ne "cpython-314") {
-        throw "The frozen backend requires exactly CPython 3.14.6 (cpython-314)."
+    if ([string]$identity.version -ne "3.14.7" -or [string]$identity.cacheTag -ne "cpython-314") {
+        throw "The frozen backend requires exactly CPython 3.14.7 (cpython-314)."
     }
     if ([bool]$identity.jitActive -ne ($JitMode -eq "Enabled")) {
         throw "The selected CPython runtime did not honor PYTHON_JIT=$jitValue."
@@ -761,7 +761,7 @@ function Get-PythonRuntimeSelection {
             [int64](Get-Item -LiteralPath $runtimeDll).Length -ne [int64]$officialDll[0].sizeBytes -or
             (Get-Sha256Hex -Path $runtimeDll) -cne [string]$officialDll[0].sha256
         ) {
-            throw "Official python314.dll does not match the locked CPython 3.14.6 runtime."
+            throw "Official python314.dll does not match the locked CPython 3.14.7 runtime."
         }
     }
 

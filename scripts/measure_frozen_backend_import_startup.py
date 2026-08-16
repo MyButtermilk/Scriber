@@ -98,11 +98,11 @@ def load_candidate(variant_id: str, executable: Path) -> Candidate:
     jit = policy.get("jit")
     if not isinstance(python, dict) or not isinstance(jit, dict):
         raise BenchmarkError(f"{variant_id} runtime policy is incomplete")
-    if python.get("version") != "3.14.6" or python.get("cacheTag") != "cpython-314":
-        raise BenchmarkError(f"{variant_id} is not CPython 3.14.6")
+    if python.get("version") != "3.14.7" or python.get("cacheTag") != "cpython-314":
+        raise BenchmarkError(f"{variant_id} is not CPython 3.14.7")
     expected_flavor, expected_jit, expected_tail = VARIANT_POLICY[variant_id]
     if jit.get("available") is not True:
-        raise BenchmarkError(f"{variant_id} requires a JIT-capable CPython 3.14.6 build")
+        raise BenchmarkError(f"{variant_id} requires a JIT-capable CPython 3.14.7 build")
     if jit.get("expected") is not expected_jit or jit.get("active") is not expected_jit:
         raise BenchmarkError(f"{variant_id} JIT policy is invalid")
     if policy.get("runtimeFlavor") != expected_flavor or policy.get("tailCallInterpreter") is not expected_tail:
@@ -409,7 +409,7 @@ def _atomic_write(path: Path, payload: Mapping[str, Any]) -> None:
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Measure a CPython 3.14.6 runtime-variant subset through frozen process startup "
+            "Measure a CPython 3.14.7 runtime-variant subset through frozen process startup "
             "plus --runtime-import-check on AMD."
         )
     )

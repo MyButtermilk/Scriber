@@ -16,7 +16,7 @@ def _identity(variant_id: str, config: dict[str, object]) -> dict[str, object]:
     variant = config["variants"][variant_id]  # type: ignore[index]
     jit = bool(variant["jit"])  # type: ignore[index]
     return {
-        "pythonVersion": "3.13.14" if variant_id == "A13" else "3.14.6",
+        "pythonVersion": "3.13.14" if variant_id == "A13" else "3.14.7",
         "cacheTag": "cpython-313" if variant_id == "A13" else "cpython-314",
         "runtimeFlavor": variant["runtimeFlavor"],  # type: ignore[index]
         "compiler": "test-compiler",
@@ -204,7 +204,7 @@ def test_no_optimized_winner_falls_back_to_official_jit_disabled(
         config,
     )
     assert result["selectedVariant"] == "O0"
-    assert result["reason"] == "fallback-official-3.14.6-jit-disabled"
+    assert result["reason"] == "fallback-official-3.14.7-jit-disabled"
 
 
 def test_provider_regression_blocks_even_a_large_local_wux_gain(

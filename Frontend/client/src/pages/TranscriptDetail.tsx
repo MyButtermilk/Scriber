@@ -932,8 +932,8 @@ export default function TranscriptDetail() {
               className="transcript-detail-accordion space-y-4"
             >
               {/* Summary Section */}
-              <AccordionItem value="summary" className="neu-recording-row overflow-hidden">
-                <AccordionTrigger className="px-4 py-3 hover:no-underline">
+              <AccordionItem value="summary" className="transcript-summary-panel neu-recording-row">
+                <AccordionTrigger className="transcript-summary-panel__trigger px-4 py-3 hover:no-underline">
                   <div className="flex items-center gap-2">
                     <Sparkles className="summary-accent-icon w-4 h-4" />
                     <span className="text-base font-semibold tracking-tight">{t("Summary")}</span>

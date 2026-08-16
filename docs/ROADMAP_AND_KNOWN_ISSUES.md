@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-08-15
+Last verified: 2026-08-16
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -130,8 +130,9 @@ Meetings:
 - Meeting delivery was the first domain extracted from `create_app`; Runtime,
   ONNX model management, YouTube, Transcript, Settings, Local Polishing,
   Device, Outlook Calendar, Meeting Import, Voice Component, File
-  Transcription, WebSocket, Meeting Capture start/pause/resume/stop, Meeting
-  Workspace title/search/correction/note/action-item routes, and Meeting
+  Transcription, WebSocket, Live Mic start/stop/toggle lifecycle, Meeting
+  Capture start/pause/resume/stop, Meeting Workspace
+  title/search/correction/note/action-item routes, and Meeting
   Processing reprocess/finalize/retry/analyze routes, Meeting Artifacts
   playback/export/email routes, Meeting Catalog list/detail/discard routes, and
   Meeting Device Readiness capabilities/audio-device/device-test routes
@@ -230,11 +231,11 @@ Packaging/performance:
 - Live-meeting PCM16 RMS checks share the native `audioop-lts` implementation
   instead of per-sample Python loops. Provider wrappers are imported only by the
   selected pipeline branch, and transcript timing uses prefix sums.
-- Release dependency resolution is constrained by an exact Windows CPython 3.14.6
+- Release dependency resolution is constrained by an exact Windows CPython 3.14.7
   graph. Profile-B restoration is bound to a versioned artifact identity, and
   tag releases remain drafts until downloaded assets, updater signatures,
   Authenticode evidence, installed smoke, and uninstall gates all pass.
-- The Python 3.14.6 product runtime is official O0 with JIT disabled. Final
+- The Python 3.14.7 product runtime is official O0 with JIT disabled. Final
   source-attested AMD screening rejected Clang/PGO C0: startup p50 improved only
   3.56%, App UX p50 regressed 5.69%, and 11 of 48 provider p50/p95 series
   exceeded the protected 3% regression limit. It also rejected Clang/PGO/Tail
@@ -1287,7 +1288,7 @@ Signing/updater:
   them against a public key embedded in the frozen launcher before importing
   physical application code.
 - Rebuilding an expired Python runtime cache now uses an exact
-  Windows/Python-3.14.6 constraints graph. The graph does not yet carry wheel
+  Windows/Python-3.14.7 constraints graph. The graph does not yet carry wheel
   hashes, so independently rebuilt generations still require the existing
   wheelhouse and runtime-inventory evidence rather than being assumed
   byte-identical.

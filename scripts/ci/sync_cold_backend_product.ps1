@@ -207,8 +207,8 @@ function Test-ManifestFileSet {
 
 Write-GitHubOutput -Name "usable" -Value "false"
 
-if ($PythonVersion -ne '3.14.6') {
-    throw "Cold backend product requires exact Python 3.14.6."
+if ($PythonVersion -ne '3.14.7') {
+    throw "Cold backend product requires exact Python 3.14.7."
 }
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path

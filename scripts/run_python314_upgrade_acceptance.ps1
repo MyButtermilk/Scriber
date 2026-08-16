@@ -321,7 +321,7 @@ function Assert-O0Runtime {
     $manifest = Read-JsonFile -Path $manifestPath
     $policy = $manifest.runtimePolicy
     if (
-        [string]$policy.python.version -cne "3.14.6" -or
+        [string]$policy.python.version -cne "3.14.7" -or
         [string]$policy.python.cacheTag -cne "cpython-314" -or
         [string]$policy.runtimeFlavor -cne "Official" -or
         [string]$policy.variantId -cne "O0" -or

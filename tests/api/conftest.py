@@ -46,6 +46,7 @@ def _assert_protocol_contract(
     *,
     methods: AbstractSet[str],
     properties: AbstractSet[str] = frozenset(),
+    property_returns: Mapping[str, object] | None = None,
     returns: Mapping[str, object] | None = None,
 ) -> None:
     declared_methods, declared_properties, declared_fields = _declared_protocol_members(port)
@@ -56,6 +57,10 @@ def _assert_protocol_contract(
     expected_returns = dict(returns or {})
     assert expected_returns.keys() <= declared_methods.keys(), (
         f"{port.__name__} return contract names an unknown method"
+    )
+    expected_property_returns = dict(property_returns or {})
+    assert expected_property_returns.keys() <= declared_properties, (
+        f"{port.__name__} return contract names an unknown property"
     )
 
     for name, declared in declared_methods.items():
@@ -82,6 +87,15 @@ def _assert_protocol_contract(
     for name in declared_properties:
         actual = inspect.getattr_static(adapter, name, None)
         assert isinstance(actual, property), f"{port.__name__} requires property {adapter.__name__}.{name}"
+        if name in expected_property_returns:
+            expected_return = expected_property_returns[name]
+            declared = inspect.getattr_static(port, name)
+            assert isinstance(declared, property) and declared.fget is not None
+            assert actual.fget is not None
+            declared_return = get_type_hints(declared.fget).get("return", inspect.Signature.empty)
+            actual_return = get_type_hints(actual.fget).get("return", inspect.Signature.empty)
+            assert declared_return == expected_return, f"{port.__name__}.{name} return type changed"
+            assert actual_return == expected_return, f"{adapter.__name__}.{name} return type changed"
 
 
 class ProtocolContractAssertion(Protocol):
@@ -92,6 +106,7 @@ class ProtocolContractAssertion(Protocol):
         *,
         methods: AbstractSet[str],
         properties: AbstractSet[str] = frozenset(),
+        property_returns: Mapping[str, object] | None = None,
         returns: Mapping[str, object] | None = None,
     ) -> None: ...
 

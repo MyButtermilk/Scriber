@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-15
+Last verified: 2026-08-16
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -955,16 +955,15 @@ Key modules:
   `src/api/device_routes.py`, `src/api/outlook_calendar_routes.py`,
   `src/api/meeting_delivery_routes.py`, `src/api/meeting_import_routes.py`,
   `src/api/voice_component_routes.py`, `src/api/file_transcription_routes.py`,
-  `src/api/websocket_routes.py`, `src/api/meeting_capture_routes.py`,
-  `src/api/meeting_workspace_routes.py`, and
-  `src/api/meeting_processing_routes.py`,
-  `src/api/meeting_artifact_routes.py`, and
+  `src/api/websocket_routes.py`, `src/api/live_mic_routes.py`,
+  `src/api/meeting_capture_routes.py`, `src/api/meeting_workspace_routes.py`,
+  `src/api/meeting_processing_routes.py`, `src/api/meeting_artifact_routes.py`,
   `src/api/meeting_catalog_routes.py`, and
   `src/api/meeting_readiness_routes.py`:
   module-level handlers for the extracted Runtime, ONNX, YouTube, Transcript,
   Settings, Local Polishing, Device, Outlook Calendar, Meeting Delivery,
-  Meeting Import, Voice Component, File Transcription, WebSocket, and Meeting
-  Capture lifecycle, Meeting Workspace, Meeting Processing, Meeting Artifacts,
+  Meeting Import, Voice Component, File Transcription, WebSocket, Live Mic,
+  Meeting Capture lifecycle, Meeting Workspace, Meeting Processing, Meeting Artifacts,
   Meeting Catalog, and Meeting Device Readiness domains.
   Runtime owns debug logs and support bundles. ONNX
   owns request-local progress scopes: one download cannot drain another,
@@ -1035,6 +1034,13 @@ Key modules:
   exposes only `add_client`, `remove_client`, `send_client_text`, and
   `get_state`; connection storage and send serialization remain controller
   concerns.
+- Live Mic owns the six authenticated start, stop, stop-request, and toggle
+  transport paths. It parses the benchmark-only native marker into one
+  immutable command, maps one route-owned outcome, and depends on an exact
+  four-method controller port. The controller retains microphone, pipeline,
+  task, duplicate-toggle, provider-error, and audio-admission ownership.
+  Installed provider replay is a separate exact activation collaborator so
+  benchmark state does not leak into the normal controller port.
 - File Transcription owns the full pre-queue ingest lifecycle: multipart
   parsing, Windows-safe naming, bounded off-loop writes, ffmpeg extraction and
   compression, workspace cleanup, and the one ownership hand-off to the

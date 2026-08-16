@@ -13,10 +13,10 @@ def test_runtime_lock_binds_complete_matrix_and_exact_inputs() -> None:
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     assert lock["lockContract"] == "ScriberCPythonWindowsRuntimeInputLockV1"
     assert lock["target"] == {
-        "pythonVersion": "3.14.6",
+        "pythonVersion": "3.14.7",
         "cacheTag": "cpython-314",
         "architecture": "win_amd64",
-        "cpythonTag": "v3.14.6",
+        "cpythonTag": "v3.14.7",
     }
     assert set(lock["buildMatrix"]) == {"A13", "O0", "O1", "C0", "C1", "T0", "T1", "K0"}
     assert lock["customBuildInputs"]["llvm"]["version"] == "19.1.7"
@@ -91,7 +91,7 @@ def test_builder_is_offline_fail_closed_and_reuses_one_binary_family_per_jit_pai
     assert '"IncludeLLVM", "GIT"' in source
     assert '"exit /b 1"' in source
     assert "Custom CPython identity probe did not emit valid JSON." in source
-    assert "Custom CPython build identity is not the isolated v3.14.6 archive identity." in source
+    assert "Custom CPython build identity is not the isolated v3.14.7 archive identity." in source
     assert '[string]$buildGitIdentity[0] -cne "CPython"' in source
     assert '[string]$buildGitIdentity[1] -cne ""' in source
     assert '[string]$buildGitIdentity[2] -cne ""' in source

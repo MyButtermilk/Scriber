@@ -340,7 +340,7 @@ For a simple cloud setup, configure a Gemini API key for Gemini STT and summarie
 ### Requirements
 
 - Windows 10 or newer for the primary desktop runtime
-- Python 3.14.6
+- Python 3.14.7
 - Node.js 26.5.0 and npm
 - Stable Rust toolchain
 - Git
@@ -384,7 +384,7 @@ The NSIS installer is written to:
 Frontend\src-tauri\target\release\bundle\nsis\
 ```
 
-Windows releases use exact CPython 3.14.6. The conservative product default is
+Windows releases use exact CPython 3.14.7. The conservative product default is
 the official runtime with JIT disabled; JIT and custom Clang/PGO/tail-call
 variants remain internal, installed-performance experiments and are not user
 settings. The stock PyInstaller 6.20 frozen interpreter currently ignores

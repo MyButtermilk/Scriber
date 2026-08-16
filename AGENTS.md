@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-15
+Last verified: 2026-08-16
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -54,7 +54,7 @@ Backend and runtime:
   into domain modules.
 - `src/api/`: module-level Runtime, ONNX, YouTube, Transcript, Settings, Local
   Polishing, Device, Outlook Calendar, Meeting Delivery, Meeting Import, Voice
-  Component, File Transcription, WebSocket, Meeting Capture, Meeting
+  Component, File Transcription, WebSocket, Live Mic, Meeting Capture, Meeting
   Workspace, Meeting Processing, Meeting Artifacts, Meeting Catalog, and
   Meeting Device Readiness route
   domains,
@@ -97,6 +97,12 @@ Backend and runtime:
   handling, and the add/remove-client lifecycle behind a four-member controller
   port. Every registered connection is removed in `finally`, including when its
   initial send fails.
+  Live Mic routes own request-marker parsing plus start, stop, stop-request, and
+  toggle response mapping. Their four-method controller port exposes only
+  lifecycle commands and route-owned outcomes; microphone, task, provider, and
+  audio-admission state remain controller-owned. Installed provider replay stays
+  behind a separate exact activation collaborator rather than widening the
+  controller port or exposing private controller fields.
   Meeting Capture owns strict parsing and normalization for start plus the
   start/pause/resume/stop HTTP lifecycle. Its immutable start command and three
   ID-only commands cross a four-method public controller port; claim, native
@@ -282,7 +288,10 @@ Frontend and shell:
   `SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH` to replay one
   bounded 48 kHz mono signed-16 PCM microphone fixture. That fixture plays once
   and then yields silence; it must not alter the default synthetic sine signal
-  or any production WASAPI path.
+  or any production WASAPI path. End-to-end Live Mic speech tests may separately
+  set `SCRIBER_RUST_AUDIO_SYNTHETIC_LIVE_MIC_PCM_S16LE_16000_MONO_PATH` to one
+  bounded 16 kHz mono signed-16 PCM fixture; it has the same play-once and
+  test-only constraints.
   Meeting capture uses one sidecar process for 48 kHz microphone plus loopback,
   pinned AEC3 processing, and shared-timeline raw mic/system/clean mic pipes.
   The token-protected Meeting device test must reuse this path, remain explicit
@@ -343,10 +352,10 @@ Packaging and scripts:
   independent clean builds must produce identical shipping bytes.
 - `packaging/cpython-windows-runtime-input-lock-v1.json`,
   `scripts/build_cpython_windows_runtime.ps1`, and
-  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.6/LLVM 19.1.7
+  `scripts/perf/profiles/python-runtime/`: exact CPython 3.14.7/LLVM 19.1.7
   runtime inputs, offline ClangCL/ThinLTO/PGO/tail builders, and the isolated
   `python-runtime-ab-v1` promotion profile. Shipping defaults to official
-  CPython 3.14.6 with JIT disabled unless installed FullLocal evidence promotes
+  CPython 3.14.7 with JIT disabled unless installed FullLocal evidence promotes
   a variant; microbenchmarks cannot select a product runtime. Stock PyInstaller
   6.20 ignores `PYTHON_JIT` in its isolated embedded interpreter, so O1/C1/T1
   currently fail the frozen runtime policy and are not eligible variants.
@@ -480,7 +489,7 @@ Packaging and scripts:
 ### Tauri Runtime
 
 - Tauri is the primary desktop runtime.
-- The packaged backend runtime is exact CPython 3.14.6 (`cpython-314`). Release
+- The packaged backend runtime is exact CPython 3.14.7 (`cpython-314`). Release
   defaults are `PythonRuntimeFlavor=Official` and
   `PythonJitMode=Disabled`; they are build parameters, not `.env` or Settings
   values. Before launching the worker, Rust removes inherited `PYTHON_JIT`,

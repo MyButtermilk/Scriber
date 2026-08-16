@@ -46,6 +46,11 @@ from src.api.http_security import (
     session_token_required,
     validate_server_bind_security,
 )
+from src.api.live_mic_routes import (
+    LiveMicOutcome,
+    LiveMicStartCommand,
+    register_live_mic_routes,
+)
 from src.api.local_polishing_routes import register_local_polishing_routes
 from src.api.meeting_artifact_routes import (
     MeetingArtifactDeps,
@@ -149,8 +154,6 @@ from src.core.rest_contracts import (
     validate_provider_replay_arm_request_payload,
     validate_provider_replay_prepare_request_payload,
     validate_provider_replay_status_query,
-    validate_tauri_activation_marker_request_payload,
-    validate_tauri_hotkey_marker_request_payload,
 )
 from src.core.state_machine import InvalidTransitionError, RecordingState, RecordingStateMachine
 from src.core.ws_contracts import (
@@ -12520,6 +12523,76 @@ class ScriberWebController:
             raise ProviderReplayConflict("provider replay manual stop session is not active")
         replay_execution.attest_manual_stop_request(session_id)
 
+    async def start_live_mic(self, command: LiveMicStartCommand) -> LiveMicOutcome:
+        """Start one validated Live Mic command and project its public result."""
+
+        start_kwargs: dict[str, Any] = {
+            "tauri_hotkey_marker": command.tauri_hotkey_marker,
+        }
+        if command.post_process:
+            start_kwargs["post_process"] = True
+        start_error = await self.start_listening(**start_kwargs)
+        if start_error is not None:
+            return LiveMicOutcome(
+                status=400,
+                payload=version_event_payload(self._provider_error_event_from_info(start_error)),
+            )
+        return LiveMicOutcome(status=200, payload=self.get_state())
+
+    async def resolve_live_mic_toggle(self) -> LiveMicOutcome | None:
+        """Resolve an active toggle, or return ``None`` when it should start."""
+
+        if not (self._live_mic_start_in_progress_generation is not None or self._is_listening or self._is_stopping):
+            return None
+        if self._should_ignore_duplicate_start_toggle():
+            start_task = self._live_mic_start_task
+            if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
+                await asyncio.shield(start_task)
+            payload = self.get_state()
+            payload["stopAccepted"] = False
+            payload["finalizing"] = False
+            payload["duplicateStartIgnored"] = True
+            return LiveMicOutcome(status=200, payload=payload)
+        accepted = self.request_background_stop_listening()
+        payload = self.get_state()
+        payload["stopAccepted"] = bool(accepted)
+        payload["finalizing"] = True
+        return LiveMicOutcome(status=202, payload=payload)
+
+    async def stop_live_mic(self) -> LiveMicOutcome:
+        """Stop Live Mic and project its public result."""
+
+        stop_error = await self.stop_listening()
+        if stop_error is not None:
+            return LiveMicOutcome(
+                status=400,
+                payload=version_event_payload(self._provider_error_event_from_info(stop_error)),
+            )
+        return LiveMicOutcome(status=200, payload=self.get_state())
+
+    def request_live_mic_stop(self) -> LiveMicOutcome:
+        """Acknowledge one non-blocking Live Mic stop request."""
+
+        replay_execution = self._provider_replay_execution
+        try:
+            self._attest_provider_replay_manual_stop_request()
+        except ProviderReplayError as exc:
+            if replay_execution is not None:
+                replay_execution.fail("manual_stop_missing")
+            self.request_async_stop_listening()
+            return LiveMicOutcome(status=409, payload={"message": str(exc)})
+        outcome = self.request_async_stop_listening()
+        payload = {
+            "apiVersion": REST_API_VERSION,
+            **outcome,
+            "finalizing": bool(outcome["stopScheduled"] or outcome["alreadyFinalizing"]),
+            "sessionId": self._session_id,
+        }
+        return LiveMicOutcome(
+            status=202 if outcome["stopAccepted"] else 503,
+            payload=payload,
+        )
+
     def request_async_stop_listening(self) -> dict[str, bool]:
         """Schedule an explicit Live Mic stop without waiting for finalization.
 
@@ -17939,6 +18012,25 @@ APP_PROVIDER_REPLAY: web.AppKey[ProviderReplayRegistry] = web.AppKey(
     ProviderReplayRegistry,
 )
 
+
+@dataclass(frozen=True, slots=True)
+class _LiveMicReplayAdapter:
+    pending_activations: Mapping[str, Mapping[str, Any]]
+    activate_replay: Callable[
+        [dict[str, Any]],
+        Awaitable[tuple[ProviderReplayExecution, dict[str, Any]]],
+    ]
+    state: Callable[[], dict[str, Any]]
+
+    @property
+    def pending_activation(self) -> bool:
+        return bool(self.pending_activations)
+
+    async def activate(self, marker: Mapping[str, Any]) -> LiveMicOutcome:
+        await self.activate_replay(dict(marker))
+        return LiveMicOutcome(status=200, payload=self.state())
+
+
 _PROVIDER_REPLAY_ROUTE_PREFIX = "/api/runtime/benchmark/provider-replay"
 
 
@@ -17957,18 +18049,6 @@ def _provider_replay_audio_preparation_snapshot(provider: str) -> str | None:
         ).strip().lower() not in {"0", "false", "no", "off"}
         return "wav_pcm16_file_v1" if enabled else "python_reserved_wav_header_v1"
     return None
-
-
-def _live_mic_runtime_unavailable_payload() -> dict[str, Any]:
-    """Return a stable public error without exposing runtime internals."""
-
-    return error_event(
-        "Scriber could not load the live microphone runtime. Restart or reinstall Scriber, then try again.",
-        title="Live microphone unavailable",
-        category="runtime_unavailable",
-        code="live_mic_runtime_unavailable",
-        retryable=False,
-    )
 
 
 def _unexpected_api_error_payload() -> dict[str, Any]:
@@ -18076,45 +18156,6 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
             }
         )
     return grouped
-
-
-async def _tauri_activation_marker_from_request(
-    request: web.Request,
-) -> tuple[dict[str, Any] | None, bool]:
-    """Return a native activation marker and whether it claims provider replay.
-
-    Empty bodies and the established generic hotkey body keep their existing
-    behavior. The provider-replay form is strict and cannot silently degrade to
-    a normal Live Mic start when its sample binding is missing.
-    """
-
-    if not request.can_read_body or request.content_length == 0:
-        return None, False
-    if request.content_length is not None and request.content_length > 2048:
-        raise RESTContractError("Live Mic request body exceeds the benchmark marker limit")
-    try:
-        payload = await request.json()
-    except Exception as exc:
-        raise RESTContractError("Live Mic request body must be JSON") from exc
-    if not isinstance(payload, dict):
-        raise RESTContractError("Live Mic request body must be a dict")
-    if "benchmarkActivationMarker" in payload:
-        marker = validate_tauri_activation_marker_request_payload(
-            payload,
-            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
-            expected_parent_pid=os.getppid(),
-            now_ns=time.perf_counter_ns(),
-        )
-        return marker, True
-    if "benchmarkHotkeyMarker" in payload:
-        marker = validate_tauri_hotkey_marker_request_payload(
-            payload,
-            configured_run_id=os.getenv(_TAURI_HOTKEY_BENCHMARK_RUN_ID_ENV),
-            expected_parent_pid=os.getppid(),
-            now_ns=time.perf_counter_ns(),
-        )
-        return marker, False
-    return None, False
 
 
 def create_app(controller: ScriberWebController) -> web.Application:
@@ -18537,139 +18578,6 @@ def create_app(controller: ScriberWebController) -> web.Application:
 
     async def provider_replay_not_found(_request: web.Request):
         return web.json_response({"message": "Not found"}, status=404)
-
-    async def start_live_request(
-        request: web.Request,
-        *,
-        post_process: bool = False,
-    ) -> web.Response:
-        """Start Live Mic behind one sanitized runtime-error boundary."""
-
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        try:
-            tauri_hotkey_marker, provider_replay_activation = await _tauri_activation_marker_from_request(request)
-        except RESTContractError as exc:
-            return web.json_response({"message": str(exc)}, status=400)
-        try:
-            if provider_replay_activation:
-                if post_process or tauri_hotkey_marker is None:
-                    raise ProviderReplayConflict("provider replay activation path is invalid")
-                await activate_provider_replay(tauri_hotkey_marker)
-                return web.json_response(ctl.get_state())
-            if pending_provider_replay_activations:
-                raise ProviderReplayConflict("provider replay requires its armed native activation")
-            start_kwargs: dict[str, Any] = {
-                "tauri_hotkey_marker": tauri_hotkey_marker,
-            }
-            if post_process:
-                start_kwargs["post_process"] = True
-            start_error = await ctl.start_listening(**start_kwargs)
-        except ProviderReplayConflict as exc:
-            return web.json_response({"message": str(exc)}, status=409)
-        except Exception:
-            # The local log retains the traceback needed to diagnose a broken
-            # frozen runtime.  Never reflect module names, filesystem paths, or
-            # exception text through the public API.
-            logger.exception(
-                "Live microphone runtime failed during {} start",
-                "post-processing" if post_process else "standard",
-            )
-            return web.json_response(
-                _live_mic_runtime_unavailable_payload(),
-                status=503,
-            )
-        if start_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(start_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
-
-    async def start_live(request: web.Request):
-        return await start_live_request(request)
-
-    async def start_live_post_processing(request: web.Request):
-        return await start_live_request(request, post_process=True)
-
-    async def stop_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        stop_error = await ctl.stop_listening()
-        if stop_error is not None:
-            return web.json_response(
-                version_event_payload(ctl._provider_error_event_from_info(stop_error)),
-                status=400,
-            )
-        return web.json_response(ctl.get_state())
-
-    async def toggle_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._live_mic_start_in_progress_generation is not None or ctl._is_listening or ctl._is_stopping:
-            if ctl._should_ignore_duplicate_start_toggle():
-                start_task = ctl._live_mic_start_task
-                if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
-                    await asyncio.shield(start_task)
-                payload = ctl.get_state()
-                payload["stopAccepted"] = False
-                payload["finalizing"] = False
-                payload["duplicateStartIgnored"] = True
-                return web.json_response(payload)
-            accepted = ctl.request_background_stop_listening()
-            payload = ctl.get_state()
-            payload["stopAccepted"] = bool(accepted)
-            payload["finalizing"] = True
-            return web.json_response(payload, status=202)
-
-        return await start_live_request(request)
-
-    async def request_stop_live(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        replay_execution = ctl._provider_replay_execution
-        try:
-            ctl._attest_provider_replay_manual_stop_request()
-        except ProviderReplayError as exc:
-            if replay_execution is not None:
-                replay_execution.fail("manual_stop_missing")
-            # The rejected benchmark sample must still release microphone and
-            # provider resources; it can never become successful evidence.
-            ctl.request_async_stop_listening()
-            return web.json_response(
-                {"message": str(exc)},
-                status=409,
-            )
-        outcome = ctl.request_async_stop_listening()
-        payload = {
-            "apiVersion": REST_API_VERSION,
-            **outcome,
-            # This is an acceptance acknowledgement, not a completion
-            # response.  State/WebSocket events remain authoritative.
-            "finalizing": bool(outcome["stopScheduled"] or outcome["alreadyFinalizing"]),
-            "sessionId": ctl._session_id,
-        }
-        status = 202 if outcome["stopAccepted"] else 503
-        return web.json_response(payload, status=status)
-
-    async def toggle_live_post_processing(request: web.Request):
-        ctl: ScriberWebController = request.app[APP_CONTROLLER]
-        if ctl._live_mic_start_in_progress_generation is not None or ctl._is_listening or ctl._is_stopping:
-            if ctl._should_ignore_duplicate_start_toggle():
-                start_task = ctl._live_mic_start_task
-                if start_task is not None and start_task is not asyncio.current_task() and not start_task.done():
-                    # Duplicate Rust hotkey requests return the authoritative
-                    # state of the one accepted start, not an early false idle
-                    # snapshot while that start is still awaiting native work.
-                    await asyncio.shield(start_task)
-                payload = ctl.get_state()
-                payload["stopAccepted"] = False
-                payload["finalizing"] = False
-                payload["duplicateStartIgnored"] = True
-                return web.json_response(payload)
-            accepted = ctl.request_background_stop_listening()
-            payload = ctl.get_state()
-            payload["stopAccepted"] = bool(accepted)
-            payload["finalizing"] = True
-            return web.json_response(payload, status=202)
-
-        return await start_live_request(request, post_process=True)
 
     async def meeting_profiles(_request: web.Request):
         soniox_ready = bool(Config.get_api_key("soniox"))
@@ -19502,12 +19410,15 @@ def create_app(controller: ScriberWebController) -> web.Application:
         f"{_PROVIDER_REPLAY_ROUTE_PREFIX}/{{tail:.*}}",
         provider_replay_not_found,
     )
-    app.router.add_post("/api/live-mic/start", start_live)
-    app.router.add_post("/api/live-mic/start-post-processing", start_live_post_processing)
-    app.router.add_post("/api/live-mic/stop", stop_live)
-    app.router.add_post("/api/live-mic/stop-request", request_stop_live)
-    app.router.add_post("/api/live-mic/toggle", toggle_live)
-    app.router.add_post("/api/live-mic/toggle-post-processing", toggle_live_post_processing)
+    register_live_mic_routes(
+        app,
+        control=controller,
+        replay=_LiveMicReplayAdapter(
+            pending_activations=pending_provider_replay_activations,
+            activate_replay=activate_provider_replay,
+            state=lambda: controller.get_state(),
+        ),
+    )
 
     register_settings_routes(app, controller=controller)
     register_local_polishing_routes(app, controller=controller)

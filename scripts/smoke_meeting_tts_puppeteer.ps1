@@ -415,6 +415,7 @@ $ArtifactDir = (Resolve-Path -LiteralPath $ArtifactDir).Path
 $DataDir = Join-Path $ArtifactDir "runtime-data"
 [System.IO.Directory]::CreateDirectory($DataDir) | Out-Null
 $PcmPath = Join-Path $ArtifactDir "meeting-mic.pcm"
+$LiveMicPcmPath = Join-Path $ArtifactDir "live-mic.pcm"
 $FixtureResultPath = Join-Path $ArtifactDir "fixture.json"
 $ResultPath = Join-Path $ArtifactDir "result.json"
 $FailureDebugPath = Join-Path $ArtifactDir "failure-debug.json"
@@ -590,6 +591,26 @@ if ([int64]$Fixture.byteLength -le 0 -or [double]$Fixture.rms -le 0.0001) {
     throw "Piper fixture signal validation failed."
 }
 
+$runPhase = "generate-live-mic-fixture"
+Invoke-CheckedCommand `
+    -FilePath $FfmpegPath `
+    -ArgumentList @(
+        "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+        "-f", "s16le", "-ar", "48000", "-ac", "1", "-i", $PcmPath,
+        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "s16le",
+        $LiveMicPcmPath
+    ) `
+    -WorkingDirectory $RepoRoot `
+    -FailureMessage "Could not prepare the bounded Live Mic speech fixture"
+$liveMicFixtureInfo = Get-Item -LiteralPath $LiveMicPcmPath -ErrorAction Stop
+if (
+    $liveMicFixtureInfo.Length -le 0 `
+    -or $liveMicFixtureInfo.Length -gt (64 * 1024 * 1024) `
+    -or $liveMicFixtureInfo.Length % 2 -ne 0
+) {
+    throw "Live Mic PCM fixture contract validation failed."
+}
+
 $runPhase = "prepare-frontend"
 $remoteDebuggingPort = Get-FreeLoopbackPort
 $sessionToken = [System.Guid]::NewGuid().ToString("N")
@@ -659,11 +680,13 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
         "SCRIBER_RUST_AUDIO_WASAPI_CAPTURE" = "0"
         "SCRIBER_RUST_AUDIO_DISABLE_WASAPI_CAPTURE" = "0"
         "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH" = $PcmPath
+        "SCRIBER_RUST_AUDIO_SYNTHETIC_LIVE_MIC_PCM_S16LE_16000_MONO_PATH" = $LiveMicPcmPath
         "SCRIBER_MEETING_FINAL_PROVIDER" = "onnx_local"
         "SCRIBER_MEETING_TRANSCRIPTION_MODE" = "final_only"
         "SCRIBER_MEETING_AUTO_ANALYZE" = "0"
         "SCRIBER_MEETING_SMART_TURN_ENABLED" = "0"
         "SCRIBER_MEETING_AUDIO_RETENTION_DAYS" = "1"
+        "SCRIBER_DEFAULT_STT" = "onnx_local"
         "SCRIBER_ONNX_MODEL" = $OnnxModel
         "SCRIBER_ONNX_QUANTIZATION" = $OnnxQuantization
         "SCRIBER_ONNX_USE_GPU" = "0"
@@ -864,8 +887,11 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
     }
     Remove-Item -LiteralPath $TriggerPath -Force -ErrorAction SilentlyContinue
     if (-not $KeepFixture) {
-        Remove-Item -LiteralPath $PcmPath -Force -ErrorAction SilentlyContinue
-        if (Test-Path -LiteralPath $PcmPath -PathType Leaf) {
+        Remove-Item -LiteralPath $PcmPath, $LiveMicPcmPath -Force -ErrorAction SilentlyContinue
+        if (
+            (Test-Path -LiteralPath $PcmPath -PathType Leaf) `
+            -or (Test-Path -LiteralPath $LiveMicPcmPath -PathType Leaf)
+        ) {
             $driverSucceeded = $false
             $cleanupFailure = $true
             $runPhase = "remove-fixture"
@@ -934,7 +960,7 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
         }
         $allowedOrchestratorPhases = @(
             "prepare-harness", "resolve-prerequisites", "prepare-puppeteer", "build-binaries",
-            "generate-fixture", "prepare-frontend", "start-tauri", "connect-webview2",
+            "generate-fixture", "generate-live-mic-fixture", "prepare-frontend", "start-tauri", "connect-webview2",
             "run-driver", "read-driver-result", "request-shell-shutdown", "wait-shell-exit",
             "verify-shell-cleanup", "verify-owned-process-cleanup", "remove-success-logs",
             "remove-fixture", "remove-runtime-data", "complete", "unknown"
@@ -946,11 +972,17 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
         $driverFailed = $DriverResult -and $DriverResult.ok -eq $false
         $allowedDriverPhases = @(
             "bootstrap", "connect-webview2", "select-main-webview", "navigate-meetings",
-            "resolve-backend-access", "verify-managed-backend", "prepare-meeting-form",
+            "resolve-backend-access", "verify-managed-backend", "wait-frontend-websocket", "prepare-meeting-form",
             "wait-meeting-start-enabled", "start-meeting", "wait-recording", "pause-meeting",
             "wait-paused", "resume-meeting", "wait-resumed-recording", "stop-meeting",
             "wait-finalization", "validate-transcript-content", "validate-transcript-marker",
-            "validate-audio-gap", "validate-page-errors", "complete"
+            "validate-audio-gap", "validate-meeting-readiness", "rename-meeting-workspace",
+            "edit-meeting-workspace-segment", "undo-meeting-workspace-segment",
+            "save-meeting-workspace-note", "search-meeting-workspace-segment",
+            "reprocess-meeting-transcript", "validate-meeting-artifacts",
+            "validate-meeting-catalog", "discard-meeting-through-ui", "navigate-live-mic",
+            "start-live-mic-through-ui", "stop-live-mic-through-ui",
+            "validate-live-mic-transcript", "validate-browser-diagnostics", "complete"
         )
         $driverFailurePhase = Convert-ToSafeDiagnosticToken -Value $DriverResult.phase
         if ($driverFailed -and $driverFailurePhase -in $allowedDriverPhases) {
@@ -978,7 +1010,10 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
             "meeting_recorder_failed", "meeting_capture_stop_failed",
             "process_interrupted", "process_interrupted_during_analysis",
             "process_interrupted_during_finalization", "meeting_analysis_failed", "provider_failed",
-            "source_audio_identity_changed"
+            "source_audio_identity_changed", "meeting_readiness_failed", "meeting_workspace_failed",
+            "meeting_reprocess_failed", "meeting_artifact_failed", "meeting_catalog_failed",
+            "live_mic_navigation_failed", "live_mic_start_failed", "live_mic_stop_failed",
+            "live_mic_transcript_failed"
         )
         $meetingErrorCode = Convert-ToSafeDiagnosticToken -Value $meetingDebugSource.errorCode
         if ($meetingErrorCode -and $meetingErrorCode -notin $allowedMeetingErrorCodes) {
@@ -998,7 +1033,9 @@ $meetingTitle = "Puppeteer Piper TTS E2E " + [DateTimeOffset]::UtcNow.ToString("
                 Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }
         ).Count -gt 0
         $runtimeDataRetained = Test-Path -LiteralPath $DataDir -PathType Container
-        $fixtureRetained = Test-Path -LiteralPath $PcmPath -PathType Leaf
+        $fixtureRetained =
+            (Test-Path -LiteralPath $PcmPath -PathType Leaf) `
+            -or (Test-Path -LiteralPath $LiveMicPcmPath -PathType Leaf)
         $failureReport = [ordered]@{
             schemaVersion = 1
             kind = "scriber-meeting-tts-puppeteer-failure-debug"

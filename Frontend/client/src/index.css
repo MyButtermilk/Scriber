@@ -4255,7 +4255,7 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 
   .transcript-detail-shell.has-summary-toc .summary-toc {
     position: sticky;
-    top: 7rem;
+    top: 7.625rem;
     display: block;
     max-height: calc(100dvh - 9rem);
     overflow-y: auto;
@@ -4267,6 +4267,20 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 
   .transcript-detail-shell.has-summary-toc .transcript-detail-accordion {
     grid-column: 2;
+  }
+
+  .transcript-detail-shell.has-summary-toc .transcript-summary-panel > h3 {
+    position: sticky;
+    top: 7.9375rem;
+    z-index: 1;
+    border-radius: 19px 19px 0 0;
+    background: var(--neu-surface);
+    box-shadow: 0 16px 24px -24px hsl(var(--foreground) / 0.34);
+  }
+
+  .transcript-detail-shell.has-summary-toc .transcript-summary-panel__trigger {
+    border-radius: inherit;
+    background: inherit;
   }
 }
 

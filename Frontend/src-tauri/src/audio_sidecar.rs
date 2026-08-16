@@ -75,6 +75,8 @@ const SIDECAR_JSON_LINE_MAX_BYTES: usize = 1024 * 1024;
 const SYNTHETIC_CAPTURE_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE";
 const SYNTHETIC_SIGNAL_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL";
 const SYNTHETIC_MIC_PCM_ENV: &str = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH";
+const SYNTHETIC_LIVE_MIC_PCM_ENV: &str =
+    "SCRIBER_RUST_AUDIO_SYNTHETIC_LIVE_MIC_PCM_S16LE_16000_MONO_PATH";
 const PROVIDER_REPLAY_RUN_ID_ENV: &str = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID";
 const PROVIDER_REPLAY_FIXTURE_EXACT_END_INTERRUPTED: &str =
     "providerReplayFixtureExactEndInterrupted";
@@ -2090,18 +2092,18 @@ fn synthetic_signal_enabled() -> bool {
     env_flag_enabled(env::var(SYNTHETIC_SIGNAL_ENV).ok().as_deref())
 }
 
-fn validate_synthetic_pcm_fixture_len(byte_len: u64) -> Result<(), String> {
+fn validate_synthetic_pcm_fixture_len(fixture_env: &str, byte_len: u64) -> Result<(), String> {
     if byte_len == 0 {
-        return Err(format!("{SYNTHETIC_MIC_PCM_ENV} must not be empty"));
+        return Err(format!("{fixture_env} must not be empty"));
     }
     if byte_len > SYNTHETIC_PCM_MAX_BYTES {
         return Err(format!(
-            "{SYNTHETIC_MIC_PCM_ENV} exceeds the bounded synthetic PCM size"
+            "{fixture_env} exceeds the bounded synthetic PCM size"
         ));
     }
     if !byte_len.is_multiple_of(2) {
         return Err(format!(
-            "{SYNTHETIC_MIC_PCM_ENV} must contain aligned signed 16-bit PCM"
+            "{fixture_env} must contain aligned signed 16-bit PCM"
         ));
     }
     Ok(())
@@ -2111,30 +2113,41 @@ fn load_synthetic_pcm_fixture(request: &CaptureRequest) -> Result<Option<Vec<u8>
     if !request.capture_kind.eq_ignore_ascii_case("microphone") {
         return Ok(None);
     }
-    let Some(raw_path) = env::var_os(SYNTHETIC_MIC_PCM_ENV) else {
+    let configured = [
+        (SYNTHETIC_LIVE_MIC_PCM_ENV, 16_000_u32),
+        (SYNTHETIC_MIC_PCM_ENV, 48_000_u32),
+    ]
+    .into_iter()
+    .filter_map(|(fixture_env, sample_rate)| {
+        env::var_os(fixture_env)
+            .filter(|value| !value.is_empty())
+            .map(|path| (fixture_env, sample_rate, path))
+    })
+    .collect::<Vec<_>>();
+    let Some((fixture_env, expected_sample_rate, raw_path)) = configured
+        .iter()
+        .find(|(_, sample_rate, _)| *sample_rate == request.sample_rate)
+        .or_else(|| configured.first())
+    else {
         return Ok(None);
     };
-    if raw_path.is_empty() {
-        return Ok(None);
-    }
-    if request.sample_rate != 48_000 || request.channels != 1 {
+    if request.sample_rate != *expected_sample_rate || request.channels != 1 {
         return Err(format!(
-            "{SYNTHETIC_MIC_PCM_ENV} requires 48000 Hz mono capture"
+            "{fixture_env} requires {expected_sample_rate} Hz mono capture"
         ));
     }
     let path = std::path::PathBuf::from(raw_path);
     if !path.is_absolute() {
-        return Err(format!("{SYNTHETIC_MIC_PCM_ENV} must be an absolute path"));
+        return Err(format!("{fixture_env} must be an absolute path"));
     }
-    let metadata = std::fs::metadata(&path)
-        .map_err(|_| format!("{SYNTHETIC_MIC_PCM_ENV} could not be opened"))?;
+    let metadata =
+        std::fs::metadata(&path).map_err(|_| format!("{fixture_env} could not be opened"))?;
     if !metadata.is_file() {
-        return Err(format!("{SYNTHETIC_MIC_PCM_ENV} must reference a file"));
+        return Err(format!("{fixture_env} must reference a file"));
     }
-    validate_synthetic_pcm_fixture_len(metadata.len())?;
-    let payload =
-        std::fs::read(&path).map_err(|_| format!("{SYNTHETIC_MIC_PCM_ENV} could not be read"))?;
-    validate_synthetic_pcm_fixture_len(payload.len() as u64)?;
+    validate_synthetic_pcm_fixture_len(fixture_env, metadata.len())?;
+    let payload = std::fs::read(&path).map_err(|_| format!("{fixture_env} could not be read"))?;
+    validate_synthetic_pcm_fixture_len(fixture_env, payload.len() as u64)?;
     Ok(Some(payload))
 }
 
@@ -7161,18 +7174,19 @@ mod tests {
 
     #[test]
     fn synthetic_pcm_fixture_length_validation_is_bounded_and_sample_aligned() {
-        assert!(validate_synthetic_pcm_fixture_len(2).is_ok());
-        assert!(validate_synthetic_pcm_fixture_len(0)
+        assert!(validate_synthetic_pcm_fixture_len(SYNTHETIC_MIC_PCM_ENV, 2).is_ok());
+        assert!(validate_synthetic_pcm_fixture_len(SYNTHETIC_MIC_PCM_ENV, 0)
             .unwrap_err()
             .contains("must not be empty"));
-        assert!(validate_synthetic_pcm_fixture_len(3)
+        assert!(validate_synthetic_pcm_fixture_len(SYNTHETIC_MIC_PCM_ENV, 3)
             .unwrap_err()
             .contains("signed 16-bit PCM"));
-        assert!(
-            validate_synthetic_pcm_fixture_len(SYNTHETIC_PCM_MAX_BYTES + 2)
-                .unwrap_err()
-                .contains("bounded synthetic PCM size")
-        );
+        assert!(validate_synthetic_pcm_fixture_len(
+            SYNTHETIC_MIC_PCM_ENV,
+            SYNTHETIC_PCM_MAX_BYTES + 2,
+        )
+        .unwrap_err()
+        .contains("bounded synthetic PCM size"));
     }
 
     #[test]
@@ -7200,6 +7214,32 @@ mod tests {
         request.sample_rate = 16_000;
         let error = load_synthetic_pcm_fixture(&request).unwrap_err();
         assert!(error.contains("requires 48000 Hz mono capture"));
+        assert!(!error.contains(&path_text));
+
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn synthetic_live_mic_pcm_fixture_accepts_only_16000_hz_mono() {
+        let _lock = audio_env_test_lock();
+        let path = env::temp_dir().join(format!(
+            "scriber-synthetic-live-mic-{}.s16le",
+            Uuid::new_v4().simple()
+        ));
+        std::fs::write(&path, [1_u8, 0, 2, 0]).unwrap();
+        let path_text = path.to_string_lossy().to_string();
+        let _fixture = set_audio_test_env(SYNTHETIC_LIVE_MIC_PCM_ENV, &path_text);
+        let mut request = test_microphone_capture_request();
+        request.sample_rate = 16_000;
+        request.channels = 1;
+        request.block_size = 160;
+
+        let microphone = load_synthetic_pcm_fixture(&request).unwrap();
+        assert_eq!(microphone, Some(vec![1, 0, 2, 0]));
+
+        request.sample_rate = 48_000;
+        let error = load_synthetic_pcm_fixture(&request).unwrap_err();
+        assert!(error.contains("requires 16000 Hz mono capture"));
         assert!(!error.contains(&path_text));
 
         std::fs::remove_file(path).unwrap();

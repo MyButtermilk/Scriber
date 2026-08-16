@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   AlertTriangle,
@@ -645,6 +645,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                     {editingId === segment.id ? (
                       <div className="mt-2 space-y-2">
                         <Textarea
+                          data-testid={`meeting-segment-edit-input-${segment.id}`}
                           value={draft}
                           onChange={(event) => setDraft(event.target.value)}
                           rows={3}
@@ -664,6 +665,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                         />
                         <div className="flex flex-wrap items-center gap-2">
                           <Button
+                            data-testid={`meeting-segment-edit-save-${segment.id}`}
                             type="button"
                             size="sm"
                             className="h-8 active:scale-[0.97]"
@@ -697,6 +699,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                         {canEdit && (
                           <div className="mt-2 flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
                             <Button
+                              data-testid={`meeting-segment-edit-${segment.id}`}
                               type="button"
                               size="sm"
                               variant="ghost"
@@ -708,6 +711,7 @@ const VirtualMeetingTranscript = memo(function VirtualMeetingTranscript({
                             </Button>
                             {segment.editVersion > 0 && (
                               <Button
+                                data-testid={`meeting-segment-undo-${segment.id}`}
                                 type="button"
                                 size="sm"
                                 variant="ghost"
@@ -1119,6 +1123,20 @@ const MeetingWorkspaceTabs = memo(function MeetingWorkspaceTabs({
   );
 });
 
+function waitForRouteCommit(): Promise<void> {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => resolve());
+    });
+  });
+}
+
+function removeMeetingQueriesAfterRouteCommit(queryClient: QueryClient, meetingId: string): void {
+  void waitForRouteCommit().then(() => {
+    queryClient.removeQueries({ queryKey: ["/api/meetings", meetingId] });
+  });
+}
+
 export default function Meetings({ params }: { params?: { id?: string } }) {
   const { t, formatDate, formatNumber, localeTag } = useI18n();
   const selectedId = params?.id || "";
@@ -1376,10 +1394,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     outlookQuery.data?.nextEvent?.id,
     selectedCalendarEventId,
   ]);
+  const deletingSelectedMeeting = Boolean(selectedId && meetingPendingDelete?.id === selectedId);
   const detailQuery = useQuery<MeetingDetail>({
     queryKey: ["/api/meetings", selectedId],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}`, signal),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId && !deletingSelectedMeeting),
     staleTime: 30_000,
     refetchInterval: (query) => meetingDetailRefetchInterval(query.state.data?.state, meetingWsConnected),
   });
@@ -1388,7 +1407,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }>({
     queryKey: ["/api/meetings", selectedId, "deliveries"],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}/deliveries`, signal),
-    enabled: Boolean(selectedId),
+    enabled: Boolean(selectedId && !deletingSelectedMeeting),
     staleTime: 5_000,
   });
   const detail = detailQuery.data;
@@ -1425,7 +1444,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   }>({
     queryKey: ["/api/meetings", selectedId, "email-preview"],
     queryFn: ({ signal }) => fetchJson(`/api/meetings/${selectedId}/email-preview`, signal),
-    enabled: Boolean(selectedId && emailDialogOpen),
+    enabled: Boolean(selectedId && emailDialogOpen && !deletingSelectedMeeting),
     staleTime: 10_000,
   });
 
@@ -1492,7 +1511,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       }
       if (message.type === "meeting_state") {
         applyMeetingSummaryEvent(queryClient, message.meeting);
-        if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
+        if (message.meeting.state === "discarded") {
+          void queryClient.cancelQueries({ queryKey: ["/api/meetings", message.meeting.id] });
+          if (message.meeting.id === selectedId) setLocation("/meetings");
+          removeMeetingQueriesAfterRouteCommit(queryClient, message.meeting.id);
+        } else if (TERMINAL_MEETING_STATES.has(message.meeting.state)) {
           void queryClient.invalidateQueries({ queryKey: ["/api/meetings", message.meeting.id], exact: true });
           void queryClient.invalidateQueries({ queryKey: ["/api/meetings/speaker-profiles"] });
           void queryClient.invalidateQueries({
@@ -1962,19 +1985,29 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
       await apiRequest("DELETE", `/api/meetings/${id}`);
       return id;
     },
+    onMutate: async (id) => {
+      const restoreSelectedMeeting = selectedId === id;
+      if (restoreSelectedMeeting) {
+        await queryClient.cancelQueries({ queryKey: ["/api/meetings", id] });
+        setLocation("/meetings");
+        await waitForRouteCommit();
+      }
+      return { restoreSelectedMeeting };
+    },
     onSuccess: (id) => {
       setMeetingPendingDelete(null);
       queryClient.removeQueries({ queryKey: ["/api/meetings", id] });
       void refreshMeetingCollections(queryClient);
       void refreshMeetingCapabilities(queryClient);
-      if (selectedId === id) setLocation("/meetings");
       toast({
         title: t("Meeting deleted"),
         description: t("Transcript, generated outputs, and locally retained audio were removed."),
       });
     },
-    onError: (error) =>
-      toast({ variant: "destructive", title: t("Meeting could not be deleted"), description: t(error.message) }),
+    onError: (error, id, context) => {
+      if (context?.restoreSelectedMeeting) setLocation(`/meetings/${encodeURIComponent(id)}`);
+      toast({ variant: "destructive", title: t("Meeting could not be deleted"), description: t(error.message) });
+    },
   });
 
   const exportMutation = useMutation({
@@ -2655,6 +2688,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     <div
       className="app-page-shell transcription-page meetings-page flex min-h-[calc(100dvh-3.5rem)] flex-col px-4 py-5 md:px-6 md:py-6"
       data-page-shell="meetings"
+      data-websocket-connected={meetingWsConnected ? "true" : "false"}
     >
       <PageIntro
         eyebrow={t("Meeting workspace")}
@@ -3369,6 +3403,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         }}
                       >
                         <Input
+                          data-testid="meeting-title-input"
                           autoFocus
                           value={meetingTitleDraft}
                           maxLength={500}
@@ -3378,6 +3413,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           className="h-9 min-w-48 max-w-xl font-heading text-lg font-semibold"
                         />
                         <Button
+                          data-testid="meeting-title-save"
                           type="submit"
                           size="icon"
                           variant="ghost"
@@ -3412,6 +3448,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                           {detail.title}
                         </h2>
                         <Button
+                          data-testid="meeting-title-edit"
                           type="button"
                           size="icon"
                           variant="ghost"
@@ -3864,7 +3901,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
-              {!OPEN_STATES.has(detail.state) && (
+              {!OPEN_STATES.has(detail.state) && !deletingSelectedMeeting && (
                 <SpeakerAttendeeAssignments
                   meetingId={detail.id}
                   calendarEvent={detail.captureMetadata.calendarEvent ?? null}
