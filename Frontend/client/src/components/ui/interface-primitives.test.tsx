@@ -62,7 +62,12 @@ describe("interface primitives", () => {
     expect(layout).toHaveClass("grid");
     expect(layout?.className).toContain("md:grid-cols-[minmax(0,1fr)_auto]");
     expect(screen.getByRole("heading", { level: 1 })).toHaveClass("text-balance", "break-words");
-    expect(screen.getByText(/The description/)).toHaveClass("text-pretty", "text-[14px]");
+    expect(screen.getByText(/The description/)).toHaveClass(
+      "break-words",
+      "text-pretty",
+      "text-[13px]",
+      "md:text-[14px]",
+    );
   });
 
   it("wraps card copy safely and keeps passive badges visually quiet", () => {

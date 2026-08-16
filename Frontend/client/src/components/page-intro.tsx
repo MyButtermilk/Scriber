@@ -49,7 +49,7 @@ export function PageIntro({
             {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
           </div>
 
-          <p className="mt-3 max-w-[72ch] break-words text-pretty text-[14px] leading-[1.55] text-muted-foreground">
+          <p className="mt-3 max-w-[72ch] text-pretty text-[13px] break-words leading-[1.55] text-muted-foreground md:text-[14px]">
             {description}
           </p>
         </div>
