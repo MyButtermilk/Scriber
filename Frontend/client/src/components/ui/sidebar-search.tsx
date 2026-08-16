@@ -18,14 +18,7 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
   return (
     <button
       type="button"
-      className={[
-        "flex w-full cursor-pointer items-center gap-2 rounded-[10px] border border-border/90",
-        "bg-background/60 px-3 py-2 text-left shadow-none",
-        "transition-[background-color,border-color] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)]",
-        "hover:border-foreground/20 hover:bg-background/90",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-        "focus-visible:ring-offset-sidebar motion-reduce:transition-none dark:bg-background/70 dark:hover:bg-background/90",
-      ].join(" ")}
+      className="neu-search-inset flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
       aria-label={t("Open command palette")}
       aria-keyshortcuts="Control+K Meta+K"
       onClick={() => onOpenCommandPalette?.()}

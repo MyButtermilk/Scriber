@@ -50,8 +50,8 @@ export function PageIntro({
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <h1
               className={cn(
-                "text-balance font-heading text-[30px] font-semibold leading-[1.02]",
-                "tracking-[-0.036em] text-foreground md:text-[34px]",
+                "text-balance font-heading text-[36px] font-semibold leading-[1.02]",
+                "tracking-[-0.036em] text-foreground md:text-[42px]",
               )}
             >
               {title}
@@ -59,7 +59,7 @@ export function PageIntro({
             {titleAccessory ? <div className="shrink-0">{titleAccessory}</div> : null}
           </div>
 
-          <p className="mt-2.5 max-w-[68ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
+          <p className="mt-3 max-w-[72ch] text-pretty text-[13px] leading-5 text-muted-foreground md:text-[13.5px]">
             {description}
           </p>
         </div>

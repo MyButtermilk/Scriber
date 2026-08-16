@@ -92,65 +92,103 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
   const utilityTabs: NavigationItem[] = [
     { href: "/settings", icon: Settings, label: t("Settings") },
-    { href: "/debug", icon: Terminal, label: t("Console") },
   ];
 
-  const renderTabList = (tabs: NavigationItem[], className?: string, onNavigate?: () => void) => (
-    <ul className={cn("space-y-1", className)}>
-      {tabs.map((tab) => {
-        const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
-        const Icon = tab.icon;
+  const navigationItemClassName = (isActive: boolean) =>
+    cn(
+      "relative flex min-h-10 min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border",
+      "border-transparent px-3 text-ui-body-sm font-medium no-underline outline-none",
+      "transition-[background-color,border-color,color,transform] duration-[var(--duration-quick)]",
+      "ease-[var(--ease-smooth-out)] hover:bg-foreground/5 hover:text-foreground active:scale-[0.985]",
+      "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
+      "motion-reduce:transition-none motion-reduce:active:scale-100",
+      isActive
+        ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15"
+        : "text-muted-foreground",
+    );
 
-        return (
-          <li key={tab.href}>
-            <Link
-              href={tab.href}
-              onPointerEnter={() => handleNavIntent(tab.href)}
-              onPointerDown={() => handleNavIntent(tab.href)}
-              onFocus={() => handleNavIntent(tab.href)}
-              onClick={onNavigate}
-              aria-current={isActive ? "page" : undefined}
-              data-active={isActive ? "true" : "false"}
-              className={cn(
-                "relative flex min-h-10 min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border",
-                "border-transparent px-3 text-ui-body-sm font-medium no-underline outline-none",
-                "transition-[background-color,border-color,color,transform] duration-[var(--duration-quick)]",
-                "ease-[var(--ease-smooth-out)] hover:bg-foreground/5 hover:text-foreground active:scale-[0.985]",
-                "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
-                "motion-reduce:transition-none motion-reduce:active:scale-100",
-                isActive
-                  ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15"
-                  : "text-muted-foreground",
-              )}
-            >
-              <span
-                className={cn(
-                  "absolute bottom-2.5 left-1 top-2.5 w-[3px] origin-center rounded-full bg-primary",
-                  "transition-[opacity,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)]",
-                  "motion-reduce:transition-none",
-                  isActive ? "scale-y-100 opacity-100" : "scale-y-50 opacity-0",
-                )}
-                aria-hidden="true"
-              />
-              <Icon
-                className={cn(
-                  "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
-                  isActive && "stroke-2 text-primary",
-                )}
-                aria-hidden="true"
-              />
-              <span className="min-w-0 truncate">{tab.label}</span>
-            </Link>
-          </li>
-        );
-      })}
-    </ul>
+  const renderActiveIndicator = (isActive: boolean) => (
+    <span
+      className={cn(
+        "absolute bottom-2.5 left-1 top-2.5 w-[3px] origin-center rounded-full bg-primary",
+        "transition-[opacity,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)]",
+        "motion-reduce:transition-none",
+        isActive ? "scale-y-100 opacity-100" : "scale-y-50 opacity-0",
+      )}
+      aria-hidden="true"
+    />
   );
 
-  const renderNavigation = (onNavigate?: () => void) => (
+  const renderTabItem = (tab: NavigationItem, onNavigate?: () => void) => {
+    const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
+    const Icon = tab.icon;
+
+    return (
+      <li key={tab.href}>
+        <Link
+          href={tab.href}
+          onPointerEnter={() => handleNavIntent(tab.href)}
+          onPointerDown={() => handleNavIntent(tab.href)}
+          onFocus={() => handleNavIntent(tab.href)}
+          onClick={onNavigate}
+          aria-current={isActive ? "page" : undefined}
+          data-active={isActive ? "true" : "false"}
+          className={navigationItemClassName(isActive)}
+        >
+          {renderActiveIndicator(isActive)}
+          <Icon
+            className={cn(
+              "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
+              isActive && "stroke-2 text-primary",
+            )}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate">{tab.label}</span>
+        </Link>
+      </li>
+    );
+  };
+
+  const renderConsoleUtility = (onNavigate?: () => void) => {
+    const isActive = location.startsWith("/debug");
+
+    return (
+      <li key="console">
+        <Link
+          href="/debug"
+          onPointerEnter={() => handleNavIntent("/debug")}
+          onPointerDown={() => handleNavIntent("/debug")}
+          onFocus={() => handleNavIntent("/debug")}
+          onClick={onNavigate}
+          aria-current={isActive ? "page" : undefined}
+          data-active={isActive ? "true" : "false"}
+          className={navigationItemClassName(isActive)}
+        >
+          {renderActiveIndicator(isActive)}
+          <Terminal
+            className={cn(
+              "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
+              isActive && "stroke-2 text-primary",
+            )}
+            aria-hidden="true"
+          />
+          <span className="min-w-0 truncate">{t("Console")}</span>
+        </Link>
+      </li>
+    );
+  };
+
+  const renderTabList = (tabs: NavigationItem[], onNavigate?: () => void) => (
+    <ul className="space-y-1">{tabs.map((tab) => renderTabItem(tab, onNavigate))}</ul>
+  );
+
+  const renderNav = (onNavigate?: () => void) => (
     <nav className="flex min-h-0 flex-1 flex-col px-3 pt-1" aria-label={t("Main navigation")}>
-      {renderTabList(primaryTabs, undefined, onNavigate)}
-      {renderTabList(utilityTabs, "mt-auto border-t border-border/60 pt-3", onNavigate)}
+      {renderTabList(primaryTabs, onNavigate)}
+      <ul className="mt-auto space-y-1 border-t border-border/60 pt-3">
+        {utilityTabs.map((tab) => renderTabItem(tab, onNavigate))}
+        {renderConsoleUtility(onNavigate)}
+      </ul>
     </nav>
   );
 
@@ -181,7 +219,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="min-h-[44px] min-w-[44px] rounded-lg"
+                  className="min-h-[44px] min-w-[44px]"
                   aria-label={t("Open navigation")}
                 >
                   <Menu className="h-5 w-5" />
@@ -197,7 +235,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
                   <div className="px-3 pb-3">
                     <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPaletteFromSheet} />
                   </div>
-                  {renderNavigation(() => setMobileNavOpen(false))}
+                  {renderNav(() => setMobileNavOpen(false))}
                   <div className="mx-3 flex items-center gap-2 px-1 pb-5 pt-3">
                     <LanguageToggle />
                     <ThemeToggle align="edge" />
@@ -212,7 +250,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
             type="button"
             variant="ghost"
             size="icon"
-            className="min-h-[44px] min-w-[44px] shrink-0 rounded-lg"
+            className="min-h-[44px] min-w-[44px]"
             onClick={handleOpenCommandPalette}
             aria-label={t("Open command palette")}
           >
@@ -231,7 +269,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
             <SidebarSearch placeholder={t("Search")} onOpenCommandPalette={handleOpenCommandPalette} />
           </div>
 
-          {renderNavigation()}
+          {renderNav()}
 
           <div className="mx-3 flex items-center gap-2 px-1 pb-5 pt-3">
             <LanguageToggle />
