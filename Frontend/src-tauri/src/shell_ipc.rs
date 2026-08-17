@@ -198,20 +198,24 @@ where
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(dispatch)) {
         Ok(response) => response,
         Err(_) => {
-            let request_id = serde_json::from_str::<Value>(raw)
-                .ok()
-                .and_then(|request| {
-                    request
-                        .get("requestId")
-                        .and_then(Value::as_str)
-                        .map(|value| value.chars().take(128).collect::<String>())
-                })
+            let request = serde_json::from_str::<Value>(raw).ok();
+            let request_id = request
+                .as_ref()
+                .and_then(|request| request.get("requestId"))
+                .and_then(Value::as_str)
+                .map(|value| value.chars().take(128).collect::<String>())
                 .unwrap_or_default();
+            let command = request
+                .as_ref()
+                .and_then(|request| request.get("command"))
+                .and_then(Value::as_str)
+                .map(|value| value.chars().take(64).collect::<String>())
+                .unwrap_or_else(|| "unknown".to_string());
             response_line(
                 &request_id,
                 false,
                 "internalCommandPanic",
-                "shell command failed internally",
+                &format!("shell command failed internally ({command})"),
                 Instant::now(),
                 json!({}),
             )
@@ -755,13 +759,26 @@ fn outlook_read_refresh_token() -> Result<String, String> {
     let mut credential: *mut CREDENTIALW = null_mut();
     let found = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
     if found == 0 {
-        return Err("Outlook is not connected".to_string());
+        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
+        if error == 1168 {
+            return Err("Outlook is not connected".to_string());
+        }
+        return Err(format!("Windows Credential Manager read failed: {error}"));
     }
-    let value = unsafe {
-        let item = &*credential;
-        let bytes = slice::from_raw_parts(item.CredentialBlob, item.CredentialBlobSize as usize);
-        String::from_utf8(bytes.to_vec())
-            .map_err(|_| "Stored Outlook credential is invalid".to_string())
+    let value = if credential.is_null() {
+        Err("Stored Outlook credential is invalid".to_string())
+    } else {
+        unsafe {
+            let item = &*credential;
+            let size = item.CredentialBlobSize as usize;
+            if size == 0 || item.CredentialBlob.is_null() {
+                Err("Stored Outlook credential is invalid".to_string())
+            } else {
+                let bytes = slice::from_raw_parts(item.CredentialBlob, size);
+                String::from_utf8(bytes.to_vec())
+                    .map_err(|_| "Stored Outlook credential is invalid".to_string())
+            }
+        }
     };
     unsafe { CredFree(credential.cast()) };
     value
@@ -875,24 +892,13 @@ fn outlook_token_request(_payload: &Value, _authorization_code: bool) -> Result<
 
 #[cfg(windows)]
 fn outlook_credential_status() -> Result<Value, String> {
-    use std::ptr::null_mut;
-    use windows_sys::Win32::Security::Credentials::{
-        CredFree, CredReadW, CREDENTIALW, CRED_TYPE_GENERIC,
-    };
-    let target: Vec<u16> = OUTLOOK_CREDENTIAL_TARGET
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let mut credential: *mut CREDENTIALW = null_mut();
-    let found = unsafe { CredReadW(target.as_ptr(), CRED_TYPE_GENERIC, 0, &mut credential) };
-    if found == 0 {
-        let error = unsafe { windows_sys::Win32::Foundation::GetLastError() };
-        if error == 1168 {
+    match outlook_read_refresh_token() {
+        Ok(_) => {}
+        Err(reason) if reason == "Outlook is not connected" => {
             return Ok(json!({"connected": false, "credentialStored": false}));
         }
-        return Err(format!("Windows Credential Manager read failed: {error}"));
+        Err(reason) => return Err(reason),
     }
-    unsafe { CredFree(credential.cast()) };
     Ok(json!({
         "connected": true,
         "credentialStored": true,
@@ -3730,6 +3736,10 @@ mod tests {
         assert_eq!(response["requestId"], "panic-request");
         assert_eq!(response["success"], false);
         assert_eq!(response["errorCode"], "internalCommandPanic");
+        assert_eq!(
+            response["fallbackReason"],
+            "shell command failed internally (ping)"
+        );
         assert!(!response.to_string().contains("secret panic detail"));
     }
 
