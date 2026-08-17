@@ -40,11 +40,11 @@ export function EmptyState({ type, title, description }: EmptyStateProps) {
 
   return (
     <div className="empty-state-container">
-      <div className="neu-search-inset p-6 rounded-full">
+      <div className="neu-search-inset rounded-full p-6">
         <Icon className="empty-state-icon text-muted-foreground" />
       </div>
-      <h3 className="empty-state-title">{t(title || content.title)}</h3>
-      <p className="empty-state-description">{t(description || content.description)}</p>
+      <h3 className="empty-state-title text-balance">{t(title || content.title)}</h3>
+      <p className="empty-state-description text-pretty">{t(description || content.description)}</p>
     </div>
   );
 }

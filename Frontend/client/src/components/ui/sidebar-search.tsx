@@ -18,13 +18,14 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
   return (
     <button
       type="button"
-      className="neu-search-inset flex w-full cursor-pointer items-center gap-2 rounded-xl px-3 py-2.5 text-left transition-colors duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] hover:bg-accent/50 motion-reduce:transition-none"
+      className="neu-search-inset flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar"
       aria-label={t("Open command palette")}
+      aria-keyshortcuts="Control+K Meta+K"
       onClick={() => onOpenCommandPalette?.()}
     >
-      <Search className="w-4 h-4 text-muted-foreground shrink-0" />
-      <span className="flex-1 min-w-0 text-sm text-muted-foreground">{t(placeholder)}</span>
-      <kbd className="neu-kbd shrink-0 inline-flex items-center px-1.5 py-0.5 text-ui-micro font-medium text-muted-foreground rounded">
+      <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="min-w-0 flex-1 truncate text-ui-body-sm text-muted-foreground">{t(placeholder)}</span>
+      <kbd className="inline-flex min-w-9 shrink-0 items-center justify-center rounded-md border border-border/90 bg-background/90 px-1.5 py-0.5 text-ui-micro font-medium leading-none text-muted-foreground">
         {isMac ? "⌘K" : locale === "de" ? "Strg+K" : "Ctrl+K"}
       </kbd>
     </button>

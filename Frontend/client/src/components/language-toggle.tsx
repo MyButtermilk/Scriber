@@ -31,7 +31,7 @@ export function LanguageToggle({ compact = false, className }: LanguageTogglePro
               key={option}
               type="button"
               className={cn(
-                "neu-nav-item h-9 min-w-0 flex-1 rounded-[12px] border border-transparent px-2 text-xs font-semibold outline-none transition-[background-color,color,box-shadow,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)] active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar motion-reduce:transition-none",
+                "neu-nav-item h-9 min-w-0 flex-1 rounded-[12px] border border-transparent px-2 text-xs font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-sidebar",
                 selected ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
               onClick={() => setLocale(option)}

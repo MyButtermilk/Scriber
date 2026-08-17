@@ -1,5 +1,6 @@
 import { Component, useEffect, useRef, type ErrorInfo, type ReactNode } from "react";
 
+import { Button } from "@/components/ui/button";
 import { useI18n } from "@/i18n";
 
 type AppErrorBoundaryVariant = "root" | "route";
@@ -42,8 +43,8 @@ function AppErrorFallback({
     <div
       className={
         isRootFallback
-          ? "flex min-h-[100dvh] items-center justify-center bg-background px-5 py-10 text-foreground"
-          : "flex min-h-[320px] items-center justify-center px-5 py-10 text-foreground"
+          ? "flex min-h-[100dvh] items-center justify-center bg-background px-5 py-10 text-foreground antialiased"
+          : "flex min-h-[320px] items-center justify-center px-5 py-10 text-foreground antialiased"
       }
       role="alert"
       aria-labelledby={headingId}
@@ -54,11 +55,11 @@ function AppErrorFallback({
           ref={headingRef}
           id={headingId}
           tabIndex={-1}
-          className="font-heading text-xl font-semibold tracking-tight outline-none"
+          className="text-balance font-heading text-xl font-semibold tracking-tight outline-none"
         >
           {t(isRootFallback ? "Scriber could not start" : "This section could not be opened")}
         </h1>
-        <p id={descriptionId} className="mt-2 text-sm leading-6 text-muted-foreground">
+        <p id={descriptionId} className="mt-2 text-pretty text-sm leading-6 text-muted-foreground">
           {t(
             isRootFallback
               ? "Reload Scriber to try again."
@@ -66,21 +67,13 @@ function AppErrorFallback({
           )}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onRetry}
-            className="hover-elevate active-elevate-2 inline-flex min-h-10 items-center justify-center whitespace-nowrap rounded-md border border-primary-border bg-primary px-4 py-2 text-sm font-medium text-primary-foreground outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
+          <Button type="button" onClick={onRetry} className="min-h-10">
             {t(isRootFallback ? "Reload Scriber" : "Try again")}
-          </button>
+          </Button>
           {!isRootFallback && onNavigateHome && (
-            <button
-              type="button"
-              onClick={onNavigateHome}
-              className="hover-elevate active-elevate-2 inline-flex min-h-10 items-center justify-center whitespace-nowrap rounded-md border px-4 py-2 text-sm font-medium text-foreground no-underline outline-none [border-color:var(--button-outline)] focus-visible:ring-1 focus-visible:ring-ring"
-            >
+            <Button type="button" variant="outline" onClick={onNavigateHome} className="min-h-10">
               {t("Back to Live Mic")}
-            </button>
+            </Button>
           )}
         </div>
       </div>
