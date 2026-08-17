@@ -32,6 +32,7 @@ GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
 SCOPES = "User.Read Calendars.Read offline_access"
 GRAPH_SYNC_TIMEOUT_SECONDS = 60.0
 REAUTHORIZATION_REQUIRED_ERROR = "OutlookReauthorizationRequired"
+_ABSENCE_NOTICE_SUBJECT_PATTERN = re.compile(r"\b(?:urlaub|krank)\b", re.IGNORECASE)
 WINDOWS_TIMEZONE_TO_IANA = {
     "W. Europe Standard Time": "Europe/Berlin",
     "GMT Standard Time": "Europe/London",
@@ -112,6 +113,10 @@ def _delta_window_needs_reseed(window_end: str, now: datetime) -> bool:
     except ValueError:
         return True
     return parsed.astimezone(UTC) <= now + timedelta(days=7)
+
+
+def _is_absence_notice_subject(subject: Any) -> bool:
+    return bool(_ABSENCE_NOTICE_SUBJECT_PATTERN.search(str(subject or "")))
 
 
 class OutlookCalendarService:
@@ -690,12 +695,20 @@ class OutlookCalendarService:
                     account = None
                     next_event = None
                 else:
-                    next_event = conn.execute(
-                        """SELECT *
-                           FROM outlook_calendar_events
-                           WHERE is_cancelled=0 AND end_at>=? ORDER BY start_at LIMIT 1""",
-                        (datetime.now(UTC).isoformat(),),
-                    ).fetchone()
+                    next_event = next(
+                        (
+                            candidate
+                            for candidate in conn.execute(
+                                """SELECT *
+                                   FROM outlook_calendar_events
+                                   WHERE is_cancelled=0 AND end_at>=?
+                                   ORDER BY start_at,id""",
+                                (datetime.now(UTC).isoformat(),),
+                            )
+                            if not _is_absence_notice_subject(candidate["subject"])
+                        ),
+                        None,
+                    )
         reauthorization_required = str(state["last_error"] or "") == REAUTHORIZATION_REQUIRED_ERROR
         return {
             "configured": self.configured,
@@ -724,34 +737,40 @@ class OutlookCalendarService:
                 return None
             with self._read_snapshot() as conn:
                 state = conn.execute("SELECT account_json FROM outlook_calendar_state WHERE id=1").fetchone()
-                row = conn.execute(
-                    """SELECT *
-                       FROM outlook_calendar_events
-                       WHERE is_cancelled=0 AND start_at<=? AND end_at>=?
-                       ORDER BY
-                         is_all_day ASC,
-                         CASE
-                           WHEN start_at<=? AND end_at>=? THEN 0
-                           WHEN start_at>? THEN 1
-                           ELSE 2
-                         END ASC,
-                         CASE WHEN start_at<=? AND end_at>=? THEN start_at END DESC,
-                         CASE WHEN start_at>? THEN start_at END ASC,
-                         CASE WHEN end_at<? THEN end_at END DESC,
-                         id ASC
-                       LIMIT 1""",
+                row = next(
                     (
-                        upper,
-                        lower,
-                        now_value,
-                        now_value,
-                        now_value,
-                        now_value,
-                        now_value,
-                        now_value,
-                        now_value,
+                        candidate
+                        for candidate in conn.execute(
+                            """SELECT *
+                               FROM outlook_calendar_events
+                               WHERE is_cancelled=0 AND start_at<=? AND end_at>=?
+                               ORDER BY
+                                 is_all_day ASC,
+                                 CASE
+                                   WHEN start_at<=? AND end_at>=? THEN 0
+                                   WHEN start_at>? THEN 1
+                                   ELSE 2
+                                 END ASC,
+                                 CASE WHEN start_at<=? AND end_at>=? THEN start_at END DESC,
+                                 CASE WHEN start_at>? THEN start_at END ASC,
+                                 CASE WHEN end_at<? THEN end_at END DESC,
+                                 id ASC""",
+                            (
+                                upper,
+                                lower,
+                                now_value,
+                                now_value,
+                                now_value,
+                                now_value,
+                                now_value,
+                                now_value,
+                                now_value,
+                            ),
+                        )
+                        if not _is_absence_notice_subject(candidate["subject"])
                     ),
-                ).fetchone()
+                    None,
+                )
         if row is None:
             return None
         account = self._load_json(state["account_json"], {}) if state else {}
@@ -774,7 +793,7 @@ class OutlookCalendarService:
                     "SELECT * FROM outlook_calendar_events WHERE id=? AND is_cancelled=0",
                     (normalized_id,),
                 ).fetchone()
-        if row is None:
+        if row is None or _is_absence_notice_subject(row["subject"]):
             return None
         account = self._load_json(state["account_json"], {}) if state else {}
         payload = self._calendar_event_payload(row, account=account)
@@ -860,12 +879,18 @@ class OutlookCalendarService:
                 state = conn.execute(
                     "SELECT last_sync_at,account_json FROM outlook_calendar_state WHERE id=1"
                 ).fetchone()
-                rows = conn.execute(
+                rows = []
+                for candidate in conn.execute(
                     """SELECT * FROM outlook_calendar_events
                        WHERE is_cancelled=0 AND start_at<? AND end_at>?
-                       ORDER BY start_at,id LIMIT 501""",
+                       ORDER BY start_at,id""",
                     (end_utc.isoformat(), start_utc.isoformat()),
-                ).fetchall()
+                ):
+                    if _is_absence_notice_subject(candidate["subject"]):
+                        continue
+                    rows.append(candidate)
+                    if len(rows) > 500:
+                        break
         account = self._load_json(state["account_json"], {}) if state else {}
         truncated = len(rows) > 500
         items = [self._calendar_event_payload(row, account=account) for row in rows[:500]]

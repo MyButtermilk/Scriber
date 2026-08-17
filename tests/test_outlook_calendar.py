@@ -648,6 +648,52 @@ def test_day_events_preserve_attendee_context_and_signed_in_identity(service):
     assert all(item["participantId"] for item in event["participants"])
 
 
+def test_day_events_filter_absence_notices_without_hiding_real_meetings(service):
+    calendar, _calls = service
+    with database._get_connection() as conn:
+        conn.executemany(
+            """INSERT INTO outlook_calendar_events
+               (id,subject,start_at,end_at,is_all_day,updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            [
+                (
+                    "sick-leave",
+                    "Klaus Krank bis 11.09.",
+                    "2026-08-01T00:00:00+00:00",
+                    "2026-09-12T00:00:00+00:00",
+                    1,
+                    "2026-08-17T12:00:00+00:00",
+                ),
+                (
+                    "vacation",
+                    "Markus Burgardt URLAUB 04. - 21.08.2026",
+                    "2026-08-04T00:00:00+00:00",
+                    "2026-08-22T00:00:00+00:00",
+                    1,
+                    "2026-08-17T12:00:00+00:00",
+                ),
+                (
+                    "real-meeting",
+                    "Freigabe Ergebnisse für Seco",
+                    "2026-08-17T13:00:00+00:00",
+                    "2026-08-17T14:00:00+00:00",
+                    0,
+                    "2026-08-17T12:00:00+00:00",
+                ),
+            ],
+        )
+        conn.commit()
+
+    payload = calendar.events_for_day(
+        day_value="2026-08-17",
+        time_zone_name="Europe/Berlin",
+        start_value="2026-08-16T22:00:00Z",
+        end_value="2026-08-17T22:00:00Z",
+    )
+
+    assert [item["subject"] for item in payload["items"]] == ["Freigabe Ergebnisse für Seco"]
+
+
 def test_day_events_reject_invalid_date_and_timezone(service):
     calendar, _calls = service
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
@@ -735,3 +781,40 @@ def test_current_event_prefers_active_then_upcoming_then_recent_over_all_day(ser
         conn.execute("DELETE FROM outlook_calendar_events WHERE id='recently-ended'")
         conn.commit()
     assert calendar.current_event()["id"] == "all-day"
+
+
+@pytest.mark.asyncio
+async def test_absence_notices_are_not_current_next_or_selectable_events(service):
+    from datetime import datetime, timedelta
+
+    calendar, _calls = service
+    now = datetime.now(UTC)
+    with database._get_connection() as conn:
+        conn.executemany(
+            """INSERT INTO outlook_calendar_events
+               (id,subject,start_at,end_at,is_all_day,updated_at)
+               VALUES (?,?,?,?,?,?)""",
+            [
+                (
+                    "absence",
+                    "Alex Krank",
+                    (now - timedelta(minutes=5)).isoformat(),
+                    (now + timedelta(hours=2)).isoformat(),
+                    0,
+                    now.isoformat(),
+                ),
+                (
+                    "real-meeting",
+                    "Kundenbesprechung",
+                    (now + timedelta(minutes=5)).isoformat(),
+                    (now + timedelta(minutes=35)).isoformat(),
+                    0,
+                    now.isoformat(),
+                ),
+            ],
+        )
+        conn.commit()
+
+    assert calendar.current_event()["id"] == "real-meeting"
+    assert (await calendar.status())["nextEvent"]["id"] == "real-meeting"
+    assert calendar.event_snapshot("absence") is None

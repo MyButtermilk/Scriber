@@ -4273,52 +4273,6 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     grid-column: 2;
   }
 
-  .transcript-detail-shell.has-summary-toc .transcript-summary-panel[data-state="open"] {
-    position: sticky;
-    top: 7.9375rem;
-    display: flex;
-    flex-direction: column;
-    max-height: calc(100dvh - 9rem);
-    overflow: hidden;
-  }
-
-  .transcript-detail-shell.has-summary-toc .transcript-summary-panel > h3 {
-    flex: 0 0 auto;
-    z-index: 1;
-    border-radius: 19px 19px 0 0;
-    background: var(--neu-surface);
-    box-shadow: 0 16px 24px -24px hsl(var(--foreground) / 0.34);
-  }
-
-  .transcript-detail-shell.has-summary-toc .transcript-summary-panel > .t-acc-presence[data-state="open"] {
-    display: flex;
-    flex: 1 1 auto;
-    min-height: 0;
-    overflow: hidden;
-  }
-
-  .transcript-detail-shell.has-summary-toc
-    .transcript-summary-panel
-    > .t-acc-presence[data-state="open"]
-    > .t-acc-panel {
-    flex: 1 1 auto;
-    min-height: 0;
-    width: 100%;
-    grid-template-rows: minmax(0, 1fr);
-  }
-
-  .transcript-detail-shell.has-summary-toc
-    .transcript-summary-panel
-    > .t-acc-presence[data-state="open"]
-    > .t-acc-panel
-    > .t-acc-panel-inner {
-    min-height: 0;
-    overflow-y: auto;
-    overscroll-behavior: contain;
-    scrollbar-color: hsl(var(--muted-foreground) / 0.32) transparent;
-    scrollbar-width: thin;
-  }
-
   .transcript-detail-shell.has-summary-toc .transcript-summary-panel__trigger {
     border-radius: inherit;
     background: inherit;
