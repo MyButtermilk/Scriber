@@ -786,7 +786,8 @@ def test_primary_page_intros_share_responsive_full_width_layout() -> None:
         )
     }
 
-    assert 'className="mt-3 max-w-[72ch] text-pretty text-[13px]' in component_source
+    assert 'className="mt-3 max-w-none break-words text-pretty text-[13px]' in component_source
+    assert "max-w-[72ch]" not in component_source
     assert "sticky = true" in component_source
     assert 'data-page-intro="true"' in component_source
     assert "rounded-[20px]" not in component_source
@@ -861,7 +862,10 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
     assert "event.preventDefault()" in settings_source
     assert "new IntersectionObserver(" in settings_source
     assert 'aria-current={active ? "location" : undefined}' in settings_source
-    assert "chooseActiveSettingsSection(visibleSections, current)" in settings_source
+    assert 'document.querySelector<HTMLElement>(\'[data-app-scroll-container="true"]\')' in settings_source
+    assert 'scrollContainer?.addEventListener("scrollend", finishRequestedSectionScroll)' in settings_source
+    assert "requestedSettingsSectionRef.current" in settings_source
+    assert "chooseActiveSettingsSectionAtOffset(sectionTops, current, activationOffset)" in settings_source
 
 
 def test_debug_console_intro_matches_primary_page_typography() -> None:
