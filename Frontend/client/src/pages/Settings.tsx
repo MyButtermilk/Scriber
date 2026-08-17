@@ -128,7 +128,7 @@ import { getCurrentLocale, translateNow, useI18n } from "@/i18n";
 import {
   SETTINGS_SECTION_KEYS,
   USD_TO_EUR_FOR_ESTIMATES,
-  chooseActiveSettingsSection,
+  chooseActiveSettingsSectionAtOffset,
   defaultPostProcessingPrompt,
   fixedEstimateExchangeRateLabel,
   formatCurrency,
@@ -1695,6 +1695,33 @@ export default function Settings() {
   const [summarizationPrompt, setSummarizationPrompt] = useState("");
   const [postProcessingPrompt, setPostProcessingPrompt] = useState(() => defaultPostProcessingPrompt(locale));
   const [activeSettingsSection, setActiveSettingsSection] = useState<SettingsSectionKey>("transcription");
+  const requestedSettingsSectionRef = useRef<SettingsSectionKey | null>(null);
+  const requestedSettingsSectionFallbackTimerRef = useRef<number | null>(null);
+
+  const requestSettingsSection = useCallback((section: SettingsSectionKey) => {
+    requestedSettingsSectionRef.current = section;
+    setActiveSettingsSection(section);
+    revealRequestedSettingsSection(section);
+    if (requestedSettingsSectionFallbackTimerRef.current !== null) {
+      window.clearTimeout(requestedSettingsSectionFallbackTimerRef.current);
+    }
+    requestedSettingsSectionFallbackTimerRef.current = window.setTimeout(() => {
+      if (requestedSettingsSectionRef.current === section) {
+        requestedSettingsSectionRef.current = null;
+        setActiveSettingsSection(section);
+      }
+      requestedSettingsSectionFallbackTimerRef.current = null;
+    }, 1800);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (requestedSettingsSectionFallbackTimerRef.current !== null) {
+        window.clearTimeout(requestedSettingsSectionFallbackTimerRef.current);
+      }
+    },
+    [],
+  );
 
   const [showOpenAIKey, setShowOpenAIKey] = useState(false);
   const [showDeepgramKey, setShowDeepgramKey] = useState(false);
@@ -2125,16 +2152,14 @@ export default function Settings() {
         section = "";
       }
       if (isSettingsSectionKey(section)) {
-        setActiveSettingsSection(section);
-        revealRequestedSettingsSection(section);
+        requestSettingsSection(section);
       }
     };
 
     const handleSectionRequest = (event: Event) => {
       const section = String((event as CustomEvent<{ section?: string }>).detail?.section || "");
       if (isSettingsSectionKey(section)) {
-        setActiveSettingsSection(section);
-        revealRequestedSettingsSection(section);
+        requestSettingsSection(section);
       }
     };
 
@@ -2145,39 +2170,59 @@ export default function Settings() {
       window.clearTimeout(retryTimer);
       window.removeEventListener("scriber-open-settings-section", handleSectionRequest);
     };
-  }, []);
+  }, [requestSettingsSection]);
 
   useEffect(() => {
     if (!settingsLoaded || typeof IntersectionObserver === "undefined") {
       return;
     }
 
-    const visibleSections = new Set<SettingsSectionKey>();
     const stickyHeader = document.querySelector<HTMLElement>(".settings-page .settings-sticky-nav");
+    const scrollContainer = document.querySelector<HTMLElement>('[data-app-scroll-container="true"]');
     const stickyOffset = Math.ceil(stickyHeader?.getBoundingClientRect().height || 0) + 16;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          const section = SETTINGS_SECTION_KEYS.find((key) => SETTINGS_SECTION_IDS[key] === entry.target.id);
-          if (!section) {
-            continue;
-          }
-          if (entry.isIntersecting) {
-            visibleSections.add(section);
-          } else {
-            visibleSections.delete(section);
-          }
+    let animationFrame: number | null = null;
+    const updateActiveSection = () => {
+      animationFrame = null;
+      const requestedSection = requestedSettingsSectionRef.current;
+      if (requestedSection) {
+        setActiveSettingsSection(requestedSection);
+        return;
+      }
+      const sectionTops = new Map<SettingsSectionKey, number>();
+      for (const section of SETTINGS_SECTION_KEYS) {
+        const element = document.getElementById(SETTINGS_SECTION_IDS[section]);
+        if (element) {
+          sectionTops.set(section, element.getBoundingClientRect().top);
         }
-        if (visibleSections.size > 0) {
-          setActiveSettingsSection((current) => chooseActiveSettingsSection(visibleSections, current));
-        }
-      },
-      {
-        root: null,
-        rootMargin: `-${stickyOffset}px 0px -58% 0px`,
-        threshold: [0, 0.01],
-      },
-    );
+      }
+      const activationOffset = Math.ceil(stickyHeader?.getBoundingClientRect().bottom || 0) + 16;
+      setActiveSettingsSection((current) =>
+        chooseActiveSettingsSectionAtOffset(sectionTops, current, activationOffset),
+      );
+    };
+    const scheduleActiveSectionUpdate = () => {
+      if (animationFrame === null) {
+        animationFrame = window.requestAnimationFrame(updateActiveSection);
+      }
+    };
+    const finishRequestedSectionScroll = () => {
+      const requestedSection = requestedSettingsSectionRef.current;
+      if (!requestedSection) {
+        scheduleActiveSectionUpdate();
+        return;
+      }
+      requestedSettingsSectionRef.current = null;
+      if (requestedSettingsSectionFallbackTimerRef.current !== null) {
+        window.clearTimeout(requestedSettingsSectionFallbackTimerRef.current);
+        requestedSettingsSectionFallbackTimerRef.current = null;
+      }
+      setActiveSettingsSection(requestedSection);
+    };
+    const observer = new IntersectionObserver(scheduleActiveSectionUpdate, {
+      root: null,
+      rootMargin: `-${stickyOffset}px 0px -58% 0px`,
+      threshold: [0, 0.01],
+    });
 
     for (const section of SETTINGS_SECTION_KEYS) {
       const element = document.getElementById(SETTINGS_SECTION_IDS[section]);
@@ -2185,7 +2230,19 @@ export default function Settings() {
         observer.observe(element);
       }
     }
-    return () => observer.disconnect();
+    scheduleActiveSectionUpdate();
+    scrollContainer?.addEventListener("scroll", scheduleActiveSectionUpdate, { passive: true });
+    scrollContainer?.addEventListener("scrollend", finishRequestedSectionScroll);
+    window.addEventListener("resize", scheduleActiveSectionUpdate);
+    return () => {
+      observer.disconnect();
+      scrollContainer?.removeEventListener("scroll", scheduleActiveSectionUpdate);
+      scrollContainer?.removeEventListener("scrollend", finishRequestedSectionScroll);
+      window.removeEventListener("resize", scheduleActiveSectionUpdate);
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+    };
   }, [settingsLoaded]);
 
   const savedCredentialAvailable = (provider: string, value: string, extraValue?: string) =>
@@ -4765,8 +4822,7 @@ export default function Settings() {
                 onClick={(event) => {
                   event.preventDefault();
                   window.history.replaceState(null, "", item.href);
-                  setActiveSettingsSection(item.section);
-                  revealRequestedSettingsSection(item.section);
+                  requestSettingsSection(item.section);
                 }}
                 className={cn(
                   "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",

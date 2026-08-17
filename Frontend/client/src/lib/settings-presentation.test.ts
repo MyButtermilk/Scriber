@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   chooseActiveSettingsSection,
+  chooseActiveSettingsSectionAtOffset,
   defaultPostProcessingPrompt,
   fixedEstimateExchangeRateLabel,
   formatCurrency,
@@ -37,4 +38,19 @@ test("keeps the selected settings section while it remains visible", () => {
   const firstRow = new Set<SettingsSectionKey>(["transcription", "providers"]);
   assert.equal(chooseActiveSettingsSection(firstRow, "providers"), "providers");
   assert.equal(chooseActiveSettingsSection(firstRow, "meetings"), "transcription");
+});
+
+test("keeps the clicked settings section active when its row is aligned below the sticky navigation", () => {
+  const sectionTops = new Map<SettingsSectionKey, number>([
+    ["transcription", -2100],
+    ["providers", -2100],
+    ["meetings", -640],
+    ["apiKeys", 96],
+    ["summarization", 96],
+    ["updates", 980],
+    ["language", 980],
+  ]);
+
+  assert.equal(chooseActiveSettingsSectionAtOffset(sectionTops, "apiKeys", 96), "apiKeys");
+  assert.equal(chooseActiveSettingsSectionAtOffset(sectionTops, "summarization", 96), "summarization");
 });

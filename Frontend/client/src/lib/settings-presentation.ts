@@ -134,3 +134,29 @@ export function chooseActiveSettingsSection(
   }
   return SETTINGS_SECTION_KEYS.find((key) => visibleSections.has(key)) ?? currentSection;
 }
+
+export function chooseActiveSettingsSectionAtOffset(
+  sectionTops: ReadonlyMap<SettingsSectionKey, number>,
+  currentSection: SettingsSectionKey,
+  activationOffset: number,
+): SettingsSectionKey {
+  const positionedSections = SETTINGS_SECTION_KEYS.flatMap((section) => {
+    const top = sectionTops.get(section);
+    return Number.isFinite(top) ? [{ section, top: top as number }] : [];
+  });
+  if (positionedSections.length === 0) {
+    return currentSection;
+  }
+
+  const activationLine = activationOffset + 1;
+  const reachedSections = positionedSections.filter(({ top }) => top <= activationLine);
+  const activeTop =
+    reachedSections.length > 0
+      ? Math.max(...reachedSections.map(({ top }) => top))
+      : Math.min(...positionedSections.map(({ top }) => top));
+  const activeRow = positionedSections
+    .filter(({ top }) => Math.abs(top - activeTop) <= 1)
+    .map(({ section }) => section);
+
+  return activeRow.includes(currentSection) ? currentSection : (activeRow[0] ?? currentSection);
+}
