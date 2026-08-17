@@ -862,7 +862,7 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
     assert "event.preventDefault()" in settings_source
     assert "new IntersectionObserver(" in settings_source
     assert 'aria-current={active ? "location" : undefined}' in settings_source
-    assert 'document.querySelector<HTMLElement>(\'[data-app-scroll-container="true"]\')' in settings_source
+    assert "document.querySelector<HTMLElement>('[data-app-scroll-container=\"true\"]')" in settings_source
     assert 'scrollContainer?.addEventListener("scrollend", finishRequestedSectionScroll)' in settings_source
     assert "requestedSettingsSectionRef.current" in settings_source
     assert "chooseActiveSettingsSectionAtOffset(sectionTops, current, activationOffset)" in settings_source
