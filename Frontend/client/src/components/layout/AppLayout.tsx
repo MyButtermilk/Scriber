@@ -88,32 +88,15 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/meetings", icon: CalendarClock, label: t("Meetings") },
     { href: "/youtube", icon: Youtube, label: t("YouTube") },
     { href: "/file", icon: FolderOpen, label: t("File") },
+    { href: "/settings", icon: Settings, label: t("Settings") },
   ];
-
-  const utilityTabs: NavigationItem[] = [{ href: "/settings", icon: Settings, label: t("Settings") }];
 
   const navigationItemClassName = (isActive: boolean) =>
     cn(
-      "relative flex min-h-10 min-w-0 cursor-pointer items-center gap-3 rounded-[10px] border",
-      "border-transparent px-3 text-ui-body-sm font-medium no-underline outline-none",
-      "transition-[background-color,border-color,color,transform] duration-[var(--duration-quick)]",
-      "ease-[var(--ease-smooth-out)] hover:bg-foreground/5 hover:text-foreground active:scale-[0.985]",
-      "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
-      "motion-reduce:transition-none motion-reduce:active:scale-100",
-      isActive ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15" : "text-muted-foreground",
+      "neu-nav-item flex min-h-10 min-w-0 cursor-pointer items-center gap-3 rounded-xl border border-transparent",
+      "px-3 py-2.5 text-sm font-medium no-underline outline-none",
+      isActive ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
     );
-
-  const renderActiveIndicator = (isActive: boolean) => (
-    <span
-      className={cn(
-        "absolute bottom-2.5 left-1 top-2.5 w-[3px] origin-center rounded-full bg-primary",
-        "transition-[opacity,transform] duration-[var(--duration-quick)] ease-[var(--ease-smooth-out)]",
-        "motion-reduce:transition-none",
-        isActive ? "scale-y-100 opacity-100" : "scale-y-50 opacity-0",
-      )}
-      aria-hidden="true"
-    />
-  );
 
   const renderTabItem = (tab: NavigationItem, onNavigate?: () => void) => {
     const isActive = location === tab.href || (tab.href !== "/" && location.startsWith(tab.href));
@@ -131,14 +114,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           data-active={isActive ? "true" : "false"}
           className={navigationItemClassName(isActive)}
         >
-          {renderActiveIndicator(isActive)}
-          <Icon
-            className={cn(
-              "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
-              isActive && "stroke-2 text-primary",
-            )}
-            aria-hidden="true"
-          />
+          <Icon className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
           <span className="min-w-0 truncate">{tab.label}</span>
         </Link>
       </li>
@@ -160,14 +136,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
           data-active={isActive ? "true" : "false"}
           className={navigationItemClassName(isActive)}
         >
-          {renderActiveIndicator(isActive)}
-          <Terminal
-            className={cn(
-              "h-[18px] w-[18px] shrink-0 stroke-[1.75px] transition-colors",
-              isActive && "stroke-2 text-primary",
-            )}
-            aria-hidden="true"
-          />
+          <Terminal className={cn("h-5 w-5 shrink-0 stroke-[1.5px]", isActive && "stroke-[2px]")} aria-hidden="true" />
           <span className="min-w-0 truncate">{t("Console")}</span>
         </Link>
       </li>
@@ -181,10 +150,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
   const renderNav = (onNavigate?: () => void) => (
     <nav className="flex min-h-0 flex-1 flex-col px-3 pt-1" aria-label={t("Main navigation")}>
       {renderTabList(primaryTabs, onNavigate)}
-      <ul className="mt-auto space-y-1 border-t border-border/60 pt-3">
-        {utilityTabs.map((tab) => renderTabItem(tab, onNavigate))}
-        {renderConsoleUtility(onNavigate)}
-      </ul>
+      <ul className="mt-auto space-y-1 border-t border-border/60 pt-3">{renderConsoleUtility(onNavigate)}</ul>
     </nav>
   );
 

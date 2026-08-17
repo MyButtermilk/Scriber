@@ -4749,7 +4749,10 @@ export default function Settings() {
         sticky={false}
       />
 
-      <nav aria-label={t("Settings sections")} className="settings-section-nav mb-6 overflow-x-auto px-1 py-1">
+      <nav
+        aria-label={t("Settings sections")}
+        className="settings-sticky-nav settings-section-nav sticky top-0 z-20 -mx-4 mb-6 overflow-x-auto border-b border-border/60 bg-background px-5 py-2.5 md:-mx-6 md:px-7"
+      >
         <div className="flex w-max items-center gap-1">
           {settingsNavItems.map((item) => {
             const active = activeSettingsSection === item.section;
@@ -4766,10 +4769,8 @@ export default function Settings() {
                   revealRequestedSettingsSection(item.section);
                 }}
                 className={cn(
-                  "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-blue-500/60",
-                  active
-                    ? "neu-nav-active text-foreground"
-                    : "text-slate-600 hover:text-slate-950 dark:text-slate-400 dark:hover:text-slate-100",
+                  "neu-nav-item inline-flex h-9 items-center gap-1.5 rounded-[12px] border border-transparent px-2.5 text-[11.5px] font-semibold no-underline outline-none transition-[background-color,color,box-shadow,transform] duration-200 active:scale-[0.98] focus-visible:ring-2 focus-visible:ring-ring",
+                  active ? "neu-nav-active text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
                 <item.icon className="h-3.5 w-3.5" aria-hidden="true" />

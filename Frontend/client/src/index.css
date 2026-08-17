@@ -1926,6 +1926,10 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   background: hsl(220 6% 22% / 0.5);
 }
 
+.neu-nav-item.neu-nav-active:hover {
+  background: var(--neu-surface-alt);
+}
+
 /* Focus States */
 .neu-panel-raised:focus-visible,
 .neu-nav-item:focus-visible,
@@ -5606,6 +5610,10 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 
 .settings-page .settings-section-nav {
   scrollbar-width: none;
+}
+
+.settings-page .settings-sticky-nav {
+  isolation: isolate;
 }
 
 .settings-page .settings-section-nav::-webkit-scrollbar {

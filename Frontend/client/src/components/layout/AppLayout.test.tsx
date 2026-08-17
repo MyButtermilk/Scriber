@@ -40,7 +40,7 @@ describe("AppLayout navigation", () => {
     });
   });
 
-  it("labels every main navigation, groups utilities, and exposes the current page", () => {
+  it("restores the raised active state, keeps settings in the main tabs, and exposes the current page", () => {
     const location = memoryLocation({ path: "/meetings/42" });
     const { container, getAllByRole } = render(
       <Router hook={location.hook}>
@@ -67,10 +67,12 @@ describe("AppLayout navigation", () => {
 
       expect(meetingLink).toHaveAttribute("aria-current", "page");
       expect(meetingLink).toHaveAttribute("data-active", "true");
+      expect(meetingLink).toHaveClass("neu-nav-item", "neu-nav-active");
       expect(youtubeLink).not.toHaveAttribute("aria-current");
       expect(youtubeLink).toHaveAttribute("data-active", "false");
-      expect(settingsLink.closest("ul")).toBe(consoleLink.closest("ul"));
-      expect(settingsLink.closest("ul")).not.toBe(meetingLink.closest("ul"));
+      expect(youtubeLink).not.toHaveClass("neu-nav-active");
+      expect(settingsLink.closest("ul")).toBe(meetingLink.closest("ul"));
+      expect(settingsLink.closest("ul")).not.toBe(consoleLink.closest("ul"));
     }
   });
 });
