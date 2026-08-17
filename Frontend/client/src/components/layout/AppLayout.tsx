@@ -90,9 +90,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/file", icon: FolderOpen, label: t("File") },
   ];
 
-  const utilityTabs: NavigationItem[] = [
-    { href: "/settings", icon: Settings, label: t("Settings") },
-  ];
+  const utilityTabs: NavigationItem[] = [{ href: "/settings", icon: Settings, label: t("Settings") }];
 
   const navigationItemClassName = (isActive: boolean) =>
     cn(
@@ -102,9 +100,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
       "ease-[var(--ease-smooth-out)] hover:bg-foreground/5 hover:text-foreground active:scale-[0.985]",
       "focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-sidebar",
       "motion-reduce:transition-none motion-reduce:active:scale-100",
-      isActive
-        ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15"
-        : "text-muted-foreground",
+      isActive ? "border-primary/20 bg-primary/10 text-foreground dark:bg-primary/15" : "text-muted-foreground",
     );
 
   const renderActiveIndicator = (isActive: boolean) => (
@@ -209,9 +205,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-sidebar md:flex-row">
         {/* Mobile Header */}
-        <header
-          className="flex items-center justify-between border-b border-border/60 bg-sidebar px-3 py-2 md:hidden"
-        >
+        <header className="flex items-center justify-between border-b border-border/60 bg-sidebar px-3 py-2 md:hidden">
           <div className="flex min-w-0 items-center gap-1.5">
             <Sheet open={mobileNavOpen} onOpenChange={setMobileNavOpen}>
               <SheetTrigger asChild>

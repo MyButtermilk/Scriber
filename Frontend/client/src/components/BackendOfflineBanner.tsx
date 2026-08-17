@@ -107,7 +107,10 @@ export function BackendOfflineBanner() {
 
             <div className="mt-7 w-full max-w-sm">
               <WavePhysicsLoader size="panel" label={t("Starting Scriber")} />
-              <div className="mt-3 text-pretty text-xs font-medium tabular-nums text-muted-foreground" aria-live="polite">
+              <div
+                className="mt-3 text-pretty text-xs font-medium tabular-nums text-muted-foreground"
+                aria-live="polite"
+              >
                 {startupDetail}
               </div>
             </div>

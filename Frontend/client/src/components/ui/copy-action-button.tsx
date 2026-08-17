@@ -20,6 +20,7 @@ export function CopyActionButton({
   onClick,
   disabled = false,
   copied = false,
+  title,
   label = "Copy",
   copiedLabel = "Copied",
   ariaLabel,
@@ -32,12 +33,18 @@ export function CopyActionButton({
   return (
     <button
       type="button"
-      className={cn("copy-pill", size === "sm" && "copy-pill--sm", copied && "is-copied", className)}
+      className={cn(
+        "copy-pill ui-pressable ui-hit-target",
+        size === "sm" && "copy-pill--sm",
+        copied && "is-copied",
+        className,
+      )}
       onClick={onClick}
       onKeyDown={(event) => event.stopPropagation()}
       disabled={disabled}
       data-label={hoverLabel}
-      aria-label={ariaLabel}
+      title={title}
+      aria-label={copied ? t(copiedLabel) : ariaLabel}
     >
       <TransitionIcon
         state={copied ? "b" : "a"}

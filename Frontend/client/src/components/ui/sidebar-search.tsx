@@ -25,9 +25,7 @@ export function SidebarSearch({ placeholder = "Search", onOpenCommandPalette }: 
     >
       <Search className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate text-ui-body-sm text-muted-foreground">{t(placeholder)}</span>
-      <kbd
-        className="inline-flex min-w-9 shrink-0 items-center justify-center rounded-md border border-border/90 bg-background/90 px-1.5 py-0.5 text-ui-micro font-medium leading-none text-muted-foreground"
-      >
+      <kbd className="inline-flex min-w-9 shrink-0 items-center justify-center rounded-md border border-border/90 bg-background/90 px-1.5 py-0.5 text-ui-micro font-medium leading-none text-muted-foreground">
         {isMac ? "⌘K" : locale === "de" ? "Strg+K" : "Ctrl+K"}
       </kbd>
     </button>
