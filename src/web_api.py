@@ -147,7 +147,7 @@ from src.core.provider_capabilities import (
     supports_five_hour_meeting,
 )
 from src.core.provider_circuit_breaker import ProviderCircuitBreaker
-from src.core.provider_errors import ProviderUserError, provider_user_error
+from src.core.provider_errors import ProviderTransportError, ProviderUserError, provider_user_error
 from src.core.rest_contracts import (
     REST_API_VERSION,
     RESTContractError,
@@ -1892,6 +1892,15 @@ class ProviderResultReconciliationRequired(RuntimeError):
 def _meeting_analysis_failure_details(exc: Exception) -> tuple[str, str]:
     """Return stable public recovery details without exposing provider internals."""
 
+    if (
+        isinstance(exc, ProviderTransportError)
+        and exc.provider == "gemini"
+        and exc.code == "authentication_error"
+    ):
+        return (
+            "meeting_analysis_provider_auth",
+            "Gemini rejected the API key. Check or replace the Gemini key in Settings.",
+        )
     public_code = str(getattr(exc, "meeting_analysis_error_code", "") or "")
     if public_code == "meeting_analysis_incomplete_response":
         return (
@@ -1911,11 +1920,18 @@ def _meeting_analysis_failure_details(exc: Exception) -> tuple[str, str]:
     )
 
 
+def _meeting_analysis_fallback_status(model: str, reason: str) -> str:
+    if str(model).startswith("gemini-") and reason == "authentication_error":
+        return "Gemini API key was rejected; continuing with OpenRouter fallback"
+    return "Selected AI model failed; continuing with OpenRouter fallback"
+
+
 _SAFE_PERSISTED_MEETING_ANALYSIS_ERROR_CODES = frozenset(
     {
         "meeting_analysis_incomplete_response",
         "meeting_analysis_timeout",
         "meeting_analysis_failed",
+        "meeting_analysis_provider_auth",
         "process_interrupted_during_analysis",
     }
 )
@@ -14491,13 +14507,58 @@ class ScriberWebController:
                 )
 
             async def analysis_progress(status: str, fraction: float) -> None:
+                published_progress = 0.1 + 0.85 * fraction
+                published_status = str(status)
+                try:
+                    snapshot = await asyncio.to_thread(
+                        self._meeting_store.set_processing_progress,
+                        meeting_id,
+                        phase="analysis",
+                        progress=published_progress,
+                        status=published_status,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Meeting analysis progress checkpoint could not be persisted for {}: {}",
+                        meeting_id,
+                        type(exc).__name__,
+                    )
+                else:
+                    if snapshot is None:
+                        return
+                    published_progress = float(snapshot["progress"])
+                    published_status = str(snapshot["status"])
                 await self.broadcast(
                     meeting_progress_event(
                         meeting_id,
                         "analysis",
-                        0.1 + 0.85 * fraction,
-                        status,
+                        published_progress,
+                        published_status,
                     )
+                )
+
+            fallback_notice_sent = False
+            fallback_notice_lock = asyncio.Lock()
+
+            async def fallback_notice(model: str, reason: str) -> None:
+                nonlocal fallback_notice_sent
+                async with fallback_notice_lock:
+                    if fallback_notice_sent:
+                        return
+                    fallback_notice_sent = True
+                await analysis_progress(_meeting_analysis_fallback_status(model, reason), 0.12)
+
+            async def generate_analysis_text(
+                prompt: str,
+                model: str | None = None,
+                *,
+                max_output_tokens: int = 2048,
+            ) -> str:
+                return await generate_meeting_analysis_text(
+                    prompt,
+                    model,
+                    max_output_tokens=max_output_tokens,
+                    on_fallback=fallback_notice,
                 )
 
             payload = await analyze_meeting(
@@ -14505,7 +14566,7 @@ class ScriberWebController:
                 canonical,
                 detail["notes"],
                 model=detail["analysisModel"],
-                generate=generate_meeting_analysis_text,
+                generate=generate_analysis_text,
                 cache_get=cache_get,
                 cache_put=cache_put,
                 on_progress=analysis_progress,
@@ -16451,11 +16512,35 @@ class ScriberWebController:
                 )
             )
 
+        fallback_notice_sent = False
+        fallback_notice_lock = asyncio.Lock()
+
+        async def fallback_notice(model: str, reason: str) -> None:
+            nonlocal fallback_notice_sent
+            async with fallback_notice_lock:
+                if fallback_notice_sent:
+                    return
+                fallback_notice_sent = True
+            await progress(_meeting_analysis_fallback_status(model, reason), 0.82)
+
+        async def generate_analysis_text(
+            prompt: str,
+            model: str | None = None,
+            *,
+            max_output_tokens: int = 2048,
+        ) -> str:
+            return await generate_meeting_analysis_text(
+                prompt,
+                model,
+                max_output_tokens=max_output_tokens,
+                on_fallback=fallback_notice,
+            )
+
         finalizer = MeetingFinalizer(
             self._meeting_store,
             data_dir() / "meetings",
             _create_scriber_pipeline,
-            generate_meeting_analysis_text,
+            generate_analysis_text,
             self._speaker_model,
             self._speaker_diarizer,
             getattr(self, "_transcript_artifacts", None),

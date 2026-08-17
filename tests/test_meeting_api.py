@@ -25,6 +25,20 @@ from src.data.transcript_artifact_store import SourceAssetState, TranscriptArtif
 from src.speaker_enrollment import voice_reference_wav
 
 
+def test_meeting_analysis_rejected_gemini_key_has_actionable_failure_message():
+    error = summarization.provider_transport_error(
+        "gemini",
+        "summarization",
+        status=400,
+        code="authentication_error",
+    )
+
+    code, message = web_api._meeting_analysis_failure_details(error)
+
+    assert code == "meeting_analysis_provider_auth"
+    assert message == "Gemini rejected the API key. Check or replace the Gemini key in Settings."
+
+
 def test_meeting_device_test_duration_override_is_bounded_and_fail_closed(monkeypatch):
     monkeypatch.delenv("SCRIBER_MEETING_DEVICE_TEST_MAX_DURATION_MS", raising=False)
     assert web_api._meeting_device_test_max_duration_ms() == 5_000

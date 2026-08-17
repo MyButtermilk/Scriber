@@ -92,6 +92,13 @@ export const meetingsTranslations = {
   "Create transcript from saved audio": "Transkript aus gespeichertem Audio erstellen",
   "Creating suggestions": "Vorschläge werden erstellt",
   "Creating summary, decisions, and action items": "Zusammenfassung, Entscheidungen und Aufgaben werden erstellt",
+  "Gemini API key was rejected": "Gemini-API-Schlüssel wurde abgelehnt",
+  "Gemini API key was rejected; continuing with OpenRouter fallback":
+    "Gemini-API-Schlüssel wurde abgelehnt; die Verarbeitung wird mit dem OpenRouter-Fallback fortgesetzt",
+  "Check or replace it in Settings. Scriber is continuing the meeting summary with the configured OpenRouter fallback.":
+    "Prüfe oder ersetze ihn in den Einstellungen. Scriber setzt die Meeting-Zusammenfassung mit dem konfigurierten OpenRouter-Fallback fort.",
+  "Selected AI model failed; continuing with OpenRouter fallback":
+    "Das ausgewählte KI-Modell ist fehlgeschlagen; die Verarbeitung wird mit dem OpenRouter-Fallback fortgesetzt",
   "Creating the final transcript from saved audio": "Endgültiges Transkript wird aus gespeichertem Audio erstellt",
   "Creating your meeting brief…": "Deine Meeting-Zusammenfassung wird erstellt …",
   "Ctrl+Enter saves · Esc cancels": "Strg+Eingabe speichert · Esc bricht ab",

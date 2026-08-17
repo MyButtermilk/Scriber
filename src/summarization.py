@@ -11,7 +11,7 @@ import json
 import math
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Literal
 
 import aiohttp
@@ -55,6 +55,7 @@ SummarizationModel = Literal[
     "celeris-1",
     "z-ai/glm-5.2:nitro",
 ]
+FallbackObserver = Callable[[str, str], Awaitable[None]]
 
 
 class SummaryOutputLimitError(RuntimeError):
@@ -515,22 +516,6 @@ def _gemini_thinking_level_for_model(model: str) -> str | None:
     return raw.upper()
 
 
-def _gemini_retry_output_cap(model: str, initial_max_output_tokens: int) -> int:
-    model_cap = _MODEL_OUTPUT_TOKEN_CAPS.get(model, max(initial_max_output_tokens, 16_384))
-    requested_cap = _env_int(
-        "SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS",
-        16_384,
-        min_value=initial_max_output_tokens,
-    )
-    return max(initial_max_output_tokens, min(model_cap, requested_cap))
-
-
-def _gemini_next_output_budget(current_tokens: int, retry_cap: int) -> int:
-    growth = _env_float("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRY_GROWTH", 2.0, min_value=1.1)
-    grown = math.ceil(current_tokens * growth)
-    return min(retry_cap, max(current_tokens + 512, grown))
-
-
 async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int | None) -> str:
     if is_celeris_model(model):
         result = await celeris_chat_completion(
@@ -751,6 +736,7 @@ async def _try_openrouter_summary_fallback(
     max_output_tokens: int | None,
     timeout_seconds: float,
     require_structured_html: bool = False,
+    on_fallback: FallbackObserver | None = None,
 ) -> str | None:
     if _is_meta_model(primary_model):
         # Meta is a direct, explicitly selected provider boundary. Never send
@@ -765,12 +751,25 @@ async def _try_openrouter_summary_fallback(
         return None
 
     fallback_models = _openrouter_fallback_models()
+    error_status = primary_error.status if isinstance(primary_error, ProviderTransportError) else None
+    error_code = (
+        provider_public_code(primary_error.code)
+        if isinstance(primary_error, ProviderTransportError)
+        else ""
+    )
     logger.warning(
-        "Summarization with {} failed (error_type={}). Falling back to OpenRouter models {}.",
+        "Summarization with {} failed (error_type={}, status={}, code={}). Falling back to OpenRouter models {}.",
         primary_model,
         type(primary_error).__name__,
+        error_status,
+        error_code or None,
         fallback_models,
     )
+    if on_fallback is not None:
+        try:
+            await on_fallback(primary_model, error_code or "provider_error")
+        except Exception as exc:
+            logger.warning("Summarization fallback observer failed: {}", type(exc).__name__)
     try:
         fallback_request = (
             _summarize_openrouter(
@@ -957,6 +956,7 @@ async def generate_text_with_model(
     model: str | None = None,
     *,
     max_output_tokens: int | None = 2048,
+    on_fallback: FallbackObserver | None = None,
 ) -> str:
     """Generate text with the configured summary LLM routing.
 
@@ -993,6 +993,7 @@ async def generate_text_with_model(
             primary_error=timeout_error,
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
+            on_fallback=on_fallback,
         )
         if fallback is not None:
             return fallback.strip()
@@ -1004,6 +1005,7 @@ async def generate_text_with_model(
             primary_error=exc,
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
+            on_fallback=on_fallback,
         )
         if fallback is not None:
             return fallback.strip()
@@ -1015,6 +1017,7 @@ async def generate_meeting_analysis_text(
     model: str | None = None,
     *,
     max_output_tokens: int = 2048,
+    on_fallback: FallbackObserver | None = None,
 ) -> str:
     """Generate one Meeting-analysis response with its longer nested budget.
 
@@ -1025,7 +1028,9 @@ async def generate_meeting_analysis_text(
     try:
         # Meeting analysis prompts define the required structured content. Do
         # not impose a Scriber output-token ceiling on any remote model.
-        return await generate_text_with_model(prompt, model, max_output_tokens=None)
+        if on_fallback is None:
+            return await generate_text_with_model(prompt, model, max_output_tokens=None)
+        return await generate_text_with_model(prompt, model, max_output_tokens=None, on_fallback=on_fallback)
     finally:
         _summary_timeout_override.reset(token)
 
@@ -1912,10 +1917,8 @@ def _build_cerebras_payload(
     return payload
 
 
-def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int | None) -> dict[str, Any]:
+def _build_gemini_payload(prompt: str, model: str, _max_output_tokens: int | None) -> dict[str, Any]:
     generation_config: dict[str, Any] = {}
-    if max_output_tokens is not None:
-        generation_config["maxOutputTokens"] = max_output_tokens
     temperature_raw = os.getenv("SCRIBER_SUMMARY_GEMINI_TEMPERATURE", "").strip()
     if temperature_raw:
         generation_config["temperature"] = min(1.0, max(0.0, float(temperature_raw)))
@@ -1928,6 +1931,27 @@ def _build_gemini_payload(prompt: str, model: str, max_output_tokens: int | None
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": generation_config,
     }
+
+
+def _gemini_error_code(response_body: str) -> str:
+    """Recognize Google's fixed invalid-key response without retaining its body."""
+
+    try:
+        payload = json.loads(response_body)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return ""
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if not isinstance(error, dict):
+        return ""
+    status = str(error.get("status") or "").strip().casefold()
+    message = str(error.get("message") or "").strip().casefold()
+    if status == "invalid_argument" and (
+        message.startswith("api key not valid")
+        or message.startswith("api key invalid")
+        or "api_key_invalid" in message
+    ):
+        return "authentication_error"
+    return ""
 
 
 async def _post_gemini_generate_content(
@@ -1944,11 +1968,14 @@ async def _post_gemini_generate_content(
         async with session.post(url, json=payload) as resp:
             raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
             if resp.status >= 400:
+                gemini_code = _gemini_error_code(raw)
                 err = provider_transport_error(
                     "gemini",
                     "summarization",
                     status=resp.status,
                     response_body=raw,
+                    code=gemini_code,
+                    retryable=False if gemini_code == "authentication_error" else None,
                 )
                 if resp.status in {429, 500, 503} and attempt < retries:
                     delay = min(8.0, 1.5 * (2**attempt))
@@ -2002,7 +2029,7 @@ def _extract_gemini_response(data: dict[str, Any]) -> tuple[str, str | None, Any
     return content, finish_reason, candidate_tokens, total_tokens
 
 
-async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int | None) -> str:
+async def _summarize_gemini(prompt: str, model: str, _max_output_tokens: int | None) -> str:
     """Summarize using Google Gemini API."""
     api_key = Config.GOOGLE_API_KEY
     if not api_key:
@@ -2019,79 +2046,48 @@ async def _summarize_gemini(prompt: str, model: str, max_output_tokens: int | No
 
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         http_retries = _env_int("SCRIBER_SUMMARY_GEMINI_RETRIES", 2, min_value=0)
-        max_token_retries = (
-            _env_int("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", 2, min_value=0)
-            if max_output_tokens is not None
-            else 0
-        )
-        retry_cap = _gemini_retry_output_cap(model, max_output_tokens) if max_output_tokens is not None else None
-        current_max_output_tokens = max_output_tokens
-
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            for max_token_attempt in range(max_token_retries + 1):
-                payload = _build_gemini_payload(prompt, model, current_max_output_tokens)
-                data = await _post_gemini_generate_content(
-                    session,
-                    url,
-                    payload,
-                    retries=http_retries,
+            payload = _build_gemini_payload(prompt, model, None)
+            data = await _post_gemini_generate_content(
+                session,
+                url,
+                payload,
+                retries=http_retries,
+            )
+            content, finish_reason, candidate_tokens, total_tokens = _extract_gemini_response(data)
+
+            logger.info(
+                "Gemini summarization complete: {} chars (finish_reason={}, candidate_tokens={}, total_tokens={}; provider chose output length)",
+                len(content or ""),
+                finish_reason,
+                candidate_tokens,
+                total_tokens,
+            )
+
+            if finish_reason == "MAX_TOKENS":
+                raise SummaryOutputLimitError(
+                    "Gemini hit its native MAX_TOKENS limit before completing the summary "
+                    f"(candidate_tokens={candidate_tokens}, total_tokens={total_tokens}). "
+                    "The partial summary was discarded to avoid saving truncated content."
                 )
-                content, finish_reason, candidate_tokens, total_tokens = _extract_gemini_response(data)
 
-                logger.info(
-                    "Gemini summarization complete: {} chars (finish_reason={}, candidate_tokens={}, total_tokens={}, max_output_tokens={})",
-                    len(content or ""),
-                    finish_reason,
-                    candidate_tokens,
-                    total_tokens,
-                    current_max_output_tokens,
+            if not content:
+                feedback = data.get("promptFeedback") if isinstance(data, dict) else None
+                block_reason = (
+                    _safe_enum_value(
+                        feedback.get("blockReason"),
+                        _GEMINI_BLOCK_REASONS,
+                    )
+                    if isinstance(feedback, dict)
+                    else ""
+                )
+                raise provider_transport_error(
+                    "gemini",
+                    "summarization_response",
+                    code=block_reason or "empty_response",
                 )
 
-                if finish_reason == "MAX_TOKENS":
-                    if (
-                        max_token_attempt < max_token_retries
-                        and current_max_output_tokens is not None
-                        and retry_cap is not None
-                        and current_max_output_tokens < retry_cap
-                    ):
-                        next_max_output_tokens = _gemini_next_output_budget(current_max_output_tokens, retry_cap)
-                        logger.warning(
-                            "Gemini stopped due MAX_TOKENS (max_output_tokens={}, candidate_tokens={}, total_tokens={}). Retrying with max_output_tokens={} and thinkingLevel={}.",
-                            current_max_output_tokens,
-                            candidate_tokens,
-                            total_tokens,
-                            next_max_output_tokens,
-                            _gemini_thinking_level_for_model(model),
-                        )
-                        current_max_output_tokens = next_max_output_tokens
-                        continue
-
-                    raise SummaryOutputLimitError(
-                        "Gemini hit MAX_TOKENS before completing the summary "
-                        f"(finish_reason=MAX_TOKENS, max_output_tokens={current_max_output_tokens}, "
-                        f"candidate_tokens={candidate_tokens}, total_tokens={total_tokens}). "
-                        "The partial summary was discarded to avoid saving truncated content."
-                    )
-
-                if not content:
-                    feedback = data.get("promptFeedback") if isinstance(data, dict) else None
-                    block_reason = (
-                        _safe_enum_value(
-                            feedback.get("blockReason"),
-                            _GEMINI_BLOCK_REASONS,
-                        )
-                        if isinstance(feedback, dict)
-                        else ""
-                    )
-                    raise provider_transport_error(
-                        "gemini",
-                        "summarization_response",
-                        code=block_reason or "empty_response",
-                    )
-
-                return content
-
-        raise RuntimeError("Gemini summarization failed before returning a response.")
+            return content
 
     except aiohttp.ClientError as e:
         logger.error("Gemini summarization HTTP error ({})", type(e).__name__)

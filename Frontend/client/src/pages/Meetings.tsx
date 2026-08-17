@@ -164,6 +164,7 @@ import type {
   SpeakerProfilesResponse,
 } from "@/lib/api-types";
 
+const GEMINI_KEY_FALLBACK_STATUS = "Gemini API key was rejected; continuing with OpenRouter fallback";
 const OPEN_STATES = new Set<MeetingState>(["starting", "recording", "paused", "stopping", "finalizing", "analyzing"]);
 const TERMINAL_MEETING_STATES = new Set<MeetingState>([
   "ready",
@@ -1257,6 +1258,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
   >({ microphone: null, system: null });
   const meetingWsHasConnectedRef = useRef(false);
   const meetingWsWasConnectedRef = useRef(false);
+  const fallbackNoticeToastRef = useRef("");
 
   useEffect(() => {
     setLastExport(null);
@@ -1267,6 +1269,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
     setReviewFocusSegmentId(null);
     setFollowPlayback(true);
     setPlaybackMeetingTimeMs(0);
+    fallbackNoticeToastRef.current = "";
   }, [selectedId]);
 
   const meetingsQuery = useInfiniteQuery<MeetingsResponse, Error>({
@@ -1606,6 +1609,19 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
         };
         applyMeetingProgressEvent(queryClient, message.meetingId, incoming);
         setMeetingProgress((current) => mergeMeetingProcessingProgress(current, incoming));
+        if (message.status === GEMINI_KEY_FALLBACK_STATUS) {
+          const noticeKey = `${message.meetingId}:${message.status}`;
+          if (fallbackNoticeToastRef.current !== noticeKey) {
+            fallbackNoticeToastRef.current = noticeKey;
+            toast({
+              variant: "destructive",
+              title: t("Gemini API key was rejected"),
+              description: t(
+                "Check or replace it in Settings. Scriber is continuing the meeting summary with the configured OpenRouter fallback.",
+              ),
+            });
+          }
+        }
         if (message.type === "meeting_analysis_progress" && message.progress >= 1) {
           if (message.status === "Speaker matches refreshed") {
             toast({
@@ -3936,6 +3952,9 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                       <WavePhysicsLoader size="micro" label={t("Processing…")} />
                     </div>
                   )}
+                  {meetingProgress?.status ? (
+                    <p className="mt-2 text-xs text-muted-foreground">{t(meetingProgress.status)}</p>
+                  ) : null}
                 </div>
               )}
 

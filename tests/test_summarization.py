@@ -633,13 +633,13 @@ def test_summary_diagnostics_discard_unknown_identifier_shaped_values():
     assert "550e8400-e29b-41d4-a716-446655440000" not in detail
 
 
-def test_gemini_payload_sets_explicit_thinking_level(monkeypatch: pytest.MonkeyPatch):
+def test_gemini_payload_sets_explicit_thinking_level_without_output_limit(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "low")
 
     payload = summarization._build_gemini_payload("prompt", "gemini-flash-latest", 4096)
 
     generation_config = payload["generationConfig"]
-    assert generation_config["maxOutputTokens"] == 4096
+    assert "maxOutputTokens" not in generation_config
     assert generation_config["thinkingConfig"] == {"thinkingLevel": "LOW"}
 
 
@@ -1570,26 +1570,14 @@ async def test_gemini_summary_openai_fallback_is_explicit_and_contextual(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_summarize_gemini_retries_max_tokens_with_larger_budget(monkeypatch: pytest.MonkeyPatch):
-    calls: list[int] = []
+async def test_summarize_gemini_never_sends_a_scriber_output_token_limit(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict[str, object]] = []
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
-    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", "1")
-    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_RETRY_MAX_OUTPUT_TOKENS", "8000")
     monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_THINKING_LEVEL", "high")
 
     async def _fake_post(_session, _url, payload, *, retries):
-        calls.append(payload["generationConfig"]["maxOutputTokens"])
+        calls.append(payload)
         assert payload["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "HIGH"}
-        if len(calls) == 1:
-            return {
-                "candidates": [
-                    {
-                        "finishReason": "MAX_TOKENS",
-                        "content": {"parts": [{"text": "abgeschnitten"}]},
-                    }
-                ],
-                "usageMetadata": {"candidatesTokenCount": calls[-1], "totalTokenCount": calls[-1] + 100},
-            }
         return {
             "candidates": [
                 {
@@ -1605,15 +1593,16 @@ async def test_summarize_gemini_retries_max_tokens_with_larger_budget(monkeypatc
     out = await summarization._summarize_gemini("prompt", "gemini-flash-latest", 3000)
 
     assert out == "vollstaendige zusammenfassung"
-    assert calls == [3000, 6000]
+    assert len(calls) == 1
+    assert "maxOutputTokens" not in calls[0]["generationConfig"]
 
 
 @pytest.mark.asyncio
-async def test_summarize_gemini_discards_partial_after_repeated_max_tokens(monkeypatch: pytest.MonkeyPatch):
+async def test_summarize_gemini_discards_partial_at_native_max_tokens(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(summarization.Config, "GOOGLE_API_KEY", "test-key")
-    monkeypatch.setenv("SCRIBER_SUMMARY_GEMINI_MAX_TOKENS_RETRIES", "0")
 
     async def _fake_post(_session, _url, payload, *, retries):
+        assert "maxOutputTokens" not in payload["generationConfig"]
         return {
             "candidates": [
                 {
@@ -1621,16 +1610,92 @@ async def test_summarize_gemini_discards_partial_after_repeated_max_tokens(monke
                     "content": {"parts": [{"text": "partial darf nicht zurueckkommen"}]},
                 }
             ],
-            "usageMetadata": {
-                "candidatesTokenCount": payload["generationConfig"]["maxOutputTokens"],
-                "totalTokenCount": payload["generationConfig"]["maxOutputTokens"] + 100,
-            },
+            "usageMetadata": {"candidatesTokenCount": 65_536, "totalTokenCount": 66_000},
         }
 
     monkeypatch.setattr(summarization, "_post_gemini_generate_content", _fake_post)
 
     with pytest.raises(summarization.SummaryOutputLimitError, match="MAX_TOKENS"):
         await summarization._summarize_gemini("prompt", "gemini-flash-latest", 3000)
+
+
+@pytest.mark.asyncio
+async def test_gemini_meeting_fallback_has_no_output_limit_and_reports_rejected_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    observed: dict[str, object] = {}
+    notices: list[tuple[str, str]] = []
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _rejected_gemini(_prompt: str, _model: str, max_output_tokens: int | None) -> str:
+        observed["gemini_tokens"] = max_output_tokens
+        raise summarization.provider_transport_error(
+            "gemini",
+            "summarization",
+            status=400,
+            code="authentication_error",
+        )
+
+    async def _fallback(_prompt: str, _models, max_output_tokens: int | None) -> str:
+        observed["fallback_tokens"] = max_output_tokens
+        return '{"schemaVersion":"1"}'
+
+    async def _notice(model: str, reason: str) -> None:
+        notices.append((model, reason))
+
+    monkeypatch.setattr(summarization, "_summarize_gemini", _rejected_gemini)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _fallback)
+
+    result = await summarization.generate_meeting_analysis_text(
+        "meeting prompt",
+        "gemini-flash-latest",
+        max_output_tokens=3072,
+        on_fallback=_notice,
+    )
+
+    assert result == '{"schemaVersion":"1"}'
+    assert observed == {"gemini_tokens": None, "fallback_tokens": None}
+    assert notices == [("gemini-flash-latest", "authentication_error")]
+
+
+@pytest.mark.asyncio
+async def test_gemini_invalid_key_response_gets_authentication_code():
+    class Response:
+        status = 400
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return json.dumps(
+                {
+                    "error": {
+                        "code": 400,
+                        "message": "API key not valid. Please pass a valid API key.",
+                        "status": "INVALID_ARGUMENT",
+                    }
+                }
+            )
+
+    class Session:
+        def post(self, *_args, **_kwargs):
+            return Response()
+
+    with pytest.raises(summarization.ProviderTransportError) as captured:
+        await summarization._post_gemini_generate_content(
+            Session(),
+            "https://gemini.example/generate",
+            {"contents": []},
+            retries=0,
+        )
+
+    assert captured.value.status == 400
+    assert captured.value.code == "authentication_error"
+    assert captured.value.retryable is False
 
 
 @pytest.mark.asyncio
