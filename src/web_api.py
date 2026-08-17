@@ -1892,11 +1892,7 @@ class ProviderResultReconciliationRequired(RuntimeError):
 def _meeting_analysis_failure_details(exc: Exception) -> tuple[str, str]:
     """Return stable public recovery details without exposing provider internals."""
 
-    if (
-        isinstance(exc, ProviderTransportError)
-        and exc.provider == "gemini"
-        and exc.code == "authentication_error"
-    ):
+    if isinstance(exc, ProviderTransportError) and exc.provider == "gemini" and exc.code == "authentication_error":
         return (
             "meeting_analysis_provider_auth",
             "Gemini rejected the API key. Check or replace the Gemini key in Settings.",

@@ -752,11 +752,7 @@ async def _try_openrouter_summary_fallback(
 
     fallback_models = _openrouter_fallback_models()
     error_status = primary_error.status if isinstance(primary_error, ProviderTransportError) else None
-    error_code = (
-        provider_public_code(primary_error.code)
-        if isinstance(primary_error, ProviderTransportError)
-        else ""
-    )
+    error_code = provider_public_code(primary_error.code) if isinstance(primary_error, ProviderTransportError) else ""
     logger.warning(
         "Summarization with {} failed (error_type={}, status={}, code={}). Falling back to OpenRouter models {}.",
         primary_model,
@@ -1938,7 +1934,7 @@ def _gemini_error_code(response_body: str) -> str:
 
     try:
         payload = json.loads(response_body)
-    except (TypeError, ValueError, json.JSONDecodeError):
+    except TypeError, ValueError, json.JSONDecodeError:
         return ""
     error = payload.get("error") if isinstance(payload, dict) else None
     if not isinstance(error, dict):
@@ -1946,9 +1942,7 @@ def _gemini_error_code(response_body: str) -> str:
     status = str(error.get("status") or "").strip().casefold()
     message = str(error.get("message") or "").strip().casefold()
     if status == "invalid_argument" and (
-        message.startswith("api key not valid")
-        or message.startswith("api key invalid")
-        or "api_key_invalid" in message
+        message.startswith("api key not valid") or message.startswith("api key invalid") or "api_key_invalid" in message
     ):
         return "authentication_error"
     return ""
