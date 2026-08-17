@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from datetime import date as date_type
 from datetime import time as time_type
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -28,8 +28,9 @@ from src import database as db
 
 AUTHORITY = "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
 GRAPH_DELTA = "https://graph.microsoft.com/v1.0/me/calendarView/delta"
+GRAPH_CALENDARS = "https://graph.microsoft.com/v1.0/me/calendars"
 GRAPH_ME = "https://graph.microsoft.com/v1.0/me"
-SCOPES = "User.Read Calendars.Read offline_access"
+SCOPES = "User.Read Calendars.Read Calendars.Read.Shared offline_access"
 GRAPH_SYNC_TIMEOUT_SECONDS = 60.0
 REAUTHORIZATION_REQUIRED_ERROR = "OutlookReauthorizationRequired"
 _ABSENCE_NOTICE_SUBJECT_PATTERN = re.compile(r"\b(?:urlaub|krank)\b", re.IGNORECASE)
@@ -153,6 +154,7 @@ class OutlookCalendarService:
                 INSERT OR IGNORE INTO outlook_calendar_state(id) VALUES (1);
                 CREATE TABLE IF NOT EXISTS outlook_calendar_events (
                     id TEXT PRIMARY KEY,
+                    calendar_id TEXT NOT NULL DEFAULT '',
                     subject TEXT NOT NULL DEFAULT '',
                     start_at TEXT NOT NULL,
                     end_at TEXT NOT NULL,
@@ -173,6 +175,7 @@ class OutlookCalendarService:
                 conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN account_json TEXT NOT NULL DEFAULT '{}'")
             event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_events)")}
             for name, declaration in (
+                ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
                 ("location", "TEXT NOT NULL DEFAULT ''"),
                 ("is_all_day", "INTEGER NOT NULL DEFAULT 0"),
                 ("etag", "TEXT NOT NULL DEFAULT ''"),
@@ -180,6 +183,9 @@ class OutlookCalendarService:
             ):
                 if name not in event_columns:
                     conn.execute(f"ALTER TABLE outlook_calendar_events ADD COLUMN {name} {declaration}")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_outlook_events_calendar ON outlook_calendar_events(calendar_id)"
+            )
             conn.commit()
 
     @property
@@ -493,6 +499,75 @@ class OutlookCalendarService:
             "aliases": aliases,
         }
 
+    @staticmethod
+    def _calendar_event_storage_id(calendar_id: str, event_id: str) -> str:
+        if not calendar_id:
+            return event_id
+        return hashlib.sha256(f"{calendar_id}\0{event_id}".encode()).hexdigest()
+
+    async def _additional_calendar_events(
+        self,
+        session: ClientSession,
+        token: str,
+        start: datetime,
+        end: datetime,
+    ) -> tuple[list[tuple[str, str, dict[str, Any]]], dict[str, set[str]]]:
+        calendars: list[str] = []
+        url = GRAPH_CALENDARS + "?" + urlencode({"$select": "id,isDefaultCalendar"})
+        visited_urls: set[str] = set()
+        while url:
+            if url in visited_urls or len(visited_urls) >= 100:
+                raise ValueError("Microsoft Graph calendar pagination did not terminate.")
+            visited_urls.add(url)
+            payload = await self._graph_json(session, url, token)
+            values = payload.get("value", [])
+            if not isinstance(values, list):
+                raise ValueError("Microsoft Graph calendar list is invalid.")
+            for item in values:
+                if not isinstance(item, dict) or not isinstance(item.get("isDefaultCalendar"), bool):
+                    continue
+                calendar_id = str(item.get("id") or "").strip()
+                if (
+                    calendar_id
+                    and len(calendar_id) <= 2048
+                    and not item["isDefaultCalendar"]
+                    and calendar_id not in calendars
+                ):
+                    calendars.append(calendar_id)
+                    if len(calendars) > 100:
+                        raise ValueError("Microsoft Graph returned too many calendars.")
+            url = str(payload.get("@odata.nextLink") or "")
+
+        changes: list[tuple[str, str, dict[str, Any]]] = []
+        snapshots: dict[str, set[str]] = {}
+        for calendar_id in calendars:
+            snapshots[calendar_id] = set()
+            url = f"{GRAPH_CALENDARS}/{quote(calendar_id, safe='')}/calendarView?" + urlencode(
+                {
+                    "startDateTime": start.isoformat(),
+                    "endDateTime": end.isoformat(),
+                }
+            )
+            visited_urls = set()
+            while url:
+                if url in visited_urls or len(visited_urls) >= 100:
+                    raise ValueError("Microsoft Graph calendar-view pagination did not terminate.")
+                visited_urls.add(url)
+                payload = await self._graph_json(session, url, token)
+                values = payload.get("value", [])
+                if not isinstance(values, list):
+                    raise ValueError("Microsoft Graph calendar-view payload is invalid.")
+                for event in values:
+                    if not isinstance(event, dict) or not event.get("id") or event.get("isCancelled"):
+                        continue
+                    event_id = self._calendar_event_storage_id(calendar_id, str(event["id"]))
+                    snapshots[calendar_id].add(event_id)
+                    changes.append((event_id, calendar_id, event))
+                    if len(changes) > 10_000:
+                        raise ValueError("Microsoft Graph returned too many calendar events.")
+                url = str(payload.get("@odata.nextLink") or "")
+        return changes, snapshots
+
     async def _sync_with_token(
         self,
         session: ClientSession,
@@ -529,7 +604,7 @@ class OutlookCalendarService:
         changed = 0
         delta_link = ""
         snapshot_ids: set[str] = set()
-        changes: list[dict[str, Any]] = []
+        changes: list[tuple[str, str, dict[str, Any]]] = []
         visited_urls: set[str] = set()
         while url:
             if url in visited_urls or len(visited_urls) >= 100:
@@ -541,7 +616,7 @@ class OutlookCalendarService:
                 raise ValueError("Microsoft Graph calendar payload is invalid.")
             for event in values:
                 if isinstance(event, dict) and event.get("id"):
-                    changes.append(event)
+                    changes.append((str(event["id"]), "", event))
                     if "@removed" not in event:
                         snapshot_ids.add(str(event["id"]))
             url = str(payload.get("@odata.nextLink") or "")
@@ -551,10 +626,12 @@ class OutlookCalendarService:
             raise ValueError("Microsoft Graph calendar sync did not return a delta cursor.")
         self._validate_graph_url(delta_link)
 
+        additional_changes, additional_snapshots = await self._additional_calendar_events(session, token, start, end)
+        changes.extend(additional_changes)
+
         with db._get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            for event in changes:
-                event_id = str(event["id"])
+            for event_id, calendar_id, event in changes:
                 if "@removed" in event:
                     conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (event_id,))
                     changed += 1
@@ -567,10 +644,11 @@ class OutlookCalendarService:
                 location = event.get("location") if isinstance(event.get("location"), dict) else {}
                 conn.execute(
                     """INSERT INTO outlook_calendar_events
-                       (id,subject,start_at,end_at,organizer_json,attendees_json,
+                       (id,calendar_id,subject,start_at,end_at,organizer_json,attendees_json,
                         join_url,location,is_all_day,is_cancelled,etag,synced_at,updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
-                       subject=excluded.subject,start_at=excluded.start_at,end_at=excluded.end_at,
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+                       calendar_id=excluded.calendar_id,subject=excluded.subject,
+                       start_at=excluded.start_at,end_at=excluded.end_at,
                        organizer_json=excluded.organizer_json,attendees_json=excluded.attendees_json,
                        join_url=excluded.join_url,location=excluded.location,
                        is_all_day=excluded.is_all_day,is_cancelled=excluded.is_cancelled,
@@ -578,6 +656,7 @@ class OutlookCalendarService:
                        updated_at=excluded.updated_at""",
                     (
                         event_id,
+                        calendar_id,
                         str(event.get("subject", ""))[:500],
                         start_at,
                         end_at,
@@ -598,9 +677,32 @@ class OutlookCalendarService:
                 # window. Reconcile only after all pages succeeded so a network
                 # failure cannot destroy the last usable calendar cache.
                 cached_ids = {
-                    str(item["id"]) for item in conn.execute("SELECT id FROM outlook_calendar_events").fetchall()
+                    str(item["id"])
+                    for item in conn.execute("SELECT id FROM outlook_calendar_events WHERE calendar_id=''").fetchall()
                 }
                 for stale_id in cached_ids - snapshot_ids:
+                    conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (stale_id,))
+            current_additional_calendars = set(additional_snapshots)
+            cached_additional_calendars = {
+                str(item["calendar_id"])
+                for item in conn.execute(
+                    "SELECT DISTINCT calendar_id FROM outlook_calendar_events WHERE calendar_id<>''"
+                ).fetchall()
+            }
+            for stale_calendar_id in cached_additional_calendars - current_additional_calendars:
+                conn.execute(
+                    "DELETE FROM outlook_calendar_events WHERE calendar_id=?",
+                    (stale_calendar_id,),
+                )
+            for calendar_id, current_ids in additional_snapshots.items():
+                cached_ids = {
+                    str(item["id"])
+                    for item in conn.execute(
+                        "SELECT id FROM outlook_calendar_events WHERE calendar_id=?",
+                        (calendar_id,),
+                    ).fetchall()
+                }
+                for stale_id in cached_ids - current_ids:
                     conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (stale_id,))
             conn.execute(
                 """UPDATE outlook_calendar_state SET delta_link=?,window_start=?,window_end=?,

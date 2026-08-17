@@ -786,7 +786,7 @@ fn outlook_read_refresh_token() -> Result<String, String> {
 
 #[cfg(windows)]
 fn outlook_token_request(payload: &Value, authorization_code: bool) -> Result<Value, String> {
-    const SCOPES: &str = "User.Read Calendars.Read offline_access";
+    const SCOPES: &str = "User.Read Calendars.Read Calendars.Read.Shared offline_access";
     let client_id = payload
         .get("clientId")
         .and_then(Value::as_str)

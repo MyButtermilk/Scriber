@@ -482,9 +482,11 @@ bytes.
    local account, delta cursor, and cached events; immutable event snapshots in
    existing Meetings remain available.
    Sync reads `/me` and retains both `mail` and `userPrincipalName` as account
-   aliases. Graph `calendarView/delta` is paginated without unsupported
-   `$select`; every response page is staged before events and the final cursor
-   are committed atomically. Daily event queries receive local-midnight and
+   aliases. The default calendar uses a paginated Graph `calendarView/delta`
+   cursor without unsupported `$select`; additional and accessible shared
+   calendars are enumerated and refreshed over the same bounded event window.
+   Every response page is staged before events and the final cursor are
+   committed atomically. Daily event queries receive local-midnight and
    next-local-midnight boundaries already converted to UTC by the browser. This
    makes 23- and 25-hour DST days correct without bundling Python `tzdata`.
    The Meeting preflight can refresh and list every cached event for that local

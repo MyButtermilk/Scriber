@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 import threading
 from datetime import UTC
 from urllib.parse import parse_qs, urlparse
@@ -64,6 +65,38 @@ def test_public_client_id_requires_a_non_nil_canonical_guid():
         assert _normalize_public_client_id(invalid) == ""
 
 
+def test_existing_calendar_cache_migrates_calendar_source_column(monkeypatch, tmp_path):
+    database._close_all_connections()
+    path = tmp_path / "legacy-outlook.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE outlook_calendar_events (
+                   id TEXT PRIMARY KEY,
+                   subject TEXT NOT NULL DEFAULT '',
+                   start_at TEXT NOT NULL,
+                   end_at TEXT NOT NULL,
+                   organizer_json TEXT NOT NULL DEFAULT '{}',
+                   attendees_json TEXT NOT NULL DEFAULT '[]',
+                   join_url TEXT NOT NULL DEFAULT '',
+                   location TEXT NOT NULL DEFAULT '',
+                   is_all_day INTEGER NOT NULL DEFAULT 0,
+                   is_cancelled INTEGER NOT NULL DEFAULT 0,
+                   etag TEXT NOT NULL DEFAULT '',
+                   synced_at TEXT NOT NULL DEFAULT '',
+                   updated_at TEXT NOT NULL
+               )"""
+        )
+    monkeypatch.setattr(database, "_DB_PATH", path)
+
+    OutlookCalendarService(lambda *_args, **_kwargs: {}, "")
+
+    columns = {row["name"] for row in database._get_connection().execute("PRAGMA table_info(outlook_calendar_events)")}
+    assert "calendar_id" in columns
+    indexes = {row["name"] for row in database._get_connection().execute("PRAGMA index_list(outlook_calendar_events)")}
+    assert "idx_outlook_events_calendar" in indexes
+    database._close_all_connections()
+
+
 def test_account_identity_preserves_mail_and_upn_aliases():
     assert OutlookCalendarService._account_payload(
         {
@@ -112,7 +145,12 @@ async def test_status_reads_credential_state_without_exposing_tokens(service):
     assert status["configured"] is True
     assert status["connected"] is True
     assert status["reauthRequired"] is False
-    assert status["scopes"] == ["User.Read", "Calendars.Read", "offline_access"]
+    assert status["scopes"] == [
+        "User.Read",
+        "Calendars.Read",
+        "Calendars.Read.Shared",
+        "offline_access",
+    ]
     assert "accessToken" not in status
     assert "refreshToken" not in status
 
@@ -534,7 +572,7 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
 
     session = Session()
     assert await calendar.sync(session) == 1
-    assert len(session.urls) == 2
+    assert len(session.urls) == 3
     delta_url = next(url for url in session.urls if "/calendarView/delta?" in url)
     assert "$deltatoken=old" not in delta_url
     assert "startDateTime=" in delta_url
@@ -546,6 +584,103 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
     )
     assert [row["id"] for row in rows] == ["future"]
     assert rows[0]["start_at"].endswith("+00:00")
+
+
+@pytest.mark.asyncio
+async def test_sync_includes_non_default_calendar_meetings(service):
+    from datetime import datetime, timedelta
+
+    calendar, _calls = service
+    now = datetime.now(UTC)
+    meeting_start = now + timedelta(minutes=10)
+
+    class Response:
+        status = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def json(self):
+            return self.payload
+
+    class Session:
+        def __init__(self):
+            self.urls = []
+
+        def get(self, url, **_kwargs):
+            self.urls.append(url)
+            if "/v1.0/me?" in url:
+                return Response(
+                    {
+                        "displayName": "Alex Example",
+                        "mail": "alex@example.com",
+                        "userPrincipalName": "alex@example.com",
+                    }
+                )
+            if "/v1.0/me/calendars?" in url:
+                return Response(
+                    {
+                        "value": [
+                            {"id": "primary", "isDefaultCalendar": True},
+                            {"id": "team-calendar", "isDefaultCalendar": False},
+                        ]
+                    }
+                )
+            if "/me/calendars/team-calendar/calendarView?" in url:
+                return Response(
+                    {
+                        "value": [
+                            {
+                                "id": "real-meeting",
+                                "subject": "Freigabe Ergebnisse für Seco",
+                                "start": {
+                                    "dateTime": meeting_start.replace(tzinfo=None).isoformat(),
+                                    "timeZone": "UTC",
+                                },
+                                "end": {
+                                    "dateTime": (meeting_start + timedelta(hours=1)).replace(tzinfo=None).isoformat(),
+                                    "timeZone": "UTC",
+                                },
+                            }
+                        ]
+                    }
+                )
+            return Response(
+                {
+                    "value": [
+                        {
+                            "id": "absence",
+                            "subject": "Manuela Urlaub",
+                            "start": {
+                                "dateTime": (now - timedelta(days=1)).replace(tzinfo=None).isoformat(),
+                                "timeZone": "UTC",
+                            },
+                            "end": {
+                                "dateTime": (now + timedelta(days=1)).replace(tzinfo=None).isoformat(),
+                                "timeZone": "UTC",
+                            },
+                        }
+                    ],
+                    "@odata.deltaLink": ("https://graph.microsoft.com/v1.0/me/calendarView/delta?$deltatoken=new"),
+                }
+            )
+
+    session = Session()
+    assert await calendar.sync(session) == 2
+    payload = calendar.events_for_day(
+        day_value=now.date().isoformat(),
+        time_zone_name="UTC",
+        start_value=datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC).isoformat(),
+        end_value=datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC).isoformat(),
+    )
+    assert [item["subject"] for item in payload["items"]] == ["Freigabe Ergebnisse für Seco"]
+    assert any("/me/calendars/team-calendar/calendarView?" in url for url in session.urls)
 
 
 @pytest.mark.asyncio
