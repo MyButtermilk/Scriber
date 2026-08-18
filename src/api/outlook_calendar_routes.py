@@ -193,7 +193,7 @@ async def events(request: web.Request) -> web.Response:
 async def select_calendar(request: web.Request) -> web.Response:
     try:
         raw = await request.json()
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         raw = None
     calendar_id = str(raw.get("calendarId") or "").strip() if isinstance(raw, dict) else ""
     try:

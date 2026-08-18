@@ -178,7 +178,9 @@ class OutlookCalendarService:
             if "calendars_json" not in state_columns:
                 conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN calendars_json TEXT NOT NULL DEFAULT '[]'")
             if "selected_calendar_id" not in state_columns:
-                conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN selected_calendar_id TEXT NOT NULL DEFAULT ''")
+                conn.execute(
+                    "ALTER TABLE outlook_calendar_state ADD COLUMN selected_calendar_id TEXT NOT NULL DEFAULT ''"
+                )
             event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_events)")}
             for name, declaration in (
                 ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
@@ -568,10 +570,7 @@ class OutlookCalendarService:
                 calendar_id = calendar["id"]
                 if all(existing["id"] != calendar_id for existing in calendar_catalog):
                     calendar_catalog.append(calendar)
-                if (
-                    not calendar["isDefault"]
-                    and calendar_id not in calendars
-                ):
+                if not calendar["isDefault"] and calendar_id not in calendars:
                     calendars.append(calendar_id)
                     if len(calendars) > 100:
                         raise ValueError("Microsoft Graph returned too many calendars.")
@@ -965,9 +964,7 @@ class OutlookCalendarService:
             if self._pending:
                 return None
             with self._read_snapshot() as conn:
-                state = conn.execute(
-                    "SELECT * FROM outlook_calendar_state WHERE id=1"
-                ).fetchone()
+                state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
                 row = conn.execute(
                     "SELECT * FROM outlook_calendar_events WHERE id=? AND is_cancelled=0",
                     (normalized_id,),
