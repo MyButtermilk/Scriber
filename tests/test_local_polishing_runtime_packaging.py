@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import urllib.error
 import zipfile
 from pathlib import Path
 
 import pytest
 
+import scripts.prepare_local_polishing_runtime as local_polishing_runtime
 from scripts.prepare_local_polishing_runtime import (
     LOCK_CONTRACT,
     MANIFEST_CONTRACT,
@@ -90,6 +93,35 @@ def _fixture(tmp_path: Path, *, unsafe_name: str | None = None) -> tuple[Path, P
     lock_path = tmp_path / "lock.json"
     lock_path.write_text(json.dumps(lock), encoding="utf-8")
     return lock_path, cache
+
+
+def test_locked_download_retries_transient_http_failures(tmp_path, monkeypatch) -> None:
+    payload = b"locked runtime payload"
+    entry = {
+        "filename": "runtime.bin",
+        "url": "https://example.invalid/runtime.bin",
+        "bytes": len(payload),
+        "sha256": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }
+    attempts = 0
+    delays: list[float] = []
+
+    def fake_urlopen(_request, *, timeout):
+        nonlocal attempts
+        assert timeout == 120
+        attempts += 1
+        if attempts < 3:
+            raise urllib.error.HTTPError(entry["url"], 429, "rate limited", {"Retry-After": "1"}, None)
+        return io.BytesIO(payload)
+
+    monkeypatch.setattr(local_polishing_runtime.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(local_polishing_runtime.time, "sleep", delays.append)
+
+    result = local_polishing_runtime._download(entry, tmp_path / "cache", "runtime archive")
+
+    assert result.read_bytes() == payload
+    assert attempts == 3
+    assert delays == [5.0, 10.0]
 
 
 def test_prepare_materializes_only_locked_runtime_files(tmp_path):

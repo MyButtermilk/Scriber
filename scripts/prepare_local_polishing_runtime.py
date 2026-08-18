@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fnmatch
 import hashlib
 import json
@@ -10,6 +11,8 @@ import os
 import shutil
 import stat
 import tempfile
+import time
+import urllib.error
 import urllib.request
 import uuid
 import zipfile
@@ -19,6 +22,8 @@ from typing import Any
 LOCK_CONTRACT = "ScriberLocalPolishingLlamaCppRuntimeLockV1"
 MANIFEST_CONTRACT = "ScriberLocalPolishingRuntimeManifestV1"
 HASH_PREFIX = "sha256:"
+DOWNLOAD_ATTEMPTS = 6
+RETRYABLE_HTTP_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 
 
 class RuntimePreparationError(RuntimeError):
@@ -92,6 +97,22 @@ def _verify_locked_file(path: Path, entry: dict[str, Any], label: str) -> None:
         raise RuntimePreparationError(f"{label} SHA-256 differs from lock")
 
 
+def _download_retry_delay(error: BaseException, attempt: int) -> float:
+    delay = min(60.0, 5.0 * (2 ** (attempt - 1)))
+    if isinstance(error, urllib.error.HTTPError):
+        retry_after = error.headers.get("Retry-After") if error.headers else None
+        if retry_after:
+            with contextlib.suppress(ValueError):
+                delay = max(delay, min(120.0, float(retry_after)))
+    return delay
+
+
+def _is_retryable_download_error(error: BaseException) -> bool:
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in RETRYABLE_HTTP_STATUS
+    return isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
 def _download(entry: dict[str, Any], cache_dir: Path, label: str) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     target = cache_dir / entry["filename"]
@@ -100,16 +121,26 @@ def _download(entry: dict[str, Any], cache_dir: Path, label: str) -> Path:
         return target
     temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.part")
     request = urllib.request.Request(str(entry["url"]), headers={"User-Agent": "Scriber-runtime-builder/1"})
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response, temporary.open("xb") as output:
-            shutil.copyfileobj(response, output, length=1024 * 1024)
-            output.flush()
-            os.fsync(output.fileno())
-        _verify_locked_file(temporary, entry, label)
-        os.replace(temporary, target)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response, temporary.open("xb") as output:
+                shutil.copyfileobj(response, output, length=1024 * 1024)
+                output.flush()
+                os.fsync(output.fileno())
+            _verify_locked_file(temporary, entry, label)
+            os.replace(temporary, target)
+            break
+        except BaseException as error:
+            temporary.unlink(missing_ok=True)
+            if attempt >= DOWNLOAD_ATTEMPTS or not _is_retryable_download_error(error):
+                raise
+            delay = _download_retry_delay(error, attempt)
+            print(
+                f"Retrying {label} download after {type(error).__name__} "
+                f"(attempt {attempt + 1}/{DOWNLOAD_ATTEMPTS}, delay {delay:.0f}s)",
+                flush=True,
+            )
+            time.sleep(delay)
     return target
 
 
