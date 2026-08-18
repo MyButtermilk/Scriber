@@ -92,6 +92,10 @@ def test_existing_calendar_cache_migrates_calendar_source_column(monkeypatch, tm
 
     columns = {row["name"] for row in database._get_connection().execute("PRAGMA table_info(outlook_calendar_events)")}
     assert "calendar_id" in columns
+    state_columns = {
+        row["name"] for row in database._get_connection().execute("PRAGMA table_info(outlook_calendar_state)")
+    }
+    assert {"calendars_json", "selected_calendar_id"} <= state_columns
     indexes = {row["name"] for row in database._get_connection().execute("PRAGMA index_list(outlook_calendar_events)")}
     assert "idx_outlook_events_calendar" in indexes
     database._close_all_connections()
@@ -587,7 +591,7 @@ async def test_expired_delta_window_reseeds_and_reconciles_cache(service):
 
 
 @pytest.mark.asyncio
-async def test_sync_includes_non_default_calendar_meetings(service):
+async def test_sync_defaults_to_primary_calendar_and_can_select_another_calendar(service):
     from datetime import datetime, timedelta
 
     calendar, _calls = service
@@ -627,8 +631,18 @@ async def test_sync_includes_non_default_calendar_meetings(service):
                 return Response(
                     {
                         "value": [
-                            {"id": "primary", "isDefaultCalendar": True},
-                            {"id": "team-calendar", "isDefaultCalendar": False},
+                            {
+                                "id": "primary",
+                                "name": "Calendar",
+                                "isDefaultCalendar": True,
+                                "owner": {"name": "Alex Example", "address": "alex@example.com"},
+                            },
+                            {
+                                "id": "team-calendar",
+                                "name": "Team calendar",
+                                "isDefaultCalendar": False,
+                                "owner": {"name": "Team", "address": "team@example.com"},
+                            },
                         ]
                     }
                 )
@@ -673,14 +687,30 @@ async def test_sync_includes_non_default_calendar_meetings(service):
 
     session = Session()
     assert await calendar.sync(session) == 2
-    payload = calendar.events_for_day(
-        day_value=now.date().isoformat(),
-        time_zone_name="UTC",
-        start_value=datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC).isoformat(),
-        end_value=datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC).isoformat(),
-    )
+    query = {
+        "day_value": now.date().isoformat(),
+        "time_zone_name": "UTC",
+        "start_value": datetime.combine(now.date(), datetime.min.time(), tzinfo=UTC).isoformat(),
+        "end_value": datetime.combine(now.date() + timedelta(days=1), datetime.min.time(), tzinfo=UTC).isoformat(),
+    }
+    payload = calendar.events_for_day(**query)
+    assert payload["items"] == []
+
+    status = await calendar.status()
+    assert status["selectedCalendarId"] == "primary"
+    assert [item["name"] for item in status["calendars"]] == ["Calendar", "Team calendar"]
+    assert status["nextEvent"] is None
+
+    await calendar.select_calendar("team-calendar")
+    payload = calendar.events_for_day(**query)
     assert [item["subject"] for item in payload["items"]] == ["Freigabe Ergebnisse für Seco"]
+    selected_status = await calendar.status()
+    assert selected_status["nextEvent"]["subject"] == "Freigabe Ergebnisse für Seco"
+    assert calendar.current_event()["subject"] == "Freigabe Ergebnisse für Seco"
     assert any("/me/calendars/team-calendar/calendarView?" in url for url in session.urls)
+
+    with pytest.raises(ValueError, match="available Outlook calendar"):
+        await calendar.select_calendar("foreign-calendar")
 
 
 @pytest.mark.asyncio

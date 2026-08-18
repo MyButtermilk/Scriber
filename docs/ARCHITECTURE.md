@@ -485,6 +485,10 @@ bytes.
    aliases. The default calendar uses a paginated Graph `calendarView/delta`
    cursor without unsupported `$select`; additional and accessible shared
    calendars are enumerated and refreshed over the same bounded event window.
+   Their bounded metadata and one selected calendar ID are persisted locally.
+   The personal default is selected automatically; Settings can choose another
+   accessible calendar. Next/current-event detection and daily Meeting views
+   filter the cache through that single selection.
    Every response page is staged before events and the final cursor are
    committed atomically. Daily event queries receive local-midnight and
    next-local-midnight boundaries already converted to UTC by the browser. This

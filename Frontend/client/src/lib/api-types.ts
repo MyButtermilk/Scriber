@@ -525,7 +525,17 @@ export interface OutlookCalendarStatus {
   lastSyncAt: string;
   lastError: string;
   account: OutlookCalendarContact | null;
+  calendars: OutlookCalendarOption[];
+  selectedCalendarId: string;
   nextEvent: OutlookCalendarEvent | null;
+}
+
+export interface OutlookCalendarOption {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  ownerName: string;
+  ownerAddress: string;
 }
 
 export interface OutlookCalendarSyncResponse extends OutlookCalendarStatus {

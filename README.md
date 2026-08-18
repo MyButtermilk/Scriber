@@ -122,7 +122,8 @@ summary, decisions, action items, cited chat answers, and reusable exports.
   install; an existing custom shortcut remains unchanged
 - Optional local speaker library with explicit biometric opt-in and deletion
 - Optional Outlook Calendar connection with a refreshable list of today's
-  events from the default, additional, and accessible shared calendars,
+  events from one calendar selected in Settings (the personal default calendar
+  is selected automatically),
   organizer and attendee details, and an explicit event/no-event choice;
   the selected details are frozen with the Meeting and no bot joins the call.
   Scriber shows when the calendar was last refreshed, warns if a selected event

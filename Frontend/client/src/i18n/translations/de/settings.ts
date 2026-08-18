@@ -167,6 +167,8 @@ export const settingsTranslations = {
   "Speakers could not be merged": "Sprecher konnten nicht zusammengeführt werden",
   "Continue in your browser": "Im Browser fortfahren",
   "Outlook calendar synchronized": "Outlook-Kalender synchronisiert",
+  "Outlook calendar selection saved": "Outlook-Kalenderauswahl gespeichert",
+  "Outlook calendar could not be selected": "Outlook-Kalender konnte nicht ausgewählt werden",
   "Outlook disconnected": "Outlook getrennt",
   "Outlook action failed": "Outlook-Aktion fehlgeschlagen",
   "Failed to load settings": "Einstellungen konnten nicht geladen werden",
@@ -631,6 +633,11 @@ export const settingsTranslations = {
   "The last calendar refresh did not finish. Your previously saved meetings are unchanged; choose Sync now to retry.":
     "Die letzte Kalenderaktualisierung wurde nicht abgeschlossen. Deine zuvor gespeicherten Meetings bleiben unverändert; wähle zum erneuten Versuch „Jetzt synchronisieren“.",
   "Outlook calendar": "Outlook-Kalender",
+  "Calendar used for meetings": "Für Meetings verwendeter Kalender",
+  "Only appointments from this Outlook calendar appear in Scriber.":
+    "In Scriber erscheinen nur Termine aus diesem Outlook-Kalender.",
+  "Choose Outlook calendar": "Outlook-Kalender auswählen",
+  "Unnamed calendar": "Unbenannter Kalender",
   "Connect Outlook once. Scriber then suggests meeting titles and participants and addresses recap emails for you.":
     "Verbinde Outlook einmalig. Scriber schlägt anschließend Meetingtitel und Teilnehmer vor und adressiert Zusammenfassungs-E-Mails für dich.",
   "Checking Outlook": "Outlook wird geprüft",

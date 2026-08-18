@@ -160,7 +160,9 @@ Meetings:
   token storage, atomic paginated Graph sync, periodic refresh, and offline
   backoff. The default calendar keeps its delta cursor; additional and
   accessible shared calendars are enumerated and refreshed over the same
-  bounded event window. Its daily view uses browser-computed DST-correct UTC
+  bounded event window. Settings persists one calendar selection, defaults it
+  to the personal default calendar, and daily/current/next-event reads expose
+  only that selection. Its daily view uses browser-computed DST-correct UTC
   boundaries and exposes all events with organizer and attendee names/addresses.
   `/me` preserves both mail and UPN aliases for self identification. Settings
   exposes configuration state, connect, sync, verified disconnect, and last

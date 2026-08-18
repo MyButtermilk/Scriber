@@ -56,6 +56,8 @@ class OutlookCalendarPort(Protocol):
 
     async def sync(self, session: ClientSession) -> int: ...
 
+    async def select_calendar(self, calendar_id: str) -> None: ...
+
     async def disconnect(self) -> None: ...
 
     def record_sync_error(self, error_type: str) -> None: ...
@@ -188,6 +190,21 @@ async def events(request: web.Request) -> web.Response:
         return web.json_response({"message": str(exc)}, status=400)
 
 
+async def select_calendar(request: web.Request) -> web.Response:
+    try:
+        raw = await request.json()
+    except (ValueError, TypeError):
+        raw = None
+    calendar_id = str(raw.get("calendarId") or "").strip() if isinstance(raw, dict) else ""
+    try:
+        calendar = _calendar(request)
+        await calendar.select_calendar(calendar_id)
+        current = await calendar.status()
+        return web.json_response({"apiVersion": REST_API_VERSION, **current})
+    except ValueError as exc:
+        return web.json_response({"message": str(exc)}, status=400)
+
+
 async def disconnect(request: web.Request) -> web.Response:
     try:
         await _calendar(request).disconnect()
@@ -209,5 +226,6 @@ def register_outlook_calendar_routes(
     app.router.add_post("/api/calendar/outlook/connect", connect)
     app.router.add_get("/api/calendar/outlook/callback", callback)
     app.router.add_post("/api/calendar/outlook/sync", sync)
+    app.router.add_post("/api/calendar/outlook/calendar", select_calendar)
     app.router.add_get("/api/calendar/outlook/events", events)
     app.router.add_delete("/api/calendar/outlook", disconnect)

@@ -30,6 +30,7 @@ class _StubCalendar:
         self.begin_calls: list[bool] = []
         self.event_queries: list[dict[str, str]] = []
         self.synced = 0
+        self.selected_calendars: list[str] = []
 
     async def status(self) -> dict[str, Any]:
         return {"connected": True}
@@ -53,6 +54,11 @@ class _StubCalendar:
             raise self.sync_error
         self.synced += 1
         return 3
+
+    async def select_calendar(self, calendar_id: str) -> None:
+        if not calendar_id:
+            raise ValueError("Choose an available Outlook calendar.")
+        self.selected_calendars.append(calendar_id)
 
     async def disconnect(self) -> None:
         if self.disconnect_error is not None:
@@ -89,6 +95,7 @@ def test_calendar_adapter_matches_the_route_port(assert_protocol_contract):
             "cancel_connect",
             "complete_connect",
             "sync",
+            "select_calendar",
             "disconnect",
             "record_sync_error",
             "events_for_day",
@@ -196,6 +203,22 @@ async def test_sync_reports_the_change_count_with_fresh_status():
         assert payload["connected"] is True
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_calendar_selection_is_validated_and_returns_fresh_status():
+    calendar = _StubCalendar()
+    client = await _client(calendar)
+    try:
+        response = await client.post("/api/calendar/outlook/calendar", json={"calendarId": "primary"})
+        assert response.status == 200
+        assert (await response.json())["connected"] is True
+
+        invalid = await client.post("/api/calendar/outlook/calendar", json={})
+        assert invalid.status == 400
+    finally:
+        await client.close()
+    assert calendar.selected_calendars == ["primary"]
 
 
 @pytest.mark.asyncio

@@ -1418,6 +1418,28 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 
 .meetings-workspace-panel {
   background: var(--live-core);
+  container-name: meeting-workspace;
+  container-type: inline-size;
+}
+
+.meeting-detail-header {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.meeting-detail-actions {
+  justify-content: flex-start;
+}
+
+@container meeting-workspace (min-width: 1120px) {
+  .meeting-detail-header {
+    align-items: center;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .meeting-detail-actions {
+    justify-content: flex-end;
+  }
 }
 
 .live-mic-control-deck {

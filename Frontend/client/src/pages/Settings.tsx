@@ -2078,6 +2078,23 @@ export default function Settings() {
       });
     },
   });
+  const outlookCalendarMutation = useMutation({
+    mutationFn: async (calendarId: string) => {
+      const response = await apiRequest("POST", "/api/calendar/outlook/calendar", { calendarId });
+      return response.json() as Promise<OutlookCalendarStatus>;
+    },
+    onSuccess: (status) => {
+      queryClient.setQueryData(["/api/calendar/outlook/status"], status);
+      void queryClient.invalidateQueries({ queryKey: ["/api/calendar/outlook/events"] });
+      toast({ title: t("Outlook calendar selection saved") });
+    },
+    onError: (error) =>
+      toast({
+        title: t("Outlook calendar could not be selected"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        variant: "destructive",
+      }),
+  });
   const outlookCredentialStatusUnavailable = outlookQuery.data?.credentialStatusAvailable === false;
 
   useEffect(() => {
@@ -3567,11 +3584,7 @@ export default function Settings() {
       return;
     }
     try {
-      const response = await fetchWithTimeout(
-        apiUrl(current.preview.url),
-        { credentials: "include" },
-        10_000,
-      );
+      const response = await fetchWithTimeout(apiUrl(current.preview.url), { credentials: "include" }, 10_000);
       if (!response.ok) throw new Error(`Voice sample unavailable (${response.status})`);
       const objectUrl = URL.createObjectURL(await response.blob());
       const audio = new Audio(objectUrl);
@@ -6012,6 +6025,37 @@ export default function Settings() {
                     </p>
                   )}
                 </div>
+                {outlookQuery.data?.connected && outlookQuery.data.calendars.length > 0 && (
+                  <div className="rounded-lg border border-slate-200/80 px-3 py-2.5 dark:border-[var(--workspace-border)]">
+                    <Label htmlFor="outlook-calendar-selection" className="text-xs font-semibold">
+                      {t("Calendar used for meetings")}
+                    </Label>
+                    <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+                      {t("Only appointments from this Outlook calendar appear in Scriber.")}
+                    </p>
+                    <Select
+                      value={outlookQuery.data.selectedCalendarId}
+                      disabled={outlookCalendarMutation.isPending}
+                      onValueChange={(calendarId) => outlookCalendarMutation.mutate(calendarId)}
+                    >
+                      <SelectTrigger id="outlook-calendar-selection" className="mt-2 h-9 w-full">
+                        <SelectValue placeholder={t("Choose Outlook calendar")} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {outlookQuery.data.calendars.map((calendar) => (
+                          <SelectItem key={calendar.id} value={calendar.id}>
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate">{calendar.name || t("Unnamed calendar")}</span>
+                              {calendar.isDefault && (
+                                <span className="shrink-0 text-ui-micro text-muted-foreground">{t("Default")}</span>
+                              )}
+                            </span>
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
                 {!outlookQuery.isLoading &&
                   (!outlookQuery.data?.connected || outlookQuery.data.authorizationPending) && (
                     <ol className="grid gap-2 rounded-lg border border-slate-200/80 p-3 text-[11px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:text-slate-300">
@@ -6825,9 +6869,7 @@ export default function Settings() {
               </div>
               <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-xs leading-5 text-slate-600 dark:bg-slate-900/60 dark:text-slate-300">
                 <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" aria-hidden="true" />
-                <p>
-                  {t("A short reference clip was saved locally so you can verify the name. Nothing was uploaded.")}
-                </p>
+                <p>{t("A short reference clip was saved locally so you can verify the name. Nothing was uploaded.")}</p>
               </div>
               <div className="flex justify-end">
                 <Button type="button" onClick={() => handleVoiceEnrollmentOpenChange(false)}>

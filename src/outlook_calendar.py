@@ -149,7 +149,9 @@ class OutlookCalendarService:
                     window_end TEXT NOT NULL DEFAULT '',
                     last_sync_at TEXT NOT NULL DEFAULT '',
                     last_error TEXT NOT NULL DEFAULT '',
-                    account_json TEXT NOT NULL DEFAULT '{}'
+                    account_json TEXT NOT NULL DEFAULT '{}',
+                    calendars_json TEXT NOT NULL DEFAULT '[]',
+                    selected_calendar_id TEXT NOT NULL DEFAULT ''
                 );
                 INSERT OR IGNORE INTO outlook_calendar_state(id) VALUES (1);
                 CREATE TABLE IF NOT EXISTS outlook_calendar_events (
@@ -173,6 +175,10 @@ class OutlookCalendarService:
             state_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_state)")}
             if "account_json" not in state_columns:
                 conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN account_json TEXT NOT NULL DEFAULT '{}'")
+            if "calendars_json" not in state_columns:
+                conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN calendars_json TEXT NOT NULL DEFAULT '[]'")
+            if "selected_calendar_id" not in state_columns:
+                conn.execute("ALTER TABLE outlook_calendar_state ADD COLUMN selected_calendar_id TEXT NOT NULL DEFAULT ''")
             event_columns = {row["name"] for row in conn.execute("PRAGMA table_info(outlook_calendar_events)")}
             for name, declaration in (
                 ("calendar_id", "TEXT NOT NULL DEFAULT ''"),
@@ -364,7 +370,8 @@ class OutlookCalendarService:
                         conn.execute("DELETE FROM outlook_calendar_events")
                         conn.execute(
                             """UPDATE outlook_calendar_state SET delta_link='',window_start='',
-                               window_end='',last_sync_at='',last_error='',account_json='{}'
+                               window_end='',last_sync_at='',last_error='',account_json='{}',
+                               calendars_json='[]',selected_calendar_id=''
                                WHERE id=1"""
                         )
                         conn.commit()
@@ -505,15 +512,46 @@ class OutlookCalendarService:
             return event_id
         return hashlib.sha256(f"{calendar_id}\0{event_id}".encode()).hexdigest()
 
+    @staticmethod
+    def _calendar_payload(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        calendar_id = str(value.get("id") or "").strip()
+        if not calendar_id or len(calendar_id) > 2048 or not isinstance(value.get("isDefaultCalendar"), bool):
+            return None
+        owner = value.get("owner") if isinstance(value.get("owner"), dict) else {}
+        owner_address = str(owner.get("address") or "").strip().lower()
+        if owner_address and (len(owner_address) > 320 or not re.fullmatch(r"[^\s@<>]+@[^\s@<>]+", owner_address)):
+            owner_address = ""
+        return {
+            "id": calendar_id,
+            "name": str(value.get("name") or "").strip()[:200],
+            "isDefault": bool(value["isDefaultCalendar"]),
+            "ownerName": str(owner.get("name") or "").strip()[:200],
+            "ownerAddress": owner_address,
+        }
+
+    @classmethod
+    def _selected_storage_calendar_id(cls, state: Any) -> str:
+        calendars = cls._load_json(state["calendars_json"], []) if state else []
+        selected = str(state["selected_calendar_id"] or "") if state else ""
+        if not isinstance(calendars, list):
+            return ""
+        for calendar in calendars:
+            if isinstance(calendar, dict) and str(calendar.get("id") or "") == selected:
+                return "" if calendar.get("isDefault") is True else selected
+        return ""
+
     async def _additional_calendar_events(
         self,
         session: ClientSession,
         token: str,
         start: datetime,
         end: datetime,
-    ) -> tuple[list[tuple[str, str, dict[str, Any]]], dict[str, set[str]]]:
+    ) -> tuple[list[tuple[str, str, dict[str, Any]]], dict[str, set[str]], list[dict[str, Any]]]:
         calendars: list[str] = []
-        url = GRAPH_CALENDARS + "?" + urlencode({"$select": "id,isDefaultCalendar"})
+        calendar_catalog: list[dict[str, Any]] = []
+        url = GRAPH_CALENDARS + "?" + urlencode({"$select": "id,name,isDefaultCalendar,owner"})
         visited_urls: set[str] = set()
         while url:
             if url in visited_urls or len(visited_urls) >= 100:
@@ -524,13 +562,14 @@ class OutlookCalendarService:
             if not isinstance(values, list):
                 raise ValueError("Microsoft Graph calendar list is invalid.")
             for item in values:
-                if not isinstance(item, dict) or not isinstance(item.get("isDefaultCalendar"), bool):
+                calendar = self._calendar_payload(item)
+                if calendar is None:
                     continue
-                calendar_id = str(item.get("id") or "").strip()
+                calendar_id = calendar["id"]
+                if all(existing["id"] != calendar_id for existing in calendar_catalog):
+                    calendar_catalog.append(calendar)
                 if (
-                    calendar_id
-                    and len(calendar_id) <= 2048
-                    and not item["isDefaultCalendar"]
+                    not calendar["isDefault"]
                     and calendar_id not in calendars
                 ):
                     calendars.append(calendar_id)
@@ -566,7 +605,7 @@ class OutlookCalendarService:
                     if len(changes) > 10_000:
                         raise ValueError("Microsoft Graph returned too many calendar events.")
                 url = str(payload.get("@odata.nextLink") or "")
-        return changes, snapshots
+        return changes, snapshots, calendar_catalog
 
     async def _sync_with_token(
         self,
@@ -626,8 +665,18 @@ class OutlookCalendarService:
             raise ValueError("Microsoft Graph calendar sync did not return a delta cursor.")
         self._validate_graph_url(delta_link)
 
-        additional_changes, additional_snapshots = await self._additional_calendar_events(session, token, start, end)
+        additional_changes, additional_snapshots, calendar_catalog = await self._additional_calendar_events(
+            session, token, start, end
+        )
         changes.extend(additional_changes)
+
+        selected_calendar_id = str(row["selected_calendar_id"] or "")
+        available_calendar_ids = {calendar["id"] for calendar in calendar_catalog}
+        if selected_calendar_id not in available_calendar_ids:
+            selected_calendar_id = next(
+                (calendar["id"] for calendar in calendar_catalog if calendar["isDefault"]),
+                calendar_catalog[0]["id"] if calendar_catalog else "",
+            )
 
         with db._get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE")
@@ -706,13 +755,16 @@ class OutlookCalendarService:
                     conn.execute("DELETE FROM outlook_calendar_events WHERE id=?", (stale_id,))
             conn.execute(
                 """UPDATE outlook_calendar_state SET delta_link=?,window_start=?,window_end=?,
-                   last_sync_at=?,last_error='',account_json=? WHERE id=1""",
+                   last_sync_at=?,last_error='',account_json=?,calendars_json=?,
+                   selected_calendar_id=? WHERE id=1""",
                 (
                     delta_link,
                     start.isoformat(),
                     end.isoformat(),
                     now.isoformat(),
                     json.dumps(account or {}, ensure_ascii=False),
+                    json.dumps(calendar_catalog, ensure_ascii=False),
+                    selected_calendar_id,
                 ),
             )
             conn.commit()
@@ -760,8 +812,28 @@ class OutlookCalendarService:
                 conn.execute("DELETE FROM outlook_calendar_events")
                 conn.execute(
                     """UPDATE outlook_calendar_state SET delta_link='',window_start='',
-                       window_end='',last_sync_at='',last_error='',account_json='{}'
+                       window_end='',last_sync_at='',last_error='',account_json='{}',
+                       calendars_json='[]',selected_calendar_id=''
                        WHERE id=1"""
+                )
+                conn.commit()
+
+    async def select_calendar(self, calendar_id: str) -> None:
+        normalized_id = str(calendar_id or "").strip()
+        if not normalized_id or len(normalized_id) > 2048:
+            raise ValueError("Choose an available Outlook calendar.")
+        async with self._mutation_lock:
+            with db._get_connection() as conn:
+                state = conn.execute("SELECT calendars_json FROM outlook_calendar_state WHERE id=1").fetchone()
+                calendars = self._load_json(state["calendars_json"], []) if state else []
+                if not isinstance(calendars, list) or not any(
+                    isinstance(calendar, dict) and str(calendar.get("id") or "") == normalized_id
+                    for calendar in calendars
+                ):
+                    raise ValueError("Choose an available Outlook calendar.")
+                conn.execute(
+                    "UPDATE outlook_calendar_state SET selected_calendar_id=? WHERE id=1",
+                    (normalized_id,),
                 )
                 conn.commit()
 
@@ -790,6 +862,7 @@ class OutlookCalendarService:
             authorization_pending = bool(self._pending)
             with self._read_snapshot() as conn:
                 state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
+                storage_calendar_id = self._selected_storage_calendar_id(state)
                 account = self._load_json(state["account_json"], {})
                 if not isinstance(account, dict) or not account.get("address"):
                     account = None
@@ -803,9 +876,9 @@ class OutlookCalendarService:
                             for candidate in conn.execute(
                                 """SELECT *
                                    FROM outlook_calendar_events
-                                   WHERE is_cancelled=0 AND end_at>=?
+                                   WHERE calendar_id=? AND is_cancelled=0 AND end_at>=?
                                    ORDER BY start_at,id""",
-                                (datetime.now(UTC).isoformat(),),
+                                (storage_calendar_id, datetime.now(UTC).isoformat()),
                             )
                             if not _is_absence_notice_subject(candidate["subject"])
                         ),
@@ -825,6 +898,8 @@ class OutlookCalendarService:
             "lastSyncAt": "" if authorization_pending else state["last_sync_at"],
             "lastError": state["last_error"],
             "account": account,
+            "calendars": self._load_json(state["calendars_json"], []),
+            "selectedCalendarId": str(state["selected_calendar_id"] or ""),
             "nextEvent": (self._calendar_event_payload(next_event, account=account) if next_event else None),
         }
 
@@ -838,14 +913,15 @@ class OutlookCalendarService:
             if self._pending:
                 return None
             with self._read_snapshot() as conn:
-                state = conn.execute("SELECT account_json FROM outlook_calendar_state WHERE id=1").fetchone()
+                state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
+                storage_calendar_id = self._selected_storage_calendar_id(state)
                 row = next(
                     (
                         candidate
                         for candidate in conn.execute(
                             """SELECT *
                                FROM outlook_calendar_events
-                               WHERE is_cancelled=0 AND start_at<=? AND end_at>=?
+                               WHERE calendar_id=? AND is_cancelled=0 AND start_at<=? AND end_at>=?
                                ORDER BY
                                  is_all_day ASC,
                                  CASE
@@ -858,6 +934,7 @@ class OutlookCalendarService:
                                  CASE WHEN end_at<? THEN end_at END DESC,
                                  id ASC""",
                             (
+                                storage_calendar_id,
                                 upper,
                                 lower,
                                 now_value,
@@ -889,7 +966,7 @@ class OutlookCalendarService:
                 return None
             with self._read_snapshot() as conn:
                 state = conn.execute(
-                    "SELECT last_sync_at,account_json FROM outlook_calendar_state WHERE id=1"
+                    "SELECT * FROM outlook_calendar_state WHERE id=1"
                 ).fetchone()
                 row = conn.execute(
                     "SELECT * FROM outlook_calendar_events WHERE id=? AND is_cancelled=0",
@@ -978,15 +1055,14 @@ class OutlookCalendarService:
             if self._pending:
                 raise ValueError("Finish the Outlook sign-in before loading calendar events.")
             with self._read_snapshot() as conn:
-                state = conn.execute(
-                    "SELECT last_sync_at,account_json FROM outlook_calendar_state WHERE id=1"
-                ).fetchone()
+                state = conn.execute("SELECT * FROM outlook_calendar_state WHERE id=1").fetchone()
+                storage_calendar_id = self._selected_storage_calendar_id(state)
                 rows = []
                 for candidate in conn.execute(
                     """SELECT * FROM outlook_calendar_events
-                       WHERE is_cancelled=0 AND start_at<? AND end_at>?
+                       WHERE calendar_id=? AND is_cancelled=0 AND start_at<? AND end_at>?
                        ORDER BY start_at,id""",
-                    (end_utc.isoformat(), start_utc.isoformat()),
+                    (storage_calendar_id, end_utc.isoformat(), start_utc.isoformat()),
                 ):
                     if _is_absence_notice_subject(candidate["subject"]):
                         continue

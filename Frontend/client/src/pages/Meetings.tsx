@@ -3542,7 +3542,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
             </div>
           ) : (
             <div className="flex h-full min-h-0 flex-col">
-              <header className="grid gap-4 border-b border-border/60 px-5 py-5 min-[780px]:grid-cols-[minmax(0,1fr)_auto] min-[780px]:items-center md:px-6 lg:px-7">
+              <header className="meeting-detail-header grid gap-4 border-b border-border/60 px-5 py-5 md:px-6 lg:px-7">
                 <div className="min-w-0">
                   <Button
                     type="button"
@@ -3606,10 +3606,10 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                         </Button>
                       </form>
                     ) : (
-                      <div className="flex min-w-0 items-center gap-1">
+                      <div className="flex min-w-0 items-start gap-1.5">
                         <h2
                           data-testid="meeting-detail-title"
-                          className="truncate font-heading text-[22px] font-semibold tracking-[-0.025em] md:text-[24px]"
+                          className="min-w-0 text-balance font-heading text-[22px] font-semibold leading-[1.15] tracking-[-0.025em] md:text-[24px]"
                         >
                           {detail.title}
                         </h2>
@@ -3640,7 +3640,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   </p>
                 </div>
                 <div
-                  className="flex flex-wrap items-center gap-3 min-[780px]:justify-end"
+                  className="meeting-detail-actions flex flex-wrap items-center gap-3"
                   data-testid="meeting-detail-actions"
                   role="group"
                   aria-label={t("Meeting recording controls")}
