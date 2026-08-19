@@ -229,6 +229,15 @@ class AudioFrameSource:
     def stop(self, *, close: bool) -> None:
         raise NotImplementedError
 
+    def native_audio_stop_confirmed(self) -> bool | None:
+        """Return whether the native producer is authoritatively stopped.
+
+        ``None`` means the source cannot prove either outcome.  Callers must
+        treat both ``None`` and ``False`` as fail-closed ownership states.
+        """
+
+        return None
+
     def diagnostic_snapshot(self) -> dict:
         return {
             "engine": self.engine,
@@ -560,6 +569,11 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self.sidecar_stop_reason = ""
         self.sidecar_stop_confirmed = None
         self.sidecar_start_count = 0
+        # This state is deliberately independent from frame-pipe integrity.
+        # A provider/queue failure after an acknowledged sidecar stop must not
+        # keep the process-wide native-audio lease forever, while an IPC result
+        # whose delivery is unknown must remain fail closed.
+        self._native_audio_stop_state: bool | None = True
         self.callback_count = 0
         self.dropped_frame_count = 0
         self.frame_pipe_frames_read = 0
@@ -787,6 +801,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         self._provider_replay_exact_end_accepted = False
         self._mark_start("audio_capture_start_ipc_started")
         capture_start_started = time.monotonic()
+        self._native_audio_stop_state = None
         response = self._shell_call("audioCaptureStart", payload, timeout_seconds=2.0)
         self.capture_start_response_ms = round(
             max(0.0, time.monotonic() - capture_start_started) * 1000.0,
@@ -800,6 +815,9 @@ class RustPrototypeFrameSource(AudioFrameSource):
         if not isinstance(response_payload, dict):
             response_payload = {}
         if not bool(response.get("success")):
+            # The Tauri sidecar client stops and reaps every partially started
+            # process before returning an explicit failed start response.
+            self._native_audio_stop_state = True
             error_code = str(response.get("errorCode") or "audioCaptureStartFailed")
             fallback_reason = str(response.get("fallbackReason") or error_code)
             self.fallback_reason = error_code
@@ -993,6 +1011,7 @@ class RustPrototypeFrameSource(AudioFrameSource):
         except Exception as exc:
             self._last_error = str(exc)
             self.sidecar_stop_confirmed = False
+            self._native_audio_stop_state = False
             return False
         if not isinstance(response, dict) or not bool(response.get("success")):
             if isinstance(response, dict):
@@ -1002,14 +1021,17 @@ class RustPrototypeFrameSource(AudioFrameSource):
             else:
                 self._last_error = "audioCaptureStopInvalidResponse"
             self.sidecar_stop_confirmed = False
+            self._native_audio_stop_state = False
             return False
         response_payload = response.get("payload")
         if not isinstance(response_payload, dict):
             self._last_error = "audioCaptureStopInvalidPayload"
             self.sidecar_stop_confirmed = False
+            self._native_audio_stop_state = False
             return False
         self._record_sidecar_stop(response_payload)
         self.sidecar_stop_confirmed = True
+        self._native_audio_stop_state = True
         return True
 
     def _clear_capture_identity(self) -> None:
@@ -1065,6 +1087,13 @@ class RustPrototypeFrameSource(AudioFrameSource):
                     self._mark_start(marker, timestamp_ns=timestamp_ns)
         if self.sidecar_writer_error:
             self._last_error = str(self.sidecar_writer_error)
+
+    def native_audio_stop_confirmed(self) -> bool | None:
+        """Expose only authoritative native-process ownership state."""
+
+        if self.stream_id or self._pending_stop_stream_id:
+            return False
+        return self._native_audio_stop_state
 
     def diagnostic_snapshot(self) -> dict:
         with self._external_stop_lock:
@@ -2134,6 +2163,22 @@ class MicrophoneInput(BaseInputTransport):
         cancel = getattr(self._frame_source, "cancel_external_stop", None)
         if callable(cancel):
             cancel()
+
+    def native_audio_stop_confirmed(self) -> bool | None:
+        """Return the Rust producer's exact stop confirmation, if known."""
+
+        source = self._frame_source
+        if source is None:
+            # No source means this transport never admitted a native producer.
+            return True if self.stream is None and not self._stream_claimed else None
+        confirmation = getattr(source, "native_audio_stop_confirmed", None)
+        if not callable(confirmation):
+            return None
+        try:
+            result = confirmation()
+        except Exception:
+            return None
+        return result if result is True or result is False else None
 
     def diagnostic_snapshot(self) -> dict:
         stream = self.stream

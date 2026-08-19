@@ -3164,15 +3164,7 @@ async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
         foreign = await _foreign_persistent_audio_claim(controller)
         if foreign is None:
             return None
-        return ProviderUserError(
-            provider="audio",
-            provider_label="Audio capture",
-            title="Audio capture active",
-            message="Another Scriber controller currently owns native audio capture.",
-            category=ErrorCategory.CONFIG_INVALID,
-            code="recording_conflict",
-            retryable=True,
-        )
+        return _live_mic_admission_conflict_info(controller, foreign)
     return ProviderUserError(
         provider="meeting",
         provider_label="Meeting",
@@ -3182,6 +3174,61 @@ async def _live_mic_audio_conflict(controller: Any) -> ProviderUserError | None:
         code="meeting_active",
         retryable=False,
     )
+
+
+def _live_mic_admission_conflict_info(
+    controller: Any,
+    active: AudioAdmissionClaim,
+) -> ProviderUserError:
+    same_controller = bool(
+        active.controller_id
+        and active.controller_id == str(getattr(controller, "_audio_controller_id", "") or "")
+    )
+    if same_controller:
+        return ProviderUserError(
+            provider="audio",
+            provider_label="Audio capture",
+            title="Previous audio cleanup incomplete",
+            message=(
+                "Scriber could not confirm that the previous native audio capture stopped. "
+                "Restart Scriber before recording again."
+            ),
+            category=ErrorCategory.CONFIG_INVALID,
+            code="recording_cleanup_pending",
+            retryable=True,
+        )
+    return ProviderUserError(
+        provider="audio",
+        provider_label="Audio capture",
+        title="Audio capture active",
+        message="Another Scriber controller currently owns native audio capture.",
+        category=ErrorCategory.CONFIG_INVALID,
+        code="recording_conflict",
+        retryable=True,
+    )
+
+
+def _pipeline_native_audio_stop_confirmation(
+    pipeline: Any | None,
+    *,
+    pipeline_stop_completed: bool,
+) -> bool | None:
+    """Read native ownership independently from downstream finalization."""
+
+    if pipeline is None:
+        return True
+    confirmation = getattr(pipeline, "native_audio_stop_confirmed", None)
+    if not callable(confirmation):
+        return True if pipeline_stop_completed else None
+    try:
+        result = confirmation()
+    except Exception as exc:
+        logger.warning(
+            "Native-audio stop confirmation read failed: {}",
+            type(exc).__name__,
+        )
+        return None
+    return result if result is True or result is False else None
 
 
 async def _wait_for_voice_enrollment(duration_ms: int) -> None:
@@ -11992,21 +12039,13 @@ class ScriberWebController:
 
             try:
                 await _claim_persistent_audio(self, owner_kind="live_mic", owner_id=session_id)
-            except AudioAdmissionConflict:
+            except AudioAdmissionConflict as conflict:
                 self._active_provider = None
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
                 self._resume_idle_mic_prewarm_after_capture()
                 self._finish_live_mic_start_transition(start_generation)
-                info = ProviderUserError(
-                    provider="audio",
-                    provider_label="Audio capture",
-                    title="Audio capture active",
-                    message="Another Scriber controller currently owns native audio capture.",
-                    category=ErrorCategory.CONFIG_INVALID,
-                    code="recording_conflict",
-                    retryable=True,
-                )
+                info = _live_mic_admission_conflict_info(self, conflict.active)
                 await self.broadcast(self._provider_error_event_from_info(info))
                 self._clear_hot_path_tracer(session_id)
                 return info
@@ -12334,7 +12373,8 @@ class ScriberWebController:
         audio_claim: AudioAdmissionClaim | None = None
         stop_owner = object()
         owns_stop = False
-        pipeline_stop_confirmed = True
+        pipeline_stop_completed = True
+        native_audio_stop_confirmation: bool | None = None
         try:
             async with self._listening_lock:
                 if session_id is not None and session_id != self._session_id:
@@ -12371,13 +12411,13 @@ class ScriberWebController:
 
             # Stop the previous pipeline instance outside the lock.
             if pipeline:
+                pipeline_stop_completed = False
                 try:
                     await asyncio.wait_for(pipeline.stop(), timeout=2.0)
+                    pipeline_stop_completed = True
                 except TimeoutError:
-                    pipeline_stop_confirmed = False
                     logger.warning("Emergency stop timeout - forcing cleanup")
                 except Exception as e:
-                    pipeline_stop_confirmed = False
                     logger.debug(f"Emergency stop warning: {e}")
 
             # Cancel previous pipeline task if still running.
@@ -12386,17 +12426,27 @@ class ScriberWebController:
                 with contextlib.suppress(TimeoutError, asyncio.CancelledError):
                     await asyncio.wait_for(asyncio.shield(pipeline_task), timeout=1.0)
         except Exception as e:
-            pipeline_stop_confirmed = False
+            pipeline_stop_completed = False
             logger.error(f"Emergency stop error: {e}")
         finally:
             if owns_stop:
+                native_audio_stop_confirmation = _pipeline_native_audio_stop_confirmation(
+                    pipeline,
+                    pipeline_stop_completed=pipeline_stop_completed,
+                )
                 # Release only the claim captured by this exact session. A
                 # stale cleanup must never release a later recording's claim.
                 try:
-                    if release_audio_claim and audio_claim is not None and pipeline_stop_confirmed:
+                    if (
+                        release_audio_claim
+                        and audio_claim is not None
+                        and native_audio_stop_confirmation is True
+                    ):
                         await _release_persistent_audio(self, audio_claim)
                     elif release_audio_claim and audio_claim is not None:
-                        logger.error("Persistent native-audio admission retained after unconfirmed emergency stop")
+                        logger.error(
+                            "Persistent native-audio admission retained after unconfirmed native emergency stop"
+                        )
                 finally:
                     resume_idle_prewarm = False
                     async with self._listening_lock:
@@ -12415,7 +12465,7 @@ class ScriberWebController:
                         # leaving the next hotkey on a cold WASAPI route and
                         # prone to a first-live-frame timeout.
                         self._resume_idle_mic_prewarm_after_capture()
-        return bool(owns_stop and pipeline_stop_confirmed)
+        return bool(owns_stop and native_audio_stop_confirmation is True)
 
     def _live_mic_stop_timeout_seconds(
         self,
@@ -12876,22 +12926,25 @@ class ScriberWebController:
 
         stop_error: Exception | None = None
         stop_error_info: ProviderUserError | None = None
-        pipeline_stop_confirmed = True
+        pipeline_stop_completed = pipeline is None
         retrigger_hotkey_toggle = False
         try:
             if pipeline:
+                pipeline_stop_completed = False
                 if silent_early_exit:
                     await pipeline.cancel_silent_recording()
+                    pipeline_stop_completed = True
                 else:
                     try:
                         await pipeline.stop(timeout_secs=stop_timeout_secs)
+                        pipeline_stop_completed = True
                     except TypeError as exc:
                         if "timeout_secs" not in str(exc) and "unexpected keyword" not in str(exc):
                             raise
                         await pipeline.stop()
+                        pipeline_stop_completed = True
                     except Exception as exc:
                         if quiet_recording and _pipeline_stop_timeout_error(exc):
-                            pipeline_stop_confirmed = False
                             logger.info(
                                 "Suppressing async live transcription timeout after quiet recording "
                                 f"(timeout={stop_timeout_secs:g}s, provider={provider_used})"
@@ -12934,7 +12987,6 @@ class ScriberWebController:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
         except Exception as exc:
-            pipeline_stop_confirmed = False
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
             self._record_provider_failure(provider_used or "", exc)
@@ -12967,10 +13019,14 @@ class ScriberWebController:
             # lease is still active. Otherwise a queued toggle can construct a
             # new pipeline and then collide with this controller's old session.
             try:
-                if audio_claim is not None and pipeline_stop_confirmed:
+                native_audio_stop_confirmation = _pipeline_native_audio_stop_confirmation(
+                    pipeline,
+                    pipeline_stop_completed=pipeline_stop_completed,
+                )
+                if audio_claim is not None and native_audio_stop_confirmation is True:
                     await _release_persistent_audio(self, audio_claim)
                 elif audio_claim is not None:
-                    logger.error("Persistent native-audio admission retained after unconfirmed Live Mic stop")
+                    logger.error("Persistent native-audio admission retained after unconfirmed native Live Mic stop")
             except Exception as release_exc:
                 logger.warning(
                     "Persistent native-audio admission release after stop failed: {}",

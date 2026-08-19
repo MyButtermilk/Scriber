@@ -2664,6 +2664,30 @@ async def test_cleanup_audio_input_forces_stream_close():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_stop_confirmed", [True, False, None])
+async def test_cleanup_audio_input_preserves_native_stop_confirmation_after_cleanup_error(
+    native_stop_confirmed,
+):
+    class _CleanupErrorAudioInput:
+        async def stop(self, _frame, *, close_stream=None):
+            assert close_stream is True
+            raise RuntimeError("synthetic downstream cleanup failure")
+
+        def native_audio_stop_confirmed(self):
+            return native_stop_confirmed
+
+    pipeline = ScriberPipeline(service_name="soniox", on_status_change=None)
+    pipeline._native_audio_stop_confirmation = None
+    pipeline.audio_input = _CleanupErrorAudioInput()
+
+    assert pipeline.native_audio_stop_confirmed() is native_stop_confirmed
+    await pipeline._cleanup_audio_input()
+
+    assert pipeline.audio_input is None
+    assert pipeline.native_audio_stop_confirmed() is native_stop_confirmed
+
+
+@pytest.mark.asyncio
 async def test_cleanup_audio_input_retains_private_provider_replay_capture_attestation():
     expected = {
         "source": "rust_audio_frame_pipe_reader",

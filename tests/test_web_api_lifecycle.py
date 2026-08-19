@@ -3306,6 +3306,36 @@ class _StopOkNamedPipeline(_StopOkPipeline):
     service_name = "openai"
 
 
+class _EmergencyPipelineTimeoutAfterNativeStop:
+    def __init__(self, *, native_stop_confirmed: bool):
+        self._native_stop_confirmed = native_stop_confirmed
+
+    def native_audio_stop_confirmed(self) -> bool:
+        return self._native_stop_confirmed
+
+    async def stop(self):
+        raise TimeoutError("synthetic downstream pipeline timeout")
+
+
+def test_live_mic_same_controller_conflict_reports_incomplete_cleanup():
+    controller_id = "controller-retained-cleanup"
+    controller = types.SimpleNamespace(_audio_controller_id=controller_id)
+    active = web_api.AudioAdmissionClaim(
+        owner_kind="live_mic",
+        owner_id="previous-session",
+        controller_id=controller_id,
+        state_version=7,
+        lease_expires_at="2026-08-19T10:00:00Z",
+        updated_at="2026-08-19T09:59:00Z",
+    )
+
+    info = web_api._live_mic_admission_conflict_info(controller, active)
+
+    assert info.code == "recording_cleanup_pending"
+    assert info.title == "Previous audio cleanup incomplete"
+    assert "Another Scriber controller" not in info.message
+
+
 @pytest.mark.asyncio
 async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypatch):
     loop = asyncio.get_running_loop()
@@ -3339,6 +3369,98 @@ async def test_emergency_stop_clears_state_before_resuming_idle_prewarm(monkeypa
     assert ctl._session_id is None
     assert ctl._current is None
     assert resume_states == [(False, None)]
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_releases_claim_when_native_audio_stopped_before_pipeline_timeout(
+    monkeypatch,
+    tmp_path,
+):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    ctl = ScriberWebController(loop)
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "emergency-native-stopped.db")
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-emergency-native-stopped"
+
+    session_id = "emergency-native-stopped-session"
+    await web_api._claim_persistent_audio(
+        ctl,
+        owner_kind="live_mic",
+        owner_id=session_id,
+        heartbeat=False,
+    )
+    ctl._current = _make_record(session_id)
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = _EmergencyPipelineTimeoutAfterNativeStop(native_stop_confirmed=True)
+    ctl._pipeline_task = None
+
+    replacement_claim = None
+    try:
+        stopped = await ctl._emergency_stop_pipeline(session_id=session_id)
+
+        assert stopped is True
+        assert ctl._persistent_audio_claim is None
+        assert ctl._audio_admission_store.active() is None
+
+        replacement_claim = await web_api._claim_persistent_audio(
+            ctl,
+            owner_kind="live_mic",
+            owner_id="replacement-live-session",
+            heartbeat=False,
+        )
+        assert replacement_claim.owner_id == "replacement-live-session"
+    finally:
+        current_claim = web_api._audio_admission_owner(ctl).current
+        if current_claim is not None:
+            await web_api._release_persistent_audio(ctl, current_claim)
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_emergency_stop_retains_claim_when_native_audio_stop_is_unconfirmed(
+    monkeypatch,
+    tmp_path,
+):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    ctl = ScriberWebController(loop)
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "emergency-native-unconfirmed.db")
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-emergency-native-unconfirmed"
+
+    session_id = "emergency-native-unconfirmed-session"
+    claim = await web_api._claim_persistent_audio(
+        ctl,
+        owner_kind="live_mic",
+        owner_id=session_id,
+        heartbeat=False,
+    )
+    ctl._current = _make_record(session_id)
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = _EmergencyPipelineTimeoutAfterNativeStop(native_stop_confirmed=False)
+    ctl._pipeline_task = None
+
+    try:
+        stopped = await ctl._emergency_stop_pipeline(session_id=session_id)
+
+        assert stopped is False
+        assert ctl._persistent_audio_claim == claim
+        assert ctl._audio_admission_store.active() == claim
+        with pytest.raises(web_api.AudioAdmissionConflict):
+            await web_api._claim_persistent_audio(
+                ctl,
+                owner_kind="live_mic",
+                owner_id="blocked-replacement-session",
+                heartbeat=False,
+            )
+    finally:
+        current_claim = web_api._audio_admission_owner(ctl).current
+        if current_claim is not None:
+            await web_api._release_persistent_audio(ctl, current_claim)
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio
@@ -3410,6 +3532,11 @@ class _StopFailPipeline:
         )
 
 
+class _StopFailAfterNativeStopPipeline(_StopFailPipeline):
+    def native_audio_stop_confirmed(self) -> bool:
+        return True
+
+
 class _QuietTimeoutPipeline:
     service_name = "azure_mai"
 
@@ -3472,6 +3599,59 @@ async def test_stop_listening_marks_failed_when_stop_raises():
     )
     assert ctl._status == "Error"
     assert rec in ctl._history
+
+
+@pytest.mark.asyncio
+async def test_stop_listening_releases_claim_after_confirmed_native_stop_even_when_provider_stop_fails(
+    monkeypatch,
+    tmp_path,
+):
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False, raising=False)
+    ctl = ScriberWebController(loop)
+    ctl._audio_admission_store = web_api.AudioAdmissionStore(tmp_path / "provider-stop-after-native-stop.db")
+    ctl._audio_admission_store.initialize()
+    ctl._audio_controller_id = "controller-provider-stop-after-native-stop"
+
+    session_id = "provider-stop-after-native-stop-session"
+    await web_api._claim_persistent_audio(
+        ctl,
+        owner_kind="live_mic",
+        owner_id=session_id,
+        heartbeat=False,
+    )
+    rec = _make_record(session_id)
+    ctl._current = rec
+    ctl._session_id = session_id
+    ctl._is_listening = True
+    ctl._pipeline = _StopFailAfterNativeStopPipeline()
+    ctl._pipeline_task = None
+
+    try:
+        with (
+            patch.object(ctl, "broadcast", new=AsyncMock()),
+            patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+            patch("src.web_api.show_transcribing_overlay"),
+            patch("src.web_api.hide_recording_overlay"),
+        ):
+            stop_error = await ctl.stop_listening()
+
+        assert stop_error is not None
+        assert ctl._persistent_audio_claim is None
+        assert ctl._audio_admission_store.active() is None
+
+        replacement = await web_api._claim_persistent_audio(
+            ctl,
+            owner_kind="live_mic",
+            owner_id="replacement-after-provider-stop-failure",
+            heartbeat=False,
+        )
+        assert replacement.owner_id == "replacement-after-provider-stop-failure"
+    finally:
+        current_claim = web_api._audio_admission_owner(ctl).current
+        if current_claim is not None:
+            await web_api._release_persistent_audio(ctl, current_claim)
+        ctl.shutdown()
 
 
 @pytest.mark.asyncio

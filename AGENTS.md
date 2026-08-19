@@ -199,8 +199,12 @@ Backend and runtime:
   heartbeat plus an independent watchdog. A per-capture loss handler must
   confirm native producer and local persistence cleanup before the owner may
   release SQLite ownership. Unknown stop or release state retains the claim for
-  retry. Only a current Meeting claim explicitly marked durable after its
-  `recording` row commits may ride out a generic renewal-store outage; pending
+  retry. Live Mic must carry the Rust producer's explicit stop confirmation
+  through `MicrophoneInput` and `ScriberPipeline`: downstream provider/queue/
+  text cleanup failure must not retain the lease after native stop is confirmed,
+  while an unknown native result remains fail closed. Only a current Meeting
+  claim explicitly marked durable after its `recording` row commits may ride
+  out a generic renewal-store outage; pending
   Meetings, Live Mic, device tests, and Voice enrollment fail closed before
   expiry. The default ten-second stop margin permits two immediate four-second
   Shell stop attempts; another attempt requires a successful renewal first.

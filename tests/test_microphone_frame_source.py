@@ -608,6 +608,7 @@ def test_rust_frame_source_retries_unconfirmed_sidecar_stop():
     source._frame_pipe = r"\\.\pipe\private-test-pipe"
     source._frame_pipe_hash = "redacted-hash"
 
+    assert source.native_audio_stop_confirmed() is False
     source.stop(close=True)
 
     assert [call[0] for call in calls] == ["audioCaptureStop", "audioCaptureStop"]
@@ -615,6 +616,7 @@ def test_rust_frame_source_retries_unconfirmed_sidecar_stop():
     assert source.stream_id == ""
     assert source._pending_stop_stream_id == ""
     assert source.diagnostic_snapshot()["sidecarStopConfirmed"] is True
+    assert source.native_audio_stop_confirmed() is True
 
 
 def test_rust_frame_source_retains_redacted_owner_after_unconfirmed_stop():
@@ -650,6 +652,7 @@ def test_rust_frame_source_retains_redacted_owner_after_unconfirmed_stop():
     assert "stream-deferred-stop" not in str(snapshot)
     assert snapshot["sidecarStopConfirmed"] is False
     assert snapshot["framePipeHash"] is None
+    assert source.native_audio_stop_confirmed() is False
 
 
 def test_rust_frame_source_accepts_no_active_retry_only_after_observed_v2_eos():
@@ -2053,6 +2056,7 @@ def test_rust_prototype_prebuffer_only_eof_wakes_start_and_fails(monkeypatch):
     assert snapshot["framePipeLiveFramesRead"] == 0
     assert snapshot["fallbackReason"] == "rustFramePipeClosedBeforeFirstLiveFrame"
     assert commands[-1] == "audioCaptureStop"
+    assert source.native_audio_stop_confirmed() is True
 
 
 def test_rust_prototype_first_live_callback_failure_does_not_report_ready(monkeypatch):
@@ -2397,6 +2401,7 @@ async def test_microphone_input_raises_when_rust_capture_unavailable(monkeypatch
     assert snapshot["engine"] != "python"
     assert snapshot["frameSource"] != "sounddevice"
     assert snapshot["engineFallbackReason"].startswith("rustCaptureFailed:")
+    assert mic.native_audio_stop_confirmed() is True
     assert _FakeInputStream.instances == []
 
 

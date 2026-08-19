@@ -902,6 +902,11 @@ margin; further retries require a successful renewal, so a second controller
 cannot acquire while native capture is still unconfirmed. The loss handler stops
 the native producer and settles local persistence before SQLite release; an
 unknown stop or store-release result retains ownership for retry.
+For Live Mic, native Rust-sidecar stop confirmation is carried through the
+microphone transport and pipeline independently from provider finalization.
+An acknowledged native stop releases the SQLite lease even when later provider,
+queue, or text-injection cleanup times out; an unknown native result still
+retains the lease and fails closed.
 
 Meeting start and resume treat capture cleanup plus admission release as one
 repeated-cancellation barrier. Device-test cleanup likewise settles its tone

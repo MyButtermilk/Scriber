@@ -1948,6 +1948,9 @@ class ScriberPipeline:
         self.task: PipelineWorker | None = None
         self.runner: WorkerRunner | None = None
         self.audio_input = None
+        # Native producer ownership is separate from provider/pipeline
+        # finalization.  ``None`` is intentionally fail closed.
+        self._native_audio_stop_confirmation: bool | None = True
         self._provider_ingress_drain_processor: _ProviderIngressDrainProcessor | None = None
         self._provider_replay_capture_attestation: dict[str, Any] | None = None
         self._vad_observer: PipecatVadSpeechObserver | None = None
@@ -2529,6 +2532,37 @@ class ScriberPipeline:
         await self._abort_after_provider_ingress_drain_failure()
         raise RuntimeError(reason)
 
+    @staticmethod
+    def _read_native_audio_stop_confirmation(
+        audio_input: Any,
+        *,
+        stop_call_completed: bool,
+    ) -> bool | None:
+        confirmation = getattr(audio_input, "native_audio_stop_confirmed", None)
+        if not callable(confirmation):
+            # Compatibility for non-native test/file transports: a completed
+            # stop call is the strongest result their older boundary exposes.
+            return True if stop_call_completed else None
+        try:
+            result = confirmation()
+        except Exception:
+            return None
+        return result if result is True or result is False else None
+
+    def native_audio_stop_confirmed(self) -> bool | None:
+        """Return whether this pipeline has released its native producer."""
+
+        confirmation = self._native_audio_stop_confirmation
+        if confirmation is not None:
+            return confirmation
+        audio_input = self.audio_input
+        if audio_input is None:
+            return None
+        return self._read_native_audio_stop_confirmation(
+            audio_input,
+            stop_call_completed=False,
+        )
+
     async def _cleanup_audio_input(self) -> None:
         audio_input = self.audio_input
         if not audio_input:
@@ -2542,14 +2576,20 @@ class ScriberPipeline:
                 return
             if has_prewarm_manager:
                 prewarm_resumed_before_stop = bool(await self._prepare_mic_prewarm_for_capture_stop_locked())
+            stop_call_completed = False
             try:
                 # Pipeline instances are per-session, so keep_alive streams cannot
                 # be safely reused here. Always close to avoid orphaned PortAudio
                 # resources; a real always-on mic needs an app-level manager.
                 await audio_input.stop(EndFrame(), close_stream=True)
+                stop_call_completed = True
             except Exception as exc:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
+                self._native_audio_stop_confirmation = self._read_native_audio_stop_confirmation(
+                    audio_input,
+                    stop_call_completed=stop_call_completed,
+                )
                 capture_snapshot = getattr(
                     audio_input,
                     "provider_replay_capture_attestation",
@@ -2596,10 +2636,17 @@ class ScriberPipeline:
                     None,
                 )
                 if callable(stop_capture):
+                    stop_call_completed = False
                     try:
                         await stop_capture(close_stream=True)
+                        stop_call_completed = True
                     except Exception as exc:
                         logger.debug(f"Segmented STT capture-stop warning: {exc}")
+                    finally:
+                        self._native_audio_stop_confirmation = self._read_native_audio_stop_confirmation(
+                            audio_input,
+                            stop_call_completed=stop_call_completed,
+                        )
                 try:
                     audio_queue = getattr(audio_input, "_audio_in_queue", None)
                     if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
@@ -3729,7 +3776,7 @@ class ScriberPipeline:
                 capture_device, capture_device_from_warm_lease = _resolve_live_mic_capture_device(
                     self.mic_prewarm_manager
                 )
-                self.audio_input = MicrophoneInput(
+                audio_input = MicrophoneInput(
                     sample_rate=(48_000 if self._provider_replay_capture_enabled else Config.SAMPLE_RATE),
                     channels=Config.CHANNELS,
                     block_size=Config.MIC_BLOCK_SIZE,
@@ -3753,6 +3800,8 @@ class ScriberPipeline:
                     ),
                     on_capture_wav_artifact=self._adopt_capture_wav_artifact,
                 )
+                self._native_audio_stop_confirmation = None
+                self.audio_input = audio_input
 
                 inject_immediately = (
                     True
