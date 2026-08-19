@@ -3181,8 +3181,7 @@ def _live_mic_admission_conflict_info(
     active: AudioAdmissionClaim,
 ) -> ProviderUserError:
     same_controller = bool(
-        active.controller_id
-        and active.controller_id == str(getattr(controller, "_audio_controller_id", "") or "")
+        active.controller_id and active.controller_id == str(getattr(controller, "_audio_controller_id", "") or "")
     )
     if same_controller:
         return ProviderUserError(
@@ -12437,11 +12436,7 @@ class ScriberWebController:
                 # Release only the claim captured by this exact session. A
                 # stale cleanup must never release a later recording's claim.
                 try:
-                    if (
-                        release_audio_claim
-                        and audio_claim is not None
-                        and native_audio_stop_confirmation is True
-                    ):
+                    if release_audio_claim and audio_claim is not None and native_audio_stop_confirmation is True:
                         await _release_persistent_audio(self, audio_claim)
                     elif release_audio_claim and audio_claim is not None:
                         logger.error(
