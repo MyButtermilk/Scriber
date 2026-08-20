@@ -4,7 +4,7 @@ import {
   type FrontendReadyRequest,
   type FrontendReadyResponse,
 } from "@/lib/api-types";
-import { appendBackendSessionToken } from "@/lib/backend-url";
+import { targetsSameBackend } from "@/lib/backend-url";
 import { responseDetailMessage } from "@/lib/request-errors";
 import { fetchWithTimeout, withPromiseTimeout } from "@/lib/fetch-with-timeout";
 import { translateNow } from "@/i18n";
@@ -107,7 +107,18 @@ function appendSessionToken(url: string): string {
   if (!backendSessionToken || typeof window === "undefined") {
     return url;
   }
-  return appendBackendSessionToken(url, backendBaseUrl, backendSessionToken, window.location.origin);
+  try {
+    const parsed = new URL(url, backendBaseUrl || window.location.origin);
+    const backend = new URL(backendBaseUrl || window.location.origin);
+    const targetsBackend = targetsSameBackend(parsed, backend);
+    if (targetsBackend && (parsed.pathname === "/ws" || parsed.pathname.startsWith("/api/"))) {
+      parsed.searchParams.set("scriberToken", backendSessionToken);
+      return parsed.toString();
+    }
+  } catch {
+    return url;
+  }
+  return url;
 }
 
 export function loadBackendBaseUrlFromTauri(): Promise<string> {
