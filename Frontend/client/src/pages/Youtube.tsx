@@ -37,6 +37,7 @@ import type {
 } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
+import { parseBrowserYoutubeImport, stripBrowserYoutubeImportParams } from "@/lib/browser-youtube-import";
 
 type SortOption = "date" | "likes" | "views";
 
@@ -425,6 +426,7 @@ export default function Youtube() {
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const retryingTranscriptRef = useRef<string | null>(null);
+  const handledBrowserRequestRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useUrlQueryState<SortOption>("sort", "date", {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
@@ -535,83 +537,106 @@ export default function Youtube() {
     }
   };
 
-  const startTranscription = async (item: YouTubeSearchItem) => {
-    if (!item?.url || startRequestInFlightRef.current) return;
-    const requestKey = item.videoId || item.url;
-    startRequestInFlightRef.current = requestKey;
-    setStartError("");
-    setLastFailedStartItem(null);
-    setStartingVideoId(requestKey);
+  const startTranscription = useCallback(
+    async (item: YouTubeSearchItem) => {
+      if (!item?.url || startRequestInFlightRef.current) return;
+      const requestKey = item.videoId || item.url;
+      startRequestInFlightRef.current = requestKey;
+      setStartError("");
+      setLastFailedStartItem(null);
+      setStartingVideoId(requestKey);
 
-    try {
-      const res = await fetchWithTimeout(
-        apiUrl("/api/youtube/transcribe"),
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            url: item.url,
-            title: item.title,
-            channelTitle: item.channelTitle,
-            thumbnailUrl: item.thumbnailUrl,
-            duration: item.duration,
-            videoId: item.videoId,
-          }),
-        },
-        15_000,
-      );
-      if (!res.ok) {
-        throw new Error(await responseErrorMessage(res));
-      }
-      const rec = (await res.json()) as TranscriptHistoryItem;
-      if (rec?.id) {
-        if (!debouncedHistorySearch) {
-          queryClient.setQueryData<InfiniteData<TranscriptHistoryPage<TranscriptHistoryItem>, number>>(
-            transcriptsQueryKey,
-            (previous) => {
-              const optimistic: TranscriptHistoryItem = {
-                ...rec,
-                type: rec.type || "youtube",
-                title: rec.title || item.title,
-                channel: rec.channel || item.channelTitle || "",
-                thumbnailUrl: rec.thumbnailUrl || item.thumbnailUrl || "",
-                duration: rec.duration || item.duration || "",
-                status: rec.status || "processing",
-                step: rec.step || "Queued",
-              };
-
-              return prependTranscriptHistoryItem(previous, optimistic);
-            },
-          );
+      try {
+        const res = await fetchWithTimeout(
+          apiUrl("/api/youtube/transcribe"),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              url: item.url,
+              title: item.title,
+              channelTitle: item.channelTitle,
+              thumbnailUrl: item.thumbnailUrl,
+              duration: item.duration,
+              videoId: item.videoId,
+            }),
+          },
+          15_000,
+        );
+        if (!res.ok) {
+          throw new Error(await responseErrorMessage(res));
         }
+        const rec = (await res.json()) as TranscriptHistoryItem;
+        if (rec?.id) {
+          if (!debouncedHistorySearch) {
+            queryClient.setQueryData<InfiniteData<TranscriptHistoryPage<TranscriptHistoryItem>, number>>(
+              transcriptsQueryKey,
+              (previous) => {
+                const optimistic: TranscriptHistoryItem = {
+                  ...rec,
+                  type: rec.type || "youtube",
+                  title: rec.title || item.title,
+                  channel: rec.channel || item.channelTitle || "",
+                  thumbnailUrl: rec.thumbnailUrl || item.thumbnailUrl || "",
+                  duration: rec.duration || item.duration || "",
+                  status: rec.status || "processing",
+                  step: rec.step || "Queued",
+                };
 
-        queryClient.invalidateQueries({
-          predicate: (query) =>
-            query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
+                return prependTranscriptHistoryItem(previous, optimistic);
+              },
+            );
+          }
+
+          queryClient.invalidateQueries({
+            predicate: (query) =>
+              query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "youtube",
+          });
+          // Stay out of the user's way if they intentionally switched tabs while
+          // the async YouTube start request was still running.
+          const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
+          const queuedBrowserImport =
+            typeof window !== "undefined" ? parseBrowserYoutubeImport(window.location.search) : null;
+          if (currentPath === "/youtube" && !queuedBrowserImport) {
+            setLocation(`/transcript/${rec.id}`);
+          }
+        }
+      } catch (e: any) {
+        const msg = t(friendlyError(e, t("Failed to start transcription.")));
+        setStartError(msg);
+        setLastFailedStartItem(item);
+        toast({
+          title: t("Failed to start transcription"),
+          description: msg,
+          variant: "destructive",
+          duration: 4000,
         });
-        // Stay out of the user's way if they intentionally switched tabs while
-        // the async YouTube start request was still running.
-        const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
-        if (currentPath === "/youtube") {
-          setLocation(`/transcript/${rec.id}`);
-        }
+      } finally {
+        startRequestInFlightRef.current = null;
+        setStartingVideoId(null);
       }
-    } catch (e: any) {
-      const msg = t(friendlyError(e, t("Failed to start transcription.")));
-      setStartError(msg);
-      setLastFailedStartItem(item);
-      toast({
-        title: t("Failed to start transcription"),
-        description: msg,
-        variant: "destructive",
-        duration: 4000,
-      });
-    } finally {
-      startRequestInFlightRef.current = null;
-      setStartingVideoId(null);
+    },
+    [debouncedHistorySearch, location, queryClient, setLocation, t, toast, transcriptsQueryKey],
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined" || startRequestInFlightRef.current) {
+      return;
     }
-  };
+    const imported = parseBrowserYoutubeImport(window.location.search);
+    if (!imported || imported.requestId === handledBrowserRequestRef.current) {
+      return;
+    }
+    handledBrowserRequestRef.current = imported.requestId;
+    const nextSearch = stripBrowserYoutubeImportParams(window.location.search);
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`,
+    );
+    void startTranscription(imported.item);
+  }, [location, startTranscription, startingVideoId]);
 
   const deleteTranscript = useCallback(
     async (e: React.MouseEvent, id: string) => {

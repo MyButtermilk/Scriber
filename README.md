@@ -78,7 +78,11 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
 
 ### ▶️ YouTube captions when possible. Audio when needed.
 
-Paste a video URL or search YouTube inside Scriber. Creator captions and automatic captions are tried first, which can make a transcript available faster and avoid unnecessary provider cost. If captions are unavailable, Scriber prepares the audio and continues automatically.
+Paste a video URL, search YouTube inside Scriber, or hand the current video over
+from Chrome without copying the URL. Creator captions and automatic captions are
+tried first, which can make a transcript available faster and avoid unnecessary
+provider cost. If captions are unavailable, Scriber prepares the audio and
+continues automatically.
 
 ![Scriber YouTube transcription](docs/screenshots/youtube.png)
 
@@ -87,6 +91,27 @@ Paste a video URL or search YouTube inside Scriber. Creator captions and automat
 - Bundled ffmpeg and ffprobe media preparation
 - Durable progress, retry, cancel, and recovery state
 - Transcript and summary saved beside every other source
+
+#### Start directly from a YouTube page in Chrome
+
+The Manifest V3 extension is directly loadable from
+`browser-extension/chrome`; it does not need a Scriber API key or access to the
+local backend port.
+
+1. Install a Scriber build that contains the `scriber://` browser handoff.
+2. Open `chrome://extensions`, enable **Developer mode**, choose **Load
+   unpacked**, and select `browser-extension/chrome`.
+3. Open a YouTube video and choose **Mit Scriber transkribieren** beside the
+   video actions. The extension toolbar popup provides the same handoff.
+4. Confirm Chrome's **Open Scriber** prompt on first use. Scriber opens the
+   queued transcript immediately and keeps showing progress through completion.
+
+The link carries only the public YouTube video ID plus the visible title and
+channel. Scriber validates that exact contract in the desktop shell; the
+session token never leaves the app.
+
+Privacy details are documented in the
+[Chrome extension privacy policy](docs/CHROME_EXTENSION_PRIVACY.md).
 
 ### 📁 Bring recordings in without upload gymnastics
 

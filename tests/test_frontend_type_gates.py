@@ -957,12 +957,17 @@ def test_transcript_detail_keeps_failed_retry_actions_contextual_and_single() ->
 
 def test_youtube_async_start_only_navigates_while_the_user_is_still_on_youtube() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Youtube.tsx").read_text(encoding="utf-8")
-    start_section = source[source.index("const startTranscription = async") : source.index("const deleteTranscript")]
+    start_section = source[
+        source.index("const startTranscription = useCallback(") : source.index("const deleteTranscript")
+    ]
 
     assert "const [location, setLocation] = useLocation();" in source
     assert ('const currentPath = typeof window !== "undefined" ? window.location.pathname : location;') in start_section
+    assert "const queuedBrowserImport =" in start_section
     assert (
-        'if (currentPath === "/youtube") {\n          setLocation(`/transcript/${rec.id}`);\n        }'
+        'if (currentPath === "/youtube" && !queuedBrowserImport) {\n'
+        "            setLocation(`/transcript/${rec.id}`);\n"
+        "          }"
     ) in start_section
 
 

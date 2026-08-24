@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scriber für YouTube</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <div class="brand-row">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <div>
+          <p class="eyebrow">SCRIBER</p>
+          <h1>YouTube transkribieren</h1>
+        </div>
+      </div>
+      <p id="video-title" class="video-title">Aktuelles Video wird geprüft …</p>
+      <button id="start" type="button" disabled>In Scriber starten</button>
+      <p id="status" class="status" aria-live="polite">
+        Öffne die Erweiterung auf einer YouTube-Videoseite.
+      </p>
+    </main>
+    <script src="shared.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

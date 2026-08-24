@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-16
+Last verified: 2026-08-23
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -19,6 +19,8 @@ The repository intentionally keeps only a small documentation set:
   CI, signing, and updater status.
 - `docs/ROADMAP_AND_KNOWN_ISSUES.md`: current open issues and prioritized next
   work.
+- `docs/CHROME_EXTENSION_PRIVACY.md`: public Chrome Web Store disclosure;
+  review it before extension data-handling or Store-listing changes.
 
 Old implementation journals and superseded analysis docs were removed in the
 2026-06-09 consolidation. Do not recreate fragmented one-off status files unless
@@ -228,6 +230,12 @@ Backend and runtime:
 
 Frontend and shell:
 
+- `browser-extension/chrome/`: loadable Manifest V3 extension for the
+  user-initiated YouTube-to-Scriber handoff. It extracts only the current public
+  video ID plus bounded visible title/channel metadata and opens the versioned
+  `scriber://youtube/transcribe` protocol; it must never receive the backend
+  session token or add localhost/network permissions. Keep the injected action
+  compatible with YouTube SPA navigation and preserve the toolbar popup fallback.
 - `Frontend/client/src/App.tsx`: routes; the five primary user tabs are eager,
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
 - `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Settings,
@@ -338,7 +346,10 @@ Frontend and shell:
   names are inert lab gates until a measured implementation is pinned and
   promoted.
 - `Frontend/src-tauri/src/lib.rs`: Rust supervisor, Tauri commands, tray/menu,
-  autostart, global hotkey, single instance, updater/process plugins.
+  autostart, global hotkey, single instance, updater/process plugins, and the
+  strictly parsed `scriber://` browser handoff. A second Windows instance must
+  queue only a validated, expiring YouTube request for the primary instance and
+  must not log raw video metadata.
 - `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
   IPC for opt-in native shell work, including text injection and diagnostics.
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
