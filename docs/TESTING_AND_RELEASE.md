@@ -161,7 +161,9 @@ npm run test:lib
 The extension gate pins Manifest V3, the narrow YouTube-only content-script
 matches, exact video-route parsing, and the credential-free versioned
 `scriber://` payload. The frontend gate pins one-shot consumption into the
-existing authenticated YouTube job request.
+existing authenticated YouTube job request, including a query-only handoff
+while the already-running app is still on `/youtube` and deferred consumption
+while an earlier start request is in flight.
 
 Use the exact Node.js 26.5.0 version from `.node-version`; CI and release builds
 consume that pin, while `Frontend/package.json` declares the supported

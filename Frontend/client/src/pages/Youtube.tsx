@@ -37,7 +37,8 @@ import type {
 } from "@/lib/api-types";
 import { useI18n } from "@/i18n";
 import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
-import { parseBrowserYoutubeImport, stripBrowserYoutubeImportParams } from "@/lib/browser-youtube-import";
+import { useBrowserYoutubeImport } from "@/hooks/use-browser-youtube-import";
+import { parseBrowserYoutubeImport } from "@/lib/browser-youtube-import";
 
 type SortOption = "date" | "likes" | "views";
 
@@ -426,7 +427,6 @@ export default function Youtube() {
   const deletingRef = useRef<string | null>(null);
   const copyingRef = useRef<string | null>(null);
   const retryingTranscriptRef = useRef<string | null>(null);
-  const handledBrowserRequestRef = useRef<string | null>(null);
   const copyResetTimerRef = useRef<number | null>(null);
   const [sortBy, setSortBy] = useUrlQueryState<SortOption>("sort", "date", {
     parse: (raw) => (raw === "likes" || raw === "views" ? raw : "date"),
@@ -620,23 +620,7 @@ export default function Youtube() {
     [debouncedHistorySearch, location, queryClient, setLocation, t, toast, transcriptsQueryKey],
   );
 
-  useEffect(() => {
-    if (typeof window === "undefined" || startRequestInFlightRef.current) {
-      return;
-    }
-    const imported = parseBrowserYoutubeImport(window.location.search);
-    if (!imported || imported.requestId === handledBrowserRequestRef.current) {
-      return;
-    }
-    handledBrowserRequestRef.current = imported.requestId;
-    const nextSearch = stripBrowserYoutubeImportParams(window.location.search);
-    window.history.replaceState(
-      window.history.state,
-      "",
-      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`,
-    );
-    void startTranscription(imported.item);
-  }, [location, startTranscription, startingVideoId]);
+  useBrowserYoutubeImport({ busy: startingVideoId !== null, onImport: startTranscription });
 
   const deleteTranscript = useCallback(
     async (e: React.MouseEvent, id: string) => {
