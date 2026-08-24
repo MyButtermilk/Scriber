@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-16
+Last verified: 2026-08-23
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -150,6 +150,19 @@ npm test
 npm run build
 ```
 
+YouTube browser handoff extension (from the repository root):
+
+```powershell
+node --test browser-extension\chrome\tests\shared.test.cjs
+cd Frontend
+npm run test:lib
+```
+
+The extension gate pins Manifest V3, the narrow YouTube-only content-script
+matches, exact video-route parsing, and the credential-free versioned
+`scriber://` payload. The frontend gate pins one-shot consumption into the
+existing authenticated YouTube job request.
+
 Use the exact Node.js 26.5.0 version from `.node-version`; CI and release builds
 consume that pin, while `Frontend/package.json` declares the supported
 `>=26.5.0 <27` range for local tooling. The frontend is a Vite-only WebView
@@ -168,6 +181,12 @@ Rust:
 cd Frontend\src-tauri
 cargo test
 ```
+
+The focused desktop-link gates are `youtube_browser_deep_link` and, on Windows,
+`single_instance_guard_hands_a_valid_youtube_link_to_the_primary_instance`.
+They reject ambiguous schemes/hosts/paths/query fields, keep raw title/channel
+metadata out of the secondary-process message, and prove that a tray-hidden
+primary instance receives both the queued request and restore signal.
 
 Windows shell artwork uses one contrast-safe white-disc feather across the PE,
 runtime window, normal tray, update, and recording states. The first command

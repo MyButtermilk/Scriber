@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Scriber für YouTube",
+  "version": "0.1.0",
+  "description": "Startet die Transkription des aktuellen YouTube-Videos direkt in der lokalen Scriber-App.",
+  "permissions": ["activeTab"],
+  "action": {
+    "default_title": "Mit Scriber transkribieren",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/scriber.png",
+      "32": "icons/scriber.png",
+      "48": "icons/scriber.png",
+      "128": "icons/scriber.png"
+    }
+  },
+  "icons": {
+    "16": "icons/scriber.png",
+    "32": "icons/scriber.png",
+    "48": "icons/scriber.png",
+    "128": "icons/scriber.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://youtube.com/*",
+        "https://www.youtube.com/*",
+        "https://m.youtube.com/*"
+      ],
+      "css": ["content.css"],
+      "js": ["shared.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-16
+Last verified: 2026-08-23
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -82,12 +82,21 @@ Live mic:
 
 YouTube:
 
-1. Frontend search or URL lookup calls backend YouTube endpoints.
-2. Backend asks yt-dlp for manual subtitles first, then automatic captions. The
+1. Frontend search/URL lookup calls backend YouTube endpoints. Alternatively,
+   the Chrome Manifest V3 extension extracts the current public video ID and
+   opens the versioned `scriber://youtube/transcribe` desktop link. The shell
+   validates the exact scheme, host, path, version, video-ID shape, and bounded
+   visible metadata before it creates an app navigation request.
+2. A user-scoped, expiring local handoff carries a validated link to an already
+   running tray instance without exposing the backend session token or opening
+   the protected loopback API to extension origins. The authenticated WebView
+   consumes the one-shot navigation parameters and starts the normal durable
+   YouTube job.
+3. Backend asks yt-dlp for manual subtitles first, then automatic captions. The
    persistent `youtubePreferCaptions` setting defaults to enabled in the writable
    runtime data directory. If no usable track exists, the job falls back to the
    configured STT provider and audio workflow.
-3. The fallback uses pinned current `yt-dlp`, bundled EJS challenge scripts, a
+4. The fallback uses pinned current `yt-dlp`, bundled EJS challenge scripts, a
    manifest-bound QuickJS-ng engine behind Scriber's bounded file-protocol
    wrapper, and bundled ffmpeg/ffprobe. Frozen resolution accepts only the
    four-file wrapper bundle under `tools/ffmpeg`, never a raw `qjs` from
@@ -96,9 +105,9 @@ YouTube:
    frozen package fails closed. yt-dlp owns current YouTube player-client
    selection; Scriber does not force stale client names. Every downloaded file
    must pass ffprobe audio/structure validation before it can reach a provider.
-4. Persistent job metadata tracks the caption preference, download, media
+5. Persistent job metadata tracks the caption preference, download, media
    preparation, transcription, summary, retry, resume, cancel, and completion.
-5. Transcript and summary are saved as a `youtube` transcript. A pending summary
+6. Transcript and summary are saved as a `youtube` transcript. A pending summary
    remains a processing state in Recent videos even after transcript persistence.
 
 File:

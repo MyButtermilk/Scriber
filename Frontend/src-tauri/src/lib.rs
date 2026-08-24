@@ -33,6 +33,7 @@ use tauri::{
     WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+use url::{form_urlencoded, Url};
 use uuid::Uuid;
 #[cfg(windows)]
 use windows::Win32::Graphics::Dwm::{
@@ -122,6 +123,15 @@ const PYTHON_RUNTIME_POLICY_MANIFEST: &str = "python-runtime-manifest.json";
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstanceDebug";
 #[cfg(not(debug_assertions))]
 const SINGLE_INSTANCE_MUTEX_NAME: &str = "Local\\ScriberDesktopSingleInstance";
+const YOUTUBE_DEEP_LINK_SCHEME: &str = "scriber";
+const YOUTUBE_DEEP_LINK_HOST: &str = "youtube";
+const YOUTUBE_DEEP_LINK_PATH: &str = "/transcribe";
+const YOUTUBE_DEEP_LINK_VERSION: &str = "1";
+const YOUTUBE_DEEP_LINK_MAX_BYTES: usize = 4096;
+#[cfg(windows)]
+const SINGLE_INSTANCE_DEEP_LINK_MAX_BYTES: u64 = 16 * 1024;
+#[cfg(windows)]
+const SINGLE_INSTANCE_DEEP_LINK_MAX_AGE_MS: u128 = 2 * 60 * 1000;
 const AUTOSTART_REGISTRY_SUBKEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const AUTOSTART_REGISTRY_VALUE: &str = "Scriber";
 const AUTOSTART_USER_CHOICE_FILE: &str = "desktop-autostart-user-choice";
@@ -632,6 +642,22 @@ struct PendingNavigationState {
     inner: Mutex<PendingNavigationStateInner>,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct YoutubeDeepLinkRequest {
+    video_id: String,
+    title: Option<String>,
+    channel: Option<String>,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct SingleInstanceDeepLinkEnvelope {
+    created_at_ms: u128,
+    request: YoutubeDeepLinkRequest,
+}
+
 impl PendingNavigationState {
     fn queue(&self, path: &str) -> PendingNavigation {
         let mut state = lock_unpoisoned(&self.inner);
@@ -700,6 +726,7 @@ struct BackendJob;
 pub struct SingleInstanceGuard {
     handle: HANDLE,
     show_event: HANDLE,
+    started_at_ms: u128,
 }
 
 #[cfg(windows)]
@@ -1527,8 +1554,243 @@ unsafe fn set_dwm_window_attribute<T>(
     }
 }
 
+fn normalized_deep_link_metadata(value: &str, max_chars: usize) -> Option<String> {
+    let normalized = value.trim();
+    if normalized.is_empty()
+        || normalized.chars().count() > max_chars
+        || normalized.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(normalized.to_string())
+}
+
+fn is_youtube_video_id(value: &str) -> bool {
+    value.len() == 11
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn youtube_deep_link_request_is_valid(request: &YoutubeDeepLinkRequest) -> bool {
+    is_youtube_video_id(&request.video_id)
+        && request
+            .title
+            .as_deref()
+            .is_none_or(|value| normalized_deep_link_metadata(value, 500).as_deref() == Some(value))
+        && request
+            .channel
+            .as_deref()
+            .is_none_or(|value| normalized_deep_link_metadata(value, 300).as_deref() == Some(value))
+}
+
+fn parse_youtube_deep_link(raw: &str) -> Option<YoutubeDeepLinkRequest> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() > YOUTUBE_DEEP_LINK_MAX_BYTES {
+        return None;
+    }
+    let parsed = Url::parse(raw).ok()?;
+    if parsed.scheme() != YOUTUBE_DEEP_LINK_SCHEME
+        || parsed.host_str() != Some(YOUTUBE_DEEP_LINK_HOST)
+        || parsed.path() != YOUTUBE_DEEP_LINK_PATH
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.port().is_some()
+        || parsed.fragment().is_some()
+    {
+        return None;
+    }
+
+    let mut version = None;
+    let mut video_id = None;
+    let mut title = None;
+    let mut channel = None;
+    for (key, value) in parsed.query_pairs() {
+        let slot = match key.as_ref() {
+            "v" => &mut version,
+            "video" => &mut video_id,
+            "title" => &mut title,
+            "channel" => &mut channel,
+            _ => return None,
+        };
+        if slot.replace(value.into_owned()).is_some() {
+            return None;
+        }
+    }
+    if version.as_deref() != Some(YOUTUBE_DEEP_LINK_VERSION) {
+        return None;
+    }
+    let video_id = video_id.filter(|value| is_youtube_video_id(value))?;
+    let title = match title {
+        Some(value) => Some(normalized_deep_link_metadata(&value, 500)?),
+        None => None,
+    };
+    let channel = match channel {
+        Some(value) => Some(normalized_deep_link_metadata(&value, 300)?),
+        None => None,
+    };
+    let request = YoutubeDeepLinkRequest {
+        video_id,
+        title,
+        channel,
+    };
+    youtube_deep_link_request_is_valid(&request).then_some(request)
+}
+
+fn youtube_deep_link_request_from_args<I, S>(args: I) -> Option<YoutubeDeepLinkRequest>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    args.into_iter()
+        .skip(1)
+        .find_map(|argument| parse_youtube_deep_link(argument.as_ref()))
+}
+
+fn youtube_import_navigation_path(request: &YoutubeDeepLinkRequest, request_id: &str) -> String {
+    let mut query = form_urlencoded::Serializer::new(String::new());
+    query.append_pair("browserVideo", &request.video_id);
+    query.append_pair("browserRequest", request_id);
+    if let Some(title) = request.title.as_deref() {
+        query.append_pair("browserTitle", title);
+    }
+    if let Some(channel) = request.channel.as_deref() {
+        query.append_pair("browserChannel", channel);
+    }
+    format!("/youtube?{}", query.finish())
+}
+
+#[cfg(windows)]
+fn single_instance_deep_link_queue_dir(name: &str) -> PathBuf {
+    let scope = redaction::hash_sensitive_identifier(name);
+    env::temp_dir().join(format!("scriber-desktop-deep-links-{scope}"))
+}
+
+#[cfg(windows)]
+fn enqueue_single_instance_deep_link(
+    name: &str,
+    request: &YoutubeDeepLinkRequest,
+) -> Result<(), String> {
+    if !youtube_deep_link_request_is_valid(request) {
+        return Err("deep-link request failed validation".to_string());
+    }
+    let envelope = SingleInstanceDeepLinkEnvelope {
+        created_at_ms: timestamp_millis(),
+        request: request.clone(),
+    };
+    let payload = serde_json::to_vec(&envelope)
+        .map_err(|error| format!("deep-link request serialization failed: {error}"))?;
+    if payload.len() as u64 > SINGLE_INSTANCE_DEEP_LINK_MAX_BYTES {
+        return Err("deep-link request exceeds the local handoff limit".to_string());
+    }
+
+    let queue_dir = single_instance_deep_link_queue_dir(name);
+    fs::create_dir_all(&queue_dir)
+        .map_err(|error| format!("deep-link handoff directory creation failed: {error}"))?;
+    let request_id = Uuid::new_v4().simple().to_string();
+    let temporary_path = queue_dir.join(format!(".{request_id}.tmp"));
+    let request_path = queue_dir.join(format!("{request_id}.json"));
+    let result = (|| -> Result<(), String> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary_path)
+            .map_err(|error| format!("deep-link handoff creation failed: {error}"))?;
+        file.write_all(&payload)
+            .map_err(|error| format!("deep-link handoff write failed: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("deep-link handoff flush failed: {error}"))?;
+        fs::rename(&temporary_path, &request_path)
+            .map_err(|error| format!("deep-link handoff commit failed: {error}"))?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    result
+}
+
+#[cfg(windows)]
+fn drain_single_instance_deep_links(
+    name: &str,
+    not_before_ms: u128,
+) -> Vec<YoutubeDeepLinkRequest> {
+    let queue_dir = single_instance_deep_link_queue_dir(name);
+    let mut paths = match fs::read_dir(&queue_dir) {
+        Ok(entries) => entries
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+            .collect::<Vec<_>>(),
+        Err(_) => return Vec::new(),
+    };
+    paths.sort();
+    let now_ms = timestamp_millis();
+    let mut accepted = Vec::new();
+    for path in paths.into_iter().take(64) {
+        let envelope = (|| -> Option<SingleInstanceDeepLinkEnvelope> {
+            let file = OpenOptions::new().read(true).open(&path).ok()?;
+            if file.metadata().ok()?.len() > SINGLE_INSTANCE_DEEP_LINK_MAX_BYTES {
+                return None;
+            }
+            let mut payload = Vec::new();
+            file.take(SINGLE_INSTANCE_DEEP_LINK_MAX_BYTES + 1)
+                .read_to_end(&mut payload)
+                .ok()?;
+            if payload.len() as u64 > SINGLE_INSTANCE_DEEP_LINK_MAX_BYTES {
+                return None;
+            }
+            serde_json::from_slice(&payload).ok()
+        })();
+        let _ = fs::remove_file(&path);
+        let Some(envelope) = envelope else {
+            continue;
+        };
+        let current_enough = envelope.created_at_ms >= not_before_ms;
+        let not_from_future = envelope.created_at_ms <= now_ms.saturating_add(5_000);
+        let recent =
+            now_ms.saturating_sub(envelope.created_at_ms) <= SINGLE_INSTANCE_DEEP_LINK_MAX_AGE_MS;
+        if current_enough
+            && not_from_future
+            && recent
+            && youtube_deep_link_request_is_valid(&envelope.request)
+        {
+            accepted.push((envelope.created_at_ms, envelope.request));
+        }
+    }
+    accepted.sort_by_key(|(created_at_ms, _)| *created_at_ms);
+    accepted.into_iter().map(|(_, request)| request).collect()
+}
+
+fn queue_youtube_deep_link_navigation<R: Runtime>(
+    app: &AppHandle<R>,
+    request: &YoutubeDeepLinkRequest,
+    reveal_window: bool,
+) -> Result<(), String> {
+    if !youtube_deep_link_request_is_valid(request) {
+        return Err("YouTube deep link failed validation".to_string());
+    }
+    let request_id = Uuid::new_v4().simple().to_string();
+    let path = youtube_import_navigation_path(request, &request_id);
+    let video_id_hash = redaction::hash_sensitive_identifier(&request.video_id);
+    write_shell_log(&format!(
+        "YouTube browser handoff accepted video_id_hash={video_id_hash}"
+    ));
+    if reveal_window {
+        show_main_window_path(app, &path)
+    } else {
+        let navigation = app.state::<PendingNavigationState>().queue(&path);
+        app.emit_to(MAIN_WINDOW_LABEL, TRAY_NAVIGATE_EVENT, navigation)
+            .map_err(|error| format!("initial YouTube navigation event failed: {error}"))
+    }
+}
+
 pub fn run() {
-    let single_instance_guard = match acquire_single_instance_guard(SINGLE_INSTANCE_MUTEX_NAME) {
+    let initial_youtube_deep_link = youtube_deep_link_request_from_args(env::args());
+    let single_instance_guard = match acquire_single_instance_guard_with_youtube_request(
+        SINGLE_INSTANCE_MUTEX_NAME,
+        initial_youtube_deep_link.as_ref(),
+    ) {
         Ok(guard) => guard,
         Err(err) => {
             write_shell_log(&err);
@@ -1562,6 +1824,7 @@ pub fn run() {
     write_shell_log("early backend ensure deferred until Tauri setup completes");
 
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
@@ -1601,9 +1864,30 @@ pub fn run() {
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
         .manage(export_dialog::MeetingExportRegistry::default())
         .manage(backend_manager)
-        .setup(|app| {
+        .setup(move |app| {
             configure_desktop_shell(app)?;
             schedule_initial_main_window_reveal_fallback(app.handle().clone());
+            if let Some(request) = initial_youtube_deep_link.as_ref() {
+                if let Err(error) = queue_youtube_deep_link_navigation(app.handle(), request, false)
+                {
+                    write_shell_log(&format!("initial YouTube browser handoff failed: {error}"));
+                }
+            }
+            #[cfg(windows)]
+            {
+                let started_at_ms = app.state::<SingleInstanceGuard>().started_at_ms;
+                for request in
+                    drain_single_instance_deep_links(SINGLE_INSTANCE_MUTEX_NAME, started_at_ms)
+                {
+                    if let Err(error) =
+                        queue_youtube_deep_link_navigation(app.handle(), &request, false)
+                    {
+                        write_shell_log(&format!(
+                            "startup YouTube browser handoff failed: {error}"
+                        ));
+                    }
+                }
+            }
             start_single_instance_show_listener(app.handle().clone());
             native_overlay::set_app_handle(app.handle().clone());
             match native_overlay::create_overlay_window(app) {
@@ -3592,6 +3876,15 @@ fn shell_ipc_env_pairs(
 
 #[cfg(windows)]
 fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, String> {
+    acquire_single_instance_guard_with_youtube_request(name, None)
+}
+
+#[cfg(windows)]
+fn acquire_single_instance_guard_with_youtube_request(
+    name: &str,
+    youtube_request: Option<&YoutubeDeepLinkRequest>,
+) -> Result<SingleInstanceGuard, String> {
+    let started_at_ms = timestamp_millis();
     let wide_name = wide_null(name);
     let wide_show_event_name = wide_null(&format!("{name}.ShowMainWindow"));
     unsafe {
@@ -3605,6 +3898,9 @@ fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, Stri
 
         if GetLastError() == ERROR_ALREADY_EXISTS {
             let _ = CloseHandle(handle);
+            let handoff = youtube_request
+                .map(|request| enqueue_single_instance_deep_link(name, request))
+                .transpose();
             let show_event = CreateEventW(std::ptr::null(), 0, 0, wide_show_event_name.as_ptr());
             if show_event.is_null() {
                 return Err(format!(
@@ -3620,10 +3916,19 @@ fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, Stri
             };
             let _ = CloseHandle(show_event);
             return if signaled {
-                Err(
-                    "another Scriber desktop instance is already running; requested its main window"
-                        .to_string(),
-                )
+                match handoff {
+                    Ok(Some(())) => Err(
+                        "another Scriber desktop instance is already running; queued a validated YouTube browser handoff and requested its main window"
+                            .to_string(),
+                    ),
+                    Ok(None) => Err(
+                        "another Scriber desktop instance is already running; requested its main window"
+                            .to_string(),
+                    ),
+                    Err(error) => Err(format!(
+                        "another Scriber desktop instance is already running; YouTube browser handoff failed ({error}); requested its main window"
+                    )),
+                }
             } else {
                 Err(format!(
                     "another Scriber desktop instance is already running; main-window restore signal failed: {}",
@@ -3642,7 +3947,11 @@ fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, Stri
             ));
         }
 
-        Ok(SingleInstanceGuard { handle, show_event })
+        Ok(SingleInstanceGuard {
+            handle,
+            show_event,
+            started_at_ms,
+        })
     }
 }
 
@@ -3651,11 +3960,21 @@ fn acquire_single_instance_guard(_name: &str) -> Result<SingleInstanceGuard, Str
     Ok(SingleInstanceGuard)
 }
 
+#[cfg(not(windows))]
+fn acquire_single_instance_guard_with_youtube_request(
+    name: &str,
+    _youtube_request: Option<&YoutubeDeepLinkRequest>,
+) -> Result<SingleInstanceGuard, String> {
+    acquire_single_instance_guard(name)
+}
+
 #[cfg(windows)]
 fn start_single_instance_show_listener<R: Runtime>(app: AppHandle<R>) {
     // HANDLE is an opaque pointer in windows-sys. Preserve only its numeric
     // value across the thread boundary; the managed guard owns its lifetime.
-    let show_event_value = app.state::<SingleInstanceGuard>().show_event as usize;
+    let guard = app.state::<SingleInstanceGuard>();
+    let show_event_value = guard.show_event as usize;
+    let started_at_ms = guard.started_at_ms;
     std::thread::spawn(move || loop {
         let show_event = show_event_value as HANDLE;
         let wait_result = unsafe { WaitForSingleObject(show_event, INFINITE) };
@@ -3666,7 +3985,19 @@ fn start_single_instance_show_listener<R: Runtime>(app: AppHandle<R>) {
             break;
         }
         write_shell_log("single-instance main-window restore requested");
-        show_main_window(&app);
+        let requests = drain_single_instance_deep_links(SINGLE_INSTANCE_MUTEX_NAME, started_at_ms);
+        if requests.is_empty() {
+            show_main_window(&app);
+            continue;
+        }
+        for request in requests {
+            if let Err(error) = queue_youtube_deep_link_navigation(&app, &request, true) {
+                write_shell_log(&format!(
+                    "YouTube browser handoff navigation failed: {error}"
+                ));
+                show_main_window(&app);
+            }
+        }
     });
 }
 
@@ -5325,7 +5656,7 @@ mod tests {
         is_safe_transcript_id, is_shell_menu_item, managed_backend_start_timed_out,
         normalize_benchmark_uuid, normalize_global_shortcut, normalize_hotkey_mode,
         parse_desktop_autostart_user_choice, parse_loopback_backend_url,
-        parse_shell_menu_smoke_actions, provider_replay_run_id_for_child,
+        parse_shell_menu_smoke_actions, parse_youtube_deep_link, provider_replay_run_id_for_child,
         python_runtime_environment, read_backend_response_limited, recent_transcript_label,
         recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
         sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
@@ -5333,12 +5664,13 @@ mod tests {
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
-        wait_for_child_exit, BackendAccess, BackendCommandSpec, BackendStatus, DesktopHotkeyState,
+        wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
+        BackendAccess, BackendCommandSpec, BackendStatus, DesktopHotkeyState,
         NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, AUTOSTART_DEFAULT_ENV,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
-        MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
-        MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
+        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, YoutubeDeepLinkRequest,
+        AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
+        HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
+        MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
         SESSION_TOKEN_ENV, SHELL_IPC_API_VERSION_ENV, SHELL_IPC_PIPE_ENV, SHELL_IPC_TOKEN_ENV,
         TRAY_RECENT_TRANSCRIPT_LIMIT,
@@ -5369,6 +5701,68 @@ mod tests {
         );
 
         assert!(health_response_ready(response));
+    }
+
+    #[test]
+    fn youtube_browser_deep_link_accepts_only_the_exact_versioned_contract() {
+        let raw = "scriber://youtube/transcribe?v=1&video=0wEjbSYNUM8&title=Ein%20Titel%20%C3%BCber%20KI&channel=Beispiel";
+        let request = parse_youtube_deep_link(raw).expect("valid browser handoff");
+        assert_eq!(
+            request,
+            YoutubeDeepLinkRequest {
+                video_id: "0wEjbSYNUM8".to_string(),
+                title: Some("Ein Titel über KI".to_string()),
+                channel: Some("Beispiel".to_string()),
+            }
+        );
+        assert_eq!(
+            youtube_deep_link_request_from_args(["scriber-desktop.exe", "--ignored", raw]),
+            Some(request.clone())
+        );
+
+        let path = youtube_import_navigation_path(&request, "0123456789abcdef0123456789abcdef");
+        let parsed =
+            url::Url::parse(&format!("http://tauri.localhost{path}")).expect("navigation path URL");
+        let query = parsed
+            .query_pairs()
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<std::collections::HashMap<_, _>>();
+        assert_eq!(
+            query.get("browserVideo").map(String::as_str),
+            Some("0wEjbSYNUM8")
+        );
+        assert_eq!(
+            query.get("browserTitle").map(String::as_str),
+            Some("Ein Titel über KI")
+        );
+        assert_eq!(
+            query.get("browserChannel").map(String::as_str),
+            Some("Beispiel")
+        );
+        assert_eq!(
+            query.get("browserRequest").map(String::as_str),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn youtube_browser_deep_link_rejects_ambiguous_or_untrusted_shapes() {
+        for raw in [
+            "https://youtube/transcribe?v=1&video=0wEjbSYNUM8",
+            "scriber://evil/transcribe?v=1&video=0wEjbSYNUM8",
+            "scriber://youtube/other?v=1&video=0wEjbSYNUM8",
+            "scriber://youtube/transcribe?video=0wEjbSYNUM8",
+            "scriber://youtube/transcribe?v=2&video=0wEjbSYNUM8",
+            "scriber://youtube/transcribe?v=1&video=too-short",
+            "scriber://youtube/transcribe?v=1&video=0wEjbSYNUM8&video=abcdefghijk",
+            "scriber://youtube/transcribe?v=1&video=0wEjbSYNUM8&unknown=value",
+            "scriber://user@youtube/transcribe?v=1&video=0wEjbSYNUM8",
+            "scriber://youtube:42/transcribe?v=1&video=0wEjbSYNUM8",
+            "scriber://youtube/transcribe?v=1&video=0wEjbSYNUM8#fragment",
+            "scriber://youtube/transcribe?v=1&video=0wEjbSYNUM8&title=%00bad",
+        ] {
+            assert!(parse_youtube_deep_link(raw).is_none(), "accepted {raw}");
+        }
     }
 
     fn runtime_policy_fixture(
@@ -5927,6 +6321,53 @@ mod tests {
         drop(first);
         let third = acquire_single_instance_guard(&name);
         assert!(third.is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn single_instance_guard_hands_a_valid_youtube_link_to_the_primary_instance() {
+        use super::{
+            acquire_single_instance_guard_with_youtube_request, drain_single_instance_deep_links,
+            single_instance_deep_link_queue_dir,
+        };
+
+        let name = format!("Local\\ScriberDesktopDeepLinkTest-{}", unique_test_id());
+        let queue_dir = single_instance_deep_link_queue_dir(&name);
+        let first = acquire_single_instance_guard(&name).expect("primary instance guard");
+        let request = YoutubeDeepLinkRequest {
+            video_id: "0wEjbSYNUM8".to_string(),
+            title: Some("FORBIDDEN_PRIVATE_TITLE".to_string()),
+            channel: Some("FORBIDDEN_PRIVATE_CHANNEL".to_string()),
+        };
+
+        let second = acquire_single_instance_guard_with_youtube_request(&name, Some(&request));
+        let message = match second {
+            Err(message) => message,
+            Ok(_) => panic!("the secondary instance must exit"),
+        };
+        assert!(message.contains("queued a validated YouTube browser handoff"));
+        assert!(!message.contains("0wEjbSYNUM8"));
+        assert!(!message.contains("FORBIDDEN_PRIVATE_TITLE"));
+        assert!(!message.contains("FORBIDDEN_PRIVATE_CHANNEL"));
+
+        let drained = drain_single_instance_deep_links(&name, first.started_at_ms);
+        assert_eq!(drained, vec![request]);
+        let restore_signal = unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(first.show_event, 0)
+        };
+        assert_eq!(
+            restore_signal,
+            windows_sys::Win32::Foundation::WAIT_OBJECT_0,
+            "the handoff must also restore the hidden primary window"
+        );
+
+        drop(first);
+        if let Ok(entries) = fs::read_dir(&queue_dir) {
+            for entry in entries.flatten() {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+        let _ = fs::remove_dir(&queue_dir);
     }
 
     #[test]
