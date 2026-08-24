@@ -19,6 +19,8 @@ The repository intentionally keeps only a small documentation set:
   CI, signing, and updater status.
 - `docs/ROADMAP_AND_KNOWN_ISSUES.md`: current open issues and prioritized next
   work.
+- `docs/CHROME_EXTENSION_PRIVACY.md`: public Chrome Web Store disclosure;
+  review it before extension data-handling or Store-listing changes.
 
 Old implementation journals and superseded analysis docs were removed in the
 2026-06-09 consolidation. Do not recreate fragmented one-off status files unless

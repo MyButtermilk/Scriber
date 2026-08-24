@@ -110,6 +110,9 @@ The link carries only the public YouTube video ID plus the visible title and
 channel. Scriber validates that exact contract in the desktop shell; the
 session token never leaves the app.
 
+Privacy details are documented in the
+[Chrome extension privacy policy](docs/CHROME_EXTENSION_PRIVACY.md).
+
 ### 📁 Bring recordings in without upload gymnastics
 
 Drop in audio, video, or several files at once. Scriber extracts audio, compresses large inputs when useful, tracks the queue, and keeps completed work organized.
