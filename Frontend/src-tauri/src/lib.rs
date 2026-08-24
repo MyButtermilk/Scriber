@@ -3874,7 +3874,7 @@ fn shell_ipc_env_pairs(
         .unwrap_or_default()
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, test))]
 fn acquire_single_instance_guard(name: &str) -> Result<SingleInstanceGuard, String> {
     acquire_single_instance_guard_with_youtube_request(name, None)
 }
