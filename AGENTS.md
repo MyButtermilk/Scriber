@@ -240,6 +240,11 @@ Frontend and shell:
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
 - `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Settings,
   Debug Console, Transcript Detail.
+- `Frontend/client/src/hooks/use-browser-youtube-import.ts` owns one-shot
+  browser handoff consumption. It must subscribe to search-string changes so a
+  second `scriber://` request is consumed even when the running app is already
+  on `/youtube`, and it must retain a new request while an earlier start is in
+  flight.
 - Meeting review keeps its timeline math and deterministic search/filter rules
   in `Frontend/client/src/lib/meeting-review-timeline.ts`; do not duplicate them
   in row rendering or transport code. `MeetingReviewToolbar` owns the visible
