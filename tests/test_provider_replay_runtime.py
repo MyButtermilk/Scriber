@@ -39,6 +39,7 @@ from src.runtime.provider_replay import (
     prewarm_azure_mai_replay_validation,
     provider_replay_fixture_duration_ms_from_environment,
     provider_replay_manual_stop_from_environment,
+    provider_replay_post_processing_from_environment,
     windows_qpc_snapshot,
 )
 from src.web_api import ScriberWebController
@@ -257,6 +258,21 @@ def test_provider_replay_manual_stop_environment_rejects_other_values(monkeypatc
 
 
 @pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("", False), ("0", False), ("1", True)],
+)
+def test_provider_replay_post_processing_environment_is_exact(monkeypatch, raw, expected):
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING", raw)
+    assert provider_replay_post_processing_from_environment() is expected
+
+
+def test_provider_replay_post_processing_environment_rejects_other_values(monkeypatch):
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING", "true")
+    with pytest.raises(ProviderReplayDisabled, match="post_processing_mode_invalid"):
+        provider_replay_post_processing_from_environment()
+
+
+@pytest.mark.parametrize(
     ("provider", "env_name", "env_value", "expected"),
     [
         (
@@ -316,6 +332,7 @@ def test_registry_is_one_active_sample_and_arm_is_one_shot():
     assert prepared["state"] == "prepared"
     assert prepared["sessionId"] is None
     assert prepared["markers"] == []
+    assert prepared["postProcessingMode"] == "raw"
 
     with pytest.raises(ProviderReplayConflict):
         registry.prepare(run_id=RUN_ID, provider="soniox")
@@ -341,6 +358,19 @@ def test_registry_is_one_active_sample_and_arm_is_one_shot():
 
     next_prepared = registry.prepare(run_id=RUN_ID, provider="soniox")
     assert next_prepared["sampleId"] == SECOND_SAMPLE_ID.hex
+
+
+def test_registry_binds_cloud_post_processing_to_the_runtime_generation():
+    registry = ProviderReplayRegistry(
+        enabled_gate(),
+        uuid_factory=lambda: SAMPLE_ID,
+        post_processing_enabled=True,
+    )
+
+    prepared = registry.prepare(run_id=RUN_ID, provider="microsoft")
+
+    assert registry.post_processing_enabled is True
+    assert prepared["postProcessingMode"] == "cloud"
 
 
 def test_arm_binds_target_process_generation_without_exposing_raw_identity():
@@ -1264,6 +1294,44 @@ async def test_disabled_replay_control_plane_is_404_before_token_auth(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("post_processing_enabled", "post_processing_engine"),
+    [(False, "cloud"), (True, "local")],
+)
+async def test_post_processing_replay_requires_exact_cloud_configuration(
+    monkeypatch,
+    tmp_path,
+    post_processing_enabled,
+    post_processing_engine,
+):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING", "1")
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", post_processing_enabled)
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENGINE", post_processing_engine)
+    monkeypatch.setattr(
+        web_api.ProviderReplayRuntimeGate,
+        "from_environment",
+        classmethod(lambda cls: enabled_gate()),
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    client = TestClient(TestServer(web_api.create_app(ctl)))
+    await client.start_server()
+    try:
+        response = await client.post(
+            "/api/runtime/benchmark/provider-replay/prepare",
+            headers={"X-Scriber-Token": "secret"},
+            json={"schemaVersion": 1, "runId": RUN_ID, "provider": "microsoft"},
+        )
+        assert response.status == 404
+        assert await response.json() == {"message": "Not found"}
+    finally:
+        await client.close()
+        ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_manual_stop_prepare_requires_matching_environment_and_request(
     monkeypatch,
     tmp_path,
@@ -1433,15 +1501,23 @@ async def test_visible_stop_request_attests_ready_manual_replay_before_schedulin
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("replay_post_processing", [False, True])
 async def test_enabled_replay_routes_require_native_activation_before_controller_start(
     monkeypatch,
     tmp_path,
+    replay_post_processing,
 ):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_SESSION_TOKEN", "secret")
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID", RUN_ID)
     monkeypatch.delenv("SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP", raising=False)
+    monkeypatch.setenv(
+        "SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING",
+        "1" if replay_post_processing else "0",
+    )
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENABLED", True)
+    monkeypatch.setattr(web_api.Config, "POST_PROCESSING_ENGINE", "cloud")
     monkeypatch.setenv("SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256", "a" * 64)
     monkeypatch.setenv(
         "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH",
@@ -1475,6 +1551,7 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
 
     async def start_replay(
         *,
+        post_process=False,
         tauri_hotkey_marker=None,
         provider_replay_execution=None,
         **_kwargs,
@@ -1482,6 +1559,8 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
         nonlocal start_calls
         start_calls += 1
         assert provider_replay_execution is not None
+        assert post_process is replay_post_processing
+        assert provider_replay_execution.post_processing_enabled is replay_post_processing
         assert tauri_hotkey_marker is not None
         assert tauri_hotkey_marker["marker"] == "hotkey_received"
         assert tauri_hotkey_marker["activationKind"] == "hotkey"
@@ -1555,6 +1634,7 @@ async def test_enabled_replay_routes_require_native_activation_before_controller
         assert prepared_response.status == 201
         assert prepared["sampleId"] == SAMPLE_ID.hex
         assert prepared["processGenerationFingerprint"] == gate.process_generation_fingerprint
+        assert prepared["postProcessingMode"] == ("cloud" if replay_post_processing else "raw")
         assert prewarm_calls == [
             {
                 "authoritative_fixture_duration_ms": 350,

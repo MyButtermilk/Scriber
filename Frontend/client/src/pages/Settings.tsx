@@ -272,6 +272,14 @@ const MODULATE_STREAMING_USD_PER_AUDIO_HOUR = 0.06;
 const MODULATE_TRANSCRIBE_ERROR_RATE_PERCENT = 4.43;
 const DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest";
 const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";
+const DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro";
+const POST_PROCESSING_FALLBACK_MODEL_VALUES = new Set<string>([
+  "openai/gpt-oss-120b",
+  "openai/gpt-oss-120b:cerebras",
+  "google/gemini-2.5-flash-lite:nitro",
+  "minimax/minimax-m3:nitro",
+  "z-ai/glm-5.2:nitro",
+]);
 const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";
 const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";
 
@@ -1662,6 +1670,13 @@ export default function Settings() {
   );
   const summarizationModelOptions = useMemo(() => createSummarizationModelOptions(localeTag, t), [localeTag, t]);
   const postProcessingModelOptions = useMemo(() => createPostProcessingModelOptions(localeTag, t), [localeTag, t]);
+  const postProcessingFallbackModelOptions = useMemo(
+    () =>
+      postProcessingModelOptions.filter(
+        (option) => option.group === "openrouter" && POST_PROCESSING_FALLBACK_MODEL_VALUES.has(option.value),
+      ),
+    [postProcessingModelOptions],
+  );
   const estimateExchangeRateLabel = useMemo(() => fixedEstimateExchangeRateLabel(localeTag), [localeTag]);
   const queryClient = useQueryClient();
   const [openAIKey, setOpenAIKey] = useState("");
@@ -1776,6 +1791,10 @@ export default function Settings() {
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
   const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
+  const [postProcessingFallbackModel, setPostProcessingFallbackModel] = useState(
+    DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
+  );
+  const postProcessingFallbackModelSaveGenerationRef = useRef(0);
   const [autoSummarize, setAutoSummarize] = useState(false);
   const [youtubePreferCaptions, setYoutubePreferCaptions] = useState(true);
   const [voiceprintLibraryOptIn, setVoiceprintLibraryOptIn] = useState(false);
@@ -2432,8 +2451,14 @@ export default function Settings() {
     const requirement = requiredCredentialForLanguageModel(postProcessingModel);
     return isCredentialReady(requirement) ? null : requirement;
   })();
+  const missingPostProcessingFallbackCredentialRequirement = (() => {
+    const requirement = requiredCredentialForLanguageModel(postProcessingFallbackModel);
+    return isCredentialReady(requirement) ? null : requirement;
+  })();
   const selectedPostProcessingModelOption =
     postProcessingModelOptions.find((option) => option.value === postProcessingModel) ?? null;
+  const selectedPostProcessingFallbackModelOption =
+    postProcessingFallbackModelOptions.find((option) => option.value === postProcessingFallbackModel) ?? null;
   const selectedMeetingFinalOption =
     MEETING_FINAL_STT_OPTIONS.find((option) => option.value === meetingFinalProvider) ?? MEETING_FINAL_STT_OPTIONS[0];
   const selectedMeetingProfile =
@@ -2447,6 +2472,7 @@ export default function Settings() {
     missingSelectedCredentialRequirement,
     missingSummarizationCredentialRequirement,
     postProcessingEngine === "cloud" ? missingPostProcessingCredentialRequirement : null,
+    postProcessingEngine === "cloud" ? missingPostProcessingFallbackCredentialRequirement : null,
   ]);
 
   const hasAnyManagedCloudSttCredential = [
@@ -2593,6 +2619,7 @@ export default function Settings() {
         setSummarizationPrompt(settings.summarizationPrompt || "");
         setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
         setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
+        setPostProcessingFallbackModel(settings.postProcessingFallbackModel || DEFAULT_POST_PROCESSING_FALLBACK_MODEL);
         setPostProcessingEngine(settings.postProcessingEngine === "local" ? "local" : "cloud");
         setLocalPolishingVariant(settings.localPolishingVariant === "bf16" ? "bf16" : "q8_0");
         setAutoSummarize(settings.autoSummarize === true);
@@ -3468,6 +3495,37 @@ export default function Settings() {
         description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 4000,
       });
+    }
+  };
+
+  const handlePostProcessingFallbackModelChange = async (value: string) => {
+    const requirement = requiredCredentialForLanguageModel(value);
+    if (!isCredentialReady(requirement)) {
+      openCredentialDialog(requirement);
+      return;
+    }
+    const previousValue = postProcessingFallbackModel;
+    const saveGeneration = postProcessingFallbackModelSaveGenerationRef.current + 1;
+    postProcessingFallbackModelSaveGenerationRef.current = saveGeneration;
+    setPostProcessingFallbackModel(value);
+    try {
+      await updateSettings({ postProcessingFallbackModel: value });
+      if (postProcessingFallbackModelSaveGenerationRef.current === saveGeneration) {
+        toast({
+          title: t("Saved"),
+          description: t("Fallback model updated."),
+          duration: 2000,
+        });
+      }
+    } catch (e: any) {
+      if (postProcessingFallbackModelSaveGenerationRef.current === saveGeneration) {
+        setPostProcessingFallbackModel(previousValue);
+        toast({
+          title: t("Save failed"),
+          description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
+          duration: 4000,
+        });
+      }
     }
   };
 
@@ -4486,6 +4544,66 @@ export default function Settings() {
                   rate: estimateExchangeRateLabel,
                 })}
               </p>
+            </FieldShell>
+
+            <FieldShell
+              label={t("Fallback model (OpenRouter)")}
+              detail={t("Used through OpenRouter when a direct primary cloud model cannot complete the cleanup.")}
+            >
+              <Select
+                value={postProcessingFallbackModel}
+                onValueChange={(value) => void handlePostProcessingFallbackModelChange(value)}
+              >
+                <SelectTrigger className="h-10 bg-white/70 dark:bg-[var(--live-well)]">
+                  {selectedPostProcessingFallbackModelOption ? (
+                    <div className="flex min-w-0 items-center gap-2 text-left">
+                      <ProviderIcon
+                        icon={selectedPostProcessingFallbackModelOption.icon}
+                        label={selectedPostProcessingFallbackModelOption.label}
+                        className="h-5 w-5 rounded"
+                      />
+                      <span className="min-w-0 truncate text-[12px] font-semibold">
+                        {selectedPostProcessingFallbackModelOption.label}
+                      </span>
+                    </div>
+                  ) : (
+                    <SelectValue placeholder={t("Select fallback model")} />
+                  )}
+                </SelectTrigger>
+                <SelectContent className="min-w-[320px]">
+                  {postProcessingFallbackModelOptions.map((option) => {
+                    const requirement = requiredCredentialForLanguageModel(option.value);
+                    const disabledReason = missingCredentialReason(requirement);
+                    return (
+                      <SelectItem key={option.value} value={option.value}>
+                        <span className="flex min-w-0 items-center gap-2 py-0.5">
+                          <ProviderIcon icon={option.icon} label={option.label} className="h-5 w-5 rounded" />
+                          <span className="min-w-0">
+                            <span className="block truncate text-[12px] font-semibold leading-4">{option.label}</span>
+                            <span className="block truncate text-ui-micro leading-3 text-slate-500 dark:text-slate-400">
+                              {option.detail}
+                            </span>
+                            {disabledReason ? (
+                              <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-ui-micro font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                                {disabledReason}
+                              </span>
+                            ) : null}
+                          </span>
+                        </span>
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+              {missingPostProcessingFallbackCredentialRequirement ? (
+                <button
+                  type="button"
+                  onClick={() => openCredentialDialog(missingPostProcessingFallbackCredentialRequirement)}
+                  className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-ui-micro font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                >
+                  {t(MISSING_CREDENTIAL_CTA)}
+                </button>
+              ) : null}
             </FieldShell>
 
             <FieldShell label={t("Live cleanup prompt")}>

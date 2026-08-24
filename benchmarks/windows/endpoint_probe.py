@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import ctypes
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -120,6 +121,13 @@ SAMPLE_PLANS = {
         "providerReplay": 5,
         "providerReplayDurationsSeconds": (5, 15, 30, 60),
     },
+    # Dedicated billable-capable lane for the complete UIA button -> replay
+    # STT -> cloud polishing -> guarded paste -> external observer path. It is
+    # intentionally one short Microsoft series and never a promotion gate.
+    "ProviderReplayPostProcessing": {
+        "providerReplay": 5,
+        "providerReplayDurationsSeconds": (5,),
+    },
 }
 
 PROVIDER_REPLAY_ROUTE = "/api/runtime/benchmark/provider-replay"
@@ -131,6 +139,23 @@ PROVIDER_REPLAY_AUDIO_FIXTURE_DURATION_MS = 350.0
 PROVIDER_REPLAY_REQUIRED_DURATION_SECONDS = (5, 15, 30, 60)
 PROVIDER_REPLAY_ACTIVATION_KINDS = ("hotkey", "button")
 PROVIDER_REPLAY_VISIBLE_TEXT_SEPARATOR = " "
+PROVIDER_REPLAY_POST_PROCESSING_CREDENTIAL_ENV_NAMES = (
+    "CEREBRAS_API_KEY",
+    "OPENROUTER_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "CELERIS_API_KEY",
+    "MODEL_API_KEY",
+)
+PROVIDER_REPLAY_POST_PROCESSING_ATTESTATION_REASONS = frozenset(
+    {
+        "cloud_post_processing_raw_fallback",
+        "post_processing_diagnostic_invalid",
+        "post_processing_diagnostic_missing",
+        "post_processing_session_invalid",
+        "post_processing_transcript_invalid",
+    }
+)
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
 PROVIDER_REPLAY_SCENARIOS = (
     {
@@ -182,6 +207,33 @@ def provider_replay_expected_visible_text(fixture_text: str) -> str:
     """
 
     return fixture_text.strip() + PROVIDER_REPLAY_VISIBLE_TEXT_SEPARATOR
+
+
+def installed_scriber_user_data_dir() -> Path:
+    """Resolve the installed user's canonical Scriber data root.
+
+    The cloud replay lane uses this directory in place, so the installed
+    runtime loads its normal settings and credentials itself. The benchmark
+    never reads or copies either file.
+    """
+
+    local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    if not local_app_data:
+        raise RuntimeError("installed Scriber data root is unavailable")
+    base = Path(local_app_data).expanduser()
+    if not base.is_absolute():
+        raise RuntimeError("installed Scriber data root is not absolute")
+    data_root = (base / "Scriber").resolve()
+    if not data_root.is_dir():
+        raise RuntimeError("installed Scriber data root does not exist")
+    return data_root
+
+
+def provider_replay_post_processing_attestation_reason(value: Any) -> str:
+    reason = str(value or "").strip()
+    if reason in PROVIDER_REPLAY_POST_PROCESSING_ATTESTATION_REASONS:
+        return reason
+    return "post_processing_output_attestation_invalid"
 
 
 def qpc_frequency() -> int:
@@ -258,6 +310,74 @@ def summarize_stage_zero_distribution(
         "varianceMs2": round(variance, 6),
         "failureRate": round(failure_count / max(1, int(attempted)), 6),
     }
+
+
+def summarize_provider_replay_distributions(
+    *,
+    activation_durations: list[Any],
+    stop_durations: list[Any],
+    non_speech_overheads: list[Any],
+    button_input_durations: list[Any],
+    attempted_samples: int,
+    attempted_button_samples: int,
+) -> dict[str, dict[str, float | int | str]]:
+    """Summarize replay KPIs without treating hotkey samples as button failures."""
+
+    return {
+        "activation_received_to_final_text_observed": summarize_stage_zero_distribution(
+            activation_durations,
+            attempted=attempted_samples,
+        ),
+        "stop_requested_to_final_text_observed": summarize_stage_zero_distribution(
+            stop_durations,
+            attempted=attempted_samples,
+        ),
+        "non_speech_overhead": summarize_stage_zero_distribution(
+            non_speech_overheads,
+            attempted=attempted_samples,
+        ),
+        "button_input_to_final_text_observed": summarize_stage_zero_distribution(
+            button_input_durations,
+            attempted=attempted_button_samples,
+        ),
+    }
+
+
+def button_input_to_final_text_observed_ms(
+    *,
+    activation_kind: str,
+    activation_action: dict[str, Any],
+    observed_ticks: Any,
+    observed_frequency: Any,
+    qpc_frequency_value: Any,
+) -> float | None:
+    """Return the benchmark-only UIA button-input-to-visible-text duration."""
+
+    if str(activation_kind or "").strip().lower() != "button":
+        return None
+    input_ticks = activation_action.get(
+        "inputQpcTicks",
+        activation_action.get("qpcTicks"),
+    )
+    action_frequency = activation_action.get("qpcFrequency")
+    if (
+        activation_action.get("ok") is not True
+        or activation_action.get("source") != "uia_invoke"
+        or activation_action.get("processId") != activation_action.get("expectedProcessId")
+        or not isinstance(input_ticks, int)
+        or isinstance(input_ticks, bool)
+        or input_ticks <= 0
+        or not isinstance(action_frequency, int)
+        or isinstance(action_frequency, bool)
+        or action_frequency <= 0
+        or action_frequency != qpc_frequency_value
+        or observed_frequency != qpc_frequency_value
+        or not isinstance(observed_ticks, int)
+        or isinstance(observed_ticks, bool)
+        or observed_ticks <= 0
+    ):
+        return None
+    return duration_ms(input_ticks, observed_ticks, action_frequency)
 
 
 def write_provider_replay_audio_fixture(
@@ -710,6 +830,173 @@ def request_runtime_json(
         return {}
     value = json.loads(body)
     return value if isinstance(value, dict) else {}
+
+
+def attest_provider_replay_post_processing_output(
+    port: int,
+    token: str,
+    session_id: str,
+) -> dict[str, Any]:
+    """Bind external visible text to one persisted, privacy-safe cloud run.
+
+    The local transcript payload is read only long enough to derive the exact
+    product injector output hash and UTF-16 length. Neither transcript nor
+    prompt text is returned or written into benchmark evidence.
+    """
+
+    normalized_session = _canonical_non_nil_uuid(session_id)
+    if not normalized_session:
+        return {"ok": False, "reason": "post_processing_session_invalid"}
+    detail = request_runtime_json(
+        port,
+        token,
+        f"/api/transcripts/{normalized_session}",
+        timeout_sec=5.0,
+    )
+    content = detail.get("content")
+    if (
+        detail.get("id") != normalized_session
+        or detail.get("status") != "completed"
+        or not isinstance(content, str)
+        or not content.strip()
+        or len(content) > 65_536
+    ):
+        return {"ok": False, "reason": "post_processing_transcript_invalid"}
+    visible_text = provider_replay_expected_visible_text(content)
+    output_binding = {
+        "contract": "provider-replay-post-processing-output-v1",
+        "transcriptId": normalized_session,
+        "visibleTextSha256": sha256_text(visible_text),
+        "visibleTextLength": len(visible_text.encode("utf-16-le")) // 2,
+    }
+
+    diagnostics_payload = request_runtime_json(
+        port,
+        token,
+        "/api/runtime/post-processing-diagnostics?limit=30",
+        timeout_sec=5.0,
+    )
+    diagnostic = next(
+        (
+            item
+            for item in diagnostics_payload.get("items", [])
+            if isinstance(item, dict) and item.get("transcriptId") == normalized_session
+        ),
+        None,
+    )
+    allowed_diagnostic_fields = (
+        "status",
+        "engine",
+        "model",
+        "durationMs",
+        "deadlineMs",
+        "fallbackPolicy",
+        "fallbackToRaw",
+        "postProcessed",
+        "outputChanged",
+        "primaryBypassed",
+        "primaryBypassReason",
+        "primaryCircuitCooldownMs",
+        "primaryFailureCode",
+        "primaryFailureStatus",
+        "reasonCodes",
+    )
+    safe_diagnostic = (
+        {field: diagnostic.get(field) for field in allowed_diagnostic_fields} if isinstance(diagnostic, dict) else {}
+    )
+    if not isinstance(diagnostic, dict) or diagnostic.get("engine") != "cloud":
+        return {
+            **output_binding,
+            "ok": False,
+            "reason": "post_processing_diagnostic_missing",
+            "diagnostic": safe_diagnostic,
+        }
+    status = str(diagnostic.get("status") or "")
+    cloud_completed = bool(
+        status == "success" and diagnostic.get("postProcessed") is True and diagnostic.get("fallbackToRaw") is False
+    )
+    raw_fallback_completed = bool(
+        status in {"failure", "original_fallback"}
+        and diagnostic.get("postProcessed") is False
+        and diagnostic.get("fallbackToRaw") is True
+    )
+    if not cloud_completed and not raw_fallback_completed:
+        return {
+            **output_binding,
+            "ok": False,
+            "reason": "post_processing_diagnostic_invalid",
+            "diagnostic": safe_diagnostic,
+        }
+    return {
+        **output_binding,
+        "ok": True,
+        "reason": None if cloud_completed else "cloud_post_processing_raw_fallback",
+        "outcome": "cloud_success" if cloud_completed else "raw_fallback",
+        "cloudPolishingSucceeded": cloud_completed,
+        "rawFallbackAttested": raw_fallback_completed,
+        "diagnostic": safe_diagnostic,
+    }
+
+
+def provider_replay_post_processing_output_evidence(
+    attestation: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Drop the transient transcript binding before evidence serialization."""
+
+    value = attestation if isinstance(attestation, dict) else {}
+    return {
+        "ok": value.get("ok") is True,
+        "reason": (
+            provider_replay_post_processing_attestation_reason(value.get("reason")) if value.get("reason") else None
+        ),
+        "contract": value.get("contract"),
+        "outcome": value.get("outcome"),
+        "cloudPolishingSucceeded": value.get("cloudPolishingSucceeded") is True,
+        "rawFallbackAttested": value.get("rawFallbackAttested") is True,
+        "visibleTextSha256": value.get("visibleTextSha256"),
+        "visibleTextLength": value.get("visibleTextLength"),
+        "diagnostic": dict(value.get("diagnostic") or {}),
+    }
+
+
+def delete_provider_replay_post_processing_transcript(
+    port: int,
+    token: str,
+    session_id: str,
+) -> dict[str, Any]:
+    """Delete exactly one bound benchmark transcript without exposing it."""
+
+    normalized_session = _canonical_non_nil_uuid(session_id)
+    if not normalized_session:
+        return {
+            "attempted": False,
+            "ok": False,
+            "reason": "post_processing_session_invalid",
+        }
+    try:
+        result = request_runtime_json(
+            port,
+            token,
+            f"/api/transcripts/{normalized_session}",
+            method="DELETE",
+            timeout_sec=5.0,
+        )
+    except Exception as exc:
+        return {
+            "attempted": True,
+            "ok": False,
+            "reason": "post_processing_transcript_cleanup_failed",
+            "errorType": type(exc).__name__,
+        }
+    return {
+        "attempted": True,
+        "ok": result.get("success") is True and _canonical_non_nil_uuid(result.get("id")) == normalized_session,
+        "reason": (
+            "benchmark_transcript_deleted"
+            if result.get("success") is True and _canonical_non_nil_uuid(result.get("id")) == normalized_session
+            else "post_processing_transcript_cleanup_rejected"
+        ),
+    }
 
 
 def wait_runtime_state(
@@ -1341,6 +1628,23 @@ def terminal_state_observed(value: dict[str, Any]) -> bool:
 
 def successful_terminal_state(value: dict[str, Any]) -> bool:
     return bool(terminal_state_observed(value) and str(value.get("status") or "").strip().lower() == "stopped")
+
+
+def provider_replay_runtime_reusable_after_sample(
+    *,
+    generation_after_matches: bool,
+    target_after: dict[str, Any],
+    target_attestation: dict[str, Any],
+    terminal: dict[str, Any],
+) -> bool:
+    """Allow another sample only after the shared runtime stayed intact."""
+
+    return bool(
+        generation_after_matches
+        and target_after.get("ok") is True
+        and target_after.get("targetGenerationSha256") == target_attestation.get("targetGenerationSha256")
+        and successful_terminal_state(terminal)
+    )
 
 
 def _wait_process_exit(
@@ -2093,6 +2397,268 @@ def provider_replay_process_generation_sha256(
     return hashlib.sha256(material).hexdigest()
 
 
+def _provider_replay_process_identity(value: Any) -> tuple[int, int, str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    pid = value.get("pid")
+    parent_pid = value.get("parentPid")
+    name = value.get("name")
+    creation_time = value.get("creationTime100ns")
+    if (
+        not isinstance(pid, int)
+        or isinstance(pid, bool)
+        or pid <= 0
+        or not isinstance(parent_pid, int)
+        or isinstance(parent_pid, bool)
+        or parent_pid < 0
+        or not isinstance(name, str)
+        or not name.strip()
+        or not isinstance(creation_time, int)
+        or isinstance(creation_time, bool)
+        or creation_time <= 0
+    ):
+        return None
+    return pid, parent_pid, name.strip().casefold(), creation_time
+
+
+def provider_replay_runtime_generation_matches(
+    baseline: dict[str, Any],
+    observed: dict[str, Any],
+) -> bool:
+    """Bind ProviderReplay to one exact desktop/backend runtime generation.
+
+    WebView2 utility processes are intentionally outside this provider replay
+    identity: WebView2 may replace a renderer or GPU helper while the same
+    installed desktop and its direct backend child stay alive. The generic UI
+    generation comparator remains stricter and is not changed by this contract.
+    ProviderReplay still fails closed on any desktop/backend identity or backend
+    startup-epoch change, on malformed snapshots, or when no live WebView is
+    attested at either boundary.
+    """
+
+    snapshots = (baseline, observed)
+    if any(
+        snapshot.get("ok") is not True or snapshot.get("fingerprint") != process_generation_fingerprint(snapshot)
+        for snapshot in snapshots
+    ):
+        return False
+
+    baseline_app = _provider_replay_process_identity(baseline.get("app"))
+    observed_app = _provider_replay_process_identity(observed.get("app"))
+    baseline_backend = _provider_replay_process_identity(baseline.get("backend"))
+    observed_backend = _provider_replay_process_identity(observed.get("backend"))
+    if (
+        baseline_app is None
+        or baseline_backend is None
+        or baseline_app != observed_app
+        or baseline_backend != observed_backend
+    ):
+        return False
+
+    baseline_core = provider_replay_process_generation_sha256(baseline)
+    observed_core = provider_replay_process_generation_sha256(observed)
+    if not baseline_core or not hmac.compare_digest(baseline_core, observed_core):
+        return False
+    baseline_started = str(baseline.get("backendStartedAt") or "")
+    observed_started = str(observed.get("backendStartedAt") or "")
+    if not baseline_started or baseline_started != observed_started:
+        return False
+
+    for snapshot in snapshots:
+        webviews = snapshot.get("webViewProcesses")
+        if not isinstance(webviews, list) or not webviews:
+            return False
+        if any(
+            (identity := _provider_replay_process_identity(item)) is None or identity[2] != "msedgewebview2.exe"
+            for item in webviews
+        ):
+            return False
+        if not str(snapshot.get("frontendReadyReceivedAt") or ""):
+            return False
+    return True
+
+
+def warm_provider_replay_pipeline_runtime(
+    *,
+    port: int,
+    token: str,
+    run_id: str,
+    provider: str,
+    backend_pid: int,
+    backend_creation_time_100ns: int,
+    expected_process_generation_sha256: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """Load the installed pipeline through one terminal sacrificial arm.
+
+    The backend process is deliberately supplied as the target generation. It
+    has no foreground window, so the arm must import the cold pipeline and then
+    fail with the exact target-mismatch conflict. That terminal sample cannot
+    consume a native activation and cannot enter any measured distribution.
+    """
+
+    normalized_run = _canonical_non_nil_uuid(run_id)
+    normalized_provider = str(provider or "").strip().lower()
+    if (
+        not normalized_run
+        or normalized_provider not in {str(item["provider"]) for item in PROVIDER_REPLAY_SCENARIOS}
+        or backend_pid <= 0
+        or backend_creation_time_100ns <= 0
+        or not _is_sha256(expected_process_generation_sha256)
+    ):
+        raise RuntimeError("provider_replay_warmup_input_invalid")
+
+    prepared = request_runtime_json(
+        port,
+        token,
+        f"{PROVIDER_REPLAY_ROUTE}/prepare",
+        method="POST",
+        payload={
+            "schemaVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
+            "runId": normalized_run,
+            "provider": normalized_provider,
+        },
+        timeout_sec=timeout_sec,
+    )
+    sample_id = _canonical_non_nil_uuid(prepared.get("sampleId"))
+    if (
+        prepared.get("state") != "prepared"
+        or _canonical_non_nil_uuid(prepared.get("runId")) != normalized_run
+        or prepared.get("provider") != normalized_provider
+        or not sample_id
+        or prepared.get("processGenerationFingerprint") != expected_process_generation_sha256
+    ):
+        raise RuntimeError("provider_replay_warmup_prepare_invalid")
+
+    arm_status_code = 0
+    try:
+        request_runtime_json(
+            port,
+            token,
+            f"{PROVIDER_REPLAY_ROUTE}/{sample_id}/arm",
+            method="POST",
+            payload={
+                "schemaVersion": PROVIDER_REPLAY_CONTRACT_VERSION,
+                "runId": normalized_run,
+                "activationKind": "hotkey",
+                "targetProcessId": backend_pid,
+                "targetCreationTime100ns": backend_creation_time_100ns,
+            },
+            timeout_sec=timeout_sec,
+        )
+    except urllib.error.HTTPError as exc:
+        arm_status_code = int(exc.code or 0)
+        with contextlib.suppress(Exception):
+            exc.read(2048)
+        if arm_status_code != 409:
+            raise RuntimeError("provider_replay_warmup_arm_status_invalid") from exc
+    else:
+        raise RuntimeError("provider_replay_warmup_arm_did_not_fail_closed")
+
+    terminal = request_runtime_json(
+        port,
+        token,
+        f"{PROVIDER_REPLAY_ROUTE}/{sample_id}?runId={normalized_run}",
+        timeout_sec=min(10.0, timeout_sec),
+    )
+    if (
+        terminal.get("state") != "failed"
+        or terminal.get("errorCode") != "target_mismatch"
+        or terminal.get("sessionId") is not None
+        or _canonical_non_nil_uuid(terminal.get("runId")) != normalized_run
+        or _canonical_non_nil_uuid(terminal.get("sampleId")) != sample_id
+        or terminal.get("provider") != normalized_provider
+        or terminal.get("processGenerationFingerprint") != expected_process_generation_sha256
+    ):
+        raise RuntimeError("provider_replay_warmup_terminal_invalid")
+    return {
+        "ok": True,
+        "contract": "provider-replay-runtime-warmup-v1",
+        "excludedFromMeasurement": True,
+        "provider": normalized_provider,
+        "sampleId": sample_id,
+        "armStatusCode": arm_status_code,
+        "terminalState": terminal["state"],
+        "errorCode": terminal["errorCode"],
+        "processGenerationFingerprint": expected_process_generation_sha256,
+    }
+
+
+def prepare_provider_replay_runtime_for_measurement(
+    *,
+    app_pid: int,
+    backend_pid: int,
+    port: int,
+    token: str,
+    run_id: str,
+    provider: str,
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """Warm setup work, then bind the post-warm measurement generation."""
+
+    before = process_generation_snapshot(app_pid, backend_pid, port, token)
+    before_app = _provider_replay_process_identity(before.get("app"))
+    before_backend = _provider_replay_process_identity(before.get("backend"))
+    before_fingerprint = provider_replay_process_generation_sha256(before)
+    if (
+        before.get("ok") is not True
+        or before_app is None
+        or before_backend is None
+        or before_app[0] != app_pid
+        or before_backend[0] != backend_pid
+        or not before_fingerprint
+    ):
+        return {
+            "ok": False,
+            "reason": "runtime_process_generation_unavailable_before_warmup",
+            "processBaseline": before,
+            "processGenerationFingerprint": before_fingerprint,
+            "setupWarmup": {},
+        }
+    try:
+        warmup = warm_provider_replay_pipeline_runtime(
+            port=port,
+            token=token,
+            run_id=run_id,
+            provider=provider,
+            backend_pid=backend_pid,
+            backend_creation_time_100ns=before_backend[3],
+            expected_process_generation_sha256=before_fingerprint,
+            timeout_sec=timeout_sec,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": f"runtime_setup_warmup_failed:{type(exc).__name__}",
+            "processBaseline": before,
+            "processGenerationFingerprint": before_fingerprint,
+            "setupWarmup": {"ok": False},
+        }
+
+    after = process_generation_snapshot(app_pid, backend_pid, port, token)
+    after_fingerprint = provider_replay_process_generation_sha256(after)
+    if (
+        warmup.get("ok") is not True
+        or warmup.get("processGenerationFingerprint") != before_fingerprint
+        or not provider_replay_runtime_generation_matches(before, after)
+        or not after_fingerprint
+    ):
+        return {
+            "ok": False,
+            "reason": "runtime_generation_changed_during_setup_warmup",
+            "processBaseline": after,
+            "processGenerationFingerprint": after_fingerprint,
+            "setupWarmup": warmup,
+        }
+    return {
+        "ok": True,
+        "reason": "measured_generation_ready",
+        "processBaseline": after,
+        "processGenerationFingerprint": after_fingerprint,
+        "setupWarmup": warmup,
+    }
+
+
 def _provider_replay_target_attestation(
     *,
     title: str,
@@ -2177,6 +2743,151 @@ def ensure_provider_replay_target_focus_after_activation(
     }
 
 
+def maintain_provider_replay_target_focus(
+    *,
+    title: str,
+    receiver_pid: int,
+    expected_target_generation_sha256: str,
+) -> dict[str, Any]:
+    """Keep one exact external receiver foregrounded during replay.
+
+    The installed overlay can finish its asynchronous visibility transition
+    after the native activation call has returned. A one-shot refocus at that
+    boundary is therefore racy. This helper only restores foreground focus; it
+    never writes receiver text, and it fails closed before focusing a replaced
+    process generation.
+    """
+
+    before = _provider_replay_target_attestation(
+        title=title,
+        receiver_pid=receiver_pid,
+    )
+    before_generation_matches = bool(before.get("targetGenerationSha256") == expected_target_generation_sha256)
+    if not before_generation_matches:
+        return {
+            "ok": False,
+            "restoreAttempted": False,
+            "restored": False,
+            "reason": "target_generation_changed",
+            "target": before,
+            "targetGenerationMatches": False,
+        }
+    if before.get("ok") is True:
+        return {
+            "ok": True,
+            "restoreAttempted": False,
+            "restored": False,
+            "target": before,
+            "targetGenerationMatches": True,
+        }
+
+    focus = focus_receiver_window(title)
+    after = _provider_replay_target_attestation(
+        title=title,
+        receiver_pid=receiver_pid,
+    )
+    after_generation_matches = bool(after.get("targetGenerationSha256") == expected_target_generation_sha256)
+    restored = bool(focus.get("ok") and after.get("ok") and after_generation_matches)
+    return {
+        "ok": restored,
+        "restoreAttempted": True,
+        "restored": restored,
+        "reason": "foreground_restored" if restored else "foreground_restore_failed",
+        "focus": focus,
+        "target": after,
+        "targetGenerationMatches": after_generation_matches,
+    }
+
+
+def wait_provider_replay_status_with_target_focus(
+    port: int,
+    token: str,
+    run_id: str,
+    sample_id: str,
+    timeout_sec: float,
+    *,
+    title: str,
+    receiver_pid: int,
+    expected_target_generation_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Poll replay completion while keeping the exact visible target bound."""
+
+    deadline = time.monotonic() + max(0.1, timeout_sec)
+    last: dict[str, Any] = {}
+    checks = 0
+    restore_attempts = 0
+    restores = 0
+    last_focus: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        last_focus = maintain_provider_replay_target_focus(
+            title=title,
+            receiver_pid=receiver_pid,
+            expected_target_generation_sha256=expected_target_generation_sha256,
+        )
+        checks += 1
+        if last_focus.get("restoreAttempted") is True:
+            restore_attempts += 1
+        if last_focus.get("restored") is True:
+            restores += 1
+        if last_focus.get("ok") is not True:
+            return last, {
+                "ok": False,
+                "contract": "provider-replay-target-focus-lease-v1",
+                "reason": str(last_focus.get("reason") or "target_focus_lease_lost"),
+                "checks": checks,
+                "restoreAttempts": restore_attempts,
+                "restores": restores,
+                "lastCheck": last_focus,
+            }
+        try:
+            last = request_runtime_json(
+                port,
+                token,
+                f"{PROVIDER_REPLAY_ROUTE}/{sample_id}?runId={run_id}",
+                timeout_sec=2.0,
+            )
+        except Exception as exc:
+            last = {"requestError": type(exc).__name__}
+        if str(last.get("state") or "") in {
+            "completed",
+            "failed",
+            "unsupported",
+        }:
+            final_focus = maintain_provider_replay_target_focus(
+                title=title,
+                receiver_pid=receiver_pid,
+                expected_target_generation_sha256=expected_target_generation_sha256,
+            )
+            checks += 1
+            if final_focus.get("restoreAttempted") is True:
+                restore_attempts += 1
+            if final_focus.get("restored") is True:
+                restores += 1
+            return last, {
+                "ok": final_focus.get("ok") is True,
+                "contract": "provider-replay-target-focus-lease-v1",
+                "reason": (
+                    "target_bound_through_terminal"
+                    if final_focus.get("ok") is True
+                    else str(final_focus.get("reason") or "target_focus_lease_lost")
+                ),
+                "checks": checks,
+                "restoreAttempts": restore_attempts,
+                "restores": restores,
+                "lastCheck": final_focus,
+            }
+        time.sleep(0.02)
+    return last, {
+        "ok": last_focus.get("ok") is True,
+        "contract": "provider-replay-target-focus-lease-v1",
+        "reason": "status_wait_timeout",
+        "checks": checks,
+        "restoreAttempts": restore_attempts,
+        "restores": restores,
+        "lastCheck": last_focus,
+    }
+
+
 def wait_provider_replay_status(
     port: int,
     token: str,
@@ -2224,6 +2935,8 @@ def validate_provider_replay_sample(
     expected_fixture_duration_ms: float | None = None,
     expected_audio_fixture: dict[str, Any] | None = None,
     expected_audio_preparation_implementation: str | None = None,
+    expected_post_processing_mode: str = "raw",
+    post_processing_output_attestation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     expected_run = _canonical_non_nil_uuid(run_id)
@@ -2232,9 +2945,40 @@ def validate_provider_replay_sample(
     fixture_text = prepared.get("fixtureText")
     fixture_sha256 = str(prepared.get("fixtureTextSha256") or "")
     fixture_length = prepared.get("fixtureTextLength")
-    expected_visible_text = provider_replay_expected_visible_text(fixture_text if isinstance(fixture_text, str) else "")
-    expected_visible_sha256 = sha256_text(expected_visible_text)
-    expected_visible_utf16_length = len(expected_visible_text.encode("utf-16-le")) // 2
+    post_processing_mode = str(expected_post_processing_mode or "").strip().lower()
+    if post_processing_mode not in {"raw", "cloud"}:
+        reasons.append("post_processing_mode_invalid")
+        post_processing_mode = "raw"
+    post_processing_output_bound = post_processing_mode != "cloud"
+    post_processing_outcome: str | None = None
+    if post_processing_mode == "cloud":
+        output_attestation = (
+            post_processing_output_attestation if isinstance(post_processing_output_attestation, dict) else {}
+        )
+        expected_visible_sha256 = str(output_attestation.get("visibleTextSha256") or "")
+        expected_visible_utf16_length = output_attestation.get("visibleTextLength")
+        post_processing_outcome = str(output_attestation.get("outcome") or "").strip()
+        post_processing_output_bound = bool(
+            output_attestation.get("contract") == "provider-replay-post-processing-output-v1"
+            and _canonical_non_nil_uuid(output_attestation.get("transcriptId")) == session_id
+            and _is_sha256(expected_visible_sha256)
+            and isinstance(expected_visible_utf16_length, int)
+            and not isinstance(expected_visible_utf16_length, bool)
+            and expected_visible_utf16_length > 0
+        )
+        if not post_processing_output_bound:
+            reasons.append("post_processing_output_attestation_invalid")
+        elif output_attestation.get("ok") is not True or post_processing_outcome not in {
+            "cloud_success",
+            "raw_fallback",
+        }:
+            reasons.append(provider_replay_post_processing_attestation_reason(output_attestation.get("reason")))
+    else:
+        expected_visible_text = provider_replay_expected_visible_text(
+            fixture_text if isinstance(fixture_text, str) else ""
+        )
+        expected_visible_sha256 = sha256_text(expected_visible_text)
+        expected_visible_utf16_length = len(expected_visible_text.encode("utf-16-le")) // 2
     actual_audio_preparation_implementation = completed.get("audioPreparationImplementationActual")
 
     if not expected_run:
@@ -2287,6 +3031,12 @@ def validate_provider_replay_sample(
             reasons.append(f"{phase}_fixture_length_mismatch")
         if payload.get("processGenerationFingerprint") != expected_process_generation_sha256:
             reasons.append(f"{phase}_process_generation_mismatch")
+        actual_post_processing_mode = payload.get("postProcessingMode")
+        if post_processing_mode == "cloud":
+            if actual_post_processing_mode != "cloud":
+                reasons.append(f"{phase}_post_processing_mode_mismatch")
+        elif actual_post_processing_mode not in {None, "raw"}:
+            reasons.append(f"{phase}_post_processing_mode_mismatch")
         if expected_fixture_duration_ms is not None:
             actual_duration = payload.get("authoritativeFixtureDurationMs")
             if (
@@ -2432,12 +3182,18 @@ def validate_provider_replay_sample(
         "target_text_observed",
     }:
         reasons.append("target_text_not_observed")
-    if observed.get("expectedSha256") != expected_visible_sha256:
+    if post_processing_mode == "cloud":
+        if observed.get("observationMode") != "first_non_empty" or observed.get("expectedSha256") not in {None, ""}:
+            reasons.append("observer_dynamic_mode_invalid")
+        if observer_ready.get("baselineChars") != 0:
+            reasons.append("observer_baseline_not_empty")
+    elif observed.get("expectedSha256") != expected_visible_sha256:
         reasons.append("observer_expected_hash_mismatch")
-    if observed.get("observedSha256") != expected_visible_sha256:
-        reasons.append("observer_hash_mismatch")
-    if observed.get("observedChars") != expected_visible_utf16_length:
-        reasons.append("observer_length_mismatch")
+    if post_processing_output_bound:
+        if observed.get("observedSha256") != expected_visible_sha256:
+            reasons.append("observer_hash_mismatch")
+        if observed.get("observedChars") != expected_visible_utf16_length:
+            reasons.append("observer_length_mismatch")
     if (
         not isinstance(observed_ticks, int)
         or isinstance(observed_ticks, bool)
@@ -2508,6 +3264,15 @@ def validate_provider_replay_sample(
             reasons.append("button_activation_action_source_invalid")
         if activation_action.get("processId") != activation_action.get("expectedProcessId"):
             reasons.append("button_activation_process_mismatch")
+    button_input_to_observed_ms = button_input_to_final_text_observed_ms(
+        activation_kind=normalized_activation,
+        activation_action=activation_action,
+        observed_ticks=observed_ticks,
+        observed_frequency=observed_frequency,
+        qpc_frequency_value=start_frequency,
+    )
+    if normalized_activation == "button" and (button_input_to_observed_ms is None or button_input_to_observed_ms <= 0):
+        reasons.append("button_input_to_visible_duration_invalid")
     if stop_to_observed_ms is None or stop_to_observed_ms <= 0:
         reasons.append("stop_to_visible_duration_invalid")
     if stop_to_provider_ms is None or stop_to_provider_ms <= 0:
@@ -2523,6 +3288,14 @@ def validate_provider_replay_sample(
         "fixtureTextLength": fixture_length,
         "expectedVisibleTextSha256": expected_visible_sha256,
         "expectedVisibleTextLength": expected_visible_utf16_length,
+        "postProcessingMode": post_processing_mode,
+        "postProcessingOutcome": post_processing_outcome,
+        "postProcessingOutputBound": post_processing_output_bound,
+        "postProcessingDiagnostic": (
+            dict((post_processing_output_attestation or {}).get("diagnostic") or {})
+            if post_processing_mode == "cloud"
+            else None
+        ),
         "markerNames": list(markers),
         "startMarker": start_marker,
         "startQpcTicks": start_ticks,
@@ -2539,7 +3312,15 @@ def validate_provider_replay_sample(
         "nativeActivationToFinalTextObservedMs": (
             native_activation_to_observed_ms if native_activation_to_observed_ms is not None else "unknown"
         ),
+        "buttonInputToFinalTextObservedMs": (
+            button_input_to_observed_ms if button_input_to_observed_ms is not None else "unknown"
+        ),
         "stopRequestedToFinalTextObservedMs": (stop_to_observed_ms if stop_to_observed_ms is not None else "unknown"),
+        "benchmarkInputKpis": {
+            "button_input_to_final_text_observed_ms": (
+                button_input_to_observed_ms if button_input_to_observed_ms is not None else "unknown"
+            ),
+        },
         "canonicalKpis": {
             "activation_received_to_final_text_observed_ms": (
                 activation_to_observed_ms if activation_to_observed_ms is not None else "unknown"
@@ -2567,6 +3348,8 @@ def run_provider_text_replay(
     timeout_sec: int,
     iterations: int,
     fixture_durations_ms: tuple[int | float, ...] | None = None,
+    *,
+    post_processing: bool = False,
 ) -> dict[str, Any]:
     probe_dir = output_dir / "provider-replay"
     probe_dir.mkdir(parents=True, exist_ok=True)
@@ -2579,6 +3362,12 @@ def run_provider_text_replay(
     clipboard_errors = 0
     events: list[dict[str, Any]] = []
     requested_iterations = max(1, iterations)
+    activation_kinds = ("button",) if post_processing else PROVIDER_REPLAY_ACTIVATION_KINDS
+    post_processing_data_dir = installed_scriber_user_data_dir() if post_processing else None
+    requested_button_iterations = sum(
+        activation_kinds[(iteration - 1) % len(activation_kinds)] == "button"
+        for iteration in range(1, requested_iterations + 1)
+    )
     azure_capture_time_mp3 = (
         "enabled"
         if os.environ.get("SCRIBER_AZURE_MAI_CAPTURE_TIME_MP3", "").strip().lower()
@@ -2605,10 +3394,13 @@ def run_provider_text_replay(
         )
     ):
         raise ValueError("provider replay duration matrix is invalid")
+    scenario_specs = (
+        tuple(item for item in PROVIDER_REPLAY_SCENARIOS if item["provider"] == "microsoft")
+        if post_processing
+        else PROVIDER_REPLAY_SCENARIOS
+    )
     series_specs = [
-        {**scenario, "fixtureDurationMs": duration_ms}
-        for scenario in PROVIDER_REPLAY_SCENARIOS
-        for duration_ms in duration_values
+        {**scenario, "fixtureDurationMs": duration_ms} for scenario in scenario_specs for duration_ms in duration_values
     ]
     audio_fixtures: list[dict[str, Any]] = []
 
@@ -2658,17 +3450,23 @@ def run_provider_text_replay(
             audio_fixtures.append(fixture_record)
         sample_timeout_sec = max(
             int(timeout_sec),
-            int(math.ceil(duration_seconds)) + 120,
+            math.ceil(duration_seconds) + 120,
         )
         smoke_path = scenario_dir / "smoke.json"
         token = uuid.uuid4().hex
         run_id = uuid.uuid4().hex
         child_env = os.environ.copy()
+        if post_processing:
+            # Let the installed runtime load its own credentials from its
+            # canonical data root. Repository/process credentials must not
+            # shadow that source, and no value is read or copied here.
+            for name in PROVIDER_REPLAY_POST_PROCESSING_CREDENTIAL_ENV_NAMES:
+                child_env.pop(name, None)
         child_env.update(
             {
                 "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID": run_id,
                 "SCRIBER_TAURI_BENCHMARK_HOTKEY_RUN_ID": run_id,
-                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS": str(int(round(fixture_duration_ms))),
+                "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS": str(round(fixture_duration_ms)),
                 "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256": str(audio_fixture["sha256"]),
                 "SCRIBER_RUST_AUDIO_SYNTHETIC_SIGNAL": "1",
                 "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH": str(audio_fixture_path),
@@ -2679,6 +3477,7 @@ def run_provider_text_replay(
                 "SCRIBER_TAURI_GLOBAL_HOTKEY": "1",
                 "SCRIBER_HOTKEY": "ctrl+alt+shift+f12",
                 "SCRIBER_AUTO_SUMMARIZE": "0",
+                "SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING": "1" if post_processing else "0",
                 "SCRIBER_AZURE_MAI_REGION": "northeurope",
                 # The Speechmatics replay must bind the production default
                 # route while its one-shot raw transport prevents network I/O.
@@ -2687,6 +3486,13 @@ def run_provider_text_replay(
                 "SPEECHMATICS_API_KEY": "",
             }
         )
+        if post_processing:
+            child_env.update(
+                {
+                    "SCRIBER_POST_PROCESSING_ENABLED": "1",
+                    "SCRIBER_POST_PROCESSING_ENGINE": "cloud",
+                }
+            )
         smoke = {}
         smoke_exit_code: int | None = None
         app_pid = 0
@@ -2696,9 +3502,15 @@ def run_provider_text_replay(
         activation_durations: list[float] = []
         stop_durations: list[float] = []
         non_speech_overheads: list[float] = []
+        button_input_durations: list[float] = []
+        post_processing_durations: list[float] = []
+        post_processing_successes = 0
+        post_processing_raw_fallbacks = 0
+        sample_failure_observed = False
         series_reason = ""
         process_baseline: dict[str, Any] = {}
         expected_process_fingerprint = ""
+        setup_warmup: dict[str, Any] = {}
         cleanup: dict[str, Any] = {}
 
         try:
@@ -2706,7 +3518,7 @@ def run_provider_text_replay(
                 smoke_args(
                     repo_root,
                     install_root,
-                    scenario_dir / "data",
+                    post_processing_data_dir or scenario_dir / "data",
                     smoke_path,
                     extra=[
                         "-KeepAppOpen",
@@ -2733,23 +3545,26 @@ def run_provider_text_replay(
             if smoke_result.returncode != 0 or not smoke.get("ok") or app_pid <= 0 or backend_pid <= 0 or port <= 0:
                 series_reason = "runtime_start_failed"
             else:
-                process_baseline = process_generation_snapshot(
-                    app_pid,
-                    backend_pid,
-                    port,
-                    token,
+                runtime_setup = prepare_provider_replay_runtime_for_measurement(
+                    app_pid=app_pid,
+                    backend_pid=backend_pid,
+                    port=port,
+                    token=token,
+                    run_id=run_id,
+                    provider=provider,
+                    timeout_sec=max(30.0, min(120.0, float(sample_timeout_sec))),
                 )
-                expected_process_fingerprint = provider_replay_process_generation_sha256(process_baseline)
-                if not process_baseline.get("ok") or not expected_process_fingerprint:
-                    series_reason = "runtime_process_generation_unavailable"
+                process_baseline = dict(runtime_setup.get("processBaseline") or {})
+                expected_process_fingerprint = str(runtime_setup.get("processGenerationFingerprint") or "")
+                setup_warmup = dict(runtime_setup.get("setupWarmup") or {})
+                if runtime_setup.get("ok") is not True:
+                    series_reason = str(runtime_setup.get("reason") or "runtime_setup_warmup_failed")
 
             for iteration in range(1, requested_iterations + 1):
                 if series_reason:
                     break
                 title = f"Scriber B7 TextReceiver {provider} {iteration}"
-                activation_kind = PROVIDER_REPLAY_ACTIVATION_KINDS[
-                    (iteration - 1) % len(PROVIDER_REPLAY_ACTIVATION_KINDS)
-                ]
+                activation_kind = activation_kinds[(iteration - 1) % len(activation_kinds)]
                 iteration_dir = scenario_dir / f"iteration-{iteration:02d}"
                 iteration_dir.mkdir(parents=True, exist_ok=True)
                 receiver_stdout = iteration_dir / "receiver.stdout.txt"
@@ -2794,6 +3609,9 @@ def run_provider_text_replay(
                 sample_error = ""
                 activation_action: dict[str, Any] = {}
                 target_focus_after_activation: dict[str, Any] = {}
+                target_focus_through_injection: dict[str, Any] = {}
+                post_processing_output: dict[str, Any] = {}
+                benchmark_transcript_cleanup: dict[str, Any] = {}
                 expected_visible_text_sha256 = ""
                 expected_visible_text_length: int | None = None
                 try:
@@ -2823,35 +3641,40 @@ def run_provider_text_replay(
                         or not fixture_text
                         or fixture_hash != sha256_text(fixture_text)
                         or prepared.get("fixtureTextLength") != len(fixture_text)
-                        or prepared.get("authoritativeFixtureDurationMs") != int(round(fixture_duration_ms))
+                        or prepared.get("authoritativeFixtureDurationMs") != round(fixture_duration_ms)
                         or prepared.get("processGenerationFingerprint") != expected_process_fingerprint
+                        or prepared.get("postProcessingMode") != ("cloud" if post_processing else "raw")
                     ):
                         raise RuntimeError("prepare_contract_invalid")
                     sample_id = _canonical_non_nil_uuid(prepared.get("sampleId"))
-                    expected_visible_text = provider_replay_expected_visible_text(fixture_text)
-                    expected_visible_text_sha256 = sha256_text(expected_visible_text)
-                    expected_visible_text_length = len(expected_visible_text.encode("utf-16-le")) // 2
+                    if not post_processing:
+                        expected_visible_text = provider_replay_expected_visible_text(fixture_text)
+                        expected_visible_text_sha256 = sha256_text(expected_visible_text)
+                        expected_visible_text_length = len(expected_visible_text.encode("utf-16-le")) // 2
 
+                    observer_args = [
+                        "powershell.exe",
+                        "-NoProfile",
+                        "-Sta",
+                        "-ExecutionPolicy",
+                        "Bypass",
+                        "-File",
+                        str(repo_root / "benchmarks" / "windows" / "text_observer.ps1"),
+                        "-WindowTitle",
+                        title,
+                        "-TimeoutSec",
+                        str(max(5, sample_timeout_sec)),
+                        "-OutputPath",
+                        str(observer_path),
+                        "-ReadyPath",
+                        str(observer_ready_path),
+                    ]
+                    if post_processing:
+                        observer_args.append("-ObserveFirstNonEmpty")
+                    else:
+                        observer_args.extend(["-ExpectedSha256", expected_visible_text_sha256])
                     observer = run_process(
-                        [
-                            "powershell.exe",
-                            "-NoProfile",
-                            "-Sta",
-                            "-ExecutionPolicy",
-                            "Bypass",
-                            "-File",
-                            str(repo_root / "benchmarks" / "windows" / "text_observer.ps1"),
-                            "-WindowTitle",
-                            title,
-                            "-ExpectedSha256",
-                            expected_visible_text_sha256,
-                            "-TimeoutSec",
-                            str(max(5, sample_timeout_sec)),
-                            "-OutputPath",
-                            str(observer_path),
-                            "-ReadyPath",
-                            str(observer_ready_path),
-                        ],
+                        observer_args,
                         cwd=repo_root,
                         stdout_path=observer_stdout,
                         stderr_path=observer_stderr,
@@ -2905,13 +3728,18 @@ def run_provider_text_replay(
                     )
                     if target_focus_after_activation.get("ok") is not True:
                         raise RuntimeError("button_target_refocus_failed")
-                    completed = wait_provider_replay_status(
+                    completed, target_focus_through_injection = wait_provider_replay_status_with_target_focus(
                         port,
                         token,
                         run_id,
                         sample_id,
                         max(20, sample_timeout_sec),
+                        title=title,
+                        receiver_pid=receiver.pid,
+                        expected_target_generation_sha256=str(target_attestation.get("targetGenerationSha256") or ""),
                     )
+                    if target_focus_through_injection.get("ok") is not True:
+                        raise RuntimeError("target_focus_lease_lost")
                     observer_exit = wait_process(
                         observer,
                         max(10, sample_timeout_sec + 10),
@@ -2923,6 +3751,14 @@ def run_provider_text_replay(
                         successful_terminal_state,
                         max(20, sample_timeout_sec),
                     )
+                    if post_processing:
+                        post_processing_output = attest_provider_replay_post_processing_output(
+                            port,
+                            token,
+                            str(completed.get("sessionId") or ""),
+                        )
+                        expected_visible_text_sha256 = str(post_processing_output.get("visibleTextSha256") or "")
+                        expected_visible_text_length = post_processing_output.get("visibleTextLength")
                     generation_after = process_generation_snapshot(
                         app_pid,
                         backend_pid,
@@ -2950,10 +3786,12 @@ def run_provider_text_replay(
                         expected_fixture_duration_ms=fixture_duration_ms,
                         expected_audio_fixture=fixture_record,
                         expected_audio_preparation_implementation=(expected_audio_preparation_implementation),
+                        expected_post_processing_mode=("cloud" if post_processing else "raw"),
+                        post_processing_output_attestation=(post_processing_output if post_processing else None),
                     )
                     if not successful_terminal_state(terminal):
                         validation["reasons"].append("runtime_terminal_state_invalid")
-                    if not process_generation_matches(process_baseline, generation_after):
+                    if not provider_replay_runtime_generation_matches(process_baseline, generation_after):
                         validation["reasons"].append("runtime_generation_changed")
                     if not target_after.get("ok") or target_after.get(
                         "targetGenerationSha256"
@@ -2968,6 +3806,23 @@ def run_provider_text_replay(
                         "durationMs": "unknown",
                     }
                 finally:
+                    if post_processing:
+                        bound_session_id = _canonical_non_nil_uuid(completed.get("sessionId"))
+                        if bound_session_id:
+                            benchmark_transcript_cleanup = delete_provider_replay_post_processing_transcript(
+                                port,
+                                token,
+                                bound_session_id,
+                            )
+                            if benchmark_transcript_cleanup.get("ok") is not True:
+                                validation.setdefault("reasons", []).append("post_processing_transcript_cleanup_failed")
+                                validation["ok"] = False
+                        else:
+                            benchmark_transcript_cleanup = {
+                                "attempted": False,
+                                "ok": False,
+                                "reason": "post_processing_session_unavailable",
+                            }
                     terminate_child(observer)
                     terminate_child(receiver)
 
@@ -2992,6 +3847,10 @@ def run_provider_text_replay(
                 )
                 stop_measured = validation.get(
                     "stopRequestedToFinalTextObservedMs",
+                    "unknown",
+                )
+                button_input_measured = validation.get(
+                    "buttonInputToFinalTextObservedMs",
                     "unknown",
                 )
                 capture_fixture_attested = bool(
@@ -3019,8 +3878,20 @@ def run_provider_text_replay(
                     durations.append(float(measured))
                     activation_durations.append(float(activation_measured))
                     stop_durations.append(float(stop_measured))
+                    if activation_kind == "button" and finite_number(button_input_measured):
+                        button_input_durations.append(float(button_input_measured))
                     if finite_number(non_speech_overhead):
                         non_speech_overheads.append(float(non_speech_overhead))
+                    if post_processing:
+                        post_processing_diagnostic = validation.get("postProcessingDiagnostic")
+                        if isinstance(post_processing_diagnostic, dict):
+                            processing_duration = post_processing_diagnostic.get("durationMs")
+                            if finite_number(processing_duration) and float(processing_duration) >= 0:
+                                post_processing_durations.append(float(processing_duration))
+                        if validation.get("postProcessingOutcome") == "cloud_success":
+                            post_processing_successes += 1
+                        elif validation.get("postProcessingOutcome") == "raw_fallback":
+                            post_processing_raw_fallbacks += 1
                     validation_markers = {
                         str(item.get("marker") or ""): item
                         for item in completed.get("markers", [])
@@ -3053,6 +3924,7 @@ def run_provider_text_replay(
                     )
                 sample_result = {
                     "provider": provider,
+                    "postProcessingMode": "cloud" if post_processing else "raw",
                     "iteration": iteration,
                     "scenario": scenario_name,
                     "activationKind": activation_kind,
@@ -3068,6 +3940,13 @@ def run_provider_text_replay(
                     "fixtureTextLength": prepared.get("fixtureTextLength"),
                     "expectedVisibleTextSha256": expected_visible_text_sha256,
                     "expectedVisibleTextLength": expected_visible_text_length,
+                    "postProcessingOutcome": validation.get("postProcessingOutcome"),
+                    "postProcessingOutput": (
+                        provider_replay_post_processing_output_evidence(post_processing_output)
+                        if post_processing
+                        else None
+                    ),
+                    "benchmarkTranscriptCleanup": (benchmark_transcript_cleanup if post_processing else None),
                     "inputMethod": "installed_backend_provider_replay",
                     "providerCandidate": {
                         "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
@@ -3082,11 +3961,17 @@ def run_provider_text_replay(
                     "observerReady": observer_ready,
                     "activationAction": activation_action,
                     "targetFocusAfterActivation": (target_focus_after_activation),
+                    "targetFocusThroughInjection": (target_focus_through_injection),
                     "focus": focus,
                     "targetAttestation": target_attestation,
                     "targetAfter": target_after,
                     "terminalState": terminal,
-                    "generationAfterMatches": process_generation_matches(
+                    "runtimeGenerationContract": "exact-desktop-backend-v1",
+                    "generationAfterMatches": provider_replay_runtime_generation_matches(
+                        process_baseline,
+                        generation_after,
+                    ),
+                    "webViewGenerationAfterMatches": process_generation_matches(
                         process_baseline,
                         generation_after,
                     ),
@@ -3096,6 +3981,7 @@ def run_provider_text_replay(
                     "targetTextObserved": target_text_observed,
                     "durationMs": measured,
                     "activationReceivedToFinalTextObservedMs": activation_measured,
+                    "buttonInputToFinalTextObservedMs": button_input_measured,
                     "stopRequestedToFinalTextObservedMs": stop_measured,
                     "captureFixtureAttested": capture_fixture_attested,
                     "audioPreparationImplementationExpected": (expected_audio_preparation_implementation),
@@ -3105,6 +3991,7 @@ def run_provider_text_replay(
                         **dict(validation.get("canonicalKpis") or {}),
                         "non_speech_overhead_ms": non_speech_overhead,
                     },
+                    "benchmarkInputKpis": dict(validation.get("benchmarkInputKpis") or {}),
                     "metricEligible": bool(validation.get("ok")),
                     "reasons": list(validation.get("reasons") or []),
                     "error": sample_error,
@@ -3114,8 +4001,16 @@ def run_provider_text_replay(
                 }
                 results.append(sample_result)
                 if not sample_result["metricEligible"]:
-                    series_reason = "provider_replay_sample_failed_closed"
-                    break
+                    sample_failure_observed = True
+                    runtime_reusable = provider_replay_runtime_reusable_after_sample(
+                        generation_after_matches=bool(sample_result["generationAfterMatches"]),
+                        target_after=target_after,
+                        target_attestation=target_attestation,
+                        terminal=terminal,
+                    )
+                    if not runtime_reusable:
+                        series_reason = "provider_replay_runtime_or_target_generation_changed"
+                        break
         except Exception as exc:
             series_reason = series_reason or f"provider_series_exception:{type(exc).__name__}"
         finally:
@@ -3127,6 +4022,23 @@ def run_provider_text_replay(
         metrics[f"{metric_prefix}_p50_ms"] = percentile_ms(durations, 50.0)
         metrics[f"{metric_prefix}_p95_ms"] = percentile_ms(durations, 95.0)
         metrics[f"{metric_prefix}_sample_count"] = len(durations)
+        if post_processing:
+            metrics[f"{metric_prefix}_post_processing_p50_ms"] = percentile_ms(
+                post_processing_durations,
+                50.0,
+            )
+            metrics[f"{metric_prefix}_post_processing_p95_ms"] = percentile_ms(
+                post_processing_durations,
+                95.0,
+            )
+            metrics[f"{metric_prefix}_post_processing_success_rate"] = round(
+                post_processing_successes / max(1, requested_iterations),
+                6,
+            )
+            metrics[f"{metric_prefix}_post_processing_raw_fallback_rate"] = round(
+                post_processing_raw_fallbacks / max(1, requested_iterations),
+                6,
+            )
         provider_samples = [
             item for item in results if item.get("provider") == provider and item.get("scenario") == scenario_name
         ]
@@ -3135,16 +4047,15 @@ def run_provider_text_replay(
             and len(provider_samples) == requested_iterations
             and all(item.get("captureFixtureAttested") is True for item in provider_samples)
         )
-        stage_zero_distributions = {
-            "activation_received_to_final_text_observed": (activation_durations),
-            "stop_requested_to_final_text_observed": stop_durations,
-            "non_speech_overhead": non_speech_overheads,
-        }
-        for kpi_name, values in stage_zero_distributions.items():
-            distribution = summarize_stage_zero_distribution(
-                values,
-                attempted=requested_iterations,
-            )
+        stage_zero_distributions = summarize_provider_replay_distributions(
+            activation_durations=activation_durations,
+            stop_durations=stop_durations,
+            non_speech_overheads=non_speech_overheads,
+            button_input_durations=button_input_durations,
+            attempted_samples=requested_iterations,
+            attempted_button_samples=requested_button_iterations,
+        )
+        for kpi_name, distribution in stage_zero_distributions.items():
             prefix = f"{scenario_name}_{kpi_name}"
             metrics[f"{prefix}_p50_ms"] = distribution["p50Ms"]
             metrics[f"{prefix}_p90_ms"] = distribution["p90Ms"]
@@ -3164,18 +4075,14 @@ def run_provider_text_replay(
             "durationBucket": duration_slug,
             "audioFixtureBytesAttested": audio_fixture_attested,
             "captureFixtureAttested": series_capture_fixture_attested,
-            "kpis": {
-                kpi_name: summarize_stage_zero_distribution(
-                    values,
-                    attempted=requested_iterations,
-                )
-                for kpi_name, values in stage_zero_distributions.items()
-            },
+            "kpis": stage_zero_distributions,
         }
         series_ok = bool(
             not series_reason
+            and not sample_failure_observed
             and len(provider_samples) == requested_iterations
             and len(durations) == requested_iterations
+            and len(button_input_durations) == requested_button_iterations
             and series_capture_fixture_attested
             and all(item.get("metricEligible") for item in provider_samples)
             and cleanup.get("ok")
@@ -3193,8 +4100,15 @@ def run_provider_text_replay(
                 "backendPid": backend_pid,
                 "backendPort": port,
                 "processGenerationFingerprint": expected_process_fingerprint,
+                "runtimeGenerationContract": "exact-desktop-backend-v1",
+                "setupWarmup": setup_warmup,
                 "requestedSamples": requested_iterations,
                 "measuredSamples": len(durations),
+                "requestedButtonInputSamples": requested_button_iterations,
+                "measuredButtonInputSamples": len(button_input_durations),
+                "postProcessingMeasuredSamples": len(post_processing_durations),
+                "postProcessingSuccesses": post_processing_successes,
+                "postProcessingRawFallbacks": post_processing_raw_fallbacks,
                 "captureFixtureAttested": series_capture_fixture_attested,
                 "providerCandidate": {
                     "azureMaiCaptureTimeMp3": azure_capture_time_mp3,
@@ -3213,7 +4127,12 @@ def run_provider_text_replay(
                 "runtimeStarted": bool(smoke.get("ok")),
                 "cleanup": cleanup,
                 "ok": series_ok,
-                "reason": "measured" if series_ok else (series_reason or "cleanup_failed"),
+                "reason": (
+                    "measured"
+                    if series_ok
+                    else series_reason
+                    or ("provider_replay_sample_failed_closed" if sample_failure_observed else "cleanup_failed")
+                ),
             }
         )
 
@@ -3229,6 +4148,7 @@ def run_provider_text_replay(
         "ok": ok,
         "reason": "measured" if ok else "installed_provider_replay_failed_closed",
         "installedRuntimeOnly": True,
+        "postProcessingMode": "cloud" if post_processing else "raw",
         "requestedSamplesPerProviderDuration": requested_iterations,
         "requestedSamplesPerProvider": requested_iterations * len(duration_values),
         "providerCandidate": {
@@ -4560,7 +5480,8 @@ def main(argv: list[str] | None = None) -> int:
 
     imported_env_names = import_dotenv_into_process(repo_root / ".env")
     sample_plan = dict(SAMPLE_PLANS[args.suite])
-    provider_replay_only = args.suite == "ProviderReplay"
+    provider_replay_post_processing_only = args.suite == "ProviderReplayPostProcessing"
+    provider_replay_only = args.suite in {"ProviderReplay", "ProviderReplayPostProcessing"}
     evidence: dict[str, Any] = {}
     if provider_replay_only:
         evidence["overlayHotkey"] = {
@@ -4622,6 +5543,7 @@ def main(argv: list[str] | None = None) -> int:
         "reason": "provider_text_replay_harness_missing",
     }
     try:
+        provider_replay_options = {"post_processing": True} if provider_replay_post_processing_only else {}
         evidence["providerReplay"] = run_provider_text_replay(
             repo_root,
             install_root,
@@ -4631,6 +5553,7 @@ def main(argv: list[str] | None = None) -> int:
             fixture_durations_ms=tuple(
                 int(seconds) * 1000 for seconds in sample_plan["providerReplayDurationsSeconds"]
             ),
+            **provider_replay_options,
         )
     except Exception as exc:
         evidence["providerReplay"] = {
@@ -4678,6 +5601,38 @@ def main(argv: list[str] | None = None) -> int:
         if key in resource_metrics:
             metrics[key] = resource_metrics[key]
     provider_ok = bool(evidence["providerReplay"].get("ok"))
+    if provider_replay_post_processing_only:
+        measured = bool(provider_ok and evidence["providerReplay"].get("metricEligible"))
+        payload = {
+            "schemaVersion": 1,
+            "status": "POST_PROCESSING_REPLAY_MEASURED" if measured else "BLOCKED",
+            "reason": (
+                "installed_cloud_post_processing_replay_measured"
+                if measured
+                else str(evidence["providerReplay"].get("reason") or "installed_provider_replay_failed_closed")
+            ),
+            "scope": "installed_provider_replay_cloud_post_processing_only",
+            "generatedAtUtc": utc_now(),
+            "suite": args.suite,
+            "promotionEligible": False,
+            "promotionEvaluation": {
+                "evaluated": False,
+                "reason": "cloud_post_processing_replay_is_diagnostic_only",
+                "providerDurationPoolingAllowed": False,
+                "localWuxEvaluated": False,
+            },
+            "samplePlan": sample_plan,
+            "importedEnvNames": imported_env_names,
+            "qpcFrequency": qpc_frequency(),
+            "evidence": evidence,
+            "metrics": metrics,
+        }
+        output_path.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0 if measured else 2
     if provider_replay_only:
         canonical_provider_evidence_valid = canonical_provider_replay_evidence_valid(metrics)
         provider_replay_succeeded = bool(

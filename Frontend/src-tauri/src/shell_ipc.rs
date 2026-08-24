@@ -338,6 +338,7 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                     "overlayHide",
                     "overlayAudioLevel",
                     "overlayStatus",
+                    "postProcessingFallbackNotify",
                 ],
                 "textInjection": true,
                 "nativeDeviceEventsStatus": true,
@@ -445,6 +446,19 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                         "renderer": "tauri-webview",
                         "windowLabel": crate::native_overlay::OVERLAY_WINDOW_LABEL,
                     }),
+                ),
+            }
+        }
+        "postProcessingFallbackNotify" => {
+            match crate::native_overlay::show_post_processing_fallback_notification(payload) {
+                Ok(payload) => response_line(request_id, true, "", "", started, payload),
+                Err(err) => response_line(
+                    request_id,
+                    false,
+                    "desktopNotificationUnavailable",
+                    &err,
+                    started,
+                    json!({ "accepted": false }),
                 ),
             }
         }
@@ -4064,6 +4078,34 @@ mod tests {
             .unwrap()
             .iter()
             .any(|command| command == "overlayHide"));
+        assert!(value["payload"]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command == "postProcessingFallbackNotify"));
+    }
+
+    #[test]
+    fn shell_ipc_fallback_notification_has_a_bounded_failure_contract() {
+        let request = json!({
+            "apiVersion": API_VERSION,
+            "requestId": "r-fallback-notification",
+            "command": "postProcessingFallbackNotify",
+            "token": "secret",
+            "payload": {
+                "eventId": "post-processing-fallback:session-1",
+                "primaryModel": "cerebras/gemma-4-31b",
+                "fallbackModel": "minimax/minimax-m3:nitro"
+            }
+        })
+        .to_string();
+
+        let response = handle_shell_ipc_request(&request, "secret");
+        let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+
+        assert_eq!(value["success"], false);
+        assert_eq!(value["errorCode"], "desktopNotificationUnavailable");
+        assert_eq!(value["payload"]["accepted"], false);
     }
 
     #[test]

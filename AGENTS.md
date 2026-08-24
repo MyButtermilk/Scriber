@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-23
+Last verified: 2026-08-24
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -356,7 +356,8 @@ Frontend and shell:
   queue only a validated, expiring YouTube request for the primary instance and
   must not log raw video metadata.
 - `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
-  IPC for opt-in native shell work, including text injection and diagnostics.
+  IPC for opt-in native shell work, including text injection, diagnostics, and
+  the synchronous Windows fallback-model toast acknowledgement.
 - `Frontend/src-tauri/tauri.conf.json`: Tauri build, CSP, NSIS bundle, backend
   resource mapping, before-bundle sidecar command.
 - `Frontend/src-tauri/windows/installer-template.nsi`: reviewed Tauri CLI
@@ -1281,7 +1282,41 @@ Packaging and scripts:
 - Live microphone post-processing is opt-in per session through the second
   hotkey. When active, suppress pipeline raw-text injection, wait for final STT
   text after stop, then route it to the explicitly selected cloud provider or
-  local GGUF engine. The cloud path keeps the configured `${output}` prompt.
+  local GGUF engine. The cloud path keeps the configured `${output}` prompt,
+  keeps the general cross-provider fallback inside one seven-second model-
+  routing deadline by default, preventing a serial retry chain from delaying
+  insertion without bound. Its default latency lane uses low OpenRouter
+  reasoning, the explicitly selected `POST_PROCESSING_FALLBACK_MODEL`, one
+  semantic generation, and no replay of an interrupted response-body request.
+  A confirmed 401/403 credential rejection bypasses that exact primary
+  model/credential pair until
+  the key/model changes or the process restarts; HTTP 402 quota failures use a
+  60-second circuit, while request-specific 400 and transient failures are not
+  cached. These overrides are task-local and must not change Meeting or ordinary
+  summary routing. The complete primary/fallback route holds one provider-HTTP
+  transport lease: shutdown seals new work immediately but the last active
+  borrower owns cancellation-safe session closure, so it cannot close the pool
+  between primary and fallback. `SCRIBER_LIVE_POST_PROCESSING_TIMEOUT_SEC` may
+  tune the deadline from 0.05 to 30 seconds for diagnostics. A provider failure
+  or deadline expiry retains and inserts the raw transcript immediately.
+  Only a successfully accepted cloud fallback may request the authenticated
+  Tauri `postProcessingFallbackNotify` shell command and publish the versioned
+  `post_processing_fallback_used` event. The native Windows toast is the normal
+  hidden/background-main-window path, but it may acknowledge acceptance only
+  after the WinRT notifier reports `Enabled` and accepts `Show`. Isolate that
+  call on the dedicated fail-fast notification worker; never hold the event-ID
+  history lock across WinRT or consume an unbounded shared shell IPC worker.
+  Carry the same bounded event ID through shell IPC, retain the last 100 accepted
+  IDs in the shell, and start the original 750-ms post-injection deadline before
+  executor admission. The event carries `desktopNotificationAccepted`; the app-
+  global frontend bridge owns a deduplicated in-app toast when the foreground
+  main window owns delivery or native delivery was unavailable. Keep a native-
+  rejected event in the authoritative WebSocket state for at most two minutes so
+  a transiently disconnected WebView can replay it by the same event ID. Primary
+  success, failed fallback, raw-text
+  fallback, and local polishing must use neither path. Settings exposes only
+  supported OpenRouter fallback choices and persists the selection independently
+  from the primary post-processing model.
   The local path uses only the pinned conservative product prompt/policy,
   defaults to Q8_0, optionally supports BF16, and must never fall through to a
   cloud provider after a local failure. In every failure case retain and insert

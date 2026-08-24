@@ -17,6 +17,7 @@ from src.celeris import (
     celeris_request_max_tokens,
     estimate_celeris_prompt_tokens,
 )
+from src.core.provider_errors import ProviderTransportError
 from src.meeting_analysis import analyze_meeting, partition_analysis_segments
 
 
@@ -188,7 +189,7 @@ async def test_celeris_transport_error_is_bounded_and_content_free() -> None:
         ]
     )
 
-    with pytest.raises(RuntimeError) as caught:
+    with pytest.raises(ProviderTransportError) as caught:
         await celeris_chat_completion(
             "private prompt",
             max_output_tokens=256,
@@ -199,6 +200,8 @@ async def test_celeris_transport_error_is_bounded_and_content_free() -> None:
 
     message = str(caught.value)
     assert "invalid_request_error" in message
+    assert caught.value.status == 400
+    assert caught.value.code == "invalid_request_error"
     assert "private prompt" not in message
     assert "private-test-key" not in message
 

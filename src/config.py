@@ -397,6 +397,14 @@ class Config:
     ).strip().lower() in {"1", "true", "yes", "on"}
 
     DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b"
+    POST_PROCESSING_FALLBACK_MODELS = (
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-120b:cerebras",
+        "google/gemini-2.5-flash-lite:nitro",
+        "minimax/minimax-m3:nitro",
+        "z-ai/glm-5.2:nitro",
+    )
+    DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro"
     _LEGACY_DEFAULT_POST_PROCESSING_MODELS: ClassVar[set[str]] = {
         "",
         "gpt-5-nano",
@@ -520,6 +528,24 @@ ${output}"""
     POST_PROCESSING_MODEL = (
         _configured_post_processing_model or _env_post_processing_model or DEFAULT_POST_PROCESSING_MODEL
     )
+    _configured_post_processing_fallback_model = (_json_settings.get("postProcessingFallbackModel") or "").strip()
+    _env_post_processing_fallback_model = (os.getenv("SCRIBER_POST_PROCESSING_FALLBACK_MODEL") or "").strip()
+    _legacy_summary_fallback_models = (os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS") or "").strip()
+    _legacy_post_processing_fallback_model = (
+        _legacy_summary_fallback_models.split(",", 1)[0].strip() if _legacy_summary_fallback_models else ""
+    )
+    if _legacy_post_processing_fallback_model and ":" not in _legacy_post_processing_fallback_model:
+        _legacy_nitro_candidate = f"{_legacy_post_processing_fallback_model}:nitro"
+        if _legacy_nitro_candidate in POST_PROCESSING_FALLBACK_MODELS:
+            _legacy_post_processing_fallback_model = _legacy_nitro_candidate
+    POST_PROCESSING_FALLBACK_MODEL = (
+        _configured_post_processing_fallback_model
+        or _env_post_processing_fallback_model
+        or _legacy_post_processing_fallback_model
+        or DEFAULT_POST_PROCESSING_FALLBACK_MODEL
+    )
+    if POST_PROCESSING_FALLBACK_MODEL not in POST_PROCESSING_FALLBACK_MODELS:
+        POST_PROCESSING_FALLBACK_MODEL = DEFAULT_POST_PROCESSING_FALLBACK_MODEL
 
     # OpenAI Speech-to-Text models. Keep realtime and batch separate so the
     # low-latency websocket model cannot accidentally be used for file upload.
@@ -855,6 +881,16 @@ ${output}"""
         _json_settings["postProcessingModel"] = cls.POST_PROCESSING_MODEL
 
     @classmethod
+    def set_post_processing_fallback_model(cls, model: str) -> None:
+        normalized = str(model or "").strip()
+        if normalized not in cls.POST_PROCESSING_FALLBACK_MODELS:
+            raise ValueError("Unsupported post-processing fallback model.")
+        cls.POST_PROCESSING_FALLBACK_MODEL = normalized
+        os.environ["SCRIBER_POST_PROCESSING_FALLBACK_MODEL"] = normalized
+        global _json_settings
+        _json_settings["postProcessingFallbackModel"] = normalized
+
+    @classmethod
     def persist_json_settings(cls) -> None:
         global _json_settings_migration_pending
         _save_json_settings(dict(_json_settings))
@@ -940,6 +976,10 @@ ${output}"""
         add("SCRIBER_POST_PROCESSING_ENGINE", cls.POST_PROCESSING_ENGINE)
         add("SCRIBER_LOCAL_POLISHING_VARIANT", cls.LOCAL_POLISHING_VARIANT)
         add("SCRIBER_POST_PROCESSING_MODEL", cls.POST_PROCESSING_MODEL or cls.DEFAULT_POST_PROCESSING_MODEL)
+        add(
+            "SCRIBER_POST_PROCESSING_FALLBACK_MODEL",
+            cls.POST_PROCESSING_FALLBACK_MODEL or cls.DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
+        )
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)

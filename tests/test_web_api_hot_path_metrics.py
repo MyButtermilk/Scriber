@@ -246,6 +246,15 @@ async def test_post_processing_diagnostics_are_exposed_without_transcript_text(t
             "rawWords": 20,
             "promptChars": 1800,
             "maxOutputTokens": 512,
+            "deadlineMs": 8000.0,
+            "fallbackPolicy": "bounded_cross_provider",
+            "openRouterReasoningEffort": "low",
+            "openRouterSemanticAttemptLimit": 1,
+            "primaryBypassed": True,
+            "primaryBypassReason": "credential_rejected",
+            "primaryCircuitCooldownMs": None,
+            "primaryFailureCode": "invalid_request_error",
+            "primaryFailureStatus": 401,
             "fallbackToRaw": True,
             "errorType": "RuntimeError",
             "error": "provider failed",
@@ -260,6 +269,15 @@ async def test_post_processing_diagnostics_are_exposed_without_transcript_text(t
     assert item["status"] == "failure"
     assert item["fallbackToRaw"] is True
     assert item["promptChars"] == 1800
+    assert item["deadlineMs"] == 8000.0
+    assert item["fallbackPolicy"] == "bounded_cross_provider"
+    assert item["openRouterReasoningEffort"] == "low"
+    assert item["openRouterSemanticAttemptLimit"] == 1
+    assert item["primaryBypassed"] is True
+    assert item["primaryBypassReason"] == "credential_rejected"
+    assert item["primaryCircuitCooldownMs"] is None
+    assert item["primaryFailureCode"] == "invalid_request_error"
+    assert item["primaryFailureStatus"] == 401
     assert "rawText" not in item
     assert "private dictated transcript" not in str(diagnostics)
 

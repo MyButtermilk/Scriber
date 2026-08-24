@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import Any, Protocol
@@ -7,8 +8,10 @@ from typing import Any, Protocol
 from loguru import logger
 
 from src.config import Config
+from src.core.provider_errors import ProviderTransportError
 from src.runtime.env_values import env_float, env_int
-from src.summarization import generate_text_with_model
+from src.runtime.provider_http import ProviderHttpTransport
+from src.summarization import generate_live_mic_text
 
 _OUTPUT_PLACEHOLDER = "${output}"
 _THINK_TAG_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
@@ -51,7 +54,7 @@ def post_processing_output_token_budget(raw_text: str) -> int:
     )
     minimum = env_int(
         "SCRIBER_POST_PROCESSING_MIN_OUTPUT_TOKENS",
-        512,
+        768,
         minimum=1,
         maximum=65536,
     )
@@ -65,6 +68,26 @@ def post_processing_output_token_budget(raw_text: str) -> int:
     return max(minimum, min(maximum, estimated))
 
 
+def live_post_processing_timeout_seconds() -> float:
+    """Return the cloud model-routing deadline for one Live Mic result."""
+    return env_float(
+        "SCRIBER_LIVE_POST_PROCESSING_TIMEOUT_SEC",
+        7.0,
+        minimum=0.05,
+        maximum=30.0,
+    )
+
+
+def live_post_processing_openrouter_max_semantic_attempts() -> int:
+    """Return the semantic OpenRouter generation cap for one Live Mic result."""
+    return env_int(
+        "SCRIBER_LIVE_POST_PROCESSING_OPENROUTER_MAX_SEMANTIC_ATTEMPTS",
+        1,
+        minimum=1,
+        maximum=4,
+    )
+
+
 async def post_process_live_transcript(
     raw_text: str,
     *,
@@ -73,6 +96,7 @@ async def post_process_live_transcript(
     local_polisher: LocalTranscriptPolisher | None = None,
     local_variant: str | None = None,
     diagnostics: dict[str, Any] | None = None,
+    provider_http_transport: ProviderHttpTransport | None = None,
 ) -> str:
     """Clean live-mic transcript text before insertion into the active app."""
     transcript = (raw_text or "").strip()
@@ -130,6 +154,8 @@ async def post_process_live_transcript(
     selected_model = model or Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL
     prompt = build_post_processing_prompt(transcript)
     max_output_tokens = post_processing_output_token_budget(transcript)
+    deadline_seconds = live_post_processing_timeout_seconds()
+    openrouter_max_semantic_attempts = live_post_processing_openrouter_max_semantic_attempts()
     if diagnostics is not None:
         diagnostics.update(
             {
@@ -140,20 +166,61 @@ async def post_process_live_transcript(
                 "rawWords": len(transcript.split()),
                 "promptChars": len(prompt),
                 "maxOutputTokens": max_output_tokens,
+                "deadlineMs": deadline_seconds * 1000.0,
+                "openRouterReasoningEffort": "low",
+                "openRouterSemanticAttemptLimit": openrouter_max_semantic_attempts,
+                "fallbackPolicy": "bounded_cross_provider",
             }
         )
     logger.info(
-        "Post-processing live transcript with {} ({} chars, max_output_tokens={})",
+        "Post-processing live transcript with {} ({} chars, max_output_tokens={}, deadline_seconds={})",
         selected_model,
         len(transcript),
         max_output_tokens,
+        deadline_seconds,
     )
     started = time.monotonic()
-    processed = await generate_text_with_model(
-        prompt,
-        selected_model,
-        max_output_tokens=max_output_tokens,
-    )
+    try:
+        async with asyncio.timeout(deadline_seconds):
+            processed = await generate_live_mic_text(
+                prompt,
+                selected_model,
+                max_output_tokens=max_output_tokens,
+                openrouter_reasoning_effort="low",
+                openrouter_max_semantic_attempts=openrouter_max_semantic_attempts,
+                routing_diagnostics=diagnostics,
+                provider_http_transport=provider_http_transport,
+            )
+    except TimeoutError as exc:
+        duration_ms = (time.monotonic() - started) * 1000
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "status": "deadline_exceeded",
+                    "fallbackToRaw": True,
+                    "reasonCodes": ["deadline_exceeded"],
+                    "durationMs": duration_ms,
+                }
+            )
+        raise RuntimeError(f"Live mic post-processing deadline exceeded after {deadline_seconds:g}s.") from exc
+    except Exception as exc:
+        duration_ms = (time.monotonic() - started) * 1000
+        reason_codes = ["provider_error" if isinstance(exc, ProviderTransportError) else "generation_failed"]
+        if isinstance(exc, ProviderTransportError):
+            if exc.code:
+                reason_codes.append(exc.code)
+            elif exc.status is not None:
+                reason_codes.append(f"http_{exc.status}")
+        if diagnostics is not None:
+            diagnostics.update(
+                {
+                    "status": "failed",
+                    "fallbackToRaw": True,
+                    "reasonCodes": reason_codes,
+                    "durationMs": duration_ms,
+                }
+            )
+        raise
     cleaned = clean_post_processing_output(processed)
     duration_ms = (time.monotonic() - started) * 1000
     if diagnostics is not None:
@@ -165,6 +232,7 @@ async def post_process_live_transcript(
                 "cleanedChars": len(cleaned or ""),
                 "outputChanged": cleaned != transcript,
                 "durationMs": duration_ms,
+                "fallbackToRaw": False,
             }
         )
     if not cleaned:

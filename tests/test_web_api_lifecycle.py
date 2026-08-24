@@ -1166,6 +1166,166 @@ async def test_render_transcript_export_async_runs_renderer(monkeypatch):
     assert ext == "pdf"
 
 
+@pytest.mark.asyncio
+async def test_create_app_serializes_transcript_and_meeting_document_exports(monkeypatch):
+    from src.api.meeting_artifact_routes import (
+        APP_MEETING_ARTIFACT_ROUTES,
+        MeetingDocumentRenderCommand,
+    )
+    from src.api.transcript_routes import (
+        APP_TRANSCRIPT_SERVICE,
+        TranscriptDocumentRenderCommand,
+    )
+
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    active = 0
+    peak_active = 0
+    entered_formats: list[str] = []
+
+    async def controlled_render(**kwargs):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        entered_formats.append(kwargs["export_format"])
+        try:
+            if len(entered_formats) == 1:
+                first_entered.set()
+                await release_first.wait()
+            return b"document", "application/octet-stream", kwargs["export_format"]
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(web_api, "_render_transcript_export_async", controlled_render)
+    controller = object.__new__(ScriberWebController)
+    controller._meeting_store = object()
+    app = web_api.create_app(controller)
+    transcript_renderer = app[APP_TRANSCRIPT_SERVICE].renderer
+    meeting_renderer = app[APP_MEETING_ARTIFACT_ROUTES].deps().renderer
+
+    transcript_task = asyncio.create_task(
+        transcript_renderer.render(
+            TranscriptDocumentRenderCommand(
+                export_format="pdf",
+                title="Transcript",
+                content="Body",
+                summary="Summary",
+                summary_format="markdown",
+                date="Today",
+                duration="00:01",
+            )
+        )
+    )
+    await asyncio.wait_for(first_entered.wait(), timeout=1.0)
+    meeting_task = asyncio.create_task(
+        meeting_renderer.render(
+            MeetingDocumentRenderCommand(
+                export_format="docx",
+                title="Meeting",
+                content="Body",
+                summary="Summary",
+                date="Today",
+                duration="00:01",
+                document_labels={},
+            )
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert entered_formats == ["pdf"]
+    assert not meeting_task.done()
+
+    release_first.set()
+    await asyncio.gather(transcript_task, meeting_task)
+
+    assert entered_formats == ["pdf", "docx"]
+    assert peak_active == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_document_export_holds_gate_until_worker_finishes(monkeypatch):
+    from src.api.meeting_artifact_routes import (
+        APP_MEETING_ARTIFACT_ROUTES,
+        MeetingDocumentRenderCommand,
+    )
+    from src.api.transcript_routes import (
+        APP_TRANSCRIPT_SERVICE,
+        TranscriptDocumentRenderCommand,
+    )
+
+    first_worker_started = threading.Event()
+    finish_first_worker = threading.Event()
+    second_worker_started = threading.Event()
+    call_lock = threading.Lock()
+    call_count = 0
+
+    def controlled_render(**kwargs):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            call_index = call_count
+        if call_index == 1:
+            first_worker_started.set()
+            assert finish_first_worker.wait(timeout=2.0)
+        else:
+            second_worker_started.set()
+        return b"document", "application/octet-stream", kwargs["export_format"]
+
+    monkeypatch.setattr(web_api, "_render_transcript_export", controlled_render)
+    controller = object.__new__(ScriberWebController)
+    controller._meeting_store = object()
+    app = web_api.create_app(controller)
+    transcript_renderer = app[APP_TRANSCRIPT_SERVICE].renderer
+    meeting_renderer = app[APP_MEETING_ARTIFACT_ROUTES].deps().renderer
+    transcript_task = asyncio.create_task(
+        transcript_renderer.render(
+            TranscriptDocumentRenderCommand(
+                export_format="pdf",
+                title="Transcript",
+                content="Body",
+                summary="Summary",
+                summary_format="markdown",
+                date="Today",
+                duration="00:01",
+            )
+        )
+    )
+    meeting_task = None
+    try:
+        assert await asyncio.to_thread(first_worker_started.wait, 1.0)
+        transcript_task.cancel()
+        await asyncio.sleep(0)
+        meeting_task = asyncio.create_task(
+            meeting_renderer.render(
+                MeetingDocumentRenderCommand(
+                    export_format="docx",
+                    title="Meeting",
+                    content="Body",
+                    summary="Summary",
+                    date="Today",
+                    duration="00:01",
+                    document_labels={},
+                )
+            )
+        )
+
+        assert not await asyncio.to_thread(second_worker_started.wait, 0.1)
+        assert not transcript_task.done()
+
+        finish_first_worker.set()
+        with pytest.raises(asyncio.CancelledError):
+            await transcript_task
+        assert await asyncio.to_thread(second_worker_started.wait, 1.0)
+        assert await meeting_task == (b"document", "application/octet-stream", "docx")
+    finally:
+        finish_first_worker.set()
+        await asyncio.gather(
+            transcript_task,
+            *(task for task in (meeting_task,) if task is not None),
+            return_exceptions=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("export_format", "expected_type", "expected_ext"),
     [
@@ -1567,6 +1727,36 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
     assert web_api.Config.OPENROUTER_API_KEY == "openrouter-secret"
     assert settings["summarizationModel"] == "minimax/minimax-m3:nitro"
     assert settings["apiKeys"]["openrouter"] == "openrouter-secret"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_settings_round_trips_explicit_live_mic_fallback_model(monkeypatch, tmp_path):
+    from src import config as config_module
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    monkeypatch.setattr(
+        web_api.Config,
+        "POST_PROCESSING_FALLBACK_MODEL",
+        web_api.Config.DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
+        raising=False,
+    )
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings({"postProcessingFallbackModel": "z-ai/glm-5.2:nitro"})
+
+    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.2:nitro"
+    assert settings["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert ctl.get_settings()["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert config_module._json_settings["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
+
+    with pytest.raises(ValueError, match="postProcessingFallbackModel"):
+        await ctl.update_settings({"language": "de", "postProcessingFallbackModel": "cerebras/gemma-4-31b"})
+    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.2:nitro"
 
     ctl.shutdown()
 
@@ -4741,6 +4931,38 @@ async def test_shutdown_drain_joins_active_live_mic_stop_without_cancelling_it()
     assert record.status == "completed"
     save_mock.assert_awaited_once_with(record)
     await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_defers_provider_transport_close_to_active_workflow():
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    route_ready = asyncio.Event()
+    release_route = asyncio.Event()
+    session_holder = []
+
+    async def active_provider_route() -> None:
+        async with ctl._provider_http_transport.borrow() as route:
+            view = await route.session_view(provider="openrouter")
+            session_holder.append(view._session)
+            route_ready.set()
+            await release_route.wait()
+
+    route_task = asyncio.create_task(active_provider_route())
+    await asyncio.wait_for(route_ready.wait(), timeout=1.0)
+    session = session_holder[0]
+
+    pending = await ctl.drain_background_tasks_for_shutdown(timeout_seconds=0.01)
+
+    assert pending == 1
+    assert not session.closed
+    assert ctl._provider_http_transport.diagnostics()["closeRequested"] is True
+    assert ctl._provider_http_transport.diagnostics()["activeBorrowCount"] == 1
+
+    release_route.set()
+    await asyncio.wait_for(route_task, timeout=1.0)
+    assert session.closed
+    assert ctl._provider_http_transport.diagnostics()["activeBorrowCount"] == 0
     ctl.shutdown()
 
 

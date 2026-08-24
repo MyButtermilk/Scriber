@@ -1,7 +1,9 @@
+import asyncio
 import inspect
 import json
 import sys
 import traceback
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -400,6 +402,799 @@ def test_openrouter_reasoning_effort_is_only_sent_when_explicit(monkeypatch: pyt
 
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "invalid")
     assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_uses_context_local_low_reasoning(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+    routing_diagnostics: dict[str, object] = {}
+
+    result = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "minimax/minimax-m3:nitro",
+        max_output_tokens=768,
+        routing_diagnostics=routing_diagnostics,
+    )
+
+    assert result == "cleaned dictation"
+    assert calls[0]["model"] == "minimax/minimax-m3:nitro"
+    assert "models" not in calls[0]
+    assert calls[0]["reasoning"] == {"exclude": True, "effort": "low"}
+    assert routing_diagnostics["primaryModel"] == "minimax/minimax-m3:nitro"
+    assert routing_diagnostics["usedModel"] == "minimax/minimax-m3"
+    assert routing_diagnostics["fallbackUsed"] is False
+    assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_temporarily_bypasses_rejected_primary_per_credential(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    primary_calls: list[str] = []
+    fallback_calls: list[dict[str, object]] = []
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS", "minimax/minimax-m3:nitro")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key-a", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(
+        summarization.Config,
+        "POST_PROCESSING_FALLBACK_MODEL",
+        "z-ai/glm-5.2:nitro",
+        raising=False,
+    )
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0),
+    )
+
+    async def _rejected_primary(_prompt, model, _max_output_tokens):
+        primary_calls.append(model)
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=401,
+            code="",
+            retryable=False,
+        )
+
+    async def _accepted_fallback(payload, _headers, _session):
+        fallback_calls.append(payload)
+        return {
+            "model": "z-ai/glm-5.2",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _rejected_primary)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _accepted_fallback)
+    first_diagnostics: dict[str, object] = {}
+    second_diagnostics: dict[str, object] = {}
+
+    first = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=first_diagnostics,
+    )
+    second = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=second_diagnostics,
+    )
+
+    assert first == second == "cleaned dictation"
+    assert len(primary_calls) == 1
+    assert len(fallback_calls) == 2
+    assert all(call["model"] == "z-ai/glm-5.2:nitro" for call in fallback_calls)
+    assert all(call["reasoning"] == {"exclude": True, "effort": "low"} for call in fallback_calls)
+    assert first_diagnostics["primaryBypassed"] is False
+    assert first_diagnostics["primaryFailureCode"] == "provider_error"
+    assert first_diagnostics["primaryFailureStatus"] == 401
+    assert first_diagnostics["primaryCircuitCooldownMs"] is None
+    assert first_diagnostics["primaryModel"] == "cerebras/gemma-4-31b"
+    assert first_diagnostics["configuredFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert first_diagnostics["fallbackUsed"] is True
+    assert first_diagnostics["fallbackModel"] == "z-ai/glm-5.2"
+    assert first_diagnostics["usedModel"] == "z-ai/glm-5.2"
+    assert second_diagnostics["primaryBypassed"] is True
+    assert second_diagnostics["primaryBypassReason"] == "credential_rejected"
+    assert second_diagnostics["primaryCircuitCooldownMs"] is None
+    assert second_diagnostics["fallbackUsed"] is True
+    assert second_diagnostics["fallbackModel"] == "z-ai/glm-5.2"
+
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key-b", raising=False)
+    changed_key_diagnostics: dict[str, object] = {}
+    await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=changed_key_diagnostics,
+    )
+
+    assert len(primary_calls) == 2
+    assert changed_key_diagnostics["primaryBypassed"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_does_not_cache_transient_primary_failure(monkeypatch: pytest.MonkeyPatch):
+    primary_calls = 0
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0),
+    )
+
+    async def _transient_primary(_prompt, _model, _max_output_tokens):
+        nonlocal primary_calls
+        primary_calls += 1
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=503,
+            code="server_error",
+            retryable=True,
+        )
+
+    async def _accepted_fallback(_payload, _headers, _session):
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _transient_primary)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _accepted_fallback)
+
+    for _ in range(2):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "cerebras/gemma-4-31b",
+            max_output_tokens=768,
+        )
+
+    assert primary_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_latches_celeris_status_only_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    primary_calls = 0
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CELERIS_API_KEY", "celeris-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0),
+    )
+
+    async def _rejected_primary(*_args, **_kwargs):
+        nonlocal primary_calls
+        primary_calls += 1
+        raise summarization.ProviderTransportError(
+            provider="celeris",
+            operation="text_generation",
+            status=403,
+            code="permission_denied",
+            retryable=False,
+        )
+
+    async def _accepted_fallback(_payload, _headers, _session):
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "celeris_chat_completion", _rejected_primary)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _accepted_fallback)
+
+    first_diagnostics: dict[str, object] = {}
+    second_diagnostics: dict[str, object] = {}
+    for diagnostics in (first_diagnostics, second_diagnostics):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "celeris-1",
+            max_output_tokens=768,
+            routing_diagnostics=diagnostics,
+        )
+
+    assert primary_calls == 1
+    assert first_diagnostics["primaryFailureStatus"] == 403
+    assert first_diagnostics["primaryCircuitCooldownMs"] is None
+    assert second_diagnostics["primaryBypassed"] is True
+    assert second_diagnostics["primaryBypassReason"] == "credential_rejected"
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_does_not_cache_request_specific_400(monkeypatch: pytest.MonkeyPatch):
+    primary_calls = 0
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0),
+    )
+
+    async def _rejected_primary(_prompt, _model, _max_output_tokens):
+        nonlocal primary_calls
+        primary_calls += 1
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=400,
+            code="invalid_request_error",
+            retryable=False,
+        )
+
+    async def _accepted_fallback(_payload, _headers, _session):
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _rejected_primary)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _accepted_fallback)
+
+    for _ in range(2):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "cerebras/gemma-4-31b",
+            max_output_tokens=768,
+        )
+
+    assert primary_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_temporarily_bypasses_quota_limited_primary(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    primary_calls = 0
+    clock = [0.0]
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(
+            failure_threshold=1,
+            cooldown_seconds=60.0,
+            clock=lambda: clock[0],
+        ),
+    )
+
+    async def _rejected_primary(_prompt, _model, _max_output_tokens):
+        nonlocal primary_calls
+        primary_calls += 1
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=402,
+            code="",
+            retryable=False,
+        )
+
+    async def _accepted_fallback(_payload, _headers, _session):
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _rejected_primary)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _accepted_fallback)
+    first_diagnostics: dict[str, object] = {}
+    second_diagnostics: dict[str, object] = {}
+
+    await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=first_diagnostics,
+    )
+    await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=second_diagnostics,
+    )
+
+    assert primary_calls == 1
+    assert first_diagnostics["primaryFailureStatus"] == 402
+    assert second_diagnostics["primaryBypassed"] is True
+    assert second_diagnostics["primaryBypassReason"] == "quota_cooldown"
+
+    clock[0] = 61.0
+    after_cooldown_diagnostics: dict[str, object] = {}
+    await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        routing_diagnostics=after_cooldown_diagnostics,
+    )
+
+    assert primary_calls == 2
+    assert after_cooldown_diagnostics["primaryBypassed"] is False
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_disables_transport_payload_replay(monkeypatch: pytest.MonkeyPatch):
+    post_calls: list[str] = []
+    read_calls = 0
+    mode = "live"
+    monkeypatch.setenv("SCRIBER_SUMMARY_PAYLOAD_RETRIES", "1")
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    class _Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _Session:
+        def post(self, _url, *, json, headers):
+            del json, headers
+            post_calls.append(mode)
+            return _Response()
+
+    async def _read_response(_response, _limit):
+        nonlocal read_calls
+        read_calls += 1
+        if mode == "live" or read_calls == 1:
+            raise ClientPayloadError("interrupted")
+        return json.dumps(
+            {
+                "model": "minimax/minimax-m3",
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "native_finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "cleaned dictation"},
+                    }
+                ],
+            }
+        )
+
+    async def _post_with_fake_session(payload, headers, _session):
+        return await summarization._post_chat_completion_json(
+            provider="openrouter",
+            url="https://openrouter.invalid/v1/chat/completions",
+            payload=payload,
+            headers=headers,
+            session=_Session(),
+        )
+
+    async def _no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(summarization, "read_response_text_limited", _read_response)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _post_with_fake_session)
+    monkeypatch.setattr(summarization.asyncio, "sleep", _no_sleep)
+
+    with pytest.raises(summarization.ProviderTransportError):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "minimax/minimax-m3:nitro",
+            max_output_tokens=768,
+        )
+    assert post_calls == ["live"]
+
+    mode = "normal"
+    read_calls = 0
+    result = await summarization.generate_text_with_model(
+        "clean this dictation",
+        "minimax/minimax-m3:nitro",
+        max_output_tokens=768,
+    )
+
+    assert result == "cleaned dictation"
+    assert post_calls == ["live", "normal", "normal"]
+
+
+@pytest.mark.asyncio
+async def test_live_mic_context_overrides_are_isolated_from_parallel_summary(monkeypatch: pytest.MonkeyPatch):
+    observed: dict[str, dict[str, object]] = {}
+    both_entered = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        summarization.Config,
+        "POST_PROCESSING_FALLBACK_MODEL",
+        "minimax/minimax-m3:nitro",
+        raising=False,
+    )
+
+    class _Transport:
+        @asynccontextmanager
+        async def borrow(self):
+            yield self
+
+    provider_http_transport = _Transport()
+
+    async def _observe_context(prompt, _model, _max_output_tokens):
+        observed[prompt] = {
+            "reasoning": summarization._openrouter_reasoning_config(),
+            "attemptLimit": summarization._openrouter_semantic_attempt_limit_override.get(),
+            "fallbackModels": summarization._openrouter_fallback_models_override.get(),
+            "payloadRetries": summarization._summary_payload_retries_override.get(),
+            "providerHttpTransport": summarization._live_mic_provider_http_transport_override.get(),
+        }
+        if len(observed) == 2:
+            both_entered.set()
+        await release.wait()
+        return "cleaned dictation"
+
+    monkeypatch.setattr(summarization, "_summarize_with_model", _observe_context)
+    live = asyncio.create_task(
+        summarization.generate_live_mic_text(
+            "live",
+            "minimax/minimax-m3:nitro",
+            max_output_tokens=768,
+            provider_http_transport=provider_http_transport,  # type: ignore[arg-type]
+        )
+    )
+    normal = asyncio.create_task(
+        summarization.generate_text_with_model(
+            "normal",
+            "minimax/minimax-m3:nitro",
+            max_output_tokens=768,
+        )
+    )
+    await asyncio.wait_for(both_entered.wait(), timeout=1.0)
+    release.set()
+    await asyncio.gather(live, normal)
+
+    assert observed["live"] == {
+        "reasoning": {"exclude": True, "effort": "low"},
+        "attemptLimit": 1,
+        "fallbackModels": ("minimax/minimax-m3:nitro",),
+        "payloadRetries": 0,
+        "providerHttpTransport": provider_http_transport,
+    }
+    assert observed["normal"] == {
+        "reasoning": {"exclude": True, "effort": "medium"},
+        "attemptLimit": None,
+        "fallbackModels": None,
+        "payloadRetries": None,
+        "providerHttpTransport": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_mic_context_overrides_reset_after_cancellation(monkeypatch: pytest.MonkeyPatch):
+    entered = asyncio.Event()
+
+    async def _hang(_prompt, _model, _max_output_tokens):
+        entered.set()
+        await asyncio.Event().wait()
+        return "unreachable"
+
+    async def _worker():
+        try:
+            await summarization.generate_live_mic_text(
+                "live",
+                "minimax/minimax-m3:nitro",
+                max_output_tokens=768,
+            )
+        except asyncio.CancelledError:
+            return {
+                "reasoning": summarization._openrouter_reasoning_config(),
+                "attemptLimit": summarization._openrouter_semantic_attempt_limit_override.get(),
+                "fallbackModels": summarization._openrouter_fallback_models_override.get(),
+                "payloadRetries": summarization._summary_payload_retries_override.get(),
+                "providerHttpTransport": summarization._live_mic_provider_http_transport_override.get(),
+            }
+
+    monkeypatch.setattr(summarization, "_summarize_with_model", _hang)
+    task = asyncio.create_task(_worker())
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    task.cancel()
+    observed = await task
+
+    assert observed == {
+        "reasoning": {"exclude": True, "effort": "medium"},
+        "attemptLimit": None,
+        "fallbackModels": None,
+        "payloadRetries": None,
+        "providerHttpTransport": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_live_mic_shared_transport_views_follow_primary_then_fallback(monkeypatch: pytest.MonkeyPatch):
+    providers: list[str] = []
+
+    class _Transport:
+        @asynccontextmanager
+        async def borrow(self):
+            yield self
+
+        async def session_view(self, *, provider, marker=None):
+            del marker
+            providers.append(provider)
+            return object()
+
+    transport = _Transport()
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _failing_primary(_prompt, _model, _max_output_tokens):
+        active = summarization._live_mic_provider_http_transport_override.get()
+        await active.session_view(provider="cerebras")
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=401,
+        )
+
+    async def _successful_fallback(_prompt, _models, _max_output_tokens):
+        active = summarization._live_mic_provider_http_transport_override.get()
+        await active.session_view(provider="openrouter")
+        return "cleaned dictation"
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _failing_primary)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _successful_fallback)
+
+    result = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=768,
+        provider_http_transport=transport,  # type: ignore[arg-type]
+    )
+
+    assert result == "cleaned dictation"
+    assert providers == ["cerebras", "openrouter"]
+    assert summarization._live_mic_provider_http_transport_override.get() is None
+
+
+@pytest.mark.asyncio
+async def test_live_mic_does_not_report_failed_fallback_as_used(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", "1")
+    monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(
+        summarization.Config,
+        "POST_PROCESSING_FALLBACK_MODEL",
+        "z-ai/glm-5.2:nitro",
+        raising=False,
+    )
+    monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
+    monkeypatch.setattr(
+        summarization,
+        "_live_mic_primary_circuit",
+        summarization.ProviderCircuitBreaker(failure_threshold=1, cooldown_seconds=60.0),
+    )
+
+    async def _failing_primary(_prompt, _model, _max_output_tokens):
+        raise summarization.ProviderTransportError(
+            provider="cerebras",
+            operation="text_generation",
+            status=503,
+            code="server_error",
+            retryable=True,
+        )
+
+    async def _failing_fallback(_prompt, models, _max_output_tokens):
+        assert models == ("z-ai/glm-5.2:nitro",)
+        raise RuntimeError("fallback unavailable")
+
+    monkeypatch.setattr(summarization, "_summarize_cerebras", _failing_primary)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", _failing_fallback)
+    diagnostics: dict[str, object] = {}
+
+    with pytest.raises(RuntimeError):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "cerebras/gemma-4-31b",
+            max_output_tokens=768,
+            routing_diagnostics=diagnostics,
+        )
+
+    assert diagnostics["primaryModel"] == "cerebras/gemma-4-31b"
+    assert diagnostics["configuredFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert diagnostics["fallbackReason"] == "server_error"
+    assert diagnostics["fallbackUsed"] is False
+    assert diagnostics["usedModel"] is None
+
+
+@pytest.mark.asyncio
+async def test_live_mic_openrouter_borrows_bounded_session_without_closing_it(monkeypatch: pytest.MonkeyPatch):
+    borrowed = object()
+    providers: list[str] = []
+    observed_sessions: list[object] = []
+
+    class _Transport:
+        @asynccontextmanager
+        async def borrow(self):
+            yield self
+
+        async def session_view(self, *, provider, marker=None):
+            del marker
+            providers.append(provider)
+            return borrowed
+
+    async def _fake_post(_payload, _headers, session):
+        observed_sessions.append(session)
+        assert isinstance(session, summarization._RequestTimeoutSessionView)
+        assert session._session is borrowed
+        assert session._timeout.total == summarization._summary_timeout_seconds()
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    result = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "minimax/minimax-m3:nitro",
+        max_output_tokens=768,
+        provider_http_transport=_Transport(),  # type: ignore[arg-type]
+    )
+
+    assert result == "cleaned dictation"
+    assert providers == ["openrouter"]
+    assert len(observed_sessions) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_mic_generation_caps_openrouter_attempts(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.delenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", raising=False)
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        max_tokens = payload["max_tokens"]
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "native_finish_reason": "length",
+                    "message": {"role": "assistant", "content": None},
+                }
+            ],
+            "usage": {
+                "completion_tokens": max_tokens,
+                "reasoning_tokens": max_tokens,
+                "total_tokens": max_tokens + 100,
+            },
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    with pytest.raises(RuntimeError, match="bounded attempt limit"):
+        await summarization.generate_live_mic_text(
+            "clean this dictation",
+            "minimax/minimax-m3:nitro",
+            max_output_tokens=768,
+            openrouter_max_semantic_attempts=1,
+        )
+
+    assert len(calls) == 1
+    assert [call["max_tokens"] for call in calls] == [768]
+    assert all(call["reasoning"] == {"exclude": True, "effort": "low"} for call in calls)
+    assert summarization._openrouter_reasoning_config() == {"exclude": True, "effort": "medium"}
+
+
+@pytest.mark.asyncio
+async def test_live_mic_openrouter_retries_remain_single_model(monkeypatch: pytest.MonkeyPatch):
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "openrouter-key", raising=False)
+
+    async def _fake_post(payload, _headers, _session):
+        calls.append(payload)
+        if len(calls) == 1:
+            max_tokens = payload["max_tokens"]
+            return {
+                "model": "google/gemini-2.5-flash-lite",
+                "choices": [
+                    {
+                        "finish_reason": "length",
+                        "native_finish_reason": "length",
+                        "message": {"role": "assistant", "content": None},
+                    }
+                ],
+                "usage": {
+                    "completion_tokens": max_tokens,
+                    "reasoning_tokens": max_tokens,
+                    "total_tokens": max_tokens + 100,
+                },
+            }
+        return {
+            "model": "minimax/minimax-m3",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "native_finish_reason": "stop",
+                    "message": {"role": "assistant", "content": "cleaned dictation"},
+                }
+            ],
+        }
+
+    monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
+
+    result = await summarization.generate_live_mic_text(
+        "clean this dictation",
+        "google/gemini-2.5-flash-lite:nitro",
+        max_output_tokens=768,
+        openrouter_max_semantic_attempts=2,
+    )
+
+    assert result == "cleaned dictation"
+    assert len(calls) == 2
+    assert calls[0]["model"] == "google/gemini-2.5-flash-lite:nitro"
+    assert calls[1]["model"] == "minimax/minimax-m3:nitro"
+    assert all("models" not in call for call in calls)
 
 
 def test_openrouter_model_family_matches_dated_response_model():

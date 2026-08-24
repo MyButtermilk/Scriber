@@ -62,11 +62,37 @@ Live mic:
    session was started through the post-processing hotkey, pipeline raw-text
    injection is suppressed and the completed live transcript follows the
    selected polishing engine. Cloud keeps the configured `${output}` prompt;
-   local uses the verified Q8_0 or BF16 GGUF and the bundled llama.cpp runtime.
-   A local failure returns the original transcript and never falls through to
-   cloud. File and YouTube jobs do not use this path.
-7. Frontend receives versioned WebSocket state, audio, transcript, and history
-   events.
+   cloud keeps its cross-provider fallback inside a bounded seven-second model-
+   routing deadline before raw-text fallback. Its Live-Mic-only fast lane uses
+   low OpenRouter reasoning, one semantic attempt against the explicitly
+   selected OpenRouter fallback model,
+   disables response-body request replay, and bypasses a credential-bound
+   primary after a confirmed authentication rejection. One route-wide HTTP
+   transport lease lets an already-admitted primary/fallback workflow finish
+   while shutdown seals new work; its cancellation-safe finalizer closes the
+   session only after the last borrower exits. Ordinary summaries keep their
+   existing reasoning, model, and retry policies. Local uses the verified Q8_0
+   or BF16 GGUF and the bundled llama.cpp runtime.
+   After the cleaned text is handed to injection, a successful cloud fallback
+   asks the authenticated Tauri shell IPC boundary for a native Windows toast.
+   The shell first requires Windows to report notifications enabled for the
+   installed application and then submits the toast on a dedicated, single-
+   owner worker with a bounded result wait; this prevents a blocked WinRT call
+   from consuming the shared shell IPC worker pool. The request deadline starts
+   before executor admission and remains inside a 750-ms post-injection budget.
+   The shell retains a bounded set of event IDs accepted by Windows. The backend
+   then publishes one versioned, session-bound event carrying whether Windows
+   accepted the native notification; the global frontend bridge deduplicates it
+   and shows the same substitution as an in-app toast only when the main window
+   owns delivery or the native route was unavailable. A native rejection is
+   retained in the authoritative WebSocket state for two minutes, so one brief
+   WebView disconnect does not lose the in-app notice. Primary success,
+   failed fallback, raw-text fallback, and local polishing use neither
+   notification path. A local failure returns the original transcript and never
+   falls through to cloud. File and YouTube jobs do not use this path.
+7. Frontend receives versioned WebSocket state, audio, transcript, history, and
+   successful post-processing fallback events used for the in-app notification
+   fallback.
 8. On stop, Always-on capture hands the endpoint back to a replacement idle
    prewarm before releasing the recording stream. Provider finalization then
    continues without turning off the Windows microphone indicator. Only real
@@ -1222,8 +1248,10 @@ loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
 Settings model selectors are credential-gated in the UI: cloud STT,
 summarization, and live post-processing choices require the matching provider
-API key or credential path before selection. Missing-credential prompts open the
-matching API-key dialog directly instead of forcing users to scroll.
+API key or credential path before selection. Live Mic keeps its primary and
+OpenRouter fallback model as independent persisted choices. Missing-credential
+prompts open the matching API-key dialog directly instead of forcing users to
+scroll.
 Local transcription models and public local-polishing GGUF downloads remain
 selectable without credentials or a Hugging Face account.
 Desktop update checks are frontend/Tauri-owned rather than Python-backend

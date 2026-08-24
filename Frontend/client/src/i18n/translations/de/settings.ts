@@ -199,6 +199,7 @@ export const settingsTranslations = {
   "Delete failed": "Löschen fehlgeschlagen",
   "Summarization model updated.": "Zusammenfassungsmodell aktualisiert.",
   "Live post-processing model updated.": "Modell für die Live-Nachbearbeitung aktualisiert.",
+  "Fallback model updated.": "Fallback-Modell aktualisiert.",
   "Local polishing models could not be loaded.": "Lokale Nachbearbeitungsmodelle konnten nicht geladen werden.",
   "Local polishing model status is invalid.": "Der Status der lokalen Nachbearbeitungsmodelle ist ungültig.",
   "Local model not ready": "Lokales Modell nicht bereit",
@@ -350,6 +351,10 @@ export const settingsTranslations = {
   "Use a low-cost, low-latency model for simple dictation cleanup.":
     "Verwende für die einfache Diktatbereinigung ein kostengünstiges Modell mit niedriger Latenz.",
   "Select cleanup model": "Bereinigungsmodell auswählen",
+  "Fallback model (OpenRouter)": "Fallback-Modell (OpenRouter)",
+  "Used through OpenRouter when a direct primary cloud model cannot complete the cleanup.":
+    "Wird über OpenRouter verwendet, wenn ein direkt angebundenes primäres Cloud-Modell die Bereinigung nicht abschließen kann.",
+  "Select fallback model": "Fallback-Modell auswählen",
   "Live cleanup prompt": "Prompt für die Live-Bereinigung",
   "Use {{placeholder}} where the raw transcript should be inserted.":
     "Verwende {{placeholder}} an der Stelle, an der das Rohtranskript eingefügt werden soll.",

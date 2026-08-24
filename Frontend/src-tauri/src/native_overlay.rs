@@ -1,13 +1,22 @@
 #[cfg(not(test))]
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
+#[cfg(all(not(test), windows))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 #[cfg(not(test))]
 use std::{sync::mpsc, time::Duration};
 #[cfg(not(test))]
 use tauri::{Emitter, LogicalPosition, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 #[cfg(all(not(test), windows))]
-use windows_sys::Win32::UI::WindowsAndMessaging::IsWindowVisible;
+use tauri_winrt_notification::{Duration as ToastDuration, Toast};
+#[cfg(all(not(test), windows))]
+use windows::UI::Notifications::{NotificationSetting, ToastNotificationManager};
+#[cfg(all(not(test), windows))]
+use windows_core::HSTRING;
+#[cfg(all(not(test), windows))]
+use windows_sys::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic, IsWindowVisible};
 
 pub const OVERLAY_WINDOW_LABEL: &str = "recording-overlay";
 #[cfg(not(test))]
@@ -16,6 +25,9 @@ pub const OVERLAY_EVENT: &str = "scriber-overlay-state";
 const OVERLAY_WIDTH: f64 = 255.0;
 const OVERLAY_HEIGHT: f64 = 78.0;
 const OVERLAY_BOTTOM_MARGIN: f64 = 12.0;
+const MAX_FALLBACK_NOTIFICATION_EVENTS: usize = 100;
+#[cfg(all(not(test), windows))]
+const FALLBACK_NOTIFICATION_RESULT_TIMEOUT: Duration = Duration::from_millis(350);
 #[cfg(not(test))]
 const OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -23,6 +35,44 @@ const OVERLAY_UI_COMMAND_TIMEOUT: Duration = Duration::from_secs(2);
 static OVERLAY_APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
 static OVERLAY_STATE: OnceLock<Mutex<OverlayState>> = OnceLock::new();
 static OVERLAY_MUTATION_LANE: OnceLock<Mutex<()>> = OnceLock::new();
+#[cfg(all(not(test), windows))]
+static FALLBACK_NOTIFICATION_HISTORY: OnceLock<Mutex<FallbackNotificationHistory>> =
+    OnceLock::new();
+#[cfg(all(not(test), windows))]
+static FALLBACK_NOTIFICATION_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Default)]
+struct FallbackNotificationHistory {
+    accepted_events: VecDeque<String>,
+}
+
+impl FallbackNotificationHistory {
+    fn contains(&self, event_id: &str) -> bool {
+        self.accepted_events
+            .iter()
+            .any(|accepted_event_id| accepted_event_id == event_id)
+    }
+
+    fn record(&mut self, event_id: String) {
+        if self.contains(&event_id) {
+            return;
+        }
+        self.accepted_events.push_back(event_id);
+        while self.accepted_events.len() > MAX_FALLBACK_NOTIFICATION_EVENTS {
+            self.accepted_events.pop_front();
+        }
+    }
+}
+
+#[cfg(all(not(test), windows))]
+struct FallbackNotificationWorkerReservation;
+
+#[cfg(all(not(test), windows))]
+impl Drop for FallbackNotificationWorkerReservation {
+    fn drop(&mut self) {
+        FALLBACK_NOTIFICATION_WORKER_ACTIVE.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Debug, Clone)]
 struct OverlayState {
@@ -108,6 +158,229 @@ pub fn create_overlay_window(app: &tauri::App) -> tauri::Result<()> {
 #[allow(dead_code)]
 pub fn create_overlay_window(_app: &tauri::App) -> tauri::Result<()> {
     Ok(())
+}
+
+fn fallback_notification_model(payload: &Value, field: &str) -> Result<String, String> {
+    let value = payload
+        .get(field)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if value.is_empty()
+        || value.len() > 160
+        || !value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:/-".contains(character))
+    {
+        return Err(format!("invalid fallback notification field: {field}"));
+    }
+    Ok(value.to_string())
+}
+
+fn fallback_notification_event_id(payload: &Value) -> Result<String, String> {
+    let event_id = payload
+        .get("eventId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    if event_id.is_empty()
+        || event_id.len() > 200
+        || !event_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || "._:/-".contains(character))
+    {
+        return Err("invalid fallback notification eventId".to_string());
+    }
+    Ok(event_id.to_string())
+}
+
+#[cfg(all(not(test), windows))]
+fn fallback_notification_history() -> &'static Mutex<FallbackNotificationHistory> {
+    FALLBACK_NOTIFICATION_HISTORY.get_or_init(|| Mutex::new(FallbackNotificationHistory::default()))
+}
+
+fn fallback_notification_model_label(model: &str) -> String {
+    match model
+        .split(':')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "cerebras/gemma-4-31b" => "Gemma 4 31B".to_string(),
+        "openai/gpt-oss-120b" => "GPT-OSS 120B".to_string(),
+        "google/gemini-2.5-flash-lite" => "Gemini 2.5 Flash Lite".to_string(),
+        "minimax/minimax-m3" => "MiniMax M3".to_string(),
+        "z-ai/glm-5.2" => "GLM 5.2".to_string(),
+        _ => model.to_string(),
+    }
+}
+
+fn fallback_notification_copy(
+    primary_model: &str,
+    fallback_model: &str,
+    locale: crate::UiLocale,
+) -> (String, String) {
+    let primary = fallback_notification_model_label(primary_model);
+    let fallback = fallback_notification_model_label(fallback_model);
+    match locale {
+        crate::UiLocale::De => (
+            "Fallback-Modell verwendet".to_string(),
+            format!("Scriber hat für dieses Diktat {fallback} statt {primary} verwendet."),
+        ),
+        crate::UiLocale::En => (
+            "Fallback model used".to_string(),
+            format!("Scriber used {fallback} instead of {primary} for this dictation."),
+        ),
+    }
+}
+
+#[cfg(all(not(test), windows))]
+fn require_windows_notifications_enabled(app_id: &str) -> Result<(), String> {
+    let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(app_id))
+        .map_err(|err| format!("desktop notification availability check failed: {err}"))?;
+    let setting = notifier
+        .Setting()
+        .map_err(|err| format!("desktop notification setting check failed: {err}"))?;
+    if setting != NotificationSetting::Enabled {
+        return Err(
+            "desktop notifications are disabled by Windows policy or user settings".to_string(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(all(not(test), windows))]
+fn main_window_can_show_in_app_toast(app: &tauri::AppHandle) -> bool {
+    let Some(window) = app.get_webview_window("main") else {
+        return false;
+    };
+    let Ok(hwnd) = window.hwnd() else {
+        return false;
+    };
+    unsafe {
+        IsWindowVisible(hwnd.0) != 0 && IsIconic(hwnd.0) == 0 && GetForegroundWindow() == hwnd.0
+    }
+}
+
+#[cfg(all(not(test), windows))]
+fn submit_windows_fallback_notification(
+    app_id: &str,
+    title: &str,
+    body: &str,
+) -> Result<(), String> {
+    require_windows_notifications_enabled(app_id)?;
+    Toast::new(app_id)
+        .title(title)
+        .text1(body)
+        .duration(ToastDuration::Short)
+        .show()
+        .map_err(|err| format!("desktop notification failed: {err}"))
+}
+
+#[cfg(not(test))]
+pub fn show_post_processing_fallback_notification(payload: &Value) -> Result<Value, String> {
+    let event_id = fallback_notification_event_id(payload)?;
+    let primary_model = fallback_notification_model(payload, "primaryModel")?;
+    let fallback_model = fallback_notification_model(payload, "fallbackModel")?;
+    let app = overlay_app_handle()?;
+    let (title, body) = fallback_notification_copy(
+        &primary_model,
+        &fallback_model,
+        crate::ui_locale_for_app(&app),
+    );
+    #[cfg(windows)]
+    {
+        // When the main window is foreground, the app-global Radix toast is the visible owner.
+        // Background dictation uses a native Windows toast so the notice remains visible over the
+        // target application without forcing Scriber to the foreground.
+        if main_window_can_show_in_app_toast(&app) {
+            return Ok(json!({
+                "accepted": false,
+                "delivery": "inApp",
+                "duplicate": false,
+            }));
+        }
+
+        {
+            let history = match fallback_notification_history().lock() {
+                Ok(history) => history,
+                Err(_) => {
+                    return Err("fallback notification history lock poisoned".to_string());
+                }
+            };
+            if history.contains(&event_id) {
+                return Ok(json!({ "accepted": true, "duplicate": true }));
+            }
+        }
+
+        FALLBACK_NOTIFICATION_WORKER_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "desktop notification worker is busy".to_string())?;
+
+        // A prior worker can finish between the history check and reservation. Reconcile once
+        // after owning the lane so the same event is never submitted twice.
+        {
+            let history = match fallback_notification_history().lock() {
+                Ok(history) => history,
+                Err(_) => {
+                    FALLBACK_NOTIFICATION_WORKER_ACTIVE.store(false, Ordering::Release);
+                    return Err("fallback notification history lock poisoned".to_string());
+                }
+            };
+            if history.contains(&event_id) {
+                FALLBACK_NOTIFICATION_WORKER_ACTIVE.store(false, Ordering::Release);
+                return Ok(json!({ "accepted": true, "duplicate": true }));
+            }
+        }
+
+        let app_id = app.config().identifier.clone();
+        let worker_event_id = event_id.clone();
+        let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let worker = std::thread::Builder::new()
+            .name("scriber-fallback-notification".to_string())
+            .spawn(move || {
+                let _reservation = FallbackNotificationWorkerReservation;
+                let result = submit_windows_fallback_notification(&app_id, &title, &body);
+                if result.is_ok() {
+                    let mut history = fallback_notification_history()
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    history.record(worker_event_id);
+                }
+                let _ = result_tx.send(result);
+            });
+        if let Err(err) = worker {
+            FALLBACK_NOTIFICATION_WORKER_ACTIVE.store(false, Ordering::Release);
+            return Err(format!(
+                "desktop notification worker could not start: {err}"
+            ));
+        }
+
+        match result_rx.recv_timeout(FALLBACK_NOTIFICATION_RESULT_TIMEOUT) {
+            Ok(Ok(())) => Ok(json!({ "accepted": true, "duplicate": false })),
+            Ok(Err(err)) => Err(err),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err("desktop notification submission timed out".to_string())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("desktop notification worker disconnected".to_string())
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, event_id, title, body);
+        Err("desktop notification is supported only on Windows".to_string())
+    }
+}
+
+#[cfg(test)]
+pub fn show_post_processing_fallback_notification(payload: &Value) -> Result<Value, String> {
+    fallback_notification_event_id(payload)?;
+    fallback_notification_model(payload, "primaryModel")?;
+    fallback_notification_model(payload, "fallbackModel")?;
+    Err("desktop notification runtime is unavailable in tests".to_string())
 }
 
 #[allow(dead_code)]
@@ -600,6 +873,79 @@ mod tests {
             "transcribing"
         );
         assert!(normalize_overlay_mode("floating").is_err());
+    }
+
+    #[test]
+    fn fallback_notification_copy_is_localized_and_uses_product_model_names() {
+        assert_eq!(
+            fallback_notification_copy(
+                "cerebras/gemma-4-31b",
+                "minimax/minimax-m3:nitro",
+                crate::UiLocale::De,
+            ),
+            (
+                "Fallback-Modell verwendet".to_string(),
+                "Scriber hat für dieses Diktat MiniMax M3 statt Gemma 4 31B verwendet.".to_string(),
+            )
+        );
+        assert_eq!(
+            fallback_notification_copy("cerebras/gemma-4-31b", "z-ai/glm-5.2", crate::UiLocale::En,),
+            (
+                "Fallback model used".to_string(),
+                "Scriber used GLM 5.2 instead of Gemma 4 31B for this dictation.".to_string(),
+            )
+        );
+    }
+
+    #[test]
+    fn fallback_notification_rejects_unbounded_or_unsafe_models() {
+        assert!(fallback_notification_model(&json!({ "model": "" }), "model").is_err());
+        assert!(
+            fallback_notification_model(&json!({ "model": "safe/model\nsecret" }), "model")
+                .is_err()
+        );
+        assert!(
+            fallback_notification_model(&json!({ "model": "x".repeat(161) }), "model").is_err()
+        );
+        assert_eq!(
+            fallback_notification_model(&json!({ "model": "z-ai/glm-5.2:nitro" }), "model")
+                .unwrap(),
+            "z-ai/glm-5.2:nitro"
+        );
+    }
+
+    #[test]
+    fn fallback_notification_rejects_unbounded_or_unsafe_event_ids() {
+        assert!(fallback_notification_event_id(&json!({ "eventId": "" })).is_err());
+        assert!(fallback_notification_event_id(&json!({ "eventId": "fallback\nsecret" })).is_err());
+        assert!(fallback_notification_event_id(&json!({ "eventId": "x".repeat(201) })).is_err());
+        assert_eq!(
+            fallback_notification_event_id(
+                &json!({ "eventId": "post-processing-fallback:session-1" })
+            )
+            .unwrap(),
+            "post-processing-fallback:session-1"
+        );
+    }
+
+    #[test]
+    fn fallback_notification_history_deduplicates_and_evicts_oldest_event() {
+        let mut history = FallbackNotificationHistory::default();
+        history.record("event-0".to_string());
+        history.record("event-0".to_string());
+        assert_eq!(history.accepted_events.len(), 1);
+
+        for index in 1..=MAX_FALLBACK_NOTIFICATION_EVENTS {
+            history.record(format!("event-{index}"));
+        }
+
+        assert_eq!(
+            history.accepted_events.len(),
+            MAX_FALLBACK_NOTIFICATION_EVENTS
+        );
+        assert!(!history.contains("event-0"));
+        assert!(history.contains("event-1"));
+        assert!(history.contains(&format!("event-{MAX_FALLBACK_NOTIFICATION_EVENTS}")));
     }
 
     #[test]

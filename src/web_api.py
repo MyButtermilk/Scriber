@@ -171,6 +171,7 @@ from src.core.ws_contracts import (
     meeting_progress_event,
     meeting_segment_event,
     meeting_state_event,
+    post_processing_fallback_used_event,
     session_finished_event,
     session_started_event,
     state_event,
@@ -216,6 +217,7 @@ from src.data.transcript_artifact_store import (
     SourceAssetState,
     TranscriptArtifactStore,
 )
+from src.desktop_notification import request_post_processing_fallback_notification
 from src.device_monitor import DeviceMonitor, devices_contain_name, get_device_guard_lock
 from src.local_polishing import LocalPolishing, LocalPolishingError
 from src.meeting_capture import MeetingAudioRecorder, MeetingDeviceLevelProbe
@@ -272,6 +274,7 @@ from src.runtime.provider_replay import (
     prewarm_azure_mai_replay_validation,
     provider_replay_fixture_duration_ms_from_environment,
     provider_replay_manual_stop_from_environment,
+    provider_replay_post_processing_from_environment,
 )
 from src.runtime.provider_router import ProviderRouter
 from src.runtime.retry_scheduler import RetryScheduler
@@ -548,6 +551,7 @@ _AUDIO_DIAGNOSTIC_IMPORT_CACHE: dict[str, dict[str, Any]] | None = None
 _SESSION_TOKEN_HEADER = SESSION_TOKEN_HEADER
 _SESSION_TOKEN_QUERY = SESSION_TOKEN_QUERY
 _WS_SEND_TIMEOUT_SECONDS = 1.0
+_POST_PROCESSING_FALLBACK_REPLAY_SECONDS = 120.0
 # Shared by the app-owned HTTP session and background Outlook maintenance.
 # A bare aiohttp ClientSession defaults to a roughly five-minute total timeout,
 # which can otherwise hold the Outlook mutation lane and delay Disconnect.
@@ -1252,6 +1256,22 @@ def _validate_summarization_model(raw_model: str) -> str:
     return model
 
 
+def _validate_post_processing_fallback_model(raw_model: str) -> str:
+    model = (raw_model or "").strip()
+    if not model:
+        raise ValueError("postProcessingFallbackModel must not be empty")
+    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
+        raise ValueError(
+            "Invalid postProcessingFallbackModel format. Allowed characters: letters, numbers, dot, "
+            "underscore, slash, colon, hyphen."
+        )
+    allowed_models = tuple(getattr(Config, "POST_PROCESSING_FALLBACK_MODELS", ()))
+    if model not in allowed_models:
+        allowed = ", ".join(allowed_models)
+        raise ValueError(f"Unsupported postProcessingFallbackModel '{raw_model}'. Choose one of: {allowed}")
+    return model
+
+
 def _validate_onnx_selection(raw_model: str, raw_quantization: str) -> tuple[str, str]:
     from src.onnx_stt import get_model_info
 
@@ -1370,7 +1390,7 @@ async def _render_transcript_export_async(
     summary_format: str = "markdown",
     document_labels: dict[str, str] | None = None,
 ) -> tuple[bytes, str, str]:
-    return await asyncio.to_thread(
+    return await to_thread_cancellation_barrier(
         _render_transcript_export,
         export_format=export_format,
         title=title,
@@ -1383,14 +1403,28 @@ async def _render_transcript_export_async(
     )
 
 
+class _DocumentExportGate:
+    """Serialize CPU-heavy document rendering within one backend app."""
+
+    def __init__(self) -> None:
+        self._semaphore = asyncio.Semaphore(1)
+
+    async def render(self, **kwargs: Any) -> tuple[bytes, str, str]:
+        async with self._semaphore:
+            return await _render_transcript_export_async(**kwargs)
+
+
 class _MeetingArtifactDocumentRenderer:
     """Composition adapter from the route command to the shared renderer."""
+
+    def __init__(self, gate: _DocumentExportGate) -> None:
+        self._gate = gate
 
     async def render(
         self,
         command: MeetingDocumentRenderCommand,
     ) -> tuple[bytes, str, str]:
-        return await _render_transcript_export_async(
+        return await self._gate.render(
             export_format=command.export_format,
             title=command.title,
             content=command.content,
@@ -1404,11 +1438,14 @@ class _MeetingArtifactDocumentRenderer:
 class _TranscriptDocumentRenderer:
     """Composition adapter from transcript export input to the shared renderer."""
 
+    def __init__(self, gate: _DocumentExportGate) -> None:
+        self._gate = gate
+
     async def render(
         self,
         command: TranscriptDocumentRenderCommand,
     ) -> tuple[bytes, str, str]:
-        return await _render_transcript_export_async(
+        return await self._gate.render(
             export_format=command.export_format,
             title=command.title,
             content=command.content,
@@ -3388,6 +3425,7 @@ class ScriberWebController:
         self._is_listening = False
         self._is_stopping = False  # Track if stop is in progress
         self._live_transcribing_visible = False
+        self._pending_post_processing_fallback_event: tuple[float, dict[str, Any]] | None = None
         self._live_mic_stop_owner: object | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
         self._mic_prewarm = _create_mic_prewarm_manager()
@@ -7981,6 +8019,14 @@ class ScriberWebController:
             current = self._current
         has_background_processing = any(task is not None and not task.done() for task in self._running_tasks.values())
         recording_state = self._recording_state_machine.state
+        pending_fallback_event: dict[str, Any] | None = None
+        pending_fallback = self._pending_post_processing_fallback_event
+        if pending_fallback is not None:
+            expires_at, event = pending_fallback
+            if time.monotonic() <= expires_at:
+                pending_fallback_event = dict(event)
+            else:
+                self._pending_post_processing_fallback_event = None
         return {
             "listening": self._is_listening,
             "voiceEnrollmentActive": bool(self._voice_enrollment_active),
@@ -7993,6 +8039,7 @@ class ScriberWebController:
             "backgroundProcessing": has_background_processing,
             "recordingState": recording_state.value,
             "transcribing": bool(self._live_transcribing_visible),
+            "pendingPostProcessingFallback": pending_fallback_event,
         }
 
     def get_runtime_info(self) -> dict[str, Any]:
@@ -8360,22 +8407,37 @@ class ScriberWebController:
 
     @staticmethod
     def _post_processing_error_summary(exc: Exception) -> str:
-        message = redact_text(str(exc) or exc.__class__.__name__).replace("\n", " ").strip()
-        return message[:240]
+        if isinstance(exc, ProviderTransportError):
+            return str(exc)[:240]
+        return f"{exc.__class__.__name__} during live mic post-processing"
 
     def _record_post_processing_diagnostic(self, entry: dict[str, Any]) -> None:
         allowed = {
             "apiVersion",
             "createdAt",
+            "deadlineMs",
             "durationMs",
             "engine",
             "error",
             "errorType",
             "fallbackToRaw",
+            "fallbackPolicy",
+            "fallbackModel",
+            "fallbackReason",
+            "fallbackUsed",
             "maxOutputTokens",
             "model",
+            "openRouterReasoningEffort",
+            "openRouterSemanticAttemptLimit",
             "outputChanged",
             "postProcessed",
+            "configuredFallbackModel",
+            "primaryBypassed",
+            "primaryBypassReason",
+            "primaryCircuitCooldownMs",
+            "primaryFailureCode",
+            "primaryFailureStatus",
+            "primaryModel",
             "promptChars",
             "processedChars",
             "provider",
@@ -8387,6 +8449,7 @@ class ScriberWebController:
             "sessionIdPrefix",
             "status",
             "transcriptId",
+            "usedModel",
         }
         sanitized = {key: copy.deepcopy(value) for key, value in entry.items() if key in allowed}
         sanitized.setdefault("apiVersion", _API_VERSION)
@@ -9098,6 +9161,7 @@ class ScriberWebController:
         session_id: str | None,
         provider: str | None,
         post_processed: bool,
+        provider_replay_execution: ProviderReplayExecution | None = None,
     ) -> bool:
         cleaned = (text or "").strip()
         if not cleaned:
@@ -9106,6 +9170,8 @@ class ScriberWebController:
         from src.injector import inject_text_once
 
         def on_text_injected(_text: str) -> None:
+            if provider_replay_execution is not None:
+                provider_replay_execution.marker("injection_callback_completed")
             self._mark_hot_path(session_id, "first_paste")
             self._emit_hot_path_report_once(session_id)
             self._emit_workflow_event(
@@ -9130,11 +9196,22 @@ class ScriberWebController:
                 "paste",
             }:
                 self._mark_hot_path(session_id, marker, timestamp_ns=timestamp_ns)
+                if provider_replay_execution is not None and marker in {
+                    "clipboard_set",
+                    "paste",
+                }:
+                    provider_replay_execution.marker(marker)
+            elif provider_replay_execution is not None and marker == "target_changed_after_paste":
+                provider_replay_execution.fail("target_mismatch")
 
         return inject_text_once(
             f"{cleaned} ",
             on_injected=on_text_injected,
             on_injection_marker=on_injection_marker,
+            target_guard=(
+                provider_replay_execution.injection_target_guard if provider_replay_execution is not None else None
+            ),
+            injection_method=("paste" if provider_replay_execution is not None else None),
         )
 
     async def _post_process_and_inject_live_transcript(
@@ -9143,6 +9220,7 @@ class ScriberWebController:
         *,
         session_id: str | None,
         provider: str | None,
+        provider_replay_execution: ProviderReplayExecution | None = None,
     ) -> None:
         raw_text = record.content_text().strip()
         if not raw_text:
@@ -9191,6 +9269,8 @@ class ScriberWebController:
 
         post_processed = False
         processing_diagnostics: dict[str, Any] = {}
+        processing_failure: Exception | None = None
+        processing_failure_summary = ""
         try:
             from src.post_processing import post_process_live_transcript
 
@@ -9202,6 +9282,7 @@ class ScriberWebController:
                 local_polisher=self._local_polisher,
                 local_variant=selected_variant,
                 diagnostics=processing_diagnostics,
+                provider_http_transport=self._provider_http_transport,
             )
             fallback_to_raw = bool(processing_diagnostics.get("fallbackToRaw")) or (
                 processing_diagnostics.get("status") == "original_fallback"
@@ -9222,7 +9303,21 @@ class ScriberWebController:
                     "durationMs": processing_diagnostics.get("durationMs", duration_ms),
                     "engine": processing_diagnostics.get("engine", selected_engine),
                     "fallbackToRaw": fallback_to_raw,
+                    "deadlineMs": processing_diagnostics.get("deadlineMs"),
+                    "fallbackPolicy": processing_diagnostics.get("fallbackPolicy"),
+                    "fallbackModel": processing_diagnostics.get("fallbackModel"),
+                    "fallbackReason": processing_diagnostics.get("fallbackReason"),
+                    "fallbackUsed": processing_diagnostics.get("fallbackUsed"),
+                    "configuredFallbackModel": processing_diagnostics.get("configuredFallbackModel"),
                     "maxOutputTokens": processing_diagnostics.get("maxOutputTokens"),
+                    "openRouterReasoningEffort": processing_diagnostics.get("openRouterReasoningEffort"),
+                    "openRouterSemanticAttemptLimit": processing_diagnostics.get("openRouterSemanticAttemptLimit"),
+                    "primaryBypassed": processing_diagnostics.get("primaryBypassed"),
+                    "primaryBypassReason": processing_diagnostics.get("primaryBypassReason"),
+                    "primaryCircuitCooldownMs": processing_diagnostics.get("primaryCircuitCooldownMs"),
+                    "primaryFailureCode": processing_diagnostics.get("primaryFailureCode"),
+                    "primaryFailureStatus": processing_diagnostics.get("primaryFailureStatus"),
+                    "primaryModel": processing_diagnostics.get("primaryModel"),
                     "promptChars": processing_diagnostics.get("promptChars"),
                     "providerResponseChars": processing_diagnostics.get("providerResponseChars"),
                     "processedChars": len(record.content_text()),
@@ -9230,6 +9325,7 @@ class ScriberWebController:
                     "postProcessed": post_processed,
                     "reasonCodes": processing_diagnostics.get("reasonCodes"),
                     "runtimeBackend": processing_diagnostics.get("runtimeBackend"),
+                    "usedModel": processing_diagnostics.get("usedModel"),
                 }
             )
             self._emit_workflow_event(
@@ -9253,13 +9349,29 @@ class ScriberWebController:
                     "provider_response_chars": processing_diagnostics.get("providerResponseChars"),
                     "prompt_chars": processing_diagnostics.get("promptChars"),
                     "max_output_tokens": processing_diagnostics.get("maxOutputTokens"),
+                    "openrouter_reasoning_effort": processing_diagnostics.get("openRouterReasoningEffort"),
+                    "openrouter_semantic_attempt_limit": processing_diagnostics.get("openRouterSemanticAttemptLimit"),
+                    "primary_bypassed": processing_diagnostics.get("primaryBypassed"),
+                    "primary_bypass_reason": processing_diagnostics.get("primaryBypassReason"),
+                    "primary_circuit_cooldown_ms": processing_diagnostics.get("primaryCircuitCooldownMs"),
+                    "primary_failure_code": processing_diagnostics.get("primaryFailureCode"),
+                    "primary_failure_status": processing_diagnostics.get("primaryFailureStatus"),
+                    "deadline_ms": processing_diagnostics.get("deadlineMs"),
+                    "fallback_policy": processing_diagnostics.get("fallbackPolicy"),
+                    "fallback_model": processing_diagnostics.get("fallbackModel"),
+                    "fallback_reason": processing_diagnostics.get("fallbackReason"),
+                    "fallback_used": processing_diagnostics.get("fallbackUsed"),
+                    "configured_fallback_model": processing_diagnostics.get("configuredFallbackModel"),
                     "output_changed": processing_diagnostics.get("outputChanged"),
                     "fallback_to_raw": fallback_to_raw,
                     "runtime_backend": processing_diagnostics.get("runtimeBackend"),
+                    "used_model": processing_diagnostics.get("usedModel"),
                     "reason_codes": processing_diagnostics.get("reasonCodes"),
                 },
             )
         except Exception as exc:
+            processing_failure = exc
+            processing_failure_summary = self._post_processing_error_summary(exc)
             self._mark_hot_path(session_id, "post_processing_failed")
             diagnostic.update(
                 {
@@ -9268,12 +9380,94 @@ class ScriberWebController:
                     "fallbackToRaw": True,
                     "postProcessed": False,
                     "errorType": exc.__class__.__name__,
-                    "error": self._post_processing_error_summary(exc),
+                    "error": processing_failure_summary,
                     "promptChars": processing_diagnostics.get("promptChars"),
                     "maxOutputTokens": processing_diagnostics.get("maxOutputTokens"),
+                    "openRouterReasoningEffort": processing_diagnostics.get("openRouterReasoningEffort"),
+                    "openRouterSemanticAttemptLimit": processing_diagnostics.get("openRouterSemanticAttemptLimit"),
+                    "primaryBypassed": processing_diagnostics.get("primaryBypassed"),
+                    "primaryBypassReason": processing_diagnostics.get("primaryBypassReason"),
+                    "primaryCircuitCooldownMs": processing_diagnostics.get("primaryCircuitCooldownMs"),
+                    "primaryFailureCode": processing_diagnostics.get("primaryFailureCode"),
+                    "primaryFailureStatus": processing_diagnostics.get("primaryFailureStatus"),
+                    "deadlineMs": processing_diagnostics.get("deadlineMs"),
+                    "fallbackPolicy": processing_diagnostics.get("fallbackPolicy"),
+                    "fallbackModel": processing_diagnostics.get("fallbackModel"),
+                    "fallbackReason": processing_diagnostics.get("fallbackReason"),
+                    "fallbackUsed": processing_diagnostics.get("fallbackUsed"),
+                    "configuredFallbackModel": processing_diagnostics.get("configuredFallbackModel"),
+                    "durationMs": processing_diagnostics.get("durationMs"),
+                    "reasonCodes": processing_diagnostics.get("reasonCodes"),
+                    "usedModel": processing_diagnostics.get("usedModel"),
                 }
             )
-            logger.warning(f"Live mic post-processing failed; inserting raw transcript: {exc}")
+            logger.warning(
+                "Live mic post-processing failed; inserting raw transcript (error_type={}, reason_codes={})",
+                exc.__class__.__name__,
+                processing_diagnostics.get("reasonCodes"),
+            )
+        finally:
+            self._record_post_processing_diagnostic(diagnostic)
+
+        await self._inject_live_transcript_text(
+            record.content_text() or raw_text,
+            record=record,
+            session_id=session_id,
+            provider=provider,
+            post_processed=post_processed,
+            provider_replay_execution=provider_replay_execution,
+        )
+        fallback_model = str(
+            processing_diagnostics.get("fallbackModel") or processing_diagnostics.get("usedModel") or ""
+        ).strip()
+        if (
+            processing_failure is None
+            and post_processed
+            and bool(processing_diagnostics.get("fallbackUsed"))
+            and fallback_model
+        ):
+            primary_model = str(processing_diagnostics.get("primaryModel") or selected_model).strip()
+            fallback_reason = str(
+                processing_diagnostics.get("fallbackReason")
+                or processing_diagnostics.get("primaryBypassReason")
+                or processing_diagnostics.get("primaryFailureCode")
+                or ""
+            ).strip()
+            event_owner = str(session_id or record.id or "live-mic")
+            event_id = f"post-processing-fallback:{event_owner}"
+            notification_cancel: asyncio.CancelledError | None = None
+            try:
+                desktop_notification_accepted, notification_cancel = await await_with_delayed_cancellation(
+                    request_post_processing_fallback_notification(
+                        primary_model,
+                        fallback_model,
+                        event_id,
+                    )
+                )
+            except Exception as exc:
+                desktop_notification_accepted = False
+                logger.debug("Desktop fallback notification failed: {}", type(exc).__name__)
+            fallback_event = post_processing_fallback_used_event(
+                event_id,
+                primary_model,
+                fallback_model,
+                desktop_notification_accepted=desktop_notification_accepted,
+                reason=fallback_reason,
+                session_id=session_id,
+            )
+            self._pending_post_processing_fallback_event = (
+                None
+                if desktop_notification_accepted
+                else (
+                    time.monotonic() + _POST_PROCESSING_FALLBACK_REPLAY_SECONDS,
+                    dict(fallback_event),
+                )
+            )
+            _ignored, broadcast_cancel = await await_with_delayed_cancellation(self.broadcast(fallback_event))
+            pending_cancel = notification_cancel or broadcast_cancel
+            if pending_cancel is not None:
+                raise pending_cancel
+        if processing_failure is not None:
             await self.broadcast(
                 status_event("Post-processing failed; inserting raw transcript", False, session_id=session_id)
             )
@@ -9291,25 +9485,25 @@ class ScriberWebController:
                 outcome="failure",
                 meta={
                     "model": selected_model,
-                    "error": self._post_processing_error_summary(exc),
-                    "error_type": exc.__class__.__name__,
+                    "error": processing_failure_summary,
+                    "error_type": processing_failure.__class__.__name__,
                     "raw_chars": len(raw_text),
                     "raw_words": len(raw_text.split()),
                     "prompt_chars": processing_diagnostics.get("promptChars"),
                     "max_output_tokens": processing_diagnostics.get("maxOutputTokens"),
+                    "openrouter_reasoning_effort": processing_diagnostics.get("openRouterReasoningEffort"),
+                    "openrouter_semantic_attempt_limit": processing_diagnostics.get("openRouterSemanticAttemptLimit"),
+                    "primary_bypassed": processing_diagnostics.get("primaryBypassed"),
+                    "primary_bypass_reason": processing_diagnostics.get("primaryBypassReason"),
+                    "primary_circuit_cooldown_ms": processing_diagnostics.get("primaryCircuitCooldownMs"),
+                    "primary_failure_code": processing_diagnostics.get("primaryFailureCode"),
+                    "primary_failure_status": processing_diagnostics.get("primaryFailureStatus"),
+                    "deadline_ms": processing_diagnostics.get("deadlineMs"),
+                    "fallback_policy": processing_diagnostics.get("fallbackPolicy"),
+                    "reason_codes": processing_diagnostics.get("reasonCodes"),
                     "fallback_to_raw": True,
                 },
             )
-        finally:
-            self._record_post_processing_diagnostic(diagnostic)
-
-        await self._inject_live_transcript_text(
-            record.content_text() or raw_text,
-            record=record,
-            session_id=session_id,
-            provider=provider,
-            post_processed=post_processed,
-        )
 
     @staticmethod
     def _history_update_payload_for_record(
@@ -11708,10 +11902,12 @@ class ScriberWebController:
                 return info
 
             if provider_replay_execution is not None:
-                if post_process or tauri_hotkey_marker is None:
+                if tauri_hotkey_marker is None or bool(post_process) is not bool(
+                    provider_replay_execution.post_processing_enabled
+                ):
                     self._finish_live_mic_start_transition(start_generation)
                     self._clear_hot_path_tracer(session_id)
-                    raise ProviderReplayConflict("provider replay requires one native activation marker")
+                    raise ProviderReplayConflict("provider replay activation mode is not bound")
                 if self._provider_replay_execution is not None:
                     self._finish_live_mic_start_transition(start_generation)
                     self._clear_hot_path_tracer(session_id)
@@ -12978,6 +13174,7 @@ class ScriberWebController:
                     current,
                     session_id=session_id,
                     provider=provider_used,
+                    provider_replay_execution=provider_replay_execution,
                 )
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
@@ -16892,8 +17089,15 @@ class ScriberWebController:
                 *(transcriber.stop() for transcriber in live_transcribers),
                 return_exceptions=True,
             )
+        provider_http_transport_pending = 0
         try:
-            await self._provider_http_transport.close()
+            provider_http_transport_closed = await self._provider_http_transport.close()
+            if not provider_http_transport_closed:
+                provider_http_transport_pending = 1
+                logger.warning(
+                    "Provider HTTP transport close deferred to {} active workflow(s)",
+                    self._provider_http_transport.diagnostics()["activeBorrowCount"],
+                )
         except Exception as exc:
             logger.warning(
                 "Provider HTTP transport shutdown warning: {}",
@@ -16908,6 +17112,7 @@ class ScriberWebController:
             + detached_pending
             + analyzer_cleanup_pending
             + audio_admission_pending
+            + provider_http_transport_pending
         )
 
     def shutdown(self) -> None:
@@ -17161,6 +17366,9 @@ class ScriberWebController:
             "speakerDiarizationFallbackEnabled": bool(Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED),
             "postProcessingPrompt": Config.POST_PROCESSING_PROMPT or Config._DEFAULT_POST_PROCESSING_PROMPT,
             "postProcessingModel": Config.POST_PROCESSING_MODEL or Config.DEFAULT_POST_PROCESSING_MODEL,
+            "postProcessingFallbackModel": (
+                Config.POST_PROCESSING_FALLBACK_MODEL or Config.DEFAULT_POST_PROCESSING_FALLBACK_MODEL
+            ),
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "openaiRealtimeSttModel": Config.OPENAI_REALTIME_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
@@ -17218,6 +17426,7 @@ class ScriberWebController:
         validated_onnx_quantization: str | None = None
         validated_overlay_visualizer_style: str | None = None
         validated_post_processing_engine: str | None = None
+        validated_post_processing_fallback_model: str | None = None
         validated_local_polishing_variant: str | None = None
         mic_runtime_changed = False
         mic_route_changed = False
@@ -17269,6 +17478,12 @@ class ScriberWebController:
         validated_post_processing_model: str | None = None
         if "postProcessingModel" in payload and isinstance(payload["postProcessingModel"], str):
             validated_post_processing_model = _validate_summarization_model(payload["postProcessingModel"])
+        if "postProcessingFallbackModel" in payload:
+            if not isinstance(payload["postProcessingFallbackModel"], str):
+                raise ValueError("Post-processing fallback model must be text.")
+            validated_post_processing_fallback_model = _validate_post_processing_fallback_model(
+                payload["postProcessingFallbackModel"]
+            )
         if "postProcessingEngine" in payload:
             if not isinstance(payload["postProcessingEngine"], str):
                 raise ValueError("Post-processing engine must be text.")
@@ -17458,6 +17673,9 @@ class ScriberWebController:
 
         if validated_post_processing_model is not None:
             Config.set_post_processing_model(validated_post_processing_model)
+
+        if validated_post_processing_fallback_model is not None:
+            Config.set_post_processing_fallback_model(validated_post_processing_fallback_model)
 
         if validated_local_polishing_variant is not None:
             Config.set_local_polishing_variant(validated_local_polishing_variant)
@@ -18293,15 +18511,23 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
 def create_app(controller: ScriberWebController) -> web.Application:
     replay_fixture_duration_ms = provider_replay_fixture_duration_ms_from_environment()
     replay_gate = ProviderReplayRuntimeGate.from_environment()
+    document_export_gate = _DocumentExportGate()
     try:
         replay_manual_stop_enabled = provider_replay_manual_stop_from_environment()
+        replay_post_processing_enabled = provider_replay_post_processing_from_environment()
+        if replay_post_processing_enabled and (
+            not Config.POST_PROCESSING_ENABLED or str(Config.POST_PROCESSING_ENGINE or "").strip().lower() != "cloud"
+        ):
+            raise ProviderReplayDisabled("post_processing_cloud_configuration_required")
     except ProviderReplayDisabled as exc:
         replay_gate = ProviderReplayRuntimeGate.disabled(str(exc))
         replay_manual_stop_enabled = False
+        replay_post_processing_enabled = False
     if replay_fixture_duration_ms == 350:
         provider_replay = ProviderReplayRegistry(
             replay_gate,
             manual_stop_enabled=replay_manual_stop_enabled,
+            post_processing_enabled=replay_post_processing_enabled,
         )
     else:
         provider_replay = ProviderReplayRegistry(
@@ -18312,6 +18538,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             ),
             authoritative_fixture_duration_ms=replay_fixture_duration_ms,
             manual_stop_enabled=replay_manual_stop_enabled,
+            post_processing_enabled=replay_post_processing_enabled,
         )
 
     @web.middleware
@@ -18642,6 +18869,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 speechmatics_batch_raw_transport=(speechmatics_batch_raw_transport),
                 soniox_server=soniox_server,
                 manual_stop_required=bool(pending.get("manualStopRequired")),
+                post_processing_enabled=replay.post_processing_enabled,
                 authoritative_fixture_duration_ms=(replay.authoritative_fixture_duration_ms),
             )
             activation_qpc = (
@@ -18657,6 +18885,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 qpc_snapshot=activation_qpc,
             )
             start_error = await ctl.start_listening(
+                post_process=execution.post_processing_enabled,
                 tauri_hotkey_marker=marker,
                 provider_replay_execution=execution,
             )
@@ -19559,7 +19788,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
     register_transcript_routes(
         app,
         controller=controller,
-        renderer=_TranscriptDocumentRenderer(),
+        renderer=_TranscriptDocumentRenderer(document_export_gate),
     )
 
     register_meeting_readiness_routes(
@@ -19599,7 +19828,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
         deps=lambda: MeetingArtifactDeps(
             store=controller._meeting_store,
             storage_root=data_dir(),
-            renderer=_MeetingArtifactDocumentRenderer(),
+            renderer=_MeetingArtifactDocumentRenderer(document_export_gate),
             fallback_language=Config.LANGUAGE,
         ),
     )

@@ -17,6 +17,7 @@ import aiohttp
 from loguru import logger
 
 from src.config import Config
+from src.core.provider_errors import provider_transport_error
 from src.runtime.http_response import read_response_text_limited
 
 CELERIS_MODEL = "celeris-1"
@@ -100,19 +101,6 @@ def _response_text(data: Any) -> str:
     return ""
 
 
-def _error_code(raw: str) -> str:
-    try:
-        payload = json.loads(raw)
-    except TypeError, ValueError:
-        return "unknown"
-    error = payload.get("error") if isinstance(payload, dict) else None
-    code = error.get("code") if isinstance(error, dict) else None
-    normalized = str(code or "").strip().lower()
-    if normalized and len(normalized) <= 80 and all(value.isalnum() or value in "._-" for value in normalized):
-        return normalized
-    return "unknown"
-
-
 def _retry_after_seconds(response: Any, attempt: int) -> float:
     raw = str(getattr(response, "headers", {}).get("Retry-After", "") or "").strip()
     try:
@@ -184,11 +172,16 @@ async def celeris_chat_completion(
                         CELERIS_RESPONSE_LIMIT_BYTES,
                     )
                     if response.status >= 400:
-                        code = _error_code(raw)
                         if response.status in _RETRYABLE_STATUSES and attempt < 2:
                             await asyncio.sleep(_retry_after_seconds(response, attempt))
                             continue
-                        raise RuntimeError(f"Celeris API error {response.status} (code={code}).")
+                        raise provider_transport_error(
+                            "celeris",
+                            "text_generation",
+                            status=response.status,
+                            response_body=raw,
+                            retryable=response.status in _RETRYABLE_STATUSES,
+                        )
                     try:
                         data = json.loads(raw)
                     except json.JSONDecodeError as exc:

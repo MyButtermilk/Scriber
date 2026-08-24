@@ -874,11 +874,16 @@ export interface PostProcessingDiagnostic {
   durationMs?: number | null;
   error?: string;
   errorType?: string;
+  configuredFallbackModel?: string | null;
+  fallbackModel?: string | null;
+  fallbackReason?: string | null;
   fallbackToRaw?: boolean;
+  fallbackUsed?: boolean;
   maxOutputTokens?: number | null;
   model?: string;
   outputChanged?: boolean | null;
   postProcessed?: boolean;
+  primaryModel?: string | null;
   processedChars?: number | null;
   promptChars?: number | null;
   provider?: string | null;
@@ -888,6 +893,7 @@ export interface PostProcessingDiagnostic {
   sessionIdPrefix?: string;
   status?: "started" | "success" | "failure" | "empty_output" | "skipped" | string;
   transcriptId?: string;
+  usedModel?: string | null;
 }
 
 export interface PostProcessingDiagnosticsResponse {
@@ -1121,6 +1127,7 @@ export interface SettingsResponse {
   speakerDiarizationFallbackEnabled?: boolean;
   postProcessingPrompt?: string;
   postProcessingModel?: string;
+  postProcessingFallbackModel?: string;
   openaiSttModel?: string;
   openaiRealtimeSttModel?: string;
   onnxModel?: string;
@@ -1166,6 +1173,7 @@ export interface SettingsUpdatePayload {
   speakerDiarizationFallbackEnabled?: boolean;
   postProcessingPrompt?: string;
   postProcessingModel?: string;
+  postProcessingFallbackModel?: string;
   openaiSttModel?: string;
   openaiRealtimeSttModel?: string;
   onnxModel?: string;

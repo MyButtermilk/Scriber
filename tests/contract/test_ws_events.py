@@ -20,6 +20,7 @@ from src.core.ws_contracts import (
     meeting_segment_event,
     meeting_state_event,
     meeting_transcript_edited_event,
+    post_processing_fallback_used_event,
     session_finished_event,
     session_started_event,
     state_event,
@@ -132,6 +133,14 @@ def test_ws_event_builders_match_contract():
             updated_at="2026-06-09T12:00:00",
             reason="progress",
         ),
+        post_processing_fallback_used_event(
+            "post-processing-fallback:s1",
+            "cerebras/gemma-4-31b",
+            "minimax/minimax-m3",
+            desktop_notification_accepted=True,
+            reason="quota_exceeded",
+            session_id="s1",
+        ),
         frontend_performance_flush_event("webview-123", 4),
         transcribing_event(session_id="s1"),
         session_started_event({"id": "s1"}, session_id="s1"),
@@ -157,6 +166,12 @@ def test_ws_state_and_auxiliary_events_match_contract():
                 "backgroundProcessing": False,
                 "recordingState": "idle",
                 "transcribing": False,
+                "pendingPostProcessingFallback": post_processing_fallback_used_event(
+                    "post-processing-fallback:replay-1",
+                    "cerebras/gemma-4-31b",
+                    "minimax/minimax-m3",
+                    desktop_notification_accepted=False,
+                ),
             }
         ),
         version_event_payload({"type": "settings_updated"}),
@@ -228,6 +243,54 @@ def test_ws_contract_validation_rejects_invalid_payload():
         validate_event_payload({"type": "history_updated", "apiVersion": "0"})
     with pytest.raises(WSContractError):
         validate_event_payload(version_event_payload({"type": "history_updated", "transcriptId": 123}))
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                    "desktopNotificationAccepted": False,
+                }
+            )
+        )
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "fallback:missing-desktop-result",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                }
+            )
+        )
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "fallback:1",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                    "desktopNotificationAccepted": False,
+                    "reason": 402,
+                }
+            )
+        )
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "fallback:1",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                    "desktopNotificationAccepted": "yes",
+                }
+            )
+        )
     with pytest.raises(WSContractError):
         validate_event_payload(
             version_event_payload(

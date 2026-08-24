@@ -1300,11 +1300,15 @@ def inject_text_once(
     *,
     on_injected: Callable[[str], None] | None = None,
     on_injection_marker: Callable[..., None] | None = None,
+    target_guard: InjectionTargetGuard | None = None,
+    injection_method: str | None = None,
 ) -> bool:
     injector = TextInjector(
         inject_immediately=True,
         enabled=True,
         on_injected=on_injected,
         on_injection_marker=on_injection_marker,
+        target_guard=target_guard,
+        injection_method=injection_method,
     )
     return injector._inject_text_safely(text)

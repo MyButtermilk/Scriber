@@ -1608,6 +1608,7 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
 
     assert "function createPostProcessingModelOptions(localeTag: string, t: Translate)" in settings_source
     assert 'const DEFAULT_POST_PROCESSING_MODEL = "cerebras/gemma-4-31b";' in settings_source
+    assert 'const DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro";' in settings_source
     assert 'value: "openai/gpt-oss-120b"' in settings_source
     assert "GPT-OSS 120B Baseten" in settings_source
     assert 'value: "openai/gpt-oss-120b:cerebras"' in settings_source
@@ -1632,16 +1633,24 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "OpenAI GPT 5 Mini" not in settings_source
     assert "OpenAI GPT 5 Nano" not in settings_source
     assert "const [postProcessingModel, setPostProcessingModel]" in settings_source
+    assert "const [postProcessingFallbackModel, setPostProcessingFallbackModel]" in settings_source
     assert "const [cerebrasKey, setCerebrasKey]" in settings_source
     assert 'provider="Cerebras"' in settings_source
     assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
+    assert "settings.postProcessingFallbackModel || DEFAULT_POST_PROCESSING_FALLBACK_MODEL" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
+    assert "await updateSettings({ postProcessingFallbackModel: value });" in settings_source
+    assert "postProcessingFallbackModelSaveGenerationRef.current === saveGeneration" in settings_source
     assert 'label={t("Post-processing model")}' in settings_source
     assert "value={postProcessingModel}" in settings_source
     assert "onValueChange={(value) => void handlePostProcessingModelChange(value)}" in settings_source
     assert "postProcessingModelOptions.map((option)" in settings_source
     assert "selectedPostProcessingModelOption" in settings_source
+    assert "POST_PROCESSING_FALLBACK_MODEL_VALUES.has(option.value)" in settings_source
+    assert 'label={t("Fallback model (OpenRouter)")}' in settings_source
+    assert "value={postProcessingFallbackModel}" in settings_source
+    assert "onValueChange={(value) => void handlePostProcessingFallbackModelChange(value)}" in settings_source
     assert "<ProviderIcon icon={option.icon} label={option.label}" in settings_source
     assert "const requirement = requiredCredentialForLanguageModel(value);" in settings_source
     assert "if (!isCredentialReady(requirement))" in settings_source
@@ -1663,6 +1672,50 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "defaultPostProcessingPrompt(locale)" in settings_source
     assert "Du bist Scribers präziser Live-Diktat-Editor." not in presentation_source
     assert "Aufgabe: Glätte das folgende Speech-to-Text-Transkript" not in presentation_source
+
+
+def test_app_owns_one_deduplicated_post_processing_fallback_toast_bridge() -> None:
+    app_source = (REPO_ROOT / "Frontend" / "client" / "src" / "App.tsx").read_text(encoding="utf-8")
+    helper_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "post-processing-fallback-toast.ts").read_text(
+        encoding="utf-8"
+    )
+    live_mic_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
+
+    assert app_source.count("function PostProcessingFallbackToastBridge()") == 1
+    assert app_source.count("<PostProcessingFallbackToastBridge />") == 1
+    assert 'message.type === "post_processing_fallback_used"' in app_source
+    assert "message.pendingPostProcessingFallback" in app_source
+    assert "seenEventIdsRef" in app_source
+    assert "showPostProcessingFallbackToast" in app_source
+    assert "seenEventIds.has(eventId)" in helper_source
+    assert "message.desktopNotificationAccepted === true" in helper_source
+    assert "post_processing_fallback_used" not in live_mic_source
+
+
+def test_tauri_fallback_notification_uses_a_bounded_dedicated_windows_boundary() -> None:
+    cargo_source = (REPO_ROOT / "Frontend" / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+    lib_source = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "lib.rs").read_text(encoding="utf-8")
+    native_source = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "native_overlay.rs").read_text(encoding="utf-8")
+    shell_source = (REPO_ROOT / "Frontend" / "src-tauri" / "src" / "shell_ipc.rs").read_text(encoding="utf-8")
+
+    assert 'tauri-winrt-notification = "=0.7.3"' in cargo_source
+    assert '"UI_Notifications"' in cargo_source
+    assert "tauri-plugin-notification" not in cargo_source
+    assert "tauri_plugin_notification" not in lib_source
+    assert "ToastNotificationManager::CreateToastNotifierWithId" in native_source
+    assert "NotificationSetting::Enabled" in native_source
+    assert "require_windows_notifications_enabled(app_id)?;" in native_source
+    assert "Toast::new(app_id)" in native_source
+    assert "FALLBACK_NOTIFICATION_WORKER_ACTIVE" in native_source
+    assert "FALLBACK_NOTIFICATION_RESULT_TIMEOUT" in native_source
+    assert "FallbackNotificationHistory" in native_source
+    assert "main_window_can_show_in_app_toast" in native_source
+    assert "fallback_notification_event_id(payload)?" in native_source
+    assert 'json!({ "accepted": true, "duplicate": true })' in native_source
+    assert ".duration(ToastDuration::Short)" in native_source
+    assert 'Ok(json!({ "accepted": true, "duplicate": false }))' in native_source
+    assert '"postProcessingFallbackNotify"' in shell_source
+    assert '"desktopNotificationUnavailable"' in shell_source
 
 
 def test_settings_model_choices_require_saved_api_keys() -> None:

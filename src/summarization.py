@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import hashlib
 import json
 import math
 import os
@@ -24,12 +25,14 @@ from src.celeris import (
     is_celeris_model,
 )
 from src.config import Config
+from src.core.provider_circuit_breaker import ProviderCircuitBreaker
 from src.core.provider_errors import (
     ProviderTransportError,
     provider_public_code,
     provider_transport_error,
 )
 from src.runtime.http_response import read_response_text_limited
+from src.runtime.provider_http import ProviderHttpTransport
 from src.summary_html import normalize_summary_document_html
 
 SummarizationModel = Literal[
@@ -56,6 +59,8 @@ SummarizationModel = Literal[
     "z-ai/glm-5.2:nitro",
 ]
 FallbackObserver = Callable[[str, str], Awaitable[None]]
+FallbackErrorObserver = Callable[[str, str, int | None], Awaitable[None]]
+ModelUsedObserver = Callable[[str], None]
 
 
 class SummaryOutputLimitError(RuntimeError):
@@ -172,6 +177,64 @@ def _transcript_language_instruction(fallback_language: Any = "") -> str:
 _summary_timeout_override: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "scriber_summary_timeout_override",
     default=None,
+)
+_openrouter_reasoning_effort_override: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "scriber_openrouter_reasoning_effort_override",
+    default=None,
+)
+_openrouter_semantic_attempt_limit_override: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "scriber_openrouter_semantic_attempt_limit_override",
+    default=None,
+)
+_openrouter_fallback_models_override: contextvars.ContextVar[tuple[str, ...] | None] = contextvars.ContextVar(
+    "scriber_openrouter_fallback_models_override",
+    default=None,
+)
+_summary_payload_retries_override: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "scriber_summary_payload_retries_override",
+    default=None,
+)
+_live_mic_provider_http_transport_override: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "scriber_live_mic_provider_http_transport_override",
+    default=None,
+)
+_live_mic_openrouter_model_observer: contextvars.ContextVar[ModelUsedObserver | None] = contextvars.ContextVar(
+    "scriber_live_mic_openrouter_model_observer",
+    default=None,
+)
+
+
+def _observe_live_mic_openrouter_model(used_model: str) -> None:
+    observer = _live_mic_openrouter_model_observer.get()
+    if observer is None:
+        return
+    try:
+        observer(str(used_model or "").strip())
+    except Exception as exc:
+        logger.warning("Live Mic model-used observer failed: {}", type(exc).__name__)
+
+
+class _RequestTimeoutSessionView:
+    """Attach the Live-Mic deadline to every request on a borrowed pool."""
+
+    def __init__(self, session: Any, timeout: aiohttp.ClientTimeout) -> None:
+        self._session = session
+        self._timeout = timeout
+
+    def post(self, url: Any, **kwargs: Any) -> Any:
+        prepared = dict(kwargs)
+        prepared.setdefault("timeout", self._timeout)
+        return self._session.post(url, **prepared)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+
+_LIVE_MIC_PRIMARY_CIRCUIT_COOLDOWN_SECONDS = 60.0
+_live_mic_rejected_primary_keys: set[str] = set()
+_live_mic_primary_circuit = ProviderCircuitBreaker(
+    failure_threshold=1,
+    cooldown_seconds=_LIVE_MIC_PRIMARY_CIRCUIT_COOLDOWN_SECONDS,
 )
 
 
@@ -518,10 +581,17 @@ def _gemini_thinking_level_for_model(model: str) -> str | None:
 
 async def _summarize_with_model(prompt: str, model: str, max_output_tokens: int | None) -> str:
     if is_celeris_model(model):
+        provider_http_transport = _live_mic_provider_http_transport_override.get()
+        session = (
+            await provider_http_transport.session_view(provider="celeris")
+            if provider_http_transport is not None
+            else None
+        )
         result = await celeris_chat_completion(
             prompt,
             max_output_tokens=max_output_tokens,
             timeout_seconds=_summary_timeout_seconds(),
+            session=session,
         )
     elif model.startswith("gpt-"):
         result = await _summarize_openai(prompt, model, max_output_tokens)
@@ -737,6 +807,7 @@ async def _try_openrouter_summary_fallback(
     timeout_seconds: float,
     require_structured_html: bool = False,
     on_fallback: FallbackObserver | None = None,
+    on_fallback_error: FallbackErrorObserver | None = None,
 ) -> str | None:
     if _is_meta_model(primary_model):
         # Meta is a direct, explicitly selected provider boundary. Never send
@@ -750,7 +821,8 @@ async def _try_openrouter_summary_fallback(
     if not (getattr(Config, "OPENROUTER_API_KEY", "") or "").strip():
         return None
 
-    fallback_models = _openrouter_fallback_models()
+    fallback_models_override = _openrouter_fallback_models_override.get()
+    fallback_models = list(fallback_models_override) if fallback_models_override else _openrouter_fallback_models()
     error_status = primary_error.status if isinstance(primary_error, ProviderTransportError) else None
     error_code = provider_public_code(primary_error.code) if isinstance(primary_error, ProviderTransportError) else ""
     logger.warning(
@@ -766,6 +838,15 @@ async def _try_openrouter_summary_fallback(
             await on_fallback(primary_model, error_code or "provider_error")
         except Exception as exc:
             logger.warning("Summarization fallback observer failed: {}", type(exc).__name__)
+    if on_fallback_error is not None:
+        try:
+            await on_fallback_error(
+                primary_model,
+                error_code or "provider_error",
+                error_status,
+            )
+        except Exception as exc:
+            logger.warning("Summarization fallback error observer failed: {}", type(exc).__name__)
     try:
         fallback_request = (
             _summarize_openrouter(
@@ -953,6 +1034,7 @@ async def generate_text_with_model(
     *,
     max_output_tokens: int | None = 2048,
     on_fallback: FallbackObserver | None = None,
+    on_fallback_error: FallbackErrorObserver | None = None,
 ) -> str:
     """Generate text with the configured summary LLM routing.
 
@@ -990,6 +1072,7 @@ async def generate_text_with_model(
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
             on_fallback=on_fallback,
+            on_fallback_error=on_fallback_error,
         )
         if fallback is not None:
             return fallback.strip()
@@ -1002,10 +1085,177 @@ async def generate_text_with_model(
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
             on_fallback=on_fallback,
+            on_fallback_error=on_fallback_error,
         )
         if fallback is not None:
             return fallback.strip()
         raise
+
+
+async def generate_live_mic_text(
+    prompt: str,
+    model: str | None = None,
+    *,
+    max_output_tokens: int | None,
+    openrouter_reasoning_effort: str = "low",
+    openrouter_max_semantic_attempts: int = 1,
+    routing_diagnostics: dict[str, Any] | None = None,
+    provider_http_transport: ProviderHttpTransport | None = None,
+) -> str:
+    """Generate latency-bounded Live Mic text without changing summary policy.
+
+    Live dictation cleanup does not need the medium reasoning budget used by
+    document summaries. Context-local overrides keep that policy isolated while
+    still reaching a direct OpenRouter model or a cross-provider fallback.
+    """
+    selected_model = model or getattr(Config, "SUMMARIZATION_MODEL", Config.DEFAULT_SUMMARIZATION_MODEL)
+    configured_fallback_model = str(
+        getattr(Config, "POST_PROCESSING_FALLBACK_MODEL", _OPENROUTER_DEFAULT_MODELS[0])
+        or _OPENROUTER_DEFAULT_MODELS[0]
+    ).strip()
+    fallback_models = (configured_fallback_model,)
+    circuit_key = _live_mic_primary_circuit_key(selected_model)
+    can_fallback = bool(
+        fallback_models
+        and _should_fallback_to_openrouter()
+        and (getattr(Config, "OPENROUTER_API_KEY", "") or "").strip()
+    )
+    rejected_credential = bool(circuit_key and circuit_key in _live_mic_rejected_primary_keys)
+    quota_limited = bool(circuit_key and not _live_mic_primary_circuit.can_execute(circuit_key))
+    bypass_primary = bool(can_fallback and (rejected_credential or quota_limited))
+    fallback_active = bypass_primary
+    if routing_diagnostics is not None:
+        routing_diagnostics.update(
+            {
+                "primaryModel": selected_model,
+                "configuredFallbackModel": configured_fallback_model,
+                "usedModel": None,
+                "fallbackUsed": False,
+                "fallbackReason": (
+                    "credential_rejected"
+                    if bypass_primary and rejected_credential
+                    else "quota_cooldown"
+                    if bypass_primary and quota_limited
+                    else None
+                ),
+                "primaryBypassed": bypass_primary,
+                "primaryBypassReason": (
+                    "credential_rejected"
+                    if bypass_primary and rejected_credential
+                    else "quota_cooldown"
+                    if bypass_primary and quota_limited
+                    else None
+                ),
+                "primaryCircuitCooldownMs": (
+                    None if rejected_credential else _LIVE_MIC_PRIMARY_CIRCUIT_COOLDOWN_SECONDS * 1000.0
+                ),
+            }
+        )
+
+    def observe_used_model(used_model: str) -> None:
+        normalized = used_model or configured_fallback_model
+        if routing_diagnostics is not None:
+            routing_diagnostics["usedModel"] = normalized
+            if fallback_active:
+                routing_diagnostics["fallbackUsed"] = True
+                routing_diagnostics["fallbackModel"] = normalized
+
+    async def generate_with_live_mic_overrides(
+        provider_http_context: Any | None,
+    ) -> str:
+        reasoning_token = _openrouter_reasoning_effort_override.set(openrouter_reasoning_effort)
+        attempt_token = _openrouter_semantic_attempt_limit_override.set(max(1, int(openrouter_max_semantic_attempts)))
+        models_token = _openrouter_fallback_models_override.set(fallback_models)
+        payload_retries_token = _summary_payload_retries_override.set(0)
+        provider_http_transport_token = _live_mic_provider_http_transport_override.set(provider_http_context)
+        model_observer_token = _live_mic_openrouter_model_observer.set(observe_used_model)
+        try:
+            if bypass_primary:
+                result = await _summarize_openrouter(prompt, fallback_models, max_output_tokens)
+                if routing_diagnostics is not None:
+                    routing_diagnostics["fallbackUsed"] = True
+                    routing_diagnostics["fallbackReason"] = routing_diagnostics.get("primaryBypassReason")
+                    if not routing_diagnostics.get("usedModel"):
+                        routing_diagnostics["usedModel"] = configured_fallback_model
+                    routing_diagnostics["fallbackModel"] = (
+                        routing_diagnostics.get("usedModel") or configured_fallback_model
+                    )
+                return result
+
+            fallback_observed = False
+
+            async def observe_fallback(primary_model: str, public_code: str, status: int | None) -> None:
+                nonlocal fallback_active, fallback_observed
+                fallback_observed = True
+                fallback_active = True
+                if routing_diagnostics is not None:
+                    routing_diagnostics["primaryFailureCode"] = public_code or "provider_error"
+                    routing_diagnostics["primaryFailureStatus"] = status
+                    routing_diagnostics["fallbackReason"] = public_code or "provider_error"
+                if circuit_key and status in {401, 403}:
+                    _live_mic_rejected_primary_keys.add(circuit_key)
+                    if routing_diagnostics is not None:
+                        routing_diagnostics["primaryCircuitCooldownMs"] = None
+                elif circuit_key and status == 402:
+                    _live_mic_primary_circuit.on_failure(circuit_key)
+                    if routing_diagnostics is not None:
+                        routing_diagnostics["primaryCircuitCooldownMs"] = (
+                            _LIVE_MIC_PRIMARY_CIRCUIT_COOLDOWN_SECONDS * 1000.0
+                        )
+
+            result = await generate_text_with_model(
+                prompt,
+                selected_model,
+                max_output_tokens=max_output_tokens,
+                on_fallback_error=observe_fallback,
+            )
+            if circuit_key and not fallback_observed:
+                _live_mic_rejected_primary_keys.discard(circuit_key)
+                _live_mic_primary_circuit.on_success(circuit_key)
+            if routing_diagnostics is not None:
+                routing_diagnostics["fallbackUsed"] = fallback_observed
+                if fallback_observed:
+                    if not routing_diagnostics.get("usedModel"):
+                        routing_diagnostics["usedModel"] = configured_fallback_model
+                    routing_diagnostics["fallbackModel"] = (
+                        routing_diagnostics.get("usedModel") or configured_fallback_model
+                    )
+                else:
+                    if not routing_diagnostics.get("usedModel"):
+                        routing_diagnostics["usedModel"] = selected_model
+            return result
+        finally:
+            _live_mic_openrouter_model_observer.reset(model_observer_token)
+            _live_mic_provider_http_transport_override.reset(provider_http_transport_token)
+            _summary_payload_retries_override.reset(payload_retries_token)
+            _openrouter_fallback_models_override.reset(models_token)
+            _openrouter_semantic_attempt_limit_override.reset(attempt_token)
+            _openrouter_reasoning_effort_override.reset(reasoning_token)
+
+    if provider_http_transport is None:
+        return await generate_with_live_mic_overrides(None)
+    async with provider_http_transport.borrow() as provider_http_borrow:
+        return await generate_with_live_mic_overrides(provider_http_borrow)
+
+
+def _live_mic_primary_circuit_key(model: str) -> str:
+    normalized = (model or "").strip()
+    if _is_openrouter_model(normalized) or _is_meta_model(normalized):
+        return ""
+    if _is_cerebras_model(normalized):
+        credential = getattr(Config, "CEREBRAS_API_KEY", "") or ""
+    elif normalized.startswith("gemini-"):
+        credential = getattr(Config, "GOOGLE_API_KEY", "") or ""
+    elif normalized.startswith("gpt-"):
+        credential = getattr(Config, "OPENAI_API_KEY", "") or ""
+    elif is_celeris_model(normalized):
+        credential = getattr(Config, "CELERIS_API_KEY", "") or ""
+    else:
+        return ""
+    if not credential.strip():
+        return ""
+    fingerprint = hashlib.sha256(credential.strip().encode("utf-8")).hexdigest()[:16]
+    return f"{normalized}:{fingerprint}"
 
 
 async def generate_meeting_analysis_text(
@@ -1217,7 +1467,12 @@ def _safe_nonnegative_int(value: Any) -> int | None:
 
 def _openrouter_reasoning_config() -> dict[str, Any]:
     config: dict[str, Any] = {"exclude": True}
-    raw = os.getenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "medium").strip().lower()
+    override = _openrouter_reasoning_effort_override.get()
+    raw = (
+        (override if override is not None else os.getenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_EFFORT", "medium"))
+        .strip()
+        .lower()
+    )
     if not raw:
         return config
     allowed = {"max", "xhigh", "high", "medium", "low", "minimal", "none"}
@@ -1349,7 +1604,12 @@ async def _post_chat_completion_json(
 ) -> dict[str, Any]:
     """Read one bounded chat response, retrying a truncated HTTP payload once."""
 
-    retries = _env_int("SCRIBER_SUMMARY_PAYLOAD_RETRIES", 1, min_value=0, max_value=3)
+    retries_override = _summary_payload_retries_override.get()
+    retries = (
+        max(0, min(3, int(retries_override)))
+        if retries_override is not None
+        else _env_int("SCRIBER_SUMMARY_PAYLOAD_RETRIES", 1, min_value=0, max_value=3)
+    )
     retryable_errors = (aiohttp.ClientPayloadError, aiohttp.ClientConnectionError)
     for attempt in range(retries + 1):
         try:
@@ -1491,7 +1751,18 @@ async def _summarize_openrouter(
         "X-OpenRouter-Title": "Scriber",
     }
     requested_models = _openrouter_model_candidates(models)
-    if isinstance(models, str) and requested_models and _is_openrouter_provider_routed_model(requested_models[0]):
+
+    def bounded_attempt_models(candidates: Sequence[str]) -> list[str]:
+        normalized = list(candidates)
+        if _openrouter_semantic_attempt_limit_override.get() is not None:
+            return normalized[:1]
+        return normalized
+
+    if _openrouter_semantic_attempt_limit_override.get() is not None:
+        # Live Mic is deliberately one semantic generation. Do not expand an
+        # explicitly selected direct model into OpenRouter's multi-model route.
+        initial_models = bounded_attempt_models(requested_models)
+    elif isinstance(models, str) and requested_models and _is_openrouter_provider_routed_model(requested_models[0]):
         initial_models = requested_models
     elif isinstance(models, str):
         initial_models = _openrouter_retry_candidates(
@@ -1512,10 +1783,22 @@ async def _summarize_openrouter(
         _openrouter_retry_output_cap(initial_models, max_output_tokens) if max_output_tokens is not None else None
     )
 
-    session = aiohttp.ClientSession(timeout=timeout)
+    provider_http_transport = _live_mic_provider_http_transport_override.get()
+    owned_session: aiohttp.ClientSession | None = None
+    if provider_http_transport is not None:
+        session = _RequestTimeoutSessionView(
+            await provider_http_transport.session_view(provider="openrouter"),
+            timeout,
+        )
+    else:
+        owned_session = aiohttp.ClientSession(timeout=timeout)
+        session = owned_session
     try:
         attempt_index = 0
         while attempt_index < len(attempts):
+            attempt_limit = _openrouter_semantic_attempt_limit_override.get()
+            if attempt_limit is not None and attempt_index >= attempt_limit:
+                raise RuntimeError("OpenRouter Live Mic generation reached its bounded attempt limit.")
             attempt_models = attempts[attempt_index]
             attempt_max_tokens = attempt_budgets[attempt_index]
             payload = _build_openrouter_payload(prompt, attempt_models, attempt_max_tokens)
@@ -1552,6 +1835,7 @@ async def _summarize_openrouter(
                     for candidate in alternate_models
                     if (_openrouter_model_family(candidate), None) not in length_limited_attempts
                 ]
+                alternate_models = bounded_attempt_models(alternate_models)
                 alternate_key = (tuple(alternate_models), None)
                 if alternate_models and alternate_key not in seen_attempts:
                     logger.warning(
@@ -1587,6 +1871,7 @@ async def _summarize_openrouter(
                     for candidate in alternate_models
                     if (_openrouter_model_family(candidate), attempt_max_tokens) not in length_limited_attempts
                 ]
+                alternate_models = bounded_attempt_models(alternate_models)
                 alternate_key = (tuple(alternate_models), attempt_max_tokens)
                 if alternate_models and alternate_key not in seen_attempts:
                     logger.warning(
@@ -1631,6 +1916,7 @@ async def _summarize_openrouter(
                     )
                     if alternate_models:
                         retry_models = alternate_models
+                retry_models = bounded_attempt_models(retry_models)
                 key = (tuple(retry_models), next_max_tokens)
                 if key not in seen_attempts:
                     logger.warning(
@@ -1654,6 +1940,7 @@ async def _summarize_openrouter(
                         len(content),
                         used_model,
                     )
+                    _observe_live_mic_openrouter_model(used_model)
                     return content
 
                 try:
@@ -1669,6 +1956,7 @@ async def _summarize_openrouter(
                         len(normalized_html),
                         used_model,
                     )
+                    _observe_live_mic_openrouter_model(used_model)
                     return normalized_html
 
                 invalid_html_model_families.add(_openrouter_model_family(used_model))
@@ -1682,6 +1970,7 @@ async def _summarize_openrouter(
                     for candidate in retry_models
                     if _openrouter_model_family(candidate) not in invalid_html_model_families
                 ]
+                retry_models = bounded_attempt_models(retry_models)
                 retry_key = (tuple(retry_models), attempt_max_tokens)
                 if retry_models and retry_key not in seen_attempts:
                     logger.warning(
@@ -1707,6 +1996,7 @@ async def _summarize_openrouter(
                 used_model=used_model,
                 allow_default_fallbacks=isinstance(models, str),
             )
+            retry_models = bounded_attempt_models(retry_models)
             retry_key = (tuple(retry_models), attempt_max_tokens)
             if retry_models and retry_key not in seen_attempts:
                 logger.warning(
@@ -1744,7 +2034,8 @@ async def _summarize_openrouter(
             code="invalid_json",
         ) from None
     finally:
-        await session.close()
+        if owned_session is not None:
+            await owned_session.close()
 
 
 async def _post_meta_chat_completion(
@@ -1846,11 +2137,21 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int | 
         "Content-Type": "application/json",
     }
 
+    provider_http_transport = _live_mic_provider_http_transport_override.get()
+    owned_session: aiohttp.ClientSession | None = None
+    if provider_http_transport is not None:
+        session = await provider_http_transport.session_view(provider="cerebras")
+    else:
+        owned_session = aiohttp.ClientSession(timeout=timeout)
+        session = owned_session
+
     try:
-        async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.post("https://api.cerebras.ai/v1/chat/completions", headers=headers, json=payload) as resp,
-        ):
+        async with session.post(
+            "https://api.cerebras.ai/v1/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=timeout,
+        ) as resp:
             raw = await read_response_text_limited(resp, 8 * 1024 * 1024)
             if resp.status >= 400:
                 raise provider_transport_error(
@@ -1897,6 +2198,9 @@ async def _summarize_cerebras(prompt: str, model: str, max_output_tokens: int | 
             "summarization_response",
             code="invalid_json",
         ) from None
+    finally:
+        if owned_session is not None:
+            await owned_session.close()
 
 
 def _build_cerebras_payload(

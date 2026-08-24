@@ -29,6 +29,15 @@ type InputWarningAction = {
 
 type ModelDownloadStatus = "downloading" | "ready" | "error" | "not_downloaded";
 
+type PostProcessingFallbackMessage = BaseWsMessage & {
+  type: "post_processing_fallback_used";
+  eventId: string;
+  primaryModel: string;
+  fallbackModel: string;
+  desktopNotificationAccepted: boolean;
+  reason?: string;
+};
+
 export type ScriberWebSocketMessage =
   | (BaseWsMessage & {
       type: "state";
@@ -42,6 +51,7 @@ export type ScriberWebSocketMessage =
       backgroundProcessing: boolean;
       recordingState: string;
       transcribing: boolean;
+      pendingPostProcessingFallback?: PostProcessingFallbackMessage | null;
     })
   | (BaseWsMessage & {
       type: "status";
@@ -82,6 +92,7 @@ export type ScriberWebSocketMessage =
       updatedAt?: string;
       reason?: string;
     })
+  | PostProcessingFallbackMessage
   | (BaseWsMessage & {
       type: "frontend_performance_flush";
       sourceInstanceId: string;

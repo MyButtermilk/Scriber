@@ -1,7 +1,8 @@
 param(
     [string]$WindowTitle = "Scriber Autoresearch TextReceiver",
     [string]$AutomationId = "ScriberAutoresearchTextBox",
-    [Parameter(Mandatory=$true)][string]$ExpectedSha256,
+    [string]$ExpectedSha256 = "",
+    [switch]$ObserveFirstNonEmpty,
     [string]$PrefixSentinel = "",
     [string]$SuffixSentinel = "",
     [double]$TimeoutSec = 10,
@@ -10,6 +11,13 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($ObserveFirstNonEmpty) {
+    if ($ExpectedSha256) {
+        throw "ObserveFirstNonEmpty cannot be combined with ExpectedSha256."
+    }
+} elseif ($ExpectedSha256 -notmatch '^[0-9a-fA-F]{64}$') {
+    throw "ExpectedSha256 must be an exact SHA-256 value."
+}
 Add-Type -AssemblyName UIAutomationClient
 Add-Type -AssemblyName UIAutomationTypes
 Add-Type @"
@@ -147,6 +155,8 @@ $targetHwnd = 0
 $descendantCount = 0
 $descendantSample = @()
 $readyWritten = $false
+$baselineChars = $null
+$baselineSha256 = ""
 
 function Write-ObserverReady {
     if (-not $ReadyPath -or $script:readyWritten) {
@@ -161,6 +171,8 @@ function Write-ObserverReady {
         targetAutomationId = $targetAutomationId
         targetControlType = $targetControlType
         targetHwnd = $targetHwnd
+        baselineChars = $baselineChars
+        baselineSha256 = $baselineSha256
         qpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
         qpcFrequency = [System.Diagnostics.Stopwatch]::Frequency
     }
@@ -185,12 +197,21 @@ do {
             $targetAutomationId = [string]$target.Current.AutomationId
             $targetControlType = [string]$target.Current.ControlType.ProgrammaticName
             $targetHwnd = [int]$target.Current.NativeWindowHandle
-            Write-ObserverReady
             $last = Get-ElementText -Element $target
+            if (-not $readyWritten) {
+                $baselineChars = $last.Length
+                $baselineSha256 = Get-Sha256Text -Text $last
+                Write-ObserverReady
+            }
             $hash = Get-Sha256Text -Text $last
             $prefixOk = (-not $PrefixSentinel) -or $last.Contains($PrefixSentinel)
             $suffixOk = (-not $SuffixSentinel) -or $last.Contains($SuffixSentinel)
-            if (($hash -eq $ExpectedSha256.ToLowerInvariant()) -and $prefixOk -and $suffixOk) {
+            $contentMatched = if ($ObserveFirstNonEmpty) {
+                (($baselineChars -eq 0) -and ($last.Length -gt 0)) -and $prefixOk -and $suffixOk
+            } else {
+                ($hash -eq $ExpectedSha256.ToLowerInvariant()) -and $prefixOk -and $suffixOk
+            }
+            if ($contentMatched) {
                 # Capture the system-wide clock at the exact successful match,
                 # before loop exit, JSON construction, or filesystem I/O.
                 $observedQpcTicks = [System.Diagnostics.Stopwatch]::GetTimestamp()
@@ -206,11 +227,14 @@ $result = [pscustomobject]@{
     schemaVersion = 1
     ok = $observed
     endpoint = "final_text_observed"
-    expectedSha256 = $ExpectedSha256.ToLowerInvariant()
+    observationMode = if ($ObserveFirstNonEmpty) { "first_non_empty" } else { "expected_sha256" }
+    expectedSha256 = if ($ExpectedSha256) { $ExpectedSha256.ToLowerInvariant() } else { "" }
     observedSha256 = if ($last) { Get-Sha256Text -Text $last } else { "" }
     prefixSentinel = $PrefixSentinel
     suffixSentinel = $SuffixSentinel
     observedChars = $last.Length
+    baselineChars = $baselineChars
+    baselineSha256 = $baselineSha256
     windowFound = $windowFound
     targetFound = $targetFound
     targetAutomationId = $targetAutomationId

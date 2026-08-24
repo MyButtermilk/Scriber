@@ -7,8 +7,25 @@ from src.injector import (
     InjectionTargetGuard,
     TextInjector,
     _ForegroundTargetSnapshot,
+    inject_text_once,
 )
 from src.runtime import shell_ipc
+
+
+def test_inject_text_once_preserves_strict_replay_target_and_method():
+    guard = InjectionTargetGuard(
+        title="Bound receiver",
+        process_id=123,
+        process_creation_time_100ns=456,
+        window_handle=789,
+    )
+
+    with patch.object(TextInjector, "_inject_text_safely", autospec=True, return_value=True) as inject:
+        assert inject_text_once("hello ", target_guard=guard, injection_method="paste") is True
+
+    injector = inject.call_args.args[0]
+    assert injector.target_guard is guard
+    assert injector.injection_method == "paste"
 
 
 def test_inject_method_type_does_not_use_sendinput_or_paste(monkeypatch):

@@ -18,12 +18,15 @@ import socket
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
 
 import aiohttp
+
+from src.runtime.cancellation import await_with_delayed_cancellation
 
 _TRACE_LIMIT = 128
 _PROVIDER_LIMIT = 48
@@ -101,6 +104,26 @@ class _ProviderHttpSessionView:
         return getattr(self._session, name)
 
 
+class _ProviderHttpBorrow:
+    """Lease-bound provider-session facade authorized through shutdown."""
+
+    def __init__(self, owner: ProviderHttpTransport) -> None:
+        self._owner = owner
+        self._active = True
+
+    async def session_view(
+        self,
+        *,
+        provider: str,
+        marker: Callable[..., None] | None = None,
+    ) -> Any:
+        return await self._owner._session_view_for_borrow(
+            self,
+            provider=provider,
+            marker=marker,
+        )
+
+
 def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
     try:
         value = float(os.environ.get(name, default))
@@ -149,6 +172,8 @@ class ProviderHttpTransport:
         self._completed: deque[dict[str, Any]] = deque(maxlen=self._trace_limit)
         self._active: dict[str, SimpleNamespace] = {}
         self._diagnostics_lock = threading.Lock()
+        self._borrow_count = 0
+        self._close_requested = False
 
     @property
     def is_open(self) -> bool:
@@ -174,9 +199,18 @@ class ProviderHttpTransport:
         return result
 
     async def session(self) -> aiohttp.ClientSession:
+        return await self._session_for_borrow(None)
+
+    async def _session_for_borrow(
+        self,
+        borrow: _ProviderHttpBorrow | None,
+    ) -> aiohttp.ClientSession:
         loop = asyncio.get_running_loop()
         if self._loop is not None and self._loop is not loop:
             raise RuntimeError("Provider HTTP transport cannot cross asyncio event loops")
+        authorized_borrow = bool(borrow is not None and borrow._owner is self and borrow._active)
+        if self._close_requested and not authorized_borrow:
+            raise RuntimeError("Provider HTTP transport is closing and rejects new work")
         if self._session is not None and not self._session.closed:
             return self._session
 
@@ -245,27 +279,76 @@ class ProviderHttpTransport:
         provider: str,
         marker: Callable[..., None] | None = None,
     ) -> Any:
+        return await self._session_view_for_borrow(
+            None,
+            provider=provider,
+            marker=marker,
+        )
+
+    async def _session_view_for_borrow(
+        self,
+        borrow: _ProviderHttpBorrow | None,
+        *,
+        provider: str,
+        marker: Callable[..., None] | None = None,
+    ) -> Any:
         return _ProviderHttpSessionView(
-            await self.session(),
+            await self._session_for_borrow(borrow),
             provider=_bounded_label(provider, limit=_PROVIDER_LIMIT),
             marker=marker,
         )
 
-    async def close(self) -> None:
-        session = self._session
-        if session is None:
-            self._loop = None
-            return
-        if self._loop is not asyncio.get_running_loop():
+    @asynccontextmanager
+    async def borrow(self) -> AsyncIterator[_ProviderHttpBorrow]:
+        """Keep the owned session alive for one complete provider workflow.
+
+        A workflow may perform a primary request followed by a fallback.  App
+        shutdown can request transport closure between those requests, so the
+        last active borrower owns the deferred close in its cancellation-safe
+        ``finally`` path.
+        """
+        loop = asyncio.get_running_loop()
+        if self._loop is not None and self._loop is not loop:
+            raise RuntimeError("Provider HTTP transport cannot cross asyncio event loops")
+        if self._close_requested:
+            raise RuntimeError("Provider HTTP transport is closing and rejects new work")
+        if self._loop is None:
+            self._loop = loop
+        borrow = _ProviderHttpBorrow(self)
+        self._borrow_count += 1
+        try:
+            yield borrow
+        finally:
+            borrow._active = False
+            self._borrow_count -= 1
+            if self._borrow_count == 0 and self._close_requested:
+                _closed, pending_cancel = await await_with_delayed_cancellation(self._close_session())
+                if pending_cancel is not None:
+                    raise pending_cancel
+
+    async def close(self) -> bool:
+        """Seal new work and close now, or defer closure to the last borrower."""
+        if self._loop is not None and self._loop is not asyncio.get_running_loop():
             raise RuntimeError("Provider HTTP transport must close on its owning event loop")
+        self._close_requested = True
+        if self._borrow_count:
+            return False
+        closed, pending_cancel = await await_with_delayed_cancellation(self._close_session())
+        if pending_cancel is not None:
+            raise pending_cancel
+        return bool(closed)
+
+    async def _close_session(self) -> bool:
+        session = self._session
         self._session = None
         try:
-            if not session.closed:
+            if session is not None and not session.closed:
                 await session.close()
         finally:
             self._loop = None
             with self._diagnostics_lock:
                 self._active.clear()
+        return True
 
     def diagnostics(self) -> dict[str, Any]:
         """Return bounded, credential-free connection evidence."""
@@ -276,6 +359,8 @@ class ProviderHttpTransport:
         return {
             "schemaVersion": 1,
             "sessionOpen": self.is_open,
+            "closeRequested": self._close_requested,
+            "activeBorrowCount": self._borrow_count,
             "activeRequestCount": active_count,
             "retainedRequestCount": len(items),
             "connectionCreatedCount": sum(1 for item in items if item.get("connection") == "created"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import math
 import subprocess
@@ -245,6 +246,189 @@ def test_process_generation_match_rejects_tampered_structured_snapshot() -> None
     observed["frontendReadyReceivedAt"] = "2026-07-21T00:00:10Z"
 
     assert endpoint_probe.process_generation_matches(baseline, observed) is False
+
+
+def test_provider_replay_runtime_generation_allows_webview_churn_but_not_core_restart() -> None:
+    from benchmarks.windows import endpoint_probe
+
+    baseline = _runtime_generation_snapshot(endpoint_probe)
+    observed = _runtime_generation_snapshot(
+        endpoint_probe,
+        frontend_ready_received_at="2026-08-24T00:00:01Z",
+        webviews=[
+            {
+                "pid": 31,
+                "parentPid": 10,
+                "name": "msedgewebview2.exe",
+                "creationTime100ns": 301,
+            }
+        ],
+    )
+
+    # The generic UI-generation gate remains strict, while ProviderReplay binds
+    # the installed desktop/backend core and tolerates WebView2 helper churn.
+    assert endpoint_probe.process_generation_matches(baseline, observed) is False
+    assert endpoint_probe.provider_replay_runtime_generation_matches(baseline, observed) is True
+
+    app_restarted = json.loads(json.dumps(baseline))
+    app_restarted["app"]["creationTime100ns"] = 1_001
+    _refresh_runtime_generation_fingerprint(endpoint_probe, app_restarted)
+    backend_restarted = json.loads(json.dumps(baseline))
+    backend_restarted["backend"]["creationTime100ns"] = 2_001
+    _refresh_runtime_generation_fingerprint(endpoint_probe, backend_restarted)
+    backend_epoch_changed = json.loads(json.dumps(baseline))
+    backend_epoch_changed["backendStartedAt"] = "2026-08-24T00:00:01Z"
+    _refresh_runtime_generation_fingerprint(endpoint_probe, backend_epoch_changed)
+    tampered = dict(observed)
+    tampered["fingerprint"] = "f" * 64
+
+    assert endpoint_probe.provider_replay_runtime_generation_matches(baseline, app_restarted) is False
+    assert endpoint_probe.provider_replay_runtime_generation_matches(baseline, backend_restarted) is False
+    assert endpoint_probe.provider_replay_runtime_generation_matches(baseline, backend_epoch_changed) is False
+    assert endpoint_probe.provider_replay_runtime_generation_matches(baseline, tampered) is False
+
+
+def test_provider_replay_pipeline_warmup_is_sacrificial_and_fail_closed(monkeypatch) -> None:
+    from benchmarks.windows import endpoint_probe
+
+    run_id = "1" * 32
+    sample_id = "2" * 32
+    process_fingerprint = "3" * 64
+    calls: list[tuple[str, str, object]] = []
+
+    def request_json(port, token, path, *, method="GET", payload=None, timeout_sec=5.0):
+        calls.append((method, path, payload))
+        if path.endswith("/prepare"):
+            return {
+                "state": "prepared",
+                "runId": run_id,
+                "sampleId": sample_id,
+                "provider": "microsoft",
+                "processGenerationFingerprint": process_fingerprint,
+            }
+        if path.endswith("/arm"):
+            raise endpoint_probe.urllib.error.HTTPError(
+                f"http://127.0.0.1:{port}{path}",
+                409,
+                "Conflict",
+                {},
+                io.BytesIO(b'{"message":"expected setup conflict"}'),
+            )
+        return {
+            "state": "failed",
+            "runId": run_id,
+            "sampleId": sample_id,
+            "provider": "microsoft",
+            "sessionId": None,
+            "errorCode": "target_mismatch",
+            "processGenerationFingerprint": process_fingerprint,
+        }
+
+    monkeypatch.setattr(endpoint_probe, "request_runtime_json", request_json)
+
+    result = endpoint_probe.warm_provider_replay_pipeline_runtime(
+        port=8765,
+        token="token",
+        run_id=run_id,
+        provider="microsoft",
+        backend_pid=202,
+        backend_creation_time_100ns=2_002,
+        expected_process_generation_sha256=process_fingerprint,
+        timeout_sec=30.0,
+    )
+
+    assert result == {
+        "ok": True,
+        "contract": "provider-replay-runtime-warmup-v1",
+        "excludedFromMeasurement": True,
+        "provider": "microsoft",
+        "sampleId": sample_id,
+        "armStatusCode": 409,
+        "terminalState": "failed",
+        "errorCode": "target_mismatch",
+        "processGenerationFingerprint": process_fingerprint,
+    }
+    assert calls == [
+        (
+            "POST",
+            f"{endpoint_probe.PROVIDER_REPLAY_ROUTE}/prepare",
+            {
+                "schemaVersion": endpoint_probe.PROVIDER_REPLAY_CONTRACT_VERSION,
+                "runId": run_id,
+                "provider": "microsoft",
+            },
+        ),
+        (
+            "POST",
+            f"{endpoint_probe.PROVIDER_REPLAY_ROUTE}/{sample_id}/arm",
+            {
+                "schemaVersion": endpoint_probe.PROVIDER_REPLAY_CONTRACT_VERSION,
+                "runId": run_id,
+                "activationKind": "hotkey",
+                "targetProcessId": 202,
+                "targetCreationTime100ns": 2_002,
+            },
+        ),
+        (
+            "GET",
+            f"{endpoint_probe.PROVIDER_REPLAY_ROUTE}/{sample_id}?runId={run_id}",
+            None,
+        ),
+    ]
+
+
+def test_provider_replay_runtime_setup_rebinds_baseline_after_warmup(monkeypatch) -> None:
+    from benchmarks.windows import endpoint_probe
+
+    before = _runtime_generation_snapshot(endpoint_probe)
+    after = _runtime_generation_snapshot(
+        endpoint_probe,
+        frontend_ready_received_at="2026-08-24T00:00:01Z",
+        webviews=[
+            {
+                "pid": 31,
+                "parentPid": 10,
+                "name": "msedgewebview2.exe",
+                "creationTime100ns": 301,
+            }
+        ],
+    )
+    snapshots = iter([before, after])
+    calls: list[str] = []
+
+    def snapshot(*_args, **_kwargs):
+        calls.append("snapshot")
+        return next(snapshots)
+
+    def warmup(**kwargs):
+        calls.append("warmup")
+        assert kwargs["backend_pid"] == 200
+        assert kwargs["backend_creation_time_100ns"] == 2_000
+        return {
+            "ok": True,
+            "contract": "provider-replay-runtime-warmup-v1",
+            "excludedFromMeasurement": True,
+            "processGenerationFingerprint": endpoint_probe.provider_replay_process_generation_sha256(before),
+        }
+
+    monkeypatch.setattr(endpoint_probe, "process_generation_snapshot", snapshot)
+    monkeypatch.setattr(endpoint_probe, "warm_provider_replay_pipeline_runtime", warmup)
+
+    result = endpoint_probe.prepare_provider_replay_runtime_for_measurement(
+        app_pid=100,
+        backend_pid=200,
+        port=8765,
+        token="token",
+        run_id="1" * 32,
+        provider="microsoft",
+        timeout_sec=30.0,
+    )
+
+    assert result["ok"] is True
+    assert result["processBaseline"] == after
+    assert result["processGenerationFingerprint"] == endpoint_probe.provider_replay_process_generation_sha256(after)
+    assert result["setupWarmup"]["excludedFromMeasurement"] is True
+    assert calls == ["snapshot", "warmup", "snapshot"]
 
 
 @pytest.mark.parametrize(
@@ -922,6 +1106,263 @@ def test_runtime_json_request_sends_exact_authenticated_payload(monkeypatch):
     assert captured["timeout"] == 3.0
 
 
+def test_provider_replay_button_input_distribution_excludes_hotkey_samples():
+    from benchmarks.windows import endpoint_probe
+
+    distributions = endpoint_probe.summarize_provider_replay_distributions(
+        activation_durations=[1_000.0, 1_050.0, 980.0, 1_100.0, 990.0],
+        stop_durations=[500.0, 510.0, 490.0, 520.0, 495.0],
+        non_speech_overheads=[20.0, 25.0, 18.0, 30.0, 19.0],
+        button_input_durations=[1_075.0, 1_125.0],
+        attempted_samples=5,
+        attempted_button_samples=2,
+    )
+
+    button = distributions["button_input_to_final_text_observed"]
+    assert button["count"] == 2
+    assert button["p50Ms"] == 1_075.0
+    assert button["p95Ms"] == 1_125.0
+    assert button["failureRate"] == 0.0
+
+
+def test_post_processing_output_attestation_hashes_text_without_retaining_it(monkeypatch):
+    from benchmarks.windows import endpoint_probe
+
+    session_id = "1" * 32
+    private_text = "PRIVATE_POST_PROCESSING_OUTPUT_SENTINEL"
+
+    def request_json(_port, _token, path, **_kwargs):
+        if path == f"/api/transcripts/{session_id}":
+            return {
+                "id": session_id,
+                "status": "completed",
+                "content": private_text,
+            }
+        assert path == "/api/runtime/post-processing-diagnostics?limit=30"
+        return {
+            "items": [
+                {
+                    "transcriptId": session_id,
+                    "engine": "cloud",
+                    "status": "success",
+                    "durationMs": 123.0,
+                    "fallbackToRaw": False,
+                    "postProcessed": True,
+                }
+            ]
+        }
+
+    monkeypatch.setattr(endpoint_probe, "request_runtime_json", request_json)
+
+    result = endpoint_probe.attest_provider_replay_post_processing_output(
+        8765,
+        "token",
+        session_id,
+    )
+
+    expected_visible = endpoint_probe.provider_replay_expected_visible_text(private_text)
+    assert result["ok"] is True
+    assert result["outcome"] == "cloud_success"
+    assert result["cloudPolishingSucceeded"] is True
+    assert result["rawFallbackAttested"] is False
+    assert result["visibleTextSha256"] == endpoint_probe.sha256_text(expected_visible)
+    assert result["visibleTextLength"] == len(expected_visible)
+    assert private_text not in json.dumps(result)
+    evidence = endpoint_probe.provider_replay_post_processing_output_evidence(result)
+    assert "transcriptId" not in evidence
+    assert evidence["visibleTextSha256"] == result["visibleTextSha256"]
+
+
+def test_post_processing_output_attestation_keeps_exact_raw_fallback_binding(monkeypatch):
+    from benchmarks.windows import endpoint_probe
+
+    session_id = "1" * 32
+    private_text = "PRIVATE_RAW_FALLBACK_SENTINEL"
+
+    def request_json(_port, _token, path, **_kwargs):
+        if path == f"/api/transcripts/{session_id}":
+            return {
+                "id": session_id,
+                "status": "completed",
+                "content": private_text,
+            }
+        return {
+            "items": [
+                {
+                    "transcriptId": session_id,
+                    "engine": "cloud",
+                    "status": "failure",
+                    "durationMs": 8_015.0,
+                    "fallbackToRaw": True,
+                    "postProcessed": False,
+                    "reasonCodes": ["deadline_exceeded"],
+                }
+            ]
+        }
+
+    monkeypatch.setattr(endpoint_probe, "request_runtime_json", request_json)
+
+    result = endpoint_probe.attest_provider_replay_post_processing_output(
+        8765,
+        "token",
+        session_id,
+    )
+    evidence = endpoint_probe.provider_replay_post_processing_output_evidence(result)
+
+    expected_visible = endpoint_probe.provider_replay_expected_visible_text(private_text)
+    assert result["ok"] is True
+    assert result["outcome"] == "raw_fallback"
+    assert result["cloudPolishingSucceeded"] is False
+    assert result["rawFallbackAttested"] is True
+    assert result["visibleTextSha256"] == endpoint_probe.sha256_text(expected_visible)
+    assert result["visibleTextLength"] == len(expected_visible)
+    assert evidence["reason"] == "cloud_post_processing_raw_fallback"
+    assert evidence["diagnostic"]["reasonCodes"] == ["deadline_exceeded"]
+    assert "transcriptId" not in evidence
+    assert private_text not in json.dumps(result)
+    assert private_text not in json.dumps(evidence)
+
+
+def test_post_processing_transcript_cleanup_deletes_only_the_bound_session(monkeypatch):
+    from benchmarks.windows import endpoint_probe
+
+    session_id = "1" * 32
+    requests = []
+
+    def request_json(port, token, path, **kwargs):
+        requests.append((port, token, path, kwargs))
+        return {"success": True, "id": session_id}
+
+    monkeypatch.setattr(endpoint_probe, "request_runtime_json", request_json)
+
+    result = endpoint_probe.delete_provider_replay_post_processing_transcript(
+        8765,
+        "token",
+        session_id,
+    )
+
+    assert result == {
+        "attempted": True,
+        "ok": True,
+        "reason": "benchmark_transcript_deleted",
+    }
+    assert requests == [
+        (
+            8765,
+            "token",
+            f"/api/transcripts/{session_id}",
+            {"method": "DELETE", "timeout_sec": 5.0},
+        )
+    ]
+
+
+def test_post_processing_replay_lane_is_button_only_and_process_start_gated(
+    monkeypatch,
+    tmp_path,
+):
+    from benchmarks.windows import endpoint_probe
+
+    launches = []
+    local_app_data = tmp_path / "local-app-data"
+    installed_data = local_app_data / "Scriber"
+    installed_data.mkdir(parents=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.setenv("CEREBRAS_API_KEY", "REPOSITORY_CREDENTIAL_MUST_NOT_ESCAPE")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "REPOSITORY_FALLBACK_MUST_NOT_ESCAPE")
+
+    def run_capture(args, cwd, timeout, *, env=None):
+        del cwd, timeout
+        launches.append({"args": args, "env": dict(env or {})})
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(endpoint_probe, "run_capture", run_capture)
+    monkeypatch.setattr(
+        endpoint_probe,
+        "load_json",
+        lambda _path: {"ok": True, "appPid": 100, "backendPid": 200, "backendPort": 8765},
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "prepare_provider_replay_runtime_for_measurement",
+        lambda **_kwargs: {
+            "ok": False,
+            "reason": "setup_sentinel",
+            "processBaseline": {},
+            "processGenerationFingerprint": "",
+            "setupWarmup": {},
+        },
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "terminate_runtime",
+        lambda *_args: {"ok": True, "appExited": True, "backendExited": True},
+    )
+
+    result = endpoint_probe.run_provider_text_replay(
+        REPO_ROOT,
+        tmp_path / "installed",
+        tmp_path / "work",
+        timeout_sec=5,
+        iterations=1,
+        fixture_durations_ms=(5_000,),
+        post_processing=True,
+    )
+
+    assert result["postProcessingMode"] == "cloud"
+    assert [series["provider"] for series in result["series"]] == ["microsoft"]
+    assert len(launches) == 1
+    data_dir_index = launches[0]["args"].index("-DataDir") + 1
+    assert Path(launches[0]["args"][data_dir_index]) == installed_data
+    assert launches[0]["env"]["SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING"] == "1"
+    assert launches[0]["env"]["SCRIBER_POST_PROCESSING_ENABLED"] == "1"
+    assert launches[0]["env"]["SCRIBER_POST_PROCESSING_ENGINE"] == "cloud"
+    assert "CEREBRAS_API_KEY" not in launches[0]["env"]
+    assert "OPENROUTER_API_KEY" not in launches[0]["env"]
+
+
+def test_text_observer_dynamic_mode_emits_only_hash_length_and_timing():
+    source = (REPO_ROOT / "benchmarks" / "windows" / "text_observer.ps1").read_text(encoding="utf-8")
+
+    assert "[switch]$ObserveFirstNonEmpty" in source
+    assert "observationMode = if ($ObserveFirstNonEmpty)" in source
+    assert "observedSha256 =" in source
+    assert "observedChars =" in source
+    assert "observedText =" not in source
+    assert "baselineText =" not in source
+
+
+def test_provider_replay_continues_after_sample_failure_only_with_reusable_runtime():
+    from benchmarks.windows import endpoint_probe
+
+    fingerprint = "a" * 64
+    terminal = {
+        "listening": False,
+        "sessionId": None,
+        "recordingState": "idle",
+        "status": "Stopped",
+    }
+    target = {"ok": True, "targetGenerationSha256": fingerprint}
+
+    assert endpoint_probe.provider_replay_runtime_reusable_after_sample(
+        generation_after_matches=True,
+        target_after=target,
+        target_attestation={"targetGenerationSha256": fingerprint},
+        terminal=terminal,
+    )
+    assert not endpoint_probe.provider_replay_runtime_reusable_after_sample(
+        generation_after_matches=False,
+        target_after=target,
+        target_attestation={"targetGenerationSha256": fingerprint},
+        terminal=terminal,
+    )
+    assert not endpoint_probe.provider_replay_runtime_reusable_after_sample(
+        generation_after_matches=True,
+        target_after=target,
+        target_attestation={"targetGenerationSha256": "b" * 64},
+        terminal=terminal,
+    )
+
+
 def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     from benchmarks.windows import endpoint_probe
 
@@ -1093,6 +1534,10 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
     assert result["reasons"] == []
     assert result["durationMs"] == 500.0
     assert result["activationReceivedToFinalTextObservedMs"] == 1000.0
+    assert result["buttonInputToFinalTextObservedMs"] == "unknown"
+    assert result["benchmarkInputKpis"] == {
+        "button_input_to_final_text_observed_ms": "unknown",
+    }
     assert result["stopRequestedToFinalTextObservedMs"] == 700.0
     assert result["fixtureDurationAttested"] is True
     assert result["captureFixtureAttested"] is True
@@ -1107,6 +1552,215 @@ def test_provider_replay_validation_accepts_bound_installed_markers(tmp_path):
         "provider_final_received_to_final_text_observed_ms": 500.0,
         "stop_requested_to_provider_final_received_ms": 200.0,
     }
+
+    button_markers = [
+        {
+            **marker,
+            **(
+                {
+                    "marker": "button_received",
+                    "source": endpoint_probe.PROVIDER_REPLAY_MARKER_SOURCES["button_received"],
+                }
+                if marker["marker"] == "hotkey_received"
+                else {}
+            ),
+        }
+        for marker in markers
+    ]
+    button_completed = response(
+        "completed",
+        session=session_id,
+        target=target_fingerprint,
+        activation_kind="button",
+        markers=button_markers,
+    )
+    button_completed["captureAttestation"] = capture_attestation
+    button_result = endpoint_probe.validate_provider_replay_sample(
+        provider="microsoft",
+        run_id=run_id,
+        start_marker="provider_response_complete",
+        activation_kind="button",
+        prepared=response("prepared"),
+        armed=response(
+            "activation_armed",
+            target=target_fingerprint,
+            activation_kind="button",
+        ),
+        completed=button_completed,
+        observed=observed_payload,
+        observer_ready={"ok": True, "endpoint": "target_text_observer_ready"},
+        observer_exit_code=0,
+        activation_action={
+            "schemaVersion": 1,
+            "ok": True,
+            "endpoint": "user_input_received",
+            "source": "uia_invoke",
+            "qpcTicks": 400,
+            "inputQpcTicks": 400,
+            "actionCompletedQpcTicks": 450,
+            "qpcFrequency": 1000,
+            "processId": 1234,
+            "expectedProcessId": 1234,
+        },
+        expected_process_generation_sha256=process_fingerprint,
+        expected_target_generation_sha256=target_fingerprint,
+        expected_fixture_duration_ms=5_000,
+        expected_audio_fixture=audio_fixture,
+        expected_audio_preparation_implementation=expected_audio_preparation,
+    )
+
+    assert button_result["ok"] is True
+    assert button_result["buttonInputToFinalTextObservedMs"] == 1_100.0
+    assert button_result["benchmarkInputKpis"] == {
+        "button_input_to_final_text_observed_ms": 1_100.0,
+    }
+    assert button_result["canonicalKpis"] == {
+        "activation_received_to_final_text_observed_ms": 1_000.0,
+        "button_received_to_final_text_observed_ms": 1_000.0,
+        "stop_requested_to_final_text_observed_ms": 700.0,
+        "provider_final_received_to_final_text_observed_ms": 500.0,
+        "stop_requested_to_provider_final_received_ms": 200.0,
+    }
+
+    cloud_visible_hash = "c" * 64
+    cloud_visible_length = 47
+    cloud_prepared = response("prepared")
+    cloud_armed = response(
+        "activation_armed",
+        target=target_fingerprint,
+        activation_kind="button",
+    )
+    cloud_completed = dict(button_completed)
+    for payload in (cloud_prepared, cloud_armed, cloud_completed):
+        payload["postProcessingMode"] = "cloud"
+    cloud_result = endpoint_probe.validate_provider_replay_sample(
+        provider="microsoft",
+        run_id=run_id,
+        start_marker="provider_response_complete",
+        activation_kind="button",
+        prepared=cloud_prepared,
+        armed=cloud_armed,
+        completed=cloud_completed,
+        observed={
+            "ok": True,
+            "endpoint": "final_text_observed",
+            "observationMode": "first_non_empty",
+            "expectedSha256": "",
+            "observedSha256": cloud_visible_hash,
+            "observedChars": cloud_visible_length,
+            "qpcTicks": 1500,
+            "qpcFrequency": 1000,
+        },
+        observer_ready={
+            "ok": True,
+            "endpoint": "target_text_observer_ready",
+            "baselineChars": 0,
+        },
+        observer_exit_code=0,
+        activation_action={
+            "schemaVersion": 1,
+            "ok": True,
+            "endpoint": "user_input_received",
+            "source": "uia_invoke",
+            "qpcTicks": 400,
+            "inputQpcTicks": 400,
+            "actionCompletedQpcTicks": 450,
+            "qpcFrequency": 1000,
+            "processId": 1234,
+            "expectedProcessId": 1234,
+        },
+        expected_process_generation_sha256=process_fingerprint,
+        expected_target_generation_sha256=target_fingerprint,
+        expected_fixture_duration_ms=5_000,
+        expected_audio_fixture=audio_fixture,
+        expected_audio_preparation_implementation=expected_audio_preparation,
+        expected_post_processing_mode="cloud",
+        post_processing_output_attestation={
+            "ok": True,
+            "contract": "provider-replay-post-processing-output-v1",
+            "transcriptId": session_id,
+            "visibleTextSha256": cloud_visible_hash,
+            "visibleTextLength": cloud_visible_length,
+            "outcome": "cloud_success",
+            "cloudPolishingSucceeded": True,
+            "rawFallbackAttested": False,
+            "diagnostic": {
+                "engine": "cloud",
+                "status": "success",
+                "durationMs": 250.0,
+            },
+        },
+    )
+    assert cloud_result["ok"] is True
+    assert cloud_result["postProcessingMode"] == "cloud"
+    assert cloud_result["expectedVisibleTextSha256"] == cloud_visible_hash
+    assert cloud_result["expectedVisibleTextLength"] == cloud_visible_length
+
+    raw_fallback_result = endpoint_probe.validate_provider_replay_sample(
+        provider="microsoft",
+        run_id=run_id,
+        start_marker="provider_response_complete",
+        activation_kind="button",
+        prepared=cloud_prepared,
+        armed=cloud_armed,
+        completed=cloud_completed,
+        observed={
+            "ok": True,
+            "endpoint": "final_text_observed",
+            "observationMode": "first_non_empty",
+            "expectedSha256": "",
+            "observedSha256": cloud_visible_hash,
+            "observedChars": cloud_visible_length,
+            "qpcTicks": 1500,
+            "qpcFrequency": 1000,
+        },
+        observer_ready={
+            "ok": True,
+            "endpoint": "target_text_observer_ready",
+            "baselineChars": 0,
+        },
+        observer_exit_code=0,
+        activation_action={
+            "schemaVersion": 1,
+            "ok": True,
+            "endpoint": "user_input_received",
+            "source": "uia_invoke",
+            "qpcTicks": 400,
+            "inputQpcTicks": 400,
+            "actionCompletedQpcTicks": 450,
+            "qpcFrequency": 1000,
+            "processId": 1234,
+            "expectedProcessId": 1234,
+        },
+        expected_process_generation_sha256=process_fingerprint,
+        expected_target_generation_sha256=target_fingerprint,
+        expected_fixture_duration_ms=5_000,
+        expected_audio_fixture=audio_fixture,
+        expected_audio_preparation_implementation=expected_audio_preparation,
+        expected_post_processing_mode="cloud",
+        post_processing_output_attestation={
+            "ok": True,
+            "reason": "cloud_post_processing_raw_fallback",
+            "contract": "provider-replay-post-processing-output-v1",
+            "transcriptId": session_id,
+            "visibleTextSha256": cloud_visible_hash,
+            "visibleTextLength": cloud_visible_length,
+            "outcome": "raw_fallback",
+            "cloudPolishingSucceeded": False,
+            "rawFallbackAttested": True,
+            "diagnostic": {
+                "engine": "cloud",
+                "status": "failure",
+                "durationMs": 8_015.0,
+                "fallbackToRaw": True,
+                "postProcessed": False,
+                "reasonCodes": ["deadline_exceeded"],
+            },
+        },
+    )
+    assert raw_fallback_result["ok"] is True
+    assert raw_fallback_result["postProcessingOutcome"] == "raw_fallback"
+    assert raw_fallback_result["postProcessingOutputBound"] is True
 
     raw_fixture_observation = dict(observed_payload)
     raw_fixture_observation.update(
@@ -1341,6 +1995,66 @@ def test_provider_replay_launches_once_and_cleans_up_per_installed_provider(
         assert launch["env"]["SPEECHMATICS_API_KEY"] == ""
 
 
+def test_provider_replay_warms_runtime_before_starting_measured_samples(
+    monkeypatch,
+    tmp_path,
+):
+    from benchmarks.windows import endpoint_probe
+
+    setup_calls: list[dict[str, object]] = []
+    receiver_launches: list[list[str]] = []
+
+    def run_capture(args, cwd, timeout, *, env=None):
+        del cwd, timeout, env
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    def load_json(_path):
+        return {
+            "ok": True,
+            "appPid": 100,
+            "backendPid": 200,
+            "backendPort": 8765,
+        }
+
+    def runtime_setup(**kwargs):
+        setup_calls.append(kwargs)
+        return {
+            "ok": False,
+            "reason": "runtime_setup_sentinel",
+            "processBaseline": {},
+            "processGenerationFingerprint": "",
+            "setupWarmup": {"ok": False},
+        }
+
+    monkeypatch.setattr(endpoint_probe, "run_capture", run_capture)
+    monkeypatch.setattr(endpoint_probe, "load_json", load_json)
+    monkeypatch.setattr(endpoint_probe, "prepare_provider_replay_runtime_for_measurement", runtime_setup)
+    monkeypatch.setattr(
+        endpoint_probe,
+        "run_process",
+        lambda args, **_kwargs: receiver_launches.append(args) or pytest.fail("measured receiver started before setup"),
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "terminate_runtime",
+        lambda *_args: {"ok": True, "appExited": True, "backendExited": True},
+    )
+
+    result = endpoint_probe.run_provider_text_replay(
+        REPO_ROOT,
+        tmp_path / "installed",
+        tmp_path / "work",
+        timeout_sec=5,
+        iterations=1,
+    )
+
+    assert result["metricEligible"] is False
+    assert len(setup_calls) == len(endpoint_probe.PROVIDER_REPLAY_SCENARIOS)
+    assert receiver_launches == []
+    assert all(series["reason"] == "runtime_setup_sentinel" for series in result["series"])
+    assert all(series["setupWarmup"] == {"ok": False} for series in result["series"])
+
+
 @pytest.mark.parametrize(
     "fixture",
     [
@@ -1460,6 +2174,113 @@ def test_provider_replay_button_refocus_rejects_replaced_target(monkeypatch):
 
     assert result["ok"] is False
     assert result["targetGenerationMatches"] is False
+
+
+def test_provider_replay_focus_lease_restores_async_overlay_focus_before_terminal(
+    monkeypatch,
+):
+    from benchmarks.windows import endpoint_probe
+
+    target_generation = "a" * 64
+    focus_calls: list[str] = []
+    target_states = iter(
+        [
+            {
+                "ok": True,
+                "targetGenerationSha256": target_generation,
+            },
+            {
+                "ok": False,
+                "targetGenerationSha256": target_generation,
+                "foregroundGenerationMatches": False,
+            },
+            {
+                "ok": True,
+                "targetGenerationSha256": target_generation,
+            },
+            {
+                "ok": True,
+                "targetGenerationSha256": target_generation,
+            },
+        ]
+    )
+    statuses = iter([{"state": "armed"}, {"state": "completed"}])
+    monkeypatch.setattr(
+        endpoint_probe,
+        "_provider_replay_target_attestation",
+        lambda **_kwargs: next(target_states),
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "focus_receiver_window",
+        lambda title: focus_calls.append(title) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "request_runtime_json",
+        lambda *_args, **_kwargs: next(statuses),
+    )
+    monkeypatch.setattr(endpoint_probe.time, "sleep", lambda _seconds: None)
+
+    completed, focus_lease = endpoint_probe.wait_provider_replay_status_with_target_focus(
+        8765,
+        "token",
+        "1" * 32,
+        "2" * 32,
+        5.0,
+        title="Bound target",
+        receiver_pid=123,
+        expected_target_generation_sha256=target_generation,
+    )
+
+    assert completed == {"state": "completed"}
+    assert focus_calls == ["Bound target"]
+    assert focus_lease == {
+        "ok": True,
+        "contract": "provider-replay-target-focus-lease-v1",
+        "reason": "target_bound_through_terminal",
+        "checks": 3,
+        "restoreAttempts": 1,
+        "restores": 1,
+        "lastCheck": {
+            "ok": True,
+            "restoreAttempted": False,
+            "restored": False,
+            "target": {
+                "ok": True,
+                "targetGenerationSha256": target_generation,
+            },
+            "targetGenerationMatches": True,
+        },
+    }
+
+
+def test_provider_replay_focus_lease_never_focuses_replaced_generation(monkeypatch):
+    from benchmarks.windows import endpoint_probe
+
+    monkeypatch.setattr(
+        endpoint_probe,
+        "_provider_replay_target_attestation",
+        lambda **_kwargs: {
+            "ok": False,
+            "targetGenerationSha256": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        endpoint_probe,
+        "focus_receiver_window",
+        lambda _title: pytest.fail("replacement target was focused"),
+    )
+
+    result = endpoint_probe.maintain_provider_replay_target_focus(
+        title="Bound target",
+        receiver_pid=123,
+        expected_target_generation_sha256="a" * 64,
+    )
+
+    assert result["ok"] is False
+    assert result["restoreAttempted"] is False
+    assert result["reason"] == "target_generation_changed"
 
 
 def test_provider_replay_stage_zero_distribution_includes_failures_and_variance():
@@ -1697,7 +2518,7 @@ def test_provider_replay_suite_fails_closed_with_clean_status_and_exit(
 def test_provider_replay_powershell_suite_keeps_attestation_and_cli_overrides():
     source = (REPO_ROOT / "scripts" / "perf" / "run.ps1").read_text(encoding="utf-8")
 
-    assert '"FullLocal", "ProviderReplay", "LiveMicrosoft"' in source
+    assert '"FullLocal", "ProviderReplay", "ProviderReplayPostProcessing", "LiveMicrosoft"' in source
     assert source.index("$importedEnvNames = @(Import-DotEnvIntoProcess") < source.index(
         'if ($AzureMaiCaptureTimeMp3 -ne "Default")'
     )
@@ -1760,6 +2581,19 @@ def test_provider_replay_expands_each_provider_across_requested_durations(
     assert "stop_requested_to_final_text_observed_p95_ms" not in result["metrics"]
     assert all(
         series["captureFixtureAttested"] is False and series["kpis"]["non_speech_overhead"]["p50Ms"] == "unknown"
+        for series in result["stageZeroDistributions"].values()
+    )
+    assert all(
+        series["kpis"]["button_input_to_final_text_observed"]
+        == {
+            "count": 0,
+            "p50Ms": "unknown",
+            "p90Ms": "unknown",
+            "p95Ms": "unknown",
+            "maxMs": "unknown",
+            "varianceMs2": "unknown",
+            "failureRate": 0.0,
+        }
         for series in result["stageZeroDistributions"].values()
     )
     assert canonical_provider_replay_promotion_eligible(result["metrics"], {}) is False

@@ -27,6 +27,7 @@ PROVIDER_REPLAY_RUN_ID_ENV = "SCRIBER_B7_PROVIDER_REPLAY_RUN_ID"
 PROVIDER_REPLAY_FIXTURE_DURATION_MS_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_DURATION_MS"
 PROVIDER_REPLAY_FIXTURE_PCM_SHA256_ENV = "SCRIBER_B7_PROVIDER_REPLAY_FIXTURE_PCM_SHA256"
 PROVIDER_REPLAY_MANUAL_STOP_ENV = "SCRIBER_B7_PROVIDER_REPLAY_MANUAL_STOP"
+PROVIDER_REPLAY_POST_PROCESSING_ENV = "SCRIBER_B7_PROVIDER_REPLAY_POST_PROCESSING"
 PROVIDER_REPLAY_FIXTURE_PCM_PATH_ENV = "SCRIBER_RUST_AUDIO_SYNTHETIC_MIC_PCM_S16LE_48000_MONO_PATH"
 PROVIDER_REPLAY_RUNTIME_MODE = "tauri-supervised"
 PROVIDER_REPLAY_LAUNCH_KIND = "sidecar"
@@ -382,6 +383,23 @@ def provider_replay_manual_stop_from_environment() -> bool:
     if raw == "1":
         return True
     raise ProviderReplayDisabled("manual_stop_mode_invalid")
+
+
+def provider_replay_post_processing_from_environment() -> bool:
+    """Return the exact private cloud-polishing replay gate.
+
+    This process-start-only switch deliberately cannot be selected through the
+    HTTP control plane.  It therefore keeps the established raw ProviderReplay
+    contract as the default and prevents an armed raw sample from turning into
+    a billable cloud request.
+    """
+
+    raw = os.getenv(PROVIDER_REPLAY_POST_PROCESSING_ENV, "").strip()
+    if raw in {"", "0"}:
+        return False
+    if raw == "1":
+        return True
+    raise ProviderReplayDisabled("post_processing_mode_invalid")
 
 
 def create_azure_mai_replay_transport(
@@ -1347,6 +1365,7 @@ class ProviderReplayExecution:
     soniox_server: LocalSonioxReplayServer | None = None
     session_id: str | None = None
     manual_stop_required: bool = False
+    post_processing_enabled: bool = False
     watchdog_task: asyncio.Task | None = None
     auto_stop_task: asyncio.Task | None = None
     authoritative_fixture_duration_ms: int = PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS
@@ -1526,6 +1545,7 @@ class ProviderReplayRegistry:
         qpc_clock: Callable[[], tuple[int, int]] = windows_qpc_snapshot,
         authoritative_fixture_duration_ms: int = (PROVIDER_REPLAY_DEFAULT_FIXTURE_DURATION_MS),
         manual_stop_enabled: bool = False,
+        post_processing_enabled: bool = False,
     ) -> None:
         if ttl_seconds <= 0 or ttl_seconds > 1_200:
             raise ValueError("provider replay TTL must be in (0, 1200]")
@@ -1542,6 +1562,7 @@ class ProviderReplayRegistry:
             raise ValueError("provider replay fixture duration is out of bounds")
         self.authoritative_fixture_duration_ms = duration_ms
         self.manual_stop_enabled = bool(manual_stop_enabled)
+        self.post_processing_enabled = bool(post_processing_enabled)
         self._samples: dict[str, _ProviderReplaySample] = {}
         self._lock = threading.Lock()
 
@@ -2111,6 +2132,7 @@ class ProviderReplayRegistry:
             "audioPreparationImplementationExpected": (sample.expected_audio_preparation_implementation),
             "audioPreparationImplementationActual": (sample.actual_audio_preparation_implementation),
             "manualStopRequired": sample.manual_stop_required,
+            "postProcessingMode": "cloud" if self.post_processing_enabled else "raw",
             "manualStopReady": sample.manual_stop_ready,
             "manualStopReadyAttestation": (
                 dict(sample.manual_stop_ready_attestation) if sample.manual_stop_ready_attestation is not None else None

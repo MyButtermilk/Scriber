@@ -119,10 +119,111 @@ async def test_provider_http_close_is_idempotent() -> None:
     transport = ProviderHttpTransport()
     session = await transport.session()
     assert transport.is_open
-    await transport.close()
-    await transport.close()
+    assert await transport.close() is True
+    assert await transport.close() is True
     assert session.closed
     assert not transport.is_open
+
+
+@pytest.mark.asyncio
+async def test_provider_http_close_seals_new_work_but_defers_for_active_route() -> None:
+    transport = ProviderHttpTransport()
+
+    async with transport.borrow() as route:
+        primary = await route.session_view(provider="cerebras")
+        session = primary._session
+
+        assert await transport.close() is False
+        diagnostics = transport.diagnostics()
+        assert diagnostics["closeRequested"] is True
+        assert diagnostics["activeBorrowCount"] == 1
+        assert not session.closed
+
+        with pytest.raises(RuntimeError, match="rejects new work"):
+            await transport.session_view(provider="unowned")
+        with pytest.raises(RuntimeError, match="rejects new work"):
+            async with transport.borrow():
+                pass
+
+        fallback = await route.session_view(provider="openrouter")
+        assert fallback._session is session
+        assert not session.closed
+
+    assert session.closed
+    assert not transport.is_open
+    assert transport.diagnostics()["activeBorrowCount"] == 0
+    with pytest.raises(RuntimeError, match="rejects new work"):
+        await transport.session()
+
+
+@pytest.mark.asyncio
+async def test_provider_http_last_parallel_borrow_owns_deferred_close() -> None:
+    transport = ProviderHttpTransport()
+
+    async with transport.borrow() as first:
+        session = (await first.session_view(provider="first"))._session
+        async with transport.borrow() as second:
+            assert (await second.session_view(provider="second"))._session is session
+            assert await transport.close() is False
+        assert not session.closed
+        assert transport.diagnostics()["activeBorrowCount"] == 1
+
+    assert session.closed
+    assert transport.diagnostics()["activeBorrowCount"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_http_deferred_close_survives_repeated_cancellation() -> None:
+    transport = ProviderHttpTransport()
+    close_started = asyncio.Event()
+    allow_close = asyncio.Event()
+    release_route = asyncio.Event()
+    route_ready = asyncio.Event()
+
+    class _SlowSession:
+        closed = False
+
+        async def close(self) -> None:
+            close_started.set()
+            await allow_close.wait()
+            self.closed = True
+
+    slow_session = _SlowSession()
+    transport._loop = asyncio.get_running_loop()
+    transport._session = slow_session  # type: ignore[assignment]
+
+    async def use_route() -> None:
+        async with transport.borrow() as route:
+            await route.session_view(provider="openrouter")
+            route_ready.set()
+            await release_route.wait()
+
+    task = asyncio.create_task(use_route())
+    await route_ready.wait()
+    assert await transport.close() is False
+    release_route.set()
+    await close_started.wait()
+    task.cancel()
+    task.cancel()
+    allow_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert slow_session.closed
+    assert not transport.is_open
+
+
+@pytest.mark.asyncio
+async def test_provider_http_close_before_first_session_permanently_seals_transport() -> None:
+    transport = ProviderHttpTransport()
+
+    assert await transport.close() is True
+    assert transport.diagnostics()["closeRequested"] is True
+    with pytest.raises(RuntimeError, match="rejects new work"):
+        await transport.session()
+    with pytest.raises(RuntimeError, match="rejects new work"):
+        async with transport.borrow():
+            pass
 
 
 @pytest.mark.asyncio

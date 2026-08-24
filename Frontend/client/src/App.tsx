@@ -11,6 +11,7 @@ import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
+import { showPostProcessingFallbackToast } from "@/lib/post-processing-fallback-toast";
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
@@ -113,6 +114,31 @@ function RecordingErrorToastBridge() {
           showRecordingErrorToast(toast, recordingError);
         }
       }
+    },
+    [t, toast],
+  );
+
+  useSharedWebSocket(handleWsMessage);
+  return null;
+}
+
+function PostProcessingFallbackToastBridge() {
+  const { toast } = useToast();
+  const { t } = useI18n();
+  const seenEventIdsRef = useRef<Set<string>>(new Set());
+
+  const handleWsMessage = useCallback(
+    (message: ScriberWebSocketMessage) => {
+      const fallbackMessage =
+        message.type === "post_processing_fallback_used"
+          ? message
+          : message.type === "state"
+            ? message.pendingPostProcessingFallback
+            : null;
+      if (!fallbackMessage) {
+        return;
+      }
+      showPostProcessingFallbackToast(toast, t, fallbackMessage, seenEventIdsRef.current);
     },
     [t, toast],
   );
@@ -516,6 +542,7 @@ function RuntimeShell() {
     <WebSocketProvider path="/ws" autoReconnect={true} reconnectDelay={1000} enabled={websocketEnabled}>
       <FrontendPerformanceFlushBridge />
       <RecordingErrorToastBridge />
+      <PostProcessingFallbackToastBridge />
       <TranscriptHistoryInvalidationBridge />
       <MeetingDetectionBridge />
       <TrayRecordingStateBridge />

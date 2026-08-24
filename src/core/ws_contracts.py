@@ -142,6 +142,28 @@ def history_updated_event(
     return version_event_payload(payload)
 
 
+def post_processing_fallback_used_event(
+    event_id: str,
+    primary_model: str,
+    fallback_model: str,
+    *,
+    desktop_notification_accepted: bool = False,
+    reason: str | None = None,
+    session_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "post_processing_fallback_used",
+        "eventId": str(event_id),
+        "primaryModel": str(primary_model),
+        "fallbackModel": str(fallback_model),
+        "desktopNotificationAccepted": bool(desktop_notification_accepted),
+    }
+    normalized_reason = str(reason or "").strip()
+    if normalized_reason:
+        payload["reason"] = normalized_reason
+    return _optional_session(payload, session_id)
+
+
 def frontend_performance_flush_event(
     source_instance_id: str,
     heartbeat_sequence: int,
@@ -427,6 +449,13 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         _require_bool(payload, "backgroundProcessing", event_type)
         _require_string(payload, "recordingState", event_type)
         _require_bool(payload, "transcribing", event_type)
+        pending_fallback = payload.get("pendingPostProcessingFallback")
+        if pending_fallback is not None:
+            if not isinstance(pending_fallback, dict):
+                raise WSContractError("state event requires object 'pendingPostProcessingFallback' when present")
+            if pending_fallback.get("type") != "post_processing_fallback_used":
+                raise WSContractError("state event pendingPostProcessingFallback requires a fallback event")
+            validate_event_payload(pending_fallback)
     elif event_type == "status":
         _require_string(payload, "status", event_type)
         _require_bool(payload, "listening", event_type)
@@ -465,6 +494,14 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
         for field in ("transcriptId", "transcriptType", "status", "step", "summaryStatus", "updatedAt", "reason"):
             if field in payload and not isinstance(payload.get(field), str):
                 raise WSContractError(f"history_updated event requires string '{field}' when present")
+    elif event_type == "post_processing_fallback_used":
+        for field in ("eventId", "primaryModel", "fallbackModel"):
+            _require_string(payload, field, event_type)
+            if not payload[field].strip():
+                raise WSContractError(f"{event_type} event requires non-empty string '{field}'")
+        if "reason" in payload and not isinstance(payload.get("reason"), str):
+            raise WSContractError(f"{event_type} event requires string 'reason' when present")
+        _require_bool(payload, "desktopNotificationAccepted", event_type)
     elif event_type == "frontend_performance_flush":
         _require_string(payload, "sourceInstanceId", event_type)
         heartbeat_sequence = payload.get("heartbeatSequence")

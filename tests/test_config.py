@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import unittest
@@ -92,6 +93,45 @@ def _read_fresh_overlay_visualizer_style(tmp_path: Path, value: str | None) -> s
     return result.stdout.strip()
 
 
+def _read_fresh_post_processing_fallback_model(
+    tmp_path: Path,
+    *,
+    configured: str | None = None,
+    direct_env: str | None = None,
+    legacy_env: str | None = None,
+) -> str:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    if configured is not None:
+        (tmp_path / "settings.json").write_text(
+            json.dumps({"postProcessingFallbackModel": configured}),
+            encoding="utf-8",
+        )
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    for key, value in (
+        ("SCRIBER_POST_PROCESSING_FALLBACK_MODEL", direct_env),
+        ("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS", legacy_env),
+    ):
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from src.config import Config; print(Config.POST_PROCESSING_FALLBACK_MODEL)",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
 def test_fresh_install_shortcut_defaults(tmp_path):
     assert _read_fresh_shortcut_config(tmp_path) == {
         "live": "ctrl+shift+d",
@@ -104,6 +144,47 @@ def test_overlay_visualizer_style_defaults_invalid_values_to_bars(tmp_path):
     assert _read_fresh_overlay_visualizer_style(tmp_path, None) == "bars"
     assert _read_fresh_overlay_visualizer_style(tmp_path, "unknown") == "bars"
     assert _read_fresh_overlay_visualizer_style(tmp_path, " ENERGY_WAVE ") == "energy_wave"
+
+
+def test_fresh_post_processing_fallback_model_preserves_precedence_and_legacy_aliases(tmp_path):
+    assert (
+        _read_fresh_post_processing_fallback_model(
+            tmp_path / "legacy",
+            legacy_env="z-ai/glm-5.2,minimax/minimax-m3",
+        )
+        == "z-ai/glm-5.2:nitro"
+    )
+    assert (
+        _read_fresh_post_processing_fallback_model(
+            tmp_path / "direct",
+            direct_env="google/gemini-2.5-flash-lite:nitro",
+            legacy_env="z-ai/glm-5.2",
+        )
+        == "google/gemini-2.5-flash-lite:nitro"
+    )
+    assert (
+        _read_fresh_post_processing_fallback_model(
+            tmp_path / "configured",
+            configured="openai/gpt-oss-120b:cerebras",
+            direct_env="google/gemini-2.5-flash-lite:nitro",
+        )
+        == "openai/gpt-oss-120b:cerebras"
+    )
+
+
+def test_frontend_and_backend_post_processing_fallback_model_lists_match():
+    settings_source = (
+        Path(__file__).resolve().parents[1] / "Frontend" / "client" / "src" / "pages" / "Settings.tsx"
+    ).read_text(encoding="utf-8")
+    values_block = re.search(
+        r"const POST_PROCESSING_FALLBACK_MODEL_VALUES = new Set<string>\(\[(.*?)\]\);",
+        settings_source,
+        flags=re.DOTALL,
+    )
+    assert values_block is not None
+    frontend_models = tuple(re.findall(r'"([a-z0-9._:/-]+)"', values_block.group(1)))
+
+    assert frontend_models == Config.POST_PROCESSING_FALLBACK_MODELS
 
 
 def test_existing_dotenv_shortcuts_override_defaults(tmp_path):
@@ -398,6 +479,8 @@ class TestConfig(unittest.TestCase):
 
     def test_post_processing_default_model_is_cerebras_gemma(self):
         self.assertEqual(Config.DEFAULT_POST_PROCESSING_MODEL, "cerebras/gemma-4-31b")
+        self.assertEqual(Config.DEFAULT_POST_PROCESSING_FALLBACK_MODEL, "minimax/minimax-m3:nitro")
+        self.assertIn(Config.DEFAULT_POST_PROCESSING_FALLBACK_MODEL, Config.POST_PROCESSING_FALLBACK_MODELS)
         self.assertIn("google/gemini-2.5-flash-lite:nitro", Config._LEGACY_DEFAULT_POST_PROCESSING_MODELS)
         self.assertIn("openai/gpt-oss-120b", Config._LEGACY_DEFAULT_POST_PROCESSING_MODELS)
 
@@ -567,6 +650,7 @@ def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_
     monkeypatch.setattr(Config, "POST_PROCESSING_ENABLED", True)
     monkeypatch.setattr(Config, "POST_PROCESSING_HOTKEY", "ctrl+shift+p")
     monkeypatch.setattr(Config, "POST_PROCESSING_MODEL", "gemini-flash-latest")
+    monkeypatch.setattr(Config, "POST_PROCESSING_FALLBACK_MODEL", "z-ai/glm-5.2:nitro")
 
     Config.persist_to_env_file(str(target))
 
@@ -574,6 +658,7 @@ def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_
     assert "SCRIBER_POST_PROCESSING_ENABLED=1" in contents
     assert "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+p" in contents
     assert "SCRIBER_POST_PROCESSING_MODEL=gemini-flash-latest" in contents
+    assert "SCRIBER_POST_PROCESSING_FALLBACK_MODEL=z-ai/glm-5.2:nitro" in contents
 
 
 def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_path):
@@ -629,11 +714,17 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
         lambda path, content: writes.append((Path(path), content)),
     )
     monkeypatch.setattr(config_module, "_json_settings_migration_pending", True)
+    monkeypatch.setattr(
+        Config,
+        "POST_PROCESSING_FALLBACK_MODEL",
+        Config.DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
+    )
 
     Config.set_post_processing_enabled(False)
     Config.set_post_processing_engine("local")
     Config.set_local_polishing_variant("bf16")
     Config.set_post_processing_model("test/model")
+    Config.set_post_processing_fallback_model("z-ai/glm-5.2:nitro")
     Config.set_segment_speech_with_vad(True)
     Config.set_youtube_prefer_captions(False)
 
@@ -644,6 +735,7 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     assert Config.json_settings_migration_pending() is False
     assert writes[0][0] == target
     assert '"postProcessingModel": "test/model"' in writes[0][1]
+    assert '"postProcessingFallbackModel": "z-ai/glm-5.2:nitro"' in writes[0][1]
     assert '"postProcessingEngine": "local"' in writes[0][1]
     assert '"localPolishingVariant": "bf16"' in writes[0][1]
     assert '"youtubePreferCaptions": false' in writes[0][1]
@@ -654,6 +746,8 @@ def test_local_polishing_settings_reject_unknown_values():
         Config.set_post_processing_engine("automatic")
     with pytest.raises(ValueError, match="local polishing variant"):
         Config.set_local_polishing_variant("q4_k_m")
+    with pytest.raises(ValueError, match="fallback model"):
+        Config.set_post_processing_fallback_model("cerebras/gemma-4-31b")
 
 
 def test_atomic_write_cleans_unique_temporary_file_after_replace_failure(monkeypatch, tmp_path):

@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Smoke", "FastLocal", "FullLocal", "ProviderReplay", "LiveMicrosoft", "LiveSoniox")]
+    [ValidateSet("Smoke", "FastLocal", "FullLocal", "ProviderReplay", "ProviderReplayPostProcessing", "LiveMicrosoft", "LiveSoniox")]
     [string]$Suite = "FastLocal",
     [string]$InstallRoot = "",
     [string]$OutputDir = "",
@@ -799,12 +799,20 @@ $payload = [pscustomobject]@{
     suite = $Suite
     status = "BLOCKED"
     reason = "user_endpoint_probe_failed"
-    scope = if ($Suite -eq "ProviderReplay") { "installed_provider_replay_only" } else { "general_local_wux" }
+    scope = if ($Suite -eq "ProviderReplay") {
+        "installed_provider_replay_only"
+    } elseif ($Suite -eq "ProviderReplayPostProcessing") {
+        "installed_provider_replay_cloud_post_processing_only"
+    } else {
+        "general_local_wux"
+    }
     generatedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
     profileId = $profile.profile_id
     importedEnvNames = @($importedEnvNames)
     contract = if ($Suite -eq "ProviderReplay") {
         "ProviderReplay measures only installed provider replay with five samples at exactly 5, 15, 30, and 60 seconds; it is not a UI or Local-WUX promotion gate."
+    } elseif ($Suite -eq "ProviderReplayPostProcessing") {
+        "ProviderReplayPostProcessing measures five installed UIA-button samples through replay STT, cloud polishing, guarded paste, and an external text observer; it is not a promotion gate."
     } else {
         "FastLocal requires external visible overlay, UI Automation text, and stable app frame evidence."
     }
@@ -942,6 +950,17 @@ if ($Suite -eq "ProviderReplay") {
         $localWux -eq "unknown"
     )
     if ($providerReplaySucceeded) { exit 0 }
+    exit 2
+}
+if ($Suite -eq "ProviderReplayPostProcessing") {
+    $postProcessingReplaySucceeded = (
+        $endpointProbe -and
+        $endpointProbeExit -eq 0 -and
+        [string]$endpointProbe.status -eq "POST_PROCESSING_REPLAY_MEASURED" -and
+        -not [bool]$endpointProbe.promotionEligible -and
+        $localWux -eq "unknown"
+    )
+    if ($postProcessingReplaySucceeded) { exit 0 }
     exit 2
 }
 if ($endpointProbe -and [string]$endpointProbe.status -eq "MEASURED" -and $localWux -ne "unknown") {

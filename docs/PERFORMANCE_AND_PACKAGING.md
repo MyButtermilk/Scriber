@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-08-16
+Last verified: 2026-08-24
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -181,6 +181,38 @@ Live mic:
   p50/p90/p95/max, population variance, failure rate, and sample count for the
   two canonical KPIs and non-speech overhead. A paste return or injection
   callback is not accepted as visible-text completion.
+- Live-Mic cloud polishing now keeps the complete primary/fallback route inside
+  one seven-second deadline, then inserts the exact raw transcript. Its
+  task-local fast lane uses low OpenRouter reasoning, one semantic attempt
+  against exactly the user-selected OpenRouter fallback model, no response-body request replay,
+  and the controller-owned reusable provider HTTP transport. Confirmed 401/403
+  rejection latches only the exact credential/model pair until it changes or
+  the process restarts; HTTP 402 uses a 60-second circuit. A deterministic
+  15-session replay of the installed 0.5.90 incident retained the same `9/15`
+  projected polished results as the interim eight-second policy while reducing
+  projected Stop-to-visible p95 from `11.286 s` to `9.085 s` and maximum from
+  `11.697 s` to `9.353 s`. In the final installed-hybrid five-sample check,
+  all five outputs were cloud-polished and externally observed: Button-to-text
+  was `8.018 s` p50 / `10.180 s` p95 and Stop-to-text was `2.293 s` p50 /
+  `4.474 s` p95. This live-provider sample is small and sequential, so it
+  validates the complete path and quality guard but does not isolate provider
+  variance or assign a causal latency gain to HTTP pooling.
+  In that final series, post-processing-end to clipboard was `16 ms` p50 and
+  injection plus independent visibility observation was about `185 ms` p50;
+  the next measured local product segment is Microsoft Stop-to-provider-final
+  at about `497 ms`. Instrument ffmpeg start/encode/validation and adapter-final
+  separately before revisiting capture-time MP3, whose earlier canonical A/B
+  had mixed regressions.
+  Successful fallback notification begins only after the cleaned text is handed
+  to injection and is independently bounded to 750 ms from executor admission.
+  The backend requests a native Windows toast through authenticated shell IPC;
+  the shell isolates WinRT on one fail-fast worker with a 350-ms result wait, so
+  a blocked notification cannot consume the shared shell worker pool. A hidden
+  or background main window is therefore not a WebSocket delivery dependency.
+  The versioned WebSocket event carries whether Windows accepted the request and
+  enables a deduplicated in-app toast when the foreground main window owns
+  delivery or the native route was unavailable. Rejected native delivery remains
+  replayable from the initial WebSocket state for two bounded minutes.
 - Replay `arm` is control-plane setup only and cannot start capture or provider
   work. It binds one exact run/sample and either the hotkey or primary-button
   lane in the native shell. The actual global-shortcut callback records Windows
@@ -378,7 +410,16 @@ I/O:
   unused fallback.
 - Multipart upload writes use chunked helpers and offload file writes where
   practical.
-- Export rendering and cleanup paths are moved off async request hot paths where
+- PDF/DOCX rendering stays off the async request hot path and one app-owned gate
+  admits exactly one document render at a time across Transcript and Meeting
+  exports. Cancellation observes the non-cancelable thread worker to completion
+  before releasing that gate. In two matched 8-export synthetic runs, reducing
+  concurrency from four to one cut health/state p95 from `2.05–2.21 s` to
+  `0.59–0.65 s` and a concurrent 1 MiB upload from `3.25–3.37 s` to
+  `0.67–0.73 s`, without increasing total export wall time. A single large
+  standard-library render can still hold the GIL long enough to miss the strict
+  control-path budget; process isolation remains a separate measured candidate.
+- Other export cleanup paths are moved off async request hot paths where
   practical.
 - Job and latency stores reuse SQLite connections more efficiently.
 - Meeting and canonical-transcript FTS5 rows are coupled to their base rows by

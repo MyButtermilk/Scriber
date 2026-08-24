@@ -55,6 +55,7 @@ base64 = "=0.22.1"
 url = "2.5.8"
 
 [target.'cfg(windows)'.dependencies]
+tauri-winrt-notification = "=0.7.3"
 windows = { version = "0.61.3", features = [
   "Win32_Devices_Properties",
   "Win32_Foundation",
@@ -64,6 +65,7 @@ windows = { version = "0.61.3", features = [
   "Win32_System_Com_StructuredStorage",
   "Win32_System_Variant",
   "Win32_UI_Shell_PropertiesSystem",
+  "UI_Notifications",
 ] }
 windows-core = "0.61.2"
 windows-sys = { version = "0.61.2", features = [

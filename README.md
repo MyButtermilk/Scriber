@@ -73,6 +73,13 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
 - Native recording overlay with selectable classic bars or an audio-reactive
   energy wave
 - Raw dictation or cloud/local prompt-driven post-processing
+- Cloud post-processing keeps provider fallback inside a short bounded deadline
+  and then inserts the raw transcript instead of delaying through a long serial
+  retry chain; repeatedly rejected credentials are skipped on subsequent
+  dictations until their key/model changes or Scriber restarts. Settings lets
+  you choose the OpenRouter fallback model. Whenever that fallback actually
+  completes a dictation, Scriber shows a native Windows toast even while the
+  main window is hidden; browser and shell-failure paths retain an in-app toast
 - Clipboard-aware insertion with bounded clipboard restoration
 - Searchable recent recordings with useful transcript excerpts
 
@@ -252,7 +259,8 @@ Provider credentials, transcription models, summary models, prompts, language be
 ![Scriber API keys and summarization settings](docs/screenshots/settings.png)
 
 - Credential status and direct provider links
-- Separate STT, summarization, and post-processing model choices
+- Separate STT, summarization, primary post-processing, and post-processing
+  fallback model choices
 - Practical price and error estimates where benchmark data is available
 - Custom vocabulary for names, brands, and domain language
 - Automatic summarization and caption-first controls

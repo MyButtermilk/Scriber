@@ -14,6 +14,7 @@ export const coreTranslations = {
   Done: "Fertig",
   English: "Englisch",
   File: "Datei",
+  "Fallback model used": "Fallback-Modell verwendet",
   "Install now": "Jetzt installieren",
   "Install update now": "Update jetzt installieren",
   "Installing update": "Update wird installiert",
@@ -43,6 +44,8 @@ export const coreTranslations = {
   Settings: "Einstellungen",
   "Scriber is downloading the update and will restart when it is ready.":
     "Scriber lädt das Update herunter und startet neu, sobald es bereit ist.",
+  "Scriber used {{fallbackModel}} instead of {{primaryModel}} for this dictation.":
+    "Scriber hat für dieses Diktat {{fallbackModel}} statt {{primaryModel}} verwendet.",
   "Scriber {{version}} is available. Click this notice to open update settings.":
     "Scriber {{version}} ist verfügbar. Klicke auf diesen Hinweis, um die Update-Einstellungen zu öffnen.",
   "Skip to main content": "Zum Hauptinhalt springen",
