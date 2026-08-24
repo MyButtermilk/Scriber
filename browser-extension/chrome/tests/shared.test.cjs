@@ -59,6 +59,13 @@ describe("Scriber YouTube Chrome extension", () => {
     assert.equal(manifest.manifest_version, 3);
     assert.deepEqual(manifest.permissions, ["activeTab"]);
     assert.equal(manifest.host_permissions, undefined);
+    assert.deepEqual(manifest.icons, {
+      16: "icons/scriber-16.png",
+      32: "icons/scriber-32.png",
+      48: "icons/scriber-48.png",
+      128: "icons/scriber-128.png",
+    });
+    assert.deepEqual(manifest.action.default_icon, manifest.icons);
     const matches = manifest.content_scripts.flatMap((entry) => entry.matches);
     assert(
       matches.every(

@@ -8,17 +8,17 @@
     "default_title": "Mit Scriber transkribieren",
     "default_popup": "popup.html",
     "default_icon": {
-      "16": "icons/scriber.png",
-      "32": "icons/scriber.png",
-      "48": "icons/scriber.png",
-      "128": "icons/scriber.png"
+      "16": "icons/scriber-16.png",
+      "32": "icons/scriber-32.png",
+      "48": "icons/scriber-48.png",
+      "128": "icons/scriber-128.png"
     }
   },
   "icons": {
-    "16": "icons/scriber.png",
-    "32": "icons/scriber.png",
-    "48": "icons/scriber.png",
-    "128": "icons/scriber.png"
+    "16": "icons/scriber-16.png",
+    "32": "icons/scriber-32.png",
+    "48": "icons/scriber-48.png",
+    "128": "icons/scriber-128.png"
   },
   "content_scripts": [
     {
