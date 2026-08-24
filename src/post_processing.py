@@ -205,18 +205,18 @@ async def post_process_live_transcript(
         raise RuntimeError(f"Live mic post-processing deadline exceeded after {deadline_seconds:g}s.") from exc
     except Exception as exc:
         duration_ms = (time.monotonic() - started) * 1000
-        reason_codes = ["provider_error" if isinstance(exc, ProviderTransportError) else "generation_failed"]
+        failure_reason_codes = ["provider_error" if isinstance(exc, ProviderTransportError) else "generation_failed"]
         if isinstance(exc, ProviderTransportError):
             if exc.code:
-                reason_codes.append(exc.code)
+                failure_reason_codes.append(exc.code)
             elif exc.status is not None:
-                reason_codes.append(f"http_{exc.status}")
+                failure_reason_codes.append(f"http_{exc.status}")
         if diagnostics is not None:
             diagnostics.update(
                 {
                     "status": "failed",
                     "fallbackToRaw": True,
-                    "reasonCodes": reason_codes,
+                    "reasonCodes": failure_reason_codes,
                     "durationMs": duration_ms,
                 }
             )
