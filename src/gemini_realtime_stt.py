@@ -124,8 +124,12 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._direction = FrameDirection.DOWNSTREAM
         self._connected_at = 0.0
         self._final_generation = 0
+        self._interim_generation = 0
         self._has_audio_in_session = False
-        self._interim_since_final = False
+        self._pending_interim = False
+        self._drain_interim_generation: int | None = None
+        self._drain_final_generation: int | None = None
+        self._drain_is_inferred = False
         self._pcm_buffer = bytearray()
         self._rotate_after_final = False
         self._closing = False
@@ -266,7 +270,10 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 return False
             self._connected_at = time.monotonic()
             self._has_audio_in_session = False
-            self._interim_since_final = False
+            self._pending_interim = False
+            self._drain_interim_generation = None
+            self._drain_final_generation = None
+            self._drain_is_inferred = False
             self._pcm_buffer.clear()
             self._rotate_after_final = False
             logger.info("Gemini Transcribe Live websocket connected")
@@ -337,7 +344,8 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         interim = content.get("interimInputTranscription") or content.get("interim_input_transcription")
         interim_text = str(interim.get("text") or "").strip() if isinstance(interim, dict) else ""
         if interim_text:
-            self._interim_since_final = True
+            self._interim_generation += 1
+            self._pending_interim = True
             self._transcription_event.set()
             await self.push_frame(
                 InterimTranscriptionFrame(
@@ -353,7 +361,20 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         final_text = str(final.get("text") or "").strip() if isinstance(final, dict) else ""
         if isinstance(final, dict):
             self._final_generation += 1
-            self._interim_since_final = False
+            if self._drain_interim_generation is not None:
+                # Input-transcription messages are independently ordered. This
+                # final satisfies only the interim that armed the active drain.
+                # Atomically arm newer interims so another final cannot race the
+                # finish task, including when both fields share one response.
+                if self._interim_generation > self._drain_interim_generation:
+                    self._drain_interim_generation = self._interim_generation
+                    self._drain_final_generation = self._final_generation
+                    self._drain_is_inferred = True
+                    self._pending_interim = False
+                else:
+                    self._clear_final_drain()
+            else:
+                self._pending_interim = False
             if self._connected_at and time.monotonic() - self._connected_at >= self._soft_rotate_seconds:
                 self._rotate_after_final = True
             self._transcription_event.set()
@@ -396,38 +417,42 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         return await self._send_pcm_chunk(audio)
 
     async def _wait_for_final_drain(self, generation: int) -> bool:
-        deadline = time.monotonic() + self._final_timeout_seconds
+        """Wait for the final matching an already armed provider speech turn."""
+        timeout = self._final_timeout_seconds
+        if self._drain_is_inferred:
+            # A few quiet intervals distinguish a reordered next turn from an
+            # extra speculative update without adding the full stop timeout.
+            timeout = min(timeout, self._final_quiet_seconds * 3)
+        deadline = time.monotonic() + timeout
         while self._final_generation <= generation:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.warning("Timed out waiting for Gemini Transcribe Live final transcript")
                 return False
             try:
                 await asyncio.wait_for(self._transcription_event.wait(), timeout=remaining)
             except TimeoutError:
-                logger.warning("Timed out waiting for Gemini Transcribe Live final transcript")
                 return False
             self._transcription_event.clear()
+        return True
 
-        # A final for the previous provider turn can race with audioStreamEnd.
-        # Keep a short quiet window and extend it whenever another final lands.
-        observed = self._final_generation
-        while True:
-            self._transcription_event.clear()
-            if self._final_generation > observed:
-                observed = self._final_generation
-                continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return True
-            try:
-                await asyncio.wait_for(
-                    self._transcription_event.wait(),
-                    timeout=min(self._final_quiet_seconds, remaining),
-                )
-            except TimeoutError:
-                return True
-            observed = self._final_generation
+    def _arm_final_drain(self) -> int | None:
+        if self._drain_final_generation is not None:
+            return self._drain_final_generation
+        if not self._pending_interim:
+            return None
+        # Coalesce the provider's speculative updates into one speech turn.
+        # Later interims remain pending when the armed turn's final arrives.
+        self._pending_interim = False
+        self._drain_interim_generation = self._interim_generation
+        self._drain_final_generation = self._final_generation
+        self._drain_is_inferred = False
+        return self._drain_final_generation
+
+    def _clear_final_drain(self) -> None:
+        self._pending_interim = False
+        self._drain_interim_generation = None
+        self._drain_final_generation = None
+        self._drain_is_inferred = False
 
     async def _wait_for_possible_late_final(self, generation: int) -> int | None:
         """Return a drain baseline if provider speech appears during the quiet window."""
@@ -442,7 +467,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                     hard_deadline,
                     time.monotonic() + self._final_quiet_seconds,
                 )
-            if self._interim_since_final:
+            if self._pending_interim:
                 return self._final_generation
             remaining = quiet_deadline - time.monotonic()
             if remaining <= 0:
@@ -456,9 +481,11 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         ws = self._ws
         if not ws or ws.closed:
             return not self._terminal_failure
+        # Arm before either websocket send: flushing buffered audio can yield to
+        # a newer interim and an older independently ordered final too.
+        pending_generation = self._arm_final_drain() if wait_for_final else None
         if not await self._flush_pcm_buffer():
             return False
-        generation = self._final_generation
         try:
             await ws.send_str(json.dumps({"realtimeInput": {"audioStreamEnd": True}}))
         except Exception as exc:
@@ -470,14 +497,30 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         # of an unfinished speech turn; otherwise audioStreamEnd is best-effort
         # and the short quiet window below catches a late final without turning
         # a normal silent stop into a 15-second terminal failure.
-        pending_generation = self._final_generation if wait_for_final and self._interim_since_final else None
-        if wait_for_final and self._has_audio_in_session and pending_generation is None:
-            # A provider interim can race with audioStreamEnd. Promote that
-            # newly observed speech to the strict drain path instead of closing
-            # at the end of the best-effort quiet window.
-            pending_generation = await self._wait_for_possible_late_final(generation)
-        while pending_generation is not None:
+        if not wait_for_final:
+            return True
+        observe_late_transcription = self._has_audio_in_session
+        while pending_generation is not None or observe_late_transcription:
+            if pending_generation is None:
+                # A provider interim can race with audioStreamEnd. Promote that
+                # newly observed speech to the strict drain path instead of
+                # closing at the end of the best-effort quiet window.
+                pending_generation = await self._wait_for_possible_late_final(self._final_generation)
+                if pending_generation is None:
+                    break
+                pending_generation = self._arm_final_drain()
+                if pending_generation is None:
+                    continue
             if not await self._wait_for_final_drain(pending_generation):
+                if self._drain_is_inferred:
+                    # Without a turn ID, a later interim can be either the next
+                    # speech turn or another hypothesis for the final we just
+                    # received. Preserve a genuinely late final through a bounded
+                    # deadline, but do not turn that ambiguity into an error.
+                    logger.info("Gemini Transcribe Live emitted no additional final for an ambiguous interim")
+                    self._clear_final_drain()
+                    return True
+                logger.warning("Timed out waiting for Gemini Transcribe Live final transcript")
                 await self._fail(
                     "finalization",
                     "timed out waiting for the final transcript",
@@ -485,9 +528,10 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 )
                 return False
             # Transcription messages are ordered independently. If a new
-            # interim landed during the prior final's quiet window, require its
-            # corresponding final before closing too.
-            pending_generation = self._final_generation if self._interim_since_final else None
+            # interim landed while the prior final was outstanding, require its
+            # corresponding final before closing too. Re-enter the quiet window
+            # only after every armed interim has been drained.
+            pending_generation = self._arm_final_drain()
         return True
 
     async def _close_connection(self) -> None:
@@ -504,7 +548,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 await task
         self._connected_at = 0.0
         self._has_audio_in_session = False
-        self._interim_since_final = False
+        self._clear_final_drain()
         self._pcm_buffer.clear()
 
     async def _rotate(self) -> bool:
