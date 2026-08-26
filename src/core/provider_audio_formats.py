@@ -5,9 +5,8 @@ preparation.  In particular, a documented OGG or WebM *container* is not
 evidence for an Opus codec.  Only exact container/codec combinations may be
 selected for a provider request.
 
-The matrix was verified against the normative provider inventory in GitHub
-issue #18 on 2026-07-20.  Unknown models, custom endpoints, and inactive routes
-receive no inherited format capabilities.
+The matrix was last verified on 2026-08-26. Unknown models, custom endpoints,
+and inactive routes receive no inherited format capabilities.
 """
 
 from __future__ import annotations
@@ -17,8 +16,8 @@ from dataclasses import dataclass
 from datetime import date
 from enum import StrEnum
 
-CAPABILITY_REVISION = "provider-audio-formats-v1"
-CAPABILITY_VERIFIED_AT = date(2026, 7, 20)
+CAPABILITY_REVISION = "provider-audio-formats-v2"
+CAPABILITY_VERIFIED_AT = date(2026, 8, 26)
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
 SPEECHMATICS_REALTIME_DEFAULT_BASE_URL = "wss://eu2.rt.speechmatics.com/v2"
 
@@ -552,14 +551,23 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
     ),
     _capability(
         "gemini_stt",
-        "generate_content_audio",
-        "gemini-2.5-flash",
+        "interactions_transcribe",
+        "gemini-3.5-transcribe",
         ProviderAudioRouteKind.BATCH,
         batch_formats=_GEMINI_BATCH,
         direct_passthrough_formats=_GEMINI_BATCH,
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        evidence_reference="https://ai.google.dev/gemini-api/docs/audio",
+        evidence_reference="https://ai.google.dev/gemini-api/docs/transcribe",
+    ),
+    _capability(
+        "gemini_realtime",
+        "live_transcription",
+        "gemini-3.5-transcribe-live",
+        ProviderAudioRouteKind.REALTIME,
+        realtime_formats=(AudioInputFormat.RAW_PCM16,),
+        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+        evidence_reference="https://ai.google.dev/gemini-api/docs/live-api/live-transcribe",
     ),
     _capability(
         "google",
@@ -743,7 +751,7 @@ _BATCH_ROUTE_BY_PROVIDER = {
     "groq": "openai_v1_segmented_audio_transcriptions",
     "azure_mai": "llm_speech_batch",
     "openrouter_stt": "audio_transcriptions",
-    "gemini_stt": "generate_content_audio",
+    "gemini_stt": "interactions_transcribe",
     "gladia": "v2_pre_recorded",
     "gladia_async": "v2_pre_recorded",
     "speechmatics_async": "batch_v2",
@@ -763,6 +771,7 @@ _REALTIME_ROUTE_BY_PROVIDER = {
     "speechmatics": "realtime_v2",
     "modulate": "velma_2_streaming",
     "elevenlabs": "scribe_v2_realtime",
+    "gemini_realtime": "live_transcription",
 }
 
 _REALTIME_PCM_PREPARATION_IMPLEMENTATION_BY_PROVIDER = {
@@ -772,6 +781,7 @@ _REALTIME_PCM_PREPARATION_IMPLEMENTATION_BY_PROVIDER = {
     "google": "pipecat_google_speech_v2_raw_pcm16",
     "elevenlabs": "pipecat_elevenlabs_scribe_v2_realtime_raw_pcm16",
     "speechmatics": "pipecat_speechmatics_realtime_v2_raw_pcm16",
+    "gemini_realtime": "scriber_gemini_live_raw_pcm16",
 }
 
 # Exact, implementation-owned model markers mapped to the normative family

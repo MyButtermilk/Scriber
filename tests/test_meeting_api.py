@@ -5509,11 +5509,11 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             "gladia_async",
             "smallest_async",
             "speechmatics_async",
+            "gemini_stt",
         }
         local_fallback_providers = {
             "openai_async",
             "openrouter_stt",
-            "gemini_stt",
             "azure_mai",
             "onnx_local",
             "groq",
@@ -5563,6 +5563,7 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
         assert "not yet verified" in profile_payload["providerCapabilities"]["openrouter_stt"]["fiveHourReason"]
         assert profile_payload["providerCapabilities"]["soniox_async"]["maxDurationSeconds"] == 18_000
         assert profile_payload["providerCapabilities"]["gladia_async"]["maxDurationSeconds"] == 8_100
+        assert profile_payload["providerCapabilities"]["gemini_stt"]["maxDurationSeconds"] == 1_800
         assert profile_payload["providerCapabilities"]["mistral_async"]["maxDurationSeconds"] == 10_800
         assert profile_payload["profiles"][0]["fiveHourSupported"] is True
         assert profile_payload["profiles"][0]["name"] == "Live text + Soniox Async final"

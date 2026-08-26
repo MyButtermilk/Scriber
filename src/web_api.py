@@ -646,6 +646,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "gladia": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "modulate_async": "Scriber's 64-kbit/s meeting derivative targets up to three hours within Modulate's 100-MB batch limit; five hours are not supported by this route.",
+    "gemini_stt": "Gemini 3.5 Transcribe accepts up to 30 minutes when Scriber requests native diarization and word timestamps.",
 }
 _MEETING_FIVE_HOUR_UNSUPPORTED_REASON = (
     "The current whole-track final transcription route is not yet verified for a five-hour source."
@@ -669,7 +670,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-08-05"
+_MEETING_PRICING_UPDATED_AT = "2026-08-26"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -733,10 +734,10 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "published_hourly",
     },
     "gemini_stt": {
-        "perTrackHourUsd": 0.15,
+        "perTrackHourUsd": 0.30,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://ai.google.dev/gemini-api/docs/pricing",
-        "estimateKind": "token_estimate",
+        "estimateKind": "published_minute",
     },
     "azure_mai": {
         "perTrackHourUsd": None,
@@ -19034,10 +19035,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "recommendation": "Uses one OpenRouter key and the optional local Sherpa-ONNX speaker fallback.",
             },
             "gemini_stt": {
-                "label": "Gemini STT",
+                "label": "Gemini 3.5 Transcribe",
                 "model": Config.GEMINI_STT_MODEL,
-                "diarization": False,
-                "recommendation": "Uses the optional local Sherpa-ONNX speaker fallback.",
+                "diarization": True,
+                "recommendation": "Native speaker diarization and word timestamps for recordings up to 30 minutes.",
             },
             "azure_mai": {
                 "label": "Microsoft MAI",
@@ -20074,6 +20075,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
         elif service_name == "google":
             import_provider_runtime_module("google", "pipecat.services.google.stt")
+        elif service_name == "gemini_realtime":
+            import_provider_runtime_module("gemini_realtime", "src.gemini_realtime_stt")
         elif service_name == "elevenlabs":
             import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":

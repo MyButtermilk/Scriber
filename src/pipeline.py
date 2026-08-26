@@ -78,7 +78,7 @@ from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_bas
 
 _SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
 _GROQ_OPENAI_V1_BASE_URL = "https://api.groq.com/openai/v1"
-_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset({"azure_mai", "speechmatics_async"})
+_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset({"azure_mai", "gemini_realtime", "speechmatics_async"})
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
 
@@ -427,6 +427,7 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
         "smallest_async",
         "deepgram_async",
         "gladia_async",
+        "gemini_stt",
         "openai_async",
         "openrouter_stt",
         "speechmatics_async",
@@ -1553,7 +1554,7 @@ def _resolve_live_mic_capture_device(
 
 
 class ConnectionErrorHandlerProcessor(FrameProcessor):
-    """Records provider errors and triggers capture cleanup for connection failures."""
+    """Record provider errors and clean up capture for connection/fatal failures."""
 
     def __init__(
         self,
@@ -1576,7 +1577,8 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
             error_msg = str(frame.error) if hasattr(frame, "error") else str(frame)
             error_lower = error_msg.lower()
 
-            # Check for connection-related errors
+            # Legacy services communicate connection failure through text;
+            # dedicated adapters can use Pipecat's structured fatal marker.
             is_connection_error = (
                 "timeout" in error_lower
                 or "handshake" in error_lower
@@ -1587,7 +1589,9 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
                 or "websocket" in error_lower
             )
 
-            if is_connection_error:
+            requires_capture_cleanup = is_connection_error or bool(getattr(frame, "fatal", False))
+
+            if requires_capture_cleanup:
                 # A failed socket can yield more than one ErrorFrame (for
                 # example, a send failure followed by a receive-loop close).
                 # Consume every duplicate so downstream processors see neither
@@ -1602,7 +1606,7 @@ class ConnectionErrorHandlerProcessor(FrameProcessor):
                     except Exception as e:
                         logger.warning(f"Provider error callback failed: {e}")
 
-                logger.error(f"Connection error detected: {error_msg}")
+                logger.error(f"Terminal provider error detected: {error_msg}")
 
                 # Trigger error callback
                 if self.on_error:
@@ -2198,6 +2202,7 @@ class ScriberPipeline:
             "assemblyai_realtime": configured_models["assemblyai-realtime"],
             "google": configured_models["google"],
             "gemini_stt": configured_models["gemini-stt"],
+            "gemini_realtime": configured_models["gemini-realtime"],
             "elevenlabs": configured_models["elevenlabs"],
             "deepgram": configured_models["deepgram"],
             "deepgram_async": configured_models["deepgram-async"],
@@ -2225,6 +2230,7 @@ class ScriberPipeline:
             "assemblyai_realtime": "realtime",
             "google": "realtime",
             "gemini_stt": "batch",
+            "gemini_realtime": "realtime",
             "elevenlabs": "realtime",
             "deepgram": "realtime",
             "deepgram_async": "batch",
@@ -2491,7 +2497,8 @@ class ScriberPipeline:
         audio queue proves only that frames were enqueued at the first
         downstream processor.  This private SystemFrame traverses the same
         ingress path and is acknowledged immediately after the STT processor,
-        making all earlier audio visible to Azure/Speechmatics before EndFrame.
+        making all earlier audio visible to terminal-buffered providers before
+        EndFrame.
         """
 
         if not self._requires_provider_ingress_audio_drain():
@@ -3171,6 +3178,26 @@ class ScriberPipeline:
                 session=session,
                 on_progress=self.on_progress,
                 diarize=self.enable_speaker_diarization,
+            )
+
+        elif self.service_name == "gemini_realtime":
+            from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
+
+            api_key = Config.get_api_key("gemini_realtime")
+            if not api_key:
+                raise ValueError("Gemini API key is missing.")
+            bound_model = self._require_realtime_pcm_request_contract(
+                provider="gemini_realtime",
+                default_model=Config.GEMINI_REALTIME_STT_MODEL,
+            )
+            logger.info("Using Gemini 3.5 Transcribe Live mode")
+            return GeminiTranscribeLiveSTTService(
+                api_key=api_key,
+                model=bound_model,
+                language=self._execution_language(),
+                custom_vocab=self._execution_custom_vocab(),
+                aiohttp_session=session,
+                sample_rate=Config.SAMPLE_RATE,
             )
 
         elif self.service_name == "elevenlabs":
@@ -4028,6 +4055,7 @@ class ScriberPipeline:
     async def transcribe_file(self, file_path: str) -> None:
         self._provider_request_started = False
         self._provider_request_state = "not_started"
+        self._provider_ingress_drain_processor = None
         if self.is_active:
             return
         logger.info(f"Transcribing audio file with {self.service_name}: {file_path}")
@@ -4055,6 +4083,9 @@ class ScriberPipeline:
                     else None
                 )
                 steps = [file_input, stt_service]
+                if self._requires_provider_ingress_audio_drain():
+                    self._provider_ingress_drain_processor = _ProviderIngressDrainProcessor()
+                    steps.append(self._provider_ingress_drain_processor)
                 if transcript_cb:
                     steps.append(transcript_cb)
 
@@ -4082,6 +4113,7 @@ class ScriberPipeline:
                 # Wait until the input transport has finished feeding (and its internal audio queue has drained),
                 # then end the pipeline gracefully so providers can flush final transcripts.
                 await file_input.done.wait()
+                await self._await_provider_ingress_audio_drain(file_input)
                 await self.task.stop_when_done()
 
                 await run_task

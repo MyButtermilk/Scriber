@@ -77,23 +77,23 @@ def _versioned_model_env(
     default: str,
     *,
     legacy_dotenv_defaults: set[str] | frozenset[str],
+    preserve_explicit_legacy: bool = True,
 ) -> str:
     """Resolve a provider model while upgrading historical persisted defaults.
 
     The app writes model defaults to its canonical ``.env`` file. Without a
     migration, that turns an old release default into a permanent override on
     every later release. Only known defaults loaded from that file are
-    upgraded. A non-empty value supplied by the parent process is intentional
-    and remains untouched, including an older model used as a short-lived
-    compatibility override.
+    upgraded. A non-empty value supplied by the parent process is normally
+    intentional and remains untouched. Providers with a new, incompatible API
+    contract can opt out so a legacy model is upgraded regardless of its source.
     """
     raw = str(os.getenv(name, default) or "").strip()
     if not raw:
         os.environ[name] = default
         return default
-    if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV and raw.casefold() in {
-        value.casefold() for value in legacy_dotenv_defaults
-    }:
+    is_legacy = raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
+    if is_legacy and (not preserve_explicit_legacy or name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV):
         os.environ[name] = default
         return default
     return raw
@@ -221,6 +221,9 @@ class Config:
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
     DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
+    DEFAULT_GEMINI_STT_MODEL = "gemini-3.5-transcribe"
+    DEFAULT_GEMINI_REALTIME_STT_MODEL = "gemini-3.5-transcribe-live"
+    _LEGACY_DEFAULT_GEMINI_STT_MODELS: ClassVar[set[str]] = {"gemini-2.5-flash"}
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -266,7 +269,16 @@ class Config:
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-2602")
     MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
     DEEPGRAM_MODEL = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
-    GEMINI_STT_MODEL = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
+    GEMINI_STT_MODEL = _versioned_model_env(
+        "SCRIBER_GEMINI_STT_MODEL",
+        DEFAULT_GEMINI_STT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_GEMINI_STT_MODELS,
+        preserve_explicit_legacy=False,
+    )
+    GEMINI_REALTIME_STT_MODEL = os.getenv(
+        "SCRIBER_GEMINI_REALTIME_STT_MODEL",
+        DEFAULT_GEMINI_REALTIME_STT_MODEL,
+    )
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
@@ -301,6 +313,7 @@ class Config:
         "soniox": "SONIOX_API_KEY",
         "soniox_async": "SONIOX_API_KEY",
         "gemini_stt": "GOOGLE_API_KEY",
+        "gemini_realtime": "GOOGLE_API_KEY",
         "mistral": "MISTRAL_API_KEY",
         "mistral_async": "MISTRAL_API_KEY",
         "smallest": "SMALLEST_API_KEY",
@@ -331,7 +344,8 @@ class Config:
     SERVICE_LABELS: ClassVar[dict[str, str]] = {
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
-        "gemini_stt": "Gemini STT",
+        "gemini_stt": "Gemini 3.5 Transcribe",
+        "gemini_realtime": "Gemini 3.5 Transcribe Live",
         "mistral": "Mistral (Segmented)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
@@ -758,7 +772,11 @@ ${output}"""
             "soniox-async": configured(cls.SONIOX_ASYNC_MODEL, cls.DEFAULT_SONIOX_ASYNC_MODEL),
             "modulate-realtime": "velma-2-stt-streaming",
             "modulate-async": "velma-2-stt-batch",
-            "gemini-stt": configured(cls.GEMINI_STT_MODEL, "gemini-2.5-flash"),
+            "gemini-stt": configured(cls.GEMINI_STT_MODEL, cls.DEFAULT_GEMINI_STT_MODEL),
+            "gemini-realtime": configured(
+                cls.GEMINI_REALTIME_STT_MODEL,
+                cls.DEFAULT_GEMINI_REALTIME_STT_MODEL,
+            ),
             "mistral-realtime": mistral_segmented,
             "mistral-async": configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602"),
             "smallest-realtime": "pulse",
@@ -965,6 +983,7 @@ ${output}"""
         add("SCRIBER_MISTRAL_ASYNC_MODEL", cls.MISTRAL_ASYNC_MODEL)
         add("SCRIBER_DEEPGRAM_MODEL", cls.DEEPGRAM_MODEL)
         add("SCRIBER_GEMINI_STT_MODEL", cls.GEMINI_STT_MODEL)
+        add("SCRIBER_GEMINI_REALTIME_STT_MODEL", cls.GEMINI_REALTIME_STT_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used

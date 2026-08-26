@@ -48,10 +48,20 @@ _CAPABILITIES: dict[str, ProviderCapabilities] = {
     ),
     "gemini_stt": ProviderCapabilities(
         supports_live_streaming=False,
-        # The implemented generate-content route accepts complete audio files.
+        # The Interactions API accepts complete audio files through Files API.
         # Exact formats are constrained separately by provider_audio_formats.
         supports_direct_file_upload=True,
         injects_immediately_in_live_mode=False,
+        supports_batch_diarization=True,
+        supports_word_timestamps=True,
+        supports_five_hour_meeting=False,
+        # Diarization and word timestamps reduce the unary model limit to 30m.
+        meeting_max_duration_seconds=1_800,
+    ),
+    "gemini_realtime": ProviderCapabilities(
+        supports_live_streaming=True,
+        supports_direct_file_upload=False,
+        injects_immediately_in_live_mode=True,
         supports_batch_diarization=False,
         supports_word_timestamps=False,
         supports_five_hour_meeting=False,

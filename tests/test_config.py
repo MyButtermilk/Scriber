@@ -445,6 +445,15 @@ class TestConfig(unittest.TestCase):
         self.assertIn("assemblyai", Config.SERVICE_LABELS)
         self.assertIn("assemblyai_realtime", Config.SERVICE_LABELS)
 
+    def test_gemini_transcribe_service_mappings_and_models_exist(self):
+        self.assertEqual(Config.SERVICE_API_KEY_MAP["gemini_stt"], "GOOGLE_API_KEY")
+        self.assertEqual(Config.SERVICE_API_KEY_MAP["gemini_realtime"], "GOOGLE_API_KEY")
+        self.assertEqual(Config.DEFAULT_GEMINI_STT_MODEL, "gemini-3.5-transcribe")
+        self.assertEqual(Config.DEFAULT_GEMINI_REALTIME_STT_MODEL, "gemini-3.5-transcribe-live")
+        models = Config.transcription_provider_models()
+        self.assertEqual(models["gemini-stt"], Config.GEMINI_STT_MODEL)
+        self.assertEqual(models["gemini-realtime"], Config.GEMINI_REALTIME_STT_MODEL)
+
     def test_openrouter_service_mapping_exists(self):
         self.assertIn("openrouter", Config.SERVICE_API_KEY_MAP)
         self.assertNotIn("openrouter", Config.SERVICE_LABELS)
@@ -643,6 +652,45 @@ def test_persist_to_env_file_includes_assemblyai_models(monkeypatch, tmp_path):
     contents = target.read_text(encoding="utf-8")
     assert "SCRIBER_ASSEMBLYAI_ASYNC_MODEL=universal-3-5-pro" in contents
     assert "SCRIBER_ASSEMBLYAI_RT_MODEL=universal-3-5-pro" in contents
+
+
+def test_persist_to_env_file_includes_gemini_transcribe_models(monkeypatch, tmp_path):
+    target = tmp_path / ".env"
+    monkeypatch.setattr(Config, "GEMINI_STT_MODEL", Config.DEFAULT_GEMINI_STT_MODEL)
+    monkeypatch.setattr(Config, "GEMINI_REALTIME_STT_MODEL", Config.DEFAULT_GEMINI_REALTIME_STT_MODEL)
+
+    Config.persist_to_env_file(str(target))
+
+    contents = target.read_text(encoding="utf-8")
+    assert "SCRIBER_GEMINI_STT_MODEL=gemini-3.5-transcribe" in contents
+    assert "SCRIBER_GEMINI_REALTIME_STT_MODEL=gemini-3.5-transcribe-live" in contents
+
+
+def test_gemini_legacy_model_is_upgraded_for_dotenv_and_process_override(monkeypatch):
+    name = "SCRIBER_GEMINI_STT_MODEL"
+    monkeypatch.setenv(name, "gemini-2.5-flash")
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    assert (
+        config_module._versioned_model_env(
+            name,
+            Config.DEFAULT_GEMINI_STT_MODEL,
+            legacy_dotenv_defaults=Config._LEGACY_DEFAULT_GEMINI_STT_MODELS,
+            preserve_explicit_legacy=False,
+        )
+        == Config.DEFAULT_GEMINI_STT_MODEL
+    )
+
+    monkeypatch.setenv(name, "gemini-2.5-flash")
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset({name}))
+    assert (
+        config_module._versioned_model_env(
+            name,
+            Config.DEFAULT_GEMINI_STT_MODEL,
+            legacy_dotenv_defaults=Config._LEGACY_DEFAULT_GEMINI_STT_MODELS,
+            preserve_explicit_legacy=False,
+        )
+        == Config.DEFAULT_GEMINI_STT_MODEL
+    )
 
 
 def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_path):

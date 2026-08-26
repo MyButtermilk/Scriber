@@ -243,7 +243,8 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "soniox-async", label: "Soniox Async" },
   { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime" },
   { value: "modulate-async", label: "Modulate.AI Multilingual Batch" },
-  { value: "gemini-stt", label: "Gemini STT" },
+  { value: "gemini-realtime", label: "Gemini 3.5 Transcribe Live" },
+  { value: "gemini-stt", label: "Gemini 3.5 Transcribe" },
   { value: "mistral-realtime", label: "Mistral Segmented (Voxtral)" },
   { value: "mistral-async", label: "Mistral Async (Voxtral V2)" },
   { value: "smallest-realtime", label: "Smallest AI STT Streaming (Pulse)" },
@@ -821,6 +822,15 @@ function createProviderModelOptions(
 
   return [
     benchmarkOption("elevenlabs", "ElevenLabs Live", 6.5, 3.6, "cloud_streaming", "elevenlabs"),
+    benchmarkOption(
+      "gemini-realtime",
+      "Gemini 3.5 Transcribe Live",
+      9.0,
+      4.0,
+      "cloud_streaming",
+      "gemini",
+      t("Interim and final text · smart transcription"),
+    ),
     benchmarkOption("assemblyai-realtime", "AssemblyAI", 7.5, 4.1, "cloud_streaming", "assemblyai"),
     hourlyOption(
       "modulate-realtime",
@@ -871,7 +881,15 @@ function createProviderModelOptions(
       "modulate",
     ),
     benchmarkOption("openai-async", "OpenAI Batch", 3.0, 4.5, "cloud_async", "openai"),
-    benchmarkOption("gemini-stt", "Gemini", 6.66, 5.1, "cloud_async", "gemini"),
+    benchmarkOption(
+      "gemini-stt",
+      "Gemini 3.5 Transcribe",
+      5.0,
+      2.6,
+      "cloud_async",
+      "gemini",
+      t("Speaker diarization and word timestamps · final text"),
+    ),
     benchmarkOption("deepgram-async", "Deepgram", 4.3, 5.2, "cloud_async", "deepgram"),
     benchmarkOption("mistral-realtime", "Mistral Segmented", 6.0, 5.2, "cloud_async", "mistral"),
     {
@@ -969,13 +987,13 @@ const MEETING_FINAL_STT_OPTIONS = [
   },
   {
     value: "gemini_stt",
-    label: "Gemini STT",
-    model: "Gemini audio",
+    label: "Gemini 3.5 Transcribe",
+    model: "gemini-3.5-transcribe",
     credentialModel: "gemini-stt",
     recommended: false,
-    nativeDiarization: false,
+    nativeDiarization: true,
     fiveHourSupported: false,
-    detail: "Creates the final transcript, then Scriber can add speaker names on this device.",
+    detail: "Creates the final transcript with speaker names and word-level timing after the meeting.",
   },
   {
     value: "openrouter_stt",
@@ -2379,6 +2397,7 @@ export default function Settings() {
       case "modulate-realtime":
       case "modulate-async":
         return { provider: "Modulate.AI", label: "Modulate.AI API key", helpKey: "modulate" };
+      case "gemini-realtime":
       case "gemini-stt":
         return { provider: "Gemini", label: "Gemini API key", helpKey: "gemini" };
       case "mistral-realtime":
@@ -2561,6 +2580,9 @@ export default function Settings() {
       }
       if (service === "assemblyai_realtime") {
         return "assemblyai-realtime";
+      }
+      if (service === "gemini_realtime") {
+        return "gemini-realtime";
       }
       if (service === "gemini_stt") {
         return "gemini-stt";
@@ -3108,6 +3130,8 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "modulate_async" });
       } else if (value === "modulate-realtime") {
         await updateSettings({ defaultSttService: "modulate" });
+      } else if (value === "gemini-realtime") {
+        await updateSettings({ defaultSttService: "gemini_realtime" });
       } else if (value === "gemini-stt") {
         await updateSettings({ defaultSttService: "gemini_stt" });
       } else if (value === "mistral-async") {

@@ -73,6 +73,20 @@ def test_exact_preparation_metadata_is_persisted_in_route_snapshot():
     assert options["audioPreparationImplementation"] == "original_passthrough"
 
 
+def test_gemini_live_route_freezes_exact_pcm_model_and_implementation():
+    route = freeze_provider_route(workload="live", provider="gemini_realtime")
+
+    assert route.model == "gemini-3.5-transcribe-live"
+    assert route.provider_route == "live_transcription"
+    assert route.audio_input_format == AudioInputFormat.RAW_PCM16
+    assert route.audio_preparation_implementation == "scriber_gemini_live_raw_pcm16"
+    assert (
+        route.snapshot_draft()
+        .request_options["providerAudioCapabilityId"]
+        .startswith("gemini_realtime:live_transcription:gemini-3.5-transcribe-live")
+    )
+
+
 def test_frozen_route_rejects_an_explicit_format_for_an_unknown_model():
     unverified = freeze_provider_route(
         workload="file",
@@ -280,6 +294,55 @@ def test_plain_provider_text_is_honestly_estimated_over_duration():
     assert units[-1].end_ms == 4_000
     assert all(unit.alignment_quality == AlignmentQuality.ESTIMATED for unit in units)
     assert evidence["estimatedTiming"] is True
+
+
+def test_gemini_transcribe_word_annotations_preserve_timing_and_speakers():
+    units, evidence = stage_units_from_provider(
+        provider="gemini_stt",
+        payload={
+            "output_text": "Hallo Welt",
+            "steps": [
+                {
+                    "content": [
+                        {
+                            "annotations": [
+                                {
+                                    "type": "word_info",
+                                    "text": "Hallo",
+                                    "speaker": "spk_1",
+                                    "start_offset": "0.100s",
+                                    "end_offset": "0.400s",
+                                },
+                                {
+                                    "type": "word_info",
+                                    "text": "Welt",
+                                    "speaker": "spk_2",
+                                    "start_offset": "0.500s",
+                                    "end_offset": "0.900s",
+                                },
+                                {
+                                    "type": "word_info",
+                                    "text": "ignored",
+                                    "start_offset": "invalid",
+                                    "end_offset": "1.000s",
+                                },
+                            ]
+                        }
+                    ]
+                }
+            ],
+        },
+        text="Hallo Welt",
+        duration_ms=1_000,
+    )
+
+    assert [(unit.text, unit.start_ms, unit.end_ms) for unit in units] == [
+        ("Hallo", 100, 400),
+        ("Welt", 500, 900),
+    ]
+    assert [unit.speaker_key for unit in units] == ["spk_1", "spk_2"]
+    assert all(unit.alignment_quality == AlignmentQuality.EXACT_WORD for unit in units)
+    assert evidence["nativeSpeakerEvidence"] is True
 
 
 def test_plain_provider_text_estimation_scales_to_many_uniform_blocks():

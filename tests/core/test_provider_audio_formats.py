@@ -119,6 +119,7 @@ def test_batch_and_realtime_formats_are_route_scoped_and_separate():
         ("google", "cloud_streaming_v2", "latest_long"),
         ("elevenlabs", "scribe_v2_realtime", "scribe_v2_realtime"),
         ("speechmatics", "realtime_v2", "enhanced"),
+        ("gemini_realtime", "live_transcription", "gemini-3.5-transcribe-live"),
     ),
 )
 def test_streaming_only_routes_have_exact_raw_pcm16_implementation(
@@ -192,8 +193,8 @@ def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_
     assert selection.mode is AudioSelectionMode.ORIGINAL_PASSTHROUGH
 
 
-def test_current_gemini_route_is_vorbis_not_opus():
-    capability = resolve_batch_provider_audio_capabilities("gemini_stt", "gemini-2.5-flash")
+def test_current_gemini_transcribe_route_is_vorbis_not_opus():
+    capability = resolve_batch_provider_audio_capabilities("gemini_stt", "gemini-3.5-transcribe")
     assert AudioInputFormat.OGG_VORBIS in capability.batch_formats
     assert AudioInputFormat.OGG_OPUS not in capability.batch_formats
     assert AudioInputFormat.WEBM_OPUS not in capability.batch_formats
@@ -212,7 +213,7 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        assert capability.verified_at == date(2026, 7, 20)
+        assert capability.verified_at == date(2026, 8, 26)
         assert capability.evidence_reference
 
 

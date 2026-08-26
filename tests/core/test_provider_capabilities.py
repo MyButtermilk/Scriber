@@ -23,6 +23,7 @@ def test_provider_capabilities_known_providers():
     assert supports_direct_file_upload("openrouter_stt") is True
     assert supports_direct_file_upload("speechmatics_async") is True
     assert supports_direct_file_upload("gemini_stt") is True
+    assert supports_direct_file_upload("gemini_realtime") is False
     assert supports_direct_file_upload("openai") is False
 
 
@@ -45,6 +46,7 @@ def test_provider_capabilities_distinguish_streaming_from_segmented_live():
     assert get_capabilities("groq").supports_live_streaming is False
     assert get_capabilities("elevenlabs").supports_live_streaming is True
     assert get_capabilities("speechmatics_async").supports_live_streaming is False
+    assert get_capabilities("gemini_realtime").supports_live_streaming is True
 
 
 def test_provider_capabilities_injection_flags():
@@ -73,6 +75,10 @@ def test_batch_capabilities_describe_the_active_request_and_normalizer_contract(
     assert supports_word_timestamps("deepgram_async") is True
     assert supports_word_timestamps("speechmatics_async") is True
     assert supports_word_timestamps("openai_async") is True
+    assert supports_batch_diarization("gemini_stt") is True
+    assert supports_word_timestamps("gemini_stt") is True
+    assert supports_batch_diarization("gemini_realtime") is False
+    assert supports_word_timestamps("gemini_realtime") is False
     assert supports_batch_diarization("openrouter_stt") is False
     assert supports_word_timestamps("openrouter_stt") is False
 
@@ -97,6 +103,7 @@ def test_five_hour_meeting_capability_tracks_the_implemented_transport_route():
     assert meeting_max_duration_seconds("mistral_async", "voxtral-mini-2507") == 1_800
     assert meeting_max_duration_seconds("gladia_async") == 8_100
     assert meeting_max_duration_seconds("modulate_async") == 10_800
+    assert meeting_max_duration_seconds("gemini_stt") == 1_800
     assert meeting_max_duration_seconds("deepgram_async") is None
     assert all(
         not supports_five_hour_meeting(provider)

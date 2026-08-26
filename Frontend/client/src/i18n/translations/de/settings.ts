@@ -54,6 +54,10 @@ export const settingsTranslations = {
     "Ein Schlüssel für STT und KI · rund 5 % Gebühr beim Guthabenkauf",
   "Separate Azure Speech key and region · no OpenRouter fee":
     "Separater Azure-Speech-Schlüssel und Region · keine OpenRouter-Gebühr",
+  "Gemini 3.5 Transcribe": "Gemini 3.5 Transcribe",
+  "Gemini 3.5 Transcribe Live": "Gemini 3.5 Transcribe Live",
+  "Interim and final text · smart transcription": "Zwischen- und Endergebnisse · intelligente Transkription",
+  "Speaker diarization and word timestamps · final text": "Sprechertrennung und Wortzeitstempel · finaler Text",
   "$0.00 / meeting hour": "0,00 $ / Meetingstunde",
   "{{price}} / meeting hour": "{{price}} / Meetingstunde",
   "~{{price}} / meeting hour": "~{{price}} / Meetingstunde",
@@ -387,6 +391,8 @@ export const settingsTranslations = {
   "Mistral Segmented (Voxtral)": "Mistral segmentiert (Voxtral)",
   "Mistral Segmented": "Mistral segmentiert",
   "Groq Segmented": "Groq segmentiert",
+  "Creates the final transcript with speaker names and word-level timing after the meeting.":
+    "Erstellt nach dem Meeting das finale Transkript mit Sprecherzuordnung und Wortzeitstempeln.",
   "{{group}} transcription providers": "Transkriptionsanbieter: {{group}}",
 
   // Page shell and primary transcription controls.

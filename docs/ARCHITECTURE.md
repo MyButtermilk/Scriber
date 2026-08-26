@@ -1805,10 +1805,13 @@ Hugging Face repo, which provides ready `encoder-model-int8.onnx` and
 model on end-user machines.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
 required `google-genai` namespace dependency and still requires Google Cloud
-credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
-API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
-stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
-can configure the simple Google path with one Gemini API key. Gemini, Meta Muse
+credentials for a Speech-to-Text project. Gemini 3.5 Transcribe is separate:
+the async path uses Files API plus the Interactions API in
+`src/cloud_async_stt.py`, while `src/gemini_realtime_stt.py` maps the dedicated
+Transcribe Live WebSocket onto Pipecat interim/final frames and rotates sessions
+before the provider's ten-minute ceiling. Both reuse the stored
+`GOOGLE_API_KEY` used by Gemini summaries and post-processing so users can
+configure the simple Google path with one Gemini API key. Gemini, Meta Muse
 Spark, Cerebras, Celeris, and OpenRouter summarization/post-processing use
 direct HTTP and do not require `google-generativeai`; OpenRouter STT reuses that
 same stored key through the separate fixed-model audio-transcriptions adapter
