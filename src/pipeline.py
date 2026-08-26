@@ -3197,7 +3197,6 @@ class ScriberPipeline:
                 language=self._execution_language(),
                 custom_vocab=self._execution_custom_vocab(),
                 aiohttp_session=session,
-                sample_rate=Config.SAMPLE_RATE,
             )
 
         elif self.service_name == "elevenlabs":

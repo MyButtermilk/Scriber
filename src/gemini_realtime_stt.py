@@ -45,7 +45,8 @@ _VOCAB_SPLIT_RE = re.compile(r"[,\n;]+")
 _TRANSCRIPT_WORD_SEPARATOR_RE = re.compile(r"\W+")
 _QUERY_KEY_RE = re.compile(r"(?i)([?&]key=)[^&\s]+")
 _MAX_PUBLIC_ERROR_CHARS = 500
-_LIVE_AUDIO_CHUNK_BYTES = 16_000 * 2 // 10  # 100 ms of mono PCM16.
+_LIVE_SAMPLE_RATE = 16_000
+_LIVE_AUDIO_CHUNK_BYTES = _LIVE_SAMPLE_RATE * 2 // 10  # 100 ms of mono PCM16.
 _GOOGLE_LIVE_ERROR_CODES = {
     "DEADLINE_EXCEEDED": "TimeoutError",
     "INVALID_ARGUMENT": "invalid_request_error",
@@ -121,7 +122,6 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         language: Language | str | None = "auto",
         custom_vocab: str = "",
         aiohttp_session: aiohttp.ClientSession | None = None,
-        sample_rate: int = 16_000,
         soft_rotate_seconds: float | None = None,
         hard_rotate_seconds: float | None = None,
         final_timeout_seconds: float | None = None,
@@ -132,7 +132,6 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._model = str(model or GEMINI_TRANSCRIBE_LIVE_MODEL).strip()
         self._language = language
         self._custom_vocab = custom_vocab
-        self._sample_rate = int(sample_rate or 16_000)
         self._session = aiohttp_session
         self._owned_session: aiohttp.ClientSession | None = None
         self._ws: aiohttp.ClientWebSocketResponse | None = None
@@ -277,7 +276,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             self._closing = False
             self._ws = await session.ws_connect(
                 GEMINI_TRANSCRIBE_LIVE_URL,
-                params={"key": self._api_key},
+                headers={"x-goog-api-key": self._api_key},
                 heartbeat=20,
                 timeout=30,
                 max_msg_size=4 * 1024 * 1024,
@@ -447,7 +446,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             "realtimeInput": {
                 "audio": {
                     "data": base64.b64encode(audio).decode("ascii"),
-                    "mimeType": "audio/pcm;rate=16000",
+                    "mimeType": f"audio/pcm;rate={_LIVE_SAMPLE_RATE}",
                 }
             }
         }
@@ -642,12 +641,21 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             return
 
         if isinstance(frame, AudioRawFrame):
+            # Rotation intentionally holds the audio lock through final drain
+            # and setupComplete on the replacement socket. Pipecat queues
+            # incoming frames while that handover runs, preserving PCM order
+            # and preventing bytes from crossing the old/new socket boundary.
+            # Do not shorten this critical section without a bounded handover
+            # buffer and provider-backed final-order validation.
             async with self._send_lock:
                 age = time.monotonic() - self._connected_at if self._connected_at else 0.0
                 if self._rotate_after_final or age >= self._hard_rotate_seconds:
                     await self._rotate()
                 if frame.audio and await self._connect():
-                    if int(frame.sample_rate or self._sample_rate) != 16_000 or int(frame.num_channels or 1) != 1:
+                    if (
+                        int(frame.sample_rate or _LIVE_SAMPLE_RATE) != _LIVE_SAMPLE_RATE
+                        or int(frame.num_channels or 1) != 1
+                    ):
                         await self._fail("audio", "expected 16-kHz mono PCM16 audio")
                     else:
                         self._pcm_buffer.extend(frame.audio)

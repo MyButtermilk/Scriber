@@ -39,7 +39,7 @@ _bootstrap_runtime_env()
 migrate_legacy_runtime_data()
 # Keep track of values supplied by the supervising process before loading the
 # writable runtime .env. Historical Scriber releases persisted their then-
-# current Soniox defaults there, so the source matters when upgrading them:
+# current provider defaults there, so the source matters when upgrading them:
 # generated legacy defaults should follow the app, while an explicit process
 # override remains available for temporary provider compatibility.
 _PROCESS_ENV_KEYS_BEFORE_DOTENV = frozenset(os.environ)
@@ -77,7 +77,6 @@ def _versioned_model_env(
     default: str,
     *,
     legacy_dotenv_defaults: set[str] | frozenset[str],
-    preserve_explicit_legacy: bool = True,
 ) -> str:
     """Resolve a provider model while upgrading historical persisted defaults.
 
@@ -85,15 +84,16 @@ def _versioned_model_env(
     migration, that turns an old release default into a permanent override on
     every later release. Only known defaults loaded from that file are
     upgraded. A non-empty value supplied by the parent process is normally
-    intentional and remains untouched. Providers with a new, incompatible API
-    contract can opt out so a legacy model is upgraded regardless of its source.
+    intentional and remains untouched. An incompatible explicit override is
+    rejected at the provider boundary before billable work starts instead of
+    being silently replaced while configuration loads.
     """
     raw = str(os.getenv(name, default) or "").strip()
     if not raw:
         os.environ[name] = default
         return default
     is_legacy = raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
-    if is_legacy and (not preserve_explicit_legacy or name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV):
+    if is_legacy and name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
         os.environ[name] = default
         return default
     return raw
@@ -273,7 +273,6 @@ class Config:
         "SCRIBER_GEMINI_STT_MODEL",
         DEFAULT_GEMINI_STT_MODEL,
         legacy_dotenv_defaults=_LEGACY_DEFAULT_GEMINI_STT_MODELS,
-        preserve_explicit_legacy=False,
     )
     GEMINI_REALTIME_STT_MODEL = os.getenv(
         "SCRIBER_GEMINI_REALTIME_STT_MODEL",

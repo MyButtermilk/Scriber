@@ -29,6 +29,25 @@ def test_soniox_async_model_error_points_to_async_v5():
     assert "stt-async-v5" in info.message
 
 
+def test_gemini_model_error_explains_dedicated_transcribe_contract():
+    error = provider_transport_error(
+        "gemini",
+        "transcription",
+        code="model_not_available",
+        retryable=False,
+    )
+
+    info = provider_user_error(None, error)
+
+    assert info.provider == "gemini"
+    assert info.provider_label == "Gemini 3.5 Transcribe"
+    assert info.category is ErrorCategory.CONFIG_INVALID
+    assert info.code == "model_not_available"
+    assert "gemini-3.5-transcribe" in info.message
+    assert "SCRIBER_GEMINI_STT_MODEL" in info.message
+    assert info.retryable is False
+
+
 def test_azure_mai_service_unavailable_gets_provider_specific_message():
     info = provider_user_error(
         "azure_mai",

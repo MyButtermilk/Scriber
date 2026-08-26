@@ -599,14 +599,25 @@ async def transcribe_with_gemini_audio(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
 ) -> dict[str, Any]:
-    audio_size = _gemini_audio_source_size(audio_source)
-    if audio_size == 0:
-        return {}
-
     model = (
         str(model or Config.GEMINI_STT_MODEL or Config.DEFAULT_GEMINI_STT_MODEL).strip()
         or Config.DEFAULT_GEMINI_STT_MODEL
     )
+    if model != Config.DEFAULT_GEMINI_STT_MODEL:
+        # The former generateContent route accepted general Gemini models. The
+        # Interactions transcription contract is exact: reject legacy/custom
+        # pins before uploading audio instead of failing after billable work.
+        raise provider_transport_error(
+            "gemini",
+            "transcription",
+            code="model_not_available",
+            retryable=False,
+        )
+
+    audio_size = _gemini_audio_source_size(audio_source)
+    if audio_size == 0:
+        return {}
+
     mime_type = content_type or "audio/wav"
     terms = _terms_from_vocab(custom_vocab)[:100]
     mode: dict[str, Any] = {"type": "smart"}

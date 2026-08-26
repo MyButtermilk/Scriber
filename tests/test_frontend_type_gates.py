@@ -1909,6 +1909,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
 
     streaming_order = [
         '"elevenlabs"',
+        "GEMINI_REALTIME_TRANSCRIPTION_OPTION.value",
         '"assemblyai-realtime"',
         '"modulate-realtime"',
         '"soniox-realtime"',
@@ -1931,7 +1932,7 @@ def test_settings_stt_benchmarks_remain_visible_when_api_keys_are_missing() -> N
         '"smallest-async"',
         '"modulate-async"',
         '"openai-async"',
-        '"gemini-stt"',
+        "GEMINI_ASYNC_TRANSCRIPTION_OPTION.value",
         '"deepgram-async"',
         '"mistral-realtime"',
     ]

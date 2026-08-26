@@ -18,6 +18,7 @@ from pipecat.processors.frame_processor import FrameDirection
 
 from src.config import Config
 from src.gemini_realtime_stt import (
+    GEMINI_TRANSCRIBE_LIVE_URL,
     GeminiTranscribeLiveSTTService,
     gemini_custom_vocabulary,
     redact_gemini_live_error,
@@ -151,6 +152,69 @@ async def test_gemini_live_audio_uses_base64_pcm_contract_and_rotates_first():
 
 
 @pytest.mark.asyncio
+async def test_gemini_live_rotation_keeps_audio_behind_handover_lock():
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.messages: list[str] = []
+
+        async def send_str(self, value: str):
+            self.messages.append(value)
+
+    old_websocket = WebSocket()
+    replacement_websocket = WebSocket()
+    rotation_started = asyncio.Event()
+    allow_rotation = asyncio.Event()
+    service = GeminiTranscribeLiveSTTService(api_key="secret")
+    service._ws = old_websocket  # type: ignore[assignment]
+    service._connected_at = time.monotonic()
+    service._rotate_after_final = True
+    service._connect = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    async def rotate():
+        rotation_started.set()
+        await allow_rotation.wait()
+        service._ws = replacement_websocket  # type: ignore[assignment]
+        service._rotate_after_final = False
+        return True
+
+    service._rotate = AsyncMock(side_effect=rotate)  # type: ignore[method-assign]
+    first_pcm = b"\x01\x02" * 800
+    second_pcm = b"\x03\x04" * 800
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        first = asyncio.create_task(
+            service.process_frame(
+                AudioRawFrame(audio=first_pcm, sample_rate=16_000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        )
+        await asyncio.wait_for(rotation_started.wait(), timeout=1.0)
+        second = asyncio.create_task(
+            service.process_frame(
+                AudioRawFrame(audio=second_pcm, sample_rate=16_000, num_channels=1),
+                FrameDirection.DOWNSTREAM,
+            )
+        )
+        await asyncio.sleep(0)
+
+        assert first.done() is False
+        assert second.done() is False
+        assert old_websocket.messages == []
+        assert replacement_websocket.messages == []
+
+        allow_rotation.set()
+        await asyncio.wait_for(asyncio.gather(first, second), timeout=1.0)
+
+    assert old_websocket.messages == []
+    assert len(replacement_websocket.messages) == 1
+    sent = json.loads(replacement_websocket.messages[0])
+    assert base64.b64decode(sent["realtimeInput"]["audio"]["data"]) == first_pcm + second_pcm
+
+
+@pytest.mark.asyncio
 async def test_gemini_live_audio_cannot_overtake_setup_complete():
     class WebSocket:
         closed = False
@@ -171,14 +235,19 @@ async def test_gemini_live_audio_cannot_overtake_setup_complete():
     class Session:
         def __init__(self, websocket):
             self.websocket = websocket
+            self.connect_args = ()
+            self.connect_kwargs = {}
 
-        async def ws_connect(self, *_args, **_kwargs):
+        async def ws_connect(self, *args, **kwargs):
+            self.connect_args = args
+            self.connect_kwargs = kwargs
             return self.websocket
 
     websocket = WebSocket()
+    session = Session(websocket)
     service = GeminiTranscribeLiveSTTService(
         api_key="secret",
-        aiohttp_session=Session(websocket),  # type: ignore[arg-type]
+        aiohttp_session=session,  # type: ignore[arg-type]
     )
     service._receive_responses = AsyncMock()  # type: ignore[method-assign]
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
@@ -201,6 +270,10 @@ async def test_gemini_live_audio_cannot_overtake_setup_complete():
         await asyncio.wait_for(asyncio.gather(start, audio), timeout=1.0)
 
     assert websocket.messages[1]["realtimeInput"]["audio"]["mimeType"] == "audio/pcm;rate=16000"
+    assert session.connect_args == (GEMINI_TRANSCRIBE_LIVE_URL,)
+    assert session.connect_kwargs["headers"] == {"x-goog-api-key": "secret"}
+    assert "params" not in session.connect_kwargs
+    assert "secret" not in session.connect_args[0]
     await service._close_connection()
 
 

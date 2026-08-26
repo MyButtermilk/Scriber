@@ -666,7 +666,7 @@ def test_persist_to_env_file_includes_gemini_transcribe_models(monkeypatch, tmp_
     assert "SCRIBER_GEMINI_REALTIME_STT_MODEL=gemini-3.5-transcribe-live" in contents
 
 
-def test_gemini_legacy_model_is_upgraded_for_dotenv_and_process_override(monkeypatch):
+def test_gemini_legacy_dotenv_default_is_upgraded(monkeypatch):
     name = "SCRIBER_GEMINI_STT_MODEL"
     monkeypatch.setenv(name, "gemini-2.5-flash")
     monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
@@ -675,19 +675,37 @@ def test_gemini_legacy_model_is_upgraded_for_dotenv_and_process_override(monkeyp
             name,
             Config.DEFAULT_GEMINI_STT_MODEL,
             legacy_dotenv_defaults=Config._LEGACY_DEFAULT_GEMINI_STT_MODELS,
-            preserve_explicit_legacy=False,
         )
         == Config.DEFAULT_GEMINI_STT_MODEL
     )
 
-    monkeypatch.setenv(name, "gemini-2.5-flash")
+
+@pytest.mark.parametrize("model", ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.5-pro"])
+def test_gemini_explicit_process_model_override_is_preserved_for_provider_validation(monkeypatch, model):
+    name = "SCRIBER_GEMINI_STT_MODEL"
+    monkeypatch.setenv(name, model)
     monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset({name}))
+
     assert (
         config_module._versioned_model_env(
             name,
             Config.DEFAULT_GEMINI_STT_MODEL,
             legacy_dotenv_defaults=Config._LEGACY_DEFAULT_GEMINI_STT_MODELS,
-            preserve_explicit_legacy=False,
+        )
+        == model
+    )
+
+
+def test_gemini_current_transcribe_model_is_preserved(monkeypatch):
+    name = "SCRIBER_GEMINI_STT_MODEL"
+    monkeypatch.setenv(name, Config.DEFAULT_GEMINI_STT_MODEL)
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset({name}))
+
+    assert (
+        config_module._versioned_model_env(
+            name,
+            Config.DEFAULT_GEMINI_STT_MODEL,
+            legacy_dotenv_defaults=Config._LEGACY_DEFAULT_GEMINI_STT_MODELS,
         )
         == Config.DEFAULT_GEMINI_STT_MODEL
     )

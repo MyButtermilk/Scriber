@@ -100,6 +100,7 @@ _KNOWN_CODES = (
     "interaction_failed",
     "interaction_in_progress",
     "interaction_incomplete",
+    "interaction_invalid_response",
     "interaction_invalid_status",
     "interaction_queued",
     "invalid_json",
@@ -195,6 +196,8 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
         specific = _classify_openai(normalized_provider, label, combined, status, code)
     elif family == "modulate":
         specific = _classify_modulate(normalized_provider, label, combined, status, code)
+    elif family == "gemini":
+        specific = _classify_gemini(normalized_provider, label, combined, status, code)
     else:
         specific = None
 
@@ -496,6 +499,9 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         "openrouter_stt": "openrouter_stt",
         "modulate": "modulate",
         "modulate_async": "modulate_async",
+        "gemini": "gemini",
+        "gemini_stt": "gemini_stt",
+        "gemini_realtime": "gemini_realtime",
         "onnx_local": "onnx_local",
     }
     if normalized in aliases:
@@ -518,6 +524,8 @@ def _normalize_provider(provider: str | None, raw: str) -> str:
         return "openai"
     if "modulate" in text or "velma-2-stt" in text:
         return "modulate_async" if "batch" in text or "async" in text else "modulate"
+    if "gemini" in text:
+        return "gemini"
     if "onnx_local" in text or "onnx local" in text:
         return "onnx_local"
     return normalized
@@ -534,6 +542,8 @@ def _provider_family(provider: str) -> str:
         return "smallest"
     if provider in {"modulate", "modulate_async"}:
         return "modulate"
+    if provider in {"gemini", "gemini_stt", "gemini_realtime"}:
+        return "gemini"
     return provider
 
 
@@ -543,6 +553,8 @@ def _provider_label(provider: str) -> str:
         if label:
             return label
     family = _provider_family(provider)
+    if family == "gemini":
+        return Config.SERVICE_LABELS.get("gemini_stt", "Gemini 3.5 Transcribe")
     if family and family in Config.SERVICE_LABELS:
         return Config.SERVICE_LABELS[family]
     return "STT provider"
@@ -870,6 +882,27 @@ def _classify_assemblyai(
             ErrorCategory.TRANSIENT_PROVIDER,
             "AssemblyAI is temporarily unavailable. Please retry shortly.",
             code=code or str(status or ""),
+        )
+    return None
+
+
+def _classify_gemini(
+    provider: str,
+    label: str,
+    text: str,
+    status: int | None,
+    code: str,
+) -> ProviderUserError | None:
+    del status
+    if code == "model_not_available" or _has(text, "model_not_available", "model not available"):
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.CONFIG_INVALID,
+            "Gemini 3.5 Transcribe requires the dedicated gemini-3.5-transcribe model. "
+            "Clear SCRIBER_GEMINI_STT_MODEL or set it to that exact value.",
+            code=code or "model_not_available",
+            retryable=False,
         )
     return None
 

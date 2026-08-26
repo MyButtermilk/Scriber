@@ -1,58 +1,74 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import path from "node:path";
 import test from "node:test";
 
-const settingsSource = readFileSync(path.resolve(import.meta.dirname, "../pages/Settings.tsx"), "utf8");
-const compactSettingsSource = settingsSource.replace(/\s+/g, " ");
-const translationsSource = readFileSync(
-  path.resolve(import.meta.dirname, "../i18n/translations/de/settings.ts"),
-  "utf8",
-);
-const compactTranslationsSource = translationsSource.replace(/\s+/g, " ");
+import { settingsTranslations } from "@/i18n/translations/de/settings";
+import {
+  GEMINI_ASYNC_TRANSCRIPTION_OPTION,
+  GEMINI_CREDENTIAL_REQUIREMENT,
+  GEMINI_MEETING_FINAL_STT_OPTION,
+  GEMINI_REALTIME_TRANSCRIPTION_OPTION,
+  geminiFrontendModelForService,
+  geminiSettingsPatchForModel,
+} from "@/lib/gemini-transcription-settings";
 
 test("offers Gemini 3.5 Transcribe as separate live and async provider choices", () => {
-  assert.match(compactSettingsSource, /value: "gemini-realtime", label: "Gemini 3\.5 Transcribe Live"/);
-  assert.match(compactSettingsSource, /value: "gemini-stt", label: "Gemini 3\.5 Transcribe"/);
-  assert.match(
-    compactSettingsSource,
-    /benchmarkOption\( "gemini-realtime", "Gemini 3\.5 Transcribe Live", 9\.0, 4\.0, "cloud_streaming", "gemini"/,
-  );
-  assert.match(
-    compactSettingsSource,
-    /benchmarkOption\( "gemini-stt", "Gemini 3\.5 Transcribe", 5\.0, 2\.6, "cloud_async", "gemini"/,
-  );
-  assert.match(compactSettingsSource, /model: providerModels\[value\] \|\| ""/);
+  assert.deepEqual(GEMINI_REALTIME_TRANSCRIPTION_OPTION, {
+    value: "gemini-realtime",
+    service: "gemini_realtime",
+    label: "Gemini 3.5 Transcribe Live",
+    usdPerThousandMinutes: 9.0,
+    wordErrorRatePercent: 4.0,
+    group: "cloud_streaming",
+    icon: "gemini",
+    routeNote: "Interim and final text · smart transcription",
+  });
+  assert.deepEqual(GEMINI_ASYNC_TRANSCRIPTION_OPTION, {
+    value: "gemini-stt",
+    service: "gemini_stt",
+    label: "Gemini 3.5 Transcribe",
+    usdPerThousandMinutes: 5.0,
+    wordErrorRatePercent: 2.6,
+    group: "cloud_async",
+    icon: "gemini",
+    routeNote: "Speaker diarization and word timestamps · final text",
+  });
 });
 
 test("round-trips Gemini provider choices through the settings API contract", () => {
-  assert.match(compactSettingsSource, /if \(service === "gemini_realtime"\) \{ return "gemini-realtime"; \}/);
-  assert.match(compactSettingsSource, /if \(service === "gemini_stt"\) \{ return "gemini-stt"; \}/);
-  assert.match(
-    compactSettingsSource,
-    /value === "gemini-realtime"\) \{ await updateSettings\(\{ defaultSttService: "gemini_realtime" \}\)/,
-  );
-  assert.match(
-    compactSettingsSource,
-    /value === "gemini-stt"\) \{ await updateSettings\(\{ defaultSttService: "gemini_stt" \}\)/,
-  );
-  assert.match(
-    compactSettingsSource,
-    /case "gemini-realtime": case "gemini-stt": return \{ provider: "Gemini", label: "Gemini API key", helpKey: "gemini" \}/,
-  );
+  assert.equal(geminiFrontendModelForService("gemini_realtime"), "gemini-realtime");
+  assert.equal(geminiFrontendModelForService("gemini_stt"), "gemini-stt");
+  assert.equal(geminiFrontendModelForService("soniox"), null);
+  assert.deepEqual(geminiSettingsPatchForModel("gemini-realtime"), {
+    defaultSttService: "gemini_realtime",
+  });
+  assert.deepEqual(geminiSettingsPatchForModel("gemini-stt"), {
+    defaultSttService: "gemini_stt",
+  });
+  assert.equal(geminiSettingsPatchForModel("soniox-realtime"), null);
+  assert.deepEqual(GEMINI_CREDENTIAL_REQUIREMENT, {
+    provider: "Gemini",
+    label: "Gemini API key",
+    helpKey: "gemini",
+  });
 });
 
 test("shows the dedicated async model in Meeting settings and localizes Gemini guidance", () => {
-  assert.match(
-    compactSettingsSource,
-    /value: "gemini_stt", label: "Gemini 3\.5 Transcribe", model: "gemini-3\.5-transcribe", credentialModel: "gemini-stt", recommended: false, nativeDiarization: true/,
+  assert.deepEqual(GEMINI_MEETING_FINAL_STT_OPTION, {
+    value: "gemini_stt",
+    label: "Gemini 3.5 Transcribe",
+    model: "gemini-3.5-transcribe",
+    credentialModel: "gemini-stt",
+    recommended: false,
+    nativeDiarization: true,
+    fiveHourSupported: false,
+    detail: "Creates the final transcript with speaker names and word-level timing after the meeting.",
+  });
+  assert.equal(
+    settingsTranslations[GEMINI_REALTIME_TRANSCRIPTION_OPTION.routeNote],
+    "Zwischen- und Endergebnisse · intelligente Transkription",
   );
-  assert.match(
-    compactTranslationsSource,
-    /"Interim and final text · smart transcription": "Zwischen- und Endergebnisse · intelligente Transkription"/,
-  );
-  assert.match(
-    compactTranslationsSource,
-    /"Speaker diarization and word timestamps · final text": "Sprechertrennung und Wortzeitstempel · finaler Text"/,
+  assert.equal(
+    settingsTranslations[GEMINI_ASYNC_TRANSCRIPTION_OPTION.routeNote],
+    "Sprechertrennung und Wortzeitstempel · finaler Text",
   );
 });
