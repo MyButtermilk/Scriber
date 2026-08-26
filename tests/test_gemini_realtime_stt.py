@@ -74,18 +74,13 @@ async def test_gemini_live_maps_interim_and_final_without_provider_metadata():
     service = GeminiTranscribeLiveSTTService(api_key="secret")
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
     service._has_audio_in_session = True
-    service._audio_since_final = True
 
     await service._handle_response(
-        json.dumps(
-            {
-                "serverContent": {
-                    "interimInputTranscription": {"text": "Zwischenstand"},
-                    "inputTranscription": {"text": "Fertig"},
-                }
-            }
-        )
+        json.dumps({"serverContent": {"interimInputTranscription": {"text": "Zwischenstand"}}})
     )
+    assert service._interim_since_final is True
+
+    await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Fertig"}}}))
 
     frames = [call.args[0] for call in service.push_frame.await_args_list]
     assert isinstance(frames[0], InterimTranscriptionFrame)
@@ -95,17 +90,17 @@ async def test_gemini_live_maps_interim_and_final_without_provider_metadata():
     assert frames[1].text == "Fertig"
     assert frames[1].result is None
     assert service._final_generation == 1
-    assert service._final_event.is_set()
+    assert service._transcription_event.is_set()
     assert service._has_audio_in_session is True
-    assert service._audio_since_final is False
+    assert service._interim_since_final is False
 
-    service._final_event.clear()
+    service._transcription_event.clear()
     await service._handle_response(
         json.dumps({"goAway": {"timeLeft": "5s"}, "serverContent": {"inputTranscription": {"text": ""}}})
     )
     assert service._rotate_after_final is True
     assert service._final_generation == 2
-    assert service._final_event.is_set()
+    assert service._transcription_event.is_set()
 
 
 @pytest.mark.asyncio
@@ -251,6 +246,46 @@ async def test_gemini_live_end_signals_audio_stream_end_and_drains_final():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prior_final", [False, True], ids=["silence-only", "trailing-silence"])
+async def test_gemini_live_end_does_not_require_transcript_for_silence(prior_final):
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.messages: list[dict] = []
+
+        async def send_str(self, value: str):
+            self.messages.append(json.loads(value))
+
+        async def close(self):
+            self.closed = True
+
+    websocket = WebSocket()
+    service = GeminiTranscribeLiveSTTService(
+        api_key="secret",
+        final_timeout_seconds=0.01,
+        final_quiet_seconds=0.01,
+    )
+    service._ws = websocket  # type: ignore[assignment]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+
+    if prior_final:
+        await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Schon final"}}}))
+    assert await service._send_pcm_chunk(b"\0" * 3_200) is True
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+
+    frames = [call.args[0] for call in service.push_frame.await_args_list]
+    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert sum(isinstance(frame, TranscriptionFrame) for frame in frames) == int(prior_final)
+    assert isinstance(frames[-1], EndFrame)
+    assert websocket.messages.count({"realtimeInput": {"audioStreamEnd": True}}) == 1
+    assert websocket.closed is True
+    assert service._terminal_failure is False
+
+
+@pytest.mark.asyncio
 async def test_gemini_live_uses_only_quiet_window_after_provider_final():
     class WebSocket:
         closed = False
@@ -265,12 +300,11 @@ async def test_gemini_live_uses_only_quiet_window_after_provider_final():
     service = GeminiTranscribeLiveSTTService(api_key="secret")
     service._ws = websocket  # type: ignore[assignment]
     service._has_audio_in_session = True
-    service._audio_since_final = True
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
 
     await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Schon final"}}}))
     service._wait_for_final_drain = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    service._wait_for_possible_late_final = AsyncMock()  # type: ignore[method-assign]
+    service._wait_for_possible_late_final = AsyncMock(return_value=None)  # type: ignore[method-assign]
 
     assert await service._finish_current_stream(wait_for_final=True) is True
     service._wait_for_final_drain.assert_not_awaited()  # type: ignore[attr-defined]
@@ -310,7 +344,7 @@ async def test_gemini_live_quiet_window_catches_final_for_audio_sent_after_prior
     assert await service._send_pcm_chunk(b"A" * 3_200) is True
     assert await service._send_pcm_chunk(b"B" * 3_200) is True
     await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Final A"}}}))
-    assert service._audio_since_final is False
+    assert service._interim_since_final is False
 
     assert await service._finish_current_stream(wait_for_final=True) is True
     if websocket.late_task:
@@ -319,6 +353,112 @@ async def test_gemini_live_quiet_window_catches_final_for_audio_sent_after_prior
     frames = [call.args[0] for call in service.push_frame.await_args_list]
     assert any(isinstance(frame, TranscriptionFrame) and frame.text == "Final B" for frame in frames)
     assert service._final_generation == 2
+
+
+@pytest.mark.asyncio
+async def test_gemini_live_late_interim_promotes_quiet_window_to_strict_drain():
+    service = GeminiTranscribeLiveSTTService(
+        api_key="secret",
+        final_timeout_seconds=0.2,
+        final_quiet_seconds=0.01,
+    )
+
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.late_task: asyncio.Task[None] | None = None
+
+        async def send_str(self, value: str):
+            if json.loads(value) == {"realtimeInput": {"audioStreamEnd": True}}:
+
+                async def emit_late_transcription():
+                    await asyncio.sleep(0.005)
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"interimInputTranscription": {"text": "Noch offen"}}})
+                    )
+                    await asyncio.sleep(0.02)
+                    assert self.closed is False
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"inputTranscription": {"text": "Jetzt final"}}})
+                    )
+
+                self.late_task = asyncio.create_task(emit_late_transcription())
+
+        async def close(self):
+            self.closed = True
+
+    websocket = WebSocket()
+    service._ws = websocket  # type: ignore[assignment]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    assert await service._send_pcm_chunk(b"A" * 3_200) is True
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    if websocket.late_task:
+        await websocket.late_task
+
+    frames = [call.args[0] for call in service.push_frame.await_args_list]
+    assert any(isinstance(frame, TranscriptionFrame) and frame.text == "Jetzt final" for frame in frames)
+    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert isinstance(frames[-1], EndFrame)
+    assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_gemini_live_drains_interim_that_follows_another_final():
+    service = GeminiTranscribeLiveSTTService(
+        api_key="secret",
+        final_timeout_seconds=0.2,
+        final_quiet_seconds=0.01,
+    )
+
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.late_task: asyncio.Task[None] | None = None
+
+        async def send_str(self, value: str):
+            if json.loads(value) == {"realtimeInput": {"audioStreamEnd": True}}:
+
+                async def emit_two_final_turns():
+                    await asyncio.sleep(0.005)
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"inputTranscription": {"text": "Final A"}}})
+                    )
+                    await asyncio.sleep(0.005)
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen B"}}})
+                    )
+                    await asyncio.sleep(0.02)
+                    assert self.closed is False
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"inputTranscription": {"text": "Final B"}}})
+                    )
+
+                self.late_task = asyncio.create_task(emit_two_final_turns())
+
+        async def close(self):
+            self.closed = True
+
+    websocket = WebSocket()
+    service._ws = websocket  # type: ignore[assignment]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    assert await service._send_pcm_chunk(b"A" * 3_200) is True
+    await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen A"}}}))
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    if websocket.late_task:
+        await websocket.late_task
+
+    frames = [call.args[0] for call in service.push_frame.await_args_list]
+    finals = [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)]
+    assert finals == ["Final A", "Final B"]
+    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert isinstance(frames[-1], EndFrame)
+    assert websocket.closed is True
 
 
 @pytest.mark.asyncio
@@ -339,9 +479,10 @@ async def test_gemini_live_final_timeout_is_terminal_and_aborts_rotation():
         final_quiet_seconds=0.01,
     )
     service._ws = websocket  # type: ignore[assignment]
-    service._audio_since_final = True
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
     service._connect = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Noch offen"}}}))
+    assert service._interim_since_final is True
 
     assert await service._rotate() is False
 
