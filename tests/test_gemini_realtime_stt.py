@@ -497,9 +497,12 @@ async def test_gemini_live_late_interim_promotes_quiet_window_to_strict_drain():
 async def test_gemini_live_drains_interim_that_follows_another_final():
     service = GeminiTranscribeLiveSTTService(
         api_key="secret",
-        final_timeout_seconds=0.2,
+        final_timeout_seconds=1.0,
         final_quiet_seconds=0.01,
     )
+    first_drain_started = asyncio.Event()
+    late_observer_started = asyncio.Event()
+    second_drain_started = asyncio.Event()
 
     class WebSocket:
         closed = False
@@ -511,15 +514,15 @@ async def test_gemini_live_drains_interim_that_follows_another_final():
             if json.loads(value) == {"realtimeInput": {"audioStreamEnd": True}}:
 
                 async def emit_two_final_turns():
-                    await asyncio.sleep(0.005)
+                    await first_drain_started.wait()
                     await service._handle_response(
                         json.dumps({"serverContent": {"inputTranscription": {"text": "Final A"}}})
                     )
-                    await asyncio.sleep(0.005)
+                    await late_observer_started.wait()
                     await service._handle_response(
                         json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen B"}}})
                     )
-                    await asyncio.sleep(0.02)
+                    await second_drain_started.wait()
                     assert self.closed is False
                     await service._handle_response(
                         json.dumps({"serverContent": {"inputTranscription": {"text": "Final B"}}})
@@ -535,14 +538,34 @@ async def test_gemini_live_drains_interim_that_follows_another_final():
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
     assert await service._send_pcm_chunk(b"A" * 3_200) is True
     await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen A"}}}))
+    wait_for_final = service._wait_for_final_drain
+    observe_late = service._wait_for_possible_late_final
+    drain_calls = 0
+
+    async def signal_final_drain(generation):
+        nonlocal drain_calls
+        drain_calls += 1
+        (first_drain_started if drain_calls == 1 else second_drain_started).set()
+        return await wait_for_final(generation)
+
+    async def signal_late_observer(generation):
+        late_observer_started.set()
+        return await observe_late(generation)
+
+    service._wait_for_final_drain = signal_final_drain  # type: ignore[method-assign]
+    service._wait_for_possible_late_final = signal_late_observer  # type: ignore[method-assign]
 
     with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
-        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
-    if websocket.late_task:
-        await websocket.late_task
+        await asyncio.wait_for(
+            service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM),
+            timeout=2.0,
+        )
+    assert websocket.late_task is not None
+    await asyncio.wait_for(websocket.late_task, timeout=2.0)
 
     frames = [call.args[0] for call in service.push_frame.await_args_list]
     finals = [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)]
+    assert drain_calls == 2
     assert finals == ["Final A", "Final B"]
     assert not any(isinstance(frame, ErrorFrame) for frame in frames)
     assert isinstance(frames[-1], EndFrame)
