@@ -1768,6 +1768,10 @@ class FrontendSmokeBackend:
             item = transcript_item("file", 1)
             item.update(
                 {
+                    "title": (
+                        "Synthetic File 00002: Desktop release review and the decisions, responsibilities, "
+                        "accessibility checks, and next steps agreed by the team before publication"
+                    ),
                     "content": (
                         "Speaker 1: We reviewed the desktop release candidate and agreed to keep the "
                         "recording workflow focused on one primary action. "
@@ -1803,6 +1807,17 @@ class FrontendSmokeBackend:
                         "<li>Review the final release evidence together.</li>"
                         "</ol>"
                         "</section>"
+                        + "".join(
+                            f"<section><h2>Review topic {index}: verification and follow-up</h2>"
+                            "<p>The team reviews the complete reading experience with a long recording title. "
+                            "Readers should be able to follow the summary, use its table of contents, and open "
+                            "the original transcript without losing their place or moving the surrounding cards.</p>"
+                            "<p>Each owner records the remaining checks, confirms the result, and discusses any "
+                            "unresolved questions before the next review. The release decision remains separate "
+                            "from this reading exercise, which uses synthetic content and makes no external requests.</p>"
+                            "</section>"
+                            for index in range(1, 9)
+                        )
                     ),
                     "summaryFormat": "html",
                     "summaryStatus": "completed",
@@ -2425,15 +2440,16 @@ async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) 
         "mobile": False,
     }
     restored_viewport: dict[str, Any] = {}
+    restored_page: dict[str, Any] = {}
     try:
         await cdp.call(
             "Emulation.setDeviceMetricsOverride",
             {**SUMMARY_READING_TRACK_VIEWPORT, "mobile": False},
             timeout=5,
         )
-        state = await wait_for_interaction_state(
+        initial = await wait_for_interaction_state(
             cdp,
-            label="summary-reading-track",
+            label="summary-reading-track-ready",
             timeout_sec=timeout_sec,
             expression=r"""
 (async () => {
@@ -2442,98 +2458,246 @@ async def exercise_summary_reading_track(cdp: CdpClient, *, timeout_sec: float) 
   const detail = documentRoot?.querySelector(':scope > section:not(.summary-overview)');
   const appScroller = document.querySelector('[data-app-scroll-container="true"]');
   const toc = document.querySelector('.summary-toc');
-  const summaryTrigger = document.querySelector(
-    '.transcript-detail-accordion > .neu-recording-row:first-child button',
+  const panel = document.querySelector('.transcript-summary-panel');
+  const summaryScroller = panel?.querySelector('[data-summary-scroll="true"]');
+  const transcriptPanel = document.querySelector(
+    '.transcript-detail-accordion > .neu-recording-row:not(.transcript-summary-panel)',
   );
-  const stickyHeader = document.querySelector('.transcript-detail-header-sticky');
-  if (!documentRoot || !overview || !detail || !appScroller || !toc || !summaryTrigger || !stickyHeader) {
+  const transcriptTrigger = transcriptPanel?.querySelector('button');
+  const header = document.querySelector('.transcript-detail-header-sticky');
+  const title = header?.querySelector('h1');
+  if (!documentRoot || !overview || !detail || !appScroller || !toc || !panel
+      || !summaryScroller || !transcriptPanel || !transcriptTrigger || !header || !title) {
     return { ok: false, reason: 'summary document sections are not ready' };
   }
-  const rootRect = documentRoot.getBoundingClientRect();
-  const overviewRect = overview.getBoundingClientRect();
-  const detailRect = detail.getBoundingClientRect();
-  const widthDelta = Math.abs(overviewRect.width - detailRect.width);
-  const leftDelta = Math.abs(overviewRect.left - detailRect.left);
-  const overflowX = Math.max(0, documentRoot.scrollWidth - documentRoot.clientWidth);
-  const viewportWidth = window.innerWidth;
-  const previousMinHeight = documentRoot.style.minHeight;
-  documentRoot.style.minHeight = '1600px';
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  const initialScrollTop = appScroller.scrollTop;
-  const initialTocTop = toc.getBoundingClientRect().top;
-  const initialTriggerTop = summaryTrigger.getBoundingClientRect().top;
-  const scrollDelta = Math.min(48, Math.max(0, appScroller.scrollHeight - appScroller.clientHeight));
-  appScroller.scrollTop = initialScrollTop + scrollDelta;
+  if (!window.__scriberSmokeSummaryReading) {
+    const original = {
+      url: window.location.href,
+      appTop: appScroller.scrollTop,
+      summaryTop: summaryScroller.scrollTop,
+      tocTop: toc.scrollTop,
+      windowX: window.scrollX,
+      windowY: window.scrollY,
+      transcriptExpanded: transcriptTrigger.getAttribute('aria-expanded'),
+    };
+    const settle = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const bounds = (element) => {
+      const { top, bottom, left, right } = element.getBoundingClientRect();
+      return { top, bottom, left, right };
+    };
+    const point = (element) => {
+      if (!element) return { ok: false };
+      const rect = element.getBoundingClientRect();
+      const x = (rect.left + rect.right) / 2;
+      const y = (rect.top + rect.bottom) / 2;
+      const hit = document.elementFromPoint(x, y);
+      return { ok: !!hit && element.contains(hit), x, y };
+    };
+    const target = toc.querySelector('li:last-child a');
+    const targetHref = target?.getAttribute('href') || '';
+    const sample = () => {
+      const panelStyle = getComputedStyle(panel);
+      const reader = bounds(summaryScroller);
+      const card = bounds(panel);
+      const transcript = bounds(transcriptPanel);
+      const rootRect = documentRoot.getBoundingClientRect();
+      const overviewRect = overview.getBoundingClientRect();
+      const detailRect = detail.getBoundingClientRect();
+      const heading = document.getElementById(targetHref.slice(1));
+      const titleRange = document.createRange();
+      titleRange.selectNodeContents(title);
+      const titleLines = new Set(Array.from(titleRange.getClientRects(), (rect) => Math.round(rect.top))).size;
+      const transcriptContent = transcriptPanel.querySelector('.transcript-content');
+      const contentRect = transcriptContent?.getBoundingClientRect();
+      return {
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        titleLines,
+        rootWidth: rootRect.width,
+        widthDelta: Math.abs(overviewRect.width - detailRect.width),
+        leftDelta: Math.abs(overviewRect.left - detailRect.left),
+        overflowX: Math.max(0, documentRoot.scrollWidth - documentRoot.clientWidth),
+        appOverflowY: Math.max(0, appScroller.scrollHeight - appScroller.clientHeight),
+        innerOverflowY: Math.max(0, summaryScroller.scrollHeight - summaryScroller.clientHeight),
+        summaryScrollTop: summaryScroller.scrollTop,
+        appScrollTop: appScroller.scrollTop,
+        windowScrollY: window.scrollY,
+        documentTop: rootRect.top,
+        card,
+        toc: bounds(toc),
+        reader,
+        cornerRadius: Math.min(...['borderTopLeftRadius', 'borderTopRightRadius',
+          'borderBottomLeftRadius', 'borderBottomRightRadius'].map((key) => parseFloat(panelStyle[key]) || 0)),
+        headerClearance: card.top - header.getBoundingClientRect().bottom,
+        transcriptClearance: transcript.top - card.bottom,
+        transcriptInView: transcript.top >= card.bottom - 1 && transcript.bottom <= window.innerHeight + 1,
+        transcriptExpanded: transcriptTrigger.getAttribute('aria-expanded') === 'true',
+        transcriptTextVisible: !!transcriptContent?.textContent.trim() && !!contentRect
+          && Math.min(contentRect.bottom, transcript.bottom, window.innerHeight) - Math.max(contentRect.top, transcript.top) > 16,
+        wheelTarget: point(summaryScroller),
+        tocTarget: point(target),
+        transcriptTarget: point(transcriptTrigger),
+        targetHref,
+        targetTop: heading?.getBoundingClientRect().top ?? null,
+        activeHref: toc.querySelector('[aria-current="location"]')?.getAttribute('href') || '',
+        hash: window.location.hash,
+        snapshotKind: overview.querySelector(':scope > .summary-snapshot--facts') ? 'facts' : 'takeaways',
+      };
+    };
+    const stable = (current, initial) => {
+      const drift = (key) => Math.max(...['top', 'bottom', 'left', 'right']
+        .map((edge) => Math.abs(current[key][edge] - initial[key][edge])));
+      return {
+        cardDrift: drift('card'),
+        tocDrift: drift('toc'),
+        appDrift: Math.abs(current.appScrollTop - initial.appScrollTop),
+        windowDrift: Math.abs(current.windowScrollY - initial.windowScrollY),
+      };
+    };
+    window.__scriberSmokeSummaryReading = {
+      sample,
+      stable,
+      restore: async () => {
+        if (transcriptTrigger.getAttribute('aria-expanded') !== original.transcriptExpanded) transcriptTrigger.click();
+        await settle();
+        appScroller.scrollTo({ top: original.appTop, behavior: 'instant' });
+        summaryScroller.scrollTo({ top: original.summaryTop, behavior: 'instant' });
+        toc.scrollTo({ top: original.tocTop, behavior: 'instant' });
+        window.history.replaceState(window.history.state, '', original.url);
+        window.scrollTo({ left: original.windowX, top: original.windowY, behavior: 'instant' });
+        await settle();
+        return { ok: window.location.href === original.url
+          && transcriptTrigger.getAttribute('aria-expanded') === original.transcriptExpanded
+          && Math.abs(appScroller.scrollTop - original.appTop) <= 1
+          && Math.abs(summaryScroller.scrollTop - original.summaryTop) <= 1
+          && Math.abs(toc.scrollTop - original.tocTop) <= 1
+          && Math.abs(window.scrollX - original.windowX) <= 1
+          && Math.abs(window.scrollY - original.windowY) <= 1 };
+      },
+    };
+    appScroller.scrollTo({ top: 0, behavior: 'instant' });
+    summaryScroller.scrollTo({ top: 0, behavior: 'instant' });
+    toc.scrollTo({ top: 0, behavior: 'instant' });
+  }
+  await document.fonts.ready;
   await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-  const scrolledTocTop = toc.getBoundingClientRect().top;
-  const scrolledTriggerTop = summaryTrigger.getBoundingClientRect().top;
-  const triggerStyle = getComputedStyle(summaryTrigger);
-  const triggerTopRadius = Math.min(
-    Number.parseFloat(triggerStyle.borderTopLeftRadius) || 0,
-    Number.parseFloat(triggerStyle.borderTopRightRadius) || 0,
-  );
-  const tocDrift = Math.abs(scrolledTocTop - initialTocTop);
-  const triggerDrift = Math.abs(scrolledTriggerTop - initialTriggerTop);
-  appScroller.scrollTop = initialScrollTop;
-  documentRoot.style.minHeight = previousMinHeight;
-  await new Promise((resolve) => requestAnimationFrame(resolve));
-  return {
-    ok: viewportWidth === __EXPECTED_VIEWPORT_WIDTH__
-      && widthDelta <= 1
-      && leftDelta <= 1
-      && overflowX <= 1
-      && scrollDelta > 0
-      && tocDrift <= 1
-      && triggerDrift <= 1
-      && triggerTopRadius >= 16,
-    viewportWidth,
-    viewportHeight: window.innerHeight,
-    rootWidth: rootRect.width,
-    overviewWidth: overviewRect.width,
-    detailWidth: detailRect.width,
-    widthDelta,
-    leftDelta,
-    overflowX,
-    scrollDelta,
-    initialTocTop,
-    scrolledTocTop,
-    tocDrift,
-    initialTriggerTop,
-    scrolledTriggerTop,
-    triggerDrift,
-    triggerTopRadius,
-    snapshotKind: overview.querySelector(':scope > .summary-snapshot--facts')
-      ? 'facts'
-      : overview.querySelector(':scope > .summary-snapshot--takeaways')
-        ? 'takeaways'
-        : 'none',
-  };
+  const state = window.__scriberSmokeSummaryReading;
+  const initial = state.sample();
+  state.initial = initial;
+  return { ...initial, ok: initial.viewportWidth === __EXPECTED_VIEWPORT_WIDTH__
+    && initial.titleLines >= 2 && initial.innerOverflowY > 800
+    && initial.widthDelta <= 1 && initial.leftDelta <= 1 && initial.overflowX <= 1
+    && initial.appOverflowY <= 1 && initial.cornerRadius >= 16
+    && initial.headerClearance >= -1 && initial.transcriptClearance >= -1
+    && initial.transcriptInView && initial.transcriptTarget.ok && initial.wheelTarget.ok
+    && initial.tocTarget.ok && initial.targetTop > initial.reader.bottom };
 })()
 """.replace("__EXPECTED_VIEWPORT_WIDTH__", str(SUMMARY_READING_TRACK_VIEWPORT["width"])),
         )
+        await cdp.call(
+            "Input.dispatchMouseEvent",
+            {
+                "type": "mouseWheel",
+                "x": initial["wheelTarget"]["x"],
+                "y": initial["wheelTarget"]["y"],
+                "deltaX": 0,
+                "deltaY": 640,
+            },
+            timeout=5,
+        )
+        wheel = await wait_for_interaction_state(
+            cdp,
+            label="summary-reading-track-wheel",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  const state = window.__scriberSmokeSummaryReading;
+  const current = state.sample();
+  const drift = state.stable(current, state.initial);
+  const scrollDelta = current.summaryScrollTop - state.initial.summaryScrollTop;
+  const textDrift = Math.abs(current.documentTop - state.initial.documentTop + scrollDelta);
+  return { ...current, ...drift, scrollDelta, textDrift,
+    ok: scrollDelta >= 100 && textDrift <= 1 && current.appOverflowY <= 1
+      && Object.values(drift).every((value) => value <= 1)
+      && current.activeHref !== state.initial.activeHref };
+})()
+""",
+        )
+        await click_page_coordinates(cdp, x=float(wheel["tocTarget"]["x"]), y=float(wheel["tocTarget"]["y"]))
+        navigation = await wait_for_interaction_state(
+            cdp,
+            label="summary-reading-track-navigation",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  const state = window.__scriberSmokeSummaryReading;
+  const current = state.sample();
+  const drift = state.stable(current, state.initial);
+  return { ...current, ...drift, ok: current.hash === current.targetHref
+    && current.activeHref === current.targetHref
+    && current.targetTop >= current.reader.top - 1 && current.targetTop < current.reader.bottom - 24
+    && current.appOverflowY <= 1 && Object.values(drift).every((value) => value <= 1) };
+})()
+""",
+        )
+        if not navigation["transcriptExpanded"]:
+            await click_page_coordinates(
+                cdp,
+                x=float(navigation["transcriptTarget"]["x"]),
+                y=float(navigation["transcriptTarget"]["y"]),
+            )
+        transcript = await wait_for_interaction_state(
+            cdp,
+            label="summary-reading-track-transcript",
+            timeout_sec=timeout_sec,
+            expression=r"""
+(() => {
+  const current = window.__scriberSmokeSummaryReading.sample();
+  return { ...current, ok: current.transcriptExpanded && current.transcriptTextVisible
+    && current.transcriptInView && current.headerClearance >= -1
+    && current.transcriptClearance >= -1 && current.appOverflowY <= 1 };
+})()
+""",
+        )
     finally:
-        await cdp.call("Emulation.clearDeviceMetricsOverride", timeout=5)
-        restored_viewport = await cdp.evaluate(viewport_expression, timeout=5)
-        if restored_viewport != original_viewport:
-            # Chromium's new headless mode can retain the last emulated viewport
-            # after clearing the override. Reapply the captured dimensions so the
-            # remaining smoke scenarios still run with their original viewport.
-            await cdp.call(
-                "Emulation.setDeviceMetricsOverride",
-                original_device_metrics,
+        try:
+            restored_page = await cdp.evaluate(
+                r"""
+(async () => {
+  try {
+    return await window.__scriberSmokeSummaryReading?.restore() ?? { ok: true };
+  } finally {
+    delete window.__scriberSmokeSummaryReading;
+  }
+})()
+""",
                 timeout=5,
             )
+        finally:
+            await cdp.call("Emulation.clearDeviceMetricsOverride", timeout=5)
             restored_viewport = await cdp.evaluate(viewport_expression, timeout=5)
+            if restored_viewport != original_viewport:
+                # Chromium's new headless mode can retain the last emulated viewport
+                # after clearing the override. Reapply the captured dimensions so the
+                # remaining smoke scenarios still run with their original viewport.
+                await cdp.call(
+                    "Emulation.setDeviceMetricsOverride",
+                    original_device_metrics,
+                    timeout=5,
+                )
+                restored_viewport = await cdp.evaluate(viewport_expression, timeout=5)
 
     viewport_restored = restored_viewport == original_viewport
     return {
         "name": "summary-reading-track",
-        "ok": bool(state.get("ok")) and viewport_restored,
+        "ok": all(item.get("ok") for item in (initial, wheel, navigation, transcript, restored_page))
+        and viewport_restored,
         "viewport": SUMMARY_READING_TRACK_VIEWPORT,
-        "state": state,
+        "state": {**initial, "wheel": wheel, "navigation": navigation, "transcript": transcript},
         "originalViewport": original_viewport,
         "restoredViewport": restored_viewport,
         "viewportRestored": viewport_restored,
+        "pageRestored": bool(restored_page.get("ok")),
     }
 
 

@@ -4255,6 +4255,78 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
   .summary-document .summary-snapshot--takeaways.is-compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  /* Let the actual toolbar height determine the reading space, including wrapped
+     titles. The app viewport stays still; each open document scrolls inside its card. */
+  .app-scroll-viewport > div:has(> .transcript-detail-page.has-summary-reader) {
+    height: 100%;
+  }
+
+  .transcript-detail-page.has-summary-reader {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .has-summary-reader .transcript-detail-header-sticky {
+    flex-shrink: 0;
+  }
+
+  .has-summary-reader .transcript-detail-scroll,
+  .has-summary-reader .transcript-detail-shell {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  .has-summary-reader .transcript-detail-shell > :not(.transcript-summary-layout) {
+    flex-shrink: 0;
+  }
+
+  .has-summary-reader .transcript-summary-layout {
+    min-height: 0;
+    flex: 1;
+  }
+
+  .has-summary-reader .transcript-detail-accordion {
+    display: flex;
+    height: 100%;
+    min-height: 0;
+    flex-direction: column;
+  }
+
+  .has-summary-reader .transcript-detail-accordion > .neu-recording-row {
+    min-height: 0;
+    flex-shrink: 0;
+    overflow: hidden;
+    transform: none;
+  }
+
+  .has-summary-reader .transcript-detail-accordion > .neu-recording-row[data-state="open"] {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+  }
+
+  .has-summary-reader .transcript-detail-accordion > .neu-recording-row > h3 {
+    flex-shrink: 0;
+  }
+
+  .has-summary-reader .transcript-detail-accordion > .neu-recording-row[data-state="open"] > .t-acc-presence {
+    min-height: 0;
+    flex: 1;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.32) transparent;
+    scrollbar-width: thin;
+  }
+
+  .has-summary-reader .t-acc-presence:focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: -2px;
+  }
 }
 
 @media (min-width: 1440px) {
@@ -4281,9 +4353,9 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
 
   .transcript-detail-shell.has-summary-toc .summary-toc {
     position: sticky;
-    top: 7.625rem;
+    top: 0;
     display: block;
-    max-height: calc(100dvh - 9rem);
+    max-height: 100%;
     overflow-y: auto;
     overscroll-behavior: contain;
     padding: 0.25rem 0.55rem 0.5rem 0;

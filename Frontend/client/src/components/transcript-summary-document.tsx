@@ -19,6 +19,7 @@ interface TranscriptSummaryDocumentProps {
 interface SummaryTableOfContentsProps {
   outline: SummaryOutlineItem[];
   scrollContainerRef: RefObject<HTMLElement | null>;
+  scrollPage?: boolean;
   title: string;
 }
 
@@ -110,7 +111,12 @@ export function TranscriptSummaryDocument({ prepared }: TranscriptSummaryDocumen
   );
 }
 
-export function SummaryTableOfContents({ outline, scrollContainerRef, title }: SummaryTableOfContentsProps) {
+export function SummaryTableOfContents({
+  outline,
+  scrollContainerRef,
+  scrollPage = false,
+  title,
+}: SummaryTableOfContentsProps) {
   const outlineKey = useMemo(() => outline.map(({ id }) => id).join("|"), [outline]);
   const [activeId, setActiveId] = useState(() => outline[0]?.id || "");
   const [pathGeometry, setPathGeometry] = useState<SummaryTocPathGeometry>(EMPTY_TOC_PATH);
@@ -185,6 +191,29 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
       scheduleNavigationRelease(4_000);
     },
     [scheduleNavigationRelease],
+  );
+
+  const scrollToHeading = useCallback(
+    (id: string) => {
+      const root = scrollContainerRef.current;
+      const heading = document.getElementById(id);
+      if (!root || !heading) return false;
+
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      const behavior = reduceMotion ? "auto" : "smooth";
+      holdNavigationTarget(id);
+      if (scrollPage) {
+        heading.scrollIntoView({ behavior, block: "start" });
+      } else {
+        const margin = Number.parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+        root.scrollTo({
+          behavior,
+          top: root.scrollTop + heading.getBoundingClientRect().top - root.getBoundingClientRect().top - margin,
+        });
+      }
+      return true;
+    },
+    [holdNavigationTarget, scrollContainerRef, scrollPage],
   );
 
   useEffect(() => {
@@ -316,26 +345,18 @@ export function SummaryTableOfContents({ outline, scrollContainerRef, title }: S
     }
     if (!hash || !outline.some(({ id }) => id === hash)) return;
     const frame = window.requestAnimationFrame(() => {
-      const heading = document.getElementById(hash);
-      if (!heading) return;
-      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      holdNavigationTarget(hash);
-      heading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      scrollToHeading(hash);
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [holdNavigationTarget, outlineKey, outline]);
+  }, [scrollToHeading, outlineKey, outline]);
 
   const handleNavigate = useCallback(
     (event: MouseEvent<HTMLAnchorElement>, id: string) => {
       event.preventDefault();
-      const heading = document.getElementById(id);
-      if (!heading) return;
-      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-      holdNavigationTarget(id);
-      heading.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "start" });
+      if (!scrollToHeading(id)) return;
       window.history.replaceState(window.history.state, "", `#${id}`);
     },
-    [holdNavigationTarget],
+    [scrollToHeading],
   );
 
   if (outline.length < 2) return null;

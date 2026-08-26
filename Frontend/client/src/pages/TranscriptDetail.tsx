@@ -20,6 +20,7 @@ import { SummaryTableOfContents, TranscriptSummaryDocument } from "@/components/
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { useAppScrollContainerRef } from "@/contexts/AppScrollContainerContext";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   extractFailureMessage,
   friendlyError,
@@ -329,6 +330,8 @@ export default function TranscriptDetail() {
   const copyResetTimerRef = useRef<number | null>(null);
   const summaryCopyResetTimerRef = useRef<number | null>(null);
   const mainScrollRef = useAppScrollContainerRef();
+  const summaryScrollRef = useRef<HTMLDivElement | null>(null);
+  const isMobile = useIsMobile();
   const [isRetryingYoutube, setIsRetryingYoutube] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const queryClient = useQueryClient();
@@ -668,7 +671,7 @@ export default function TranscriptDetail() {
   );
 
   return (
-    <div className="min-h-full bg-background">
+    <div className={`transcript-detail-page min-h-full bg-background${hasSummary ? " has-summary-reader" : ""}`}>
       {/* Header Toolbar */}
       <div className="transcript-detail-header-sticky sticky top-0 z-40 px-4 pt-4 md:px-12 lg:px-8 xl:px-12">
         <header
@@ -916,11 +919,12 @@ export default function TranscriptDetail() {
             </div>
           )}
 
-          <div className="transcript-summary-layout">
+          <div key={id} className="transcript-summary-layout">
             {showSummaryToc && (
               <SummaryTableOfContents
                 outline={preparedSummaryHtml.outline}
-                scrollContainerRef={mainScrollRef}
+                scrollContainerRef={isMobile ? mainScrollRef : summaryScrollRef}
+                scrollPage={isMobile}
                 title={summaryTocTitle}
               />
             )}
@@ -951,7 +955,7 @@ export default function TranscriptDetail() {
                     )}
                   </div>
                 </AccordionTrigger>
-                <AccordionContent className="px-4 pb-4">
+                <AccordionContent ref={summaryScrollRef} data-summary-scroll="true" tabIndex={0} className="px-4 pb-4">
                   {hasSummary ? (
                     summaryFormat === "html" ? (
                       <TranscriptSummaryDocument prepared={preparedSummaryHtml} />
@@ -991,7 +995,7 @@ export default function TranscriptDetail() {
                     )}
                   </div>
                 </AccordionTrigger>
-                <AccordionContent className="px-4 pb-4">
+                <AccordionContent tabIndex={0} className="px-4 pb-4">
                   <div className="transcript-content">
                     {transcriptQuery.isLoading ? (
                       t("Loading…")

@@ -1243,6 +1243,12 @@ health is proven.
 page. It preserves the shell and synchronously swaps primary-tab content, then
 resets only the shared scroll container. This avoids a visible blank/Suspense
 interval on the first tab visit.
+Transcript details with a summary use the available app viewport as a desktop
+reading area. The toolbar takes its actual height, including wrapped titles;
+the contents navigation and rounded document cards stay in place while each
+open accordion region scrolls internally. Contents links and active-heading
+tracking target the summary region. Below 768 px, details retain document
+scrolling, including direct summary-heading links.
 Installed frontend assets are owned by Tauri through `frontendDist` and are
 loaded from the WebView origin (`http://tauri.localhost`), not from the Python
 backend loopback server.
