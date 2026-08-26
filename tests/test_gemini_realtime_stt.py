@@ -362,6 +362,8 @@ async def test_gemini_live_late_interim_promotes_quiet_window_to_strict_drain():
         final_timeout_seconds=0.2,
         final_quiet_seconds=0.01,
     )
+    observer_started = asyncio.Event()
+    strict_drain_started = asyncio.Event()
 
     class WebSocket:
         closed = False
@@ -373,11 +375,11 @@ async def test_gemini_live_late_interim_promotes_quiet_window_to_strict_drain():
             if json.loads(value) == {"realtimeInput": {"audioStreamEnd": True}}:
 
                 async def emit_late_transcription():
-                    await asyncio.sleep(0.005)
+                    await observer_started.wait()
                     await service._handle_response(
                         json.dumps({"serverContent": {"interimInputTranscription": {"text": "Noch offen"}}})
                     )
-                    await asyncio.sleep(0.02)
+                    await strict_drain_started.wait()
                     assert self.closed is False
                     await service._handle_response(
                         json.dumps({"serverContent": {"inputTranscription": {"text": "Jetzt final"}}})
@@ -392,6 +394,19 @@ async def test_gemini_live_late_interim_promotes_quiet_window_to_strict_drain():
     service._ws = websocket  # type: ignore[assignment]
     service.push_frame = AsyncMock()  # type: ignore[method-assign]
     assert await service._send_pcm_chunk(b"A" * 3_200) is True
+    observe_late = service._wait_for_possible_late_final
+    wait_for_final = service._wait_for_final_drain
+
+    async def observe_after_end(generation):
+        observer_started.set()
+        return await observe_late(generation)
+
+    async def signal_strict_drain(generation):
+        strict_drain_started.set()
+        return await wait_for_final(generation)
+
+    service._wait_for_possible_late_final = observe_after_end  # type: ignore[method-assign]
+    service._wait_for_final_drain = signal_strict_drain  # type: ignore[method-assign]
 
     with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
         await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
@@ -517,7 +532,7 @@ async def test_gemini_live_preserves_interim_that_precedes_unrelated_final(
                     return
 
                 async def emit_final_b():
-                    await asyncio.sleep(0.02)
+                    await asyncio.sleep(0.05)
                     assert self.closed is False
                     await service._handle_response(
                         json.dumps({"serverContent": {"inputTranscription": {"text": "Final B"}}})
@@ -548,10 +563,133 @@ async def test_gemini_live_preserves_interim_that_precedes_unrelated_final(
 
 
 @pytest.mark.asyncio
-async def test_gemini_live_interim_revision_does_not_fail_or_stall_stop():
+async def test_gemini_live_preserves_multiple_interims_armed_before_stop():
     service = GeminiTranscribeLiveSTTService(
         api_key="secret",
-        final_timeout_seconds=1.0,
+        final_timeout_seconds=0.2,
+        final_quiet_seconds=0.01,
+    )
+
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.late_task: asyncio.Task[None] | None = None
+
+        async def send_str(self, value: str):
+            payload = json.loads(value)
+            if "audio" in payload.get("realtimeInput", {}):
+                await service._handle_response(
+                    json.dumps({"serverContent": {"inputTranscription": {"text": "Final A"}}})
+                )
+            elif payload == {"realtimeInput": {"audioStreamEnd": True}}:
+
+                async def emit_final_b():
+                    await asyncio.sleep(0.05)
+                    assert self.closed is False
+                    await service._handle_response(
+                        json.dumps({"serverContent": {"inputTranscription": {"text": "Final B"}}})
+                    )
+
+                self.late_task = asyncio.create_task(emit_final_b())
+
+        async def close(self):
+            self.closed = True
+
+    websocket = WebSocket()
+    service._ws = websocket  # type: ignore[assignment]
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    for text in ("Offen A", "Offen B"):
+        await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": text}}}))
+    service._pcm_buffer.extend(b"A" * 3_200)
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    if websocket.late_task:
+        await websocket.late_task
+
+    frames = [call.args[0] for call in service.push_frame.await_args_list]
+    assert [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)] == ["Final A", "Final B"]
+    assert not any(isinstance(frame, ErrorFrame) for frame in frames)
+    assert isinstance(frames[-1], EndFrame)
+    assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_gemini_live_uses_one_late_observer_for_drained_turns():
+    service = GeminiTranscribeLiveSTTService(
+        api_key="secret",
+        final_timeout_seconds=0.2,
+        final_quiet_seconds=0.01,
+    )
+    observer_started = asyncio.Event()
+
+    class WebSocket:
+        closed = False
+
+        def __init__(self):
+            self.late_task: asyncio.Task[None] | None = None
+
+        async def send_str(self, value: str):
+            if json.loads(value) != {"realtimeInput": {"audioStreamEnd": True}}:
+                return
+            await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Final A"}}}))
+
+            async def emit_turn_b():
+                await observer_started.wait()
+                await service._handle_response(
+                    json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen B"}}})
+                )
+                await asyncio.sleep(0.005)
+                await service._handle_response(
+                    json.dumps({"serverContent": {"inputTranscription": {"text": "Final B"}}})
+                )
+
+            self.late_task = asyncio.create_task(emit_turn_b())
+
+        async def close(self):
+            self.closed = True
+
+    websocket = WebSocket()
+    service._ws = websocket  # type: ignore[assignment]
+    service._has_audio_in_session = True
+    service.push_frame = AsyncMock()  # type: ignore[method-assign]
+    await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen A"}}}))
+    observe_late = service._wait_for_possible_late_final
+
+    async def observe_once(generation):
+        observer_started.set()
+        return await observe_late(generation)
+
+    service._wait_for_possible_late_final = AsyncMock(  # type: ignore[method-assign]
+        side_effect=observe_once
+    )
+
+    with patch("src.gemini_realtime_stt.FrameProcessor.process_frame", new=AsyncMock()):
+        await service.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    if websocket.late_task:
+        await websocket.late_task
+
+    assert service._wait_for_possible_late_final.await_count == 1  # type: ignore[attr-defined]
+    frames = [call.args[0] for call in service.push_frame.await_args_list]
+    assert [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)] == ["Final A", "Final B"]
+    assert isinstance(frames[-1], EndFrame)
+    assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_text", "final_timeout"),
+    [("Offen A erweitert heute.", 1.0), ("Final A", 0.02)],
+    ids=["confirmed-revision", "ambiguous-timeout"],
+)
+async def test_gemini_live_interim_revision_stop_is_bounded_and_nonfatal(
+    final_text,
+    final_timeout,
+):
+    service = GeminiTranscribeLiveSTTService(
+        api_key="secret",
+        final_timeout_seconds=final_timeout,
         final_quiet_seconds=0.01,
     )
 
@@ -566,7 +704,7 @@ async def test_gemini_live_interim_revision_does_not_fail_or_stall_stop():
                         {
                             "serverContent": {
                                 "interimInputTranscription": {"text": "Offen A erweitert"},
-                                "inputTranscription": {"text": "Final A"},
+                                "inputTranscription": {"text": final_text},
                             }
                         }
                     )
@@ -587,7 +725,7 @@ async def test_gemini_live_interim_revision_does_not_fail_or_stall_stop():
 
     frames = [call.args[0] for call in service.push_frame.await_args_list]
     assert time.monotonic() - started < 0.25
-    assert [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)] == ["Final A"]
+    assert [frame.text for frame in frames if isinstance(frame, TranscriptionFrame)] == [final_text]
     assert not any(isinstance(frame, ErrorFrame) for frame in frames)
     assert isinstance(frames[-1], EndFrame)
     assert service._terminal_failure is False

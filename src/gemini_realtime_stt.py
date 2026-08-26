@@ -42,6 +42,7 @@ GEMINI_TRANSCRIBE_LIVE_URL = (
 )
 GEMINI_TRANSCRIBE_LIVE_MODEL = "gemini-3.5-transcribe-live"
 _VOCAB_SPLIT_RE = re.compile(r"[,\n;]+")
+_TRANSCRIPT_WORD_SEPARATOR_RE = re.compile(r"\W+")
 _QUERY_KEY_RE = re.compile(r"(?i)([?&]key=)[^&\s]+")
 _MAX_PUBLIC_ERROR_CHARS = 500
 _LIVE_AUDIO_CHUNK_BYTES = 16_000 * 2 // 10  # 100 ms of mono PCM16.
@@ -68,6 +69,24 @@ def gemini_custom_vocabulary(value: str) -> list[str]:
         if len(terms) >= 100:
             break
     return terms
+
+
+def _normalize_transcription_text(value: str) -> str:
+    return " ".join(_TRANSCRIPT_WORD_SEPARATOR_RE.split(value.casefold())).strip()
+
+
+def _transcription_match_score(interim: str, final: str) -> int:
+    interim_text = _normalize_transcription_text(interim)
+    final_text = _normalize_transcription_text(final)
+    if not interim_text or not final_text:
+        return 0
+    if interim_text == final_text:
+        return len(interim_text) + 1
+    if min(len(interim_text), len(final_text)) >= 4 and (
+        interim_text.startswith(final_text) or final_text.startswith(interim_text)
+    ):
+        return min(len(interim_text), len(final_text))
+    return 0
 
 
 def redact_gemini_live_error(value: object, api_key: str) -> str:
@@ -127,8 +146,12 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._interim_generation = 0
         self._has_audio_in_session = False
         self._pending_interim = False
+        self._pending_interim_generation: int | None = None
+        self._pending_interim_text: str | None = None
+        self._latest_interim_text = ""
         self._drain_interim_generation: int | None = None
         self._drain_final_generation: int | None = None
+        self._drain_interim_text: str | None = None
         self._drain_is_inferred = False
         self._pcm_buffer = bytearray()
         self._rotate_after_final = False
@@ -271,8 +294,12 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             self._connected_at = time.monotonic()
             self._has_audio_in_session = False
             self._pending_interim = False
+            self._pending_interim_generation = None
+            self._pending_interim_text = None
+            self._latest_interim_text = ""
             self._drain_interim_generation = None
             self._drain_final_generation = None
+            self._drain_interim_text = None
             self._drain_is_inferred = False
             self._pcm_buffer.clear()
             self._rotate_after_final = False
@@ -345,6 +372,10 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         interim_text = str(interim.get("text") or "").strip() if isinstance(interim, dict) else ""
         if interim_text:
             self._interim_generation += 1
+            if not self._pending_interim:
+                self._pending_interim_generation = self._interim_generation
+                self._pending_interim_text = interim_text
+            self._latest_interim_text = interim_text
             self._pending_interim = True
             self._transcription_event.set()
             await self.push_frame(
@@ -363,18 +394,37 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             self._final_generation += 1
             if self._drain_interim_generation is not None:
                 # Input-transcription messages are independently ordered. This
-                # final satisfies only the interim that armed the active drain.
-                # Atomically arm newer interims so another final cannot race the
-                # finish task, including when both fields share one response.
+                # final satisfies the armed turn unless its text more strongly
+                # confirms the latest hypothesis as an update of that same turn.
+                # Otherwise atomically carry newer interims so another final
+                # cannot race the finish task, including in one response.
                 if self._interim_generation > self._drain_interim_generation:
-                    self._drain_interim_generation = self._interim_generation
-                    self._drain_final_generation = self._final_generation
-                    self._drain_is_inferred = True
-                    self._pending_interim = False
+                    active_text = self._drain_interim_text or ""
+                    same_update = _normalize_transcription_text(
+                        self._latest_interim_text
+                    ) == _normalize_transcription_text(active_text)
+                    latest_match = _transcription_match_score(
+                        self._latest_interim_text,
+                        final_text,
+                    )
+                    active_match = _transcription_match_score(active_text, final_text)
+                    if same_update or latest_match > active_match:
+                        self._clear_final_drain()
+                    else:
+                        self._drain_interim_generation = self._interim_generation
+                        self._drain_final_generation = self._final_generation
+                        self._drain_interim_text = self._latest_interim_text
+                        self._drain_is_inferred = True
+                        self._pending_interim = False
+                        self._pending_interim_generation = None
+                        self._pending_interim_text = None
                 else:
                     self._clear_final_drain()
             else:
                 self._pending_interim = False
+                self._pending_interim_generation = None
+                self._pending_interim_text = None
+                self._latest_interim_text = ""
             if self._connected_at and time.monotonic() - self._connected_at >= self._soft_rotate_seconds:
                 self._rotate_after_final = True
             self._transcription_event.set()
@@ -418,12 +468,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
 
     async def _wait_for_final_drain(self, generation: int) -> bool:
         """Wait for the final matching an already armed provider speech turn."""
-        timeout = self._final_timeout_seconds
-        if self._drain_is_inferred:
-            # A few quiet intervals distinguish a reordered next turn from an
-            # extra speculative update without adding the full stop timeout.
-            timeout = min(timeout, self._final_quiet_seconds * 3)
-        deadline = time.monotonic() + timeout
+        deadline = time.monotonic() + self._final_timeout_seconds
         while self._final_generation <= generation:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -441,17 +486,25 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         if not self._pending_interim:
             return None
         # Coalesce the provider's speculative updates into one speech turn.
-        # Later interims remain pending when the armed turn's final arrives.
+        # Arm the first pending generation so a possible second turn that was
+        # already observed before shutdown survives an older delayed final.
         self._pending_interim = False
-        self._drain_interim_generation = self._interim_generation
+        self._drain_interim_generation = self._pending_interim_generation or self._interim_generation
+        self._drain_interim_text = self._pending_interim_text or self._latest_interim_text
+        self._pending_interim_generation = None
+        self._pending_interim_text = None
         self._drain_final_generation = self._final_generation
         self._drain_is_inferred = False
         return self._drain_final_generation
 
     def _clear_final_drain(self) -> None:
         self._pending_interim = False
+        self._pending_interim_generation = None
+        self._pending_interim_text = None
+        self._latest_interim_text = ""
         self._drain_interim_generation = None
         self._drain_final_generation = None
+        self._drain_interim_text = None
         self._drain_is_inferred = False
 
     async def _wait_for_possible_late_final(self, generation: int) -> int | None:
@@ -505,6 +558,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 # A provider interim can race with audioStreamEnd. Promote that
                 # newly observed speech to the strict drain path instead of
                 # closing at the end of the best-effort quiet window.
+                observe_late_transcription = False
                 pending_generation = await self._wait_for_possible_late_final(self._final_generation)
                 if pending_generation is None:
                     break
@@ -515,8 +569,9 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 if self._drain_is_inferred:
                     # Without a turn ID, a later interim can be either the next
                     # speech turn or another hypothesis for the final we just
-                    # received. Preserve a genuinely late final through a bounded
-                    # deadline, but do not turn that ambiguity into an error.
+                    # received. Honor the configured drain deadline so a real
+                    # next turn is not dropped, but do not turn an unresolved
+                    # speculative update into an error.
                     logger.info("Gemini Transcribe Live emitted no additional final for an ambiguous interim")
                     self._clear_final_drain()
                     return True
@@ -529,9 +584,13 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 return False
             # Transcription messages are ordered independently. If a new
             # interim landed while the prior final was outstanding, require its
-            # corresponding final before closing too. Re-enter the quiet window
-            # only after every armed interim has been drained.
+            # corresponding final before closing too. One observer window per
+            # stop is enough; a carried turn is already the late evidence that
+            # the observer was intended to catch.
+            drained_generation = pending_generation
             pending_generation = self._arm_final_drain()
+            if pending_generation is not None or self._final_generation > drained_generation + 1:
+                observe_late_transcription = False
         return True
 
     async def _close_connection(self) -> None:
