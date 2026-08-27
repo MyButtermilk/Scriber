@@ -212,6 +212,7 @@ fn fallback_notification_model_label(model: &str) -> String {
         "google/gemini-2.5-flash-lite" => "Gemini 2.5 Flash Lite".to_string(),
         "minimax/minimax-m3" => "MiniMax M3".to_string(),
         "z-ai/glm-5.2" => "GLM 5.2".to_string(),
+        "z-ai/glm-5.3-flash" => "GLM 5.3 Flash".to_string(),
         _ => model.to_string(),
     }
 }
@@ -889,10 +890,14 @@ mod tests {
             )
         );
         assert_eq!(
-            fallback_notification_copy("cerebras/gemma-4-31b", "z-ai/glm-5.2", crate::UiLocale::En,),
+            fallback_notification_copy(
+                "cerebras/gemma-4-31b",
+                "z-ai/glm-5.3-flash",
+                crate::UiLocale::En,
+            ),
             (
                 "Fallback model used".to_string(),
-                "Scriber used GLM 5.2 instead of Gemma 4 31B for this dictation.".to_string(),
+                "Scriber used GLM 5.3 Flash instead of Gemma 4 31B for this dictation.".to_string(),
             )
         );
     }
@@ -908,9 +913,9 @@ mod tests {
             fallback_notification_model(&json!({ "model": "x".repeat(161) }), "model").is_err()
         );
         assert_eq!(
-            fallback_notification_model(&json!({ "model": "z-ai/glm-5.2:nitro" }), "model")
+            fallback_notification_model(&json!({ "model": "z-ai/glm-5.3-flash:nitro" }), "model")
                 .unwrap(),
-            "z-ai/glm-5.2:nitro"
+            "z-ai/glm-5.3-flash:nitro"
         );
     }
 

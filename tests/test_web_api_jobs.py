@@ -16,7 +16,7 @@ from src.data.job_store import JobStatus, JobStore
 from src.pipeline import direct_file_workflow_timeout_seconds
 from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.web_api import ScriberWebController, TranscriptRecord
-from src.youtube_download import YouTubeCaptionCue, YouTubeDownloadError, YouTubeTranscript
+from src.youtube_download import DownloadProgress, YouTubeCaptionCue, YouTubeDownloadError, YouTubeTranscript
 
 
 class _DurableParentHarness:
@@ -4747,6 +4747,65 @@ async def test_youtube_captions_skip_audio_download_and_stt_provider(monkeypatch
     assert persisted.payload["executionRoute"]["provider"] == "youtube_captions_auto"
     assert persisted.payload["executionRoute"]["transport"] == "caption_track"
     assert persisted.payload["executedRoute"] == persisted.payload["executionRoute"]
+
+
+@pytest.mark.asyncio
+async def test_youtube_audio_status_is_truthful_before_bytes_and_during_403_retry(
+    monkeypatch,
+    tmp_path,
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    ctl._downloads_dir = tmp_path / "downloads"
+    rec = _completed_record(transcript_type="youtube", tmp_path=tmp_path)
+    observed_steps: list[str] = []
+
+    async def _capture_broadcast(*_args, **_kwargs):
+        observed_steps.append(rec.step)
+
+    async def _download_with_retry(*_args, on_progress, **_kwargs):
+        assert rec.step == "Preparing audio download..."
+
+        no_bytes = DownloadProgress()
+        no_bytes.status = "downloading"
+        no_bytes.percent = 1.0
+        on_progress(no_bytes)
+        await asyncio.sleep(0)
+        assert rec.step == "Preparing audio download..."
+
+        retry = DownloadProgress()
+        retry.status = "retrying"
+        retry.retry_attempt = 1
+        retry.retry_max_attempts = 3
+        retry.retry_delay_seconds = 2.0
+        on_progress(retry)
+        await asyncio.sleep(0)
+        assert rec.step == "Retrying audio download in 2s (1/3)"
+
+        raise YouTubeDownloadError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+
+    with (
+        patch(
+            "src.web_api.download_youtube_audio",
+            new=AsyncMock(side_effect=_download_with_retry),
+        ),
+        patch.object(
+            ctl,
+            "_broadcast_history_updated",
+            new=AsyncMock(side_effect=_capture_broadcast),
+        ),
+    ):
+        await ctl._run_youtube_transcription(rec, provider="soniox")
+
+    assert observed_steps[:3] == [
+        "Preparing audio download...",
+        "Preparing audio download...",
+        "Retrying audio download in 2s (1/3)",
+    ]
+    assert "Downloading audio..." not in observed_steps
+    assert rec.status == "failed"
+    assert rec.step == "Failed"
 
 
 @pytest.mark.asyncio

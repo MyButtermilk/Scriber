@@ -670,6 +670,7 @@ async def test_live_controller_broadcasts_successful_cloud_fallback_once(
                 "fallbackModel": "minimax/minimax-m3",
                 "fallbackUsed": True,
                 "fallbackReason": "quota_exceeded",
+                "primaryFailureStatus": 402,
             }
         )
         return "Bereinigter Text"
@@ -713,6 +714,8 @@ async def test_live_controller_broadcasts_successful_cloud_fallback_once(
             "fallbackModel": "minimax/minimax-m3",
             "desktopNotificationAccepted": native_notification_accepted,
             "reason": "quota_exceeded",
+            "reasonCategory": "quota_or_payment",
+            "primaryFailureStatus": 402,
             "sessionId": "cloud-fallback",
         }
     ]

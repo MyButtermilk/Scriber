@@ -25,6 +25,8 @@ export const settingsTranslations = {
   "{{price}}€/M blended, ~{{tokens}} Token/s": "{{price}} €/M gemischt, ~{{tokens}} Token/s",
   "{{price}}€/M with AA Score {{score}}": "{{price}} €/M mit AA-Score {{score}}",
   "{{price}}/M blended · ~{{tokens}} tokens/s": "{{price}}/M gemischt · ~{{tokens}} Token/s",
+  "{{price}}/M blended · AA score {{score}} · ~{{tokens}} tokens/s":
+    "{{price}}/M gemischt · AA-Score {{score}} · ~{{tokens}} Token/s",
   "{{price}}/M · AA score {{score}}": "{{price}}/M · AA-Score {{score}}",
   "{{price}}€/h with {{errorRate}}% Error": "{{price}} €/h bei {{errorRate}} % Fehlerquote",
   "{{price}}€/h with {{error}}% Error": "{{price}} €/h bei {{error}} % Fehlerquote",
@@ -43,8 +45,18 @@ export const settingsTranslations = {
     "Standardtarif · Prompts und Antworten werden nicht zum Training von Meta-Modellen verwendet",
   "Contributor tier · prompts and responses may be used to train future Meta models":
     "Contributor-Tarif · Prompts und Antworten dürfen zum Training künftiger Meta-Modelle verwendet werden",
-  "Blended token price averages the listed input and output rates.":
-    "Der gemischte Tokenpreis ist der Mittelwert der angegebenen Ein- und Ausgabepreise.",
+  "Same Muse Spark checkpoint score · not separately benchmarked · Contributor data-use warning applies":
+    "Score desselben Muse-Spark-Checkpoints · nicht separat gemessen · Hinweis zur Contributor-Datennutzung gilt",
+  "Custom OpenRouter model": "Benutzerdefiniertes OpenRouter-Modell",
+  "Enter a canonical author/model code. Scriber applies the OpenRouter Nitro route automatically.":
+    "Gib einen kanonischen Code im Format Autor/Modell ein. Scriber verwendet automatisch die OpenRouter-Nitro-Route.",
+  "Use custom model": "Benutzerdefiniertes Modell verwenden",
+  "Enter a canonical OpenRouter model code such as author/model.":
+    "Gib einen kanonischen OpenRouter-Modellcode wie Autor/Modell ein.",
+  "Active custom model: {{model}}": "Aktives benutzerdefiniertes Modell: {{model}}",
+  "Nitro route · {{model}}": "Nitro-Route · {{model}}",
+  "Blended token price uses the listed benchmark blend when available; otherwise it averages input and output rates.":
+    "Der gemischte Tokenpreis verwendet, sofern vorhanden, den ausgewiesenen Benchmark-Mix; andernfalls ist er der Mittelwert aus Ein- und Ausgabepreis.",
   "Euro estimates use a fixed rate of {{rate}}. Provider prices may change.":
     "Euro-Beträge sind Schätzungen mit dem festen Kurs {{rate}}. Anbieterpreise können sich ändern.",
   "Provider rate varies": "Anbieterpreis variiert",
@@ -54,6 +66,10 @@ export const settingsTranslations = {
     "Ein Schlüssel für STT und KI · rund 5 % Gebühr beim Guthabenkauf",
   "Separate Azure Speech key and region · no OpenRouter fee":
     "Separater Azure-Speech-Schlüssel und Region · keine OpenRouter-Gebühr",
+  "Gemini 3.5 Transcribe": "Gemini 3.5 Transcribe",
+  "Gemini 3.5 Transcribe Live": "Gemini 3.5 Transcribe Live",
+  "Interim and final text · smart transcription": "Zwischen- und Endergebnisse · intelligente Transkription",
+  "Speaker diarization and word timestamps · final text": "Sprechertrennung und Wortzeitstempel · finaler Text",
   "$0.00 / meeting hour": "0,00 $ / Meetingstunde",
   "{{price}} / meeting hour": "{{price}} / Meetingstunde",
   "~{{price}} / meeting hour": "~{{price}} / Meetingstunde",
@@ -387,6 +403,8 @@ export const settingsTranslations = {
   "Mistral Segmented (Voxtral)": "Mistral segmentiert (Voxtral)",
   "Mistral Segmented": "Mistral segmentiert",
   "Groq Segmented": "Groq segmentiert",
+  "Creates the final transcript with speaker names and word-level timing after the meeting.":
+    "Erstellt nach dem Meeting das finale Transkript mit Sprecherzuordnung und Wortzeitstempeln.",
   "{{group}} transcription providers": "Transkriptionsanbieter: {{group}}",
 
   // Page shell and primary transcription controls.

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from typing import Any
+
+_GEMINI_OFFSET_RE = re.compile(r"^(?:0|[1-9]\d*)(?:\.\d+)?s$")
 
 
 def _number(value: Any) -> float | None:
@@ -134,6 +137,48 @@ def _azure_phrase_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+def _gemini_offset_ms(value: Any) -> int | None:
+    raw = str(value or "").strip()
+    if not _GEMINI_OFFSET_RE.fullmatch(raw):
+        return None
+    try:
+        return round(float(raw[:-1]) * 1_000)
+    except ValueError, OverflowError:
+        return None
+
+
+def _gemini_word_info(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Extract dedicated Transcribe word annotations from Interactions output."""
+    words: list[dict[str, Any]] = []
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        content = step.get("content") if isinstance(step.get("content"), list) else []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            annotations = item.get("annotations") if isinstance(item.get("annotations"), list) else []
+            for annotation in annotations:
+                if not isinstance(annotation, dict) or annotation.get("type") != "word_info":
+                    continue
+                text = str(annotation.get("text") or "")
+                start_ms = _gemini_offset_ms(annotation.get("start_offset"))
+                end_ms = _gemini_offset_ms(annotation.get("end_offset"))
+                if not text.strip() or start_ms is None or end_ms is None or end_ms < start_ms:
+                    continue
+                words.append(
+                    {
+                        "text": text,
+                        "startMs": start_ms,
+                        "endMs": end_ms,
+                        "speaker": _speaker_key(annotation.get("speaker")),
+                        "confidence": None,
+                    }
+                )
+    return words
+
+
 def group_provider_words(
     words: list[dict[str, Any]],
     source: str,
@@ -260,6 +305,9 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
             alignment_quality="provider_segment",
         )
 
+    if provider == "gemini_stt":
+        return group_provider_words(_gemini_word_info(payload), source, origin_ms)
+
     if provider == "speechmatics_async":
         return group_provider_words(_speechmatics_words(payload), source, origin_ms)
 
@@ -356,6 +404,9 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
     elif key in {"gladia", "gladia_async"}:
         words = _gladia_utterances(payload)
         alignment_quality = "provider_segment"
+    elif key == "gemini_stt":
+        words = _gemini_word_info(payload)
+        alignment_quality = "exact_word"
     elif key == "speechmatics_async":
         words = _speechmatics_words(payload)
         alignment_quality = "exact_word"

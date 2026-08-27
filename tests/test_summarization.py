@@ -27,6 +27,45 @@ def test_summary_provider_module_never_logs_diagnostic_tracebacks_with_request_l
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("primary_error", "expected_reason"),
+    [
+        (TimeoutError(), "timeout"),
+        (summarization.SummaryOutputLimitError("bounded provider output limit"), "output_limit"),
+    ],
+)
+async def test_text_generation_reports_safe_non_transport_fallback_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    primary_error: Exception,
+    expected_reason: str,
+):
+    observed: list[tuple[str, str, int | None]] = []
+
+    async def failing_primary(_prompt, _model, _max_output_tokens):
+        raise primary_error
+
+    async def successful_fallback(_prompt, _models, _max_output_tokens, **_kwargs):
+        return "fallback output"
+
+    async def observe(primary_model: str, reason: str, status: int | None) -> None:
+        observed.append((primary_model, reason, status))
+
+    monkeypatch.setattr(summarization.Config, "OPENROUTER_API_KEY", "test-key", raising=False)
+    monkeypatch.setattr(summarization, "_summarize_with_model", failing_primary)
+    monkeypatch.setattr(summarization, "_summarize_openrouter", successful_fallback)
+
+    result = await summarization.generate_text_with_model(
+        "safe synthetic prompt",
+        "cerebras/gemma-4-31b",
+        max_output_tokens=128,
+        on_fallback_error=observe,
+    )
+
+    assert result == "fallback output"
+    assert observed == [("cerebras/gemma-4-31b", expected_reason, None)]
+
+
+@pytest.mark.asyncio
 async def test_meeting_analysis_uses_a_longer_nested_provider_timeout(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SCRIBER_SUMMARY_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("SCRIBER_MEETING_ANALYSIS_TIMEOUT_SEC", raising=False)
@@ -117,7 +156,7 @@ def test_summary_budget_openrouter_reasoning_models_include_reasoning_reserve(mo
     monkeypatch.setenv("SCRIBER_SUMMARY_OPENROUTER_REASONING_RESERVE_TOKENS", "2400")
 
     _, _, minimax_tokens = summarization._summary_budget_for_text(_words(300), "minimax/minimax-m3:nitro")
-    _, _, glm_tokens = summarization._summary_budget_for_text(_words(300), "z-ai/glm-5.2:nitro")
+    _, _, glm_tokens = summarization._summary_budget_for_text(_words(300), "z-ai/glm-5.3-flash:nitro")
 
     assert minimax_tokens == 6144
     assert glm_tokens == 6144
@@ -126,20 +165,32 @@ def test_summary_budget_openrouter_reasoning_models_include_reasoning_reserve(mo
 def test_openrouter_payload_normalizes_models_to_nitro():
     payload = summarization._build_openrouter_payload(
         "prompt",
-        ["minimax/minimax-m3", "z-ai/glm-5.2:floor"],
+        ["minimax/minimax-m3", "z-ai/glm-5.3-flash:floor"],
         4096,
     )
 
-    assert payload["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert payload["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
     assert payload["max_tokens"] == 4096
     assert payload["messages"] == [{"role": "user", "content": "prompt"}]
     assert payload["reasoning"] == {"exclude": True, "effort": "medium"}
 
 
+def test_openrouter_payload_applies_nitro_to_custom_canonical_model_code():
+    payload = summarization._build_openrouter_payload("prompt", "acme-labs/custom-model-v2", 2048)
+
+    assert payload["model"] == "acme-labs/custom-model-v2:nitro"
+
+
+def test_openrouter_payload_migrates_retired_glm_5_2_builtin_to_glm_5_3_flash():
+    payload = summarization._build_openrouter_payload("prompt", "z-ai/glm-5.2:nitro", 2048)
+
+    assert payload["model"] == "z-ai/glm-5.3-flash:nitro"
+
+
 def test_openrouter_summary_payload_can_omit_scriber_output_limit():
     payload = summarization._build_openrouter_payload(
         "prompt",
-        ["minimax/minimax-m3", "z-ai/glm-5.2"],
+        ["minimax/minimax-m3", "z-ai/glm-5.3-flash"],
         None,
     )
 
@@ -456,7 +507,7 @@ async def test_live_mic_generation_temporarily_bypasses_rejected_primary_per_cre
     monkeypatch.setattr(
         summarization.Config,
         "POST_PROCESSING_FALLBACK_MODEL",
-        "z-ai/glm-5.2:nitro",
+        "z-ai/glm-5.3-flash:nitro",
         raising=False,
     )
     monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
@@ -479,7 +530,7 @@ async def test_live_mic_generation_temporarily_bypasses_rejected_primary_per_cre
     async def _accepted_fallback(payload, _headers, _session):
         fallback_calls.append(payload)
         return {
-            "model": "z-ai/glm-5.2",
+            "model": "z-ai/glm-5.3-flash",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -510,22 +561,22 @@ async def test_live_mic_generation_temporarily_bypasses_rejected_primary_per_cre
     assert first == second == "cleaned dictation"
     assert len(primary_calls) == 1
     assert len(fallback_calls) == 2
-    assert all(call["model"] == "z-ai/glm-5.2:nitro" for call in fallback_calls)
+    assert all(call["model"] == "z-ai/glm-5.3-flash:nitro" for call in fallback_calls)
     assert all(call["reasoning"] == {"exclude": True, "effort": "low"} for call in fallback_calls)
     assert first_diagnostics["primaryBypassed"] is False
     assert first_diagnostics["primaryFailureCode"] == "provider_error"
     assert first_diagnostics["primaryFailureStatus"] == 401
     assert first_diagnostics["primaryCircuitCooldownMs"] is None
     assert first_diagnostics["primaryModel"] == "cerebras/gemma-4-31b"
-    assert first_diagnostics["configuredFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert first_diagnostics["configuredFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
     assert first_diagnostics["fallbackUsed"] is True
-    assert first_diagnostics["fallbackModel"] == "z-ai/glm-5.2"
-    assert first_diagnostics["usedModel"] == "z-ai/glm-5.2"
+    assert first_diagnostics["fallbackModel"] == "z-ai/glm-5.3-flash"
+    assert first_diagnostics["usedModel"] == "z-ai/glm-5.3-flash"
     assert second_diagnostics["primaryBypassed"] is True
     assert second_diagnostics["primaryBypassReason"] == "credential_rejected"
     assert second_diagnostics["primaryCircuitCooldownMs"] is None
     assert second_diagnostics["fallbackUsed"] is True
-    assert second_diagnostics["fallbackModel"] == "z-ai/glm-5.2"
+    assert second_diagnostics["fallbackModel"] == "z-ai/glm-5.3-flash"
 
     monkeypatch.setattr(summarization.Config, "CEREBRAS_API_KEY", "cerebras-key-b", raising=False)
     changed_key_diagnostics: dict[str, object] = {}
@@ -1016,7 +1067,7 @@ async def test_live_mic_does_not_report_failed_fallback_as_used(monkeypatch: pyt
     monkeypatch.setattr(
         summarization.Config,
         "POST_PROCESSING_FALLBACK_MODEL",
-        "z-ai/glm-5.2:nitro",
+        "z-ai/glm-5.3-flash:nitro",
         raising=False,
     )
     monkeypatch.setattr(summarization, "_live_mic_rejected_primary_keys", set())
@@ -1036,7 +1087,7 @@ async def test_live_mic_does_not_report_failed_fallback_as_used(monkeypatch: pyt
         )
 
     async def _failing_fallback(_prompt, models, _max_output_tokens):
-        assert models == ("z-ai/glm-5.2:nitro",)
+        assert models == ("z-ai/glm-5.3-flash:nitro",)
         raise RuntimeError("fallback unavailable")
 
     monkeypatch.setattr(summarization, "_summarize_cerebras", _failing_primary)
@@ -1052,7 +1103,7 @@ async def test_live_mic_does_not_report_failed_fallback_as_used(monkeypatch: pyt
         )
 
     assert diagnostics["primaryModel"] == "cerebras/gemma-4-31b"
-    assert diagnostics["configuredFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert diagnostics["configuredFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
     assert diagnostics["fallbackReason"] == "server_error"
     assert diagnostics["fallbackUsed"] is False
     assert diagnostics["usedModel"] is None
@@ -1198,8 +1249,8 @@ async def test_live_mic_openrouter_retries_remain_single_model(monkeypatch: pyte
 
 
 def test_openrouter_model_family_matches_dated_response_model():
-    assert summarization._same_openrouter_model("z-ai/glm-5.2:nitro", "z-ai/glm-5.2-20260616")
-    assert not summarization._same_openrouter_model("minimax/minimax-m3:nitro", "z-ai/glm-5.2-20260616")
+    assert summarization._same_openrouter_model("z-ai/glm-5.3-flash:nitro", "z-ai/glm-5.3-flash-20260826")
+    assert not summarization._same_openrouter_model("minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash-20260826")
 
 
 def test_openrouter_response_extractor_uses_first_non_empty_choice():
@@ -1730,7 +1781,7 @@ async def test_summarize_text_retries_next_openrouter_model_after_invalid_html_w
                 ],
             }
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -1749,8 +1800,8 @@ async def test_summarize_text_retries_next_openrouter_model_after_invalid_html_w
     out = await summarization.summarize_text("x y z", model="minimax/minimax-m3:nitro")
 
     assert out == _structured_summary("Fallback summary")
-    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
-    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
+    assert calls[1]["model"] == "z-ai/glm-5.3-flash:nitro"
     assert invalid_content not in repr(log_records)
     assert any("locally invalid structured HTML" in message for message, _args in log_records)
 
@@ -1764,7 +1815,7 @@ async def test_summarize_text_stops_after_all_openrouter_models_return_invalid_h
 
     async def _fake_post(payload, _headers, _session):
         calls.append(payload)
-        response_model = "minimax/minimax-m3" if len(calls) == 1 else "z-ai/glm-5.2-20260616"
+        response_model = "minimax/minimax-m3" if len(calls) == 1 else "z-ai/glm-5.3-flash-20260826"
         return {
             "model": response_model,
             "choices": [
@@ -1785,7 +1836,7 @@ async def test_summarize_text_stops_after_all_openrouter_models_return_invalid_h
         await summarization.summarize_text("x y z", model="minimax/minimax-m3:nitro")
 
     assert len(calls) == 2
-    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[1]["model"] == "z-ai/glm-5.3-flash:nitro"
 
 
 @pytest.mark.asyncio
@@ -1845,7 +1896,7 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
                 "usage": {"completion_tokens": 0, "total_tokens": 120},
             }
         return {
-            "model": "z-ai/glm-5.2:nitro",
+            "model": "z-ai/glm-5.3-flash:nitro",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -1860,10 +1911,10 @@ async def test_summarize_openrouter_retries_empty_selected_model_with_default_fa
     out = await summarization._summarize_openrouter("prompt", "minimax/minimax-m3:nitro", 900)
 
     assert out == "fallback summary"
-    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
     assert calls[0]["max_tokens"] == 900
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
-    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[1]["model"] == "z-ai/glm-5.3-flash:nitro"
     assert sessions[0] is sessions[1]
 
 
@@ -1905,7 +1956,7 @@ async def test_summarize_openrouter_uses_gpt_oss_provider_route_before_default_f
     assert out == "fallback summary"
     assert calls[0]["model"] == "openai/gpt-oss-120b"
     assert calls[0]["provider"] == {"order": ["baseten", "cerebras"], "allow_fallbacks": True}
-    assert calls[1]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert calls[1]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
     assert "provider" not in calls[1]
 
 
@@ -1936,7 +1987,7 @@ async def test_summarize_openrouter_retries_empty_length_response_with_next_mode
                 },
             }
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -1952,10 +2003,10 @@ async def test_summarize_openrouter_retries_empty_length_response_with_next_mode
     out = await summarization._summarize_openrouter("prompt", "minimax/minimax-m3:nitro", 900)
 
     assert out == "glm summary"
-    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert calls[0]["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
     assert calls[0]["max_tokens"] == 900
     assert calls[0]["reasoning"] == {"exclude": True, "effort": "medium"}
-    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[1]["model"] == "z-ai/glm-5.3-flash:nitro"
     assert calls[1]["max_tokens"] == 1800
 
 
@@ -1970,7 +2021,7 @@ async def test_summarize_openrouter_retries_partial_length_response_instead_of_s
         calls.append(payload)
         if len(calls) == 1:
             return {
-                "model": "z-ai/glm-5.2-20260616",
+                "model": "z-ai/glm-5.3-flash-20260826",
                 "choices": [
                     {
                         "finish_reason": "length",
@@ -1989,7 +2040,7 @@ async def test_summarize_openrouter_retries_partial_length_response_instead_of_s
                 },
             }
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -2002,7 +2053,7 @@ async def test_summarize_openrouter_retries_partial_length_response_instead_of_s
 
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
-    out = await summarization._summarize_openrouter("prompt", "z-ai/glm-5.2:nitro", 900)
+    out = await summarization._summarize_openrouter("prompt", "z-ai/glm-5.3-flash:nitro", 900)
 
     assert out == "vollstaendige summary"
     assert calls[1]["max_tokens"] > calls[0]["max_tokens"]
@@ -2017,7 +2068,7 @@ async def test_summarize_openrouter_discards_partial_length_response_at_retry_ca
 
     async def _fake_post(_payload, _headers, _timeout):
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "length",
@@ -2031,7 +2082,7 @@ async def test_summarize_openrouter_discards_partial_length_response_at_retry_ca
     monkeypatch.setattr(summarization, "_post_openrouter_chat_completion", _fake_post)
 
     with pytest.raises(summarization.SummaryOutputLimitError, match="partial summary was discarded"):
-        await summarization._summarize_openrouter("prompt", ["z-ai/glm-5.2:nitro"], 900)
+        await summarization._summarize_openrouter("prompt", ["z-ai/glm-5.3-flash:nitro"], 900)
 
 
 @pytest.mark.asyncio
@@ -2099,7 +2150,7 @@ async def test_summarize_openrouter_tries_alternate_model_after_larger_partial_r
                 },
             }
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -2114,13 +2165,13 @@ async def test_summarize_openrouter_tries_alternate_model_after_larger_partial_r
 
     out = await summarization._summarize_openrouter(
         "large meeting reduce prompt",
-        ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"],
+        ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"],
         4096,
     )
 
     assert out == "complete alternate-model summary"
     assert [call["max_tokens"] for call in calls] == [4096, 8192, 8192]
-    assert calls[2]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[2]["model"] == "z-ai/glm-5.3-flash:nitro"
 
 
 @pytest.mark.asyncio
@@ -2136,7 +2187,7 @@ async def test_summarize_openrouter_retries_initial_model_at_full_budget_after_o
         if len(calls) == 1:
             model = "minimax/minimax-m3"
         elif len(calls) == 2:
-            model = "z-ai/glm-5.2-20260616"
+            model = "z-ai/glm-5.3-flash-20260826"
         else:
             return {
                 "model": "minimax/minimax-m3",
@@ -2164,7 +2215,7 @@ async def test_summarize_openrouter_retries_initial_model_at_full_budget_after_o
 
     out = await summarization._summarize_openrouter(
         "large meeting reduce prompt",
-        ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"],
+        ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"],
         4096,
     )
 
@@ -2213,7 +2264,7 @@ async def test_meeting_analysis_tries_complete_alternate_without_scriber_token_c
                 },
             }
         return {
-            "model": "z-ai/glm-5.2-20260616",
+            "model": "z-ai/glm-5.3-flash-20260826",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -2236,7 +2287,7 @@ async def test_meeting_analysis_tries_complete_alternate_without_scriber_token_c
     assert result == "VALID COMPLETE MAP JSON"
     assert len(calls) == 2
     assert all("max_tokens" not in call for call in calls)
-    assert calls[1]["model"] == "z-ai/glm-5.2:nitro"
+    assert calls[1]["model"] == "z-ai/glm-5.3-flash:nitro"
 
 
 @pytest.mark.asyncio
@@ -2310,7 +2361,7 @@ async def test_summarize_text_falls_back_to_openrouter_when_primary_fails(monkey
     out = await summarization.summarize_text("x y z", model="gemini-3.5-flash")
 
     assert out == _structured_summary("openrouter fallback")
-    assert captured["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro"]
+    assert captured["models"] == ["minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro"]
     assert captured["require_structured_html"] is True
 
 

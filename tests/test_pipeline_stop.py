@@ -605,7 +605,10 @@ def test_live_processor_order_keeps_segment_gate_before_http_stt_and_smart_turn_
     ]
 
 
-@pytest.mark.parametrize("service_name", ["azure_mai", "speechmatics_async"])
+@pytest.mark.parametrize(
+    "service_name",
+    ["azure_mai", "gemini_realtime", "speechmatics_async"],
+)
 @pytest.mark.asyncio
 async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before_endframe(
     service_name,
@@ -707,6 +710,80 @@ async def test_provider_ingress_drain_waits_for_delayed_last_system_audio_before
         if not run_task.done():
             await runner.cancel()
         await asyncio.gather(run_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_gemini_file_pipeline_fences_delayed_last_system_audio_before_endframe(monkeypatch):
+    first = b"\x01\x00" * 256
+    last = b"\x02\x00" * 256
+
+    class _FileInput(FrameProcessor):
+        def __init__(self, *_args, **_kwargs):
+            super().__init__()
+            self.done = asyncio.Event()
+            self.error = None
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            await self.push_frame(frame, direction)
+            if isinstance(frame, StartFrame):
+                await self.push_frame(
+                    InputAudioRawFrame(audio=first, sample_rate=16_000, num_channels=1),
+                    direction,
+                )
+                await self.push_frame(
+                    InputAudioRawFrame(audio=last, sample_rate=16_000, num_channels=1),
+                    direction,
+                )
+                self.done.set()
+
+        async def stop(self, _frame):
+            return None
+
+    class _DelayedProvider(FrameProcessor):
+        def __init__(self):
+            super().__init__()
+            self.last_audio_started = asyncio.Event()
+            self.release_last_audio = asyncio.Event()
+            self.received = bytearray()
+            self.terminal_snapshots: list[bytes] = []
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if isinstance(frame, InputAudioRawFrame):
+                if frame.audio.startswith(b"\x02\x00"):
+                    self.last_audio_started.set()
+                    await self.release_last_audio.wait()
+                self.received.extend(frame.audio)
+            elif isinstance(frame, EndFrame):
+                self.terminal_snapshots.append(bytes(self.received))
+            await self.push_frame(frame, direction)
+
+    monkeypatch.setattr(pipeline_module, "FfmpegAudioFileInput", _FileInput)
+    provider = _DelayedProvider()
+    pipeline = ScriberPipeline(service_name="gemini_realtime", on_status_change=None)
+    monkeypatch.setattr(
+        pipeline,
+        "_create_stt_service",
+        lambda _session, for_file=False: provider,
+    )
+
+    transcription = asyncio.create_task(pipeline.transcribe_file("synthetic.wav"))
+    try:
+        await asyncio.wait_for(provider.last_audio_started.wait(), timeout=1.0)
+        await asyncio.sleep(0.02)
+        assert transcription.done() is False
+        assert pipeline._provider_ingress_drain_processor is not None
+
+        provider.release_last_audio.set()
+        await asyncio.wait_for(transcription, timeout=2.0)
+
+        assert provider.terminal_snapshots == [first + last]
+    finally:
+        provider.release_last_audio.set()
+        if not transcription.done():
+            transcription.cancel()
+        await asyncio.gather(transcription, return_exceptions=True)
 
 
 @pytest.mark.asyncio

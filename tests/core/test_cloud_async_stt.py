@@ -18,6 +18,8 @@ from src.cloud_async_stt import (
     _pcm_stream_to_wav,
     _wait_for_gemini_file_active,
     deepgram_transcript_payload_to_text,
+    gemini_language_codes,
+    gemini_transcript_payload_to_text,
     openai_transcript_payload_to_text,
     speechmatics_transcript_payload_to_text,
     transcribe_with_deepgram_pre_recorded,
@@ -26,6 +28,7 @@ from src.cloud_async_stt import (
     transcribe_with_openrouter_audio_transcription,
 )
 from src.config import Config
+from src.core.provider_errors import ProviderTransportError
 from src.microphone import RustCaptureWavArtifact
 from src.runtime.audio_spool import create_pcm_spool
 
@@ -442,8 +445,6 @@ async def test_speechmatics_job_cleanup_deletes_remote_job():
 
 @pytest.mark.asyncio
 async def test_gemini_large_seekable_audio_streams_to_file_upload(monkeypatch):
-    monkeypatch.setenv("SCRIBER_GEMINI_STT_INLINE_LIMIT_MB", "0.000001")
-
     class TrackingStream(io.BytesIO):
         def read(self, size: int = -1) -> bytes:
             if size < 0:
@@ -474,7 +475,7 @@ async def test_gemini_large_seekable_audio_streams_to_file_upload(monkeypatch):
                 Response(
                     text='{"file":{"name":"files/1","uri":"https://files.invalid/1","mimeType":"audio/wav","state":"ACTIVE"}}'
                 ),
-                Response(text='{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}'),
+                Response(text='{"status":"completed","output_text":"hello"}'),
             ]
 
         def post(self, url, **kwargs):
@@ -496,28 +497,41 @@ async def test_gemini_large_seekable_audio_streams_to_file_upload(monkeypatch):
         language="en",
     )
 
-    assert payload["candidates"][0]["content"]["parts"][0]["text"] == "hello"
+    assert payload["output_text"] == "hello"
     assert session.posts[1][1]["data"] is source
     assert session.posts[1][1]["headers"]["Content-Length"] == str(len(b"large-audio-source"))
+    interactions_url, interactions_request = session.posts[2]
+    assert interactions_url.endswith("/v1beta/interactions")
+    assert interactions_request["headers"] == {"x-goog-api-key": "key"}
+    assert interactions_request["json"] == {
+        "model": "gemini-3.5-transcribe",
+        "input": [
+            {
+                "type": "audio",
+                "uri": "https://files.invalid/1",
+                "mime_type": "audio/wav",
+            }
+        ],
+        "generation_config": {
+            "transcription_config": {
+                "language_codes": ["en-US"],
+                "mode": {"type": "smart"},
+            }
+        },
+        "store": False,
+    }
     assert session.deletes[0][0].endswith("/files/1")
 
 
 @pytest.mark.asyncio
-async def test_gemini_inline_audio_read_and_base64_run_off_event_loop(monkeypatch):
-    monkeypatch.setenv("SCRIBER_GEMINI_STT_INLINE_LIMIT_MB", "1")
+async def test_gemini_small_audio_still_uses_files_and_frozen_interactions_model(monkeypatch):
     monkeypatch.setattr(Config, "GEMINI_STT_MODEL", "changed-after-route-freeze")
-    event_loop_thread = threading.get_ident()
-    read_threads: list[int] = []
-    encode_threads: list[int] = []
-
-    class TrackingStream(io.BytesIO):
-        def read(self, size: int = -1) -> bytes:
-            read_threads.append(threading.get_ident())
-            return super().read(size)
 
     class Response:
-        status = 200
-        headers = {}
+        def __init__(self, *, text="", headers=None, status=200):
+            self.status = status
+            self._text = text
+            self.headers = headers or {}
 
         async def __aenter__(self):
             return self
@@ -526,40 +540,170 @@ async def test_gemini_inline_audio_read_and_base64_run_off_event_loop(monkeypatc
             return False
 
         async def text(self):
-            return '{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}'
+            return self._text
 
     class Session:
         def __init__(self):
             self.posts = []
+            self.responses = [
+                Response(headers={"X-Goog-Upload-URL": "https://upload.invalid/file"}),
+                Response(
+                    text='{"file":{"name":"files/1","uri":"https://files.invalid/1","mimeType":"audio/wav","state":"ACTIVE"}}'
+                ),
+                Response(text='{"status":"completed","output_text":"hello"}'),
+            ]
 
         def post(self, url, **kwargs):
             self.posts.append((url, kwargs))
-            return Response()
+            return self.responses.pop(0)
 
-    from src import cloud_async_stt
+        def delete(self, _url, **_kwargs):
+            return Response(status=204)
 
-    original_b64encode = cloud_async_stt.base64.b64encode
-
-    def tracking_b64encode(value: bytes) -> bytes:
-        encode_threads.append(threading.get_ident())
-        return original_b64encode(value)
-
-    monkeypatch.setattr(cloud_async_stt.base64, "b64encode", tracking_b64encode)
     session = Session()
     payload = await transcribe_with_gemini_audio(
         session=session,
         api_key="key",
-        audio_source=TrackingStream(b"inline audio"),
+        audio_source=io.BytesIO(b"small audio"),
         filename="audio.wav",
         content_type="audio/wav",
-        model="frozen-gemini-model",
-        language="en",
+        model=Config.DEFAULT_GEMINI_STT_MODEL,
+        language="de",
+        custom_vocab="Scriber; Pipecat; Scriber",
+        diarize=True,
     )
 
-    assert payload["candidates"][0]["content"]["parts"][0]["text"] == "hello"
-    assert session.posts[0][0].endswith("/models/frozen-gemini-model:generateContent")
-    assert read_threads and all(thread_id != event_loop_thread for thread_id in read_threads)
-    assert encode_threads and all(thread_id != event_loop_thread for thread_id in encode_threads)
+    assert payload["output_text"] == "hello"
+    request = session.posts[2][1]
+    assert request["json"]["model"] == Config.DEFAULT_GEMINI_STT_MODEL
+    transcription = request["json"]["generation_config"]["transcription_config"]
+    assert transcription == {
+        "language_codes": ["de-DE"],
+        "mode": {
+            "type": "verbatim",
+            "diarization_mode": "speaker",
+            "timestamp_granularities": ["word"],
+        },
+        "custom_vocabulary": ["Scriber", "Pipecat"],
+    }
+
+
+def test_gemini_language_codes_and_output_text_contract():
+    assert gemini_language_codes("auto") == []
+    assert gemini_language_codes("de") == ["de-DE"]
+    assert gemini_language_codes("es") == ["es-419"]
+    assert gemini_language_codes("es-ES") == ["es-419"]
+    assert gemini_language_codes("en-GB") == ["en-GB"]
+    assert gemini_language_codes("not_a_language!") == []
+    assert gemini_transcript_payload_to_text({"output_text": " hello "}) == "hello"
+
+
+@pytest.mark.parametrize(
+    ("response_payload", "code"),
+    (
+        (
+            {
+                "status": "failed",
+                "errors": [{"message": "must not escape into the exception"}],
+                "output_text": "partial transcript",
+            },
+            "interaction_failed",
+        ),
+        (
+            {
+                "status": "incomplete",
+                "errors": [{"message": "must not escape into the exception"}],
+                "output_text": "partial transcript",
+            },
+            "interaction_incomplete",
+        ),
+        (
+            [{"status": "completed", "output_text": "must not escape into the exception"}],
+            "interaction_invalid_response",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_gemini_rejects_invalid_http_200_interactions(monkeypatch, response_payload, code):
+    from src import cloud_async_stt
+
+    deleted_files: list[str] = []
+
+    async def fake_upload(**_kwargs):
+        return {
+            "name": "files/1",
+            "uri": "https://files.invalid/1",
+            "mimeType": "audio/wav",
+            "state": "ACTIVE",
+        }
+
+    async def fake_wait(*, file_info, **_kwargs):
+        return file_info
+
+    async def fake_delete(*, file_name, **_kwargs):
+        deleted_files.append(file_name)
+
+    class Response:
+        status = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return json.dumps(response_payload)
+
+    class Session:
+        def post(self, _url, **_kwargs):
+            return Response()
+
+    monkeypatch.setattr(cloud_async_stt, "_upload_gemini_file", fake_upload)
+    monkeypatch.setattr(cloud_async_stt, "_wait_for_gemini_file_active", fake_wait)
+    monkeypatch.setattr(cloud_async_stt, "_delete_gemini_file", fake_delete)
+
+    with pytest.raises(ProviderTransportError, match=rf"code={code}") as raised:
+        await transcribe_with_gemini_audio(
+            session=Session(),
+            api_key="key",
+            audio_source=b"audio",
+            filename="audio.wav",
+            content_type="audio/wav",
+            language="en",
+        )
+    assert raised.value.code == code
+    assert deleted_files == ["files/1"]
+    assert "must not escape" not in str(raised.value)
+    assert "partial transcript" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro", "GEMINI-3.5-TRANSCRIBE"],
+)
+@pytest.mark.asyncio
+async def test_gemini_rejects_incompatible_model_before_upload(model):
+    class Session:
+        def post(self, *_args, **_kwargs):
+            raise AssertionError("Gemini model validation must run before Files API upload")
+
+        def delete(self, *_args, **_kwargs):
+            raise AssertionError("No Gemini file exists when model validation fails")
+
+    with pytest.raises(ProviderTransportError, match=r"code=model_not_available") as raised:
+        await transcribe_with_gemini_audio(
+            session=Session(),  # type: ignore[arg-type]
+            api_key="key",
+            audio_source=b"audio",
+            filename="audio.wav",
+            content_type="audio/wav",
+            model=model,
+            language="en",
+        )
+
+    assert raised.value.code == "model_not_available"
+    assert raised.value.retryable is False
 
 
 @pytest.mark.asyncio

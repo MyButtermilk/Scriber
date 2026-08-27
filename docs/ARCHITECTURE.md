@@ -1805,10 +1805,13 @@ Hugging Face repo, which provides ready `encoder-model-int8.onnx` and
 model on end-user machines.
 Google Cloud STT is packaged through `google-cloud-speech` plus Pipecat's
 required `google-genai` namespace dependency and still requires Google Cloud
-credentials for a Speech-to-Text project. Gemini STT is a separate direct Gemini
-API audio-transcription adapter in `src/cloud_async_stt.py`; it reuses the
-stored `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users
-can configure the simple Google path with one Gemini API key. Gemini, Meta Muse
+credentials for a Speech-to-Text project. Gemini 3.5 Transcribe is separate:
+the async path uses Files API plus the Interactions API in
+`src/cloud_async_stt.py`, while `src/gemini_realtime_stt.py` maps the dedicated
+Transcribe Live WebSocket onto Pipecat interim/final frames and rotates sessions
+before the provider's ten-minute ceiling. Both reuse the stored
+`GOOGLE_API_KEY` used by Gemini summaries and post-processing so users can
+configure the simple Google path with one Gemini API key. Gemini, Meta Muse
 Spark, Cerebras, Celeris, and OpenRouter summarization/post-processing use
 direct HTTP and do not require `google-generativeai`; OpenRouter STT reuses that
 same stored key through the separate fixed-model audio-transcriptions adapter
@@ -1822,8 +1825,14 @@ partition File, YouTube, and Meeting inputs below the 8,192-token context
 ceiling. Its explicit generic-generation budgets remain quantized to 256-token
 steps. Direct Cerebras calls use
 `cerebras/gemma-4-31b`, which is the live post-processing default. Most
-OpenRouter summary fallback models are
-sent with `:nitro` variants; `openai/gpt-oss-120b` keeps explicit OpenRouter
+OpenRouter summary fallback models are sent with `:nitro` variants. The built-in
+GLM route is `z-ai/glm-5.3-flash:nitro`; exact persisted GLM 5.2 built-in
+selections are migrated to it. Settings also accept one validated canonical
+OpenRouter `author/model` code for summaries and primary post-processing. The
+canonical code remains visible and persisted in the existing model setting,
+while the request boundary applies `:nitro`; URLs, extra path segments, and
+unsafe characters are rejected. `cerebras/*` remains a direct Cerebras route
+rather than being reinterpreted as OpenRouter. `openai/gpt-oss-120b` keeps explicit OpenRouter
 provider ordering through `baseten,cerebras` when selected. OpenRouter remains
 the automatic cross-provider summary fallback when an OpenRouter key is
 configured. File, YouTube, and Meeting summary transports omit provider

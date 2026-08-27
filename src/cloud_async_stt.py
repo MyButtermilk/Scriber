@@ -48,7 +48,7 @@ from src.runtime.audio_spool import (
 from src.runtime.audio_spool import (
     pcm_stream_to_wav as _pcm_stream_to_wav,
 )
-from src.runtime.env_values import env_float, env_int
+from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
@@ -76,6 +76,38 @@ def provider_language_code(language: Language | str | None) -> str:
     if not raw or raw == "auto":
         return ""
     return raw.replace("_", "-").split("-", 1)[0]
+
+
+_GEMINI_DEFAULT_LANGUAGE_CODES = {
+    "de": "de-DE",
+    "en": "en-US",
+    "es": "es-419",
+    "fr": "fr-FR",
+    "it": "it-IT",
+}
+
+
+def gemini_language_codes(language: Language | str | None) -> list[str]:
+    """Return Gemini Transcribe's BCP-47 language hint, or auto-detect."""
+    if not language:
+        return []
+    raw = str(language.value if isinstance(language, Language) else language).strip().replace("_", "-")
+    if not raw or raw.casefold() == "auto":
+        return []
+    if "-" not in raw:
+        mapped = _GEMINI_DEFAULT_LANGUAGE_CODES.get(raw.casefold())
+        return [mapped] if mapped else []
+    parts = raw.split("-")
+    if not all(part.isalnum() for part in parts) or not (2 <= len(parts[0]) <= 3):
+        return []
+    normalized = [parts[0].lower()]
+    normalized.extend(part.upper() if len(part) == 2 else part.title() for part in parts[1:])
+    result = "-".join(normalized)
+    # Gemini 3.5 Transcribe currently supports Latin American and US Spanish,
+    # but not the otherwise common es-ES tag.
+    if result.casefold() == "es-es":
+        result = "es-419"
+    return [result]
 
 
 def openrouter_audio_format(filename: str, content_type: str) -> str:
@@ -151,7 +183,7 @@ def _report_progress(on_progress: Callable[[str], None] | None, message: str) ->
 def _terms_from_vocab(custom_vocab: str) -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
-    for raw in str(custom_vocab or "").replace("\n", ",").split(","):
+    for raw in str(custom_vocab or "").replace("\n", ",").replace(";", ",").split(","):
         term = " ".join(raw.strip().split())
         if not term:
             continue
@@ -315,6 +347,24 @@ def openai_transcript_payload_to_text(
 
 
 def gemini_transcript_payload_to_text(payload: dict[str, Any]) -> str:
+    output_text = payload.get("output_text") or payload.get("outputText")
+    if isinstance(output_text, str):
+        return output_text.strip()
+
+    step_text: list[str] = []
+    steps = payload.get("steps") if isinstance(payload.get("steps"), list) else []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        content = step.get("content") if isinstance(step.get("content"), list) else []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                step_text.append(item["text"])
+    if step_text:
+        return "".join(step_text).strip()
+
+    # Compatibility with transcripts created before the dedicated Transcribe
+    # model, which used generateContent.
     candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
     if not candidates:
         return ""
@@ -324,6 +374,27 @@ def gemini_transcript_payload_to_text(payload: dict[str, Any]) -> str:
     return "".join(
         str(part.get("text") or "") for part in parts if isinstance(part, dict) and isinstance(part.get("text"), str)
     ).strip()
+
+
+def _require_completed_gemini_interaction(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reject successful HTTP responses that are not completed interactions."""
+    status = str(payload.get("status") or "").strip().lower()
+    if status == "completed":
+        return payload
+    status_codes = {
+        "budget_exceeded",
+        "cancelled",
+        "failed",
+        "in_progress",
+        "incomplete",
+        "queued",
+    }
+    code = f"interaction_{status}" if status in status_codes else "interaction_invalid_status"
+    raise provider_transport_error(
+        "gemini",
+        "transcription",
+        code=code,
+    )
 
 
 async def _delete_gemini_file(
@@ -528,103 +599,91 @@ async def transcribe_with_gemini_audio(
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
 ) -> dict[str, Any]:
+    model = (
+        str(model or Config.GEMINI_STT_MODEL or Config.DEFAULT_GEMINI_STT_MODEL).strip()
+        or Config.DEFAULT_GEMINI_STT_MODEL
+    )
+    if model != Config.DEFAULT_GEMINI_STT_MODEL:
+        # The former generateContent route accepted general Gemini models. The
+        # Interactions transcription contract is exact: reject legacy/custom
+        # pins before uploading audio instead of failing after billable work.
+        raise provider_transport_error(
+            "gemini",
+            "transcription",
+            code="model_not_available",
+            retryable=False,
+        )
+
     audio_size = _gemini_audio_source_size(audio_source)
     if audio_size == 0:
         return {}
 
-    model = str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash").strip() or "gemini-2.5-flash"
-    inline_limit_mb = env_float(
-        "SCRIBER_GEMINI_STT_INLINE_LIMIT_MB",
-        18.0,
-        minimum=0.000001,
-        maximum=20.0,
-    )
-    inline_limit_bytes = max(1, int(inline_limit_mb * 1024 * 1024))
     mime_type = content_type or "audio/wav"
     terms = _terms_from_vocab(custom_vocab)[:100]
-    language_code = provider_language_code(language)
-    language_hint = f" The expected spoken language is {language_code}." if language_code else ""
-    vocab_hint = f" Prefer these domain terms when audible: {', '.join(terms)}." if terms else ""
-    speaker_hint = (
-        " If multiple speakers are clearly present, keep the order and label turns as [Speaker 1]:, [Speaker 2]:."
-        if diarize
-        else " Do not add speaker labels for single-speaker dictation."
-    )
-    prompt = (
-        "Transcribe the attached audio exactly and output only the transcript. "
-        "Preserve meaning, names, numbers, punctuation, and paragraph breaks. "
-        "Do not summarize, translate, explain, or add commentary."
-        f"{language_hint}{vocab_hint}{speaker_hint}"
-    )
-    generation_config = {
-        "temperature": 0,
-        "maxOutputTokens": env_int(
-            "SCRIBER_GEMINI_STT_MAX_OUTPUT_TOKENS",
-            16384,
-            minimum=256,
-            maximum=65536,
-        ),
+    mode: dict[str, Any] = {"type": "smart"}
+    if diarize:
+        mode = {
+            "type": "verbatim",
+            "diarization_mode": "speaker",
+            "timestamp_granularities": ["word"],
+        }
+    transcription_config: dict[str, Any] = {
+        "language_codes": gemini_language_codes(language),
+        "mode": mode,
     }
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    params = {"key": api_key}
+    if terms:
+        transcription_config["custom_vocabulary"] = terms
+    url = "https://generativelanguage.googleapis.com/v1beta/interactions"
 
     file_name = ""
     spooled_source: BinaryIO | None = None
     try:
         _report_progress(on_progress, "Uploading audio...")
-        if 0 <= audio_size <= inline_limit_bytes:
-            audio_bytes = (
-                audio_source if isinstance(audio_source, bytes) else await asyncio.to_thread(audio_source.read)
+        if audio_size < 0:
+            # Files API uploads require a trustworthy content length.
+            spooled_source, audio_size = await asyncio.to_thread(
+                _spool_gemini_audio_source,
+                audio_source,
             )
-            encoded_audio = await asyncio.to_thread(lambda: base64.b64encode(audio_bytes).decode("ascii"))
-            audio_part = {
-                "inlineData": {
-                    "mimeType": mime_type,
-                    "data": encoded_audio,
-                }
-            }
-        else:
-            if audio_size < 0:
-                # Direct callers may provide a non-seekable source. Spool it so
-                # the resumable upload still has a trustworthy content length.
-                spooled_source, audio_size = await asyncio.to_thread(
-                    _spool_gemini_audio_source,
-                    audio_source,
-                )
-                audio_source = spooled_source
-                if not audio_size:
-                    return {}
-            file_info = await _upload_gemini_file(
-                session=session,
-                api_key=api_key,
-                audio_source=audio_source,
-                audio_size=audio_size,
-                filename=filename,
-                content_type=mime_type,
-            )
-            file_name = str(file_info.get("name") or "")
-            _report_progress(on_progress, "Processing uploaded audio...")
-            file_info = await _wait_for_gemini_file_active(
-                session=session,
-                api_key=api_key,
-                file_info=file_info,
-                timeout_secs=timeout_secs,
-            )
-            audio_part = {
-                "fileData": {
-                    "mimeType": str(file_info.get("mimeType") or mime_type),
-                    "fileUri": str(file_info.get("uri") or ""),
-                }
-            }
+            audio_source = spooled_source
+            if not audio_size:
+                return {}
+        file_info = await _upload_gemini_file(
+            session=session,
+            api_key=api_key,
+            audio_source=audio_source,
+            audio_size=audio_size,
+            filename=filename,
+            content_type=mime_type,
+        )
+        file_name = str(file_info.get("name") or "")
+        _report_progress(on_progress, "Processing uploaded audio...")
+        file_info = await _wait_for_gemini_file_active(
+            session=session,
+            api_key=api_key,
+            file_info=file_info,
+            timeout_secs=timeout_secs,
+        )
+        file_uri = str(file_info.get("uri") or "").strip()
+        if not file_uri:
+            raise RuntimeError("Gemini file upload response did not include a file URI.")
 
         _report_progress(on_progress, "Processing transcription...")
         payload = {
-            "contents": [{"parts": [{"text": prompt}, audio_part]}],
-            "generationConfig": generation_config,
+            "model": model,
+            "input": [
+                {
+                    "type": "audio",
+                    "uri": file_uri,
+                    "mime_type": str(file_info.get("mimeType") or file_info.get("mime_type") or mime_type),
+                }
+            ],
+            "generation_config": {"transcription_config": transcription_config},
+            "store": False,
         }
         async with session.post(
             url,
-            params=params,
+            headers={"x-goog-api-key": api_key},
             json=payload,
             timeout=aiohttp.ClientTimeout(total=timeout_secs),
         ) as response:
@@ -642,7 +701,13 @@ async def transcribe_with_gemini_audio(
                 raw,
                 empty_value={},
             )
-            return parsed if isinstance(parsed, dict) else {}
+            if not isinstance(parsed, dict):
+                raise provider_transport_error(
+                    "gemini",
+                    "transcription",
+                    code="interaction_invalid_response",
+                )
+            return _require_completed_gemini_interaction(parsed)
     finally:
         if file_name:
             await _delete_gemini_file(session=session, api_key=api_key, file_name=file_name)
@@ -1304,7 +1369,7 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
     ) -> None:
         super().__init__(session=session, on_progress=on_progress, diarize=diarize)
         self._api_key = api_key
-        self._model = str(model or Config.GEMINI_STT_MODEL or "gemini-2.5-flash")
+        self._model = str(model or Config.GEMINI_STT_MODEL or Config.DEFAULT_GEMINI_STT_MODEL)
         self._language = language
         self._custom_vocab = custom_vocab
 

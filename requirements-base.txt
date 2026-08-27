@@ -22,7 +22,7 @@ pillow
 numpy
 onnxruntime
 onnx-asr[cpu,hub]>=0.10.2,<0.11
-yt-dlp[default]==2026.7.4
+yt-dlp[default]==2026.8.19
 python-docx
 reportlab
 lxml

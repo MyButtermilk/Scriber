@@ -37,7 +37,7 @@ from src.provider_transcript import has_speaker_evidence, normalize_provider_seg
 from src.youtube_download import YouTubeCaptionCue
 
 PARSER_ID = "scriber-provider-transcript"
-PARSER_VERSION = "1"
+PARSER_VERSION = "2"
 CAPTION_PARSER_ID = "youtube-caption-cues"
 CAPTION_PARSER_VERSION = "1"
 
@@ -158,6 +158,7 @@ def provider_batch_model(provider: str) -> str:
         "smallest_async": "pulse",
         "azure_mai": getattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5"),
         "gemini_stt": Config.GEMINI_STT_MODEL,
+        "gemini_realtime": Config.GEMINI_REALTIME_STT_MODEL,
         "groq": "whisper-large-v3-turbo",
         "google": "latest_long",
         "elevenlabs": "scribe_v2_realtime",
@@ -214,6 +215,7 @@ def freeze_provider_route(
         "google",
         "elevenlabs",
         "speechmatics",
+        "gemini_realtime",
     }
     route_kind = ProviderAudioRouteKind.REALTIME if streaming_only else ProviderAudioRouteKind.BATCH
     default_provider_route = (

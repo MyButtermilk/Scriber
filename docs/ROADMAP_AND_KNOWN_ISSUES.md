@@ -55,7 +55,7 @@ YouTube/file:
 - YouTube input is restricted to validated YouTube URLs, API/thumbnail responses
   are bounded, redirect targets are revalidated, and canceled library downloads
   use isolated attempt directories so late workers cannot corrupt retries.
-- YouTube extraction pins `yt-dlp[default]==2026.7.4`, bundles matching EJS
+- YouTube extraction pins `yt-dlp[default]==2026.8.19`, bundles matching EJS
   scripts plus a manifest-bound QuickJS-ng 0.15.0 wrapper/engine quartet, leaves
   player-client selection to yt-dlp, and validates audio-stream and container
   integrity with ffprobe before provider upload. Frozen builds never resolve a

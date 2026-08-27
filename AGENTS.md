@@ -1384,7 +1384,12 @@ Packaging and scripts:
   `speechmatics_async` live in `src/cloud_async_stt.py`; keep them as direct
   HTTP/batch adapters unless a measured provider SDK change justifies adding
   more packaged dependencies. Do not add `speechmatics-batch` to the standard
-  sidecar while the direct Speechmatics batch API path is sufficient. Keep
+  sidecar while the direct Speechmatics batch API path is sufficient. Gemini
+  async transcription uses the Interactions API's exact
+  `gemini-3.5-transcribe` model contract. Automatically migrate only an
+  app-managed historical default; preserve explicit process overrides and
+  reject incompatible values before Files API upload with credential-free
+  configuration guidance. Keep
   `onnx-asr[cpu,hub]` in the standard sidecar for the ONNX local-ASR path.
   NeMo/Torch is not exposed as a local provider in Settings.
   Local ONNX file transcription uses the buffered Pipecat service with bounded
@@ -1410,7 +1415,7 @@ Packaging and scripts:
   default. Keep `youtubePreferCaptions` persistent in writable runtime settings,
   fall back to provider audio transcription when captions are unavailable, and
   do not expose the preference as an inline control on the YouTube page.
-- Standard YouTube builds pin `yt-dlp[default]==2026.7.4` with matching
+- Standard YouTube builds pin `yt-dlp[default]==2026.8.19` with matching
   `yt-dlp-ejs==0.8.0` and the locked QuickJS-ng `0.15.0` engine behind
   `scriber-quickjs-wrapper`. Stage `qjs.exe`, `qjs-engine.exe`,
   `LICENSE.quickjs-ng.txt`, and `js-runtime-manifest.json` as one indivisible

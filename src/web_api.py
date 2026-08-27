@@ -593,15 +593,7 @@ _attachment_content_disposition = attachment_content_disposition
 _VALID_STT_SERVICES = frozenset(Config.SERVICE_LABELS.keys())
 _VALID_MODES = {"toggle", "push_to_talk"}
 _VALID_SONIOX_MODES = {"realtime", "async"}
-_VALID_SUMMARIZATION_MODEL_PREFIXES = (
-    "gemini-",
-    "gpt-",
-    "google/",
-    "minimax/",
-    "openai/",
-    "z-ai/",
-    "cerebras/",
-)
+_VALID_DIRECT_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-")
 _VALID_SUMMARIZATION_MODELS = frozenset(
     {
         "celeris-1",
@@ -609,6 +601,9 @@ _VALID_SUMMARIZATION_MODELS = frozenset(
         "muse-spark-1.2-contributor",
     }
 )
+_VALID_ROUTED_OPENROUTER_MODELS = frozenset(Config.POST_PROCESSING_FALLBACK_MODELS)
+_CANONICAL_MODEL_SEGMENT = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+_CANONICAL_PROVIDER_MODEL_RE = re.compile(rf"{_CANONICAL_MODEL_SEGMENT}/{_CANONICAL_MODEL_SEGMENT}")
 _INPUT_WARNING_CODE_LOW_LEVEL = "mic_level_very_low"
 _SETTINGS_URI_SOUND = "ms-settings:sound"
 _SETTINGS_URI_SOUND_INPUT_PROPERTIES = "ms-settings:sound-defaultinputproperties"
@@ -646,6 +641,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "gladia": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "modulate_async": "Scriber's 64-kbit/s meeting derivative targets up to three hours within Modulate's 100-MB batch limit; five hours are not supported by this route.",
+    "gemini_stt": "Gemini 3.5 Transcribe accepts up to 30 minutes when Scriber requests native diarization and word timestamps.",
 }
 _MEETING_FIVE_HOUR_UNSUPPORTED_REASON = (
     "The current whole-track final transcription route is not yet verified for a five-hour source."
@@ -669,7 +665,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-08-05"
+_MEETING_PRICING_UPDATED_AT = "2026-08-26"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -733,10 +729,10 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "published_hourly",
     },
     "gemini_stt": {
-        "perTrackHourUsd": 0.15,
+        "perTrackHourUsd": 0.30,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://ai.google.dev/gemini-api/docs/pricing",
-        "estimateKind": "token_estimate",
+        "estimateKind": "published_minute",
     },
     "azure_mai": {
         "perTrackHourUsd": None,
@@ -1245,15 +1241,20 @@ def _validate_summarization_model(raw_model: str) -> str:
     model = (raw_model or "").strip()
     if not model:
         raise ValueError("summarizationModel must not be empty")
-    if model not in _VALID_SUMMARIZATION_MODELS and not model.startswith(_VALID_SUMMARIZATION_MODEL_PREFIXES):
-        allowed = ", ".join(_VALID_SUMMARIZATION_MODEL_PREFIXES)
-        exact = ", ".join(sorted(_VALID_SUMMARIZATION_MODELS))
-        raise ValueError(f"Invalid summarizationModel '{raw_model}'. Must be {exact} or start with: {allowed}")
-    if not re.fullmatch(r"[A-Za-z0-9._:/-]+", model):
-        raise ValueError(
-            "Invalid summarizationModel format. Allowed characters: letters, numbers, dot, underscore, slash, colon, hyphen."
-        )
-    return model
+    if (
+        model in _VALID_SUMMARIZATION_MODELS or model.startswith(_VALID_DIRECT_SUMMARIZATION_MODEL_PREFIXES)
+    ) and re.fullmatch(r"[A-Za-z0-9._-]+", model):
+        return model
+    if model in _VALID_ROUTED_OPENROUTER_MODELS:
+        return model
+    if _CANONICAL_PROVIDER_MODEL_RE.fullmatch(model):
+        # ``cerebras/*`` remains a direct Cerebras route. Every other canonical
+        # provider/model slug is an OpenRouter model and is normalized to Nitro
+        # only when the request is built.
+        return model
+    raise ValueError(
+        f"Invalid summarizationModel '{raw_model}'. Use a supported direct model or a canonical author/model code."
+    )
 
 
 def _validate_post_processing_fallback_model(raw_model: str) -> str:
@@ -3556,7 +3557,9 @@ class ScriberWebController:
             )
         except Exception:
             self._settings_persist_retry_seconds = 5.0
-        if Config.json_settings_migration_pending():
+        if Config.env_settings_migration_pending():
+            self._schedule_settings_persist()
+        elif Config.json_settings_migration_pending():
             self._schedule_settings_persist(json_only=True)
 
         self._downloads_dir = downloads_dir()
@@ -9453,6 +9456,7 @@ class ScriberWebController:
                 fallback_model,
                 desktop_notification_accepted=desktop_notification_accepted,
                 reason=fallback_reason,
+                primary_failure_status=processing_diagnostics.get("primaryFailureStatus"),
                 session_id=session_id,
             )
             self._pending_post_processing_fallback_event = (
@@ -10607,7 +10611,7 @@ class ScriberWebController:
         provider_result_received = False
         provider_result_attempt_id = ""
         provider_request_fence_persisted = False
-        rec.step = "Downloading audio..."
+        rec.step = "Preparing audio download..."
         rec.updated_at = datetime.now().isoformat()
         await self._broadcast_history_updated(record=rec, reason="progress")
         self._emit_workflow_event(
@@ -10634,13 +10638,20 @@ class ScriberWebController:
                 now = time.monotonic()
                 # Throttle broadcasts to max 4 per second to avoid flooding
                 # BUT always allow "finished" status through to show 100%
-                if progress.status != "finished" and now - last_broadcast_time[0] < 0.25:
+                if progress.status not in {"finished", "retrying"} and now - last_broadcast_time[0] < 0.25:
                     return
                 last_broadcast_time[0] = now
 
                 # Build step message with speed and ETA
                 if progress.status == "finished":
                     step = "Download complete"
+                elif progress.status == "retrying":
+                    delay = f"{progress.retry_delay_seconds:g}"
+                    step = (
+                        f"Retrying audio download in {delay}s ({progress.retry_attempt}/{progress.retry_max_attempts})"
+                    )
+                elif progress.downloaded_bytes <= 0:
+                    step = "Preparing audio download..."
                 elif progress.speed and progress.eta:
                     step = f"Downloading... {progress.percent:.0f}% • {progress.speed} • ETA {progress.eta}"
                 elif progress.speed:
@@ -17637,8 +17648,7 @@ class ScriberWebController:
             Config.set_summarization_prompt(payload["summarizationPrompt"])
 
         if validated_summarization_model is not None:
-            Config.SUMMARIZATION_MODEL = validated_summarization_model
-            os.environ["SCRIBER_SUMMARIZATION_MODEL"] = Config.SUMMARIZATION_MODEL
+            Config.set_summarization_model(validated_summarization_model)
 
         if validated_meeting_analysis_model is not None:
             Config.set_meeting_analysis_model(validated_meeting_analysis_model)
@@ -19034,10 +19044,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "recommendation": "Uses one OpenRouter key and the optional local Sherpa-ONNX speaker fallback.",
             },
             "gemini_stt": {
-                "label": "Gemini STT",
+                "label": "Gemini 3.5 Transcribe",
                 "model": Config.GEMINI_STT_MODEL,
-                "diarization": False,
-                "recommendation": "Uses the optional local Sherpa-ONNX speaker fallback.",
+                "diarization": True,
+                "recommendation": "Native speaker diarization and word timestamps for recordings up to 30 minutes.",
             },
             "azure_mai": {
                 "label": "Microsoft MAI",
@@ -20074,6 +20084,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             import_provider_runtime_module("assemblyai_realtime", "pipecat.services.assemblyai.stt")
         elif service_name == "google":
             import_provider_runtime_module("google", "pipecat.services.google.stt")
+        elif service_name == "gemini_realtime":
+            import_provider_runtime_module("gemini_realtime", "src.gemini_realtime_stt")
         elif service_name == "elevenlabs":
             import_provider_runtime_module("elevenlabs", "pipecat.services.elevenlabs.stt")
         elif service_name == "deepgram":

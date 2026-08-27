@@ -19,7 +19,7 @@ def _bound_stack_fixture(root: Path, *, label: str = "baseline") -> tuple[holdou
         "backend/tools/ffmpeg/js-runtime-manifest.json": b"{}\n",
         "backend/_internal/yt_dlp/__init__.py": b"yt-dlp-code",
         "backend/_internal/yt_dlp_ejs/__init__.py": b"ejs-code",
-        "backend/_internal/yt_dlp-2026.7.4.dist-info/METADATA": b"yt-dlp-metadata",
+        "backend/_internal/yt_dlp-2026.8.19.dist-info/METADATA": b"yt-dlp-metadata",
         "backend/_internal/yt_dlp_ejs-0.8.0.dist-info/METADATA": b"ejs-metadata",
     }
     entries: list[dict[str, object]] = []
@@ -69,7 +69,7 @@ def _bound_stack_fixture(root: Path, *, label: str = "baseline") -> tuple[holdou
         ),
         yt_dlp=holdouts.DistributionIdentity(
             name="yt-dlp",
-            version="2026.7.4",
+            version="2026.8.19",
             content_sha256="e" * 64,
             origin="https://example.test/yt-dlp",
             license="Unlicense",
@@ -527,7 +527,7 @@ def test_probe_outcome_accepts_only_bounded_frozen_contract() -> None:
         "schemaVersion": 1,
         "caseId": "regular-audio",
         "runtimeKind": "quickjs",
-        "ytDlpVersion": "2026.7.4",
+        "ytDlpVersion": "2026.8.19",
         "ejsVersion": "0.8.0",
         "policy": {
             "configDiscovery": False,
@@ -556,7 +556,7 @@ def test_probe_outcome_accepts_only_bounded_frozen_contract() -> None:
         case_id="regular-audio",
         expected_video_id="abcdefghijk",
         runtime_kind="quickjs",
-        yt_dlp_version="2026.7.4",
+        yt_dlp_version="2026.8.19",
         ejs_version="0.8.0",
     )
 
@@ -604,7 +604,7 @@ def test_probe_outcome_rejects_policy_or_version_drift() -> None:
         case_id="regular-audio",
         expected_video_id="abcdefghijk",
         runtime_kind="deno",
-        yt_dlp_version="2026.7.4",
+        yt_dlp_version="2026.8.19",
         ejs_version="0.8.0",
     )
 
@@ -618,7 +618,7 @@ def test_probe_outcome_rejects_non_allowlisted_failure_code() -> None:
         "schemaVersion": 1,
         "caseId": "regular-audio",
         "runtimeKind": "deno",
-        "ytDlpVersion": "2026.7.4",
+        "ytDlpVersion": "2026.8.19",
         "ejsVersion": "0.8.0",
         "policy": {
             "configDiscovery": False,
@@ -647,7 +647,7 @@ def test_probe_outcome_rejects_non_allowlisted_failure_code() -> None:
         case_id="regular-audio",
         expected_video_id="abcdefghijk",
         runtime_kind="deno",
-        yt_dlp_version="2026.7.4",
+        yt_dlp_version="2026.8.19",
         ejs_version="0.8.0",
     )
 
@@ -1041,18 +1041,18 @@ def test_public_youtube_identities_use_semantic_inventory_values(
     metadata = (
         b"Metadata-Version: 2.4\n"
         b"Name: yt-dlp\n"
-        b"Version: 2026.7.4\n"
+        b"Version: 2026.8.19\n"
         b"License-Expression: Unlicense\n"
         b"Project-URL: Source, https://github.com/yt-dlp/yt-dlp\n\n"
     )
     raw_record = b"../../Scripts/yt-dlp.exe,raw-wrapper-hash,123\n"
     semantic_record = b"../../Scripts/yt-dlp.exe,<normalized>,0\n"
     contents = {
-        "backend/_internal/yt_dlp-2026.7.4.dist-info/METADATA": (
+        "backend/_internal/yt_dlp-2026.8.19.dist-info/METADATA": (
             metadata,
             metadata,
         ),
-        "backend/_internal/yt_dlp-2026.7.4.dist-info/RECORD": (
+        "backend/_internal/yt_dlp-2026.8.19.dist-info/RECORD": (
             raw_record,
             semantic_record,
         ),

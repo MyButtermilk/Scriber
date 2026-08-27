@@ -84,7 +84,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
 
 REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
     ("pipecat-ai", "1.5.0"),
-    ("yt-dlp", "2026.7.4"),
+    ("yt-dlp", "2026.8.19"),
     ("yt-dlp-ejs", "0.8.0"),
 )
 

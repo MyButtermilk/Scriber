@@ -132,7 +132,7 @@ def test_frozen_probe_uses_the_pinned_yt_dlp_cli_parser(tmp_path: Path) -> None:
     )
 
     assert exit_code == 0
-    assert response["ytDlpVersion"] == "2026.7.4"
+    assert response["ytDlpVersion"] == "2026.8.19"
     assert response["ejsVersion"] == "0.8.0"
     assert response["policy"]["remoteComponents"] is False
 

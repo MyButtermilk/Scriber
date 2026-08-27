@@ -82,7 +82,7 @@ def _pass_response(request: dict[str, object], elapsed_ns: int) -> bytes:
             "schemaVersion": 1,
             "caseId": request["caseId"],
             "runtimeKind": "quickjs",
-            "ytDlpVersion": "2026.7.4",
+            "ytDlpVersion": "2026.8.19",
             "ejsVersion": "0.8.0",
             "policy": smoke.PROBE_POLICY,
             "status": "pass",

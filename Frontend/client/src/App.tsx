@@ -11,7 +11,7 @@ import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { recordingErrorToastMessageFromPayload, showRecordingErrorToast } from "@/lib/recording-error-toast";
-import { showPostProcessingFallbackToast } from "@/lib/post-processing-fallback-toast";
+import { showPostProcessingFallbackToast, type CredentialSettingsRequest } from "@/lib/post-processing-fallback-toast";
 import { useToast } from "@/hooks/use-toast";
 import { lazy, Suspense, useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState } from "@/lib/backend";
@@ -21,7 +21,7 @@ import { flushFrontendPerformanceReport, setFrontendPerformanceReportingEnabled 
 import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
 import { useI18n } from "@/i18n";
-import { SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
+import { SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY, SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
 import { isBusyForUpdatePrompt, trayRecordingStateFromMessage } from "@/lib/runtime-message-state";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
@@ -123,9 +123,41 @@ function RecordingErrorToastBridge() {
 }
 
 function PostProcessingFallbackToastBridge() {
-  const { toast } = useToast();
+  const { toast, dismiss } = useToast();
+  const [, setLocation] = useLocation();
   const { t } = useI18n();
   const seenEventIdsRef = useRef<Set<string>>(new Set());
+
+  const openCredentialSettings = useCallback(
+    (request: CredentialSettingsRequest) => {
+      if (typeof window !== "undefined") {
+        try {
+          window.sessionStorage.setItem(SETTINGS_SECTION_REQUEST_STORAGE_KEY, "apiKeys");
+          window.sessionStorage.setItem(SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY, request.provider);
+        } catch {
+          // Navigation and the in-process events still open Settings when storage is unavailable.
+        }
+      }
+      setLocation("/settings");
+      window.setTimeout(() => {
+        window.dispatchEvent(new CustomEvent("scriber-open-settings-section", { detail: { section: "apiKeys" } }));
+        window.dispatchEvent(
+          new CustomEvent("scriber-open-settings-credential", { detail: { provider: request.provider } }),
+        );
+      }, 80);
+      dismiss();
+    },
+    [dismiss, setLocation],
+  );
+
+  const createCredentialAction = useCallback(
+    (request: CredentialSettingsRequest) => (
+      <ToastAction altText={request.actionLabel} onClick={() => openCredentialSettings(request)}>
+        {request.actionLabel}
+      </ToastAction>
+    ),
+    [openCredentialSettings],
+  );
 
   const handleWsMessage = useCallback(
     (message: ScriberWebSocketMessage) => {
@@ -138,9 +170,9 @@ function PostProcessingFallbackToastBridge() {
       if (!fallbackMessage) {
         return;
       }
-      showPostProcessingFallbackToast(toast, t, fallbackMessage, seenEventIdsRef.current);
+      showPostProcessingFallbackToast(toast, t, fallbackMessage, seenEventIdsRef.current, createCredentialAction);
     },
-    [t, toast],
+    [createCredentialAction, t, toast],
   );
 
   useSharedWebSocket(handleWsMessage);

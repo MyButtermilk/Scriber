@@ -39,7 +39,7 @@ _bootstrap_runtime_env()
 migrate_legacy_runtime_data()
 # Keep track of values supplied by the supervising process before loading the
 # writable runtime .env. Historical Scriber releases persisted their then-
-# current Soniox defaults there, so the source matters when upgrading them:
+# current provider defaults there, so the source matters when upgrading them:
 # generated legacy defaults should follow the app, while an explicit process
 # override remains available for temporary provider compatibility.
 _PROCESS_ENV_KEYS_BEFORE_DOTENV = frozenset(os.environ)
@@ -52,6 +52,9 @@ _MAX_JSON_SETTINGS_BYTES = 1024 * 1024
 DEFAULT_LIVE_MIC_HOTKEY = "ctrl+shift+d"
 DEFAULT_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
 DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
+_LEGACY_GLM_NITRO_MODELS = frozenset({"z-ai/glm-5.2", "z-ai/glm-5.2:nitro"})
+_CURRENT_GLM_NITRO_MODEL = "z-ai/glm-5.3-flash:nitro"
+_env_settings_migration_pending = False
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -83,20 +86,40 @@ def _versioned_model_env(
     The app writes model defaults to its canonical ``.env`` file. Without a
     migration, that turns an old release default into a permanent override on
     every later release. Only known defaults loaded from that file are
-    upgraded. A non-empty value supplied by the parent process is intentional
-    and remains untouched, including an older model used as a short-lived
-    compatibility override.
+    upgraded. A non-empty value supplied by the parent process is normally
+    intentional and remains untouched. An incompatible explicit override is
+    rejected at the provider boundary before billable work starts instead of
+    being silently replaced while configuration loads.
     """
     raw = str(os.getenv(name, default) or "").strip()
     if not raw:
         os.environ[name] = default
         return default
-    if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV and raw.casefold() in {
-        value.casefold() for value in legacy_dotenv_defaults
-    }:
+    is_legacy = raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
+    if is_legacy and name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
         os.environ[name] = default
         return default
     return raw
+
+
+def _migrate_legacy_glm_nitro_model(value: object) -> str:
+    """Upgrade the retired built-in GLM route while preserving custom models."""
+    raw = str(value or "").strip()
+    if raw.casefold() in _LEGACY_GLM_NITRO_MODELS:
+        return _CURRENT_GLM_NITRO_MODEL
+    return raw
+
+
+def _migrated_glm_model_env(name: str, default: str = "") -> str:
+    """Resolve a model env value and durably flag old generated settings."""
+    global _env_settings_migration_pending
+    raw = str(os.getenv(name, default) or "").strip()
+    migrated = _migrate_legacy_glm_nitro_model(raw)
+    if migrated != raw:
+        os.environ[name] = migrated
+        if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
+            _env_settings_migration_pending = True
+    return migrated
 
 
 def _atomic_write_text(path: str | Path, content: str) -> None:
@@ -202,10 +225,27 @@ def _migrate_summarization_prompt_once(settings: dict) -> bool:
     return True
 
 
+def _migrate_builtin_language_models(settings: dict) -> bool:
+    """Upgrade exact retired built-ins without rewriting user model codes."""
+    changed = False
+    for key in ("summarizationModel", "meetingAnalysisModel", "postProcessingModel", "postProcessingFallbackModel"):
+        if key not in settings:
+            continue
+        current = settings[key]
+        migrated = _migrate_legacy_glm_nitro_model(current)
+        if migrated and migrated != current:
+            settings[key] = migrated
+            changed = True
+    return changed
+
+
 _json_settings, _json_settings_rewrite_safe = _load_json_settings_with_status()
-_json_settings_migration_pending = (
-    _migrate_summarization_prompt_once(_json_settings) if _json_settings_rewrite_safe else False
-)
+_json_settings_migration_pending = False
+if _json_settings_rewrite_safe:
+    _json_settings_migration_pending = _migrate_summarization_prompt_once(_json_settings)
+    _json_settings_migration_pending = (
+        _migrate_builtin_language_models(_json_settings) or _json_settings_migration_pending
+    )
 
 
 class Config:
@@ -221,6 +261,9 @@ class Config:
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
     DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
+    DEFAULT_GEMINI_STT_MODEL = "gemini-3.5-transcribe"
+    DEFAULT_GEMINI_REALTIME_STT_MODEL = "gemini-3.5-transcribe-live"
+    _LEGACY_DEFAULT_GEMINI_STT_MODELS: ClassVar[set[str]] = {"gemini-2.5-flash"}
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -266,7 +309,15 @@ class Config:
     MISTRAL_RT_MODEL = os.getenv("SCRIBER_MISTRAL_RT_MODEL", "voxtral-mini-2602")
     MISTRAL_ASYNC_MODEL = os.getenv("SCRIBER_MISTRAL_ASYNC_MODEL", "voxtral-mini-2602")
     DEEPGRAM_MODEL = os.getenv("SCRIBER_DEEPGRAM_MODEL", "nova-3")
-    GEMINI_STT_MODEL = os.getenv("SCRIBER_GEMINI_STT_MODEL", "gemini-2.5-flash")
+    GEMINI_STT_MODEL = _versioned_model_env(
+        "SCRIBER_GEMINI_STT_MODEL",
+        DEFAULT_GEMINI_STT_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_GEMINI_STT_MODELS,
+    )
+    GEMINI_REALTIME_STT_MODEL = os.getenv(
+        "SCRIBER_GEMINI_REALTIME_STT_MODEL",
+        DEFAULT_GEMINI_REALTIME_STT_MODEL,
+    )
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
@@ -301,6 +352,7 @@ class Config:
         "soniox": "SONIOX_API_KEY",
         "soniox_async": "SONIOX_API_KEY",
         "gemini_stt": "GOOGLE_API_KEY",
+        "gemini_realtime": "GOOGLE_API_KEY",
         "mistral": "MISTRAL_API_KEY",
         "mistral_async": "MISTRAL_API_KEY",
         "smallest": "SMALLEST_API_KEY",
@@ -331,7 +383,8 @@ class Config:
     SERVICE_LABELS: ClassVar[dict[str, str]] = {
         "soniox": "Soniox",
         "soniox_async": "Soniox (Async)",
-        "gemini_stt": "Gemini STT",
+        "gemini_stt": "Gemini 3.5 Transcribe",
+        "gemini_realtime": "Gemini 3.5 Transcribe Live",
         "mistral": "Mistral (Segmented)",
         "mistral_async": "Mistral (Async)",
         "smallest": "Smallest AI (Realtime)",
@@ -378,7 +431,9 @@ class Config:
 
     # Summarization model for LLM transcript summarization
     DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
-    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
+    SUMMARIZATION_MODEL = _migrate_legacy_glm_nitro_model(
+        _json_settings.get("summarizationModel")
+    ) or _migrated_glm_model_env("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
 
     # Public Microsoft Entra desktop-app registration. This identifier is not a secret.
     OUTLOOK_CLIENT_ID = os.getenv("SCRIBER_OUTLOOK_CLIENT_ID", "").strip()
@@ -402,7 +457,7 @@ class Config:
         "openai/gpt-oss-120b:cerebras",
         "google/gemini-2.5-flash-lite:nitro",
         "minimax/minimax-m3:nitro",
-        "z-ai/glm-5.2:nitro",
+        "z-ai/glm-5.3-flash:nitro",
     )
     DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro"
     _LEGACY_DEFAULT_POST_PROCESSING_MODELS: ClassVar[set[str]] = {
@@ -489,7 +544,7 @@ ${output}"""
         MEETING_TRANSCRIPTION_MODE = "live_final"
     MEETING_ANALYSIS_MODEL = (
         _json_settings.get("meetingAnalysisModel")
-        or os.getenv("SCRIBER_MEETING_ANALYSIS_MODEL")
+        or _migrated_glm_model_env("SCRIBER_MEETING_ANALYSIS_MODEL")
         or SUMMARIZATION_MODEL
         or DEFAULT_SUMMARIZATION_MODEL
     )
@@ -519,8 +574,8 @@ ${output}"""
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
         or _DEFAULT_POST_PROCESSING_PROMPT
     )
-    _configured_post_processing_model = (_json_settings.get("postProcessingModel") or "").strip()
-    _env_post_processing_model = (os.getenv("SCRIBER_POST_PROCESSING_MODEL") or "").strip()
+    _configured_post_processing_model = _migrate_legacy_glm_nitro_model(_json_settings.get("postProcessingModel"))
+    _env_post_processing_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_MODEL")
     if _configured_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
         _configured_post_processing_model = ""
     if _env_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
@@ -528,10 +583,12 @@ ${output}"""
     POST_PROCESSING_MODEL = (
         _configured_post_processing_model or _env_post_processing_model or DEFAULT_POST_PROCESSING_MODEL
     )
-    _configured_post_processing_fallback_model = (_json_settings.get("postProcessingFallbackModel") or "").strip()
-    _env_post_processing_fallback_model = (os.getenv("SCRIBER_POST_PROCESSING_FALLBACK_MODEL") or "").strip()
+    _configured_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
+        _json_settings.get("postProcessingFallbackModel")
+    )
+    _env_post_processing_fallback_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_FALLBACK_MODEL")
     _legacy_summary_fallback_models = (os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS") or "").strip()
-    _legacy_post_processing_fallback_model = (
+    _legacy_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
         _legacy_summary_fallback_models.split(",", 1)[0].strip() if _legacy_summary_fallback_models else ""
     )
     if _legacy_post_processing_fallback_model and ":" not in _legacy_post_processing_fallback_model:
@@ -758,7 +815,11 @@ ${output}"""
             "soniox-async": configured(cls.SONIOX_ASYNC_MODEL, cls.DEFAULT_SONIOX_ASYNC_MODEL),
             "modulate-realtime": "velma-2-stt-streaming",
             "modulate-async": "velma-2-stt-batch",
-            "gemini-stt": configured(cls.GEMINI_STT_MODEL, "gemini-2.5-flash"),
+            "gemini-stt": configured(cls.GEMINI_STT_MODEL, cls.DEFAULT_GEMINI_STT_MODEL),
+            "gemini-realtime": configured(
+                cls.GEMINI_REALTIME_STT_MODEL,
+                cls.DEFAULT_GEMINI_REALTIME_STT_MODEL,
+            ),
             "mistral-realtime": mistral_segmented,
             "mistral-async": configured(cls.MISTRAL_ASYNC_MODEL, "voxtral-mini-2602"),
             "smallest-realtime": "pulse",
@@ -822,9 +883,22 @@ ${output}"""
         _json_settings_migration_pending = False
 
     @classmethod
+    def set_summarization_model(cls, model: str) -> None:
+        """Update the summary model in the existing settings field."""
+        cls.SUMMARIZATION_MODEL = model.strip() or cls.DEFAULT_SUMMARIZATION_MODEL
+        os.environ["SCRIBER_SUMMARIZATION_MODEL"] = cls.SUMMARIZATION_MODEL
+        global _json_settings
+        _json_settings["summarizationModel"] = cls.SUMMARIZATION_MODEL
+
+    @classmethod
     def json_settings_migration_pending(cls) -> bool:
         """Return whether a safe built-in settings migration still needs disk persistence."""
         return bool(_json_settings_migration_pending)
+
+    @classmethod
+    def env_settings_migration_pending(cls) -> bool:
+        """Return whether a retired built-in loaded from .env needs rewriting."""
+        return bool(_env_settings_migration_pending)
 
     @classmethod
     def set_youtube_prefer_captions(cls, enabled: bool) -> None:
@@ -965,6 +1039,7 @@ ${output}"""
         add("SCRIBER_MISTRAL_ASYNC_MODEL", cls.MISTRAL_ASYNC_MODEL)
         add("SCRIBER_DEEPGRAM_MODEL", cls.DEEPGRAM_MODEL)
         add("SCRIBER_GEMINI_STT_MODEL", cls.GEMINI_STT_MODEL)
+        add("SCRIBER_GEMINI_REALTIME_STT_MODEL", cls.GEMINI_REALTIME_STT_MODEL)
         add("SCRIBER_CUSTOM_VOCAB", cls.CUSTOM_VOCAB or "")
         # Note: SUMMARIZATION_PROMPT is not persisted to .env (multi-line value causes parsing issues)
         # The default prompt from config.py will be used
@@ -1013,3 +1088,5 @@ ${output}"""
 
         with _SETTINGS_FILE_LOCK:
             _atomic_write_text(target_path, "\n".join(lines) + "\n")
+        global _env_settings_migration_pending
+        _env_settings_migration_pending = False

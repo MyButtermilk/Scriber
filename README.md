@@ -249,8 +249,8 @@ from the model repository.
 
 Current provider coverage includes Soniox, Modulate.AI, AssemblyAI, Microsoft
 MAI through direct Azure or OpenRouter, OpenAI, Celeris, Deepgram, Mistral,
-Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini, Google Cloud, and
-ONNX.
+Gladia, Groq, Speechmatics, Smallest AI, ElevenLabs, Gemini 3.5 Transcribe
+(async and live), Google Cloud, and ONNX.
 
 ## 🔑 Credentials and AI behavior stay understandable
 
@@ -261,6 +261,8 @@ Provider credentials, transcription models, summary models, prompts, language be
 - Credential status and direct provider links
 - Separate STT, summarization, primary post-processing, and post-processing
   fallback model choices
+- Canonical custom OpenRouter `author/model` choices for summaries and primary
+  post-processing; Scriber applies the Nitro route at request time
 - Practical price and error estimates where benchmark data is available
 - Custom vocabulary for names, brands, and domain language
 - Automatic summarization and caption-first controls
@@ -364,7 +366,9 @@ Transcript history and runtime data stay in Scriber's local user data directory.
 <details>
 <summary><strong>What should I try first?</strong></summary>
 
-For a simple cloud setup, configure a Gemini API key for Gemini STT and summaries. For local transcription, download an ONNX model from Settings.
+For a simple cloud setup, configure a Gemini API key for Gemini 3.5 Transcribe
+(async or live) and summaries. For local transcription, download an ONNX model
+from Settings.
 </details>
 
 ## For developers
