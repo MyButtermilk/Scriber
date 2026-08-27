@@ -213,6 +213,7 @@ from src.data.transcript_artifact_store import (
     ArtifactInputDraft,
     AttemptRecord,
     AttemptState,
+    CanonicalArtifact,
     RecoveryBundle,
     SourceAssetState,
     TranscriptArtifactStore,
@@ -1483,6 +1484,39 @@ def _resolved_media_duration_seconds(
     if not re.fullmatch(r"\d+(?::\d+){1,2}(?:\.\d+)?", label):
         return 0.0
     return duration_label_to_ms(label, fallback_ms=0) / 1_000.0
+
+
+def _resolved_artifact_duration_label(
+    current_label: str,
+    units: Sequence[Any],
+    evidence: Mapping[str, Any],
+) -> str:
+    """Recover terminal duration from the durable provider-stage boundary."""
+
+    try:
+        evidence_ms = int(evidence.get("sourceMediaDurationMs") or 0)
+    except TypeError, ValueError:
+        evidence_ms = 0
+    if evidence_ms > 0:
+        return _format_duration(evidence_ms / 1_000.0)
+
+    current_seconds = _resolved_media_duration_seconds(None, current_label)
+    if current_seconds >= 1.0:
+        return _format_duration(current_seconds)
+
+    # Compatibility fallback for durable provider results created before the
+    # exact source duration became part of stage evidence. Their normalized
+    # units are still immutable and are the only source-free recovery input.
+    end_ms = 0
+    for unit in units:
+        raw_end = unit.get("endMs", unit.get("end_ms", 0)) if isinstance(unit, Mapping) else getattr(unit, "end_ms", 0)
+        try:
+            end_ms = max(end_ms, int(raw_end or 0))
+        except TypeError, ValueError:
+            continue
+    if end_ms > 0:
+        return _format_duration(end_ms / 1_000.0)
+    return str(current_label or "--:--").strip() or "--:--"
 
 
 def _validate_provider_media_duration(
@@ -5689,6 +5723,29 @@ class ScriberWebController:
             attempt_id,
         )
 
+    async def _promote_completed_artifact_duration(
+        self,
+        rec: TranscriptRecord,
+        bundle: RecoveryBundle,
+        artifact: CanonicalArtifact,
+    ) -> bool:
+        resolved_duration = _resolved_artifact_duration_label(
+            rec.duration,
+            bundle.stage_result.units,
+            bundle.stage_result.evidence,
+        )
+        if _resolved_media_duration_seconds(None, resolved_duration) < 1.0:
+            return False
+        promoted = await to_thread_cancellation_barrier(
+            self._transcript_artifacts.promote_completed_projection_duration,
+            rec.id,
+            expected_attempt_id=bundle.attempt.id,
+            expected_artifact_id=artifact.id,
+            duration=resolved_duration,
+        )
+        rec.duration = resolved_duration
+        return promoted
+
     async def _recover_bound_provider_result(
         self,
         rec: TranscriptRecord,
@@ -5734,6 +5791,9 @@ class ScriberWebController:
             )
             if artifact is None or artifact.attempt_id != attempt_id:
                 raise TranscriptPersistenceError("Completed provider result is not the canonical transcript head")
+            promoted = await self._promote_completed_artifact_duration(rec, bundle, artifact)
+            if rec.status == "completed" and not promoted:
+                raise TranscriptPersistenceError("Completed provider result duration could not be projected")
             content = self._transcript_artifacts.render_legacy_content(artifact.segments)
             rec.replace_content(content)
         else:
@@ -6812,6 +6872,53 @@ class ScriberWebController:
                     rec = self._record_from_persisted_data(persisted)
                     if rec.type == "file" and not rec.source_url:
                         rec.source_url = str(job.payload.get("path", "") or "")
+                    if (
+                        persisted_status == "completed"
+                        and _resolved_media_duration_seconds(None, rec.duration) < 1.0
+                        and job.provider_result_attempt_id
+                    ):
+                        try:
+                            bundle = await self._provider_result_bundle_for_attempt_async(
+                                job.provider_result_attempt_id
+                            )
+                            persisted_route = job.payload.get("executionRoute")
+                            head = await asyncio.to_thread(
+                                self._transcript_artifacts.get_head,
+                                rec.id,
+                            )
+                            artifact = (
+                                await asyncio.to_thread(
+                                    self._transcript_artifacts.get_artifact,
+                                    head.artifact_id,
+                                )
+                                if head is not None
+                                else None
+                            )
+                            if (
+                                artifact is None
+                                or artifact.attempt_id != bundle.attempt.id
+                                or not self._persisted_job_route_matches_bundle(
+                                    persisted_route,
+                                    bundle,
+                                )
+                                or not await self._promote_completed_artifact_duration(
+                                    rec,
+                                    bundle,
+                                    artifact,
+                                )
+                            ):
+                                logger.warning(
+                                    "Completed provider-result duration repair remains pending for {}",
+                                    rec.id,
+                                )
+                                return reconciled
+                        except Exception as exc:
+                            logger.warning(
+                                "Completed provider-result duration repair failed for {} (error_type={})",
+                                rec.id,
+                                type(exc).__name__,
+                            )
+                            return reconciled
                     self._add_to_history(rec)
                     self._job_ids_by_transcript[rec.id] = job.id
                     outcome = await self._reconcile_terminal_job_projection(
@@ -9898,6 +10005,7 @@ class ScriberWebController:
         units: Sequence[Any],
         evidence: Mapping[str, Any],
         source_asset_id: str = "",
+        compatibility_duration: str | None = None,
     ) -> str:
         """Persist provider evidence and atomically advance the canonical head."""
         if attempt.state == AttemptState.TRANSCRIBING and (not str(transcript_text or "").strip() or not units):
@@ -9973,6 +10081,14 @@ class ScriberWebController:
             expected_attempt_version=attempt.state_version,
             expected_head_generation=attempt.expected_head_generation,
             segments=canonical_drafts(units),
+            duration=(
+                compatibility_duration
+                or _resolved_artifact_duration_label(
+                    rec.duration,
+                    units,
+                    evidence,
+                )
+            ),
             inputs=inputs,
             lease_owner=owner,
         )
@@ -9989,10 +10105,21 @@ class ScriberWebController:
         **kwargs: Any,
     ) -> str:
         """Observe a started canonical commit through its durable transaction boundary."""
+        resolved_duration = _resolved_artifact_duration_label(
+            rec.duration,
+            kwargs.get("units", ()),
+            kwargs.get("evidence", {}),
+        )
         rendered, pending_cancel = await await_with_delayed_cancellation(
-            asyncio.to_thread(self._commit_transcript_artifact, rec, **kwargs)
+            asyncio.to_thread(
+                self._commit_transcript_artifact,
+                rec,
+                compatibility_duration=resolved_duration,
+                **kwargs,
+            )
         )
         # Keep mutable TranscriptRecord ownership on the event-loop thread.
+        rec.duration = resolved_duration
         rec.replace_content(rendered)
         if pending_cancel is not None:
             # The canonical head is already committed. Completing projection is
@@ -10838,7 +10965,7 @@ class ScriberWebController:
                 duration_ms=(
                     max(1, round(duration_seconds * 1_000))
                     if duration_seconds > 0.0
-                    else duration_label_to_ms(rec.duration)
+                    else duration_label_to_ms(rec.duration, fallback_ms=0)
                 ),
             )
             workflow_phase["value"] = "postprocessing"
@@ -11497,7 +11624,7 @@ class ScriberWebController:
                 duration_ms=(
                     max(1, round(duration_seconds * 1_000))
                     if duration_seconds > 0.0
-                    else duration_label_to_ms(rec.duration)
+                    else duration_label_to_ms(rec.duration, fallback_ms=0)
                 ),
             )
             attempt = await self._persist_provider_stage_before_local_diarization_async(

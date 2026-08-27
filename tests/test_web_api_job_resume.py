@@ -1,4 +1,5 @@
 import asyncio
+import sqlite3
 import threading
 import time
 from datetime import datetime
@@ -49,13 +50,14 @@ def _persist_file_projection(
     transcript_id: str,
     source_path: Path,
     status: str,
+    duration: str = "00:05",
     content: str = "stale projection",
 ) -> TranscriptRecord:
     record = TranscriptRecord(
         id=transcript_id,
         title="Durable recovery",
         date="Today",
-        duration="00:05",
+        duration=duration,
         status=status,
         type="file",
         language="en",
@@ -140,7 +142,12 @@ def _persist_provider_result(
     return attempt
 
 
-def _commit_provider_result(controller: ScriberWebController, attempt):
+def _commit_provider_result(
+    controller: ScriberWebController,
+    attempt,
+    *,
+    duration: str = "00:05",
+):
     artifacts = controller._transcript_artifacts
     stage = artifacts.get_stage_result(attempt.id)
     assert stage is not None
@@ -161,6 +168,7 @@ def _commit_provider_result(controller: ScriberWebController, attempt):
         expected_attempt_version=attempt.state_version,
         expected_head_generation=attempt.expected_head_generation,
         segments=stage.units,
+        duration=duration,
     )
 
 
@@ -541,6 +549,7 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
         transcript_id=transcript_id,
         source_path=missing_source,
         status=stale_status,
+        duration="--:--" if stale_status == "processing" else "00:05",
         content="stale projection written after canonical commit",
     )
 
@@ -568,6 +577,7 @@ async def test_startup_reprojects_completed_artifact_instead_of_only_completing_
             assert recovered_job.status == JobStatus.QUEUED
         else:
             assert persisted["status"] == "completed"
+            assert persisted["duration"] == "00:05"
             assert _DURABLE_TRANSCRIPT_TEXT in persisted["content"]
             assert "stale projection" not in persisted["content"]
             assert recovered_job.status == JobStatus.COMPLETED
@@ -686,7 +696,7 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
             id=transcript_id,
             title="YouTube durable recovery",
             date="Today",
-            duration="00:05",
+            duration="--:--",
             status="failed",
             type="youtube",
             language="en",
@@ -700,7 +710,7 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
         job_type=JobType.YOUTUBE,
         payload={
             "title": "YouTube durable recovery",
-            "duration": "00:05",
+            "duration": "--:--",
             "language": "en",
             "preferCaptions": True,
             "executionRoute": ctl._job_execution_route(route),
@@ -741,6 +751,7 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
         recovered_job = store.get(job.id)
         assert persisted is not None
         assert persisted["status"] == "completed"
+        assert persisted["duration"] == "00:05"
         assert _DURABLE_TRANSCRIPT_TEXT in persisted["content"]
         assert recovered_job is not None
         assert recovered_job.status == JobStatus.COMPLETED
@@ -751,6 +762,155 @@ async def test_startup_recovers_youtube_durable_result_without_url_or_download(
         prepare_audio.assert_not_called()
         validate_provider.assert_not_called()
     finally:
+        await _close_test_controller(ctl)
+
+
+@pytest.mark.asyncio
+async def test_startup_repairs_duration_for_completed_youtube_artifact_without_replay(
+    isolated_recovery_database,
+):
+    store = JobStore(db_path=isolated_recovery_database)
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    transcript_id = "tx-youtube-completed-duration-repair"
+    route = ctl._freeze_background_provider_route(
+        workload="youtube",
+        provider="soniox",
+        language="en",
+    )
+    database.save_transcript(
+        TranscriptRecord(
+            id=transcript_id,
+            title="Completed YouTube duration repair",
+            date="Today",
+            duration="--:--",
+            status="processing",
+            type="youtube",
+            language="en",
+            source_url="",
+        )
+    )
+    job = store.enqueue(
+        transcript_id=transcript_id,
+        job_type=JobType.YOUTUBE,
+        payload={
+            "title": "Completed YouTube duration repair",
+            "duration": "--:--",
+            "language": "en",
+            "preferCaptions": False,
+            "executionRoute": ctl._job_execution_route(route),
+        },
+    )
+    assert store.mark_running(job.id)
+    assert store.mark_provider_request_may_be_committed(job.id)
+    attempt = _persist_provider_result(
+        ctl,
+        transcript_id=transcript_id,
+        route=route,
+        attempt_id="paid-youtube-completed-duration-repair",
+        workload="youtube",
+    )
+    committed = _commit_provider_result(ctl, attempt, duration="--:--")
+    assert committed.artifact is not None
+    artifact_id = committed.artifact.id
+    assert store.mark_provider_result_durable(job.id, attempt_id=attempt.id)
+    ctl._startup_running_job_ids = frozenset({job.id})
+
+    with sqlite3.connect(isolated_recovery_database) as conn:
+        artifact_count = conn.execute(
+            "SELECT COUNT(*) FROM canonical_transcript_artifacts WHERE transcript_id = ?",
+            (transcript_id,),
+        ).fetchone()[0]
+
+    forbidden_source_io = AssertionError("completed artifact repair must not replay source or provider work")
+    try:
+        with (
+            patch("src.web_api.download_youtube_audio", new=MagicMock(side_effect=forbidden_source_io)),
+            patch("src.web_api.download_youtube_transcript", new=MagicMock(side_effect=forbidden_source_io)),
+            patch("src.web_api._create_scriber_pipeline", new=MagicMock(side_effect=forbidden_source_io)),
+            patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        ):
+            assert await ctl.resume_pending_jobs(limit=10, recover_running=True) == 0
+
+        persisted = database.get_transcript(transcript_id)
+        recovered_job = store.get(job.id)
+        head = ctl._transcript_artifacts.get_head(transcript_id)
+        with sqlite3.connect(isolated_recovery_database) as conn:
+            repaired_artifact_count = conn.execute(
+                "SELECT COUNT(*) FROM canonical_transcript_artifacts WHERE transcript_id = ?",
+                (transcript_id,),
+            ).fetchone()[0]
+
+        assert persisted is not None
+        assert persisted["status"] == "completed"
+        assert persisted["duration"] == "00:05"
+        assert recovered_job is not None
+        assert recovered_job.status == JobStatus.COMPLETED
+        assert head is not None
+        assert head.artifact_id == artifact_id
+        assert repaired_artifact_count == artifact_count == 1
+    finally:
+        await _close_test_controller(ctl)
+
+
+@pytest.mark.asyncio
+async def test_completed_duration_promotion_observes_cancellation_before_projection(
+    monkeypatch,
+    isolated_recovery_database,
+):
+    ctl = ScriberWebController(asyncio.get_running_loop())
+    rec = TranscriptRecord(
+        id="tx-duration-promotion-cancel",
+        title="Duration promotion cancellation",
+        date="Today",
+        duration="--:--",
+        status="completed",
+        type="youtube",
+        language="en",
+    )
+    bundle = MagicMock()
+    bundle.attempt.id = "attempt-duration-promotion-cancel"
+    bundle.stage_result.units = (
+        StageUnit(
+            source_track="mix",
+            start_ms=0,
+            end_ms=5000,
+            text=_DURABLE_TRANSCRIPT_TEXT,
+        ),
+    )
+    bundle.stage_result.evidence = {"sourceMediaDurationMs": 5000}
+    artifact = MagicMock(id="artifact-duration-promotion-cancel")
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def promote(*_args, **_kwargs):
+        started.set()
+        assert release.wait(timeout=2.0)
+        finished.set()
+        return True
+
+    monkeypatch.setattr(
+        ctl._transcript_artifacts,
+        "promote_completed_projection_duration",
+        promote,
+    )
+    task = asyncio.create_task(ctl._promote_completed_artifact_duration(rec, bundle, artifact))
+    try:
+        assert await asyncio.to_thread(started.wait, 1.0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert rec.duration == "--:--"
+        release.set()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+        assert rec.duration == "--:--"
+    finally:
+        release.set()
+        if not task.done():
+            await asyncio.gather(task, return_exceptions=True)
         await _close_test_controller(ctl)
 
 

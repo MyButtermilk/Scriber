@@ -114,6 +114,7 @@ class SourceAssetState(str, Enum):  # noqa: UP042
 
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DURATION_LABEL_RE = re.compile(r"^\d+(?::\d+){1,2}$")
 _FTS_TOKEN_RE = re.compile(r"\w+(?:-\w+)*", re.UNICODE)
 _SAFE_TOKEN_RE = re.compile(r"^[^\x00-\x1f\x7f]{1,255}$")
 _WINDOWS_ABSOLUTE_RE = re.compile(r"^[A-Za-z]:[\\/]")
@@ -229,6 +230,13 @@ def _safe_scalar(value: Any, *, field_name: str, allow_empty: bool = False) -> s
         return ""
     if not text or not _SAFE_TOKEN_RE.fullmatch(text):
         raise ValueError(f"{field_name} must be a non-empty single-line value.")
+    return text
+
+
+def _positive_duration_label(value: Any) -> str:
+    text = _safe_scalar(value, field_name="duration")
+    if not _DURATION_LABEL_RE.fullmatch(text) or not any(int(part) > 0 for part in text.split(":")):
+        raise ValueError("duration must be a positive minutes/seconds or hours/minutes/seconds label.")
     return text
 
 
@@ -2347,6 +2355,71 @@ class TranscriptArtifactStore:
         row = conn.execute("SELECT * FROM canonical_transcript_artifacts WHERE id = ?", (artifact_id,)).fetchone()
         return self._artifact_from_row(conn, row) if row else None
 
+    def promote_completed_projection_duration(
+        self,
+        transcript_id: str,
+        *,
+        expected_attempt_id: str,
+        expected_artifact_id: str,
+        duration: str,
+    ) -> bool:
+        """Fill only a legacy placeholder owned by one exact completed head."""
+
+        transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
+        expected_attempt_id = _safe_scalar(expected_attempt_id, field_name="expected_attempt_id")
+        expected_artifact_id = _safe_scalar(expected_artifact_id, field_name="expected_artifact_id")
+        promoted_duration = _positive_duration_label(duration)
+        placeholders = {"", "--:--", "00:00", "0:00:00", "00:00:00"}
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                """
+                SELECT t.status, t.duration, h.artifact_id, a.attempt_id, p.state
+                FROM transcripts t
+                JOIN canonical_transcript_heads h ON h.transcript_id = t.id
+                JOIN canonical_transcript_artifacts a
+                  ON a.id = h.artifact_id AND a.transcript_id = t.id
+                JOIN transcription_attempts p
+                  ON p.id = a.attempt_id AND p.transcript_id = t.id
+                WHERE t.id = ?
+                """,
+                (transcript_id,),
+            ).fetchone()
+            if (
+                row is None
+                or str(row["status"] or "").strip().lower() != "completed"
+                or str(row["artifact_id"] or "") != expected_artifact_id
+                or str(row["attempt_id"] or "") != expected_attempt_id
+                or str(row["state"] or "") != AttemptState.COMPLETED.value
+            ):
+                conn.rollback()
+                return False
+            current_duration = str(row["duration"] or "").strip()
+            if current_duration not in placeholders:
+                conn.rollback()
+                return True
+            cursor = conn.execute(
+                """
+                UPDATE transcripts
+                SET duration = ?, updated_at = ?
+                WHERE id = ? AND status = 'completed' AND duration = ?
+                """,
+                (
+                    promoted_duration,
+                    _now_iso(),
+                    transcript_id,
+                    current_duration,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ArtifactConflict("Completed compatibility duration promotion CAS lost.")
+            conn.commit()
+            return True
+        except Exception:
+            conn.rollback()
+            raise
+
     def search_canonical_segments(
         self,
         transcript_id: str,
@@ -2397,11 +2470,13 @@ class TranscriptArtifactStore:
         expected_attempt_version: int,
         expected_head_generation: int,
         segments: Sequence[CanonicalSegmentDraft | StageUnit | Mapping[str, Any]],
+        duration: str,
         inputs: Iterable[ArtifactInputDraft] = (),
         lease_owner: str = "",
         artifact_id: str | None = None,
     ) -> CanonicalCommitResult:
         artifact_id = _safe_scalar(artifact_id or uuid4().hex, field_name="artifact_id")
+        compatibility_duration = _safe_scalar(duration, field_name="duration")
         conn = self._connect()
         try:
             conn.execute("BEGIN IMMEDIATE")
@@ -2663,10 +2738,16 @@ class TranscriptArtifactStore:
             legacy_cursor = conn.execute(
                 """
                 UPDATE transcripts
-                SET content = ?, preview = ?, status = 'completed', step = '', updated_at = ?
+                SET content = ?, preview = ?, duration = ?, status = 'completed', step = '', updated_at = ?
                 WHERE id = ?
                 """,
-                (legacy_content, _preview(legacy_content), now, attempt.transcript_id),
+                (
+                    legacy_content,
+                    _preview(legacy_content),
+                    compatibility_duration,
+                    now,
+                    attempt.transcript_id,
+                ),
             )
             if legacy_cursor.rowcount != 1:
                 raise ArtifactConflict("Compatibility transcript projection CAS lost.")

@@ -518,6 +518,7 @@ class MeetingFinalizer:
         attempt: AttemptRecord,
         owner: str,
         units: list[StageUnit],
+        duration_ms: int,
         track_results: list[Any],
         track_derivations: list[Any],
     ) -> tuple[CanonicalSegment, ...]:
@@ -551,11 +552,13 @@ class MeetingFinalizer:
                 new_state=AttemptState.COMMITTING,
                 lease_owner=owner,
             )
+        duration = f"{duration_ms // 3_600_000:d}:{(duration_ms // 60_000) % 60:02d}:{(duration_ms // 1000) % 60:02d}"
         result = self.artifact_store.commit_canonical_artifact(
             attempt.id,
             expected_attempt_version=attempt.state_version,
             expected_head_generation=attempt.expected_head_generation,
             segments=canonical_drafts(units),
+            duration=duration,
             inputs=[
                 ArtifactInputDraft(
                     "track_stage_result",
@@ -942,6 +945,10 @@ class MeetingFinalizer:
             attempt=attempt,
             owner=owner,
             units=canonical_units,
+            duration_ms=max(
+                (track.timeline_origin_ms + track.duration_ms for track in tracks.values()),
+                default=0,
+            ),
             track_results=track_results,
             track_derivations=track_derivations,
         )

@@ -259,6 +259,30 @@ def test_provider_speaker_zero_and_exact_timing_become_stage_units():
     assert units[0].speaker_origin == "provider_native"
     assert units[0].alignment_quality == "exact_word"
     assert evidence["nativeSpeakerEvidence"] is True
+    assert evidence["sourceMediaDurationMs"] == 1_000
+
+
+@pytest.mark.parametrize("placeholder", ["", "--:--", "00:00", "0:00:00", "00:00:00"])
+def test_unknown_source_duration_uses_provider_units_without_exact_duration_evidence(placeholder):
+    units, evidence = stage_units_from_provider(
+        provider="soniox_async",
+        payload={
+            "tokens": [
+                {
+                    "text": "Recovered duration.",
+                    "start_ms": 0,
+                    "end_ms": 5_000,
+                    "speaker": 0,
+                }
+            ]
+        },
+        text="Recovered duration.",
+        duration_ms=duration_label_to_ms(placeholder, fallback_ms=0),
+    )
+
+    assert duration_label_to_ms(placeholder, fallback_ms=0) == 0
+    assert units[-1].end_ms == 5_000
+    assert "sourceMediaDurationMs" not in evidence
 
 
 def test_soniox_microphone_diarization_preserves_multiple_native_speakers():

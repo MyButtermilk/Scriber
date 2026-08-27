@@ -1588,6 +1588,13 @@ Packaging and scripts:
   snapshot, durable normalized stage result, optional local diarization,
   immutable canonical artifact, then UI/summary/export/legacy projections.
   `transcripts.content` is compatibility output, never a second canonical truth.
+  The canonical commit must project content, preview, current duration, and
+  terminal status in the same transaction; a later terminal-parent CAS is an
+  idempotent completion boundary, not a metadata repair path. Bind the probed
+  source-media duration into StageResult evidence for source-free recovery.
+  Older completed attempts may promote only a placeholder duration through the
+  artifact store after revalidating the exact attempt and canonical head; never
+  rewrite content or a non-placeholder duration there.
   Each canonical segment has stable identity, integer-millisecond start/end,
   timing and speaker origin, and alignment quality. New citations bind both
   artifact id and stable segment id.

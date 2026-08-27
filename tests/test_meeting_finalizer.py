@@ -386,6 +386,9 @@ async def test_finalizer_accepts_one_silent_canonical_track(
     assert [item.source_track for item in finalizer.artifact_store.list_track_stage_results(artifact.attempt_id)] == [
         speech_source
     ]
+    persisted = database.get_transcript(meeting["id"])
+    assert persisted is not None
+    assert persisted["duration"] == "0:00:02"
     silent_source = "system" if speech_source == "microphone" else "microphone"
     assert any(f"No {silent_source} speech detected" in status for status, _ in updates)
     database._close_all_connections()

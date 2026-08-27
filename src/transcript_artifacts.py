@@ -403,14 +403,15 @@ def freeze_caption_route(*, workload: str, language: str, automatic: bool) -> Fr
 def duration_label_to_ms(value: str, *, fallback_ms: int = 1) -> int:
     parts = str(value or "").strip().split(":")
     if not parts or any(not re.fullmatch(r"\d+(?:\.\d+)?", part) for part in parts):
-        return max(1, int(fallback_ms))
+        return max(0, int(fallback_ms))
     try:
         seconds = 0.0
         for part in parts:
             seconds = seconds * 60 + float(part)
     except ValueError:
-        return max(1, int(fallback_ms))
-    return max(1, round(seconds * 1000))
+        return max(0, int(fallback_ms))
+    minimum_ms = 0 if int(fallback_ms) == 0 else 1
+    return max(minimum_ms, round(seconds * 1000))
 
 
 def _estimated_units(text: str, *, duration_ms: int, source_track: str) -> tuple[StageUnit, ...]:
@@ -502,6 +503,8 @@ def stage_units_from_provider(
             str(getattr(unit.alignment_quality, "value", unit.alignment_quality)) == "estimated" for unit in units
         ),
     }
+    if duration_ms > 0:
+        evidence["sourceMediaDurationMs"] = int(duration_ms)
     return tuple(units), evidence
 
 

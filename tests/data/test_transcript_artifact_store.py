@@ -33,6 +33,7 @@ def _create_legacy_database(db_path: Path, *transcript_ids: str) -> None:
                 title TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL DEFAULT '',
                 preview TEXT NOT NULL DEFAULT '',
+                duration TEXT NOT NULL DEFAULT '00:00',
                 status TEXT NOT NULL DEFAULT 'processing',
                 step TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL DEFAULT ''
@@ -620,6 +621,7 @@ def test_canonical_commit_updates_head_attempt_and_legacy_projection_atomically(
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
     )
     assert result.committed is True
     assert result.superseded is False
@@ -629,8 +631,11 @@ def test_canonical_commit_updates_head_attempt_and_legacy_projection_atomically(
     assert result.artifact.segments[0].duration_ms == 1200
 
     with sqlite3.connect(artifact_store._db_path) as conn:
-        content, status = conn.execute("SELECT content, status FROM transcripts WHERE id = 'transcript-1'").fetchone()
+        content, duration, status = conn.execute(
+            "SELECT content, duration, status FROM transcripts WHERE id = 'transcript-1'"
+        ).fetchone()
         assert "[0:00] Speaker 0: Guten Morgen." in content
+        assert duration == "00:03"
         assert status == "completed"
         assert conn.execute("SELECT COUNT(*) FROM canonical_artifact_inputs").fetchone()[0] == 2
         assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_segments_fts").fetchone()[0] == 2
@@ -639,6 +644,44 @@ def test_canonical_commit_updates_head_attempt_and_legacy_projection_atomically(
     assert len(matches) == 1
     assert matches[0].segment_id == result.artifact.segments[1].segment_id
     assert matches[0].start_ms == 1500
+
+
+def test_completed_projection_duration_promotion_is_exact_and_monotonic(artifact_store):
+    attempt = _ready_commit(artifact_store)
+    result = artifact_store.commit_canonical_artifact(
+        attempt.id,
+        expected_attempt_version=attempt.state_version,
+        expected_head_generation=0,
+        segments=_segments(),
+        duration="--:--",
+    )
+    assert result.artifact is not None
+    assert (
+        artifact_store.promote_completed_projection_duration(
+            "transcript-1",
+            expected_attempt_id=attempt.id,
+            expected_artifact_id="wrong-artifact",
+            duration="00:03",
+        )
+        is False
+    )
+    assert artifact_store.promote_completed_projection_duration(
+        "transcript-1",
+        expected_attempt_id=attempt.id,
+        expected_artifact_id=result.artifact.id,
+        duration="00:03",
+    )
+    assert artifact_store.promote_completed_projection_duration(
+        "transcript-1",
+        expected_attempt_id=attempt.id,
+        expected_artifact_id=result.artifact.id,
+        duration="00:04",
+    )
+
+    with sqlite3.connect(artifact_store._db_path) as conn:
+        assert conn.execute("SELECT duration FROM transcripts WHERE id = 'transcript-1'").fetchone()[0] == "00:03"
+        assert conn.execute("SELECT COUNT(*) FROM canonical_transcript_artifacts").fetchone()[0] == 1
+        assert conn.execute("SELECT artifact_id FROM canonical_transcript_heads").fetchone()[0] == result.artifact.id
 
 
 def test_canonical_fts_migration_restores_rowid_parity_and_indexed_integrity_lookup(
@@ -650,6 +693,7 @@ def test_canonical_fts_migration_restores_rowid_parity_and_indexed_integrity_loo
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
     )
     conn = artifact_store._connect()
     conn.executescript(
@@ -712,6 +756,7 @@ def test_canonical_commit_retry_is_idempotent(artifact_store):
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
         artifact_id="artifact-one",
     )
     retry = artifact_store.commit_canonical_artifact(
@@ -719,6 +764,7 @@ def test_canonical_commit_retry_is_idempotent(artifact_store):
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
         artifact_id="ignored-retry-id",
     )
     assert retry.artifact.id == first.artifact.id
@@ -734,6 +780,7 @@ def test_transcript_cascade_removes_canonical_segment_search_rows(artifact_store
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
     )
     with sqlite3.connect(artifact_store._db_path) as conn:
         conn.execute("PRAGMA foreign_keys=ON")
@@ -761,6 +808,7 @@ def test_concurrent_same_generation_commit_has_one_winner_and_supersedes_stale_l
             expected_attempt_version=attempt.state_version,
             expected_head_generation=0,
             segments=_segments(),
+            duration="00:03",
             artifact_id=artifact_id,
         )
 
@@ -791,6 +839,7 @@ def test_segment_ids_exclude_artifact_version_and_normalize_unicode_whitespace(a
         expected_attempt_version=first_attempt.state_version,
         expected_head_generation=0,
         segments=_segments("Café   Morgen."),
+        duration="00:03",
     )
     second_attempt = _ready_commit(artifact_store, attempt_id="stable-b")
     second = artifact_store.commit_canonical_artifact(
@@ -798,6 +847,7 @@ def test_segment_ids_exclude_artifact_version_and_normalize_unicode_whitespace(a
         expected_attempt_version=second_attempt.state_version,
         expected_head_generation=1,
         segments=_segments("Cafe\u0301 Morgen."),
+        duration="00:03",
     )
     assert first.artifact.generation == 1
     assert second.artifact.generation == 2
@@ -835,6 +885,7 @@ def test_fault_after_artifact_insert_rolls_back_head_projection_and_attempt(tmp_
             expected_attempt_version=attempt.state_version,
             expected_head_generation=0,
             segments=_segments(),
+            duration="00:03",
         )
     store.close()
 
@@ -854,6 +905,7 @@ def test_fault_after_artifact_insert_rolls_back_head_projection_and_attempt(tmp_
         expected_attempt_version=attempt.state_version,
         expected_head_generation=0,
         segments=_segments(),
+        duration="00:03",
     )
     assert result.committed
     recovered.close()

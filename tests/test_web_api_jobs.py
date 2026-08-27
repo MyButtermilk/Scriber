@@ -68,6 +68,25 @@ def _install_durable_parent_harness(
     return harness
 
 
+@pytest.fixture
+def isolated_youtube_database(monkeypatch, tmp_path):
+    """Keep the public YouTube workflow and canonical projection test-local."""
+
+    runtime_dir = tmp_path / "runtime"
+    db_path = runtime_dir / "transcripts.db"
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(runtime_dir))
+    monkeypatch.setenv("SCRIBER_DATABASE_PATH", str(db_path))
+    monkeypatch.setenv("SCRIBER_DOWNLOADS_DIR", str(runtime_dir / "downloads"))
+    monkeypatch.setenv("SCRIBER_SKIP_LEGACY_DATA_MIGRATION", "1")
+    monkeypatch.setattr(web_api.db, "_DB_PATH", db_path)
+    web_api.db._close_all_connections()
+    web_api.db.init_database()
+    try:
+        yield runtime_dir
+    finally:
+        web_api.db._close_all_connections()
+
+
 def _file_upload_plan(
     ctl: ScriberWebController,
     *,
@@ -3319,6 +3338,78 @@ async def test_start_youtube_transcription_persists_caption_override(monkeypatch
     assert "plannedFallbackRoute" not in job.payload
     assert job.payload["executionRoute"]["provider"]
     assert rec._youtube_prefer_captions is False
+
+
+@pytest.mark.asyncio
+async def test_completed_youtube_detail_persists_probed_duration(
+    monkeypatch,
+    isolated_youtube_database,
+):
+    runtime_dir = isolated_youtube_database
+    store = JobStore(db_path=runtime_dir / "jobs.db")
+    ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    ctl._downloads_dir = runtime_dir / "downloads"
+
+    async def download_audio(_url, *, output_dir, on_progress=None):
+        del on_progress
+        audio_path = Path(output_dir) / "downloaded.webm"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"synthetic audio")
+        return audio_path
+
+    class Pipeline:
+        last_structured_transcript_payload = None
+
+        def __init__(self, *, on_transcription):
+            self._on_transcription = on_transcription
+
+        async def transcribe_file(self, _path):
+            self._on_transcription("Synthetic YouTube transcript.", True)
+
+    def create_pipeline(*_args, **kwargs):
+        return Pipeline(on_transcription=kwargs["on_transcription"])
+
+    try:
+        monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
+        monkeypatch.setattr(Config, "YOUTUBE_PREFER_CAPTIONS", False)
+        monkeypatch.setattr(ctl, "_provider_candidates", lambda: ["soniox"])
+
+        with (
+            patch("src.web_api._validate_provider_ready"),
+            patch("src.web_api.download_youtube_audio", new=AsyncMock(side_effect=download_audio)),
+            patch("src.web_api._probe_media_duration_seconds", return_value=19.021),
+            patch("src.web_api.supports_direct_file_upload", return_value=False),
+            patch("src.web_api._create_scriber_pipeline", side_effect=create_pipeline),
+            patch.object(
+                ctl,
+                "_apply_speaker_diarization_fallback",
+                new=AsyncMock(return_value=[]),
+            ),
+            patch.object(ctl, "_broadcast_history_updated", new=AsyncMock()),
+        ):
+            rec = await ctl.start_youtube_transcription(
+                {
+                    "url": "https://youtube.com/watch?v=durationtest",
+                    "duration": "--:--",
+                    "preferCaptions": False,
+                }
+            )
+            task = ctl._running_tasks[rec.id]
+            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+
+        detail = await ctl.get_transcript(rec.id)
+        persisted = web_api.db.get_transcript(rec.id)
+
+        assert detail is not None
+        assert detail["status"] == "completed"
+        assert detail["content"] == "[0:00] Synthetic YouTube transcript."
+        assert detail["duration"] == "00:19"
+        assert persisted is not None
+        assert persisted["duration"] == "00:19"
+    finally:
+        await ctl.drain_background_tasks_for_shutdown(timeout_seconds=0.5)
+        ctl.shutdown()
+        ctl.close_persistence_stores()
 
 
 @pytest.mark.asyncio

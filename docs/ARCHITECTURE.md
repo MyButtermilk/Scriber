@@ -765,7 +765,13 @@ The validated normalized provider/caption result is committed before optional
 diarization. Recovery from `provider_result_ready` therefore resumes without a
 second cloud call. A canonical commit is one `BEGIN IMMEDIATE` transaction: it
 checks the expected head generation, writes artifact/segments/inputs, advances
-the head by CAS, updates compatibility projections, and completes the attempt.
+the head by CAS, updates compatibility content, preview, duration, and terminal
+status together, and completes the attempt.
+A provider StageResult also binds the probed source-media duration for
+source-free recovery. Builds predating that evidence fall back to the immutable
+unit end time. Startup may promote only a placeholder duration when the exact
+completed attempt still owns the exact canonical head and the parent is already
+`completed`; it never rewrites content or another terminal winner.
 A stale attempt becomes `superseded` and cannot replace a newer artifact.
 Artifact begin, provider-stage persistence, canonical commit/FTS projection,
 and Meeting track-stage persistence execute as coarse worker-thread phases so
