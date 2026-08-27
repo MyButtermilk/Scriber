@@ -152,7 +152,7 @@ def test_fresh_post_processing_fallback_model_preserves_precedence_and_legacy_al
             tmp_path / "legacy",
             legacy_env="z-ai/glm-5.2,minimax/minimax-m3",
         )
-        == "z-ai/glm-5.2:nitro"
+        == "z-ai/glm-5.3-flash:nitro"
     )
     assert (
         _read_fresh_post_processing_fallback_model(
@@ -170,6 +170,37 @@ def test_fresh_post_processing_fallback_model_preserves_precedence_and_legacy_al
         )
         == "openai/gpt-oss-120b:cerebras"
     )
+    assert (
+        _read_fresh_post_processing_fallback_model(
+            tmp_path / "configured-glm-5-2",
+            configured="z-ai/glm-5.2:nitro",
+        )
+        == "z-ai/glm-5.3-flash:nitro"
+    )
+    assert (
+        _read_fresh_post_processing_fallback_model(
+            tmp_path / "env-glm-5-2",
+            direct_env="z-ai/glm-5.2:nitro",
+        )
+        == "z-ai/glm-5.3-flash:nitro"
+    )
+
+
+def test_builtin_language_model_migration_updates_only_exact_retired_glm_values():
+    settings = {
+        "summarizationModel": "z-ai/glm-5.2:nitro",
+        "meetingAnalysisModel": "z-ai/glm-5.2",
+        "postProcessingModel": "z-ai/glm-5.2:nitro",
+        "postProcessingFallbackModel": "z-ai/glm-5.2:nitro",
+        "unrelated": "z-ai/glm-5.2:nitro",
+    }
+
+    assert config_module._migrate_builtin_language_models(settings) is True
+    assert settings["summarizationModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["meetingAnalysisModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["postProcessingModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["postProcessingFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["unrelated"] == "z-ai/glm-5.2:nitro"
 
 
 def test_frontend_and_backend_post_processing_fallback_model_lists_match():
@@ -716,7 +747,7 @@ def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_
     monkeypatch.setattr(Config, "POST_PROCESSING_ENABLED", True)
     monkeypatch.setattr(Config, "POST_PROCESSING_HOTKEY", "ctrl+shift+p")
     monkeypatch.setattr(Config, "POST_PROCESSING_MODEL", "gemini-flash-latest")
-    monkeypatch.setattr(Config, "POST_PROCESSING_FALLBACK_MODEL", "z-ai/glm-5.2:nitro")
+    monkeypatch.setattr(Config, "POST_PROCESSING_FALLBACK_MODEL", "z-ai/glm-5.3-flash:nitro")
 
     Config.persist_to_env_file(str(target))
 
@@ -724,7 +755,7 @@ def test_persist_to_env_file_includes_post_processing_settings(monkeypatch, tmp_
     assert "SCRIBER_POST_PROCESSING_ENABLED=1" in contents
     assert "SCRIBER_POST_PROCESSING_HOTKEY=ctrl+shift+p" in contents
     assert "SCRIBER_POST_PROCESSING_MODEL=gemini-flash-latest" in contents
-    assert "SCRIBER_POST_PROCESSING_FALLBACK_MODEL=z-ai/glm-5.2:nitro" in contents
+    assert "SCRIBER_POST_PROCESSING_FALLBACK_MODEL=z-ai/glm-5.3-flash:nitro" in contents
 
 
 def test_persist_to_env_file_includes_vad_segmentation_setting(monkeypatch, tmp_path):
@@ -789,8 +820,9 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     Config.set_post_processing_enabled(False)
     Config.set_post_processing_engine("local")
     Config.set_local_polishing_variant("bf16")
+    Config.set_summarization_model("custom/summary-model")
     Config.set_post_processing_model("test/model")
-    Config.set_post_processing_fallback_model("z-ai/glm-5.2:nitro")
+    Config.set_post_processing_fallback_model("z-ai/glm-5.3-flash:nitro")
     Config.set_segment_speech_with_vad(True)
     Config.set_youtube_prefer_captions(False)
 
@@ -800,8 +832,9 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     assert len(writes) == 1
     assert Config.json_settings_migration_pending() is False
     assert writes[0][0] == target
+    assert '"summarizationModel": "custom/summary-model"' in writes[0][1]
     assert '"postProcessingModel": "test/model"' in writes[0][1]
-    assert '"postProcessingFallbackModel": "z-ai/glm-5.2:nitro"' in writes[0][1]
+    assert '"postProcessingFallbackModel": "z-ai/glm-5.3-flash:nitro"' in writes[0][1]
     assert '"postProcessingEngine": "local"' in writes[0][1]
     assert '"localPolishingVariant": "bf16"' in writes[0][1]
     assert '"youtubePreferCaptions": false' in writes[0][1]

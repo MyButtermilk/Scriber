@@ -39,6 +39,7 @@ import { useI18n } from "@/i18n";
 import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
 import { useBrowserYoutubeImport } from "@/hooks/use-browser-youtube-import";
 import { parseBrowserYoutubeImport } from "@/lib/browser-youtube-import";
+import { localizedYoutubeProcessingStep } from "@/lib/youtube-processing-step";
 
 type SortOption = "date" | "likes" | "views";
 
@@ -63,39 +64,6 @@ function youtubeHistoryStatus(item: TranscriptHistoryItem): YoutubeHistoryStatus
   if (item.summaryStatus === "failed") return "summary_failed";
   if (item.status === "stopped") return "stopped";
   return "ready";
-}
-
-function localizedProcessingStep(
-  value: string | null | undefined,
-  fallback: string,
-  t: ReturnType<typeof useI18n>["t"],
-  formatNumber: ReturnType<typeof useI18n>["formatNumber"],
-): string {
-  const source = String(value || fallback).trim();
-  const retryMatch = /^Retrying in ([\d.,]+)s \((\d+)\/(\d+)\)$/.exec(source);
-  if (retryMatch) {
-    const seconds = Number(retryMatch[1].replace(",", "."));
-    return t("Retrying in {{seconds}}s ({{attempt}}/{{total}})", {
-      seconds: Number.isFinite(seconds) ? formatNumber(seconds, { maximumFractionDigits: 2 }) : retryMatch[1],
-      attempt: formatNumber(Number(retryMatch[2])),
-      total: formatNumber(Number(retryMatch[3])),
-    });
-  }
-
-  const downloadMatch = /^Downloading\.\.\.\s+([\d.,]+)%(.*)$/.exec(source);
-  if (downloadMatch) {
-    const percentage = Number(downloadMatch[1].replace(",", "."));
-    const formattedPercentage = Number.isFinite(percentage)
-      ? formatNumber(percentage / 100, { style: "percent", maximumFractionDigits: 1 })
-      : `${downloadMatch[1]}%`;
-    const technicalSuffix = downloadMatch[2].replace(" • ETA ", ` • ${t("ETA")} `);
-    return `${t("Downloading… {{percent}}", { percent: formattedPercentage })}${technicalSuffix}`;
-  }
-
-  if (source.startsWith("Error: ")) {
-    return `${t("Error")}: ${source.slice("Error: ".length)}`;
-  }
-  return t(source);
 }
 
 interface YoutubeThumbnailProps {
@@ -221,7 +189,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     <WavePhysicsLoader size="micro" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
-                      : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
+                      : localizedYoutubeProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Button
@@ -311,7 +279,7 @@ const YoutubeVideoCard = memo(function YoutubeVideoCard({
                     <WavePhysicsLoader size="micro" />
                     {item.summaryStatus === "pending"
                       ? t("Summarizing…")
-                      : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
+                      : localizedYoutubeProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                 ) : historyStatus === "failed" ? (
                   <Button

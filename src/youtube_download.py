@@ -74,6 +74,29 @@ class DownloadProgress:
         self.eta: str = ""  # e.g., "00:15"
         self.eta_seconds: int = 0
         self.status: str = ""  # "downloading", "finished", etc.
+        self.retry_attempt: int = 0
+        self.retry_max_attempts: int = 0
+        self.retry_delay_seconds: float = 0.0
+
+
+def _report_download_retry(
+    on_progress: Callable[[DownloadProgress], None] | None,
+    *,
+    attempt: int,
+    max_attempts: int,
+    delay_seconds: float,
+) -> None:
+    if on_progress is None:
+        return
+    progress = DownloadProgress()
+    progress.status = "retrying"
+    progress.retry_attempt = attempt
+    progress.retry_max_attempts = max_attempts
+    progress.retry_delay_seconds = delay_seconds
+    try:
+        on_progress(progress)
+    except Exception as exc:
+        logger.debug("YouTube retry progress callback failed: {}", type(exc).__name__)
 
 
 def _format_bytes(num_bytes: float) -> str:
@@ -806,6 +829,12 @@ async def download_youtube_audio(
                                 logger.warning(
                                     f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})..."
                                 )
+                                _report_download_retry(
+                                    on_progress,
+                                    attempt=attempt + 1,
+                                    max_attempts=max_retries,
+                                    delay_seconds=delay,
+                                )
                                 time.sleep(delay)
                                 continue
 
@@ -921,6 +950,12 @@ async def download_youtube_audio(
             if _is_forbidden_error(last_error_msg) and attempt < max_retries - 1:
                 delay = 2.0 + attempt * 2.0  # Increasing delay: 2s, 4s, 6s
                 logger.warning(f"YouTube download got 403 error, retrying in {delay}s ({attempt + 1}/{max_retries})...")
+                _report_download_retry(
+                    on_progress,
+                    attempt=attempt + 1,
+                    max_attempts=max_retries,
+                    delay_seconds=delay,
+                )
                 await asyncio.sleep(delay)
                 continue
 

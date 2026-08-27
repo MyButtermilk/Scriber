@@ -29,6 +29,16 @@ type InputWarningAction = {
 
 type ModelDownloadStatus = "downloading" | "ready" | "error" | "not_downloaded";
 
+export type PostProcessingFallbackReasonCategory =
+  | "authentication"
+  | "quota_or_payment"
+  | "rate_limit"
+  | "provider_unavailable"
+  | "timeout"
+  | "output_limit"
+  | "request_rejected"
+  | "provider_error";
+
 type PostProcessingFallbackMessage = BaseWsMessage & {
   type: "post_processing_fallback_used";
   eventId: string;
@@ -36,6 +46,8 @@ type PostProcessingFallbackMessage = BaseWsMessage & {
   fallbackModel: string;
   desktopNotificationAccepted: boolean;
   reason?: string;
+  reasonCategory?: PostProcessingFallbackReasonCategory;
+  primaryFailureStatus?: number;
 };
 
 export type ScriberWebSocketMessage =

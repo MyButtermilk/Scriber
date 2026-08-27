@@ -1415,7 +1415,7 @@ Packaging and scripts:
   default. Keep `youtubePreferCaptions` persistent in writable runtime settings,
   fall back to provider audio transcription when captions are unavailable, and
   do not expose the preference as an inline control on the YouTube page.
-- Standard YouTube builds pin `yt-dlp[default]==2026.7.4` with matching
+- Standard YouTube builds pin `yt-dlp[default]==2026.8.19` with matching
   `yt-dlp-ejs==0.8.0` and the locked QuickJS-ng `0.15.0` engine behind
   `scriber-quickjs-wrapper`. Stage `qjs.exe`, `qjs-engine.exe`,
   `LICENSE.quickjs-ng.txt`, and `js-runtime-manifest.json` as one indivisible

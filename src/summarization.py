@@ -35,7 +35,7 @@ from src.runtime.http_response import read_response_text_limited
 from src.runtime.provider_http import ProviderHttpTransport
 from src.summary_html import normalize_summary_document_html
 
-SummarizationModel = Literal[
+BuiltInSummarizationModel = Literal[
     "gemini-flash-latest",
     "gemini-3.5-flash",
     "gemini-3-flash-preview",
@@ -56,8 +56,12 @@ SummarizationModel = Literal[
     "openai/gpt-oss-120b:cerebras",
     "cerebras/gemma-4-31b",
     "celeris-1",
-    "z-ai/glm-5.2:nitro",
+    "z-ai/glm-5.3-flash:nitro",
 ]
+# Settings may also contain a validated canonical OpenRouter ``author/model``
+# code. Keeping the public alias open avoids falsely narrowing those values to
+# the built-in catalog.
+SummarizationModel = BuiltInSummarizationModel | str
 FallbackObserver = Callable[[str, str], Awaitable[None]]
 FallbackErrorObserver = Callable[[str, str, int | None], Awaitable[None]]
 ModelUsedObserver = Callable[[str], None]
@@ -84,7 +88,19 @@ def _is_incomplete_summary_error(error: BaseException) -> bool:
     return getattr(error, "meeting_analysis_error_code", "") == "meeting_analysis_incomplete_response"
 
 
-_OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.2:nitro")
+def _fallback_public_reason(error: BaseException) -> str:
+    """Return a bounded reason code without exposing provider response text."""
+
+    if isinstance(error, ProviderTransportError):
+        return provider_public_code(error.code) or "provider_error"
+    if isinstance(error, TimeoutError):
+        return "timeout"
+    if isinstance(error, SummaryOutputLimitError) or _is_incomplete_summary_error(error):
+        return "output_limit"
+    return "provider_error"
+
+
+_OPENROUTER_DEFAULT_MODELS = ("minimax/minimax-m3:nitro", "z-ai/glm-5.3-flash:nitro")
 _OPENROUTER_PROVIDER_ROUTED_MODELS = frozenset({"openai/gpt-oss-120b"})
 _OPENROUTER_PROVIDER_ROUTE_SUFFIXES = frozenset({"baseten", "cerebras"})
 _MODEL_OUTPUT_TOKEN_CAPS = {
@@ -108,7 +124,7 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "openai/gpt-oss-120b:cerebras": 4096,
     "cerebras/gemma-4-31b": 8192,
     "celeris-1": 3072,
-    "z-ai/glm-5.2:nitro": 8192,
+    "z-ai/glm-5.3-flash:nitro": 8192,
 }
 _HTML_OUTPUT_GUARDRAIL = (
     "Output contract (mandatory; this overrides every conflicting instruction in the custom prompt):\n"
@@ -318,6 +334,8 @@ def _openrouter_nitro_model(model: str) -> str:
     if not raw:
         return _OPENROUTER_DEFAULT_MODELS[0]
     base = raw.split(":", 1)[0]
+    if base.lower() == "z-ai/glm-5.2":
+        base = "z-ai/glm-5.3-flash"
     if base.lower() in _OPENROUTER_PROVIDER_ROUTED_MODELS:
         route_suffix = _openrouter_provider_route_suffix(raw)
         return f"{base}:{route_suffix}" if route_suffix else base
@@ -397,7 +415,7 @@ def _same_openrouter_model(left: str, right: str) -> bool:
 def _is_openrouter_reasoning_model(model: str) -> bool:
     raw = os.getenv(
         "SCRIBER_SUMMARY_OPENROUTER_REASONING_MODELS",
-        "minimax/minimax-m3,z-ai/glm-5.2",
+        "minimax/minimax-m3,z-ai/glm-5.3-flash",
     ).strip()
     families = {_openrouter_model_family(item) for item in raw.split(",") if item.strip()}
     return _openrouter_model_family(model) in families
@@ -505,7 +523,7 @@ def _summary_budget_for_text(
         if thinking_reserve > 0:
             output_tokens = min(budget_cap, output_tokens + thinking_reserve)
 
-    # Some OpenRouter models, currently GLM 5.2, spend completion tokens on
+    # Some OpenRouter models, including GLM 5.3 Flash, spend completion tokens on
     # hidden/provider reasoning before emitting visible content.
     if _is_openrouter_model(model) and _is_openrouter_reasoning_model(model_key):
         reasoning_reserve = _env_int(
@@ -824,25 +842,25 @@ async def _try_openrouter_summary_fallback(
     fallback_models_override = _openrouter_fallback_models_override.get()
     fallback_models = list(fallback_models_override) if fallback_models_override else _openrouter_fallback_models()
     error_status = primary_error.status if isinstance(primary_error, ProviderTransportError) else None
-    error_code = provider_public_code(primary_error.code) if isinstance(primary_error, ProviderTransportError) else ""
+    error_code = _fallback_public_reason(primary_error)
     logger.warning(
         "Summarization with {} failed (error_type={}, status={}, code={}). Falling back to OpenRouter models {}.",
         primary_model,
         type(primary_error).__name__,
         error_status,
-        error_code or None,
+        error_code,
         fallback_models,
     )
     if on_fallback is not None:
         try:
-            await on_fallback(primary_model, error_code or "provider_error")
+            await on_fallback(primary_model, error_code)
         except Exception as exc:
             logger.warning("Summarization fallback observer failed: {}", type(exc).__name__)
     if on_fallback_error is not None:
         try:
             await on_fallback_error(
                 primary_model,
-                error_code or "provider_error",
+                error_code,
                 error_status,
             )
         except Exception as exc:
@@ -962,7 +980,7 @@ async def summarize_text(
         fallback = await _try_openrouter_summary_fallback(
             full_prompt,
             primary_model=model,
-            primary_error=timeout_error,
+            primary_error=exc,
             max_output_tokens=None,
             timeout_seconds=timeout_seconds,
             require_structured_html=True,
@@ -1068,7 +1086,7 @@ async def generate_text_with_model(
         fallback = await _try_openrouter_summary_fallback(
             prompt,
             primary_model=selected_model,
-            primary_error=timeout_error,
+            primary_error=exc,
             max_output_tokens=output_tokens,
             timeout_seconds=timeout_seconds,
             on_fallback=on_fallback,

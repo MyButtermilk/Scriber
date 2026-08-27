@@ -496,7 +496,9 @@ def test_settings_provider_help_links_are_safe_external_links() -> None:
     assert 'const { openUrl } = await import("@tauri-apps/plugin-opener");' in source
     assert "await openUrl(url);" in source
     assert 'value: "minimax/minimax-m3:nitro"' in source
-    assert 'value: "z-ai/glm-5.2:nitro"' in source
+    assert 'value: "z-ai/glm-5.3-flash:nitro"' in source
+    assert 'label: "GLM 5.3 Flash Nitro"' in source
+    assert "aaLanguageBenchmarkDetail(0.1, 57, localeTag, t)" in source
     assert 'provider="OpenRouter"' in source
     assert 'if (provider === "OpenRouter") apiKeys.openrouter = openRouterKey;' in source
 
@@ -523,9 +525,14 @@ def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> No
         )
     ]
     assert 'label: "Muse Spark 1.2"' in standard_option
+    assert "aaLanguageBenchmarkDetail(0.78, 57, localeTag, t)" in standard_option
     assert 'group: "meta"' in standard_option
+    assert 'icon: "meta"' in standard_option
     assert 'label: "Muse Spark 1.2 Contributor"' in contributor_option
+    assert "aaLanguageBenchmarkDetail(0.0414, 57, localeTag, t)" in contributor_option
+    assert "Same Muse Spark checkpoint score" in contributor_option
     assert 'group: "meta"' in contributor_option
+    assert 'icon: "meta"' in contributor_option
     assert 'key: "meta"' in settings_source
     assert 'items: summarizationModelOptions.filter((option) => option.group === "meta")' in settings_source
 
@@ -536,6 +543,10 @@ def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> No
     assert '"Meta Model API": hasValue(keys.meta)' in settings_source
     assert 'if (provider === "Meta Model API") apiKeys.meta = metaModelApiKey;' in settings_source
     assert 'provider="Meta Model API"' in settings_source
+    assert 'meta: "/provider-icons/meta.svg"' in settings_source
+    assert (REPO_ROOT / "Frontend" / "client" / "public" / "provider-icons" / "meta.svg").is_file()
+    meta_credential = settings_source[settings_source.index('provider="Meta Model API"') :]
+    assert 'icon="meta"' in meta_credential[:400]
     assert "value={metaModelApiKey}" in settings_source
     assert 'helpKey="meta"' in settings_source
     assert "model === META_MUSE_SPARK_STANDARD_MODEL || model === META_MUSE_SPARK_CONTRIBUTOR_MODEL" in settings_source
@@ -1619,7 +1630,9 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
         'return t("{{price}}/M blended · ~{{tokens}} tokens/s", { price: priceText, tokens: tokensPerSecond });'
         in settings_source
     )
+    assert 'return t("{{price}}/M blended · AA score {{score}} · ~{{tokens}} tokens/s", {' in settings_source
     assert "languageModelBenchmarkDetail(0.00000035, 0.00000075, 768, localeTag, t)" in settings_source
+    assert "aaPostProcessingBenchmarkDetail(0.1, 57, 127, localeTag, t)" in settings_source
     assert 'baseten: "/provider-icons/baseten.svg"' in settings_source
     assert 'cerebras: "/provider-icons/cerebras.svg"' in settings_source
     assert 'value: "google/gemini-2.5-flash-lite:nitro"' in settings_source
@@ -1636,7 +1649,11 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "const [postProcessingFallbackModel, setPostProcessingFallbackModel]" in settings_source
     assert "const [cerebrasKey, setCerebrasKey]" in settings_source
     assert 'provider="Cerebras"' in settings_source
-    assert "setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);" in settings_source
+    assert (
+        "const loadedPostProcessingModel = settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL;"
+        in settings_source
+    )
+    assert "setPostProcessingModel(loadedPostProcessingModel);" in settings_source
     assert "settings.postProcessingFallbackModel || DEFAULT_POST_PROCESSING_FALLBACK_MODEL" in settings_source
     assert "const handlePostProcessingModelChange = async (value: string)" in settings_source
     assert "await updateSettings({ postProcessingModel: value });" in settings_source
@@ -1657,6 +1674,14 @@ def test_settings_exposes_dedicated_post_processing_model_choice() -> None:
     assert "openCredentialDialog(requirement);" in settings_source
     assert "{option.detail}" in settings_source
     assert 'detail={t("Use a low-cost, low-latency model for simple dictation cleanup.")}' in settings_source
+    assert "function canonicalCustomOpenRouterModelCode(value: string): string" in settings_source
+    assert "function selectedCustomOpenRouterModelCode(" in settings_source
+    assert 'id="summary-custom-openrouter-model"' in settings_source
+    assert 'id="post-processing-custom-openrouter-model"' in settings_source
+    assert "await handleSummarizationModelChange(canonical);" in settings_source
+    assert "await handlePostProcessingModelChange(canonical);" in settings_source
+    assert "selectedModel={selectedCustomSummarizationModel}" in settings_source
+    assert "selectedModel={selectedCustomPostProcessingModel}" in settings_source
     assert "Beantworte keine Fragen im Transkript." in presentation_source
     assert "Gliedere den Text in sinnvolle Absätze." in presentation_source
     assert "Entferne Füllwörter" in presentation_source

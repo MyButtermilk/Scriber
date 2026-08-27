@@ -9,6 +9,102 @@ class WSContractError(ValueError):
 
 WS_API_VERSION = "1"
 
+POST_PROCESSING_FALLBACK_REASON_CATEGORIES = frozenset(
+    {
+        "authentication",
+        "quota_or_payment",
+        "rate_limit",
+        "provider_unavailable",
+        "timeout",
+        "output_limit",
+        "request_rejected",
+        "provider_error",
+    }
+)
+
+
+def _post_processing_failure_status(value: Any) -> int | None:
+    if isinstance(value, int) and not isinstance(value, bool) and 100 <= value <= 599:
+        return value
+    return None
+
+
+def _post_processing_public_reason(value: Any) -> str:
+    candidate = str(value or "").strip()
+    if not candidate or len(candidate) > 80 or not candidate.isascii():
+        return ""
+    return candidate if all(char.isalnum() or char in "._:-" for char in candidate) else ""
+
+
+def _post_processing_fallback_reason_category(reason: str | None, status: int | None) -> str:
+    normalized_status = _post_processing_failure_status(status)
+    if normalized_status in {401, 403}:
+        return "authentication"
+    if normalized_status == 402:
+        return "quota_or_payment"
+    if normalized_status == 408:
+        return "timeout"
+    if normalized_status == 429:
+        return "rate_limit"
+    if normalized_status is not None and 500 <= normalized_status <= 599:
+        return "provider_unavailable"
+
+    normalized_reason = str(reason or "").strip().lower().replace("-", "_").replace(".", "_")
+    if normalized_reason in {
+        "auth_invalid",
+        "authentication_error",
+        "authentication_failed",
+        "credential_rejected",
+        "invalid_api_key",
+        "unauthorized",
+        "forbidden",
+        "access_denied",
+    }:
+        return "authentication"
+    if normalized_reason in {
+        "quota_exceeded",
+        "quota_cooldown",
+        "payment_required",
+        "insufficient_credits",
+        "insufficient_quota",
+        "billing_error",
+    }:
+        return "quota_or_payment"
+    if normalized_reason in {"rate_limit", "rate_limit_error", "too_many_requests"}:
+        return "rate_limit"
+    if normalized_reason in {
+        "server_error",
+        "service_unavailable",
+        "provider_unavailable",
+        "provider_overloaded",
+        "overloaded",
+        "internal_server_error",
+        "bad_gateway",
+        "gateway_timeout",
+    }:
+        return "provider_unavailable"
+    if normalized_reason in {"timeout", "request_timeout", "deadline_exceeded", "timed_out"}:
+        return "timeout"
+    if normalized_reason in {
+        "output_limit",
+        "max_tokens",
+        "length",
+        "incomplete_response",
+        "meeting_analysis_incomplete_response",
+    }:
+        return "output_limit"
+    if normalized_status is not None and 400 <= normalized_status <= 499:
+        return "request_rejected"
+    if normalized_reason in {
+        "invalid_request",
+        "invalid_request_error",
+        "request_rejected",
+        "model_not_found",
+        "payload_too_large",
+    }:
+        return "request_rejected"
+    return "provider_error"
+
 
 def version_event_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = dict(payload)
@@ -149,6 +245,7 @@ def post_processing_fallback_used_event(
     *,
     desktop_notification_accepted: bool = False,
     reason: str | None = None,
+    primary_failure_status: int | None = None,
     session_id: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
@@ -158,9 +255,13 @@ def post_processing_fallback_used_event(
         "fallbackModel": str(fallback_model),
         "desktopNotificationAccepted": bool(desktop_notification_accepted),
     }
-    normalized_reason = str(reason or "").strip()
+    normalized_reason = _post_processing_public_reason(reason)
     if normalized_reason:
         payload["reason"] = normalized_reason
+    normalized_status = _post_processing_failure_status(primary_failure_status)
+    if normalized_status is not None:
+        payload["primaryFailureStatus"] = normalized_status
+    payload["reasonCategory"] = _post_processing_fallback_reason_category(normalized_reason, normalized_status)
     return _optional_session(payload, session_id)
 
 
@@ -499,8 +600,18 @@ def validate_event_payload(payload: dict[str, Any]) -> None:
             _require_string(payload, field, event_type)
             if not payload[field].strip():
                 raise WSContractError(f"{event_type} event requires non-empty string '{field}'")
-        if "reason" in payload and not isinstance(payload.get("reason"), str):
-            raise WSContractError(f"{event_type} event requires string 'reason' when present")
+        if "reason" in payload:
+            reason = payload.get("reason")
+            if not isinstance(reason, str) or _post_processing_public_reason(reason) != reason:
+                raise WSContractError(f"{event_type} event requires bounded public code 'reason' when present")
+        reason_category = payload.get("reasonCategory")
+        if reason_category is not None and reason_category not in POST_PROCESSING_FALLBACK_REASON_CATEGORIES:
+            raise WSContractError(f"{event_type} event has invalid 'reasonCategory'")
+        if (
+            "primaryFailureStatus" in payload
+            and _post_processing_failure_status(payload.get("primaryFailureStatus")) is None
+        ):
+            raise WSContractError(f"{event_type} event requires HTTP status int 'primaryFailureStatus' when present")
         _require_bool(payload, "desktopNotificationAccepted", event_type)
     elif event_type == "frontend_performance_flush":
         _require_string(payload, "sourceInstanceId", event_type)

@@ -52,6 +52,9 @@ _MAX_JSON_SETTINGS_BYTES = 1024 * 1024
 DEFAULT_LIVE_MIC_HOTKEY = "ctrl+shift+d"
 DEFAULT_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
 DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
+_LEGACY_GLM_NITRO_MODELS = frozenset({"z-ai/glm-5.2", "z-ai/glm-5.2:nitro"})
+_CURRENT_GLM_NITRO_MODEL = "z-ai/glm-5.3-flash:nitro"
+_env_settings_migration_pending = False
 
 
 def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
@@ -97,6 +100,26 @@ def _versioned_model_env(
         os.environ[name] = default
         return default
     return raw
+
+
+def _migrate_legacy_glm_nitro_model(value: object) -> str:
+    """Upgrade the retired built-in GLM route while preserving custom models."""
+    raw = str(value or "").strip()
+    if raw.casefold() in _LEGACY_GLM_NITRO_MODELS:
+        return _CURRENT_GLM_NITRO_MODEL
+    return raw
+
+
+def _migrated_glm_model_env(name: str, default: str = "") -> str:
+    """Resolve a model env value and durably flag old generated settings."""
+    global _env_settings_migration_pending
+    raw = str(os.getenv(name, default) or "").strip()
+    migrated = _migrate_legacy_glm_nitro_model(raw)
+    if migrated != raw:
+        os.environ[name] = migrated
+        if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
+            _env_settings_migration_pending = True
+    return migrated
 
 
 def _atomic_write_text(path: str | Path, content: str) -> None:
@@ -202,10 +225,27 @@ def _migrate_summarization_prompt_once(settings: dict) -> bool:
     return True
 
 
+def _migrate_builtin_language_models(settings: dict) -> bool:
+    """Upgrade exact retired built-ins without rewriting user model codes."""
+    changed = False
+    for key in ("summarizationModel", "meetingAnalysisModel", "postProcessingModel", "postProcessingFallbackModel"):
+        if key not in settings:
+            continue
+        current = settings[key]
+        migrated = _migrate_legacy_glm_nitro_model(current)
+        if migrated and migrated != current:
+            settings[key] = migrated
+            changed = True
+    return changed
+
+
 _json_settings, _json_settings_rewrite_safe = _load_json_settings_with_status()
-_json_settings_migration_pending = (
-    _migrate_summarization_prompt_once(_json_settings) if _json_settings_rewrite_safe else False
-)
+_json_settings_migration_pending = False
+if _json_settings_rewrite_safe:
+    _json_settings_migration_pending = _migrate_summarization_prompt_once(_json_settings)
+    _json_settings_migration_pending = (
+        _migrate_builtin_language_models(_json_settings) or _json_settings_migration_pending
+    )
 
 
 class Config:
@@ -391,7 +431,9 @@ class Config:
 
     # Summarization model for LLM transcript summarization
     DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
-    SUMMARIZATION_MODEL = os.getenv("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
+    SUMMARIZATION_MODEL = _migrate_legacy_glm_nitro_model(
+        _json_settings.get("summarizationModel")
+    ) or _migrated_glm_model_env("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
 
     # Public Microsoft Entra desktop-app registration. This identifier is not a secret.
     OUTLOOK_CLIENT_ID = os.getenv("SCRIBER_OUTLOOK_CLIENT_ID", "").strip()
@@ -415,7 +457,7 @@ class Config:
         "openai/gpt-oss-120b:cerebras",
         "google/gemini-2.5-flash-lite:nitro",
         "minimax/minimax-m3:nitro",
-        "z-ai/glm-5.2:nitro",
+        "z-ai/glm-5.3-flash:nitro",
     )
     DEFAULT_POST_PROCESSING_FALLBACK_MODEL = "minimax/minimax-m3:nitro"
     _LEGACY_DEFAULT_POST_PROCESSING_MODELS: ClassVar[set[str]] = {
@@ -502,7 +544,7 @@ ${output}"""
         MEETING_TRANSCRIPTION_MODE = "live_final"
     MEETING_ANALYSIS_MODEL = (
         _json_settings.get("meetingAnalysisModel")
-        or os.getenv("SCRIBER_MEETING_ANALYSIS_MODEL")
+        or _migrated_glm_model_env("SCRIBER_MEETING_ANALYSIS_MODEL")
         or SUMMARIZATION_MODEL
         or DEFAULT_SUMMARIZATION_MODEL
     )
@@ -532,8 +574,8 @@ ${output}"""
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
         or _DEFAULT_POST_PROCESSING_PROMPT
     )
-    _configured_post_processing_model = (_json_settings.get("postProcessingModel") or "").strip()
-    _env_post_processing_model = (os.getenv("SCRIBER_POST_PROCESSING_MODEL") or "").strip()
+    _configured_post_processing_model = _migrate_legacy_glm_nitro_model(_json_settings.get("postProcessingModel"))
+    _env_post_processing_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_MODEL")
     if _configured_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
         _configured_post_processing_model = ""
     if _env_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
@@ -541,10 +583,12 @@ ${output}"""
     POST_PROCESSING_MODEL = (
         _configured_post_processing_model or _env_post_processing_model or DEFAULT_POST_PROCESSING_MODEL
     )
-    _configured_post_processing_fallback_model = (_json_settings.get("postProcessingFallbackModel") or "").strip()
-    _env_post_processing_fallback_model = (os.getenv("SCRIBER_POST_PROCESSING_FALLBACK_MODEL") or "").strip()
+    _configured_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
+        _json_settings.get("postProcessingFallbackModel")
+    )
+    _env_post_processing_fallback_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_FALLBACK_MODEL")
     _legacy_summary_fallback_models = (os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS") or "").strip()
-    _legacy_post_processing_fallback_model = (
+    _legacy_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
         _legacy_summary_fallback_models.split(",", 1)[0].strip() if _legacy_summary_fallback_models else ""
     )
     if _legacy_post_processing_fallback_model and ":" not in _legacy_post_processing_fallback_model:
@@ -839,9 +883,22 @@ ${output}"""
         _json_settings_migration_pending = False
 
     @classmethod
+    def set_summarization_model(cls, model: str) -> None:
+        """Update the summary model in the existing settings field."""
+        cls.SUMMARIZATION_MODEL = model.strip() or cls.DEFAULT_SUMMARIZATION_MODEL
+        os.environ["SCRIBER_SUMMARIZATION_MODEL"] = cls.SUMMARIZATION_MODEL
+        global _json_settings
+        _json_settings["summarizationModel"] = cls.SUMMARIZATION_MODEL
+
+    @classmethod
     def json_settings_migration_pending(cls) -> bool:
         """Return whether a safe built-in settings migration still needs disk persistence."""
         return bool(_json_settings_migration_pending)
+
+    @classmethod
+    def env_settings_migration_pending(cls) -> bool:
+        """Return whether a retired built-in loaded from .env needs rewriting."""
+        return bool(_env_settings_migration_pending)
 
     @classmethod
     def set_youtube_prefer_captions(cls, enabled: bool) -> None:
@@ -1031,3 +1088,5 @@ ${output}"""
 
         with _SETTINGS_FILE_LOCK:
             _atomic_write_text(target_path, "\n".join(lines) + "\n")
+        global _env_settings_migration_pending
+        _env_settings_migration_pending = False

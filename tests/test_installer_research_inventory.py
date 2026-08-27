@@ -47,10 +47,10 @@ def _write_console_record_fixture(
     launcher_length: int = 108_467,
     launcher_path: str = "../../Scripts/yt-dlp.exe",
     console_name: str = "yt-dlp",
-    retained_row: str = "yt_dlp-2026.7.4.dist-info/RECORD,,",
+    retained_row: str = "yt_dlp-2026.8.19.dist-info/RECORD,,",
     bundle_recorded_target: bool = False,
 ) -> Path:
-    dist_info = root / "backend/_internal/yt_dlp-2026.7.4.dist-info"
+    dist_info = root / "backend/_internal/yt_dlp-2026.8.19.dist-info"
     dist_info.mkdir(parents=True, exist_ok=True)
     (dist_info / "entry_points.txt").write_text(
         f"[console_scripts]\n{console_name} = yt_dlp:main\n",
@@ -514,7 +514,7 @@ def test_dist_info_record_semantics_ignore_only_unbundled_declared_console_launc
         backend_relative_path="backend/scriber-backend.exe",
         backend_attribution=second_backend,
     )
-    record_relative = "backend/_internal/yt_dlp-2026.7.4.dist-info/RECORD"
+    record_relative = "backend/_internal/yt_dlp-2026.8.19.dist-info/RECORD"
     first_entry = next(item for item in first["files"] if item["path"] == record_relative)
     second_entry = next(item for item in second["files"] if item["path"] == record_relative)
 

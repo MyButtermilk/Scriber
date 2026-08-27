@@ -46,6 +46,28 @@ export const coreTranslations = {
     "Scriber lädt das Update herunter und startet neu, sobald es bereit ist.",
   "Scriber used {{fallbackModel}} instead of {{primaryModel}} for this dictation.":
     "Scriber hat für dieses Diktat {{fallbackModel}} statt {{primaryModel}} verwendet.",
+  "Check {{provider}} key": "{{provider}}-Schlüssel prüfen",
+  "Post-processing timed out": "Zeitüberschreitung bei der Nachbearbeitung",
+  "Provider output limit reached": "Ausgabelimit des Anbieters erreicht",
+  "Provider quota or payment issue": "Problem mit Anbieter-Kontingent oder Zahlung",
+  "Provider rate limit reached": "Anbieter-Ratenlimit erreicht",
+  "Provider rejected the request": "Anbieter hat die Anfrage abgelehnt",
+  "Provider temporarily unavailable": "Anbieter vorübergehend nicht verfügbar",
+  "{{primaryModel}} could not process this dictation because its quota or payment access was unavailable. Scriber used {{fallbackModel}} instead.":
+    "{{primaryModel}} konnte dieses Diktat wegen eines Kontingent- oder Zahlungsproblems nicht verarbeiten. Scriber hat stattdessen {{fallbackModel}} verwendet.",
+  "{{primaryModel}} did not answer before the post-processing deadline. Scriber used {{fallbackModel}} instead.":
+    "{{primaryModel}} hat nicht vor Ablauf der Nachbearbeitungsfrist geantwortet. Scriber hat stattdessen {{fallbackModel}} verwendet.",
+  "{{primaryModel}} reached its output limit before returning a complete result. Scriber used {{fallbackModel}} instead.":
+    "{{primaryModel}} hat sein Ausgabelimit erreicht, bevor ein vollständiges Ergebnis vorlag. Scriber hat stattdessen {{fallbackModel}} verwendet.",
+  "{{primaryModel}} rejected this post-processing request. Scriber used {{fallbackModel}} instead; check the provider and model settings if this repeats.":
+    "{{primaryModel}} hat diese Nachbearbeitungsanfrage abgelehnt. Scriber hat stattdessen {{fallbackModel}} verwendet. Prüfe bei wiederholtem Auftreten die Anbieter- und Modelleinstellungen.",
+  "{{primaryModel}} was temporarily rate-limited. Scriber used {{fallbackModel}} for this dictation.":
+    "{{primaryModel}} war vorübergehend durch ein Ratenlimit eingeschränkt. Scriber hat für dieses Diktat {{fallbackModel}} verwendet.",
+  "{{primaryModel}} was unavailable or under heavy load. Scriber used {{fallbackModel}} for this dictation.":
+    "{{primaryModel}} war nicht verfügbar oder stark ausgelastet. Scriber hat für dieses Diktat {{fallbackModel}} verwendet.",
+  "{{provider}} API key was rejected": "{{provider}}-API-Schlüssel wurde abgelehnt",
+  "{{provider}} rejected its API key. Scriber used {{fallbackModel}} for this dictation. Check or replace the key in Settings.":
+    "{{provider}} hat den API-Schlüssel abgelehnt. Scriber hat für dieses Diktat stattdessen {{fallbackModel}} verwendet. Prüfe oder ersetze den Schlüssel in den Einstellungen.",
   "Scriber {{version}} is available. Click this notice to open update settings.":
     "Scriber {{version}} ist verfügbar. Klicke auf diesen Hinweis, um die Update-Einstellungen zu öffnen.",
   "Skip to main content": "Zum Hauptinhalt springen",

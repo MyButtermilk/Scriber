@@ -1732,6 +1732,33 @@ async def test_settings_round_trips_openrouter_summary_model_and_key(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_settings_round_trips_custom_openrouter_summary_and_post_processing_models(monkeypatch, tmp_path):
+    from src import config as config_module
+
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    ctl = ScriberWebController(asyncio.get_running_loop())
+
+    settings = await ctl.update_settings(
+        {
+            "summarizationModel": "acme-labs/summary-v2",
+            "postProcessingModel": "acme-labs/cleanup-v3",
+        }
+    )
+
+    assert web_api.Config.SUMMARIZATION_MODEL == "acme-labs/summary-v2"
+    assert web_api.Config.POST_PROCESSING_MODEL == "acme-labs/cleanup-v3"
+    assert settings["summarizationModel"] == "acme-labs/summary-v2"
+    assert settings["postProcessingModel"] == "acme-labs/cleanup-v3"
+    assert config_module._json_settings["summarizationModel"] == "acme-labs/summary-v2"
+    assert config_module._json_settings["postProcessingModel"] == "acme-labs/cleanup-v3"
+
+    ctl.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_settings_round_trips_explicit_live_mic_fallback_model(monkeypatch, tmp_path):
     from src import config as config_module
 
@@ -1747,16 +1774,16 @@ async def test_settings_round_trips_explicit_live_mic_fallback_model(monkeypatch
     )
     ctl = ScriberWebController(asyncio.get_running_loop())
 
-    settings = await ctl.update_settings({"postProcessingFallbackModel": "z-ai/glm-5.2:nitro"})
+    settings = await ctl.update_settings({"postProcessingFallbackModel": "z-ai/glm-5.3-flash:nitro"})
 
-    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.2:nitro"
-    assert settings["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
-    assert ctl.get_settings()["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
-    assert config_module._json_settings["postProcessingFallbackModel"] == "z-ai/glm-5.2:nitro"
+    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.3-flash:nitro"
+    assert settings["postProcessingFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert ctl.get_settings()["postProcessingFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert config_module._json_settings["postProcessingFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
 
     with pytest.raises(ValueError, match="postProcessingFallbackModel"):
         await ctl.update_settings({"language": "de", "postProcessingFallbackModel": "cerebras/gemma-4-31b"})
-    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.2:nitro"
+    assert web_api.Config.POST_PROCESSING_FALLBACK_MODEL == "z-ai/glm-5.3-flash:nitro"
 
     ctl.shutdown()
 

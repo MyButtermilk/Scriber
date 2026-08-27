@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from collections.abc import Iterable
 
-
 EXPECTED_YT_DLP_MODULE_COUNT = 1046
 EXPECTED_EXTRACTOR_MODULE_COUNT = 972
 EXPECTED_NON_EXTRACTOR_MODULE_COUNT = 74
@@ -68,26 +67,20 @@ def is_retained_yt_dlp_module(module_name: str) -> bool:
 def partition_yt_dlp_modules(
     discovered_modules: Iterable[str],
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Validate the pinned 2026.7.4 inventory and return keep/exclude sets."""
+    """Validate the pinned 2026.8.19 inventory and return keep/exclude sets."""
 
     discovered = tuple(sorted(discovered_modules))
     if len(discovered) != len(set(discovered)):
         raise RuntimeError("yt-dlp module discovery returned duplicates")
     extractor_modules = tuple(
-        name
-        for name in discovered
-        if name == "yt_dlp.extractor" or name.startswith("yt_dlp.extractor.")
+        name for name in discovered if name == "yt_dlp.extractor" or name.startswith("yt_dlp.extractor.")
     )
     extractor_module_set = set(extractor_modules)
-    non_extractor_modules = tuple(
-        name for name in discovered if name not in extractor_module_set
-    )
+    non_extractor_modules = tuple(name for name in discovered if name not in extractor_module_set)
     retained = tuple(name for name in discovered if is_retained_yt_dlp_module(name))
     excluded = tuple(name for name in discovered if not is_retained_yt_dlp_module(name))
     retained_module_set = set(retained)
-    retained_extractors = tuple(
-        name for name in extractor_modules if name in retained_module_set
-    )
+    retained_extractors = tuple(name for name in extractor_modules if name in retained_module_set)
 
     actual_counts = (
         len(discovered),
@@ -105,8 +98,7 @@ def partition_yt_dlp_modules(
     )
     if actual_counts != expected_counts:
         raise RuntimeError(
-            "yt-dlp 2026.7.4 module inventory drifted: "
-            f"expected {expected_counts}, got {actual_counts}"
+            f"yt-dlp 2026.8.19 module inventory drifted: expected {expected_counts}, got {actual_counts}"
         )
     if set(non_extractor_modules) - set(retained):
         raise RuntimeError("yt-dlp non-extractor modules must not be pruned")

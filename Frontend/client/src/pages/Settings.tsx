@@ -137,7 +137,7 @@ import {
   isSettingsSectionKey,
   type SettingsSectionKey,
 } from "@/lib/settings-presentation";
-import { SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
+import { SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY, SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
 import {
   GEMINI_ASYNC_TRANSCRIPTION_OPTION,
   GEMINI_CREDENTIAL_REQUIREMENT,
@@ -293,10 +293,12 @@ const POST_PROCESSING_FALLBACK_MODEL_VALUES = new Set<string>([
   "openai/gpt-oss-120b:cerebras",
   "google/gemini-2.5-flash-lite:nitro",
   "minimax/minimax-m3:nitro",
-  "z-ai/glm-5.2:nitro",
+  "z-ai/glm-5.3-flash:nitro",
 ]);
 const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";
 const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";
+const CANONICAL_OPENROUTER_MODEL_RE =
+  /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
 type HotkeyCaptureEvent = Pick<KeyboardEvent, "altKey" | "code" | "ctrlKey" | "key" | "metaKey" | "shiftKey"> & {
   preventDefault?: () => void;
@@ -343,6 +345,7 @@ type SummarizationModelOption = {
   detail: string;
   group: "gemini" | "meta" | "openrouter" | "openai" | "cerebras" | "celeris";
   icon?: ProviderIconKey;
+  note?: string;
 };
 
 function languageModelBenchmarkDetail(
@@ -371,6 +374,21 @@ function aaLanguageBenchmarkDetail(
 ): string {
   const priceText = formatEstimatedEuroFromUsd(usdPerMillionTokens, localeTag);
   return t("{{price}}/M · AA score {{score}}", { price: priceText, score: intelligenceScore });
+}
+
+function aaPostProcessingBenchmarkDetail(
+  usdPerMillionTokens: number,
+  intelligenceScore: number,
+  tokensPerSecond: number,
+  localeTag: string,
+  t: Translate,
+): string {
+  const priceText = formatEstimatedEuroFromUsd(usdPerMillionTokens, localeTag);
+  return t("{{price}}/M blended · AA score {{score}} · ~{{tokens}} tokens/s", {
+    price: priceText,
+    score: intelligenceScore,
+    tokens: tokensPerSecond,
+  });
 }
 
 function expandPromptTextarea(element: HTMLTextAreaElement, minimumHeightPx: number): void {
@@ -425,14 +443,18 @@ function createSummarizationModelOptions(localeTag: string, t: Translate): reado
     {
       value: META_MUSE_SPARK_STANDARD_MODEL,
       label: "Muse Spark 1.2",
-      detail: t("Standard tier · prompts and responses are not used to train Meta models"),
+      detail: aaLanguageBenchmarkDetail(0.78, 57, localeTag, t),
+      note: t("Standard tier · prompts and responses are not used to train Meta models"),
       group: "meta",
+      icon: "meta",
     },
     {
       value: META_MUSE_SPARK_CONTRIBUTOR_MODEL,
       label: "Muse Spark 1.2 Contributor",
-      detail: t("Contributor tier · prompts and responses may be used to train future Meta models"),
+      detail: aaLanguageBenchmarkDetail(0.0414, 57, localeTag, t),
+      note: t("Same Muse Spark checkpoint score · not separately benchmarked · Contributor data-use warning applies"),
       group: "meta",
+      icon: "meta",
     },
     {
       value: "minimax/minimax-m3:nitro",
@@ -442,9 +464,9 @@ function createSummarizationModelOptions(localeTag: string, t: Translate): reado
       icon: "openrouter",
     },
     {
-      value: "z-ai/glm-5.2:nitro",
-      label: "GLM 5.2 Nitro",
-      detail: aaLanguageBenchmarkDetail(0.9, 51, localeTag, t),
+      value: "z-ai/glm-5.3-flash:nitro",
+      label: "GLM 5.3 Flash Nitro",
+      detail: aaLanguageBenchmarkDetail(0.1, 57, localeTag, t),
       group: "openrouter",
       icon: "openrouter",
     },
@@ -538,9 +560,9 @@ function createPostProcessingModelOptions(localeTag: string, t: Translate): read
       icon: "openai",
     },
     {
-      value: "z-ai/glm-5.2:nitro",
-      label: "GLM 5.2 Nitro",
-      detail: languageModelBenchmarkDetail(0.00000093, 0.000003, 30, localeTag, t),
+      value: "z-ai/glm-5.3-flash:nitro",
+      label: "GLM 5.3 Flash Nitro",
+      detail: aaPostProcessingBenchmarkDetail(0.1, 57, 127, localeTag, t),
       group: "openrouter",
       icon: "openrouter",
     },
@@ -566,6 +588,22 @@ function createPostProcessingModelOptions(localeTag: string, t: Translate): read
       icon: "gemini",
     },
   ];
+}
+
+function canonicalCustomOpenRouterModelCode(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.toLowerCase().endsWith(":nitro") ? trimmed.slice(0, -":nitro".length) : trimmed;
+}
+
+function isCanonicalCustomOpenRouterModelCode(value: string): boolean {
+  return !value.startsWith("cerebras/") && CANONICAL_OPENROUTER_MODEL_RE.test(value);
+}
+
+function selectedCustomOpenRouterModelCode(value: string, builtInOptions: readonly SummarizationModelOption[]): string {
+  const canonical = canonicalCustomOpenRouterModelCode(value);
+  if (!isCanonicalCustomOpenRouterModelCode(canonical)) return "";
+  const isBuiltIn = builtInOptions.some((option) => option.value.toLowerCase() === value.trim().toLowerCase());
+  return isBuiltIn ? "" : canonical;
 }
 
 const API_KEY_HELP_LINKS = {
@@ -599,6 +637,19 @@ type CredentialRequirement = {
   label: string;
   helpKey: ApiKeyHelpKey;
 };
+
+const REMOTE_CREDENTIAL_DIALOG_PROVIDERS = new Set([
+  "OpenAI",
+  "Gemini",
+  "Meta Model API",
+  "OpenRouter",
+  "Cerebras",
+  "Celeris",
+]);
+
+function isRemoteCredentialDialogProvider(value: string): boolean {
+  return REMOTE_CREDENTIAL_DIALOG_PROVIDERS.has(value);
+}
 
 const MISSING_CREDENTIAL_CTA = "Add API Key";
 const SONIOX_DATA_RESIDENCY_URL = "https://soniox.com/docs/data-residency";
@@ -749,6 +800,7 @@ const PROVIDER_ICON_PATHS = {
   modulate: "/provider-icons/modulate.svg",
   openai: "/provider-icons/openai.svg",
   openrouter: "/provider-icons/openrouter.svg",
+  meta: "/provider-icons/meta.svg",
   soniox: "/provider-icons/soniox.svg",
   smallest: "/provider-icons/smallest.png",
   speechmatics: "/provider-icons/speechmatics.svg",
@@ -1377,6 +1429,11 @@ function SummaryModelChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
+          {option.note ? (
+            <span className="mt-0.5 block text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
+              {option.note}
+            </span>
+          ) : null}
           {disabled ? (
             <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
               <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
@@ -1427,6 +1484,61 @@ function MetaContributorWarning({ active }: { active: boolean }) {
         </p>
       </div>
     </div>
+  );
+}
+
+function CustomOpenRouterModelField({
+  id,
+  value,
+  selectedModel,
+  invalid,
+  onValueChange,
+  onUse,
+}: {
+  id: string;
+  value: string;
+  selectedModel: string;
+  invalid: boolean;
+  onValueChange: (value: string) => void;
+  onUse: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <FieldShell
+      label={t("Custom OpenRouter model")}
+      detail={t("Enter a canonical author/model code. Scriber applies the OpenRouter Nitro route automatically.")}
+    >
+      <form
+        className="flex flex-col gap-1.5 sm:flex-row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onUse();
+        }}
+      >
+        <Input
+          id={id}
+          value={value}
+          onChange={(event) => onValueChange(event.target.value)}
+          placeholder="author/model"
+          aria-invalid={invalid}
+          className="h-9 min-w-0 flex-1 bg-white/70 font-mono text-xs dark:bg-[var(--live-well)]"
+        />
+        <Button type="submit" size="sm" variant="outline" disabled={!value.trim()} className="h-9 shrink-0">
+          {t("Use custom model")}
+        </Button>
+      </form>
+      {invalid ? (
+        <p className="text-ui-micro font-medium leading-4 text-red-600 dark:text-red-300">
+          {t("Enter a canonical OpenRouter model code such as author/model.")}
+        </p>
+      ) : null}
+      {selectedModel ? (
+        <p className="flex items-center gap-1.5 text-ui-micro font-medium leading-4 text-blue-700 dark:text-blue-300">
+          <ProviderIcon icon="openrouter" label="OpenRouter" className="h-5 w-5 rounded p-1" />
+          {t("Active custom model: {{model}}", { model: selectedModel })}
+        </p>
+      ) : null}
+    </FieldShell>
   );
 }
 
@@ -1693,6 +1805,10 @@ export default function Settings() {
   );
   const summarizationModelOptions = useMemo(() => createSummarizationModelOptions(localeTag, t), [localeTag, t]);
   const postProcessingModelOptions = useMemo(() => createPostProcessingModelOptions(localeTag, t), [localeTag, t]);
+  // Bootstrap runs once. Model codes are locale-invariant even though their
+  // rendered labels and price details are rebuilt when the locale changes.
+  const summarizationModelOptionsAtBootstrapRef = useRef(summarizationModelOptions);
+  const postProcessingModelOptionsAtBootstrapRef = useRef(postProcessingModelOptions);
   const postProcessingFallbackModelOptions = useMemo(
     () =>
       postProcessingModelOptions.filter(
@@ -1813,7 +1929,11 @@ export default function Settings() {
   const [selectedDeviceId, setSelectedDeviceId] = useState("default");
   const [transcriptionModel, setTranscriptionModel] = useState("soniox-realtime");
   const [summarizationModel, setSummarizationModel] = useState(DEFAULT_SUMMARIZATION_MODEL);
+  const [customSummarizationModel, setCustomSummarizationModel] = useState("");
+  const [customSummarizationModelInvalid, setCustomSummarizationModelInvalid] = useState(false);
   const [postProcessingModel, setPostProcessingModel] = useState(DEFAULT_POST_PROCESSING_MODEL);
+  const [customPostProcessingModel, setCustomPostProcessingModel] = useState("");
+  const [customPostProcessingModelInvalid, setCustomPostProcessingModelInvalid] = useState(false);
   const [postProcessingFallbackModel, setPostProcessingFallbackModel] = useState(
     DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
   );
@@ -2232,6 +2352,42 @@ export default function Settings() {
   }, [requestSettingsSection]);
 
   useEffect(() => {
+    const openRequestedCredential = (provider: string) => {
+      if (!isRemoteCredentialDialogProvider(provider)) {
+        return;
+      }
+      requestSettingsSection("apiKeys");
+      setCredentialDialogProvider(provider);
+    };
+
+    const consumeRequestedCredential = () => {
+      let provider: string;
+      try {
+        provider = window.sessionStorage.getItem(SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY) || "";
+        if (provider) {
+          window.sessionStorage.removeItem(SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY);
+        }
+      } catch {
+        return;
+      }
+      openRequestedCredential(provider);
+    };
+
+    const handleCredentialRequest = (event: Event) => {
+      const provider = String((event as CustomEvent<{ provider?: string }>).detail?.provider || "");
+      openRequestedCredential(provider);
+    };
+
+    consumeRequestedCredential();
+    const retryTimer = window.setTimeout(consumeRequestedCredential, 120);
+    window.addEventListener("scriber-open-settings-credential", handleCredentialRequest);
+    return () => {
+      window.clearTimeout(retryTimer);
+      window.removeEventListener("scriber-open-settings-credential", handleCredentialRequest);
+    };
+  }, [requestSettingsSection]);
+
+  useEffect(() => {
     if (!settingsLoaded || typeof IntersectionObserver === "undefined") {
       return;
     }
@@ -2479,10 +2635,33 @@ export default function Settings() {
     const requirement = requiredCredentialForLanguageModel(postProcessingFallbackModel);
     return isCredentialReady(requirement) ? null : requirement;
   })();
+  const selectedCustomSummarizationModel = selectedCustomOpenRouterModelCode(
+    summarizationModel,
+    summarizationModelOptions,
+  );
+  const selectedCustomPostProcessingModel = selectedCustomOpenRouterModelCode(
+    postProcessingModel,
+    postProcessingModelOptions,
+  );
+  const selectedCustomMeetingAnalysisModel = selectedCustomOpenRouterModelCode(
+    meetingAnalysisModel,
+    summarizationModelOptions,
+  );
+  const customLanguageModelOption = (value: string): SummarizationModelOption => ({
+    value,
+    label: t("Custom OpenRouter model"),
+    detail: t("Nitro route · {{model}}", { model: value }),
+    group: "openrouter",
+    icon: "openrouter",
+  });
   const selectedPostProcessingModelOption =
-    postProcessingModelOptions.find((option) => option.value === postProcessingModel) ?? null;
+    postProcessingModelOptions.find((option) => option.value === postProcessingModel) ??
+    (selectedCustomPostProcessingModel ? customLanguageModelOption(selectedCustomPostProcessingModel) : null);
   const selectedPostProcessingFallbackModelOption =
     postProcessingFallbackModelOptions.find((option) => option.value === postProcessingFallbackModel) ?? null;
+  const meetingAnalysisModelOptions = selectedCustomMeetingAnalysisModel
+    ? [...summarizationModelOptions, customLanguageModelOption(selectedCustomMeetingAnalysisModel)]
+    : summarizationModelOptions;
   const selectedMeetingFinalOption =
     MEETING_FINAL_STT_OPTIONS.find((option) => option.value === meetingFinalProvider) ?? MEETING_FINAL_STT_OPTIONS[0];
   const selectedMeetingProfile =
@@ -2642,8 +2821,21 @@ export default function Settings() {
         savedCustomVocabularyRef.current = settings.customVocab || "";
         setCustomVocabulary(savedCustomVocabularyRef.current);
         setSummarizationPrompt(settings.summarizationPrompt || "");
-        setSummarizationModel(settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL);
-        setPostProcessingModel(settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL);
+        const loadedSummarizationModel = settings.summarizationModel || DEFAULT_SUMMARIZATION_MODEL;
+        const loadedPostProcessingModel = settings.postProcessingModel || DEFAULT_POST_PROCESSING_MODEL;
+        setSummarizationModel(loadedSummarizationModel);
+        setCustomSummarizationModel(
+          selectedCustomOpenRouterModelCode(loadedSummarizationModel, summarizationModelOptionsAtBootstrapRef.current),
+        );
+        setCustomSummarizationModelInvalid(false);
+        setPostProcessingModel(loadedPostProcessingModel);
+        setCustomPostProcessingModel(
+          selectedCustomOpenRouterModelCode(
+            loadedPostProcessingModel,
+            postProcessingModelOptionsAtBootstrapRef.current,
+          ),
+        );
+        setCustomPostProcessingModelInvalid(false);
         setPostProcessingFallbackModel(settings.postProcessingFallbackModel || DEFAULT_POST_PROCESSING_FALLBACK_MODEL);
         setPostProcessingEngine(settings.postProcessingEngine === "local" ? "local" : "cloud");
         setLocalPolishingVariant(settings.localPolishingVariant === "bf16" ? "bf16" : "q8_0");
@@ -3522,6 +3714,28 @@ export default function Settings() {
         duration: 4000,
       });
     }
+  };
+
+  const handleCustomSummarizationModelUse = async () => {
+    const canonical = canonicalCustomOpenRouterModelCode(customSummarizationModel);
+    if (!isCanonicalCustomOpenRouterModelCode(canonical)) {
+      setCustomSummarizationModelInvalid(true);
+      return;
+    }
+    setCustomSummarizationModel(canonical);
+    setCustomSummarizationModelInvalid(false);
+    await handleSummarizationModelChange(canonical);
+  };
+
+  const handleCustomPostProcessingModelUse = async () => {
+    const canonical = canonicalCustomOpenRouterModelCode(customPostProcessingModel);
+    if (!isCanonicalCustomOpenRouterModelCode(canonical)) {
+      setCustomPostProcessingModelInvalid(true);
+      return;
+    }
+    setCustomPostProcessingModel(canonical);
+    setCustomPostProcessingModelInvalid(false);
+    await handlePostProcessingModelChange(canonical);
   };
 
   const handlePostProcessingFallbackModelChange = async (value: string) => {
@@ -4416,7 +4630,10 @@ export default function Settings() {
     {
       key: "openrouter",
       label: "OpenRouter",
-      items: summarizationModelOptions.filter((option) => option.group === "openrouter"),
+      items: [
+        ...summarizationModelOptions.filter((option) => option.group === "openrouter"),
+        ...(selectedCustomSummarizationModel ? [customLanguageModelOption(selectedCustomSummarizationModel)] : []),
+      ],
     },
     {
       key: "openai",
@@ -4565,12 +4782,26 @@ export default function Settings() {
                 </button>
               ) : null}
               <p className="text-ui-micro leading-4 text-slate-500 dark:text-slate-400">
-                {t("Blended token price averages the listed input and output rates.")}{" "}
+                {t(
+                  "Blended token price uses the listed benchmark blend when available; otherwise it averages input and output rates.",
+                )}{" "}
                 {t("Euro estimates use a fixed rate of {{rate}}. Provider prices may change.", {
                   rate: estimateExchangeRateLabel,
                 })}
               </p>
             </FieldShell>
+
+            <CustomOpenRouterModelField
+              id="post-processing-custom-openrouter-model"
+              value={customPostProcessingModel}
+              selectedModel={selectedCustomPostProcessingModel}
+              invalid={customPostProcessingModelInvalid}
+              onValueChange={(value) => {
+                setCustomPostProcessingModel(value);
+                setCustomPostProcessingModelInvalid(false);
+              }}
+              onUse={() => void handleCustomPostProcessingModelUse()}
+            />
 
             <FieldShell
               label={t("Fallback model (OpenRouter)")}
@@ -5700,7 +5931,7 @@ export default function Settings() {
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {summarizationModelOptions.map((option) => (
+                      {meetingAnalysisModelOptions.map((option) => (
                         <SelectItem
                           key={option.value}
                           value={option.value}
@@ -6407,6 +6638,7 @@ export default function Settings() {
               />
               <ApiCredentialRow
                 provider="Meta Model API"
+                icon="meta"
                 value={metaModelApiKey}
                 onValueChange={markCredentialChanged("Meta Model API", setMetaModelApiKey)}
                 show={showMetaModelApiKey}
@@ -6665,36 +6897,49 @@ export default function Settings() {
           className="flex h-full self-stretch flex-col"
         >
           <div className="flex flex-1 flex-col justify-between gap-3">
-            <div role="radiogroup" aria-label={t("Summary models")} className="space-y-1.5">
-              {summaryModelGroups.map((group) => (
-                <div
-                  key={group.key}
-                  className="rounded-xl bg-slate-50/90 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
-                >
-                  <div className="mb-1">
-                    <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
-                      {group.label}
-                    </h3>
+            <div className="space-y-1.5">
+              <div role="radiogroup" aria-label={t("Summary models")} className="space-y-1.5">
+                {summaryModelGroups.map((group) => (
+                  <div
+                    key={group.key}
+                    className="rounded-xl bg-slate-50/90 p-2 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)]"
+                  >
+                    <div className="mb-1">
+                      <h3 className="text-[13px] !font-bold leading-4 text-slate-950 dark:text-slate-100">
+                        {group.label}
+                      </h3>
+                    </div>
+                    <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
+                      {group.items.map((option) => {
+                        const requirement = requiredCredentialForLanguageModel(option.value);
+                        const disabledReason = missingCredentialReason(requirement);
+                        return (
+                          <SummaryModelChoice
+                            key={option.value}
+                            option={option}
+                            selected={summarizationModel === option.value}
+                            disabled={Boolean(disabledReason)}
+                            disabledReason={disabledReason}
+                            onCredentialAction={() => openCredentialDialog(requirement)}
+                            onSelect={() => void handleSummarizationModelChange(option.value)}
+                          />
+                        );
+                      })}
+                    </div>
                   </div>
-                  <div className="grid gap-x-2 gap-y-1 sm:grid-cols-2">
-                    {group.items.map((option) => {
-                      const requirement = requiredCredentialForLanguageModel(option.value);
-                      const disabledReason = missingCredentialReason(requirement);
-                      return (
-                        <SummaryModelChoice
-                          key={option.value}
-                          option={option}
-                          selected={summarizationModel === option.value}
-                          disabled={Boolean(disabledReason)}
-                          disabledReason={disabledReason}
-                          onCredentialAction={() => openCredentialDialog(requirement)}
-                          onSelect={() => void handleSummarizationModelChange(option.value)}
-                        />
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+                ))}
+              </div>
+              <CustomOpenRouterModelField
+                id="summary-custom-openrouter-model"
+                value={customSummarizationModel}
+                selectedModel={selectedCustomSummarizationModel}
+                invalid={customSummarizationModelInvalid}
+                onValueChange={(value) => {
+                  setCustomSummarizationModel(value);
+                  setCustomSummarizationModelInvalid(false);
+                }}
+                onUse={() => void handleCustomSummarizationModelUse()}
+              />
               <MetaContributorWarning active={summarizationModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL} />
               <div
                 role="note"

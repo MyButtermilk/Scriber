@@ -261,6 +261,8 @@ Provider credentials, transcription models, summary models, prompts, language be
 - Credential status and direct provider links
 - Separate STT, summarization, primary post-processing, and post-processing
   fallback model choices
+- Canonical custom OpenRouter `author/model` choices for summaries and primary
+  post-processing; Scriber applies the Nitro route at request time
 - Practical price and error estimates where benchmark data is available
 - Custom vocabulary for names, brands, and domain language
 - Automatic summarization and caption-first controls

@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.youtube_download import (
+    DownloadProgress,
     YouTubeCaptionCue,
     YouTubeDownloadError,
     _caption_cues_from_json3_bytes,
@@ -538,6 +539,65 @@ async def test_download_youtube_audio_uses_quickjs_and_current_default_clients(
     assert captured_options["extractor_retries"] == 3
     assert captured_options["allowed_extractors"] == [r"youtube.*"]
     assert captured_options["remote_components"] == []
+
+
+@pytest.mark.asyncio
+async def test_download_youtube_audio_reports_default_client_http_403_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    """The UI must see retry state while yt-dlp recovers from transient 403s."""
+
+    attempts: list[dict] = []
+    progress_events: list[DownloadProgress] = []
+
+    class FakeDownloadError(Exception):
+        pass
+
+    class FakeYoutubeDL:
+        def __init__(self, options):
+            self._options = options
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def extract_info(self, _url, *, download):
+            assert download is True
+            attempts.append(self._options)
+            raise FakeDownloadError("ERROR: unable to download video data: HTTP Error 403: Forbidden")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "yt_dlp",
+        types.SimpleNamespace(
+            YoutubeDL=FakeYoutubeDL,
+            utils=types.SimpleNamespace(DownloadError=FakeDownloadError),
+        ),
+    )
+    monkeypatch.setattr("src.youtube_download._apply_youtube_only_runtime_policy", lambda: None)
+    quickjs_path = tmp_path / "qjs.exe"
+    quickjs_path.write_bytes(b"quickjs")
+    with (
+        patch("src.youtube_download._require_ffmpeg"),
+        patch("src.youtube_download.find_media_tool", return_value=str(quickjs_path)),
+        patch("time.sleep"),
+        pytest.raises(FakeDownloadError, match="HTTP Error 403"),
+    ):
+        await download_youtube_audio(
+            "https://www.youtube.com/watch?v=video-id",
+            output_dir=tmp_path / "downloads",
+            on_progress=progress_events.append,
+        )
+
+    assert len(attempts) == 3
+    assert "extractor_args" not in attempts[0]
+    assert [event.status for event in progress_events] == ["retrying", "retrying"]
+    assert [event.retry_attempt for event in progress_events] == [1, 2]
+    assert all(event.retry_max_attempts == 3 for event in progress_events)
+    assert [event.retry_delay_seconds for event in progress_events] == [2.0, 4.0]
 
 
 @pytest.mark.asyncio

@@ -4543,7 +4543,7 @@ async def exercise_settings_interactions(
     transcription: !!findChoice('Mistral Batch'),
     language: !!document.querySelector('input[aria-label="Select German as default transcription language"]'),
     summarizationModel: !!findChoice('Gemini 3.5 Flash'),
-    openRouterSummaryModels: !!findChoice('MiniMax M3 Nitro') && !!findChoice('GLM 5.2 Nitro'),
+    openRouterSummaryModels: !!findChoice('MiniMax M3 Nitro') && !!findChoice('GLM 5.3 Flash Nitro'),
     autoSummarize: !!findSwitchInSetting('Auto-summarize'),
     overlayVisualizer: !!findRadioByText('Energy wave'),
     customVocabulary: !!customVocabularyArea,
@@ -4570,12 +4570,12 @@ async def exercise_settings_interactions(
       && text.includes('German')
       && text.includes('Gemini 3.5 Flash')
       && text.includes('MiniMax M3 Nitro')
-      && text.includes('GLM 5.2 Nitro'),
+      && text.includes('GLM 5.3 Flash Nitro'),
     actions,
     hasMistralAsync: text.includes('Mistral Batch'),
     hasGerman: text.includes('German'),
     hasGemini35: text.includes('Gemini 3.5 Flash'),
-    hasOpenRouterSummaries: text.includes('MiniMax M3 Nitro') && text.includes('GLM 5.2 Nitro'),
+    hasOpenRouterSummaries: text.includes('MiniMax M3 Nitro') && text.includes('GLM 5.3 Flash Nitro'),
     energyWaveSelected
   };
 })()

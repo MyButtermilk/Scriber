@@ -151,6 +151,50 @@ def test_ws_event_builders_match_contract():
         validate_event_payload(payload)
 
 
+@pytest.mark.parametrize(
+    ("reason", "status", "expected_category"),
+    [
+        ("invalid_request_error", 401, "authentication"),
+        ("quota_exceeded", 402, "quota_or_payment"),
+        ("rate_limit_error", 429, "rate_limit"),
+        ("server_error", 503, "provider_unavailable"),
+        ("timeout", None, "timeout"),
+        ("output_limit", None, "output_limit"),
+        ("invalid_request_error", 400, "request_rejected"),
+        ("provider_error", None, "provider_error"),
+    ],
+)
+def test_post_processing_fallback_event_classifies_public_failure_reason(reason, status, expected_category):
+    payload = post_processing_fallback_used_event(
+        "post-processing-fallback:s1",
+        "cerebras/gemma-4-31b",
+        "minimax/minimax-m3",
+        reason=reason,
+        primary_failure_status=status,
+    )
+
+    assert payload["reasonCategory"] == expected_category
+    if status is None:
+        assert "primaryFailureStatus" not in payload
+    else:
+        assert payload["primaryFailureStatus"] == status
+    validate_event_payload(payload)
+
+
+def test_post_processing_fallback_event_drops_unbounded_provider_error_text():
+    payload = post_processing_fallback_used_event(
+        "post-processing-fallback:s1",
+        "cerebras/gemma-4-31b",
+        "minimax/minimax-m3",
+        reason="synthetic upstream error body with request details",
+        primary_failure_status=500,
+    )
+
+    assert "reason" not in payload
+    assert payload["reasonCategory"] == "provider_unavailable"
+    validate_event_payload(payload)
+
+
 def test_ws_state_and_auxiliary_events_match_contract():
     payloads = [
         state_event(
@@ -288,6 +332,33 @@ def test_ws_contract_validation_rejects_invalid_payload():
                     "primaryModel": "primary/model",
                     "fallbackModel": "fallback/model",
                     "desktopNotificationAccepted": "yes",
+                }
+            )
+        )
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "fallback:invalid-category",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                    "desktopNotificationAccepted": False,
+                    "reasonCategory": "raw-provider-body",
+                }
+            )
+        )
+    with pytest.raises(WSContractError):
+        validate_event_payload(
+            version_event_payload(
+                {
+                    "type": "post_processing_fallback_used",
+                    "eventId": "fallback:invalid-status",
+                    "primaryModel": "primary/model",
+                    "fallbackModel": "fallback/model",
+                    "desktopNotificationAccepted": False,
+                    "reasonCategory": "provider_error",
+                    "primaryFailureStatus": True,
                 }
             )
         )

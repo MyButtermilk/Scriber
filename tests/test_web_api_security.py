@@ -1323,6 +1323,28 @@ def test_validate_summarization_model_accepts_known_prefixes():
     assert web_api._validate_summarization_model("celeris-1") == "celeris-1"
 
 
+def test_validate_summarization_model_accepts_canonical_custom_openrouter_slug():
+    assert web_api._validate_summarization_model(" acme-labs/summary_model-v2 ") == "acme-labs/summary_model-v2"
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "https://openrouter.ai/acme/model",
+        "http://acme/model",
+        "acme/model/extra",
+        "acme/model:free",
+        "acme//model",
+        "/model",
+        "acme/",
+        "acme/model;secret",
+    ],
+)
+def test_validate_summarization_model_rejects_noncanonical_custom_openrouter_slug(model):
+    with pytest.raises(ValueError, match="canonical author/model"):
+        web_api._validate_summarization_model(model)
+
+
 def test_validate_summarization_model_rejects_invalid_prefix():
     with pytest.raises(ValueError):
         web_api._validate_summarization_model("claude-3-opus")

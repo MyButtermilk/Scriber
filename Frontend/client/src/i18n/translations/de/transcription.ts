@@ -117,6 +117,7 @@ export const transcriptionTranslations = {
   "Preparing {{file}}…": "{{file}} wird vorbereitet …",
   "Preparing audio...": "Audio wird vorbereitet …",
   "Preparing audio": "Audio wird vorbereitet",
+  "Preparing audio download...": "Audiodownload wird vorbereitet …",
   "Preparing transcription...": "Transkription wird vorbereitet …",
   "Preparing your transcript": "Dein Transkript wird vorbereitet",
   "local audio": "Lokales Audio",
@@ -154,6 +155,8 @@ export const transcriptionTranslations = {
   "Download complete": "Download abgeschlossen",
   "Downloading audio...": "Audio wird heruntergeladen …",
   "Downloading… {{percent}}": "Download läuft … {{percent}}",
+  "Retrying audio download in {{seconds}}s ({{attempt}}/{{total}})":
+    "Audiodownload wird in {{seconds}} s erneut versucht ({{attempt}}/{{total}})",
   Enter: "Eingabe",
   ETA: "Restzeit",
   "Failed to start transcription": "Transkription konnte nicht gestartet werden",

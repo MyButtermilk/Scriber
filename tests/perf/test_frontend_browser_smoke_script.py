@@ -539,7 +539,7 @@ def test_frontend_browser_smoke_exercises_settings_persistence() -> None:
     assert "gemini-flash-latest" in script
     assert "gemini-3.5-flash" in script
     assert "MiniMax M3 Nitro" in script
-    assert "GLM 5.2 Nitro" in script
+    assert "GLM 5.3 Flash Nitro" in script
     assert "Mistral Batch" in script
     assert "save_settings_credential" in script
     assert "https://platform.openai.com/api-keys" in script

@@ -173,7 +173,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
     assert "src.audio_file_input" in required_modules
     assert "src.pipeline" in required_modules
     assert ("pipecat-ai", "1.5.0") in REQUIRED_PACKAGE_VERSIONS
-    assert ("yt-dlp", "2026.7.4") in REQUIRED_PACKAGE_VERSIONS
+    assert ("yt-dlp", "2026.8.19") in REQUIRED_PACKAGE_VERSIONS
     assert ("yt-dlp-ejs", "0.8.0") in REQUIRED_PACKAGE_VERSIONS
 
 
@@ -841,7 +841,7 @@ def test_standard_requirements_include_audio_runtime_dependencies():
     assert "onnx-asr[cpu,hub]>=0.10.2,<0.11" in requirements
     assert "sherpa-onnx==1.13.4" not in requirements
     assert "pipecat-ai[silero]==1.5.0" in requirements
-    assert "yt-dlp[default]==2026.7.4" in requirements
+    assert "yt-dlp[default]==2026.8.19" in requirements
     assert all(not line.startswith("deno==") for line in requirements)
     assert "deepgram-sdk==7.4.0" in requirements
     assert "google-cloud-speech<3,>=2.33.0" in requirements
