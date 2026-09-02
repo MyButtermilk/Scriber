@@ -243,6 +243,36 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
         return []
     provider = str(provider).lower()
 
+    if provider in {"meta_stt", "meta_stt_async"}:
+        turns = payload.get("turns", [])
+        if not isinstance(turns, list):
+            return []
+        segments = []
+        for turn in turns:
+            if not isinstance(turn, dict) or not isinstance(turn.get("transcript"), str):
+                continue
+            if any(type(turn.get(key)) is not int for key in ("turnId", "startMs", "endMs")):
+                continue
+            if not 0 <= turn["startMs"] <= turn["endMs"] or not turn["transcript"].strip():
+                continue
+            speaker = _speaker_key(turn.get("speaker"))
+            segments.append(
+                {
+                    "revision": "canonical",
+                    "source": source,
+                    "providerSegmentId": f"meta-turn-{turn['turnId']}",
+                    "speakerKey": speaker,
+                    "speakerLabel": f"Speaker {speaker}" if speaker else "Meeting audio",
+                    "startMs": origin_ms + turn["startMs"],
+                    "endMs": origin_ms + turn["endMs"],
+                    "text": turn["transcript"].strip(),
+                    "confidence": None,
+                    "isFinal": True,
+                    "alignmentQuality": "provider_segment",
+                }
+            )
+        return segments
+
     if provider in {"soniox", "soniox_async"}:
         return group_provider_words(
             _timed_items(payload.get("tokens", []), start_key="start_ms", end_key="end_ms", scale=1),

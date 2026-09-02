@@ -7,6 +7,15 @@ It tracks current status only.
 
 ## Recently Completed
 
+Meta Muse Voice Transcribe integration (2026-09-02): separate Realtime and Async
+choices use the same `muse-voice-transcribe-1.0` model and Meta Model API key.
+Async means one non-blocking HTTP upload, not a separate Meta model or hosted
+background job. Current constraints: ten minutes per file/Meeting final,
+60 minutes per realtime session, no automatic splitting/resume, and no word
+timestamps. HTTP SSE is available from Meta but not used by Scriber; realtime
+previews use the WebSocket endpoint. Protocol tests are local; production
+account access and installed microphone smoke still require verification.
+
 Desktop runtime:
 
 - Tauri is the primary Windows desktop runtime.

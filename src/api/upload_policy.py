@@ -62,6 +62,8 @@ _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, tuple[int, str]] = {
     "openrouter_stt": (300 * 1024 * 1024, "300MB"),
     "modulate": (100 * 1024 * 1024, "100MB"),
     "modulate_async": (100 * 1024 * 1024, "100MB"),
+    "meta_stt": (32_000_000 - 65_536, "32MB including multipart overhead"),
+    "meta_stt_async": (32_000_000 - 65_536, "32MB including multipart overhead"),
 }
 
 

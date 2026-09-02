@@ -213,6 +213,48 @@ fee, not a markup on the model's inference price.
 [See the OpenRouter model page.](https://openrouter.ai/microsoft/mai-transcribe-1.5)
 [See the OpenRouter fee details.](https://openrouter.ai/docs/faq)
 
+### Meta Muse Voice Transcribe
+
+Choose **Meta Muse Voice Transcribe Realtime** for live microphone transcription,
+or **Meta Muse Voice Transcribe Async** to transcribe after stopping. Both use
+`muse-voice-transcribe-1.0`, released by Meta on September 1, 2026, and the
+existing **Meta Model API** credential in Settings (`MODEL_API_KEY`). Model API
+access must be enabled for your Meta project; a Muse Spark entitlement alone
+does not prove Voice access.
+
+Realtime displays replaceable partials and injects only completed speech turns.
+It does not run local VAD or speaker detection. Async buffers one recording and
+submits one HTTP upload; Meta documents no separate async model or job-polling
+endpoint. File, YouTube and Meeting final transcription use that same upload
+route, with native speaker labels when requested.
+
+Limits: 60 minutes per realtime session; 10 minutes per upload. Uploads must fit
+32 MB including multipart overhead. Scriber prepares mono PCM16 WAV at 16 kHz
+when necessary and also accepts verified 24 kHz mono PCM16 WAV unchanged.
+There are 25 documented languages including German; use automatic language
+detection or a supported language hint. Custom vocabulary becomes Meta's
+`keywords`. Turn timestamps are approximate processed-audio boundaries, not
+word timestamps. The published rate is $0.18 per audio hour for both endpoints.
+
+Optional environment configuration (the UI stores credentials through the
+existing secret configuration path):
+
+```dotenv
+MODEL_API_KEY=your-meta-model-api-key
+SCRIBER_DEFAULT_STT=meta_stt
+# Use meta_stt_async above for transcription after stop.
+SCRIBER_META_STT_MODEL=muse-voice-transcribe-1.0
+```
+
+Unknown model IDs fail closed until their audio contract is verified. Cancellation
+never submits buffered audio. Failed uploads and interrupted streams are not
+automatically replayed. No local model download or new ML dependency is needed.
+
+[Meta announcement](https://research.meta.ai/blog/introducing-muse-voice-transcribe),
+[Voice guide and limits](https://dev.meta.ai/docs/speech-to-text),
+[HTTP API](https://dev.meta.ai/docs/api-reference/voice/transcribe),
+[WebSocket protocol](https://dev.meta.ai/docs/api-reference/voice/realtime).
+
 ### Modulate.AI multilingual transcription
 
 Modulate.AI is available for multilingual batch and realtime transcription.

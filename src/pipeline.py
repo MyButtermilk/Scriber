@@ -78,7 +78,9 @@ from src.soniox_region import soniox_realtime_websocket_url, soniox_rest_api_bas
 
 _SONIOX_MANUAL_FINALIZE_MESSAGE = '{"type": "finalize"}'
 _GROQ_OPENAI_V1_BASE_URL = "https://api.groq.com/openai/v1"
-_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset({"azure_mai", "gemini_realtime", "speechmatics_async"})
+_PROVIDER_INGRESS_DRAIN_SERVICES = frozenset(
+    {"azure_mai", "gemini_realtime", "speechmatics_async", "meta_stt", "meta_stt_async"}
+)
 _PROVIDER_INGRESS_DRAIN_TIMEOUT_SECONDS = 2.0
 _PROVIDER_INGRESS_ABORT_TIMEOUT_SECONDS = 2.0
 
@@ -432,6 +434,7 @@ def _live_service_uses_async_finalization(service_name: str) -> bool:
         "openrouter_stt",
         "speechmatics_async",
         "modulate_async",
+        "meta_stt_async",
         "azure_mai",
         "assemblyai",
     } or (normalized == "soniox" and Config.SONIOX_MODE == "async")
@@ -2217,6 +2220,8 @@ class ScriberPipeline:
             "speechmatics_async": configured_models["speechmatics-async"],
             "modulate": configured_models["modulate-realtime"],
             "modulate_async": configured_models["modulate-async"],
+            "meta_stt": configured_models["meta-realtime"],
+            "meta_stt_async": configured_models["meta-async"],
             "onnx_local": configured_models["onnx_local"],
         }
         modes: dict[str, str] = {
@@ -2245,6 +2250,8 @@ class ScriberPipeline:
             "speechmatics_async": "batch",
             "modulate": "realtime",
             "modulate_async": "batch",
+            "meta_stt": "realtime",
+            "meta_stt_async": "batch",
             "onnx_local": "local",
         }
         fallback_model = models.get(service, "provider-default")
@@ -3678,6 +3685,23 @@ class ScriberPipeline:
                 on_response_complete=self.on_provider_response_complete,
             )
 
+        elif self.service_name in {"meta_stt", "meta_stt_async"}:
+            from src.meta_stt import MetaAsyncProcessor, MetaRealtimeSTTService
+
+            api_key = _get_api_key("meta_stt")
+            if not api_key:
+                raise ValueError("Meta API key is missing.")
+            options = dict(
+                api_key=api_key,
+                model=self._execution_model(Config.META_STT_MODEL),
+                language=self._execution_language(),
+                custom_vocab=self._execution_custom_vocab(),
+                session=session,
+            )
+            if self.service_name == "meta_stt_async" or for_file:
+                return MetaAsyncProcessor(**options, on_progress=self.on_progress)
+            return MetaRealtimeSTTService(**options, sample_rate=Config.SAMPLE_RATE, channels=Config.CHANNELS)
+
         elif self.service_name in {"modulate", "modulate_async"}:
             from src.modulate_stt import (
                 ModulateAsyncProcessor,
@@ -4765,6 +4789,33 @@ class ScriberPipeline:
                     self.on_progress("Completed")
                 return
 
+            if self.service_name in {"meta_stt", "meta_stt_async"}:
+                from src.meta_stt import META_STT_BATCH_URL, transcribe_with_meta
+
+                endpoint = self._bind_execution_provider_endpoint(META_STT_BATCH_URL)
+                if self.on_progress:
+                    self.on_progress("Transcribing...")
+                async with self._provider_session() as session:
+                    with open(path, "rb") as audio:
+                        payload = await transcribe_with_meta(
+                            session=session,
+                            api_key=Config.get_api_key("meta_stt"),
+                            audio_source=audio,
+                            model=self._execution_model(Config.META_STT_MODEL),
+                            language=self._execution_language(),
+                            custom_vocab=self._execution_custom_vocab(),
+                            mode="DIARIZATION" if self.direct_file_speaker_diarization else "ENDPOINTING",
+                            timeout_secs=batch_timeout_seconds,
+                            endpoint=endpoint,
+                        )
+                self.last_structured_transcript_payload = payload
+                text = payload["transcript"].strip()
+                if text and self.on_transcription:
+                    self.on_transcription(text, True)
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
             if self.service_name in {"modulate", "modulate_async"}:
                 from src.modulate_stt import (
                     modulate_transcript_payload_to_text,
@@ -5198,7 +5249,7 @@ class ScriberPipeline:
             # existing 30-second budget.
             if is_async_finalization:
                 wait_timeout = 600.0
-            elif self.service_name == "modulate":
+            elif self.service_name in {"modulate", "meta_stt"}:
                 wait_timeout = 40.0
             else:
                 wait_timeout = 30.0

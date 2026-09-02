@@ -150,6 +150,13 @@ import {
   geminiFrontendModelForService,
   geminiSettingsPatchForModel,
 } from "@/lib/gemini-transcription-settings";
+import {
+  META_TRANSCRIPTION_OPTIONS,
+  META_CREDENTIAL_REQUIREMENT,
+  META_MEETING_FINAL_STT_OPTION,
+  metaFrontendModelForService,
+  metaSettingsPatchForModel,
+} from "@/lib/meta-transcription-settings";
 
 type Translate = ReturnType<typeof useI18n>["t"];
 type FormatDate = ReturnType<typeof useI18n>["formatDate"];
@@ -255,6 +262,7 @@ const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "soniox-async", label: "Soniox Async" },
   { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime" },
   { value: "modulate-async", label: "Modulate.AI Multilingual Batch" },
+  ...META_TRANSCRIPTION_OPTIONS.map(({ value, label }) => ({ value, label })),
   {
     value: GEMINI_REALTIME_TRANSCRIPTION_OPTION.value,
     label: GEMINI_REALTIME_TRANSCRIPTION_OPTION.label,
@@ -892,6 +900,13 @@ function createProviderModelOptions(
 
   return [
     benchmarkOption("elevenlabs", "ElevenLabs Live", 6.5, 3.6, "cloud_streaming", "elevenlabs"),
+    ...META_TRANSCRIPTION_OPTIONS.map((option) => ({
+      ...option,
+      model: providerModels[option.value] || option.model,
+      detail: `${formatEstimatedEuroFromUsd(option.usdPerHour, localeTag)}/h`,
+      routeNote: t(option.routeNote),
+      hourlyCostEur: option.usdPerHour * USD_TO_EUR_FOR_ESTIMATES,
+    })),
     benchmarkOption(
       GEMINI_REALTIME_TRANSCRIPTION_OPTION.value,
       GEMINI_REALTIME_TRANSCRIPTION_OPTION.label,
@@ -974,6 +989,7 @@ function createProviderModelOptions(
 }
 
 const MEETING_FINAL_STT_OPTIONS = [
+  META_MEETING_FINAL_STT_OPTION,
   {
     value: "soniox_async",
     label: "Soniox Async",
@@ -2556,6 +2572,9 @@ export default function Settings() {
 
   const requiredCredentialForTranscriptionModel = (model: string): CredentialRequirement | null => {
     switch (model) {
+      case "meta-realtime":
+      case "meta-async":
+        return META_CREDENTIAL_REQUIREMENT;
       case "soniox-realtime":
       case "soniox-async":
         return { provider: "Soniox", label: "Soniox API key", helpKey: "soniox" };
@@ -2759,6 +2778,10 @@ export default function Settings() {
       }
       if (service === "modulate" || service === "modulate_async") {
         return service === "modulate_async" ? "modulate-async" : "modulate-realtime";
+      }
+      const metaModel = metaFrontendModelForService(service);
+      if (metaModel) {
+        return metaModel;
       }
       if (service === "mistral" || service === "mistral_async") {
         return service === "mistral_async" ? "mistral-async" : "mistral-realtime";
@@ -3320,6 +3343,7 @@ export default function Settings() {
     }
     const previousValue = transcriptionModel;
     const geminiSettingsPatch = geminiSettingsPatchForModel(value);
+    const metaSettingsPatch = metaSettingsPatchForModel(value);
     setTranscriptionModel(value);
     try {
       if (value === "soniox-async") {
@@ -3330,6 +3354,8 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "modulate_async" });
       } else if (value === "modulate-realtime") {
         await updateSettings({ defaultSttService: "modulate" });
+      } else if (metaSettingsPatch) {
+        await updateSettings(metaSettingsPatch);
       } else if (geminiSettingsPatch) {
         await updateSettings(geminiSettingsPatch);
       } else if (value === "mistral-async") {
