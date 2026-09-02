@@ -7,6 +7,44 @@ architecture notes and should be updated when ownership boundaries change.
 
 ## Runtime Overview
 
+### Meta Muse Voice Transcribe (verified 2026-09-02)
+
+`src/meta_stt.py` owns the two Voice API contracts for
+`muse-voice-transcribe-1.0`. `meta_stt` authenticates the WebSocket in its first
+JSON frame, sends paced raw mono PCM16, and uses provider-native ENDPOINTING.
+Interim hypotheses are replaceable `InterimTranscriptionFrame` previews, never
+durable text. Completed turns are keyed by `turnId`, emitted in speech-start
+order, and deduplicated. Neither `transcript.final` nor `speechEnd` commits a
+turn. Stop drains admitted audio, sends `endStream`, and waits for close 1000;
+errors or unfinished turns cannot become successful completion. The receiver
+belongs to an `AsyncTaskSupervisor`, and the application retains ownership of
+the shared HTTP session.
+Connection setup, audio sends and socket closure share one lock. Audio waits
+for handshake acknowledgement and rechecks shutdown state after waiting for
+startup or pacing; cancellation cannot leak a socket or send queued audio.
+
+`meta_stt_async` buffers one recording in the existing disk-backed PCM spool
+and submits one multipart HTTP request on normal stop. Cancel discards it.
+The same HTTP path serves File, YouTube and Meeting finals. It uses buffered
+JSON (`Accept: application/json`), not SSE or a speculative job-polling API.
+Both routes use `MODEL_API_KEY`; no model weights or additional dependencies
+are required. The immutable route binds the model, vocabulary, language,
+endpoint identity and exact audio-format capability. WAV pass-through also
+checks sample rate and channel count. `DIARIZATION` is requested only for
+speaker-enabled file/Meeting results; normal live dictation has no speakers.
+Native turns remain `provider_segment` evidence and never become fabricated
+word timestamps. Uploads are limited to ten minutes and 32 MB including
+multipart overhead; realtime sessions are limited to one hour. There is no
+automatic replay after failure, no session resumption and no automatic
+long-recording splitting.
+
+Protocol sources: [guide](https://dev.meta.ai/docs/speech-to-text),
+[upload](https://dev.meta.ai/docs/api-reference/voice/transcribe),
+[realtime](https://dev.meta.ai/docs/api-reference/voice/realtime),
+[schemas](https://dev.meta.ai/docs/api-reference/voice/schemas).
+
+### Application components
+
 Scriber is a hybrid desktop app:
 
 - Tauri 2 shell for installed Windows desktop runtime.

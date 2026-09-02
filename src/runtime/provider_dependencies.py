@@ -45,6 +45,7 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
         "Deepgram, Gladia, OpenAI, OpenRouter, Speechmatics, and Gemini async STT adapters",
     ),
     ("src.gemini_realtime_stt", "Gemini 3.5 Transcribe Live Pipecat adapter"),
+    ("src.meta_stt", "Meta Muse Voice Transcribe realtime and asynchronous HTTP adapters"),
     ("src.azure_mai_stt", "Microsoft MAI Transcribe adapter"),
     ("pipecat.services.google.stt", "Google Cloud STT provider"),
     ("pipecat.services.elevenlabs.stt", "ElevenLabs STT provider"),
@@ -57,6 +58,12 @@ STANDARD_PROVIDER_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
 
 
 _PROVIDER_DEPENDENCIES: dict[str, tuple[ProviderRuntimeDependency, ...]] = {
+    "meta_stt": (
+        ProviderRuntimeDependency("meta_stt", "src.meta_stt", "requirements-base.txt", "Meta Voice realtime adapter"),
+    ),
+    "meta_stt_async": (
+        ProviderRuntimeDependency("meta_stt_async", "src.meta_stt", "requirements-base.txt", "Meta Voice HTTP adapter"),
+    ),
     "soniox": (
         ProviderRuntimeDependency(
             "soniox",

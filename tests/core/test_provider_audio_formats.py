@@ -213,7 +213,8 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        assert capability.verified_at == date(2026, 8, 26)
+        expected_date = date(2026, 9, 2) if capability.provider in {"meta_stt", "meta_stt_async"} else date(2026, 8, 26)
+        assert capability.verified_at == expected_date
         assert capability.evidence_reference
 
 

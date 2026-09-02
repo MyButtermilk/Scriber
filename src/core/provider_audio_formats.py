@@ -235,6 +235,7 @@ def _capability(
     max_upload_bytes: int | None = None,
     evidence_kind: CapabilityEvidenceKind = (CapabilityEvidenceKind.OFFICIAL_ENDPOINT_DOCS),
     evidence_reference: str,
+    verified_at: date = CAPABILITY_VERIFIED_AT,
     active: bool = True,
 ) -> ProviderAudioInputCapabilities:
     return ProviderAudioInputCapabilities(
@@ -252,7 +253,7 @@ def _capability(
         max_upload_bytes=max_upload_bytes,
         evidence_kind=evidence_kind,
         evidence_reference=evidence_reference,
-        verified_at=CAPABILITY_VERIFIED_AT,
+        verified_at=verified_at,
         capability_id=f"{provider}:{route}:{model_family}",
         revision=CAPABILITY_REVISION,
         active=active,
@@ -655,6 +656,31 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         )
         for provider in ("modulate", "modulate_async")
     ),
+    *(
+        _capability(
+            provider,
+            "asr_transcribe",
+            "muse-voice-transcribe-1.0",
+            ProviderAudioRouteKind.BATCH,
+            batch_formats=(AudioInputFormat.WAV_PCM16,),
+            direct_passthrough_formats=(AudioInputFormat.WAV_PCM16,),
+            preferred_lossless_format=AudioInputFormat.WAV_PCM16,
+            max_upload_bytes=32_000_000 - 65_536,
+            evidence_reference="https://dev.meta.ai/docs/api-reference/voice/transcribe",
+            verified_at=date(2026, 9, 2),
+        )
+        for provider in ("meta_stt", "meta_stt_async")
+    ),
+    _capability(
+        "meta_stt",
+        "asr_realtime",
+        "muse-voice-transcribe-1.0",
+        ProviderAudioRouteKind.REALTIME,
+        realtime_formats=(AudioInputFormat.RAW_PCM16,),
+        preferred_lossless_format=AudioInputFormat.RAW_PCM16,
+        evidence_reference="https://dev.meta.ai/docs/api-reference/voice/realtime",
+        verified_at=date(2026, 9, 2),
+    ),
     _capability(
         "modulate_async",
         "velma_2_batch_english_vfast",
@@ -757,6 +783,8 @@ _BATCH_ROUTE_BY_PROVIDER = {
     "speechmatics_async": "batch_v2",
     "modulate": "velma_2_batch",
     "modulate_async": "velma_2_batch",
+    "meta_stt": "asr_transcribe",
+    "meta_stt_async": "asr_transcribe",
     "onnx_local": "decoded_pcm_local",
 }
 
@@ -770,6 +798,7 @@ _REALTIME_ROUTE_BY_PROVIDER = {
     "gladia": "v2_live",
     "speechmatics": "realtime_v2",
     "modulate": "velma_2_streaming",
+    "meta_stt": "asr_realtime",
     "elevenlabs": "scribe_v2_realtime",
     "gemini_realtime": "live_transcription",
 }
@@ -1062,7 +1091,7 @@ def _validate_registry() -> None:
         ):
             if preferred is not None and preferred not in accepted:
                 raise RuntimeError(f"{capability.capability_id} has an unsupported preferred format.")
-        if capability.verified_at != CAPABILITY_VERIFIED_AT:
+        if not isinstance(capability.verified_at, date) or capability.verified_at < CAPABILITY_VERIFIED_AT:
             raise RuntimeError(f"{capability.capability_id} has an unexpected verification date.")
 
 

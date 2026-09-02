@@ -1,6 +1,12 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Live partials and completed turns · up to 60 minutes · Meta Model API key":
+    "Live-Zwischenstände und abgeschlossene Äußerungen · bis 60 Minuten · Meta-Model-API-Schlüssel",
+  "Transcribes after stop · files up to 10 minutes · Meta Model API key":
+    "Transkription nach dem Stoppen · Dateien bis 10 Minuten · Meta-Model-API-Schlüssel",
+  "Native speaker labels and approximate turn timestamps. Maximum 10 minutes per recording.":
+    "Native Sprechertrennung und ungefähre Zeitstempel je Äußerung. Maximal 10 Minuten pro Aufnahme.",
   // Languages and shared settings states.
   "Auto-detect": "Automatisch erkennen",
   German: "Deutsch",

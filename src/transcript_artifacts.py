@@ -154,6 +154,8 @@ def provider_batch_model(provider: str) -> str:
         "speechmatics_async": "batch-v2",
         "modulate": "velma-2-stt-batch",
         "modulate_async": "velma-2-stt-batch",
+        "meta_stt": Config.META_STT_MODEL,
+        "meta_stt_async": Config.META_STT_MODEL,
         "smallest": "pulse",
         "smallest_async": "pulse",
         "azure_mai": getattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5"),
@@ -205,6 +207,8 @@ def freeze_provider_route(
         "speechmatics_async",
         "modulate",
         "modulate_async",
+        "meta_stt",
+        "meta_stt_async",
     }
     final_text_only = key in {"modulate", "modulate_async", "openrouter_stt"}
     resolved_model = str(model or provider_batch_model(key)).strip()

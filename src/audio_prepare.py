@@ -301,6 +301,11 @@ def resolve_provider_audio_selection(
         else None
     )
     original = probe.audio_format if effective_limit is None or probe.byte_length <= effective_limit else None
+    if provider in {"meta_stt", "meta_stt_async"}:
+        if probe.duration_ms is not None and probe.duration_ms > 600_000:
+            raise ProviderAudioPreparationError("Meta STT recordings must not exceed 10 minutes.")
+        if probe.channels != 1 or probe.sample_rate not in (16_000, 24_000):
+            original = None
     selection = select_audio_input_format(
         capability,
         route_kind=ProviderAudioRouteKind.BATCH,
@@ -386,6 +391,12 @@ async def prepare_provider_audio_file(
             and frozen_selection.audio_format != probe.audio_format
         ):
             raise ProviderAudioPreparationError("Frozen pass-through format does not match the probed source.")
+        if (
+            provider in {"meta_stt", "meta_stt_async"}
+            and frozen_selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
+            and (probe.channels != 1 or probe.sample_rate not in (16_000, 24_000))
+        ):
+            raise ProviderAudioPreparationError("Frozen Meta WAV must be mono PCM16 at 16 or 24 kHz.")
         selected = frozen_selection
 
     generated = selected.mode != AudioSelectionMode.ORIGINAL_PASSTHROUGH

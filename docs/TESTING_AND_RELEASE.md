@@ -7,6 +7,19 @@ notes.
 
 ## Core Test Commands
 
+Muse Voice Transcribe regression coverage is in `tests/test_meta_stt.py`.
+It exercises real local aiohttp HTTP/WebSocket servers: multipart settings and
+auth, PCM framing, cumulative previews, overlapping turn completion, endStream
+drain, authentication rejection, disconnects, timeout, privacy-safe errors,
+no retry, cancel-without-upload, model/language validation and upload limits.
+Startup-race tests initialize the real Pipecat processor and use server-side
+barriers at both WebSocket upgrade and handshake acknowledgement. They check
+waiting audio and cancellation before client-session cleanup can hide leaks.
+Run it together with audio-preparation, route-artifact, config and pipeline-stop
+tests. Live Meta validation requires an explicitly configured `MODEL_API_KEY`
+with Voice access; local protocol tests do not prove account entitlement or
+recognition quality. No installer was built as part of this provider change.
+
 Run from repository root unless specified.
 
 Python (always through Scriber's project environment, never bare `python`):

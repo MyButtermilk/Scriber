@@ -643,6 +643,7 @@ _MEETING_FIVE_HOUR_ROUTE_REASONS: dict[str, str] = {
     "gladia_async": "Gladia pre-recorded transcription is limited to 135 minutes per request.",
     "modulate_async": "Scriber's 64-kbit/s meeting derivative targets up to three hours within Modulate's 100-MB batch limit; five hours are not supported by this route.",
     "gemini_stt": "Gemini 3.5 Transcribe accepts up to 30 minutes when Scriber requests native diarization and word timestamps.",
+    "meta_stt_async": "Meta Muse Voice Transcribe accepts recordings up to 10 minutes and 32 MB including multipart overhead; turn timestamps are approximate, not word-level.",
 }
 _MEETING_FIVE_HOUR_UNSUPPORTED_REASON = (
     "The current whole-track final transcription route is not yet verified for a five-hour source."
@@ -663,6 +664,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
         "onnx_local",
         "groq",
         "modulate_async",
+        "meta_stt_async",
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
@@ -727,6 +729,12 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "perTrackHourUsd": 0.03,
         "systemDiarizationHourUsd": 0.0,
         "pricingUrl": "https://www.modulate.ai/api/speech-to-text",
+        "estimateKind": "published_hourly",
+    },
+    "meta_stt_async": {
+        "perTrackHourUsd": 0.18,
+        "systemDiarizationHourUsd": 0.0,
+        "pricingUrl": "https://dev.meta.ai/docs/speech-to-text#availability-pricing",
         "estimateKind": "published_hourly",
     },
     "gemini_stt": {
@@ -1629,6 +1637,7 @@ def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
         "soniox_async",
         "smallest_async",
         "modulate_async",
+        "meta_stt_async",
         "azure_mai",
         "assemblyai",
     } or (service_name == "soniox" and Config.SONIOX_MODE == "async")
@@ -5486,6 +5495,8 @@ class ScriberWebController:
             endpoint_identity = "https://api.groq.com/openai/v1"
         elif provider_key == "openrouter_stt":
             endpoint_identity = "https://openrouter.ai/api/v1/audio/transcriptions"
+        elif provider_key in {"meta_stt", "meta_stt_async"}:
+            endpoint_identity = "https://api.meta.ai/v1/asr/transcribe"
         resolved_endpoint_sha256 = (
             hashlib.sha256(endpoint_identity.encode("utf-8")).hexdigest() if endpoint_identity else ""
         )
@@ -17609,6 +17620,7 @@ class ScriberWebController:
                 "onnx_local",
                 "groq",
                 "modulate_async",
+                "meta_stt_async",
             }
             if candidate not in allowed_meeting_final_providers:
                 raise ValueError("Unsupported final meeting transcription provider.")
@@ -19158,6 +19170,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
                 "diarization": False,
                 "recommendation": "Final transcript only; uses the optional local Sherpa-ONNX speaker fallback.",
             },
+            "meta_stt_async": {
+                "label": "Meta Muse Voice Transcribe",
+                "model": Config.META_STT_MODEL,
+                "diarization": True,
+                "recommendation": "Native speaker labels and approximate turn timestamps; maximum 10 minutes per recording.",
+            },
             "openai_async": {
                 "label": "OpenAI Batch",
                 "model": Config.OPENAI_STT_MODEL,
@@ -20240,6 +20258,8 @@ def _prewarm_stt_service(service_name: str) -> None:
             from src.smallest_stt import SmallestAsyncProcessor, SmallestRealtimeSTTService  # noqa: F401
         elif service_name in {"modulate", "modulate_async"}:
             from src.modulate_stt import ModulateAsyncProcessor, ModulateRealtimeSTTService  # noqa: F401
+        elif service_name in {"meta_stt", "meta_stt_async"}:
+            from src.meta_stt import MetaAsyncProcessor, MetaRealtimeSTTService  # noqa: F401
         elif service_name == "azure_mai":
             from src.azure_mai_stt import AzureMaiTranscribeSTTService  # noqa: F401
     except ImportError as e:

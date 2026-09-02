@@ -295,6 +295,8 @@ class Config:
     DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
     DEFAULT_GEMINI_STT_MODEL = "gemini-3.5-transcribe"
     DEFAULT_GEMINI_REALTIME_STT_MODEL = "gemini-3.5-transcribe-live"
+    DEFAULT_META_STT_MODEL = "muse-voice-transcribe-1.0"
+    META_STT_MODEL = os.getenv("SCRIBER_META_STT_MODEL", DEFAULT_META_STT_MODEL)
     _LEGACY_DEFAULT_GEMINI_STT_MODELS: ClassVar[set[str]] = {"gemini-2.5-flash"}
 
     # API Keys
@@ -409,6 +411,8 @@ class Config:
         "speechmatics_async": "SPEECHMATICS_API_KEY",
         "modulate": "MODULATE_API_KEY",
         "modulate_async": "MODULATE_API_KEY",
+        "meta_stt": "MODEL_API_KEY",
+        "meta_stt_async": "MODEL_API_KEY",
         "onnx_local": None,  # No API key needed for local models
     }
 
@@ -438,6 +442,8 @@ class Config:
         "speechmatics_async": "Speechmatics (Batch)",
         "modulate": "Modulate (Realtime Multilingual)",
         "modulate_async": "Modulate (Batch Multilingual)",
+        "meta_stt": "Meta Muse Voice Transcribe (Realtime)",
+        "meta_stt_async": "Meta Muse Voice Transcribe (Async)",
         "onnx_local": "Local (ONNX)",
     }
 
@@ -845,6 +851,8 @@ ${output}"""
             "soniox-async": configured(cls.SONIOX_ASYNC_MODEL, cls.DEFAULT_SONIOX_ASYNC_MODEL),
             "modulate-realtime": "velma-2-stt-streaming",
             "modulate-async": "velma-2-stt-batch",
+            "meta-realtime": cls.META_STT_MODEL,
+            "meta-async": cls.META_STT_MODEL,
             "gemini-stt": configured(cls.GEMINI_STT_MODEL, cls.DEFAULT_GEMINI_STT_MODEL),
             "gemini-realtime": configured(
                 cls.GEMINI_REALTIME_STT_MODEL,
@@ -1042,6 +1050,7 @@ ${output}"""
         add("GROQ_API_KEY", cls.GROQ_API_KEY or "")
         add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")
         add("MODULATE_API_KEY", cls.MODULATE_API_KEY or "")
+        add("SCRIBER_META_STT_MODEL", cls.META_STT_MODEL)
 
         add("SCRIBER_HOTKEY", cls.HOTKEY)
         add("SCRIBER_POST_PROCESSING_HOTKEY", cls.POST_PROCESSING_HOTKEY)
