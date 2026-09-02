@@ -238,16 +238,6 @@ a US project key does not provide EU data residency.
 
 Download supported ONNX models from Settings and transcribe locally without an STT API key. Scriber uses prepared model artifacts rather than asking end users to install or run NeMo and Torch.
 
-Meta [Omnilingual ASR](https://github.com/facebookresearch/omnilingual-asr) is
-also listed as a local, final-result provider. Meta publishes it as downloadable
-weights and a Python reference pipeline, not as a hosted Meta API: it has no API
-key and emits no realtime partials. The selected model is run after recording
-stops; its first use downloads the model weights.
-Meta's current reference package declares Python `<3.14`, while Scriber ships a
-Python 3.14 sidecar, so released builds keep the option unavailable until Meta
-publishes a compatible runtime (or Scriber gains a separately packaged worker).
-No audio is sent to Meta by this integration.
-
 ### Local transcript polishing (GGUF)
 
 Local polishing is QAD-only: the sole model is **LFM2.5 350M · QAD Q4_0**.

@@ -1131,8 +1131,6 @@ export interface SettingsResponse {
   openaiSttModel?: string;
   openaiRealtimeSttModel?: string;
   onnxModel?: string;
-  omnilingualAsrModel?: string;
-  omnilingualAsrAvailable?: boolean;
   onnxQuantization?: string;
   onnxUseGpu?: boolean;
   visualizerBarCount?: number;
@@ -1145,7 +1143,6 @@ export interface SettingsUpdatePayload {
   hotkey?: string;
   mode?: "toggle" | "push_to_talk";
   defaultSttService?: string;
-  omnilingualAsrModel?: string;
   sonioxMode?: "realtime" | "async";
   sonioxRegion?: "us" | "eu";
   sonioxAsyncModel?: string;

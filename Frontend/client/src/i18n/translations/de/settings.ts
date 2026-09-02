@@ -3,13 +3,6 @@ import type { TranslationCatalog } from "@/i18n/types";
 export const settingsTranslations = {
   // Languages and shared settings states.
   "Auto-detect": "Automatisch erkennen",
-  "Local Meta model · downloads weights on first use": "Lokales Meta-Modell · lädt Gewichte bei erster Verwendung herunter",
-  "Meta Omnilingual ASR model": "Meta-Omnilingual-ASR-Modell",
-  "Meta Omnilingual ASR unavailable": "Meta Omnilingual ASR nicht verfügbar",
-  "This build needs Meta's Python <3.14 runtime. No compatible runtime is currently bundled.":
-    "Dieser Build benötigt Metas Python-Laufzeit <3.14. Eine kompatible Laufzeit ist derzeit nicht enthalten.",
-  "Local final-result inference only. No Meta API key; first use downloads model weights.":
-    "Nur lokale Inferenz mit Endergebnis. Kein Meta-API-Schlüssel; bei erster Verwendung werden Modellgewichte heruntergeladen.",
   German: "Deutsch",
   Spanish: "Spanisch",
   French: "Französisch",

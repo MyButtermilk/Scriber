@@ -251,7 +251,6 @@ function restoreScrollSnapshot(snapshot: ScrollSnapshot) {
 
 const TRANSCRIPTION_MODEL_OPTIONS = [
   { value: "onnx_local", label: "Local (ONNX) - No API Key" },
-  { value: "omnilingual_asr", label: "Meta Omnilingual ASR (Local) - No API Key" },
   { value: "soniox-realtime", label: "Soniox STT Streaming" },
   { value: "soniox-async", label: "Soniox Async" },
   { value: "modulate-realtime", label: "Modulate.AI Multilingual Realtime" },
@@ -969,15 +968,6 @@ function createProviderModelOptions(
       model: providerModels.onnx_local || "",
       detail: t("{{price}}/h · model-dependent WER", { price: formatCurrency(0, "EUR", localeTag) }),
       group: "local",
-      hourlyCostEur: 0,
-    },
-    {
-      value: "omnilingual_asr",
-      label: "Meta Omnilingual ASR",
-      model: providerModels["omnilingual-asr"] || "",
-      detail: t("Local Meta model · downloads weights on first use"),
-      group: "local",
-      icon: "meta",
       hourlyCostEur: 0,
     },
   ];
@@ -2007,8 +1997,6 @@ export default function Settings() {
   const [onnxModels, setOnnxModels] = useState<OnnxModelInfo[]>([]);
   const [onnxModel, setOnnxModel] = useState("");
   const [onnxQuantization, setOnnxQuantization] = useState("int8");
-  const [omnilingualAsrModel, setOmnilingualAsrModel] = useState("omniASR_LLM_Unlimited_300M_v2");
-  const [omnilingualAsrAvailable, setOmnilingualAsrAvailable] = useState(false);
   const onnxModelActionInFlightRef = useRef<Set<string>>(new Set());
   const [localPolishingCatalog, setLocalPolishingCatalog] = useState<LocalPolishingModelsResponse | null>(null);
   const [localPolishingLoading, setLocalPolishingLoading] = useState(false);
@@ -2834,8 +2822,6 @@ export default function Settings() {
         setSelectedDeviceId(settings.micDevice || "default");
         setLanguage(settings.language || "auto");
         setTranscriptionModel(serviceToModel(settings.defaultSttService || "", settings.sonioxMode || "realtime"));
-        setOmnilingualAsrModel(settings.omnilingualAsrModel || "omniASR_LLM_Unlimited_300M_v2");
-        setOmnilingualAsrAvailable(settings.omnilingualAsrAvailable === true);
         savedCustomVocabularyRef.current = settings.customVocab || "";
         setCustomVocabulary(savedCustomVocabularyRef.current);
         setSummarizationPrompt(settings.summarizationPrompt || "");
@@ -3327,14 +3313,6 @@ export default function Settings() {
   };
 
   const handleTranscriptionModelChange = async (value: string) => {
-    if (value === "omnilingual_asr" && !omnilingualAsrAvailable) {
-      toast({
-        title: t("Meta Omnilingual ASR unavailable"),
-        description: t("This build needs Meta's Python <3.14 runtime. No compatible runtime is currently bundled."),
-        duration: 5000,
-      });
-      return;
-    }
     const requirement = requiredCredentialForTranscriptionModel(value);
     if (!isCredentialReady(requirement)) {
       openCredentialDialog(requirement);
@@ -3372,8 +3350,6 @@ export default function Settings() {
         await updateSettings({ defaultSttService: "openai_async" });
       } else if (value === "speechmatics-async") {
         await updateSettings({ defaultSttService: "speechmatics_async" });
-      } else if (value === "omnilingual_asr") {
-        await updateSettings({ defaultSttService: "omnilingual_asr" });
       } else {
         await updateSettings({ defaultSttService: value });
       }
@@ -5068,35 +5044,7 @@ export default function Settings() {
     </div>
   );
 
-  const omnilingualAsrModelSettings = (
-    <div className="rounded-xl bg-white/70 p-3 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-well)]">
-      <p className="text-[13px] font-bold text-slate-950 dark:text-slate-100">{t("Meta Omnilingual ASR model")}</p>
-      <p className="mt-0.5 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
-        {t("Local final-result inference only. No Meta API key; first use downloads model weights.")}
-      </p>
-      <FieldShell label={t("Model")}>
-        <Select value={omnilingualAsrModel} onValueChange={async (value) => {
-          const previous = omnilingualAsrModel;
-          setOmnilingualAsrModel(value);
-          try {
-            await updateSettings({ omnilingualAsrModel: value });
-          } catch (error: any) {
-            setOmnilingualAsrModel(previous);
-            toast({ title: t("Save failed"), description: localizedSettingsError(error, "The requested settings action failed.", locale, t), duration: 4000 });
-          }
-        }}>
-          <SelectTrigger className="mt-2 h-9"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="omniASR_LLM_Unlimited_300M_v2">LLM Unlimited 300M v2</SelectItem>
-            <SelectItem value="omniASR_LLM_300M_v2">LLM 300M v2 (max. 40 s)</SelectItem>
-            <SelectItem value="omniASR_CTC_300M_v2">CTC 300M v2 (max. 40 s)</SelectItem>
-          </SelectContent>
-        </Select>
-      </FieldShell>
-    </div>
-  );
-
-  const activeLocalModelSettings = transcriptionModel === "omnilingual_asr" ? omnilingualAsrModelSettings : onnxLocalModelSettings;
+  const activeLocalModelSettings = onnxLocalModelSettings;
 
   const speechToTextProviderPanel = (
     <SectionPanel
