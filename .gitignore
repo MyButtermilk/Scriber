@@ -69,3 +69,23 @@ tmp/
 /ml/scriber_polishing/data/pilot*/
 /ml/scriber_polishing/artifacts/*
 !/ml/scriber_polishing/artifacts/.gitkeep
+
+# Fresh local transcript-polishing V2 runtime outputs. Source, contracts, and
+# technical test fixtures remain versioned; datasets and model artifacts never do.
+/ml/scriber_polishing_v2/.venv/
+/ml/scriber_polishing_v2/.pytest_cache/
+/ml/scriber_polishing_v2/.ruff_cache/
+/ml/scriber_polishing_v2/.cache/
+/ml/scriber_polishing_v2/hf-cache/
+/ml/scriber_polishing_v2/data/
+/ml/scriber_polishing_v2/checkpoints/
+/ml/scriber_polishing_v2/runs/
+/ml/scriber_polishing_v2/artifacts/
+
+# PRAXIST run state contains generated checkpoints, scheduler databases, and
+# runtime traces. Keep the reproducible task contract, but never version runs.
+/praxist_task/experiments/
+/praxist_task/**/experiments/
+/praxist_task/hub/
+/praxist_task/xet/
+/praxist_task/**/__pycache__/

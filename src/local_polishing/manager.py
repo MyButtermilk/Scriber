@@ -18,16 +18,25 @@ from uuid import uuid4
 
 from src.runtime.paths import data_dir
 
-from .catalog import DEFAULT_CATALOG, VARIANTS, ArtifactSpec, ModelCatalog, Variant
+from .catalog import (
+    DEFAULT_CATALOG,
+    ArtifactSpec,
+    CatalogError,
+    CatalogVariant,
+    ModelCatalog,
+    catalog_identity,
+)
 from .hub import ArtifactDownloader, HuggingFaceArtifactDownloader
-from .runtime import GenerationRuntime, GenerationRuntimeFactory, packaged_runtime_factories
+from .runtime import CompletionResult, GenerationRuntime, GenerationRuntimeFactory, packaged_runtime_factories
 from .safety import (
     SafetyError,
     load_policy_markers,
     protect_transcript,
     render_plain_sst,
+    render_plain_text,
+    repair_unambiguous_numeric_anchors,
     restore_protected_values,
-    validate_content,
+    validate_plain_text_content,
 )
 
 OperationStatus = Literal[
@@ -45,6 +54,21 @@ POLISHING_INSTRUCTION = (
 )
 
 
+def _validate_or_repair_numeric_anchors(source: str, candidate: str) -> str:
+    """Accept a proven candidate first; repair only a numeric mismatch."""
+
+    try:
+        validate_plain_text_content(source, candidate)
+    except SafetyError as error:
+        if error.code != "changed_number":
+            raise
+    else:
+        return candidate
+    repaired = repair_unambiguous_numeric_anchors(source, candidate)
+    validate_plain_text_content(source, repaired)
+    return repaired
+
+
 class LocalPolishingError(RuntimeError):
     """A bounded, machine-actionable local-polishing failure."""
 
@@ -56,7 +80,7 @@ class LocalPolishingError(RuntimeError):
 @dataclass(frozen=True, slots=True)
 class InstallOperationSnapshot:
     operation_id: str
-    variant: Variant
+    variant: CatalogVariant
     status: OperationStatus
     bytes_received: int
     bytes_total: int
@@ -81,7 +105,7 @@ class InstallOperationSnapshot:
 class LocalPolishingSnapshot:
     available: bool
     message: str | None
-    current_variant: Variant | None
+    current_variant: CatalogVariant | None
     models: tuple[Mapping[str, object], ...]
 
     def to_dict(self) -> dict[str, object]:
@@ -96,7 +120,7 @@ class LocalPolishingSnapshot:
 @dataclass(frozen=True, slots=True)
 class PolishOutcome:
     text: str
-    variant: Variant | None
+    variant: CatalogVariant | None
     status: Literal["accepted", "original_fallback"]
     reason_codes: tuple[str, ...]
     duration_ms: float
@@ -106,7 +130,7 @@ class PolishOutcome:
 @dataclass(slots=True)
 class _InstallOperation:
     operation_id: str
-    variant: Variant
+    variant: CatalogVariant
     status: OperationStatus
     bytes_received: int
     bytes_total: int
@@ -214,53 +238,40 @@ class LocalPolishing:
     ) -> None:
         self.root = (root or (data_dir() / "models" / "local-polishing")).resolve()
         self.catalog = catalog
+        self._variants: tuple[CatalogVariant, ...] = tuple(catalog.variants)
         self._downloader = downloader or HuggingFaceArtifactDownloader()
         self._token_provider = token_provider or (lambda: None)
         self._clock = clock
         self._runtime_factories = runtime_factories if runtime_factories is not None else packaged_runtime_factories()
         self._operation_lock = asyncio.Lock()
         self._operations: dict[str, _InstallOperation] = {}
-        self._active_operation_by_variant: dict[Variant, str] = {}
-        self._runtime_variant: Variant | None = None
+        self._active_operation_by_variant: dict[CatalogVariant, str] = {}
+        self._runtime_variant: CatalogVariant | None = None
         self._runtime: GenerationRuntime | None = None
         self._runtime_lock = asyncio.Lock()
-        self._runtime_ready_by_variant: dict[Variant, bool] = {variant: False for variant in VARIANTS}
-        self._runtime_error_by_variant: dict[Variant, str | None] = {
-            variant: (None if self._runtime_factories else "runtime_unavailable") for variant in VARIANTS
+        self._runtime_ready_by_variant: dict[CatalogVariant, bool] = {variant: False for variant in self._variants}
+        self._runtime_error_by_variant: dict[CatalogVariant, str | None] = {
+            variant: (None if self._runtime_factories else "runtime_unavailable") for variant in self._variants
         }
         self._inference_count = 0
         self._closed = False
 
-    def _require_variant(self, variant: str) -> Variant:
-        if variant not in VARIANTS:
+    def _require_variant(self, variant: str) -> CatalogVariant:
+        if variant not in self._variants:
             raise LocalPolishingError("unknown_variant", f"unsupported local-polishing variant: {variant!r}")
-        return variant  # type: ignore[return-value]
+        return variant
 
-    def _stage_dir(self, variant: Variant) -> Path:
+    def _stage_dir(self, variant: CatalogVariant) -> Path:
         assert self.catalog.revision is not None
         return self.root / ".staging" / self.catalog.revision / variant
 
-    def _activation_path(self, variant: Variant) -> Path:
+    def _activation_path(self, variant: CatalogVariant) -> Path:
         return self.root / f"active-{variant}.json"
 
-    def _catalog_identity(self, variant: Variant) -> str:
-        descriptor = self.catalog.variants[variant]
-        payload = {
-            "schemaVersion": self.catalog.schema_version,
-            "repositoryId": self.catalog.repository_id,
-            "revision": self.catalog.revision,
-            "variant": variant,
-            "model": descriptor.model_relative_path,
-            "policy": descriptor.protection_policy_relative_path,
-            "chatTemplateSha256": descriptor.chat_template_sha256,
-            "artifacts": [
-                {"path": item.relative_path, "bytes": item.byte_size, "sha256": item.sha256}
-                for item in descriptor.artifacts
-            ],
-        }
-        return hashlib.sha256(_canonical_json(payload)).hexdigest()
+    def _catalog_identity(self, variant: CatalogVariant) -> str:
+        return catalog_identity(self.catalog, variant)
 
-    def _installed_dir(self, variant: Variant) -> Path | None:
+    def _installed_dir(self, variant: CatalogVariant) -> Path | None:
         pointer = self._activation_path(variant)
         try:
             value = json.loads(pointer.read_text(encoding="utf-8"))
@@ -300,7 +311,7 @@ class LocalPolishing:
                 return None
         return candidate
 
-    def _verify_installation(self, variant: Variant, installation: Path) -> None:
+    def _verify_installation(self, variant: CatalogVariant, installation: Path) -> None:
         for artifact in self.catalog.variants[variant].artifacts:
             _verify_file(_safe_artifact_path(installation, artifact.relative_path), artifact)
 
@@ -309,7 +320,7 @@ class LocalPolishing:
         message = None if available else "catalog_not_materialized"
         models: list[Mapping[str, object]] = []
         now = self._clock()
-        for variant in VARIANTS:
+        for variant in self._variants:
             descriptor = self.catalog.variants[variant]
             installed = available and self._installed_dir(variant) is not None
             operation_id = self._active_operation_by_variant.get(variant)
@@ -570,7 +581,7 @@ class LocalPolishing:
             with suppress(Exception):
                 await _close_runtime_resilient(runtime)
 
-    async def _ensure_runtime_locked(self, variant: Variant, installation: Path) -> GenerationRuntime:
+    async def _ensure_runtime_locked(self, variant: CatalogVariant, installation: Path) -> GenerationRuntime:
         if self._runtime is not None and self._runtime_variant == variant:
             return self._runtime
         await self._close_runtime_locked()
@@ -587,17 +598,20 @@ class LocalPolishing:
             candidate: GenerationRuntime | None = None
             try:
                 candidate = await factory.create(model_path=model_path, model_sha256=model_artifact.sha256)
-                properties = await candidate.properties()
-                chat_template = properties.get("chat_template")
-                template_payload = json.dumps(
-                    chat_template,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-                if hashlib.sha256(template_payload).hexdigest() != descriptor.chat_template_sha256:
-                    await _close_runtime_resilient(candidate)
-                    raise LocalPolishingError("template_hash_mismatch", "GGUF chat template differs from the catalog")
+                if descriptor.prompt_contract == "chat_template_v1":
+                    properties = await candidate.properties()
+                    chat_template = properties.get("chat_template")
+                    template_payload = json.dumps(
+                        chat_template,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    if hashlib.sha256(template_payload).hexdigest() != descriptor.chat_template_sha256:
+                        await _close_runtime_resilient(candidate)
+                        raise LocalPolishingError(
+                            "template_hash_mismatch", "GGUF chat template differs from the catalog"
+                        )
                 self._runtime = candidate
                 self._runtime_variant = variant
                 self._runtime_ready_by_variant[variant] = True
@@ -643,7 +657,7 @@ class LocalPolishing:
 
     async def polish(self, transcript: str, variant: str) -> PolishOutcome:
         started = self._clock()
-        selected: Variant | None = None
+        selected: CatalogVariant | None = None
         backend: str | None = None
 
         def _fallback(code: str) -> PolishOutcome:
@@ -670,7 +684,13 @@ class LocalPolishing:
             policy_path = _safe_artifact_path(installation, descriptor.protection_policy_relative_path)
             await asyncio.to_thread(_verify_file, policy_path, policy_artifact)
             markers = await asyncio.to_thread(load_policy_markers, policy_path)
-            protected = protect_transcript(transcript, markers)
+            # The production LFM was trained and evaluated on the raw source
+            # transcript.  KEEP markers belong only to the retired SST/chat
+            # contract; injecting them into plain_completion_v1 would create
+            # an untrained prompt distribution and change the exact task input.
+            protected = (
+                protect_transcript(transcript, markers) if descriptor.prompt_contract == "chat_template_v1" else None
+            )
         except SafetyError as error:
             return _fallback(error.code)
         except LocalPolishingError as error:
@@ -681,17 +701,32 @@ class LocalPolishing:
         async with self._runtime_lock:
             self._inference_count += 1
             try:
-                generated: str | None = None
+                completion: CompletionResult | None = None
+                if descriptor.prompt_contract == "plain_completion_v1":
+                    if descriptor.generation_max_new_tokens is None:
+                        return _fallback("prompt_contract_error")
+                    max_new_tokens = descriptor.generation_max_new_tokens
+                else:
+                    # Preserve schema-1 Gemma's existing length-derived budget.
+                    max_new_tokens = min(4096, max(128, len(transcript) // 2 + 128))
                 for attempt in range(2):
                     try:
                         runtime = await self._ensure_runtime_locked(selected, installation)
                         backend = runtime.backend_name
-                        prompt = await runtime.apply_template(
-                            [{"role": "user", "content": f"{POLISHING_INSTRUCTION}{protected.text}"}]
-                        )
-                        generated = await runtime.complete(
+                        if descriptor.prompt_contract == "chat_template_v1":
+                            if protected is None:
+                                return _fallback("prompt_contract_error")
+                            prompt = await runtime.apply_template(
+                                [{"role": "user", "content": f"{POLISHING_INSTRUCTION}{protected.text}"}]
+                            )
+                        else:
+                            try:
+                                prompt = descriptor.render_plain_completion_prompt(transcript)
+                            except CatalogError:
+                                return _fallback("prompt_contract_error")
+                        completion = await runtime.complete(
                             prompt,
-                            max_new_tokens=min(4096, max(128, len(transcript) // 2 + 128)),
+                            max_new_tokens=max_new_tokens,
                         )
                         break
                     except LocalPolishingError as error:
@@ -704,12 +739,27 @@ class LocalPolishing:
                             self._runtime_ready_by_variant[selected] = False
                             self._runtime_error_by_variant[selected] = "generation_error"
                             return _fallback("generation_error")
-                if generated is None:
+                if completion is None:
                     return _fallback("generation_error")
+                if not isinstance(completion, CompletionResult):
+                    return _fallback("generation_error")
+                if completion.prompt_truncated:
+                    return _fallback("prompt_truncated")
+                if completion.finish_reason == "limit" or completion.tokens_predicted >= max_new_tokens:
+                    return _fallback("token_budget_exhausted")
+                if not completion.stop_reached:
+                    return _fallback("generation_incomplete")
                 try:
-                    restored = restore_protected_values(protected, generated)
-                    output = render_plain_sst(restored)
-                    validate_content(transcript, output)
+                    # Preserve the legacy runtime's outer-whitespace behavior;
+                    # plain_text_v1 still performs its own structural checks.
+                    if descriptor.output_contract == "plain_text_v1":
+                        output = render_plain_text(completion.content.strip())
+                    else:
+                        if protected is None:
+                            return _fallback("prompt_contract_error")
+                        restored = restore_protected_values(protected, completion.content.strip())
+                        output = render_plain_sst(restored)
+                    output = _validate_or_repair_numeric_anchors(transcript, output)
                 except SafetyError as error:
                     return _fallback(error.code)
                 return PolishOutcome(

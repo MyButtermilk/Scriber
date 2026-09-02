@@ -54,6 +54,7 @@ DEFAULT_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
 DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
 _LEGACY_GLM_NITRO_MODELS = frozenset({"z-ai/glm-5.2", "z-ai/glm-5.2:nitro"})
 _CURRENT_GLM_NITRO_MODEL = "z-ai/glm-5.3-flash:nitro"
+DEFAULT_LOCAL_POLISHING_VARIANT = "qad_q4_0"
 _env_settings_migration_pending = False
 
 
@@ -120,6 +121,20 @@ def _migrated_glm_model_env(name: str, default: str = "") -> str:
         if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
             _env_settings_migration_pending = True
     return migrated
+
+
+def _migrated_local_polishing_variant_env() -> str:
+    """Retire every former local precision choice in favor of QAD Q4_0."""
+
+    global _env_settings_migration_pending
+    name = "SCRIBER_LOCAL_POLISHING_VARIANT"
+    raw = str(os.getenv(name, DEFAULT_LOCAL_POLISHING_VARIANT) or "").strip().lower()
+    if raw == DEFAULT_LOCAL_POLISHING_VARIANT:
+        return raw
+    os.environ[name] = DEFAULT_LOCAL_POLISHING_VARIANT
+    if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
+        _env_settings_migration_pending = True
+    return DEFAULT_LOCAL_POLISHING_VARIANT
 
 
 def _atomic_write_text(path: str | Path, content: str) -> None:
@@ -239,6 +254,18 @@ def _migrate_builtin_language_models(settings: dict) -> bool:
     return changed
 
 
+def _migrate_local_polishing_variant(settings: dict) -> bool:
+    """Replace persisted Gemma precision choices with the sole LFM QAD model."""
+
+    if "localPolishingVariant" not in settings:
+        return False
+    current = str(settings.get("localPolishingVariant") or "").strip().lower()
+    if current == DEFAULT_LOCAL_POLISHING_VARIANT:
+        return False
+    settings["localPolishingVariant"] = DEFAULT_LOCAL_POLISHING_VARIANT
+    return True
+
+
 _json_settings, _json_settings_rewrite_safe = _load_json_settings_with_status()
 _json_settings_migration_pending = False
 if _json_settings_rewrite_safe:
@@ -246,9 +273,14 @@ if _json_settings_rewrite_safe:
     _json_settings_migration_pending = (
         _migrate_builtin_language_models(_json_settings) or _json_settings_migration_pending
     )
+    _json_settings_migration_pending = (
+        _migrate_local_polishing_variant(_json_settings) or _json_settings_migration_pending
+    )
+_local_polishing_variant_env = _migrated_local_polishing_variant_env()
 
 
 class Config:
+    DEFAULT_LOCAL_POLISHING_VARIANT = DEFAULT_LOCAL_POLISHING_VARIANT
     DEFAULT_SONIOX_ASYNC_MODEL = "stt-async-v5"
     DEFAULT_SONIOX_RT_MODEL = "stt-rt-v5"
     DEFAULT_SONIOX_REGION = SONIOX_DEFAULT_REGION
@@ -514,12 +546,10 @@ ${output}"""
     if POST_PROCESSING_ENGINE not in {"cloud", "local"}:
         POST_PROCESSING_ENGINE = "cloud"
     LOCAL_POLISHING_VARIANT = (
-        str(_json_settings.get("localPolishingVariant") or os.getenv("SCRIBER_LOCAL_POLISHING_VARIANT") or "q8_0")
-        .strip()
-        .lower()
+        str(_json_settings.get("localPolishingVariant") or _local_polishing_variant_env).strip().lower()
     )
-    if LOCAL_POLISHING_VARIANT not in {"q8_0", "bf16"}:
-        LOCAL_POLISHING_VARIANT = "q8_0"
+    if LOCAL_POLISHING_VARIANT != DEFAULT_LOCAL_POLISHING_VARIANT:
+        LOCAL_POLISHING_VARIANT = DEFAULT_LOCAL_POLISHING_VARIANT
     POST_PROCESSING_HOTKEY = (
         os.getenv("SCRIBER_POST_PROCESSING_HOTKEY")
         or _json_settings.get("postProcessingHotkey")
@@ -934,7 +964,7 @@ ${output}"""
     @classmethod
     def set_local_polishing_variant(cls, variant: str) -> None:
         normalized = str(variant or "").strip().lower()
-        if normalized not in {"q8_0", "bf16"}:
+        if normalized != DEFAULT_LOCAL_POLISHING_VARIANT:
             raise ValueError("Unsupported local polishing variant.")
         cls.LOCAL_POLISHING_VARIANT = normalized
         os.environ["SCRIBER_LOCAL_POLISHING_VARIANT"] = normalized

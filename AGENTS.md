@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-08-24
+Last verified: 2026-09-02
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -219,12 +219,34 @@ Backend and runtime:
   belong exclusively to the owner and must never be mirrored on the controller.
 - `src/native_overlay.py`: Python facade for the Tauri-owned recording overlay
   exposed through private shell IPC.
-- `src/local_polishing/`: public, immutable Hugging Face GGUF catalog,
+- `src/local_polishing/`: immutable, fail-closed Hugging Face GGUF catalog,
   resumable/hash-verified model installation, conservative output safety gate,
   and loopback-only llama.cpp lifecycle for optional local live-mic polishing.
-  Q8_0 is the product default and BF16 is the larger reference option. This
-  path is anonymous and must not depend on a Hugging Face account, token, or
+  The sole product variant identity is `qad_q4_0`: the LFM2.5 350M Production QAD-Q4_0
+  GGUF. The former local Gemma models have been removed from active product
+  choices; their exact descriptors remain only for verified legacy cleanup.
+  The active schema-3 contract renders the exact
+  short LFM training serialization as `plain_completion_v1`, sends the raw
+  transcript without KEEP markers, caps generation at 384 tokens, requires
+  `plain_text_v1`, and returns the source unchanged after any runtime or safety
+  failure. QAD is the only permitted quantization for this model: do not export,
+  benchmark, or add PTQ, Q8, BF16, or another quantized product alternative.
+  On 2026-09-01 the owner explicitly confirmed aggregate annual revenue of USD 0
+  including affiliates and described all work as open source, so the PRAXIST
+  free-license revenue gate is passed. The selected 600/600 QAD artifact is
+  published at immutable Hugging Face revision
+  `d64f8a14a09b2916000d969edd18bc411745e53a`, is anonymously byte-verified,
+  and retains the exact attribution `Praxist by Sapient Intelligence`.
+  Product installation must never depend on a Hugging Face account, token, or
   credential manager.
+- Local-polishing training, corpus generation, PRAXIST research, evaluation,
+  and model export must first read `praxist_task/AGENTS.md`. The historical
+  `ml/scriber_polishing` content is retired and is never a training,
+  evaluation, discovery, or prompt source; active work uses only
+  `ml/scriber_polishing_v2` and the explicitly bound fresh 2,000-pair German
+  letter corpus named in `praxist_task/AGENTS.md`. Earlier generated corpora,
+  SAPI/Qwen/Soniox source attempts, Scriber transcripts, old split files, and
+  historical PRAXIST smoke bindings are not quality inputs for this winner.
 - `src/main.py`: compatibility notice for the removed Python desktop UI; use
   Tauri for desktop runs.
 
@@ -1317,10 +1339,10 @@ Packaging and scripts:
   fallback, and local polishing must use neither path. Settings exposes only
   supported OpenRouter fallback choices and persists the selection independently
   from the primary post-processing model.
-  The local path uses only the pinned conservative product prompt/policy,
-  defaults to Q8_0, optionally supports BF16, and must never fall through to a
-  cloud provider after a local failure. In every failure case retain and insert
-  the raw transcript. Do not route File or YouTube jobs through this path.
+  The local path uses only the pinned LFM QAD prompt/policy and the sole
+  `qad_q4_0` model. It must never fall through to a cloud provider after a local
+  failure. In every failure case retain and insert the raw transcript. Do not
+  route File or YouTube jobs through this path.
 - Azure MAI defaults to `mai-transcribe-1.5`.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.
@@ -1773,13 +1795,18 @@ Packaging and scripts:
 - Post-processing diagnostics are redacted runtime metadata only. They may
   include model, prompt/output sizes, duration, status, and sanitized error type
   or message, but must never include raw transcript text or processed output.
-- Local polishing model downloads use the public, ungated Hugging Face repo at
-  one full commit SHA and an exact allowlist of GGUF/policy/manifest files. Use
-  anonymous downloads explicitly, disable ambient Hugging Face credentials,
-  reject returned paths outside the allowlisted cache boundary, verify byte
-  length and SHA-256 before atomic promotion under `SCRIBER_DATA_DIR/models`,
-  and never execute remote code. Downloading or updating a model must not
-  silently activate it; only a fully verified model may be selected.
+- Local polishing installs the sole public LFM2.5 350M QAD-Q4_0 winner from the
+  immutable Hugging Face revision
+  `d64f8a14a09b2916000d969edd18bc411745e53a`. The selected artifact passed the
+  bound 200-long plus 400-short regression set exactly; the earlier 0-of-5
+  candidate remains historical failure evidence only. The PRAXIST revenue gate
+  is passed and every distribution retains `Praxist by Sapient Intelligence`.
+  Do not use ambient Hugging Face credentials. Installation uses anonymous
+  downloads, rejects
+  paths outside the allowlisted cache boundary, verify byte length and SHA-256
+  before atomic promotion under `SCRIBER_DATA_DIR/models`, and never execute
+  remote code. Downloading or updating a model must not silently activate it;
+  only a fully verified and release-gated model may be selected.
   Cancellation must prevent verification/activation and keep only the bounded
   resumable staging state; a later explicit retry may reuse it. Shutdown must
   stop the local inference runtime and leave no active model process.

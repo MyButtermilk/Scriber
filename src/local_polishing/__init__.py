@@ -2,13 +2,18 @@
 
 from .catalog import (
     DEFAULT_CATALOG,
+    PLAIN_COMPLETION_TRANSCRIPT_PLACEHOLDER,
     VARIANTS,
     ArtifactSpec,
     CatalogError,
     CatalogNotMaterializedError,
+    CatalogVariant,
     ModelCatalog,
+    OutputContract,
+    PromptContract,
     Variant,
     VariantSpec,
+    catalog_identity,
 )
 from .hub import ArtifactDownloader, HuggingFaceArtifactDownloader
 from .manager import (
@@ -19,22 +24,27 @@ from .manager import (
     PolishOutcome,
 )
 from .runtime import (
+    CompletionResult,
     GenerationRuntime,
     GenerationRuntimeFactory,
     LlamaRuntimeError,
     LlamaServerLaunchSpec,
     LlamaServerRuntimeFactory,
     RuntimeBinary,
+    RuntimeFile,
     packaged_runtime_factories,
 )
 
 __all__ = [
     "DEFAULT_CATALOG",
+    "PLAIN_COMPLETION_TRANSCRIPT_PLACEHOLDER",
     "VARIANTS",
     "ArtifactDownloader",
     "ArtifactSpec",
     "CatalogError",
     "CatalogNotMaterializedError",
+    "CatalogVariant",
+    "CompletionResult",
     "GenerationRuntime",
     "GenerationRuntimeFactory",
     "HuggingFaceArtifactDownloader",
@@ -46,9 +56,13 @@ __all__ = [
     "LocalPolishingError",
     "LocalPolishingSnapshot",
     "ModelCatalog",
+    "OutputContract",
     "PolishOutcome",
+    "PromptContract",
     "RuntimeBinary",
+    "RuntimeFile",
     "Variant",
     "VariantSpec",
+    "catalog_identity",
     "packaged_runtime_factories",
 ]

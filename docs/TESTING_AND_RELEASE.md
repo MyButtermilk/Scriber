@@ -355,9 +355,9 @@ npx vitest run --config vitest.components.config.ts `
   client/src/components/settings/LocalPolishingSettings.test.tsx
 ```
 
-The optional V2 research path has separate focused, fail-closed gates. Run
-them from `ml\scriber_polishing`; they do not start a Hugging Face job or
-publish a model:
+The superseded V2 research path is retained as historical, fail-closed test
+evidence. These commands are not a current training, quantization-comparison,
+or publication workflow:
 
 ```powershell
 uv run pytest tests/test_hf_v2_training_postflight.py `
@@ -379,11 +379,21 @@ claim, conversion job, public upload, and catalog switch. The 2026-08-01 V2
 candidate failed both gates, so no attempt-15 job was started.
 
 The packaging gate must cover unsafe-archive rejection, exact staged-file
-membership, full manifest re-verification, and corruption rejection. Before a
-release, the model catalog must also be materialized to one full public Hugging
-Face commit, both anonymous Q8_0/BF16 downloads must return without a token,
-and the downloaded bytes must match the catalog's exact sizes and SHA-256.
-Never satisfy this gate from an authenticated developer cache.
+membership, full manifest re-verification, and corruption rejection. The sole
+LFM2.5 Production QAD-Q4_0 winner is public at immutable Hugging Face revision
+`d64f8a14a09b2916000d969edd18bc411745e53a`. Release verification must prove an
+anonymous download, exact byte verification, activation, one real Windows
+runtime completion, and process cleanup. The selected artifact passed all 200
+bound Long and 400 Short regression cases; the earlier 0-of-5 candidate is
+historical failure evidence only.
+
+The independent PRAXIST revenue gate is passed: on 2026-09-01 the owner
+explicitly confirmed aggregate annual revenue of USD 0 including affiliates.
+Third-party distribution must retain the exact attribution
+`Praxist by Sapient Intelligence`.
+
+QAD-Q4_0 is the only permitted product quantization. Do not add or run a BF16,
+Q8, PTQ, or other alternative-quantization comparison as a release gate.
 
 - Tauri bundle resources include the Python `backend/` resource tree. The Rust
   audio sidecar is bundled once as Tauri's install-root
@@ -404,7 +414,8 @@ Never satisfy this gate from an authenticated developer cache.
 - Backend preparation also stages the locked llama.cpp b10158 Vulkan runtime
   plus CPU libraries under `backend\tools\local-polishing`. Verify its complete
   runtime manifest and `llama-server.exe --version`; confirm that neither Q8_0
-  nor BF16 model weights are present in the installer tree.
+  nor BF16 legacy weights, and no Production QAD-Q4_0 model weight, are present
+  in the installer tree.
 
 ```powershell
 scripts\project-python.cmd scripts\smoke_local_polishing_runtime.py `

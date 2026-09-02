@@ -123,7 +123,11 @@ import {
   normalizeVisualizerBarCount,
 } from "@/lib/visualizer-settings";
 import { localizeOnnxDownloadMessage } from "@/lib/onnx-download-message";
-import { mergeLocalPolishingProgress, normalizeLocalPolishingModelsResponse } from "@/lib/local-polishing";
+import {
+  LOCAL_POLISHING_MODEL_LABEL,
+  mergeLocalPolishingProgress,
+  normalizeLocalPolishingModelsResponse,
+} from "@/lib/local-polishing";
 import { getCurrentLocale, translateNow, useI18n } from "@/i18n";
 import {
   SETTINGS_SECTION_KEYS,
@@ -1947,7 +1951,7 @@ export default function Settings() {
   const [speakerProfileName, setSpeakerProfileName] = useState("");
   const [postProcessingEnabled, setPostProcessingEnabled] = useState(true);
   const [postProcessingEngine, setPostProcessingEngine] = useState<PostProcessingEngine>("cloud");
-  const [localPolishingVariant, setLocalPolishingVariant] = useState<LocalPolishingVariant>("q8_0");
+  const [localPolishingVariant, setLocalPolishingVariant] = useState<LocalPolishingVariant>("qad_q4_0");
   const [language, setLanguage] = useState("auto");
   const [visualizerBarCount, setVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
   const [savedVisualizerBarCount, setSavedVisualizerBarCount] = useState(DEFAULT_VISUALIZER_BAR_COUNT);
@@ -2740,7 +2744,7 @@ export default function Settings() {
       setLocalPolishingCatalog(catalog);
       setLocalPolishingError("");
     } catch (error) {
-      setLocalPolishingError(localizedSettingsError(error, "Local polishing models could not be loaded.", locale, t));
+      setLocalPolishingError(localizedSettingsError(error, "Local polishing model could not be loaded.", locale, t));
     } finally {
       setLocalPolishingLoading(false);
     }
@@ -2838,7 +2842,7 @@ export default function Settings() {
         setCustomPostProcessingModelInvalid(false);
         setPostProcessingFallbackModel(settings.postProcessingFallbackModel || DEFAULT_POST_PROCESSING_FALLBACK_MODEL);
         setPostProcessingEngine(settings.postProcessingEngine === "local" ? "local" : "cloud");
-        setLocalPolishingVariant(settings.localPolishingVariant === "bf16" ? "bf16" : "q8_0");
+        setLocalPolishingVariant("qad_q4_0");
         setAutoSummarize(settings.autoSummarize === true);
         setYoutubePreferCaptions(settings.youtubePreferCaptions !== false);
         setVoiceprintLibraryOptIn(settings.voiceprintLibraryOptIn === true);
@@ -3624,7 +3628,7 @@ export default function Settings() {
       toast({
         title: t("Local cleanup selected"),
         description: t("New post-processed dictations will use {{model}} on this device.", {
-          model: variant === "q8_0" ? "Q8_0" : "BF16",
+          model: LOCAL_POLISHING_MODEL_LABEL,
         }),
         duration: 3000,
       });

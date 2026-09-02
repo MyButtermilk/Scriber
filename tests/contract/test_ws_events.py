@@ -232,7 +232,7 @@ def test_ws_state_and_auxiliary_events_match_contract():
         version_event_payload({"type": "onnx_models_updated", "modelId": "nemo-parakeet"}),
         local_polishing_model_progress_event(
             {
-                "variant": "q8_0",
+                "variant": "qad_q4_0",
                 "status": "downloading",
                 "operationId": "operation-1",
                 "progress": 25.0,

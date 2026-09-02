@@ -115,7 +115,9 @@ async def post_process_live_transcript(
     if selected_engine == "local":
         if local_polisher is None:
             raise RuntimeError("Local post-processing is not available.")
-        variant = (local_variant or Config.LOCAL_POLISHING_VARIANT or "q8_0").strip().lower()
+        variant = (
+            (local_variant or Config.LOCAL_POLISHING_VARIANT or Config.DEFAULT_LOCAL_POLISHING_VARIANT).strip().lower()
+        )
         if diagnostics is not None:
             diagnostics.update(
                 {

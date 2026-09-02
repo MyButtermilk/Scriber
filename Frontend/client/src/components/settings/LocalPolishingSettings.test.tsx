@@ -8,17 +8,16 @@ import type { LocalPolishingModelsResponse } from "@/lib/api-types";
 
 const readyCatalog: LocalPolishingModelsResponse = {
   available: true,
-  currentVariant: "q8_0",
+  currentVariant: "qad_q4_0",
   models: [
     {
-      variant: "q8_0",
+      variant: "qad_q4_0",
       status: "ready",
       installed: true,
       active: true,
       runtimeReady: true,
-      sizeBytes: 291_545_440,
+      sizeBytes: 228_000_000,
     },
-    { variant: "bf16", status: "not_installed", installed: false },
   ],
 };
 
@@ -26,7 +25,7 @@ function renderSettings(overrides: Partial<ComponentProps<typeof LocalPolishingS
   const props: ComponentProps<typeof LocalPolishingSettings> = {
     enabled: true,
     engine: "cloud",
-    selectedVariant: "q8_0",
+    selectedVariant: "qad_q4_0",
     catalog: readyCatalog,
     loading: false,
     error: "",
@@ -52,58 +51,73 @@ describe("LocalPolishingSettings", () => {
   });
 
   it("downloads a model without activating it", () => {
-    const props = renderSettings();
-    const bf16Card = screen.getByTestId("local-polishing-model-bf16");
+    const props = renderSettings({
+      catalog: {
+        available: true,
+        models: [{ variant: "qad_q4_0", status: "not_installed", installed: false }],
+      },
+    });
+    const qadCard = screen.getByTestId("local-polishing-model-qad_q4_0");
 
-    fireEvent.click(within(bf16Card).getByRole("button", { name: "Download" }));
+    fireEvent.click(within(qadCard).getByRole("button", { name: "Download" }));
 
-    expect(props.onInstall).toHaveBeenCalledWith("bf16");
+    expect(props.onInstall).toHaveBeenCalledWith("qad_q4_0");
     expect(props.onUse).not.toHaveBeenCalled();
     expect(props.onEngineChange).not.toHaveBeenCalled();
   });
 
-  it("describes anonymous downloads and the exact local-processing privacy boundary", () => {
+  it("describes the conditional local-processing privacy boundary without claiming a public download", () => {
     renderSettings();
 
     expect(
       screen.getByText(
-        "Polishing runs on this device, so transcript text is not sent to a polishing provider. Cloud speech recognition may still upload audio. The public model download needs no Hugging Face account.",
+        "When local polishing is available, transcript text stays on this device. Cloud speech recognition may still upload audio.",
       ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Audio stays local/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /sign in|log in|token|credential/i })).not.toBeInTheDocument();
   });
 
-  it("shows the Gemma use-policy notice with safe official links but no acceptance checkbox", () => {
+  it("identifies the single QAD model without retired model choices or Gemma terms", () => {
     renderSettings();
 
-    expect(screen.getByText(/By clicking Download, you accept Google's/)).toBeInTheDocument();
-    const termsLink = screen.getByRole("link", { name: "Gemma Terms of Use" });
-    const prohibitedUseLink = screen.getByRole("link", { name: "Gemma Prohibited Use Policy" });
-    expect(termsLink).toHaveAttribute("href", "https://ai.google.dev/gemma/terms");
-    expect(prohibitedUseLink).toHaveAttribute("href", "https://ai.google.dev/gemma/prohibited_use_policy");
-    for (const link of [termsLink, prohibitedUseLink]) {
-      expect(link).toHaveAttribute("target", "_blank");
-      expect(link).toHaveAttribute("rel", "noopener noreferrer");
-    }
+    expect(screen.getByText("LFM2.5 350M · QAD Q4_0")).toBeInTheDocument();
+    expect(screen.getByText(/only one local model: LFM2.5 350M quantized with QAD to Q4_0/i)).toBeInTheDocument();
+    expect(screen.getByText(/Praxist by Sapient Intelligence/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("local-polishing-model-q8_0")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("local-polishing-model-bf16")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Gemma/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
   });
 
-  it("marks Q8 as recommended and BF16 as optional", () => {
+  it("shows exactly one installable model card", () => {
     renderSettings();
 
-    const q8Card = screen.getByTestId("local-polishing-model-q8_0");
-    const bf16Card = screen.getByTestId("local-polishing-model-bf16");
-    expect(within(q8Card).getByText("Recommended")).toBeInTheDocument();
-    expect(within(bf16Card).getByText("Optional")).toBeInTheDocument();
+    expect(screen.getAllByTestId(/^local-polishing-model-/)).toHaveLength(1);
+    expect(screen.getByTestId("local-polishing-model-qad_q4_0")).toBeInTheDocument();
+  });
+
+  it("shows an unavailable message and no model card when the catalog is not materialized", () => {
+    renderSettings({
+      catalog: {
+        available: false,
+        message: "catalog_not_materialized",
+        models: [{ variant: "qad_q4_0", status: "unavailable", installed: false }],
+      },
+    });
+
+    expect(
+      screen.getByText("The local polishing model is unavailable in this build."),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("local-polishing-model-qad_q4_0")).not.toBeInTheDocument();
   });
 
   it("requires an explicit use action and protects the active model from removal", () => {
     const props = renderSettings({ engine: "local" });
-    const q8Card = screen.getByTestId("local-polishing-model-q8_0");
+    const qadCard = screen.getByTestId("local-polishing-model-qad_q4_0");
 
-    expect(within(q8Card).getByRole("button", { name: "In use" })).toBeDisabled();
-    expect(within(q8Card).getByRole("button", { name: "Remove" })).toBeDisabled();
+    expect(within(qadCard).getByRole("button", { name: "In use" })).toBeDisabled();
+    expect(within(qadCard).getByRole("button", { name: "Remove" })).toBeDisabled();
     expect(props.onUse).not.toHaveBeenCalled();
   });
 
@@ -115,22 +129,23 @@ describe("LocalPolishingSettings", () => {
         available: true,
         models: [
           {
-            variant: "q8_0",
+            variant: "qad_q4_0",
             status: "downloading",
             operationId: "operation-17",
             progress: 38,
           },
-          { variant: "bf16", status: "not_installed" },
         ],
       },
     });
 
-    const q8Card = screen.getByTestId("local-polishing-model-q8_0");
-    expect(within(q8Card).getByRole("progressbar", { name: "Q8_0 download progress" })).toHaveAttribute(
+    const qadCard = screen.getByTestId("local-polishing-model-qad_q4_0");
+    expect(
+      within(qadCard).getByRole("progressbar", { name: "LFM2.5 350M · QAD Q4_0 download progress" }),
+    ).toHaveAttribute(
       "aria-valuenow",
       "38",
     );
-    fireEvent.click(within(q8Card).getByRole("button", { name: "Cancel" }));
+    fireEvent.click(within(qadCard).getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledWith("operation-17");
   });
 });

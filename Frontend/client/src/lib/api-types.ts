@@ -1007,7 +1007,7 @@ export interface LocalModelActionResponse {
 
 export type PostProcessingEngine = "cloud" | "local";
 
-export type LocalPolishingVariant = "q8_0" | "bf16";
+export type LocalPolishingVariant = "qad_q4_0";
 
 export type LocalPolishingModelStatus =
   "not_installed" | "downloading" | "verifying" | "cancelling" | "cancelled" | "ready" | "unavailable" | "error";

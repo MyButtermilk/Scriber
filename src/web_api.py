@@ -8673,7 +8673,7 @@ class ScriberWebController:
 
     def _schedule_local_polishing_prewarm(self, variant: str) -> None:
         normalized = str(variant or "").strip().lower()
-        if normalized not in {"q8_0", "bf16"} or self._shutting_down or self._loop.is_closed():
+        if normalized != "qad_q4_0" or self._shutting_down or self._loop.is_closed():
             return
         existing = self._local_polishing_prewarm_tasks.get(normalized)
         if self._local_polishing_prewarm_target == normalized and existing is not None and not existing.done():
@@ -9338,7 +9338,7 @@ class ScriberWebController:
 
         await self.broadcast(status_event("Post-processing...", False, session_id=session_id))
         selected_engine = str(Config.POST_PROCESSING_ENGINE or "cloud").strip().lower()
-        selected_variant = str(Config.LOCAL_POLISHING_VARIANT or "q8_0").strip().lower()
+        selected_variant = str(Config.LOCAL_POLISHING_VARIANT or Config.DEFAULT_LOCAL_POLISHING_VARIANT).strip().lower()
         selected_model = (
             f"local:{selected_variant}"
             if selected_engine == "local"
@@ -17633,7 +17633,7 @@ class ScriberWebController:
             if not isinstance(payload["localPolishingVariant"], str):
                 raise ValueError("Local polishing variant must be text.")
             candidate_variant = payload["localPolishingVariant"].strip().lower()
-            if candidate_variant not in {"q8_0", "bf16"}:
+            if candidate_variant != "qad_q4_0":
                 raise ValueError("Unsupported local polishing variant.")
             validated_local_polishing_variant = candidate_variant
         has_onnx_model = "onnxModel" in payload and isinstance(payload["onnxModel"], str)

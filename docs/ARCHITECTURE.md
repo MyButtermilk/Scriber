@@ -71,8 +71,10 @@ Live mic:
    transport lease lets an already-admitted primary/fallback workflow finish
    while shutdown seals new work; its cancellation-safe finalizer closes the
    session only after the last borrower exits. Ordinary summaries keep their
-   existing reasoning, model, and retry policies. Local uses the verified Q8_0
-   or BF16 GGUF and the bundled llama.cpp runtime.
+   existing reasoning, model, and retry policies. The local path is QAD-only
+   and can use only the LFM2.5 350M Production QAD-Q4_0 GGUF with the bundled
+   llama.cpp runtime. The public immutable model is installed on demand after
+   anonymous byte verification; no Hugging Face credential enters this path.
    After the cleaned text is handed to injection, a successful cloud fallback
    asks the authenticated Tauri shell IPC boundary for a native Windows toast.
    The shell first requires Windows to report notifications enabled for the
@@ -1179,9 +1181,10 @@ Key modules:
   Meeting backpressure, and analyzer-cache cleanup use this seam; shutdown
   therefore accounts for work accepted immediately before its barrier and
   never relies on an unowned `create_task()` hidden inside a scheduler callback.
-- `src/local_polishing/`: immutable public-artifact catalog, anonymous model
-  downloader, verified model lifecycle, conservative transcript-output safety
-  checks, and the loopback-only bundled llama.cpp adapter.
+- `src/local_polishing/`: QAD-only artifact catalog and model lifecycle,
+  conservative transcript-output safety checks, and the loopback-only bundled
+  llama.cpp adapter. The sole public model is downloaded anonymously from an
+  immutable revision and every artifact is checked before activation.
 - `src/core/`: REST/WebSocket contracts, state machine, circuit breaker, retry
   and provider support types, hot-path tracing, logging helpers.
 - `src/native_overlay.py`: backend facade for the Tauri-owned recording overlay
@@ -1264,8 +1267,8 @@ API key or credential path before selection. Live Mic keeps its primary and
 OpenRouter fallback model as independent persisted choices. Missing-credential
 prompts open the matching API-key dialog directly instead of forcing users to
 scroll.
-Local transcription models and public local-polishing GGUF downloads remain
-selectable without credentials or a Hugging Face account.
+Local transcription models and the QAD local-polishing model remain selectable
+without provider credentials or a Hugging Face account.
 Desktop update checks are frontend/Tauri-owned rather than Python-backend
 work. Installed builds check the configured Tauri updater endpoint in the
 background after startup and then about once per week, cache the result in
@@ -1589,12 +1592,66 @@ Local transcript polishing has two intentionally separate artifact boundaries:
   under `backend\tools\local-polishing`. Its Vulkan backend is preferred and
   the same distribution contains CPU fallback libraries. No inference
   executable is accepted from Hugging Face.
-- Settings downloads only the public, commit-pinned Q8_0 or BF16 GGUF bundle
-  into `SCRIBER_DATA_DIR\models`. The download is anonymous, resumable, bounded,
-  and promoted only after exact size/SHA-256 plus policy/manifest validation.
-  Q8_0 is the normal desktop/laptop choice; BF16 is an optional larger
-  reference. The feature uses GGUF rather than ONNX, so there is no second
-  conversion/runtime path to maintain.
+- The sole model identity is `qad_q4_0`, for the LFM2.5 350M Production
+  QAD-Q4_0 GGUF. Public immutable commit
+  `d64f8a14a09b2916000d969edd18bc411745e53a` in
+  `Buttermilk03/scriber-lfm2.5-350m-polishing-de-qad-v1` carries the exact
+  PRAXIST attribution, model, schema-2 LFM safety policy, manifest, and license
+  files. Installation downloads anonymously into
+  `SCRIBER_DATA_DIR\models` and verifies the catalog-bound size and SHA-256 of
+  every artifact before activation. Retired Gemma Q8_0/BF16 revisions remain
+  legacy-removal and rollback identities only. The feature uses GGUF rather
+  than ONNX, and no alternative quantization or comparison path is authorized.
+
+The separate training boundary uses only `ml/scriber_polishing_v2` and the
+fresh, bound 2,000-pair German Word corpus. The 1,600/200/200 split was
+deterministically shuffled before training, and Production reconstructed all
+2,000 parents plus one Identity and one Noisy child per parent. Earlier
+Soniox/Azure/Cerebras attempts, Scriber transcript databases, legacy polishing
+corpora, SAPI/Qwen audio, and historical technical PRAXIST smoke artifacts are
+explicitly excluded from the winner's quality inputs. The resulting weights
+are Generated Output from
+`Praxist by Sapient Intelligence`. The owner explicitly confirmed aggregate
+annual revenue of USD 0 including affiliates on 2026-09-01; the public package
+retains the required attribution.
+
+Vulkan startup is device-explicit rather than host-order-dependent. The exact
+manifest-verified b10158 executable is first run with `--list-devices` in a
+bounded child process. Only one unambiguous `NVIDIA ` row is eligible, and a
+second probe with the self-generated physical index in the child-only
+`GGML_VK_VISIBLE_DEVICES` environment must expose that same device alone as
+logical `Vulkan0`. Malformed output, non-empty probe stderr, multiple NVIDIA
+devices, or a remap mismatch skips Vulkan and preserves the CPU fallback; no
+process-wide environment is changed. If that isolated server then exits with
+b10158's exact `vk::PhysicalDevice::createDevice: ErrorExtensionNotPresent`
+failure, one newly constructed server may retry with child-only
+`GGML_VK_DISABLE_BFLOAT16=1`. The packaged Production QAD factory already sets
+that compatibility flag on its first Vulkan launch: a physical adapter exposed
+as `Vulkan1` is isolated with `GGML_VK_VISIBLE_DEVICES=1` and appears to the
+child as logical `Vulkan0`. Any failure of that compatibility process proceeds
+to CPU. A crashed process is closed and never reused.
+
+The public QAD catalog also owns a versioned inference contract.
+Schema v1 is retained only for the exact retired Gemma installation/rollback
+identities. The candidate schema v3 binds one exact UTF-8 LFM prompt template
+and SHA-256 as
+`plain_completion_v1`, fixes `generation_max_new_tokens=384`, requires
+`plain_text_v1`, and sends the raw transcript directly to `/completion` without
+applying a chat template or inserting KEEP markers. Runtime output is still
+checked for critical values, content loss/addition, control markup, repetition,
+and unsafe structure. Both paths use llama.cpp b10158's exact non-OAI
+termination evidence: `stop` must
+be true, `stop_type` must be `eos` or `word`, `truncated` must be false, and the
+reported `tokens_predicted` must remain below the requested budget. `limit`,
+`none`, truncation, budget exhaustion, malformed evidence, or output-safety
+rejection returns the unchanged input transcript.
+
+The original QAD candidate failed its first real Windows product-manager E2E
+and was not shipped. The later selected artifact reproduced 600/600 frozen
+runtime-regression cases exactly with zero protected mutations and zero safety
+rejections. Its public commit and all downloaded files are immutable and
+byte-verified; the same fail-closed safety path still returns the original text
+for any unsafe unfamiliar output.
 
 Post-processing diagnostics are intentionally metadata-only. The backend records
 bounded recent attempts with status, configured model, prompt/output character

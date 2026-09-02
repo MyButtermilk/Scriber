@@ -105,10 +105,19 @@ Reliability and data:
 
 Local transcript polishing:
 
-- The public V1 Gemma 3 270M GGUF release remains the product model. Settings
-  downloads its commit-pinned Q8_0 or BF16 variant anonymously, verifies exact
-  bytes, and runs it through the bundled llama.cpp runtime. Q8_0 remains the
-  recommended desktop/laptop choice; BF16 remains the larger reference option.
+- The backend has exactly one active identity: `qad_q4_0`, the LFM2.5 350M
+  Production QAD-Q4_0 GGUF. Its production GGUF, schema-3 LFM policy, manifest,
+  and license files are public at immutable Hugging Face revision
+  `d64f8a14a09b2916000d969edd18bc411745e53a` and install anonymously on demand.
+  Retired Gemma Q8_0/BF16 revisions are legacy-removal and rollback identities
+  only, not selectable models; no alternative quantization is authorized or
+  compared.
+- The selected replacement passed the bound 200 Long plus 400 Short regression
+  cases exactly. The earlier real Windows 0-of-5 result remains historical
+  failure evidence and is not the shipping artifact. On 2026-09-01 the owner
+  explicitly confirmed aggregate annual revenue of USD 0 including affiliates,
+  so the PRAXIST free-license revenue gate is passed. Third-party availability
+  retains `Praxist by Sapient Intelligence`.
 - A 640-step V2 hard-case continuation completed successfully, but its compact
   promotion evidence failed closed. Across 300 sealed automatic cases, V1/V2
   normalized exact match was `0.546667`/`0.530000`, deterministic critical
@@ -1352,6 +1361,427 @@ Architecture and maintainability:
 - The editing contracts in `AGENTS.md` remain intentionally authoritative but
   large. A future documentation-only change may move detailed contracts under
   `docs/contracts/` while keeping `AGENTS.md` as the indexed entry point.
+
+### Historical Praxist / 350M candidate feasibility (2026-08-30; superseded)
+
+This is a source-bounded feasibility record, not training or release evidence.
+It pins [Praxist 0.5.0 commit `92b78538`](https://github.com/sapientinc/PRAXIST/tree/92b785381ee13f9ea1435ba52024493c90db35ee)
+and [Boldt checkpoint commit `8ed2326e`](https://huggingface.co/Boldt/Boldt-DC-350M/tree/8ed2326ed7bd833ddd832ae961dff8312746b104)
+plus [LiquidAI checkpoint commit `9960764e`](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/tree/9960764e30892e01f29a6dc23df2533fcd8bd5ae)
+so later work does not silently inherit changed inputs.
+
+**Feasibility verdict and blocking facts:**
+
+- The Boldt checkpoint is a plausible small German causal-LM starting point, but it
+  is not a drop-in Scriber model and no quality result has yet been measured.
+  Its [model card](https://huggingface.co/Boldt/Boldt-DC-350M/blob/8ed2326ed7bd833ddd832ae961dff8312746b104/README.md)
+  explicitly calls it a base model, not instruction-tuned, and recommends text
+  completion rather than chat prompting. Reproducing the current Cerebras
+  editor therefore requires task-specific supervised pairs and an evaluator;
+  the prompt alone is not a fine-tuning dataset.
+- **Model-identity correction:** despite the `Boldt-DC-350M` name, Hugging Face's
+  [immutable Safetensors metadata](https://huggingface.co/api/models/Boldt/Boldt-DC-350M/revision/8ed2326ed7bd833ddd832ae961dff8312746b104)
+  reports exactly **468,239,360 BF16 parameters**, and the repository lists a
+  937 MB `model.safetensors`. This is consistent with Hugging Face displaying
+  the model as `0.5B`, not with an exact 350-million-parameter requirement.
+  The operator explicitly selected this named checkpoint, so the experiment
+  treats `350M` as its published product-class label while reporting the real
+  count everywhere. It must never be described as exactly 350,000,000
+  parameters.
+- `LiquidAI/LFM2.5-350M-Base` is the closer nominal alternative, but its pinned
+  [Safetensors metadata](https://huggingface.co/api/models/LiquidAI/LFM2.5-350M-Base/revision/9960764e30892e01f29a6dc23df2533fcd8bd5ae)
+  reports **354,483,968 BF16 parameters**, not mathematically exactly 350
+  million. Its 709 MB source checkpoint is materially smaller than Boldt's and
+  its card explicitly positions it as a pre-trained base for fine-tuning. A
+  strict exactly-350,000,000-parameter requirement therefore excludes both
+  published checkpoints; a nominal `350M` product-class requirement permits a
+  measured A/B comparison.
+- **Execution prerequisite:** Praxist does not supply the trainer, CUDA,
+  datasets, or
+  evaluator. Its [platform contract](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/docs/operations/platform-support.md)
+  requires an already runnable, measurable task project, release-tests Linux
+  on CPython 3.11/3.12, and places Windows-native outside its current research
+  runtime. This host now has a dedicated Ubuntu 24.04 WSL2 environment with the
+  RTX 4070 visible, Praxist 0.5.0 installed in its own Python 3.12 venv, and the
+  Codex-native doctor gate passing. The remaining prerequisite is task-owned:
+  the new trainer, fresh corpus, and evaluator must be runnable before takeover.
+- **Hosted-compute blocker:** the current public
+  [`MyButtermilk/Scriber`](https://github.com/MyButtermilk/Scriber) remote is
+  owned by a personal user account. GitHub says
+  [larger/GPU runners are available only to organizations and enterprises on
+  Team or Enterprise Cloud](https://docs.github.com/en/actions/concepts/runners/larger-runners).
+  Consequently this repository cannot presently select a GitHub-hosted GPU
+  runner merely because the user has Actions credit. The account's actual
+  promotional balance was not exposed by the repository/API checks and remains
+  unknown.
+
+**Exact Boldt checkpoint contract:**
+
+- The model card declares German text generation under `Apache-2.0`, says the
+  base model was trained from scratch on the German Dense-Core FineWeb-2 subset,
+  and warns that it has not had systematic toxicity, bias, or stereotype
+  evaluation. Those general benchmark results are not evidence for faithful
+  transcript editing.
+- The pinned [`config.json`](https://huggingface.co/Boldt/Boldt-DC-350M/blob/8ed2326ed7bd833ddd832ae961dff8312746b104/config.json)
+  specifies `LlamaForCausalLM`, 24 layers, hidden size 1,024, FFN size 4,096,
+  16 attention and 16 KV heads, untied embeddings, BF16 weights, a 32,000-token
+  vocabulary, and a 2,048-token context.
+- The pinned [`tokenizer_config.json`](https://huggingface.co/Boldt/Boldt-DC-350M/blob/8ed2326ed7bd833ddd832ae961dff8312746b104/tokenizer_config.json)
+  specifies `GPT2Tokenizer`, 2,048 tokens, `<|endoftext|>` BOS/EOS/UNK, and
+  `<|pad|>` padding. It defines no chat template. The long production editor
+  prompt plus source plus near-length-preserving result can exceed 2,048
+  tokens; the trained runtime needs a short fixed task prefix and a measured,
+  meaning-preserving chunk/window policy for longer dictations.
+- **SFT suitability, as an inference from the published files:** a standard
+  Transformers causal-LM Safetensors checkpoint and tokenizer are technically
+  suitable inputs to completion-style SFT. That establishes tool shape only,
+  not that 468M parameters can match a larger teacher, preserve all numbers and
+  names, or learn the requested formatting rules. Full-weight SFT versus a
+  parameter-efficient adapter, sequence length, effective batch, precision,
+  and memory headroom remain experiment variables.
+
+**Exact LiquidAI checkpoint contract:**
+
+- The pinned
+  [model card](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/README.md)
+  distinguishes the `Base` checkpoint from the separately published
+  instruction-tuned model and recommends this base only for heavy task,
+  language, domain, or post-training adaptation. The included chat template is
+  a serialization asset, not evidence that the base weights already follow
+  instructions.
+- The pinned
+  [`config.json`](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/config.json)
+  specifies `Lfm2ForCausalLM`, hidden size 1,024, 16 layers comprising ten
+  double-gated LIV convolution blocks and six full-attention GQA blocks, 16
+  attention heads, eight KV heads, tied embeddings, BF16, and a 65,536-token
+  vocabulary. The config records FFN input 6,656 with auto-adjust enabled; the
+  [native Transformers calculation](https://github.com/huggingface/transformers/blob/v4.57.6/src/transformers/models/lfm2/modeling_lfm2.py#L105-L120)
+  scales and rounds that to an effective FFN width of 4,608. The card documents
+  a 32,768-token context while the config records
+  `max_position_embeddings=128000`; the
+  [`tokenizer_config.json`](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/tokenizer_config.json)
+  uses an effectively unbounded sentinel rather than a usable limit. Treat
+  32,768 as the source-backed product limit until an exact long-context parity
+  test explains the discrepancy.
+- The pinned
+  [`tokenizer.json`](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/tokenizer.json)
+  is a 65,536-entry BPE tokenizer; BOS is `<|startoftext|>`, EOS is
+  `<|im_end|>`, and padding is `<|pad|>`. Unlike Boldt, the repository provides
+  a concrete
+  [`chat_template.jinja`](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/chat_template.jinja),
+  but the base weights are not instruction-tuned. The product experiment will
+  use one explicit hash-pinned completion serialization for both arms instead
+  of inheriting architecture-specific chat behavior.
+- LiquidAI's primary
+  [TRL guide](https://docs.liquid.ai/lfm/fine-tuning/trl) requires
+  `transformers>=4.55.0`, `torch>=2.6`, PEFT, and Accelerate; it supports full
+  SFT and recommends LoRA. The new isolated V2 environment now pins Python
+  3.12, Torch 2.11.0+cu128, Transformers 5.16.1, PEFT 0.20.0, and Accelerate
+  1.14.0. It does not import the old Gemma-specific trainer or any old ML data.
+  Both pinned base checkpoints have completed a real BF16 load,
+  forward/backward, adapter save/reload, and second forward/backward on the
+  local RTX 4070 with `trust_remote_code=False`.
+- **Tokenizer/runtime blocker resolved for research:** the exact checkpoint
+  declares `tokenizer_class="TokenizersBackend"`, which requires the isolated
+  Transformers-v5 environment. The pinned LFM tokenizer loaded successfully
+  there without modifying the downloaded checkpoint. This establishes the
+  research loader only; later Transformers-to-GGUF token parity remains a
+  product promotion gate.
+- **Explicit PEFT contract:** PEFT 0.20.0 has no `lfm2` default in
+  its
+  [LoRA target-module map](https://github.com/huggingface/peft/blob/v0.20.0/src/peft/utils/constants.py),
+  so targets must be explicit. LiquidAI's guide lists `o_proj`, while the exact
+  Transformers implementation and checkpoint use `out_proj`; the checkpoint
+  also has convolution `in_proj`/`out_proj` and FFN `w1`/`w2`/`w3` tensors.
+  The V2 harness therefore pins and discovers the intended exact module set
+  rather than silently training only whichever names happen to match. Its real
+  smoke found 92 LFM targets (`q_proj`, `k_proj`, `v_proj`, `out_proj`,
+  convolution `in_proj`, and `w1`/`w2`/`w3`) and 168 Boldt targets, with finite
+  gradients before and after adapter reload.
+  The V2 path deliberately uses task-owned completion-only tokenization and a
+  small explicit training loop instead of copying a version-sensitive TRL
+  sample.
+- The model repository ships no custom Python implementation. The task would
+  use Apache-2.0 Transformers plus Apache-2.0
+  [PEFT](https://github.com/huggingface/peft/blob/v0.20.0/LICENSE); those code
+  licenses do not replace the separate LFM weight license below.
+- Compute plausibility is not a fit result. The immutable
+  [BF16 file](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/model.safetensors)
+  is 708,984,464 bytes, and LiquidAI describes LoRA as training roughly 1-2% of
+  model parameters. A 2026-08-30 local `nvidia-smi` probe reports an RTX 4070
+  Laptop GPU with 8,188 MiB and compute capability 8.9. This makes
+  short-context, micro-batch LoRA credible locally. The actual compatibility
+  smokes fit and completed, but they do not yet prove a full training batch,
+  evaluator generation, or production latency envelope. As a deliberately
+  conservative full-SFT planning inference, BF16
+  weights and gradients plus FP32 master weights and two FP32 Adam moments cost
+  16 bytes per parameter, or about 5.28 GiB for LFM before activations, CUDA
+  workspace, temporary tensors, and allocator headroom. Implementations may
+  use a different state layout, so the task must record measured peak VRAM.
+  Full-weight SFT, especially at 32k context, must not be declared to fit the
+  local 8 GB device or a 16 GB T4 from checkpoint size or this arithmetic alone.
+
+**What Praxist can and cannot own:**
+
+- Praxist 0.5.0 requires CPython 3.11+. Its pinned
+  [`pyproject.toml`](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/pyproject.toml)
+  has a small core (`PyYAML`, `Jinja2`, `Pydantic`) and optional agent/Codex
+  integrations; it does not depend on PyTorch, Transformers, PEFT, TRL, or a
+  dataset package. Those task-owned dependencies must be locked separately.
+- For this SFT task, Praxist would orchestrate the iteration rather than perform
+  gradient training itself: parallel peers develop candidates, the task-owned
+  evaluator turns each result into structured evidence, and the planning panel
+  carries that evidence into the next generation until convergence or the
+  declared budget ends
+  ([pinned loop contract](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/README.md#L208-L220)).
+  The separate task project must therefore own the pinned trainer command,
+  dataset manifests, candidate search surface, metrics, acceptance thresholds,
+  and model-export validation; Praxist owns orchestration, evidence, scheduling,
+  replay, and lifecycle, not those scientific choices
+  ([ownership boundary](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/README.md#L132-L139)).
+- The documented setup is
+  `python3 -m pip install --index-url https://pypi.org/simple
+  "praxist[agents,codex]" && praxist setup --interactive --install-skills codex`.
+  After readiness, `praxist --takeover --task-path <research-project>` creates
+  or validates a separate task harness; `praxist resolve <task>` and
+  `praxist doctor --task-path <task>` validate it without starting;
+  `praxist start --task-path <task> --daemonize --json` launches; and
+  `praxist status --json`, `praxist --monitor --latest`,
+  `praxist stop <run_id>`, and `praxist resume <run_dir>` operate it.
+  Installation alone neither chooses Scriber nor starts research, as the pinned
+  [README](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/README.md)
+  and [Quickstart](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/docs/getting-started/quickstart.md)
+  state.
+- **Operator/legal setup record:** the same Quickstart requires review of the
+  exact Fair Source License, User Agreement, and data notice followed by an
+  explicit agree-or-cancel choice whose version and digest are recorded.
+  Optional product-usage consent is separate and not preselected. The operator
+  explicitly authorized the required confirmations for this autonomous task;
+  the local Praxist setup recorded acceptance of the required legal bundle and
+  product-usage telemetry was declined. Revenue, distribution, attribution,
+  and any commercial-license questions remain separate release gates.
+- Before takeover, the task must expose an unchanged training/inference
+  baseline, locally reachable data, and a metric with direction; Praxist refuses
+  to invent or download missing prerequisites. This is the explicit
+  [first-task contract](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/docs/getting-started/first-task.md).
+- A suitable Scriber task harness should keep teacher-generation/training data
+  disjoint from sealed evaluation, compare candidates against both newly
+  generated outputs from the exact current Cerebras prompt and the shipped V1
+  model on those same fresh inputs, and score at least content preservation,
+  additions/omissions, names/numbers/units/timestamps, punctuation and
+  structure, forbidden answer/summary behavior, latency, memory, and GGUF size.
+  By explicit operator instruction on 2026-08-30, every prior Scriber-polishing
+  training, validation, challenge, prediction, and judge corpus is excluded
+  from the new train/development/test sets. Only reusable code and schemas may
+  be inspected; zero old examples or targets may enter the experiment.
+- Praxist can centrally schedule explicit GPU profiles and passes exact GPU UUID
+  and CUDA visibility into task descendants; it does not make a declared GPU
+  profile real or scientifically equivalent to CPU execution. Its
+  [scheduler contract](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/docs/guides/central-resource-scheduler.md)
+  requires measured VRAM/utilization envelopes and fail-closed device binding.
+
+**GitHub Actions option:**
+
+- GitHub's hosted GPU larger runner is one Tesla T4 with 16 GB VRAM, 28 GB RAM,
+  4 CPU cores, and 176 GB SSD on Ubuntu or Windows
+  ([runner specification](https://docs.github.com/en/actions/reference/runners/larger-runners)).
+  This is credible for initial parameter-efficient SFT probes of either 354M
+  LFM or 468M Boldt, but full-weight SFT and the chosen sequence/batch settings
+  still need a real memory probe; the hardware table alone is not a fit result.
+  The T4 is compute capability 7.5
+  ([NVIDIA GPU table](https://developer.nvidia.com/cuda/gpus)), while CUDA
+  requires compute capability 8.0 or newer for BF16
+  ([CUDA floating-point contract](https://docs.nvidia.com/cuda/cuda-programming-guide/05-appendices/mathematical-functions.html#floating-point-data-types)).
+  A T4 experiment must therefore smoke-test and use the same supported FP16
+  policy for both A/B arms rather than copying the current `bf16=True` setting.
+- Current pricing is $0.052/minute for Linux and $0.102/minute for Windows,
+  rounded up by job; included minutes cannot pay for larger runners and larger
+  runners are not free for public repositories
+  ([pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)).
+  That is $3.12/hour or $6.12/hour respectively. Every GitHub-hosted job is
+  capped at six hours
+  ([Actions limits](https://docs.github.com/en/actions/reference/limits)), so a
+  single maximum-length Linux GPU job costs up to $18.72 before storage and
+  must checkpoint early enough to finish upload/validation before termination.
+- The same limits page lists 500 MB artifact storage and 10 GB cache storage for
+  GitHub Free, versus 1 GB artifact storage for GitHub Pro. The account plan is
+  unconfirmed: the 937 MB source checkpoint exceeds the Free artifact quota and
+  would leave almost no Pro headroom before a tuned BF16 checkpoint, reports,
+  or optimizer states. Do not rely on Actions artifacts; use a separately
+  authorized model registry/object store with resumable, hash-verified uploads,
+  and treat Actions cache as evictable.
+- GitHub repository/environment secrets can carry a teacher-provider key or a
+  write-scoped model-registry token only when explicitly mapped into the job.
+  Fork-triggered workflows do not receive repository secrets
+  ([secret handling](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)).
+  Training should therefore be manual `workflow_dispatch` on a protected
+  revision/environment, never an untrusted pull-request workflow. Downloading
+  the public Boldt source needs no Hugging Face token; publishing results does.
+- A local self-hosted Linux/WSL Actions runner can use the user's GPU without
+  hosted-GPU eligibility, but it is local compute, not GitHub online GPU credit.
+  Praxist still requires the Linux task runtime and long jobs must survive
+  machine restarts and preserve their run directory.
+
+**GGUF, Scriber integration, and redistribution gates:**
+
+- GGUF conversion is plausible but unverified. Scriber's pinned llama.cpp
+  `b10158` converter registers `LlamaForCausalLM` and falls back to GPT-2
+  vocabulary conversion when SentencePiece/Llama-HF vocabularies are absent
+  ([pinned converter](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/conversion/llama.py#L17-L32),
+  [vocabulary path](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/conversion/llama.py#L104-L140)).
+  Promotion still requires conversion of the exact tuned checkpoint, tokenizer
+  parity against Transformers, BF16/Q8_0 output comparison, and successful load
+  and deterministic completion through the exact bundled `llama-server.exe`.
+- LFM2.5 has stronger structural evidence against the exact same pin: b10158's
+  [`conversion/lfm2.py`](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/conversion/lfm2.py#L15)
+  registers `Lfm2ForCausalLM`, its
+  [native LFM2 graph](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/src/models/lfm2.cpp)
+  loads and executes the hybrid convolution/attention architecture, and its
+  [tokenizer registry](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/convert_hf_to_gguf_update.py#L143)
+  names LiquidAI's LFM2.5-350M tokenizer. This confirms converter/runtime code
+  paths, not the exact tuned artifact. Promotion still requires merged-adapter
+  conversion, tensor/tokenizer/chat-template parity with Transformers,
+  QAD-Q4_0 byte parity, and an installed Vulkan/CPU `llama-server.exe` smoke and
+  stress run. Those technical gates were completed for the selected LFM arm,
+  but they did not satisfy the later fresh-case product acceptance gate.
+- The shipping model boundary uses catalog schema v3 with a hash-pinned
+  `plain_completion_v1` prompt template, a fixed 384-token cap, and
+  `plain_text_v1` output contract.
+  [`manager.py`](../src/local_polishing/manager.py) sends that contract directly
+  to `/completion` without `/apply-template` and without injecting KEEP markers
+  into the raw training-distribution input. The existing schema-v1
+  `chat_template_v1`/SST path remains only for exact legacy rollback identities.
+  [`runtime.py`](../src/local_polishing/runtime.py) validates llama.cpp b10158's
+  exact `stop_type` response: only `eos` or `word` may reach the output safety
+  gate, while `limit`, `none`, prompt truncation, token-budget exhaustion, or
+  malformed evidence return the unchanged transcript. The manager also has an
+  explicit legacy-removal seam bound to the allowlisted repository, revision,
+  variant, catalog identity, installation manifest, and managed path. It is not
+  automatic: Gemma installations are inactive but are removed only through the
+  explicit verified legacy-removal boundary.
+- The bundled b10158 Vulkan path no longer assumes that the host's first
+  enumerated adapter is the intended GPU. It strictly parses `--list-devices`,
+  accepts only one unambiguous NVIDIA adapter, and verifies a second
+  child-environment isolation probe before starting it as logical `Vulkan0`.
+  Missing, malformed, ambiguous, or mismatched evidence fails over to CPU.
+  b10158's exact `vk::PhysicalDevice::createDevice: ErrorExtensionNotPresent`
+  startup failure permits one fresh process with
+  `GGML_VK_DISABLE_BFLOAT16=1`; the packaged Production QAD factory now sets the
+  same child-only flag on its first launch. A physical `Vulkan1` selected by the
+  exact probe is isolated and exposed to llama.cpp as logical `Vulkan0`. The
+  parent environment is never changed, and a failed compatibility launch
+  proceeds directly to CPU.
+- The PRAXIST-v2 evaluator now precomputes and verifies each arm's complete
+  schedule hash and one common, gradient-accumulation-independent raw-example
+  order hash. Candidate hyperparameters are bound to the training identity.
+  Published child results are strict metadata projections: unknown top-level or
+  nested fields fail closed, while runtime/determinism strings and the shared
+  pair config cross the boundary only as hashes. Raw examples, targets,
+  predictions, pair IDs, and token IDs are not PRAXIST result fields.
+- The LFM-only PRAXIST run, all-2,000-pair SFT lineage, Production QAD recovery,
+  GGUF export, and catalog binding are complete. The selected QAD-Q4_0 winner
+  and its exact policy/license/manifest files are public at immutable revision
+  `d64f8a14a09b2916000d969edd18bc411745e53a` and require no credentials. The
+  earlier private/rejected artifact remains historical evidence only.
+- The historical public-v7 Soniox/Azure/Cerebras chain is excluded from the
+  selected winner. Its partial and failed attempts remain engineering evidence
+  only. The active quality source is the independently bound, deterministically
+  shuffled 2,000-pair German Word corpus with a 1,600/200/200 split; Production
+  used all 2,000 parents plus their deterministic Identity and Noisy children.
+- The Boldt repository declares Apache-2.0 but currently contains no separate
+  `LICENSE` or `NOTICE` artifact in its pinned file tree. Apache 2.0 permits
+  redistribution subject to providing the license, marking modified files, and
+  retaining applicable notices
+  ([official Section 4](https://www.apache.org/licenses/LICENSE-2.0#redistribution)).
+  The bundled llama.cpp runtime is MIT-licensed and its copyright/permission
+  notice must remain included
+  ([pinned license](https://github.com/ggml-org/llama.cpp/blob/f87067841bac583bc089a225382248d857791ca8/LICENSE)).
+- LiquidAI weights use the non-Apache
+  [LFM Open License v1.0](https://huggingface.co/LiquidAI/LFM2.5-350M-Base/blob/9960764e30892e01f29a6dc23df2533fcd8bd5ae/LICENSE).
+  It permits commercial use only while the legal entity and its controlled
+  group remain below USD 10 million annual revenue; commercial use at or above
+  that threshold is not licensed by that agreement. Redistribution of tuned or
+  GGUF derivative weights must provide the license, mark modified files, and
+  retain applicable copyright, patent, trademark, and attribution notices. The
+  pinned model repository currently contains no separate `NOTICE` file, so the
+  release manifest must preserve every applicable notice found in the actual
+  conversion/training inputs rather than assume that none exists. Revenue
+  status and any needed separate LiquidAI permission are release gates,
+  independent of the Apache-2.0 Transformers code and MIT llama.cpp runtime.
+- **Praxist output-license gate:** its Fair Source License 1.0 expressly
+  defines model parameter updates and weight files as `Generated Output`. It
+  permits free internal business use only while aggregate annual revenue and
+  affiliates remain below USD 1 million, requires a Commercial License at or
+  above that threshold, and requires the product-name attribution
+  `Praxist by Sapient Intelligence` when generated output is made available to
+  third parties
+  ([generated-output definition](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/LICENSE.md#L51-L55),
+  [attribution and revenue terms](https://github.com/sapientinc/PRAXIST/blob/92b785381ee13f9ea1435ba52024493c90db35ee/LICENSE.md#L113-L140)).
+  **Revenue gate passed, attribution retained:** on 2026-09-01 the owner
+  explicitly confirmed aggregate annual revenue of USD 0 including affiliates.
+  The model repository is public, anonymous access is enabled, and both the
+  publication package and Scriber UI retain the exact attribution
+  `Praxist by Sapient Intelligence`. Do not bundle Praxist itself into Scriber
+  without separate legal review and any required written consent.
+
+**Historical preregistered Boldt-versus-LFM A/B contract (superseded by the
+operator's LFM-only decision):**
+
+- Freeze both source commits above, the exact UTF-8 teacher prompt supplied by
+  the operator in this task, one newly generated hash-manifested
+  transcript/teacher-target corpus, one deterministic preprocessing version,
+  and source-grouped train/development/sealed-test splits. Near-duplicates,
+  alternate corrections, and excerpts of one original dictation remain in one
+  split. Teacher targets are generated and validated once before the final split
+  is sealed; after sealing there is no regeneration, repair, or additional
+  sampling for test cases. The sealed test targets are unavailable to training,
+  Praxist peer prompts, evaluator development, hyperparameter/model selection,
+  quantization choices, and stopping decisions. Open them once for exactly one
+  frozen final candidate per arm; do not retrain, retune, or select again after
+  seeing them. No legacy `ml/scriber_polishing` data artifact is eligible.
+- Run both arms in one separately pinned and parity-smoked training environment
+  that can load both exact tokenizers, with the same supported arithmetic on the
+  same GPU class: BF16 may be a common local RTX 4070 track, while a T4 track
+  must use common FP16. Use the same plain-text completion instruction and
+  teacher targets, raw examples, example order/exposures, maximum training
+  sequence length,
+  optimizer-update count, optimizer/scheduler policy, seed list, number of
+  Praxist candidates, and hard GPU-minute/cost ceiling. The primary corpus must
+  fit both serialized tokenizers without truncation under the common 2,048-token
+  cap; report each tokenizer's non-padding supervised-token count rather than
+  changing or duplicating examples to force token equality. Hash the
+  architecture-specific serialization separately.
+- If LoRA is used, preregister architecture-specific target modules and match
+  the total trainable-parameter budget, or its fraction of base parameters,
+  within a declared tolerance; rank alone is not equivalent across Boldt's 24
+  attention layers and LFM's mixed 16-layer topology. Keep alpha/dropout and
+  the search grid fixed, disclose exact trainable counts, and do not give one
+  arm replacement trials after OOM or invalid evidence. A separate fixed
+  4,096-plus product track may test LFM's longer context and Boldt's frozen
+  chunk policy without contaminating the equal-budget headline result.
+- Keep newly generated results from the exact frozen Cerebras prompt and the
+  shipped Gemma V1 runtime as untouched reference baselines on the same fresh
+  raw inputs. Score those inputs for protected names, numbers,
+  units, dates, timestamps and speaker labels; additions, omissions, meaning
+  changes, forbidden answering/summarizing, output-contract/safety rejection,
+  punctuation, structure, and blind randomized human preference with ties.
+  Critical content-preservation failures are hard gates and cannot be averaged
+  away by stylistic gains.
+- Evaluate merged BF16 and identically produced Q8_0 artifacts through the
+  exact pinned Windows runtime. Report quality beside cold/warm p50/p95 latency,
+  throughput, peak VRAM/RAM, model/download/installed bytes, start time, and
+  failure rate on the same machine and concurrency. Select only a Pareto-valid
+  candidate that beats the frozen product baseline without a critical-quality
+  regression; otherwise retain the existing catalog and report no winner.
+
+**Current promotion boundary:** Gemma Q8_0/BF16 are no longer active catalog or
+settings choices. Their exact identities remain available only for verified
+rollback/removal. The sole LFM QAD winner is public at immutable revision
+`d64f8a14a09b2916000d969edd18bc411745e53a`, installs anonymously, and passed
+the bound 200 Long plus 400 Short regression cases exactly. The PRAXIST owner
+revenue confirmation is complete. QAD-Q4_0 remains the only authorized
+quantization, with no parallel comparison. Scriber never falls back to a
+retired model or mutable local path.
 
 Signing/updater:
 

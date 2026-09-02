@@ -1107,13 +1107,16 @@ Local live-mic transcript polishing deliberately uses one inference stack:
   manifest, and verifies every staged byte before reuse. Authenticode builds
   refresh that manifest after signing `llama-server.exe`.
 - The installer contains the runtime and MIT notice, but no polishing weights.
-  Settings downloads the public, commit-pinned Q8_0 or BF16 GGUF data files
-  anonymously from Hugging Face into the user model cache. Q8_0 is the normal
-  desktop/laptop choice; BF16 is the larger reference option. Neither variant
-  needs a Hugging Face account, access token, or credential manager.
-- ONNX is not used for this feature. Retaining GGUF for both precisions avoids a
-  second converter/runtime/test matrix and lets both variants share identical
-  prompting, lifecycle, and fallback behavior.
+  The sole LFM2.5 350M Production QAD-Q4_0 winner is downloaded on demand from
+  public immutable Hugging Face revision
+  `d64f8a14a09b2916000d969edd18bc411745e53a`, without an account or token. The
+  selected artifact passed all 200 bound Long and 400 Short regression cases;
+  the earlier 0-of-5 candidate remains historical failure evidence. The owner
+  confirmed aggregate annual revenue of USD 0 including affiliates on
+  2026-09-01, so the PRAXIST free-license revenue gate is passed. Distribution
+  retains `Praxist by Sapient Intelligence`.
+- ONNX is not used for this feature. QAD-Q4_0 is the only authorized product
+  quantization; no BF16, Q8, PTQ, or other alternative is produced or compared.
 
 The local-polishing lock and preparation script are part of the normalized
 backend release cache key. Existing Tauri backend targets are reusable only
@@ -1134,10 +1137,10 @@ No-feature-loss constraints:
 - CPU ONNX local-ASR support is part of the standard sidecar. Full NeMo/Torch
   packaging remains outside the standard sidecar and is not exposed as a local
   provider.
-- The llama.cpp executable/runtime is part of the standard sidecar so a model
-  becomes usable immediately after its post-install download. Q8_0/BF16 GGUF
-  weights remain outside the installer and are never duplicated between the
-  installer and the user model cache.
+- The llama.cpp executable/runtime is part of the standard sidecar. The public
+  Production QAD-Q4_0 GGUF remains outside the installer and is downloaded into
+  the managed user model cache only when requested; packaging contains no
+  polishing weights.
 
 Current packaging choices:
 

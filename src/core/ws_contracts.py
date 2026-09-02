@@ -504,7 +504,7 @@ def _validate_model_progress(payload: dict[str, Any], event_type: str) -> None:
 
 def _validate_local_polishing_progress(payload: dict[str, Any], event_type: str) -> None:
     _require_string(payload, "variant", event_type)
-    if payload["variant"] not in {"q8_0", "bf16"}:
+    if payload["variant"] != "qad_q4_0":
         raise WSContractError(f"{event_type} event has unsupported variant")
     _require_string(payload, "status", event_type)
     if payload["status"] not in {

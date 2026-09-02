@@ -5,7 +5,8 @@ import type {
   LocalPolishingVariant,
 } from "@/lib/api-types";
 
-export const LOCAL_POLISHING_VARIANTS = ["q8_0", "bf16"] as const satisfies readonly LocalPolishingVariant[];
+export const LOCAL_POLISHING_VARIANTS = ["qad_q4_0"] as const satisfies readonly LocalPolishingVariant[];
+export const LOCAL_POLISHING_MODEL_LABEL = "LFM2.5 350M · QAD Q4_0";
 
 export interface LocalPolishingProgressUpdate {
   variant: LocalPolishingVariant;
@@ -41,7 +42,7 @@ function optionalBoolean(value: unknown): boolean | undefined {
 }
 
 function isVariant(value: unknown): value is LocalPolishingVariant {
-  return value === "q8_0" || value === "bf16";
+  return value === "qad_q4_0";
 }
 
 function normalizeStatus(value: unknown): LocalPolishingModelStatus {

@@ -819,7 +819,7 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
 
     Config.set_post_processing_enabled(False)
     Config.set_post_processing_engine("local")
-    Config.set_local_polishing_variant("bf16")
+    Config.set_local_polishing_variant("qad_q4_0")
     Config.set_summarization_model("custom/summary-model")
     Config.set_post_processing_model("test/model")
     Config.set_post_processing_fallback_model("z-ai/glm-5.3-flash:nitro")
@@ -836,7 +836,7 @@ def test_json_setting_setters_are_batched_until_explicit_persist(monkeypatch, tm
     assert '"postProcessingModel": "test/model"' in writes[0][1]
     assert '"postProcessingFallbackModel": "z-ai/glm-5.3-flash:nitro"' in writes[0][1]
     assert '"postProcessingEngine": "local"' in writes[0][1]
-    assert '"localPolishingVariant": "bf16"' in writes[0][1]
+    assert '"localPolishingVariant": "qad_q4_0"' in writes[0][1]
     assert '"youtubePreferCaptions": false' in writes[0][1]
 
 
@@ -845,8 +845,26 @@ def test_local_polishing_settings_reject_unknown_values():
         Config.set_post_processing_engine("automatic")
     with pytest.raises(ValueError, match="local polishing variant"):
         Config.set_local_polishing_variant("q4_k_m")
+    with pytest.raises(ValueError, match="local polishing variant"):
+        Config.set_local_polishing_variant("bf16")
     with pytest.raises(ValueError, match="fallback model"):
         Config.set_post_processing_fallback_model("cerebras/gemma-4-31b")
+
+
+def test_retired_local_polishing_variants_migrate_to_qad_q4_0(monkeypatch):
+    settings = {"localPolishingVariant": "bf16"}
+
+    assert config_module._migrate_local_polishing_variant(settings) is True
+    assert settings == {"localPolishingVariant": "qad_q4_0"}
+    assert config_module._migrate_local_polishing_variant(settings) is False
+
+    monkeypatch.setenv("SCRIBER_LOCAL_POLISHING_VARIANT", "q8_0")
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    monkeypatch.setattr(config_module, "_env_settings_migration_pending", False)
+
+    assert config_module._migrated_local_polishing_variant_env() == "qad_q4_0"
+    assert os.environ["SCRIBER_LOCAL_POLISHING_VARIANT"] == "qad_q4_0"
+    assert config_module._env_settings_migration_pending is True
 
 
 def test_atomic_write_cleans_unique_temporary_file_after_replace_failure(monkeypatch, tmp_path):

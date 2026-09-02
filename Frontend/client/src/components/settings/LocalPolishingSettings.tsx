@@ -1,4 +1,4 @@
-import { Check, Cloud, Cpu, Download, ExternalLink, HardDrive, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, Cloud, Cpu, Download, HardDrive, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,7 @@ import type {
   LocalPolishingVariant,
   PostProcessingEngine,
 } from "@/lib/api-types";
-import { LOCAL_POLISHING_VARIANTS } from "@/lib/local-polishing";
+import { LOCAL_POLISHING_MODEL_LABEL, LOCAL_POLISHING_VARIANTS } from "@/lib/local-polishing";
 import { cn } from "@/lib/utils";
 
 interface LocalPolishingSettingsProps {
@@ -27,10 +27,6 @@ interface LocalPolishingSettingsProps {
   onUse: (variant: LocalPolishingVariant) => void;
   onRemove: (variant: LocalPolishingVariant) => void;
   onRetry: () => void;
-}
-
-function modelLabel(variant: LocalPolishingVariant): string {
-  return variant === "q8_0" ? "Q8_0" : "BF16";
 }
 
 function modelForVariant(
@@ -173,7 +169,7 @@ export function LocalPolishingSettings({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <p className="text-[12px] font-semibold text-amber-950 dark:text-amber-100">
-                {t("Local polishing models")}
+                {t("Local polishing model")}
               </p>
               <Badge
                 variant="outline"
@@ -184,38 +180,20 @@ export function LocalPolishingSettings({
             </div>
             <p className="mt-1 text-[11px] leading-4 text-amber-900/80 dark:text-amber-200/80">
               {t(
-                "Polishing runs on this device, so transcript text is not sent to a polishing provider. Cloud speech recognition may still upload audio. The public model download needs no Hugging Face account.",
+                "When local polishing is available, transcript text stays on this device. Cloud speech recognition may still upload audio.",
               )}
             </p>
             <p className="mt-2 border-t border-amber-200/80 pt-2 text-[11px] font-medium leading-4 text-amber-950 dark:border-amber-900/70 dark:text-amber-100">
-              {t("By clicking Download, you accept Google's")}{" "}
-              <a
-                href="https://ai.google.dev/gemma/terms"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 rounded-sm font-semibold underline underline-offset-2 outline-none hover:text-amber-700 focus-visible:ring-2 focus-visible:ring-amber-600/70 dark:hover:text-amber-200"
-              >
-                {t("Gemma Terms of Use")}
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>{" "}
-              {t("and its")}{" "}
-              <a
-                href="https://ai.google.dev/gemma/prohibited_use_policy"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 rounded-sm font-semibold underline underline-offset-2 outline-none hover:text-amber-700 focus-visible:ring-2 focus-visible:ring-amber-600/70 dark:hover:text-amber-200"
-              >
-                {t("Gemma Prohibited Use Policy")}
-                <ExternalLink className="h-3 w-3" aria-hidden="true" />
-              </a>
-              .
+              {t(
+                "Scriber supports only one local model: LFM2.5 350M quantized with QAD to Q4_0. Praxist by Sapient Intelligence.",
+              )}
             </p>
           </div>
         </div>
       </div>
 
       {loading && !catalog ? (
-        <div className="grid gap-2 sm:grid-cols-2" aria-label={t("Loading local polishing models...")}>
+        <div className="grid gap-2" aria-label={t("Loading local polishing model...")}>
           {LOCAL_POLISHING_VARIANTS.map((variant) => (
             <div
               key={variant}
@@ -236,10 +214,12 @@ export function LocalPolishingSettings({
         </div>
       ) : catalog?.available === false ? (
         <p className="rounded-xl border border-slate-200 bg-white/70 p-3 text-[12px] leading-4 text-slate-600 dark:border-[var(--workspace-border)] dark:bg-[var(--live-well)] dark:text-slate-300">
-          {catalog.message || t("Local polishing is not available in this Scriber build.")}
+          {catalog.message === "catalog_not_materialized"
+            ? t("The local polishing model is unavailable in this build.")
+            : catalog.message || t("Local polishing is not available in this Scriber build.")}
         </p>
       ) : (
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="grid gap-2">
           {LOCAL_POLISHING_VARIANTS.map((variant) => {
             const model = modelForVariant(catalog, variant);
             const selected = engine === "local" && selectedVariant === variant;
@@ -263,24 +243,13 @@ export function LocalPolishingSettings({
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h4 className="text-[13px] font-bold text-slate-950 dark:text-slate-100">
-                        {model.name ? t(model.name) : modelLabel(variant)}
+                        {model.name ? t(model.name) : LOCAL_POLISHING_MODEL_LABEL}
                       </h4>
-                      {variant === "q8_0" ? (
-                        <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-ui-micro font-semibold text-blue-700 dark:bg-blue-950/40 dark:text-blue-300">
-                          {t("Recommended")}
-                        </span>
-                      ) : (
-                        <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-ui-micro font-semibold text-slate-600 dark:bg-slate-800 dark:text-slate-300">
-                          {t("Optional")}
-                        </span>
-                      )}
                     </div>
                     <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
                       {model.description
                         ? t(model.description)
-                        : variant === "q8_0"
-                          ? t("Fast desktop model with low memory use.")
-                          : t("Higher precision reference with greater memory use.")}
+                        : t("Optimized for fast, high-quality German dictation cleanup directly on this device.")}
                     </p>
                   </div>
                   <Badge variant={modelStatusVariant(model, active)} className="shrink-0">
@@ -299,7 +268,7 @@ export function LocalPolishingSettings({
                   <div className="mt-3 space-y-1.5" aria-live="polite">
                     <Progress
                       value={progress}
-                      aria-label={t("{{model}} download progress", { model: modelLabel(variant) })}
+                      aria-label={t("{{model}} download progress", { model: LOCAL_POLISHING_MODEL_LABEL })}
                     />
                     <div className="flex min-w-0 items-center gap-1.5 text-ui-micro text-slate-500 dark:text-slate-400">
                       <WavePhysicsLoader size="micro" />

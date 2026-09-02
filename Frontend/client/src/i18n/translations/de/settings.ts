@@ -216,7 +216,7 @@ export const settingsTranslations = {
   "Summarization model updated.": "Zusammenfassungsmodell aktualisiert.",
   "Live post-processing model updated.": "Modell für die Live-Nachbearbeitung aktualisiert.",
   "Fallback model updated.": "Fallback-Modell aktualisiert.",
-  "Local polishing models could not be loaded.": "Lokale Nachbearbeitungsmodelle konnten nicht geladen werden.",
+  "Local polishing model could not be loaded.": "Das lokale Nachbearbeitungsmodell konnte nicht geladen werden.",
   "Local polishing model status is invalid.": "Der Status der lokalen Nachbearbeitungsmodelle ist ungültig.",
   "Local model not ready": "Lokales Modell nicht bereit",
   "Install a local model, then choose Use locally.":
@@ -333,24 +333,24 @@ export const settingsTranslations = {
   "Cleanup uses the selected cloud model and custom prompt.":
     "Die Bereinigung verwendet das ausgewählte Cloud-Modell und den eigenen Prompt.",
   Cloud: "Cloud",
-  "Local polishing models": "Lokale Nachbearbeitungsmodelle",
+  "Local polishing model": "Lokales Nachbearbeitungsmodell",
   Experimental: "Experimentell",
-  "Polishing runs on this device, so transcript text is not sent to a polishing provider. Cloud speech recognition may still upload audio. The public model download needs no Hugging Face account.":
-    "Die Nachbearbeitung läuft auf diesem Gerät. Der Transkripttext wird daher nicht an einen Nachbearbeitungsanbieter gesendet. Eine Cloud-Spracherkennung kann weiterhin Audio hochladen. Für den öffentlichen Modelldownload ist kein Hugging-Face-Konto nötig.",
-  "By clicking Download, you accept Google's": "Mit einem Klick auf „Download“ akzeptierst du die",
-  "Gemma Terms of Use": "Gemma-Nutzungsbedingungen",
-  "and its": "und die",
-  "Gemma Prohibited Use Policy": "Richtlinie zur unzulässigen Nutzung von Gemma",
-  "Loading local polishing models...": "Lokale Nachbearbeitungsmodelle werden geladen ...",
+  "When local polishing is available, transcript text stays on this device. Cloud speech recognition may still upload audio.":
+    "Wenn die lokale Nachbearbeitung verfügbar ist, bleibt der Transkripttext auf diesem Gerät. Eine Cloud-Spracherkennung kann weiterhin Audio hochladen.",
+  "Scriber supports only one local model: LFM2.5 350M quantized with QAD to Q4_0. Praxist by Sapient Intelligence.":
+    "Scriber unterstützt nur ein lokales Modell: LFM2.5 350M, mit QAD auf Q4_0 quantisiert. Praxist by Sapient Intelligence.",
+  "Loading local polishing model...": "Lokales Nachbearbeitungsmodell wird geladen ...",
   "Local polishing is not available in this Scriber build.":
     "Lokale Nachbearbeitung ist in diesem Scriber-Build nicht verfügbar.",
+  "The local polishing model is unavailable in this build.":
+    "Das lokale Nachbearbeitungsmodell ist in dieser Version nicht verfügbar.",
   "In use": "Wird verwendet",
   Verifying: "Wird geprüft",
   Canceling: "Wird abgebrochen",
   Canceled: "Abgebrochen",
   "Not installed": "Nicht installiert",
-  "Fast desktop model with low memory use.": "Schnelles Desktop-Modell mit geringem Speicherbedarf.",
-  "Higher precision reference with greater memory use.": "Referenz mit höherer Präzision und größerem Speicherbedarf.",
+  "Optimized for fast, high-quality German dictation cleanup directly on this device.":
+    "Für eine schnelle, hochwertige Bereinigung deutscher Diktate direkt auf diesem Gerät optimiert.",
   "Runtime unavailable": "Lokale Laufzeit nicht verfügbar",
   "The verified local runtime could not start. Reinstall Scriber or use cloud cleanup.":
     "Die geprüfte lokale Laufzeit konnte nicht starten. Installiere Scriber neu oder verwende die Cloud-Bereinigung.",
