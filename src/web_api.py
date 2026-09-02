@@ -1195,6 +1195,15 @@ def _provider_readiness_error(provider: str) -> str | None:
         except Exception:
             pass
         return "Local ONNX transcription is unavailable in this Scriber build. Switch provider or install a build with local ONNX support."
+    if provider == "omnilingual_asr":
+        try:
+            from src.omnilingual_asr_stt import omnilingual_asr_available
+
+            if omnilingual_asr_available():
+                return None
+        except Exception:
+            pass
+        return "Meta Omnilingual ASR is unavailable in this Scriber build. Install a build with the optional omnilingual-asr runtime."
 
     api_key_attr = Config.SERVICE_API_KEY_MAP.get(provider)
     if api_key_attr and not Config.get_api_key(provider).strip():
@@ -1225,7 +1234,7 @@ def _meeting_llm_model_ready(model: str) -> bool:
 
 def _validate_local_provider_ready(provider: str) -> None:
     provider = (provider or "").strip().lower()
-    if provider != "onnx_local":
+    if provider not in {"onnx_local", "omnilingual_asr"}:
         return
     _validate_provider_ready(provider)
 
@@ -17510,6 +17519,8 @@ class ScriberWebController:
             "openaiSttModel": Config.OPENAI_STT_MODEL,
             "openaiRealtimeSttModel": Config.OPENAI_REALTIME_STT_MODEL,
             "onnxModel": Config.ONNX_MODEL,
+            "omnilingualAsrModel": Config.OMNILINGUAL_ASR_MODEL,
+            "omnilingualAsrAvailable": _provider_readiness_error("omnilingual_asr") is None,
             "onnxQuantization": Config.ONNX_QUANTIZATION,
             "onnxUseGpu": bool(Config.ONNX_USE_GPU),
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
@@ -17561,6 +17572,7 @@ class ScriberWebController:
         validated_meeting_transcription_mode: str | None = None
         validated_meeting_final_provider: str | None = None
         validated_onnx_model: str | None = None
+        validated_omnilingual_asr_model: str | None = None
         validated_onnx_quantization: str | None = None
         validated_overlay_visualizer_style: str | None = None
         validated_post_processing_engine: str | None = None
@@ -17855,8 +17867,17 @@ class ScriberWebController:
         if "openaiRealtimeSttModel" in payload and isinstance(payload["openaiRealtimeSttModel"], str):
             Config.set_openai_realtime_stt_model(payload["openaiRealtimeSttModel"])
 
+        if "omnilingualAsrModel" in payload and isinstance(payload["omnilingualAsrModel"], str):
+            candidate = payload["omnilingualAsrModel"].strip()
+            if candidate not in {"omniASR_CTC_300M_v2", "omniASR_LLM_300M_v2", "omniASR_LLM_Unlimited_300M_v2"}:
+                raise ValueError("Unsupported Meta Omnilingual ASR model")
+            validated_omnilingual_asr_model = candidate
+
         if validated_onnx_model is not None:
             Config.set_onnx_model(validated_onnx_model)
+
+        if validated_omnilingual_asr_model is not None:
+            Config.set_omnilingual_asr_model(validated_omnilingual_asr_model)
 
         if validated_onnx_quantization is not None:
             Config.set_onnx_quantization(validated_onnx_quantization)

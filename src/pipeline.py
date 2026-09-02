@@ -2088,7 +2088,7 @@ class ScriberPipeline:
         boundary and deliberately remains retryable.
         """
 
-        if self.service_name == "onnx_local":
+        if self.service_name in {"onnx_local", "omnilingual_asr"}:
             return
         self._provider_request_started = True
         self._provider_request_state = "bytes_may_have_been_sent"
@@ -2218,6 +2218,7 @@ class ScriberPipeline:
             "modulate": configured_models["modulate-realtime"],
             "modulate_async": configured_models["modulate-async"],
             "onnx_local": configured_models["onnx_local"],
+            "omnilingual_asr": configured_models["omnilingual-asr"],
         }
         modes: dict[str, str] = {
             "soniox": "batch" if soniox_async else "realtime",
@@ -2246,6 +2247,7 @@ class ScriberPipeline:
             "modulate": "realtime",
             "modulate_async": "batch",
             "onnx_local": "local",
+            "omnilingual_asr": "local-final",
         }
         fallback_model = models.get(service, "provider-default")
         configuration: dict[str, Any] = {
@@ -3728,6 +3730,16 @@ class ScriberPipeline:
                 channels=Config.CHANNELS,
             )
 
+        elif self.service_name == "omnilingual_asr":
+            from src.omnilingual_asr_stt import OmnilingualASRBufferedSTTService
+
+            return OmnilingualASRBufferedSTTService(
+                model_card=self._execution_model(Config.OMNILINGUAL_ASR_MODEL),
+                language=self._execution_language(),
+                sample_rate=Config.SAMPLE_RATE,
+                channels=Config.CHANNELS,
+            )
+
         else:
             raise ValueError(f"Unknown service: {self.service_name}")
 
@@ -4842,6 +4854,21 @@ class ScriberPipeline:
                     logger.info(f"Speechmatics direct transcription completed ({len(text)} chars)")
                     self.on_transcription(text, True)
 
+                if self.on_progress:
+                    self.on_progress("Completed")
+                return
+
+            if self.service_name == "omnilingual_asr":
+                from src.omnilingual_asr_stt import omnilingual_language_code, transcribe_omnilingual_file
+
+                text = await asyncio.to_thread(
+                    transcribe_omnilingual_file,
+                    path,
+                    model_card=self._execution_model(Config.OMNILINGUAL_ASR_MODEL),
+                    language=omnilingual_language_code(self._execution_language()),
+                )
+                if text and self.on_transcription:
+                    self.on_transcription(text, True)
                 if self.on_progress:
                     self.on_progress("Completed")
                 return

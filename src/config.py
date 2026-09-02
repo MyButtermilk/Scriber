@@ -410,6 +410,7 @@ class Config:
         "modulate": "MODULATE_API_KEY",
         "modulate_async": "MODULATE_API_KEY",
         "onnx_local": None,  # No API key needed for local models
+        "omnilingual_asr": None,  # Meta distributes local model weights
     }
 
     SERVICE_LABELS: ClassVar[dict[str, str]] = {
@@ -439,6 +440,7 @@ class Config:
         "modulate": "Modulate (Realtime Multilingual)",
         "modulate_async": "Modulate (Batch Multilingual)",
         "onnx_local": "Local (ONNX)",
+        "omnilingual_asr": "Meta Omnilingual ASR (Local)",
     }
 
     if str(DEFAULT_STT_SERVICE or "").strip().lower() == "nemo_local":
@@ -644,6 +646,9 @@ ${output}"""
     ONNX_MODEL = os.getenv("SCRIBER_ONNX_MODEL", "nemo-parakeet-tdt-0.6b-v3")
     ONNX_QUANTIZATION = os.getenv("SCRIBER_ONNX_QUANTIZATION", "int8")  # int8 | fp16 | fp32
     ONNX_USE_GPU = os.getenv("SCRIBER_ONNX_USE_GPU", "0") in ("1", "true", "True")
+    # The unlimited LLM variant is Meta's documented option for recordings
+    # longer than 40 seconds. Assets download into fairseq2's cache on first use.
+    OMNILINGUAL_ASR_MODEL = os.getenv("SCRIBER_OMNILINGUAL_ASR_MODEL", "omniASR_LLM_Unlimited_300M_v2")
 
     # Audio settings
     SAMPLE_RATE = 16000
@@ -788,6 +793,11 @@ ${output}"""
         os.environ["SCRIBER_ONNX_MODEL"] = cls.ONNX_MODEL
 
     @classmethod
+    def set_omnilingual_asr_model(cls, model: str) -> None:
+        cls.OMNILINGUAL_ASR_MODEL = model.strip()
+        os.environ["SCRIBER_OMNILINGUAL_ASR_MODEL"] = cls.OMNILINGUAL_ASR_MODEL
+
+    @classmethod
     def set_onnx_quantization(cls, quantization: str) -> None:
         cls.ONNX_QUANTIZATION = quantization.strip()
         os.environ["SCRIBER_ONNX_QUANTIZATION"] = cls.ONNX_QUANTIZATION
@@ -882,6 +892,7 @@ ${output}"""
             "elevenlabs": "scribe_v2_realtime",
             "google": "latest_long",
             "onnx_local": configured(cls.ONNX_MODEL, "nemo-parakeet-tdt-0.6b-v3"),
+            "omnilingual-asr": configured(cls.OMNILINGUAL_ASR_MODEL, "omniASR_LLM_Unlimited_300M_v2"),
         }
 
     @classmethod
@@ -1092,6 +1103,7 @@ ${output}"""
         add("SCRIBER_ONNX_MODEL", cls.ONNX_MODEL)
         add("SCRIBER_ONNX_QUANTIZATION", cls.ONNX_QUANTIZATION)
         add("SCRIBER_ONNX_USE_GPU", "1" if cls.ONNX_USE_GPU else "0")
+        add("SCRIBER_OMNILINGUAL_ASR_MODEL", cls.OMNILINGUAL_ASR_MODEL)
         # If a favorite mic is set, always revert MIC_DEVICE to "default" in the saved .env
         # This ensures that on the next restart, the favorite mic is automatically selected
         # (via the startup resolution logic) instead of persisting the last used temporary mic.

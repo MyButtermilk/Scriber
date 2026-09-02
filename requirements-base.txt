@@ -22,6 +22,10 @@ pillow
 numpy
 onnxruntime
 onnx-asr[cpu,hub]>=0.10.2,<0.11
+# Meta Omnilingual ASR: local reference inference, no hosted Meta API key.
+# Meta's current reference runtime declares Python <3.14. Keep this marker so
+# the Python-3.14 desktop sidecar never claims a dependency it cannot install.
+omnilingual-asr==0.1.0; python_version < '3.14'
 yt-dlp[default]==2026.8.19
 python-docx
 reportlab
