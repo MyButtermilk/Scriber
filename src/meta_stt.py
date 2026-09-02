@@ -226,6 +226,7 @@ class MetaAsyncProcessor(FrameProcessor):
                         not isinstance(frame, CancelFrame)
                         and not self._failed
                         and self._size
+                        and self._rate is not None
                         and not getattr(self, "_skip_terminal_transcription", False)
                     ):
                         if self._on_progress:
@@ -301,6 +302,9 @@ class MetaRealtimeSTTService(FrameProcessor):
         self._ws: aiohttp.ClientWebSocketResponse | None = None
         self._tasks = AsyncTaskSupervisor(owner="meta_stt")
         self._terminal = asyncio.Event()
+        # Start and audio processing may overlap. Both wait on the same
+        # authenticated connection; shutdown cannot orphan a pending handshake.
+        self._connect_lock = asyncio.Lock()
         self._failed = False
         self._ending = False
         self._closed = False
@@ -318,8 +322,14 @@ class MetaRealtimeSTTService(FrameProcessor):
             await self.push_frame(ErrorFrame(error=f"Meta STT realtime: {message}"), direction)
 
     async def _connect(self, direction: FrameDirection) -> None:
-        if self._started or self._closed:
-            return
+        # _started means startup was attempted, not that the socket is ready.
+        # Do not read it as a fast path before acquiring the readiness barrier.
+        async with self._connect_lock:
+            if self._started or self._closed or self._ending:
+                return
+            await self._connect_locked(direction)
+
+    async def _connect_locked(self, direction: FrameDirection) -> None:
         self._started = True
         if not self._api_key:
             await self._error("API key is missing.", direction)
@@ -432,6 +442,12 @@ class MetaRealtimeSTTService(FrameProcessor):
         if self._closed:
             return
         self._ending = True
+        async with self._connect_lock:
+            await self._close_locked(finalize=finalize, direction=direction)
+
+    async def _close_locked(self, *, finalize: bool, direction: FrameDirection) -> None:
+        if self._closed:
+            return
         try:
             if finalize and not self._failed and self._ws is not None and not self._ws.closed:
                 await self._ws.send_json({"type": "endStream"})
@@ -456,6 +472,10 @@ class MetaRealtimeSTTService(FrameProcessor):
                 await self._connect(direction)
             elif isinstance(frame, AudioRawFrame) and not self._ending and not self._failed:
                 await self._connect(direction)
+                # Cancel/cleanup can begin while this frame waits for startup.
+                if self._ending or self._closed or self._failed:
+                    await self.push_frame(frame, direction)
+                    return
                 if frame.sample_rate != self._rate or frame.num_channels != 1 or len(frame.audio) % 2:
                     raise ValueError("invalid audio format")
                 if self._audio_bytes + len(frame.audio) > self._rate * 2 * META_STT_REALTIME_MAX_SECONDS:
@@ -467,8 +487,12 @@ class MetaRealtimeSTTService(FrameProcessor):
                     delay = self._audio_started + self._audio_bytes / (self._rate * 2) - time.monotonic()
                     if delay > 0:
                         await asyncio.sleep(delay)
-                    await self._ws.send_bytes(frame.audio)
-                    self._audio_bytes += len(frame.audio)
+                    # Pacing is outside the lock so it cannot delay shutdown.
+                    # Recheck admission under the same lock that closes the socket.
+                    async with self._connect_lock:
+                        if not self._ending and not self._closed and not self._failed:
+                            await self._ws.send_bytes(frame.audio)
+                            self._audio_bytes += len(frame.audio)
             elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
                 await self._close(finalize=not isinstance(frame, CancelFrame), direction=direction)
         except asyncio.CancelledError:

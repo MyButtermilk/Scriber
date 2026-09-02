@@ -19,6 +19,9 @@ turn. Stop drains admitted audio, sends `endStream`, and waits for close 1000;
 errors or unfinished turns cannot become successful completion. The receiver
 belongs to an `AsyncTaskSupervisor`, and the application retains ownership of
 the shared HTTP session.
+Connection setup, audio sends and socket closure share one lock. Audio waits
+for handshake acknowledgement and rechecks shutdown state after waiting for
+startup or pacing; cancellation cannot leak a socket or send queued audio.
 
 `meta_stt_async` buffers one recording in the existing disk-backed PCM spool
 and submits one multipart HTTP request on normal stop. Cancel discards it.

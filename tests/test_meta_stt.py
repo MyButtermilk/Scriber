@@ -9,15 +9,18 @@ from unittest.mock import AsyncMock
 import aiohttp
 import pytest
 from aiohttp import web
+from pipecat.clocks.system_clock import SystemClock
 from pipecat.frames.frames import (
     AudioRawFrame,
     CancelFrame,
     EndFrame,
     ErrorFrame,
     InterimTranscriptionFrame,
+    StartFrame,
     TranscriptionFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
+from pipecat.utils.asyncio.task_manager import TaskManager
 
 from src.audio_prepare import ProbedAudioInput, ProviderAudioPreparationError, resolve_provider_audio_selection
 from src.config import Config
@@ -251,6 +254,96 @@ async def test_realtime_handshake_pcm_drain_and_final_turns():
     assert seen["partialMode"] == "CUMULATIVE" and seen["model"] == META_STT_MODEL
 
 
+@asynccontextmanager
+async def delayed_realtime_server(stage):
+    paused = asyncio.Event()
+    resume = asyncio.Event()
+    received = asyncio.Queue()
+
+    async def pause_at(boundary):
+        if stage == boundary:
+            paused.set()
+            await resume.wait()
+
+    async def handler(request):
+        await pause_at("upgrade")
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        await ws.receive_json()
+        await pause_at("acknowledgement")
+        await ws.send_json({"sessionId": "test"})
+        async for message in ws:
+            if message.type == aiohttp.WSMsgType.BINARY:
+                received.put_nowait(message.data)
+        return ws
+
+    async with server(handler, websocket=True) as endpoint:
+        yield endpoint, paused, resume, received
+
+
+@pytest.mark.parametrize("stage", ["upgrade", "acknowledgement"])
+@pytest.mark.asyncio
+async def test_audio_waits_for_authenticated_startup(stage):
+    async with (
+        delayed_realtime_server(stage) as (endpoint, paused, resume, received),
+        aiohttp.ClientSession() as session,
+    ):
+        service = MetaRealtimeSTTService(session=session, api_key="test-secret", endpoint=endpoint)
+        service.push_frame = AsyncMock()
+        await service.setup(FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=None))
+        start = asyncio.create_task(service.process_frame(StartFrame(), DOWN))
+        audio = None
+        try:
+            await asyncio.wait_for(paused.wait(), 2)
+            audio = asyncio.create_task(
+                service.process_frame(AudioRawFrame(audio=b"\0\0" * 160, sample_rate=16000, num_channels=1), DOWN)
+            )
+            await asyncio.sleep(0)  # let audio enter while startup is held at the barrier
+            assert not audio.done(), "Audio must wait for the authenticated socket, not return during startup"
+            assert service._audio_bytes == 0
+            resume.set()
+            await asyncio.wait_for(asyncio.gather(start, audio), 2)
+            assert await asyncio.wait_for(received.get(), 2) == b"\0\0" * 160
+            assert service._audio_bytes == 320 and received.empty()
+        finally:
+            resume.set()
+            await asyncio.gather(start, *([audio] if audio is not None else []), return_exceptions=True)
+            await service._close(finalize=False, direction=DOWN)
+            await service.cleanup()
+        assert not any(isinstance(call.args[0], ErrorFrame) for call in service.push_frame.call_args_list)
+
+
+@pytest.mark.parametrize("stage", ["upgrade", "acknowledgement"])
+@pytest.mark.asyncio
+async def test_cancel_during_startup_leaves_no_socket_or_receiver(stage):
+    async with (
+        delayed_realtime_server(stage) as (endpoint, paused, resume, received),
+        aiohttp.ClientSession() as session,
+    ):
+        service = MetaRealtimeSTTService(session=session, api_key="test-secret", endpoint=endpoint)
+        service.push_frame = AsyncMock()
+        await service.setup(FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=None))
+        start = asyncio.create_task(service.process_frame(StartFrame(), DOWN))
+        cancel = None
+        try:
+            await asyncio.wait_for(paused.wait(), 2)
+            cancel = asyncio.create_task(service.process_frame(CancelFrame(), DOWN))
+            await asyncio.sleep(0)
+            resume.set()
+            await asyncio.wait_for(asyncio.gather(start, cancel), 2)
+            # Assert before ClientSession.__aexit__ can conceal a leaked socket.
+            assert not session.closed
+            assert service._closed and (service._ws is None or service._ws.closed)
+            assert service._tasks.pending_count == 0 and received.empty()
+        finally:
+            resume.set()
+            await asyncio.gather(start, *([cancel] if cancel is not None else []), return_exceptions=True)
+            await service._tasks.close(timeout_seconds=2, cancel=True)
+            if service._ws is not None:
+                await service._ws.close()
+            await service.cleanup()
+
+
 @pytest.mark.asyncio
 async def test_overlapping_turns_are_ordered_and_deduplicated():
     service = MetaRealtimeSTTService(session=AsyncMock(), api_key="test")
@@ -262,6 +355,41 @@ async def test_overlapping_turns_are_ordered_and_deduplicated():
     await service._handle_event({"type": "speechComplete", "turnId": 8, "transcript": "First."}, DOWN)
     await service._handle_event({"type": "speechComplete", "turnId": 8, "transcript": "Duplicate."}, DOWN)
     assert [call.args[0].text for call in service.push_frame.call_args_list] == ["First.", "Second."]
+
+
+@pytest.mark.parametrize("stage", ["upgrade", "acknowledgement"])
+@pytest.mark.asyncio
+async def test_cancel_discards_audio_already_waiting_for_startup(stage):
+    async with (
+        delayed_realtime_server(stage) as (endpoint, paused, resume, received),
+        aiohttp.ClientSession() as session,
+    ):
+        service = MetaRealtimeSTTService(session=session, api_key="test-secret", endpoint=endpoint)
+        service.push_frame = AsyncMock()
+        await service.setup(FrameProcessorSetup(clock=SystemClock(), task_manager=TaskManager(), pipeline_worker=None))
+        start = asyncio.create_task(service.process_frame(StartFrame(), DOWN))
+        pending = [start]
+        try:
+            await asyncio.wait_for(paused.wait(), 2)
+            pending.append(
+                asyncio.create_task(
+                    service.process_frame(AudioRawFrame(audio=b"\0\0" * 160, sample_rate=16000, num_channels=1), DOWN)
+                )
+            )
+            await asyncio.sleep(0)
+            pending.append(asyncio.create_task(service.process_frame(CancelFrame(), DOWN)))
+            async with asyncio.timeout(2):
+                while not service._ending:
+                    await asyncio.sleep(0)
+            resume.set()
+            await asyncio.wait_for(asyncio.gather(*pending), 2)
+            assert service._audio_bytes == 0 and received.empty(), "Canceled queued audio must never be sent"
+            assert service._ws.closed and service._tasks.pending_count == 0
+            assert not any(isinstance(call.args[0], ErrorFrame) for call in service.push_frame.call_args_list)
+        finally:
+            resume.set()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await service.cleanup()
 
 
 @pytest.mark.parametrize("mode", ["error", "disconnect", "timeout", "bad_handshake"])
