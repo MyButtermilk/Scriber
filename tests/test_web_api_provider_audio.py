@@ -220,12 +220,12 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
     persisted = controller._job_execution_route(route)
     snapshot_options = route.snapshot_draft().request_options
 
-    assert route.model == "microsoft/mai-transcribe-1.5"
+    assert route.model == "microsoft/mai-transcribe-2"
     assert route.provider_route == "audio_transcriptions"
     assert route.response_shape == "final_text"
     assert route.timestamp_mode == "estimated"
     assert route.diarization_mode == "local_fallback_if_enabled"
-    assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5")
+    assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2")
     assert (
         route.provider_endpoint_sha256
         == hashlib.sha256(b"https://openrouter.ai/api/v1/audio/transcriptions").hexdigest()

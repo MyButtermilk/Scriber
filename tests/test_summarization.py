@@ -254,7 +254,7 @@ def test_cerebras_summary_payload_can_omit_scriber_output_limit():
 
 
 def test_meta_muse_models_are_direct_models_with_large_output_caps():
-    for model in ("muse-spark-1.2", "muse-spark-1.2-contributor"):
+    for model in ("muse-spark-1.3", "muse-spark-1.3-contributor"):
         assert summarization._is_meta_model(model)
         assert not summarization._is_openrouter_model(model)
         assert summarization._MODEL_OUTPUT_TOKEN_CAPS[model] == 131_072
@@ -268,7 +268,7 @@ async def test_meta_muse_chat_completion_uses_official_contract(monkeypatch: pyt
     async def _fake_post(payload, headers, _session):
         calls.append((payload, headers))
         return {
-            "model": "muse-spark-1.2",
+            "model": "muse-spark-1.3",
             "choices": [
                 {
                     "finish_reason": "stop",
@@ -279,12 +279,12 @@ async def test_meta_muse_chat_completion_uses_official_contract(monkeypatch: pyt
 
     monkeypatch.setattr(summarization, "_post_meta_chat_completion", _fake_post)
 
-    result = await summarization._summarize_meta("Summarize this", "muse-spark-1.2", None)
+    result = await summarization._summarize_meta("Summarize this", "muse-spark-1.3", None)
 
     assert result == "Meta summary"
     payload, headers = calls[0]
     assert payload == {
-        "model": "muse-spark-1.2",
+        "model": "muse-spark-1.3",
         "messages": [{"role": "user", "content": "Summarize this"}],
     }
     assert headers == {"Authorization": "Bearer meta-test-key", "Content-Type": "application/json"}
@@ -296,7 +296,7 @@ async def test_meta_muse_discards_output_marked_incomplete(monkeypatch: pytest.M
 
     async def _fake_post(_payload, _headers, _session):
         return {
-            "model": "muse-spark-1.2-contributor",
+            "model": "muse-spark-1.3-contributor",
             "choices": [
                 {
                     "finish_reason": "length",
@@ -308,7 +308,7 @@ async def test_meta_muse_discards_output_marked_incomplete(monkeypatch: pytest.M
     monkeypatch.setattr(summarization, "_post_meta_chat_completion", _fake_post)
 
     with pytest.raises(summarization.SummaryOutputLimitError, match="output limit"):
-        await summarization._summarize_meta("prompt", "muse-spark-1.2-contributor", 2048)
+        await summarization._summarize_meta("prompt", "muse-spark-1.3-contributor", 2048)
 
 
 @pytest.mark.asyncio
@@ -327,24 +327,24 @@ async def test_meta_muse_routes_both_youtube_and_meeting_summary_workflows(monke
 
     youtube = await summarization.summarize_text(
         "A sufficiently detailed YouTube transcript about product planning.",
-        model="muse-spark-1.2",
+        model="muse-spark-1.3",
     )
     meeting = await summarization.generate_meeting_analysis_text(
         "Return meeting JSON",
-        model="muse-spark-1.2-contributor",
+        model="muse-spark-1.3-contributor",
         max_output_tokens=2048,
     )
 
     assert youtube == "<section><h2>Video</h2><p>YouTube result</p></section>"
     assert meeting == '{"overview":"Meeting result"}'
     assert calls == [
-        ("muse-spark-1.2", None),
-        ("muse-spark-1.2-contributor", None),
+        ("muse-spark-1.3", None),
+        ("muse-spark-1.3-contributor", None),
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["muse-spark-1.2", "muse-spark-1.2-contributor"])
+@pytest.mark.parametrize("model", ["muse-spark-1.3", "muse-spark-1.3-contributor"])
 @pytest.mark.parametrize(
     ("failure_kind", "expected_error", "expected_message"),
     [
@@ -397,19 +397,19 @@ async def test_direct_meta_summary_never_sends_transcript_to_openrouter_fallback
 @pytest.mark.parametrize(
     ("model", "primary_error", "expected_error"),
     [
-        ("muse-spark-1.2", TimeoutError(), RuntimeError),
+        ("muse-spark-1.3", TimeoutError(), RuntimeError),
         (
-            "muse-spark-1.2",
+            "muse-spark-1.3",
             summarization.provider_transport_error("meta", "summarization", status=503),
             summarization.ProviderTransportError,
         ),
         (
-            "muse-spark-1.2-contributor",
+            "muse-spark-1.3-contributor",
             summarization.SummaryOutputLimitError("Meta reached its native output limit."),
             summarization.SummaryOutputLimitError,
         ),
         (
-            "muse-spark-1.2-contributor",
+            "muse-spark-1.3-contributor",
             summarization.MetaContributorAccessError("Contributor access is unavailable."),
             summarization.MetaContributorAccessError,
         ),
@@ -1439,7 +1439,7 @@ async def test_summary_chat_completion_retries_incomplete_response_payload(post)
                 raise ClientPayloadError("response payload is not completed")
             return json.dumps(
                 {
-                    "model": "muse-spark-1.2",
+                    "model": "muse-spark-1.3",
                     "choices": [
                         {
                             "finish_reason": "stop",

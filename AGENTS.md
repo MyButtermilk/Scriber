@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-09-02
+Last verified: 2026-09-04
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -1343,24 +1343,29 @@ Packaging and scripts:
   `qad_q4_0` model. It must never fall through to a cloud provider after a local
   failure. In every failure case retain and insert the raw transcript. Do not
   route File or YouTube jobs through this path.
-- Azure MAI defaults to `mai-transcribe-1.5`.
+- Azure MAI defaults to `MAI-Transcribe-2`.
+- Migrate the exact app-persisted `mai-transcribe-1.5` default to that model;
+  preserve explicit process overrides and unrelated custom model values.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.
-- For Azure MAI 1.5, `SCRIBER_CUSTOM_VOCAB` is sent as `phraseList`.
+- For Azure MAI-Transcribe-2, `SCRIBER_CUSTOM_VOCAB` is sent as `phraseList`.
 - Azure MAI upload preparation is latency-first: existing MP3 uploads directly,
   non-MP3 inputs are transcoded to mono 64k MP3, and live PCM buffers are encoded
   to MP3 before upload. The shipped control remains post-stop FFmpeg MP3;
   capture-time FFmpeg MP3 is production-safe but default-off after its mixed
   canonical A/B result. Do not restore WAV upload without measured provider need.
-- `openrouter_stt` is the separate active OpenRouter route for Microsoft MAI
-  Transcribe 1.5. Keep its exact model fixed to
-  `microsoft/mai-transcribe-1.5`, reuse the existing `OPENROUTER_API_KEY` used
+- `openrouter_stt` is the separate active OpenRouter route for Microsoft
+  MAI-Transcribe-2. Keep its exact model fixed to
+  `microsoft/mai-transcribe-2`, reuse the existing `OPENROUTER_API_KEY` used
   by OpenRouter summaries and post-processing, and send WAV, MP3, or FLAC audio
   to `/api/v1/audio/transcriptions` as JSON with base64 `input_audio`. This route
   returns final text only: request normal JSON, do not claim native timestamps
   or diarization, and do not forward `SCRIBER_CUSTOM_VOCAB` or an Azure
   `phraseList`. The direct `azure_mai` route remains a distinct credential,
   endpoint, preparation, and capability path.
+- Meta language-model choices are `muse-spark-1.3` and
+  `muse-spark-1.3-contributor`; exact persisted 1.2 built-in selections migrate
+  to their matching 1.3 tier without rewriting custom model codes.
 - AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
   paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
   `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not

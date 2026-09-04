@@ -789,7 +789,7 @@ async def transcribe_with_openrouter_audio_transcription(
 
     selected_model = str(model or "").strip() or OPENROUTER_MAI_TRANSCRIBE_MODEL
     if selected_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
-        raise ValueError("OpenRouter STT is pinned to Microsoft MAI Transcribe 1.5.")
+        raise ValueError("OpenRouter STT is pinned to Microsoft MAI-Transcribe-2.")
     audio_format = openrouter_audio_format(filename, content_type)
     language_code = provider_language_code(language)
 

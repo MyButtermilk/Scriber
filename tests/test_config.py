@@ -132,6 +132,64 @@ def _read_fresh_post_processing_fallback_model(
     return result.stdout.strip()
 
 
+def _read_fresh_retired_model_config(
+    tmp_path: Path,
+    *,
+    explicit_azure_model: str | None = None,
+    persist: bool = False,
+) -> dict[str, object]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".env").write_text(
+        "SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "settings.json").write_text(
+        json.dumps(
+            {
+                "summarizationModel": "muse-spark-1.2",
+                "meetingAnalysisModel": "muse-spark-1.2-contributor",
+            }
+        ),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    for key in (
+        "SCRIBER_AZURE_MAI_MODEL",
+        "SCRIBER_SUMMARIZATION_MODEL",
+        "SCRIBER_MEETING_ANALYSIS_MODEL",
+    ):
+        env.pop(key, None)
+    if explicit_azure_model is not None:
+        env["SCRIBER_AZURE_MAI_MODEL"] = explicit_azure_model
+    code = f"""
+import json
+import src.config as module
+payload = {{
+    "azure": module.Config.AZURE_MAI_MODEL,
+    "summary": module.Config.SUMMARIZATION_MODEL,
+    "meeting": module.Config.MEETING_ANALYSIS_MODEL,
+    "envPendingBefore": module.Config.env_settings_migration_pending(),
+    "jsonPendingBefore": module.Config.json_settings_migration_pending(),
+}}
+if {persist!r}:
+    module.Config.persist_settings_files()
+payload["envPendingAfter"] = module.Config.env_settings_migration_pending()
+payload["jsonPendingAfter"] = module.Config.json_settings_migration_pending()
+print(json.dumps(payload))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout.strip())
+
+
 def test_fresh_install_shortcut_defaults(tmp_path):
     assert _read_fresh_shortcut_config(tmp_path) == {
         "live": "ctrl+shift+d",
@@ -186,21 +244,51 @@ def test_fresh_post_processing_fallback_model_preserves_precedence_and_legacy_al
     )
 
 
-def test_builtin_language_model_migration_updates_only_exact_retired_glm_values():
+def test_builtin_language_model_migration_updates_only_exact_retired_models():
     settings = {
         "summarizationModel": "z-ai/glm-5.2:nitro",
-        "meetingAnalysisModel": "z-ai/glm-5.2",
+        "meetingAnalysisModel": "muse-spark-1.2",
         "postProcessingModel": "z-ai/glm-5.2:nitro",
-        "postProcessingFallbackModel": "z-ai/glm-5.2:nitro",
+        "postProcessingFallbackModel": "muse-spark-1.2-contributor",
         "unrelated": "z-ai/glm-5.2:nitro",
     }
 
     assert config_module._migrate_builtin_language_models(settings) is True
     assert settings["summarizationModel"] == "z-ai/glm-5.3-flash:nitro"
-    assert settings["meetingAnalysisModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["meetingAnalysisModel"] == "muse-spark-1.3"
     assert settings["postProcessingModel"] == "z-ai/glm-5.3-flash:nitro"
-    assert settings["postProcessingFallbackModel"] == "z-ai/glm-5.3-flash:nitro"
+    assert settings["postProcessingFallbackModel"] == "muse-spark-1.3-contributor"
     assert settings["unrelated"] == "z-ai/glm-5.2:nitro"
+
+
+def test_retired_mai_and_muse_models_migrate_and_persist_across_process_start(tmp_path):
+    result = _read_fresh_retired_model_config(tmp_path, persist=True)
+
+    assert result == {
+        "azure": "MAI-Transcribe-2",
+        "summary": "muse-spark-1.3",
+        "meeting": "muse-spark-1.3-contributor",
+        "envPendingBefore": True,
+        "jsonPendingBefore": True,
+        "envPendingAfter": False,
+        "jsonPendingAfter": False,
+    }
+    persisted_env = (tmp_path / ".env").read_text(encoding="utf-8")
+    persisted_settings = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
+    assert "SCRIBER_AZURE_MAI_MODEL=MAI-Transcribe-2" in persisted_env
+    assert persisted_settings["summarizationModel"] == "muse-spark-1.3"
+    assert persisted_settings["meetingAnalysisModel"] == "muse-spark-1.3-contributor"
+
+
+@pytest.mark.parametrize("explicit_model", ["mai-transcribe-1.5", "mai-transcribe-1"])
+def test_explicit_azure_mai_process_override_survives_retired_default_migration(tmp_path, explicit_model):
+    result = _read_fresh_retired_model_config(
+        tmp_path,
+        explicit_azure_model=explicit_model,
+    )
+
+    assert result["azure"] == explicit_model
+    assert result["envPendingBefore"] is False
 
 
 def test_frontend_and_backend_post_processing_fallback_model_lists_match():
@@ -371,6 +459,7 @@ def test_prompt_upgrade_migrates_once_across_real_process_starts(tmp_path):
 
 def test_versioned_model_env_upgrades_legacy_dotenv_default(monkeypatch):
     monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    monkeypatch.setattr(config_module, "_env_settings_migration_pending", False)
     monkeypatch.setenv("TEST_SCRIBER_MODEL", "stt-rt-v3")
 
     resolved = config_module._versioned_model_env(
@@ -381,6 +470,23 @@ def test_versioned_model_env_upgrades_legacy_dotenv_default(monkeypatch):
 
     assert resolved == "stt-rt-v5"
     assert os.environ["TEST_SCRIBER_MODEL"] == "stt-rt-v5"
+    assert config_module._env_settings_migration_pending is True
+
+
+def test_azure_mai_versioned_model_env_upgrades_only_persisted_old_default(monkeypatch):
+    monkeypatch.setattr(config_module, "_PROCESS_ENV_KEYS_BEFORE_DOTENV", frozenset())
+    monkeypatch.setattr(config_module, "_env_settings_migration_pending", False)
+    monkeypatch.setenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
+
+    resolved = config_module._versioned_model_env(
+        "SCRIBER_AZURE_MAI_MODEL",
+        Config.DEFAULT_AZURE_MAI_MODEL,
+        legacy_dotenv_defaults=Config._LEGACY_DEFAULT_AZURE_MAI_MODELS,
+    )
+
+    assert resolved == "MAI-Transcribe-2"
+    assert os.environ["SCRIBER_AZURE_MAI_MODEL"] == "MAI-Transcribe-2"
+    assert config_module._env_settings_migration_pending is True
 
 
 def test_versioned_model_env_preserves_explicit_process_override(monkeypatch):
@@ -492,10 +598,10 @@ class TestConfig(unittest.TestCase):
     def test_openrouter_stt_reuses_one_key_and_pins_mai_model(self):
         self.assertEqual(Config.SERVICE_API_KEY_MAP["openrouter_stt"], "OPENROUTER_API_KEY")
         self.assertEqual(Config.SERVICE_LABELS["openrouter_stt"], "Microsoft MAI Transcribe via OpenRouter")
-        self.assertEqual(Config.DEFAULT_OPENROUTER_STT_MODEL, "microsoft/mai-transcribe-1.5")
+        self.assertEqual(Config.DEFAULT_OPENROUTER_STT_MODEL, "microsoft/mai-transcribe-2")
         self.assertEqual(
             Config.transcription_provider_models()["openrouter_stt"],
-            "microsoft/mai-transcribe-1.5",
+            "microsoft/mai-transcribe-2",
         )
 
     def test_aws_transcribe_is_not_supported(self):
@@ -581,11 +687,11 @@ def test_overlay_visualizer_style_is_validated_and_persisted(monkeypatch, tmp_pa
 
 def test_persist_to_env_file_includes_azure_mai_model(monkeypatch, tmp_path):
     target = tmp_path / ".env"
-    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5")
+    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "MAI-Transcribe-2")
 
     Config.persist_to_env_file(str(target))
 
-    assert "SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1.5" in target.read_text(encoding="utf-8")
+    assert "SCRIBER_AZURE_MAI_MODEL=MAI-Transcribe-2" in target.read_text(encoding="utf-8")
 
 
 def test_persist_to_env_file_includes_openrouter_api_key(monkeypatch, tmp_path):

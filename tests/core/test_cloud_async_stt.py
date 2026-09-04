@@ -155,7 +155,7 @@ async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_on
     assert session.headers["Authorization"] == "Bearer openrouter-secret"
     assert session.headers["Content-Type"] == "application/json"
     assert request == {
-        "model": "microsoft/mai-transcribe-1.5",
+        "model": "microsoft/mai-transcribe-2",
         "input_audio": {
             "data": base64.b64encode(audio).decode("ascii"),
             "format": "wav",

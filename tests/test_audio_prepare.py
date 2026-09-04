@@ -120,7 +120,7 @@ def test_probe_audio_input_file_uses_container_and_codec(monkeypatch, tmp_path: 
 def test_selection_passes_through_exact_azure_mp3() -> None:
     capability, selection = audio_prepare.resolve_provider_audio_selection(
         provider="azure_mai",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         probe=_probe(AudioInputFormat.MP3),
     )
     assert capability.provider == "azure_mai"
@@ -131,7 +131,7 @@ def test_selection_passes_through_exact_azure_mp3() -> None:
 def test_azure_unaccepted_source_retains_promoted_mp3_control() -> None:
     _capability, selection = audio_prepare.resolve_provider_audio_selection(
         provider="azure_mai",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         probe=_probe(AudioInputFormat.OGG_OPUS),
     )
     assert selection.audio_format == AudioInputFormat.MP3
@@ -142,7 +142,7 @@ def test_azure_unaccepted_source_retains_promoted_mp3_control() -> None:
 def test_azure_non_mp3_sources_retain_promoted_mp3_control(source_format) -> None:
     _capability, selection = audio_prepare.resolve_provider_audio_selection(
         provider="azure_mai",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         probe=_probe(source_format),
     )
     assert selection.audio_format == AudioInputFormat.MP3
@@ -153,7 +153,7 @@ def test_selection_fails_closed_for_custom_endpoint() -> None:
     with pytest.raises(UnsupportedProviderAudioRoute):
         audio_prepare.resolve_provider_audio_selection(
             provider="azure_mai",
-            model="mai-transcribe-1.5",
+            model="MAI-Transcribe-2",
             probe=_probe(AudioInputFormat.MP3),
             custom_endpoint=True,
         )
@@ -185,7 +185,7 @@ async def test_generated_preparation_is_cleaned(monkeypatch, tmp_path: Path) -> 
     async with audio_prepare.prepare_provider_audio_file(
         source,
         provider="azure_mai",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         work_dir=tmp_path,
     ) as prepared:
         generated_path = prepared.path
@@ -228,7 +228,7 @@ async def test_generated_preparation_rejects_wrong_container_codec(
         async with audio_prepare.prepare_provider_audio_file(
             source,
             provider="azure_mai",
-            model="mai-transcribe-1.5",
+            model="MAI-Transcribe-2",
             work_dir=tmp_path,
         ):
             pass

@@ -5,8 +5,9 @@ preparation.  In particular, a documented OGG or WebM *container* is not
 evidence for an Opus codec.  Only exact container/codec combinations may be
 selected for a provider request.
 
-The matrix was last verified on 2026-08-26. Unknown models, custom endpoints,
-and inactive routes receive no inherited format capabilities.
+The matrix baseline was verified on 2026-08-26; entries carry later dates when
+their route evidence is refreshed. Unknown models, custom endpoints, and
+inactive routes receive no inherited format capabilities.
 """
 
 from __future__ import annotations
@@ -527,7 +528,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
     _capability(
         "azure_mai",
         "llm_speech_batch",
-        "mai-transcribe-1.5",
+        "MAI-Transcribe-2",
         ProviderAudioRouteKind.BATCH,
         batch_formats=_WAV_MP3_FLAC,
         # Keep the shipped 64-kbit/s MP3 control authoritative.  Provider
@@ -538,17 +539,19 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossless_format=AudioInputFormat.FLAC,
         max_upload_bytes=300_000_000,
         evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
+        verified_at=date(2026, 9, 4),
     ),
     _capability(
         "openrouter_stt",
         "audio_transcriptions",
-        "microsoft/mai-transcribe-1.5",
+        "microsoft/mai-transcribe-2",
         ProviderAudioRouteKind.BATCH,
         batch_formats=_WAV_MP3_FLAC,
         direct_passthrough_formats=_WAV_MP3_FLAC,
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
-        evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
+        evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-2/providers"),
+        verified_at=date(2026, 9, 4),
     ),
     _capability(
         "gemini_stt",
@@ -761,7 +764,12 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
 
 
 _CAPABILITY_INDEX = {
-    (entry.provider, entry.route, entry.model_family): entry for entry in PROVIDER_AUDIO_CAPABILITY_MATRIX
+    (
+        str(entry.provider or "").strip().lower(),
+        str(entry.route or "").strip().lower(),
+        str(entry.model_family or "").strip().lower(),
+    ): entry
+    for entry in PROVIDER_AUDIO_CAPABILITY_MATRIX
 }
 
 _BATCH_ROUTE_BY_PROVIDER = {
@@ -996,7 +1004,7 @@ _REALTIME_GENERATION_ORDER = (
 # until an installed end-to-end benchmark promotes WAV or FLAC for a duration
 # and network bucket. Other routes keep the conservative WAV control.
 _PROMOTED_BATCH_GENERATION_ORDER: dict[str, tuple[AudioInputFormat, ...]] = {
-    "azure_mai:llm_speech_batch:mai-transcribe-1.5": (
+    "azure_mai:llm_speech_batch:MAI-Transcribe-2": (
         AudioInputFormat.MP3,
         AudioInputFormat.WAV_PCM16,
         AudioInputFormat.FLAC,

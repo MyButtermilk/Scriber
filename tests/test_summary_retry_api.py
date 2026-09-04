@@ -153,8 +153,8 @@ async def test_summary_retry_preserves_safe_meta_contributor_access_guidance(
     record = _failed_summary_record()
     controller._add_to_history(record)
     message = (
-        "Muse Spark 1.2 Contributor is not available for this Meta project. "
-        "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+        "Muse Spark 1.3 Contributor is not available for this Meta project. "
+        "Choose Muse Spark 1.3 Standard in Settings or request Contributor access "
         "in the Meta dashboard, then try again."
     )
 

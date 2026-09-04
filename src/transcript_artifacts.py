@@ -158,7 +158,7 @@ def provider_batch_model(provider: str) -> str:
         "meta_stt_async": Config.META_STT_MODEL,
         "smallest": "pulse",
         "smallest_async": "pulse",
-        "azure_mai": getattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5"),
+        "azure_mai": getattr(Config, "AZURE_MAI_MODEL", "MAI-Transcribe-2"),
         "gemini_stt": Config.GEMINI_STT_MODEL,
         "gemini_realtime": Config.GEMINI_REALTIME_STT_MODEL,
         "groq": "whisper-large-v3-turbo",

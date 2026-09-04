@@ -162,7 +162,7 @@ def test_unknown_model_and_custom_endpoint_fail_closed():
     with pytest.raises(UnsupportedProviderAudioRoute):
         resolve_batch_provider_audio_capabilities(
             "azure_mai",
-            "mai-transcribe-1.5",
+            "MAI-Transcribe-2",
             custom_endpoint=True,
         )
     with pytest.raises(UnsupportedProviderAudioRoute):
@@ -173,7 +173,7 @@ def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_
     capability = resolve_provider_audio_capabilities(
         "openrouter_stt",
         "audio_transcriptions",
-        "microsoft/mai-transcribe-1.5",
+        "microsoft/mai-transcribe-2",
     )
     assert capability.active is True
     assert capability.batch_formats == {
@@ -213,7 +213,12 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        expected_date = date(2026, 9, 2) if capability.provider in {"meta_stt", "meta_stt_async"} else date(2026, 8, 26)
+        if capability.provider in {"azure_mai", "openrouter_stt"}:
+            expected_date = date(2026, 9, 4)
+        elif capability.provider in {"meta_stt", "meta_stt_async"}:
+            expected_date = date(2026, 9, 2)
+        else:
+            expected_date = date(2026, 8, 26)
         assert capability.verified_at == expected_date
         assert capability.evidence_reference
 

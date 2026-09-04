@@ -52,8 +52,12 @@ _MAX_JSON_SETTINGS_BYTES = 1024 * 1024
 DEFAULT_LIVE_MIC_HOTKEY = "ctrl+shift+d"
 DEFAULT_POST_PROCESSING_HOTKEY = "ctrl+shift+f"
 DEFAULT_MEETING_HOTKEY = "ctrl+shift+m"
-_LEGACY_GLM_NITRO_MODELS = frozenset({"z-ai/glm-5.2", "z-ai/glm-5.2:nitro"})
-_CURRENT_GLM_NITRO_MODEL = "z-ai/glm-5.3-flash:nitro"
+_RETIRED_BUILTIN_LANGUAGE_MODELS = {
+    "z-ai/glm-5.2": "z-ai/glm-5.3-flash:nitro",
+    "z-ai/glm-5.2:nitro": "z-ai/glm-5.3-flash:nitro",
+    "muse-spark-1.2": "muse-spark-1.3",
+    "muse-spark-1.2-contributor": "muse-spark-1.3-contributor",
+}
 DEFAULT_LOCAL_POLISHING_VARIANT = "qad_q4_0"
 _env_settings_migration_pending = False
 
@@ -92,30 +96,32 @@ def _versioned_model_env(
     rejected at the provider boundary before billable work starts instead of
     being silently replaced while configuration loads.
     """
+    global _env_settings_migration_pending
     raw = str(os.getenv(name, default) or "").strip()
     if not raw:
         os.environ[name] = default
+        if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
+            _env_settings_migration_pending = True
         return default
     is_legacy = raw.casefold() in {value.casefold() for value in legacy_dotenv_defaults}
     if is_legacy and name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
         os.environ[name] = default
+        _env_settings_migration_pending = True
         return default
     return raw
 
 
-def _migrate_legacy_glm_nitro_model(value: object) -> str:
-    """Upgrade the retired built-in GLM route while preserving custom models."""
+def _migrate_retired_builtin_language_model(value: object) -> str:
+    """Upgrade exact retired built-ins while preserving custom model codes."""
     raw = str(value or "").strip()
-    if raw.casefold() in _LEGACY_GLM_NITRO_MODELS:
-        return _CURRENT_GLM_NITRO_MODEL
-    return raw
+    return _RETIRED_BUILTIN_LANGUAGE_MODELS.get(raw.casefold(), raw)
 
 
-def _migrated_glm_model_env(name: str, default: str = "") -> str:
-    """Resolve a model env value and durably flag old generated settings."""
+def _migrated_builtin_language_model_env(name: str, default: str = "") -> str:
+    """Resolve a built-in model env value and durably flag retired settings."""
     global _env_settings_migration_pending
     raw = str(os.getenv(name, default) or "").strip()
-    migrated = _migrate_legacy_glm_nitro_model(raw)
+    migrated = _migrate_retired_builtin_language_model(raw)
     if migrated != raw:
         os.environ[name] = migrated
         if name not in _PROCESS_ENV_KEYS_BEFORE_DOTENV:
@@ -247,7 +253,7 @@ def _migrate_builtin_language_models(settings: dict) -> bool:
         if key not in settings:
             continue
         current = settings[key]
-        migrated = _migrate_legacy_glm_nitro_model(current)
+        migrated = _migrate_retired_builtin_language_model(current)
         if migrated and migrated != current:
             settings[key] = migrated
             changed = True
@@ -292,12 +298,14 @@ class Config:
     _LEGACY_DEFAULT_SONIOX_RT_MODELS: ClassVar[set[str]] = {"stt-rt-v3", "stt-rt-v4"}
     DEFAULT_ASSEMBLYAI_ASYNC_MODEL = "universal-3-5-pro"
     DEFAULT_ASSEMBLYAI_RT_MODEL = "universal-3-5-pro"
-    DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-1.5"
+    DEFAULT_AZURE_MAI_MODEL = "MAI-Transcribe-2"
+    DEFAULT_OPENROUTER_STT_MODEL = "microsoft/mai-transcribe-2"
     DEFAULT_GEMINI_STT_MODEL = "gemini-3.5-transcribe"
     DEFAULT_GEMINI_REALTIME_STT_MODEL = "gemini-3.5-transcribe-live"
     DEFAULT_META_STT_MODEL = "muse-voice-transcribe-1.0"
     META_STT_MODEL = os.getenv("SCRIBER_META_STT_MODEL", DEFAULT_META_STT_MODEL)
     _LEGACY_DEFAULT_GEMINI_STT_MODELS: ClassVar[set[str]] = {"gemini-2.5-flash"}
+    _LEGACY_DEFAULT_AZURE_MAI_MODELS: ClassVar[set[str]] = {"mai-transcribe-1.5"}
 
     # API Keys
     SONIOX_API_KEY = os.getenv("SONIOX_API_KEY")
@@ -317,7 +325,11 @@ class Config:
     CELERIS_API_KEY = os.getenv("CELERIS_API_KEY")
     AZURE_MAI_SPEECH_KEY = os.getenv("AZURE_MAI_SPEECH_KEY")
     AZURE_MAI_REGION = os.getenv("SCRIBER_AZURE_MAI_REGION", "northeurope")
-    AZURE_MAI_MODEL = os.getenv("SCRIBER_AZURE_MAI_MODEL", "mai-transcribe-1.5")
+    AZURE_MAI_MODEL = _versioned_model_env(
+        "SCRIBER_AZURE_MAI_MODEL",
+        DEFAULT_AZURE_MAI_MODEL,
+        legacy_dotenv_defaults=_LEGACY_DEFAULT_AZURE_MAI_MODELS,
+    )
     GLADIA_API_KEY = os.getenv("GLADIA_API_KEY")
     GROQ_API_KEY = os.getenv("GROQ_API_KEY")
     SPEECHMATICS_API_KEY = os.getenv("SPEECHMATICS_API_KEY")
@@ -469,9 +481,9 @@ class Config:
 
     # Summarization model for LLM transcript summarization
     DEFAULT_SUMMARIZATION_MODEL = "gemini-flash-latest"
-    SUMMARIZATION_MODEL = _migrate_legacy_glm_nitro_model(
+    SUMMARIZATION_MODEL = _migrate_retired_builtin_language_model(
         _json_settings.get("summarizationModel")
-    ) or _migrated_glm_model_env("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
+    ) or _migrated_builtin_language_model_env("SCRIBER_SUMMARIZATION_MODEL", DEFAULT_SUMMARIZATION_MODEL)
 
     # Public Microsoft Entra desktop-app registration. This identifier is not a secret.
     OUTLOOK_CLIENT_ID = os.getenv("SCRIBER_OUTLOOK_CLIENT_ID", "").strip()
@@ -580,7 +592,7 @@ ${output}"""
         MEETING_TRANSCRIPTION_MODE = "live_final"
     MEETING_ANALYSIS_MODEL = (
         _json_settings.get("meetingAnalysisModel")
-        or _migrated_glm_model_env("SCRIBER_MEETING_ANALYSIS_MODEL")
+        or _migrated_builtin_language_model_env("SCRIBER_MEETING_ANALYSIS_MODEL")
         or SUMMARIZATION_MODEL
         or DEFAULT_SUMMARIZATION_MODEL
     )
@@ -610,8 +622,10 @@ ${output}"""
         or os.getenv("SCRIBER_POST_PROCESSING_PROMPT")
         or _DEFAULT_POST_PROCESSING_PROMPT
     )
-    _configured_post_processing_model = _migrate_legacy_glm_nitro_model(_json_settings.get("postProcessingModel"))
-    _env_post_processing_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_MODEL")
+    _configured_post_processing_model = _migrate_retired_builtin_language_model(
+        _json_settings.get("postProcessingModel")
+    )
+    _env_post_processing_model = _migrated_builtin_language_model_env("SCRIBER_POST_PROCESSING_MODEL")
     if _configured_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
         _configured_post_processing_model = ""
     if _env_post_processing_model in _LEGACY_DEFAULT_POST_PROCESSING_MODELS:
@@ -619,12 +633,12 @@ ${output}"""
     POST_PROCESSING_MODEL = (
         _configured_post_processing_model or _env_post_processing_model or DEFAULT_POST_PROCESSING_MODEL
     )
-    _configured_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
+    _configured_post_processing_fallback_model = _migrate_retired_builtin_language_model(
         _json_settings.get("postProcessingFallbackModel")
     )
-    _env_post_processing_fallback_model = _migrated_glm_model_env("SCRIBER_POST_PROCESSING_FALLBACK_MODEL")
+    _env_post_processing_fallback_model = _migrated_builtin_language_model_env("SCRIBER_POST_PROCESSING_FALLBACK_MODEL")
     _legacy_summary_fallback_models = (os.getenv("SCRIBER_SUMMARY_OPENROUTER_FALLBACK_MODELS") or "").strip()
-    _legacy_post_processing_fallback_model = _migrate_legacy_glm_nitro_model(
+    _legacy_post_processing_fallback_model = _migrate_retired_builtin_language_model(
         _legacy_summary_fallback_models.split(",", 1)[0].strip() if _legacy_summary_fallback_models else ""
     )
     if _legacy_post_processing_fallback_model and ":" not in _legacy_post_processing_fallback_model:
@@ -878,7 +892,7 @@ ${output}"""
                 "gpt-4o-mini-transcribe-2025-12-15",
             ),
             "openrouter_stt": cls.DEFAULT_OPENROUTER_STT_MODEL,
-            "azure_mai": configured(cls.AZURE_MAI_MODEL, "mai-transcribe-1.5"),
+            "azure_mai": configured(cls.AZURE_MAI_MODEL, cls.DEFAULT_AZURE_MAI_MODEL),
             "gladia": "solaria-1",
             # Gladia's current pre-recorded v2 request has no STT model field.
             "gladia-async": "provider default (Gladia Pre-recorded API v2)",
@@ -1045,7 +1059,7 @@ ${output}"""
         add("CELERIS_API_KEY", cls.CELERIS_API_KEY or "")
         add("AZURE_MAI_SPEECH_KEY", cls.AZURE_MAI_SPEECH_KEY or "")
         add("SCRIBER_AZURE_MAI_REGION", cls.AZURE_MAI_REGION or "northeurope")
-        add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or "mai-transcribe-1.5")
+        add("SCRIBER_AZURE_MAI_MODEL", cls.AZURE_MAI_MODEL or cls.DEFAULT_AZURE_MAI_MODEL)
         add("GLADIA_API_KEY", cls.GLADIA_API_KEY or "")
         add("GROQ_API_KEY", cls.GROQ_API_KEY or "")
         add("SPEECHMATICS_API_KEY", cls.SPEECHMATICS_API_KEY or "")

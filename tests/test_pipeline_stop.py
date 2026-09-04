@@ -1073,7 +1073,7 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
     pipeline = ScriberPipeline(
         service_name="openrouter_stt",
         execution_route={
-            "model": "microsoft/mai-transcribe-1.5",
+            "model": "microsoft/mai-transcribe-2",
             "language": "de-DE",
         },
     )
@@ -1082,7 +1082,7 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
     await pipeline.transcribe_file_direct(str(source))
 
     assert captured["api_key"] == "one-key"
-    assert captured["model"] == "microsoft/mai-transcribe-1.5"
+    assert captured["model"] == "microsoft/mai-transcribe-2"
     assert captured["language"] == "de-DE"
     assert "custom_vocab" not in captured
     assert "diarize" not in captured
@@ -1498,11 +1498,11 @@ def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route
 
     assert type(service).__name__ == "OpenRouterSTTProcessor"
     assert service._api_key == "shared-openrouter-key"
-    assert service._model == "microsoft/mai-transcribe-1.5"
+    assert service._model == "microsoft/mai-transcribe-2"
     assert service._language == "de-DE"
     assert service._session is session
     assert configuration["provider"] == "openrouter_stt"
-    assert configuration["model"] == "microsoft/mai-transcribe-1.5"
+    assert configuration["model"] == "microsoft/mai-transcribe-2"
     assert configuration["mode"] == "batch"
     assert configuration["language"] == "de-DE"
 

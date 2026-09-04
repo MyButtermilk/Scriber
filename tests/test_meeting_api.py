@@ -1888,13 +1888,28 @@ async def test_openrouter_mai_meeting_profile_uses_shared_key_and_conservative_c
     assert response.status == 200
     assert profile["available"] is True
     assert profile["finalProvider"] == "openrouter_stt"
-    assert profile["stages"][1]["model"] == "microsoft/mai-transcribe-1.5"
-    assert profile["costEstimate"]["singleTrackFinalPerAudioHour"] == 0.36
-    assert profile["costEstimate"]["finalPerMeetingHour"] == 0.72
+    assert profile["stages"][1]["model"] == "microsoft/mai-transcribe-2"
+    assert profile["costEstimate"]["singleTrackFinalPerAudioHour"] == 0.10
+    assert profile["costEstimate"]["finalPerMeetingHour"] == 0.20
     assert capabilities["timestamps"] is False
     assert capabilities["batchDiarization"] is False
     assert capabilities["localDiarizationFallback"] is True
     assert capabilities["fiveHourSupported"] is False
+
+
+def test_azure_mai_meeting_cost_uses_published_transcribe_2_price_and_source():
+    estimate = web_api._meeting_stt_cost_estimate("azure_mai", "final_only")
+
+    assert estimate["singleTrackFinalPerAudioHour"] == 0.10
+    assert estimate["finalPerMeetingHour"] == 0.20
+    assert estimate["pricingUpdatedAt"] == "2026-09-04"
+    assert estimate["estimateKind"] == "published_hourly"
+    assert estimate["sources"] == [
+        {
+            "label": "Microsoft MAI Transcribe pricing",
+            "url": "https://microsoft.ai/models/mai-transcribe-2/",
+        }
+    ]
 
 
 @pytest.mark.asyncio

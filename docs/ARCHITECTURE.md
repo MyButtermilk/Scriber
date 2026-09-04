@@ -1708,7 +1708,7 @@ direct-pass-through allowlist. Container and codec are distinct: OGG/Vorbis,
 OGG/Opus, WebM/Vorbis, and WebM/Opus are different values, and generic OGG or
 WebM documentation is never promoted into an exact codec claim. Exact lookup
 rejects unknown/custom routes and inactive entries. The active `openrouter_stt`
-route is pinned to the exact `microsoft/mai-transcribe-1.5` model and accepts
+route is pinned to the exact `microsoft/mai-transcribe-2` model and accepts
 WAV/PCM16, MP3, or FLAC. Its direct adapter posts JSON with base64
 `input_audio` to OpenRouter's `/api/v1/audio/transcriptions` endpoint and reuses
 the same `OPENROUTER_API_KEY` as existing OpenRouter summarization and
@@ -1916,11 +1916,12 @@ configure the simple Google path with one Gemini API key. Gemini, Meta Muse
 Spark, Cerebras, Celeris, and OpenRouter summarization/post-processing use
 direct HTTP and do not require `google-generativeai`; OpenRouter STT reuses that
 same stored key through the separate fixed-model audio-transcriptions adapter
-described above. Meta Muse Spark uses the OpenAI-compatible
+described above. Meta Muse Spark 1.3 uses the OpenAI-compatible
 `https://api.meta.ai/v1/chat/completions` route and `MODEL_API_KEY`. The standard
 tier does not use prompts or responses to train Meta models; the explicitly
 labelled Contributor tier may use both to improve future Meta models and is not
-recommended for sensitive or confidential content. Direct Celeris calls use
+recommended for sensitive or confidential content. Exact persisted Muse Spark
+1.2 selections migrate to the corresponding 1.3 tier. Direct Celeris calls use
 the fixed `https://inference.celeris.ai/celeris-1/v1` route and conservatively
 partition File, YouTube, and Meeting inputs below the 8,192-token context
 ceiling. Its explicit generic-generation budgets remain quantized to 256-token
