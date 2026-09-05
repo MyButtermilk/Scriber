@@ -99,16 +99,8 @@ def classify_error_message(message: str) -> ErrorCategory:
     return ErrorCategory.INTERNAL_BUG
 
 
-def classify_exception(exc: Exception) -> ErrorCategory:
-    return classify_error_message(str(exc))
-
-
 def user_message_for_category(category: ErrorCategory) -> str:
     return _CATEGORY_TO_USER_MESSAGE.get(category, _CATEGORY_TO_USER_MESSAGE[ErrorCategory.INTERNAL_BUG])
-
-
-def user_message_for_exception(exc: Exception) -> str:
-    return user_message_for_category(classify_exception(exc))
 
 
 def is_retryable(category: ErrorCategory) -> bool:

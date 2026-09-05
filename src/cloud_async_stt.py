@@ -53,6 +53,9 @@ from src.runtime.http_response import read_response_text_limited
 
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
 OPENROUTER_MAI_TRANSCRIBE_MODEL = Config.DEFAULT_OPENROUTER_STT_MODEL
+# The legacy model is accepted only when explicitly supplied by a frozen
+# execution route. Current admissions and the transport default stay on 2.
+OPENROUTER_MAI_TRANSCRIBE_MODELS = frozenset({OPENROUTER_MAI_TRANSCRIBE_MODEL, "microsoft/mai-transcribe-1.5"})
 _OPENROUTER_AUDIO_FORMAT_BY_SUFFIX = {
     ".flac": "flac",
     ".mp3": "mp3",
@@ -788,8 +791,8 @@ async def transcribe_with_openrouter_audio_transcription(
     """Transcribe verified audio through OpenRouter's dedicated STT endpoint."""
 
     selected_model = str(model or "").strip() or OPENROUTER_MAI_TRANSCRIBE_MODEL
-    if selected_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
-        raise ValueError("OpenRouter STT is pinned to Microsoft MAI-Transcribe-2.")
+    if selected_model not in OPENROUTER_MAI_TRANSCRIBE_MODELS:
+        raise ValueError("OpenRouter STT has no verified exact model contract.")
     audio_format = openrouter_audio_format(filename, content_type)
     language_code = provider_language_code(language)
 

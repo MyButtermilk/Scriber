@@ -457,13 +457,6 @@ def _active_foreground_target_snapshot() -> _ForegroundTargetSnapshot | None:
         return None
 
 
-def _active_foreground_process_identity() -> tuple[int | None, int | None]:
-    snapshot = _active_foreground_target_snapshot()
-    if snapshot is None:
-        return None, None
-    return snapshot.process_id, snapshot.process_creation_time_100ns
-
-
 def _coerce_injection_target_guard(
     target: str | InjectionTargetGuard | None,
 ) -> InjectionTargetGuard | None:
@@ -516,14 +509,6 @@ def _is_slow_app(title: str) -> bool:
     title_lower = title.lower()
     # Word/Outlook are slow with per-keystroke injection and need pre-paste delays
     return title_lower.endswith(" - word") or title_lower.endswith(" - outlook")
-
-
-def _should_paste_for_active_window() -> bool:
-    """Check if clipboard paste should be used for the active window."""
-    title = _active_window_title()
-    if not title:
-        return False
-    return _is_slow_app(title)
 
 
 def _get_pre_delay_for_window() -> int:

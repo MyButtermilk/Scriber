@@ -560,11 +560,6 @@ def validate_provider_replay_capture_attestation(
     return not reasons, reasons
 
 
-def readiness_value(user_ready: dict[str, Any], key: str) -> float | str:
-    value = user_ready.get(key)
-    return round(float(value), 3) if finite_number(value) else "unknown"
-
-
 def sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

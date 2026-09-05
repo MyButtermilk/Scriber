@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  chooseActiveSettingsSection,
   chooseActiveSettingsSectionAtOffset,
   defaultPostProcessingPrompt,
   fixedEstimateExchangeRateLabel,
@@ -32,12 +31,6 @@ test("formats currencies with Intl conventions and discloses the fixed estimate 
   assert.equal(formatEstimatedEuroFromUsd(1, "en-US", 3), "€0.877");
   assert.equal(fixedEstimateExchangeRateLabel("en-US"), "$1 = €0.877");
   assert.match(fixedEstimateExchangeRateLabel("de-DE"), /1\s*\$\s*=\s*0,877\s*€/);
-});
-
-test("keeps the selected settings section while it remains visible", () => {
-  const firstRow = new Set<SettingsSectionKey>(["transcription", "providers"]);
-  assert.equal(chooseActiveSettingsSection(firstRow, "providers"), "providers");
-  assert.equal(chooseActiveSettingsSection(firstRow, "meetings"), "transcription");
 });
 
 test("keeps the clicked settings section active when its row is aligned below the sticky navigation", () => {

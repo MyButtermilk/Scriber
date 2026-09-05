@@ -125,16 +125,6 @@ export function isSettingsSectionKey(value: string): value is SettingsSectionKey
   return SETTINGS_SECTION_KEYS.some((key) => key === value);
 }
 
-export function chooseActiveSettingsSection(
-  visibleSections: ReadonlySet<SettingsSectionKey>,
-  currentSection: SettingsSectionKey,
-): SettingsSectionKey {
-  if (visibleSections.has(currentSection)) {
-    return currentSection;
-  }
-  return SETTINGS_SECTION_KEYS.find((key) => visibleSections.has(key)) ?? currentSection;
-}
-
 export function chooseActiveSettingsSectionAtOffset(
   sectionTops: ReadonlyMap<SettingsSectionKey, number>,
   currentSection: SettingsSectionKey,

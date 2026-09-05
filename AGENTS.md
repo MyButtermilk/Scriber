@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-09-04
+Last verified: 2026-09-05
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -1346,6 +1346,8 @@ Packaging and scripts:
 - Azure MAI defaults to `MAI-Transcribe-2`.
 - Migrate the exact app-persisted `mai-transcribe-1.5` default to that model;
   preserve explicit process overrides and unrelated custom model values.
+  Retain the exact 1.5 capability and MP3 preparation for explicit overrides
+  and already frozen jobs, including recovery of durable provider results.
 - Keep `SCRIBER_AZURE_MAI_MODEL=mai-transcribe-1` available as region/resource
   fallback.
 - For Azure MAI-Transcribe-2, `SCRIBER_CUSTOM_VOCAB` is sent as `phraseList`.
@@ -1363,9 +1365,13 @@ Packaging and scripts:
   or diarization, and do not forward `SCRIBER_CUSTOM_VOCAB` or an Azure
   `phraseList`. The direct `azure_mai` route remains a distinct credential,
   endpoint, preparation, and capability path.
+  Already frozen `microsoft/mai-transcribe-1.5` work retains its exact legacy
+  capability and request model; new work continues to select version 2.
 - Meta language-model choices are `muse-spark-1.3` and
   `muse-spark-1.3-contributor`; exact persisted 1.2 built-in selections migrate
-  to their matching 1.3 tier without rewriting custom model codes.
+  to their matching 1.3 tier without rewriting custom model codes. This also
+  applies to stored Meeting analysis selections at database initialization;
+  keep historical analysis output and model provenance unchanged.
 - AssemblyAI defaults to Universal-3.5-Pro for both async/batch and realtime
   paths. Keep `SCRIBER_ASSEMBLYAI_ASYNC_MODEL` and
   `SCRIBER_ASSEMBLYAI_RT_MODEL` as temporary compatibility overrides, but do not

@@ -169,11 +169,12 @@ def test_unknown_model_and_custom_endpoint_fail_closed():
         resolve_batch_provider_audio_capabilities("unknown", "default")
 
 
-def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_opus():
+@pytest.mark.parametrize("model", ["microsoft/mai-transcribe-2", "microsoft/mai-transcribe-1.5"])
+def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_opus(model):
     capability = resolve_provider_audio_capabilities(
         "openrouter_stt",
         "audio_transcriptions",
-        "microsoft/mai-transcribe-2",
+        model,
     )
     assert capability.active is True
     assert capability.batch_formats == {
@@ -191,6 +192,21 @@ def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_
     )
     assert selection.audio_format is AudioInputFormat.MP3
     assert selection.mode is AudioSelectionMode.ORIGINAL_PASSTHROUGH
+
+
+def test_legacy_azure_override_retains_exact_capability_and_mp3_control():
+    capability = resolve_batch_provider_audio_capabilities("azure_mai", "mai-transcribe-1.5")
+    selection = select_audio_input_format(
+        capability,
+        route_kind=ProviderAudioRouteKind.BATCH,
+        original_format=AudioInputFormat.WAV_PCM16,
+    )
+
+    assert capability.capability_id == "azure_mai:llm_speech_batch:mai-transcribe-1.5"
+    assert capability.revision == "provider-audio-formats-v2"
+    assert capability.max_upload_bytes == 300_000_000
+    assert selection.audio_format is AudioInputFormat.MP3
+    assert selection.mode is AudioSelectionMode.GENERATED
 
 
 def test_current_gemini_transcribe_route_is_vorbis_not_opus():
@@ -213,7 +229,7 @@ def test_matrix_entries_carry_evidence_date_and_revision():
     for capability in PROVIDER_AUDIO_CAPABILITY_MATRIX:
         assert capability.capability_id
         assert capability.revision == CAPABILITY_REVISION
-        if capability.provider in {"azure_mai", "openrouter_stt"}:
+        if capability.model_family in {"MAI-Transcribe-2", "microsoft/mai-transcribe-2"}:
             expected_date = date(2026, 9, 4)
         elif capability.provider in {"meta_stt", "meta_stt_async"}:
             expected_date = date(2026, 9, 2)

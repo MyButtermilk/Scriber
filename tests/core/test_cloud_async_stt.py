@@ -114,7 +114,8 @@ def test_openrouter_json_body_reads_audio_in_bounded_base64_chunks():
 
 
 @pytest.mark.asyncio
-async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_only_fields():
+@pytest.mark.parametrize("model", [None, "microsoft/mai-transcribe-1.5"])
+async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_only_fields(model):
     class Response:
         status = 200
 
@@ -146,7 +147,7 @@ async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_on
         audio_source=audio,
         filename="dictation.wav",
         content_type="audio/wav",
-        model=OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        **({"model": model} if model is not None else {}),
         language="de-DE",
     )
     request = json.loads(session.raw_body)
@@ -155,7 +156,7 @@ async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_on
     assert session.headers["Authorization"] == "Bearer openrouter-secret"
     assert session.headers["Content-Type"] == "application/json"
     assert request == {
-        "model": "microsoft/mai-transcribe-2",
+        "model": model or "microsoft/mai-transcribe-2",
         "input_audio": {
             "data": base64.b64encode(audio).decode("ascii"),
             "format": "wav",
@@ -168,6 +169,20 @@ async def test_openrouter_mai_uses_dedicated_json_stt_contract_without_openai_on
     assert "prompt" not in request
     assert "verbose_json" not in session.raw_body.decode("ascii")
     assert payload["text"] == "Hallo von MAI"
+
+
+@pytest.mark.asyncio
+async def test_openrouter_stt_rejects_unverified_models_before_upload():
+    with pytest.raises(ValueError, match="no verified exact model contract"):
+        await transcribe_with_openrouter_audio_transcription(
+            session=object(),
+            api_key="test-key",
+            audio_source=b"RIFF-audio",
+            filename="audio.wav",
+            content_type="audio/wav",
+            model="microsoft/mai-transcribe-custom",
+            language="de",
+        )
 
 
 @pytest.mark.asyncio

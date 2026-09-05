@@ -83,10 +83,6 @@ def _normalize_context_bias_terms(context_bias: str | list[str] | None) -> list[
     return tokens
 
 
-def _custom_vocab_to_context_bias(custom_vocab: str) -> list[str]:
-    return _normalize_context_bias_terms(custom_vocab)
-
-
 def _extract_text(payload: dict[str, Any]) -> str:
     text = (payload.get("text") or "").strip()
     if text:
@@ -219,7 +215,7 @@ class MistralRealtimeSTTService(SegmentedSTTService):
         self._api_key = api_key
         self._model = model
         self._language = resolved_language
-        self._context_bias = _custom_vocab_to_context_bias(custom_vocab)
+        self._context_bias = _normalize_context_bias_terms(custom_vocab)
         self._session = aiohttp_session
 
         logger.info(f"MistralRealtimeSTTService initialized (model={self._model})")
@@ -300,7 +296,7 @@ class MistralAsyncProcessor(FrameProcessor):
         self._api_key = api_key
         self._model = model
         self._language = _language_to_code(language)
-        self._context_bias = _custom_vocab_to_context_bias(custom_vocab)
+        self._context_bias = _normalize_context_bias_terms(custom_vocab)
         self._session = session
         self._on_progress = on_progress
         self._diarize = bool(diarize)

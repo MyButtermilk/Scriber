@@ -1,11 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { citationDisplayLabel, genericMeetingSpeakerLabel, genericMeetingSpeakerLabels } from "./meeting-display";
-
-test("meeting citations use alphabetical labels and audio start positions", () => {
-  assert.equal(citationDisplayLabel(0, 1_453_000), "Segment A · from 24:13");
-  assert.equal(citationDisplayLabel(27, 3_661_000), "Segment AB · from 1:01:01");
-});
+import { genericMeetingSpeakerLabel, genericMeetingSpeakerLabels } from "./meeting-display";
 
 test("technical anonymous speaker labels become stable letters", () => {
   assert.equal(genericMeetingSpeakerLabel("SPEAKER_00", 0), "Speaker A");

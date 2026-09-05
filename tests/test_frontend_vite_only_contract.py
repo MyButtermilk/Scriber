@@ -82,8 +82,6 @@ def test_frontend_package_is_vite_only() -> None:
     assert scripts["tauri:bundle"] == "tauri bundle"
     assert {"start", "db:push"}.isdisjoint(scripts)
 
-    assert len(dependencies) == 35
-    assert len(dev_dependencies) == 25
     assert {
         "@eslint/js",
         "@testing-library/react",

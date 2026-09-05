@@ -66,7 +66,7 @@ from src.core.provider_audio_formats import (
 )
 from src.core.provider_capabilities import get_capabilities
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
-from src.runtime.env_values import env_float as _safe_env_float
+from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
 from src.runtime.media_tools import find_media_tool
 from src.runtime.provider_dependencies import import_provider_runtime_module
@@ -620,10 +620,6 @@ def _ordered_live_pipeline_steps(
         steps.append(transcript_callback)
     steps.append(text_injector)
     return steps
-
-
-def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    return _safe_env_float(name, default, minimum=minimum, maximum=maximum)
 
 
 def _redact_provider_error_text(message: str) -> str:
@@ -1302,7 +1298,6 @@ class SonioxAsyncProcessor(FrameProcessor):
 # ============================================================================
 
 from src.audio_devices import (  # noqa: E402 - preserve established runtime import ordering
-    normalize_device_name,
     resolve_input_microphone_device,
 )
 from src.audio_file_input import FfmpegAudioFileInput  # noqa: E402 - preserve established runtime import ordering
@@ -1421,10 +1416,6 @@ def _load_soniox_realtime_classes():
     return SonioxSTTService, SonioxContextObject
 
 
-def _normalize_device_name(name: str) -> str:
-    return normalize_device_name(name)
-
-
 _MIC_DEVICE_CACHE_LOCK = threading.Lock()
 _MIC_DEVICE_CACHE: dict[tuple[int, str, str, int, int], tuple[float, str]] = {}
 
@@ -1436,7 +1427,7 @@ def invalidate_mic_device_resolution_cache() -> None:
 
 
 def _mic_device_resolution_cache_ttl() -> float:
-    return _env_float(
+    return env_float(
         "SCRIBER_MIC_DEVICE_CACHE_TTL_SEC",
         # Native endpoint notifications and Settings changes explicitly
         # invalidate this cache. A ten-second default made every longer
@@ -2675,7 +2666,7 @@ class ScriberPipeline:
             await self._cleanup_audio_input()
 
     def _live_stt_final_failure_timeout_seconds(self) -> float:
-        return _env_float(
+        return env_float(
             "SCRIBER_LIVE_STT_FINAL_FAILURE_TIMEOUT_SECONDS",
             5.0,
             minimum=0.5,
@@ -3374,7 +3365,7 @@ class ScriberPipeline:
 
         elif self.service_name == "openrouter_stt":
             from src.cloud_async_stt import (
-                OPENROUTER_MAI_TRANSCRIBE_MODEL,
+                OPENROUTER_MAI_TRANSCRIBE_MODELS,
                 OPENROUTER_STT_URL,
                 OpenRouterSTTProcessor,
             )
@@ -3383,7 +3374,7 @@ class ScriberPipeline:
             if not api_key:
                 raise ValueError("OpenRouter API Key is missing.")
             bound_model = self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL)
-            if bound_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
+            if bound_model not in OPENROUTER_MAI_TRANSCRIBE_MODELS:
                 raise ProviderAudioCapabilityError("OpenRouter STT has no active exact model contract.")
             provider_route = batch_route_for_provider("openrouter_stt")
             if not provider_route:
@@ -3466,7 +3457,7 @@ class ScriberPipeline:
                     except Exception as exc:
                         logger.debug(f"Gladia stop_recording warning: {exc}")
 
-                    timeout = _env_float(
+                    timeout = env_float(
                         "SCRIBER_GLADIA_STOP_FINAL_TIMEOUT_SECONDS",
                         3.0,
                         minimum=0.25,

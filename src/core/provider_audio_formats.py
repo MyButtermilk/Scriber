@@ -541,6 +541,20 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
         verified_at=date(2026, 9, 4),
     ),
+    # Preserve the shipped exact contract for supervising-process overrides
+    # and persisted jobs. New default selections use MAI-Transcribe-2.
+    _capability(
+        "azure_mai",
+        "llm_speech_batch",
+        "mai-transcribe-1.5",
+        ProviderAudioRouteKind.BATCH,
+        batch_formats=_WAV_MP3_FLAC,
+        direct_passthrough_formats=(AudioInputFormat.MP3,),
+        preferred_lossy_format=AudioInputFormat.MP3,
+        preferred_lossless_format=AudioInputFormat.FLAC,
+        max_upload_bytes=300_000_000,
+        evidence_reference=("https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe"),
+    ),
     _capability(
         "openrouter_stt",
         "audio_transcriptions",
@@ -552,6 +566,19 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-2/providers"),
         verified_at=date(2026, 9, 4),
+    ),
+    # Frozen routes retain their original model and capability identity across
+    # upgrades, including recovery of an already paid provider result.
+    _capability(
+        "openrouter_stt",
+        "audio_transcriptions",
+        "microsoft/mai-transcribe-1.5",
+        ProviderAudioRouteKind.BATCH,
+        batch_formats=_WAV_MP3_FLAC,
+        direct_passthrough_formats=_WAV_MP3_FLAC,
+        preferred_lossy_format=AudioInputFormat.MP3,
+        preferred_lossless_format=AudioInputFormat.FLAC,
+        evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
     ),
     _capability(
         "gemini_stt",
@@ -1004,6 +1031,11 @@ _REALTIME_GENERATION_ORDER = (
 # until an installed end-to-end benchmark promotes WAV or FLAC for a duration
 # and network bucket. Other routes keep the conservative WAV control.
 _PROMOTED_BATCH_GENERATION_ORDER: dict[str, tuple[AudioInputFormat, ...]] = {
+    "azure_mai:llm_speech_batch:mai-transcribe-1.5": (
+        AudioInputFormat.MP3,
+        AudioInputFormat.WAV_PCM16,
+        AudioInputFormat.FLAC,
+    ),
     "azure_mai:llm_speech_batch:MAI-Transcribe-2": (
         AudioInputFormat.MP3,
         AudioInputFormat.WAV_PCM16,
@@ -1059,31 +1091,6 @@ def select_audio_input_format(
                 capability_revision=capability.revision,
             )
     raise UnsupportedAudioInputFormat("Provider route/model has no verified generated audio representation.")
-
-
-def select_provider_audio_input_format(
-    *,
-    provider: str,
-    route: str,
-    model_family: str,
-    route_kind: ProviderAudioRouteKind | str,
-    original_format: AudioInputFormat | str | None = None,
-    custom_endpoint: bool = False,
-    include_inactive: bool = False,
-) -> AudioInputSelection:
-    capability = resolve_provider_audio_capabilities(
-        provider,
-        route,
-        model_family,
-        custom_endpoint=custom_endpoint,
-        include_inactive=include_inactive,
-    )
-    return select_audio_input_format(
-        capability,
-        route_kind=route_kind,
-        original_format=original_format,
-        allow_inactive=include_inactive,
-    )
 
 
 def _validate_registry() -> None:

@@ -2,6 +2,7 @@ import asyncio
 import sqlite3
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -447,8 +448,10 @@ async def test_resume_reconciles_terminal_file_job_and_cleans_owned_upload(isola
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["soniox", "openrouter_stt"])
 async def test_startup_recovers_exact_durable_result_with_failed_projection_and_missing_source(
     isolated_recovery_database,
+    provider,
 ):
     store = JobStore(db_path=isolated_recovery_database)
     ctl = ScriberWebController(asyncio.get_running_loop(), job_store=store)
@@ -456,9 +459,15 @@ async def test_startup_recovers_exact_durable_result_with_failed_projection_and_
     missing_source = isolated_recovery_database.parent / "deleted-source.wav"
     route = ctl._freeze_background_provider_route(
         workload="file",
-        provider="soniox",
+        provider=provider,
         language="en",
     )
+    if provider == "openrouter_stt":
+        route = replace(
+            route,
+            model="microsoft/mai-transcribe-1.5",
+            provider_audio_capability_id="openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5",
+        )
     _persist_file_projection(
         transcript_id=transcript_id,
         source_path=missing_source,

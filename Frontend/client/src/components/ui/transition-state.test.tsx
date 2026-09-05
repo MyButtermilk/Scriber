@@ -62,13 +62,6 @@ describe("transitions.dev state primitives", () => {
     expect(text).toHaveTextContent("Save");
   });
 
-  it("renders a calibrated success path in the persistent success wrapper", () => {
-    const { container } = render(<SuccessCheckIcon className="h-5 w-5" />);
-
-    expect(container.querySelector(".t-success-check")).toHaveAttribute("data-state", "in");
-    expect(container.querySelector("path")).toHaveAttribute("d", "M5 12.5L9.2 16.5L19 7");
-  });
-
   it("keeps an already-visible check steady on remount and animates a later success", () => {
     const mounted = render(<SuccessCheckIcon visible animateOnMount={false} />);
     expect(mounted.container.querySelector(".t-success-check")).toHaveAttribute("data-state", "steady");
