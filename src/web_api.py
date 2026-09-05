@@ -597,8 +597,8 @@ _VALID_DIRECT_SUMMARIZATION_MODEL_PREFIXES = ("gemini-", "gpt-")
 _VALID_SUMMARIZATION_MODELS = frozenset(
     {
         "celeris-1",
-        "muse-spark-1.2",
-        "muse-spark-1.2-contributor",
+        "muse-spark-1.3",
+        "muse-spark-1.3-contributor",
     }
 )
 _VALID_ROUTED_OPENROUTER_MODELS = frozenset(Config.POST_PROCESSING_FALLBACK_MODELS)
@@ -667,7 +667,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-08-26"
+_MEETING_PRICING_UPDATED_AT = "2026-09-04"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -719,9 +719,9 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "token_estimate",
     },
     "openrouter_stt": {
-        "perTrackHourUsd": 0.36,
+        "perTrackHourUsd": 0.10,
         "systemDiarizationHourUsd": 0.0,
-        "pricingUrl": "https://openrouter.ai/microsoft/mai-transcribe-1.5",
+        "pricingUrl": "https://openrouter.ai/microsoft/mai-transcribe-2",
         "estimateKind": "published_hourly",
     },
     "modulate_async": {
@@ -743,10 +743,10 @@ _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
         "estimateKind": "published_minute",
     },
     "azure_mai": {
-        "perTrackHourUsd": None,
+        "perTrackHourUsd": 0.10,
         "systemDiarizationHourUsd": 0.0,
-        "pricingUrl": "https://azure.microsoft.com/pricing/details/ai-services/",
-        "estimateKind": "account_pricing",
+        "pricingUrl": "https://microsoft.ai/models/mai-transcribe-2/",
+        "estimateKind": "published_hourly",
     },
     "groq": {
         "perTrackHourUsd": 0.04,
@@ -1219,7 +1219,7 @@ def _meeting_llm_model_ready(model: str) -> bool:
         return bool(Config.GOOGLE_API_KEY)
     if normalized.startswith("cerebras/"):
         return bool(Config.CEREBRAS_API_KEY)
-    if normalized in {"muse-spark-1.2", "muse-spark-1.2-contributor"}:
+    if normalized in {"muse-spark-1.3", "muse-spark-1.3-contributor"}:
         return bool(getattr(Config, "MODEL_API_KEY", ""))
     if normalized == "celeris-1":
         return bool(Config.CELERIS_API_KEY)
@@ -12409,7 +12409,7 @@ class ScriberWebController:
                 if provider_replay_execution is not None and provider_replay_execution.provider == "microsoft":
                     live_execution_route = {
                         "language": "en-US",
-                        "model": "mai-transcribe-1.5",
+                        "model": "MAI-Transcribe-2",
                         "provider_region": PROVIDER_REPLAY_AZURE_REGION,
                         "custom_vocab": "",
                         "audio_preparation_implementation": (
@@ -17503,7 +17503,7 @@ class ScriberWebController:
                 "celeris": getattr(Config, "CELERIS_API_KEY", "") or "",
                 "azureMaiSpeechKey": getattr(Config, "AZURE_MAI_SPEECH_KEY", "") or "",
                 "azureMaiRegion": getattr(Config, "AZURE_MAI_REGION", "") or "northeurope",
-                "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "mai-transcribe-1.5",
+                "azureMaiModel": getattr(Config, "AZURE_MAI_MODEL", "") or "MAI-Transcribe-2",
                 "gladia": Config.GLADIA_API_KEY or "",
                 "groq": Config.GROQ_API_KEY or "",
                 "speechmatics": Config.SPEECHMATICS_API_KEY or "",
@@ -17881,7 +17881,7 @@ class ScriberWebController:
                 Config.AZURE_MAI_REGION = api_keys["azureMaiRegion"].strip() or "northeurope"
                 os.environ["SCRIBER_AZURE_MAI_REGION"] = Config.AZURE_MAI_REGION
             if "azureMaiModel" in api_keys and isinstance(api_keys["azureMaiModel"], str):
-                Config.AZURE_MAI_MODEL = api_keys["azureMaiModel"].strip() or "mai-transcribe-1.5"
+                Config.AZURE_MAI_MODEL = api_keys["azureMaiModel"].strip() or "MAI-Transcribe-2"
                 os.environ["SCRIBER_AZURE_MAI_MODEL"] = Config.AZURE_MAI_MODEL
 
             if "googleApiKey" in api_keys and isinstance(api_keys["googleApiKey"], str):

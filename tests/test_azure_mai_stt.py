@@ -42,7 +42,7 @@ def test_azure_mai_service_initializes_complete_pipecat_1_5_settings():
         language="auto",
     )
 
-    assert service._settings.model == "mai-transcribe-1.5"
+    assert service._settings.model == "MAI-Transcribe-2"
     assert service._settings.language is None
 
 
@@ -73,6 +73,7 @@ def test_azure_mai_capture_time_candidate_is_frozen_per_service(monkeypatch):
 
 def test_validate_azure_mai_region_rejects_unsupported():
     assert validate_azure_mai_region("northeurope") == "northeurope"
+    assert validate_azure_mai_region("southeastasia") == "southeastasia"
     try:
         validate_azure_mai_region("westeurope")
     except ValueError as exc:
@@ -86,20 +87,20 @@ def test_build_azure_mai_definition_sets_model_and_optional_locale():
     assert build_azure_mai_definition("auto", custom_vocab="") == {
         "enhancedMode": {
             "enabled": True,
-            "model": "mai-transcribe-1.5",
+            "model": "MAI-Transcribe-2",
         }
     }
     assert build_azure_mai_definition("de", custom_vocab="") == {
         "enhancedMode": {
             "enabled": True,
-            "model": "mai-transcribe-1.5",
+            "model": "MAI-Transcribe-2",
         },
         "locales": ["de"],
     }
 
 
 def test_azure_mai_model_can_be_overridden(monkeypatch):
-    assert azure_mai_model("") == "mai-transcribe-1.5"
+    assert azure_mai_model("") == "MAI-Transcribe-2"
 
     monkeypatch.setattr("src.azure_mai_stt.Config.AZURE_MAI_MODEL", "mai-transcribe-1")
     assert build_azure_mai_definition("en", custom_vocab="")["enhancedMode"]["model"] == "mai-transcribe-1"
@@ -109,11 +110,18 @@ def test_azure_mai_model_can_be_overridden(monkeypatch):
     )
 
 
-def test_azure_mai_phrase_list_uses_custom_vocab_for_transcribe_15():
+def test_azure_mai_phrase_list_uses_custom_vocab_for_transcribe_2():
     assert azure_mai_phrase_list("Contoso, Jessie, , Rehaan") == ["Contoso", "Jessie", "Rehaan"]
 
     definition = build_azure_mai_definition("en", custom_vocab="Contoso, Jessie")
     assert definition["phraseList"] == {"phrases": ["Contoso", "Jessie"]}
+
+    legacy_definition = build_azure_mai_definition(
+        "en",
+        model="mai-transcribe-1.5",
+        custom_vocab="Contoso, Jessie",
+    )
+    assert legacy_definition["phraseList"] == {"phrases": ["Contoso", "Jessie"]}
 
     old_model_definition = build_azure_mai_definition(
         "en",
@@ -157,13 +165,13 @@ async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatc
         filename="audio.mp3",
         content_type="audio/mpeg",
         language="de-DE",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         custom_vocab="Frozen term",
     )
 
     fields = {str(field[0].get("name")): field[2] for field in session.posts[0][1]["data"]._fields}
     assert payload["combinedPhrases"][0]["text"] == "done"
-    assert '"model": "mai-transcribe-1.5"' in fields["definition"]
+    assert '"model": "MAI-Transcribe-2"' in fields["definition"]
     assert '"phrases": ["Frozen term"]' in fields["definition"]
 
 
@@ -175,7 +183,7 @@ async def test_azure_mai_raw_transport_marks_completion_before_json_parse(monkey
         events.append("transport_complete")
         assert kwargs["filename"] == "audio.mp3"
         assert kwargs["content_type"] == "audio/mpeg"
-        assert kwargs["definition"]["enhancedMode"]["model"] == "mai-transcribe-1.5"
+        assert kwargs["definition"]["enhancedMode"]["model"] == "MAI-Transcribe-2"
         return 200, '{"combinedPhrases":[{"text":"done"}]}'
 
     original_loads = __import__("json").loads
@@ -193,7 +201,7 @@ async def test_azure_mai_raw_transport_marks_completion_before_json_parse(monkey
         filename="audio.mp3",
         content_type="audio/mpeg",
         language="de-DE",
-        model="mai-transcribe-1.5",
+        model="MAI-Transcribe-2",
         raw_transport=raw_transport,
         on_response_complete=lambda: events.append("response_complete_marker"),
     )

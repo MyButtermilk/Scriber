@@ -48,8 +48,8 @@ BuiltInSummarizationModel = Literal[
     "gpt-5.2",
     "gpt-5-mini",
     "gpt-5-nano",
-    "muse-spark-1.2",
-    "muse-spark-1.2-contributor",
+    "muse-spark-1.3",
+    "muse-spark-1.3-contributor",
     "google/gemini-2.5-flash-lite:nitro",
     "minimax/minimax-m3:nitro",
     "openai/gpt-oss-120b",
@@ -78,8 +78,8 @@ class MetaContributorAccessError(ValueError):
 
 
 _META_CONTRIBUTOR_ACCESS_MESSAGE = (
-    "Muse Spark 1.2 Contributor is not available for this Meta project. "
-    "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+    "Muse Spark 1.3 Contributor is not available for this Meta project. "
+    "Choose Muse Spark 1.3 Standard in Settings or request Contributor access "
     "in the Meta dashboard, then try again."
 )
 
@@ -110,8 +110,8 @@ _MODEL_OUTPUT_TOKEN_CAPS = {
     "gpt-5-mini": 8192,
     "gpt-5.5": 8192,
     "gpt-5.2": 8192,
-    "muse-spark-1.2": 131_072,
-    "muse-spark-1.2-contributor": 131_072,
+    "muse-spark-1.3": 131_072,
+    "muse-spark-1.3-contributor": 131_072,
     "gemini-flash-latest": 65536,
     "gemini-3.5-flash": 65536,
     "gemini-3-flash-preview": 8192,
@@ -317,7 +317,7 @@ def _is_openrouter_model(model: str) -> bool:
 
 
 def _is_meta_model(model: str) -> bool:
-    return (model or "").strip() in {"muse-spark-1.2", "muse-spark-1.2-contributor"}
+    return (model or "").strip() in {"muse-spark-1.3", "muse-spark-1.3-contributor"}
 
 
 def _is_cerebras_model(model: str) -> bool:
@@ -2101,7 +2101,7 @@ async def _summarize_meta(prompt: str, model: str, max_output_tokens: int | None
         async with aiohttp.ClientSession(timeout=timeout) as session:
             data = await _post_meta_chat_completion(payload, headers, session)
     except ProviderTransportError as exc:
-        if model == "muse-spark-1.2-contributor" and exc.status == 404:
+        if model == "muse-spark-1.3-contributor" and exc.status == 404:
             raise MetaContributorAccessError(_META_CONTRIBUTOR_ACCESS_MESSAGE) from None
         raise
     except aiohttp.ClientError as exc:

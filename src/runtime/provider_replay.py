@@ -53,7 +53,7 @@ _AZURE_REPLAY_URL = (
 _AZURE_REPLAY_DEFINITION = {
     "enhancedMode": {
         "enabled": True,
-        "model": "mai-transcribe-1.5",
+        "model": "MAI-Transcribe-2",
     },
     "locales": ["en-US"],
 }

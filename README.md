@@ -204,13 +204,15 @@ Use completed-audio processing for long recordings, file imports, and providers 
 
 ### Microsoft MAI through Azure or one OpenRouter key
 
-Microsoft MAI Transcribe 1.5 can use either the separate direct Azure setup or
+Microsoft MAI-Transcribe-2 can use either the separate direct Azure setup or
 the OpenRouter option. With OpenRouter, the same API key covers MAI
 transcription and Scriber's existing OpenRouter summaries and post-processing.
+The published limited-time model price is **$0.10 per audio hour through the
+end of 2026**.
 OpenRouter currently charges **5.5% (minimum $0.80) on standard credit
 purchases** or **5% on cryptocurrency purchases**; this is an account-funding
 fee, not a markup on the model's inference price.
-[See the OpenRouter model page.](https://openrouter.ai/microsoft/mai-transcribe-1.5)
+[See the OpenRouter model page.](https://openrouter.ai/microsoft/mai-transcribe-2)
 [See the OpenRouter fee details.](https://openrouter.ai/docs/faq)
 
 ### Meta Muse Voice Transcribe

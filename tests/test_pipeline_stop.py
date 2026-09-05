@@ -1056,7 +1056,10 @@ async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes
 
 
 @pytest.mark.asyncio
-async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_openai_options(monkeypatch, tmp_path):
+@pytest.mark.parametrize("model", ["microsoft/mai-transcribe-2", "microsoft/mai-transcribe-1.5"])
+async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_openai_options(
+    monkeypatch, tmp_path, model
+):
     source = tmp_path / "openrouter.wav"
     source.write_bytes(b"RIFF-audio")
     captured = {}
@@ -1073,7 +1076,7 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
     pipeline = ScriberPipeline(
         service_name="openrouter_stt",
         execution_route={
-            "model": "microsoft/mai-transcribe-1.5",
+            "model": model,
             "language": "de-DE",
         },
     )
@@ -1082,7 +1085,7 @@ async def test_openrouter_mai_direct_uses_frozen_model_and_language_without_open
     await pipeline.transcribe_file_direct(str(source))
 
     assert captured["api_key"] == "one-key"
-    assert captured["model"] == "microsoft/mai-transcribe-1.5"
+    assert captured["model"] == model
     assert captured["language"] == "de-DE"
     assert "custom_vocab" not in captured
     assert "diarize" not in captured
@@ -1487,22 +1490,26 @@ def test_buffered_provider_factories_enable_diarization_for_batch_jobs(monkeypat
     assert assemblyai._speaker_labels is True
 
 
-def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route(monkeypatch):
+@pytest.mark.parametrize("model", [None, "microsoft/mai-transcribe-1.5"])
+def test_openrouter_mai_factory_and_runtime_configuration_use_pinned_batch_route(monkeypatch, model):
     monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "shared-openrouter-key")
     monkeypatch.setattr(Config, "LANGUAGE", "de-DE")
     session = object()
-    pipeline = ScriberPipeline(service_name="openrouter_stt")
+    pipeline = ScriberPipeline(
+        service_name="openrouter_stt",
+        execution_route={"model": model} if model is not None else None,
+    )
 
     service = pipeline._create_stt_service(session)
     configuration = pipeline.stt_runtime_configuration()
 
     assert type(service).__name__ == "OpenRouterSTTProcessor"
     assert service._api_key == "shared-openrouter-key"
-    assert service._model == "microsoft/mai-transcribe-1.5"
+    assert service._model == (model or "microsoft/mai-transcribe-2")
     assert service._language == "de-DE"
     assert service._session is session
     assert configuration["provider"] == "openrouter_stt"
-    assert configuration["model"] == "microsoft/mai-transcribe-1.5"
+    assert configuration["model"] == (model or "microsoft/mai-transcribe-2")
     assert configuration["mode"] == "batch"
     assert configuration["language"] == "de-DE"
 

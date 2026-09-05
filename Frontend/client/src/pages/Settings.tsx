@@ -307,8 +307,8 @@ const POST_PROCESSING_FALLBACK_MODEL_VALUES = new Set<string>([
   "minimax/minimax-m3:nitro",
   "z-ai/glm-5.3-flash:nitro",
 ]);
-const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";
-const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";
+const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.3";
+const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.3-contributor";
 const CANONICAL_OPENROUTER_MODEL_RE =
   /^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?\/[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$/;
 
@@ -454,16 +454,16 @@ function createSummarizationModelOptions(localeTag: string, t: Translate): reado
     },
     {
       value: META_MUSE_SPARK_STANDARD_MODEL,
-      label: "Muse Spark 1.2",
-      detail: aaLanguageBenchmarkDetail(0.78, 57, localeTag, t),
+      label: "Muse Spark 1.3",
+      detail: aaLanguageBenchmarkDetail(0.78, 61, localeTag, t),
       note: t("Standard tier · prompts and responses are not used to train Meta models"),
       group: "meta",
       icon: "meta",
     },
     {
       value: META_MUSE_SPARK_CONTRIBUTOR_MODEL,
-      label: "Muse Spark 1.2 Contributor",
-      detail: aaLanguageBenchmarkDetail(0.0414, 57, localeTag, t),
+      label: "Muse Spark 1.3 Contributor",
+      detail: aaLanguageBenchmarkDetail(0.0414, 61, localeTag, t),
       note: t("Same Muse Spark checkpoint score · not separately benchmarked · Contributor data-use warning applies"),
       group: "meta",
       icon: "meta",
@@ -935,8 +935,8 @@ function createProviderModelOptions(
     benchmarkOption(
       "openrouter_stt",
       t("Microsoft MAI · OpenRouter"),
-      6.0,
-      2.4,
+      1.6667,
+      2.0,
       "cloud_async",
       "openrouter",
       t("One key for STT and AI · about 5% credit purchase fee"),
@@ -944,8 +944,8 @@ function createProviderModelOptions(
     benchmarkOption(
       "azure_mai",
       t("Microsoft MAI · Azure direct"),
-      6.0,
-      2.4,
+      1.6667,
+      2.0,
       "cloud_async",
       "azure",
       t("Separate Azure Speech key and region · no OpenRouter fee"),
@@ -1075,7 +1075,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "openrouter_stt",
     label: "Microsoft MAI · OpenRouter",
-    model: "microsoft/mai-transcribe-1.5",
+    model: "microsoft/mai-transcribe-2",
     credentialModel: "openrouter_stt",
     recommended: false,
     nativeDiarization: false,
@@ -1086,7 +1086,7 @@ const MEETING_FINAL_STT_OPTIONS = [
   {
     value: "azure_mai",
     label: "Microsoft MAI · Azure direct",
-    model: "mai-transcribe-1.5",
+    model: "MAI-Transcribe-2",
     credentialModel: "azure_mai",
     recommended: false,
     nativeDiarization: false,
@@ -1499,7 +1499,7 @@ function MetaContributorWarning({ active }: { active: boolean }) {
         </p>
         <p className="mt-1">
           {t(
-            "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.2 Standard or request Contributor access in the Meta dashboard.",
+            "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.3 Standard or request Contributor access in the Meta dashboard.",
           )}
         </p>
       </div>
@@ -1855,7 +1855,7 @@ export default function Settings() {
   const [elevenLabsKey, setElevenLabsKey] = useState("");
   const [azureMaiKey, setAzureMaiKey] = useState("");
   const [azureMaiRegion, setAzureMaiRegion] = useState("northeurope");
-  const [azureMaiModel, setAzureMaiModel] = useState("mai-transcribe-1.5");
+  const [azureMaiModel, setAzureMaiModel] = useState("MAI-Transcribe-2");
   const [gladiaKey, setGladiaKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
   const [speechmaticsKey, setSpeechmaticsKey] = useState("");
@@ -2895,7 +2895,7 @@ export default function Settings() {
         setElevenLabsKey(keys.elevenlabs || "");
         setAzureMaiKey(keys.azureMaiSpeechKey || "");
         setAzureMaiRegion(keys.azureMaiRegion || "northeurope");
-        setAzureMaiModel(keys.azureMaiModel || "mai-transcribe-1.5");
+        setAzureMaiModel(keys.azureMaiModel || "MAI-Transcribe-2");
         setGladiaKey(keys.gladia || "");
         setGroqKey(keys.groq || "");
         setSpeechmaticsKey(keys.speechmatics || "");
@@ -3102,7 +3102,7 @@ export default function Settings() {
       if (provider === "Azure") {
         apiKeys.azureMaiSpeechKey = azureMaiKey;
         apiKeys.azureMaiRegion = azureMaiRegion || "northeurope";
-        apiKeys.azureMaiModel = azureMaiModel || "mai-transcribe-1.5";
+        apiKeys.azureMaiModel = azureMaiModel || "MAI-Transcribe-2";
       }
       if (provider === "Gladia") apiKeys.gladia = gladiaKey;
       if (provider === "Groq") apiKeys.groq = groqKey;
@@ -6909,7 +6909,7 @@ export default function Settings() {
                     <Input
                       value={azureMaiModel}
                       onChange={(event) => markCredentialChanged("Azure", setAzureMaiModel)(event.target.value)}
-                      placeholder="mai-transcribe-1.5"
+                      placeholder="MAI-Transcribe-2"
                       className="font-mono text-sm"
                     />
                   </FieldShell>

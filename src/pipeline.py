@@ -3365,7 +3365,7 @@ class ScriberPipeline:
 
         elif self.service_name == "openrouter_stt":
             from src.cloud_async_stt import (
-                OPENROUTER_MAI_TRANSCRIBE_MODEL,
+                OPENROUTER_MAI_TRANSCRIBE_MODELS,
                 OPENROUTER_STT_URL,
                 OpenRouterSTTProcessor,
             )
@@ -3374,7 +3374,7 @@ class ScriberPipeline:
             if not api_key:
                 raise ValueError("OpenRouter API Key is missing.")
             bound_model = self._execution_model(Config.DEFAULT_OPENROUTER_STT_MODEL)
-            if bound_model != OPENROUTER_MAI_TRANSCRIBE_MODEL:
+            if bound_model not in OPENROUTER_MAI_TRANSCRIBE_MODELS:
                 raise ProviderAudioCapabilityError("OpenRouter STT has no active exact model contract.")
             provider_route = batch_route_for_provider("openrouter_stt")
             if not provider_route:

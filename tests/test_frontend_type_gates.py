@@ -493,10 +493,10 @@ def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> No
         REPO_ROOT / "Frontend" / "client" / "src" / "i18n" / "translations" / "de" / "settings.ts"
     ).read_text(encoding="utf-8")
 
-    assert 'const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.2";' in settings_source
-    assert 'const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.2-contributor";' in settings_source
-    assert 'label: "Muse Spark 1.2"' in settings_source
-    assert 'label: "Muse Spark 1.2 Contributor"' in settings_source
+    assert 'const META_MUSE_SPARK_STANDARD_MODEL = "muse-spark-1.3";' in settings_source
+    assert 'const META_MUSE_SPARK_CONTRIBUTOR_MODEL = "muse-spark-1.3-contributor";' in settings_source
+    assert 'label: "Muse Spark 1.3"' in settings_source
+    assert 'label: "Muse Spark 1.3 Contributor"' in settings_source
     standard_option = settings_source[
         settings_source.index("value: META_MUSE_SPARK_STANDARD_MODEL") : settings_source.index(
             "value: META_MUSE_SPARK_CONTRIBUTOR_MODEL"
@@ -507,12 +507,12 @@ def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> No
             'value: "minimax/minimax-m3:nitro"'
         )
     ]
-    assert 'label: "Muse Spark 1.2"' in standard_option
-    assert "aaLanguageBenchmarkDetail(0.78, 57, localeTag, t)" in standard_option
+    assert 'label: "Muse Spark 1.3"' in standard_option
+    assert "aaLanguageBenchmarkDetail(0.78, 61, localeTag, t)" in standard_option
     assert 'group: "meta"' in standard_option
     assert 'icon: "meta"' in standard_option
-    assert 'label: "Muse Spark 1.2 Contributor"' in contributor_option
-    assert "aaLanguageBenchmarkDetail(0.0414, 57, localeTag, t)" in contributor_option
+    assert 'label: "Muse Spark 1.3 Contributor"' in contributor_option
+    assert "aaLanguageBenchmarkDetail(0.0414, 61, localeTag, t)" in contributor_option
     assert "Same Muse Spark checkpoint score" in contributor_option
     assert 'group: "meta"' in contributor_option
     assert 'icon: "meta"' in contributor_option
@@ -1672,11 +1672,11 @@ def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> Non
     ]
     assert_source_contains_tokens(
         provider_options_source,
-        'benchmarkOption("openrouter_stt", t("Microsoft MAI · OpenRouter"), 6.0, 2.4, "cloud_async", "openrouter", t("One key for STT and AI · about 5% credit purchase fee"))',
+        'benchmarkOption("openrouter_stt", t("Microsoft MAI · OpenRouter"), 1.6667, 2.0, "cloud_async", "openrouter", t("One key for STT and AI · about 5% credit purchase fee"))',
     )
     assert_source_contains_tokens(
         provider_options_source,
-        'benchmarkOption("azure_mai", t("Microsoft MAI · Azure direct"), 6.0, 2.4, "cloud_async", "azure", t("Separate Azure Speech key and region · no OpenRouter fee"))',
+        'benchmarkOption("azure_mai", t("Microsoft MAI · Azure direct"), 1.6667, 2.0, "cloud_async", "azure", t("Separate Azure Speech key and region · no OpenRouter fee"))',
     )
     assert source_token_sequence_position(
         provider_options_source, 'benchmarkOption("openrouter_stt",'
@@ -1705,7 +1705,7 @@ def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> Non
     ]
     assert_source_contains_tokens(
         meeting_options_source,
-        'value: "openrouter_stt", label: "Microsoft MAI · OpenRouter", model: "microsoft/mai-transcribe-1.5", credentialModel: "openrouter_stt", recommended: false, nativeDiarization: false, fiveHourSupported: false',
+        'value: "openrouter_stt", label: "Microsoft MAI · OpenRouter", model: "microsoft/mai-transcribe-2", credentialModel: "openrouter_stt", recommended: false, nativeDiarization: false, fiveHourSupported: false',
     )
 
     openrouter_key_note = (

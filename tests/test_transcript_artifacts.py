@@ -224,7 +224,7 @@ def test_pipecat_owned_routes_do_not_claim_unknown_models(provider):
     (
         ("modulate", "velma-2-stt-batch"),
         ("modulate_async", "velma-2-stt-batch"),
-        ("openrouter_stt", "microsoft/mai-transcribe-1.5"),
+        ("openrouter_stt", "microsoft/mai-transcribe-2"),
     ),
 )
 def test_text_only_route_reports_final_text_with_estimated_timing(provider, expected_model):

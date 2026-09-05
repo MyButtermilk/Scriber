@@ -128,7 +128,7 @@ function credentialProviderForModel(model: string): string | null {
   if (family.startsWith("cerebras/")) return "Cerebras";
   if (family.startsWith("gemini-")) return "Gemini";
   if (family.startsWith("gpt-")) return "OpenAI";
-  if (family === "muse-spark-1.2" || family === "muse-spark-1.2-contributor") return "Meta Model API";
+  if (family === "muse-spark-1.3" || family === "muse-spark-1.3-contributor") return "Meta Model API";
   if (family === "celeris-1") return "Celeris";
   if (family.includes("/")) return "OpenRouter";
   return null;

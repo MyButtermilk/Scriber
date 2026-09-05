@@ -83,11 +83,11 @@ def test_job_store_freezes_and_finalizes_execution_route_once(tmp_path):
     initial = {
         "provider": "azure_mai",
         "providerRoute": "audio_transcriptions",
-        "model": "mai-transcribe-1.5",
+        "model": "MAI-Transcribe-2",
         "transport": "direct_upload",
         "language": "de",
         "audioInputFormat": None,
-        "providerAudioCapabilityId": ("azure_mai:audio_transcriptions:mai-transcribe-1.5"),
+        "providerAudioCapabilityId": ("azure_mai:audio_transcriptions:MAI-Transcribe-2"),
         "providerAudioCapabilityRevision": "provider-audio-formats-v1",
         "audioInputFormatVerified": None,
     }

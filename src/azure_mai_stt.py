@@ -46,10 +46,11 @@ from src.runtime.subprocess_utils import (
     read_stream_limited,
 )
 
-_AZURE_MAI_DEFAULT_MODEL = "mai-transcribe-1.5"
+_AZURE_MAI_DEFAULT_MODEL = "MAI-Transcribe-2"
 _AZURE_MAI_API_VERSION = "2025-10-15"
 _AZURE_MAI_DEFAULT_REGION = "northeurope"
-_AZURE_MAI_SUPPORTED_REGIONS = {"eastus", "northeurope", "westus"}
+_AZURE_MAI_SUPPORTED_REGIONS = {"eastus", "northeurope", "southeastasia", "westus"}
+_AZURE_MAI_PHRASE_LIST_MODELS = frozenset({"mai-transcribe-1.5", "mai-transcribe-2"})
 _AZURE_MAI_DIRECT_UPLOAD_EXTENSIONS = {".mp3"}
 _AZURE_MAI_CONTENT_TYPES = {
     ".wav": "audio/wav",
@@ -123,7 +124,7 @@ def build_azure_mai_definition(
     if locales:
         definition["locales"] = locales
     phrases = azure_mai_phrase_list(custom_vocab)
-    if selected_model == "mai-transcribe-1.5" and phrases:
+    if selected_model.casefold() in _AZURE_MAI_PHRASE_LIST_MODELS and phrases:
         definition["phraseList"] = {"phrases": phrases}
     return definition
 
@@ -391,7 +392,7 @@ async def transcribe_with_azure_mai(
 class AzureMaiTranscribeSTTService(STTService):
     """Pipecat STT service for Azure MAI Transcribe's batch REST API.
 
-    MAI Transcribe 1.5 is currently exposed through Azure's LLM Speech REST API,
+    MAI-Transcribe-2 is currently exposed through Azure's LLM Speech REST API,
     not the streaming Azure Speech SDK path used by Pipecat's AzureSTTService.
     This service keeps the app on Pipecat's STT boundary while buffering audio
     until a terminal frame before calling MAI once.

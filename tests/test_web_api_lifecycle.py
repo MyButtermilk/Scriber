@@ -1695,7 +1695,7 @@ async def test_settings_round_trips_azure_mai_model(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
-    monkeypatch.setattr(web_api.Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5", raising=False)
+    monkeypatch.setattr(web_api.Config, "AZURE_MAI_MODEL", "MAI-Transcribe-2", raising=False)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
@@ -1798,17 +1798,17 @@ async def test_settings_round_trips_meta_muse_models_and_key(monkeypatch, tmp_pa
 
     settings = await ctl.update_settings(
         {
-            "summarizationModel": "muse-spark-1.2",
-            "meetingAnalysisModel": "muse-spark-1.2-contributor",
+            "summarizationModel": "muse-spark-1.3",
+            "meetingAnalysisModel": "muse-spark-1.3-contributor",
             "apiKeys": {"meta": "meta-secret"},
         }
     )
 
-    assert web_api.Config.SUMMARIZATION_MODEL == "muse-spark-1.2"
-    assert web_api.Config.MEETING_ANALYSIS_MODEL == "muse-spark-1.2-contributor"
+    assert web_api.Config.SUMMARIZATION_MODEL == "muse-spark-1.3"
+    assert web_api.Config.MEETING_ANALYSIS_MODEL == "muse-spark-1.3-contributor"
     assert web_api.Config.MODEL_API_KEY == "meta-secret"
-    assert settings["summarizationModel"] == "muse-spark-1.2"
-    assert settings["meetingAnalysisModel"] == "muse-spark-1.2-contributor"
+    assert settings["summarizationModel"] == "muse-spark-1.3"
+    assert settings["meetingAnalysisModel"] == "muse-spark-1.3-contributor"
     assert settings["apiKeys"]["meta"] == "meta-secret"
 
     ctl.shutdown()
@@ -1834,7 +1834,7 @@ async def test_settings_selects_openrouter_mai_stt_with_the_shared_key(monkeypat
     assert web_api.Config.OPENROUTER_API_KEY == "one-openrouter-key"
     assert settings["defaultSttService"] == "openrouter_stt"
     assert settings["apiKeys"]["openrouter"] == "one-openrouter-key"
-    assert settings["transcriptionProviderModels"]["openrouter_stt"] == "microsoft/mai-transcribe-1.5"
+    assert settings["transcriptionProviderModels"]["openrouter_stt"] == "microsoft/mai-transcribe-2"
 
     ctl.shutdown()
 

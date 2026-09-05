@@ -827,6 +827,15 @@ class MeetingStore:
                 conn.execute("ALTER TABLE meetings ADD COLUMN processing_status TEXT NOT NULL DEFAULT ''")
             if "processing_progress_updated_at" not in meeting_columns:
                 conn.execute("ALTER TABLE meetings ADD COLUMN processing_progress_updated_at TEXT")
+            # This is the model for future analysis, chat, and speaker suggestions.
+            # Keep historical output provenance and cached chunk model IDs intact.
+            conn.executemany(
+                "UPDATE meetings SET analysis_model=? WHERE lower(trim(analysis_model))=?",
+                (
+                    ("muse-spark-1.3", "muse-spark-1.2"),
+                    ("muse-spark-1.3-contributor", "muse-spark-1.2-contributor"),
+                ),
+            )
             asset_columns = {row["name"] for row in conn.execute("PRAGMA table_info(meeting_audio_assets)")}
             if "track_manifest_version" not in asset_columns:
                 conn.execute(

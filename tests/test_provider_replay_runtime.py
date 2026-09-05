@@ -53,7 +53,7 @@ AZURE_REPLAY_URL = (
     "https://northeurope.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version=2025-10-15"
 )
 AZURE_REPLAY_DEFINITION = {
-    "enhancedMode": {"enabled": True, "model": "mai-transcribe-1.5"},
+    "enhancedMode": {"enabled": True, "model": "MAI-Transcribe-2"},
     "locales": ["en-US"],
 }
 

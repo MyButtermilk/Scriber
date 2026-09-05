@@ -754,8 +754,8 @@ export const settingsTranslations = {
   "Contributor data use": "Datennutzung im Contributor-Tarif",
   "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. This model is not recommended for sensitive or confidential content.":
     "Meta darf Prompts und Antworten, die mit dem Contributor-Modell gesendet werden, zur Verbesserung künftiger Meta-Modelle verwenden. Dieses Modell wird nicht für sensible oder vertrauliche Inhalte empfohlen.",
-  "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.2 Standard or request Contributor access in the Meta dashboard.":
-    "Die Verfügbarkeit von Contributor hängt vom Zugriff Ihres Meta-Projekts ab. Wenn Meta dieses Modell für das Projekt nicht aufführt, verwenden Sie Muse Spark 1.2 Standard oder beantragen Sie den Contributor-Zugriff im Meta-Dashboard.",
+  "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.3 Standard or request Contributor access in the Meta dashboard.":
+    "Die Verfügbarkeit von Contributor hängt vom Zugriff Ihres Meta-Projekts ab. Wenn Meta dieses Modell für das Projekt nicht aufführt, verwenden Sie Muse Spark 1.3 Standard oder beantragen Sie den Contributor-Zugriff im Meta-Dashboard.",
   "Use one Soniox API key and choose where Soniox processes your audio.":
     "Verwende einen Soniox-API-Schlüssel und wähle aus, wo Soniox dein Audio verarbeitet.",
   "One key enables multilingual realtime and batch transcription. Scriber requests final transcript text only and leaves enrichment signals off.":
@@ -763,7 +763,7 @@ export const settingsTranslations = {
   "Enter Modulate.AI API key": "Modulate.AI-API-Schlüssel eingeben",
   "C:\\\\path\\\\to\\\\service-account.json": "C:\\\\path\\\\to\\\\service-account.json",
   northeurope: "northeurope",
-  "mai-transcribe-1.5": "mai-transcribe-1.5",
+  "MAI-Transcribe-2": "MAI-Transcribe-2",
   "Google Cloud STT uses Cloud credentials, not the Gemini API key. Enter the service account JSON path for the speech.googleapis.com project.":
     "Google Cloud STT verwendet Cloud-Anmeldedaten, nicht den Gemini-API-Schlüssel. Gib den JSON-Pfad des Dienstkontos für das Projekt mit speech.googleapis.com ein.",
   "The key must belong to a region that supports the configured model.":

@@ -4971,7 +4971,7 @@ async def test_youtube_meta_contributor_404_exposes_actionable_access_error_with
         )
 
     monkeypatch.setattr(Config, "AUTO_SUMMARIZE", True)
-    monkeypatch.setattr(Config, "SUMMARIZATION_MODEL", "muse-spark-1.2-contributor")
+    monkeypatch.setattr(Config, "SUMMARIZATION_MODEL", "muse-spark-1.3-contributor")
     monkeypatch.setattr(Config, "MODEL_API_KEY", "meta-test-key", raising=False)
     monkeypatch.setattr(Config, "OPENROUTER_API_KEY", "openrouter-test-key", raising=False)
     monkeypatch.delenv("SCRIBER_SUMMARY_FALLBACK_TO_OPENROUTER", raising=False)
@@ -4998,8 +4998,8 @@ async def test_youtube_meta_contributor_404_exposes_actionable_access_error_with
     assert rec.summary_status == "failed"
     assert rec.summary == ""
     assert rec.summary_error == (
-        "Muse Spark 1.2 Contributor is not available for this Meta project. "
-        "Choose Muse Spark 1.2 Standard in Settings or request Contributor access "
+        "Muse Spark 1.3 Contributor is not available for this Meta project. "
+        "Choose Muse Spark 1.3 Standard in Settings or request Contributor access "
         "in the Meta dashboard, then try again."
     )
     assert "404" not in rec.summary_error

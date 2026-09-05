@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -220,12 +221,12 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
     persisted = controller._job_execution_route(route)
     snapshot_options = route.snapshot_draft().request_options
 
-    assert route.model == "microsoft/mai-transcribe-1.5"
+    assert route.model == "microsoft/mai-transcribe-2"
     assert route.provider_route == "audio_transcriptions"
     assert route.response_shape == "final_text"
     assert route.timestamp_mode == "estimated"
     assert route.diarization_mode == "local_fallback_if_enabled"
-    assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5")
+    assert route.provider_audio_capability_id == ("openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2")
     assert (
         route.provider_endpoint_sha256
         == hashlib.sha256(b"https://openrouter.ai/api/v1/audio/transcriptions").hexdigest()
@@ -238,6 +239,67 @@ async def test_openrouter_mai_freezes_exact_model_route_and_endpoint(monkeypatch
     assert snapshot_options["customVocabularyCount"] == 0
     assert "customVocabularySha256" not in snapshot_options
     assert controller._persisted_endpoint_evidence_complete(persisted) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workload", ["file", "youtube", "meeting"])
+async def test_explicit_legacy_azure_override_freezes_verified_route(monkeypatch, workload):
+    monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "mai-transcribe-1.5")
+    controller = ScriberWebController(asyncio.get_running_loop())
+
+    route = controller._freeze_background_provider_route(
+        workload=workload,
+        provider="azure_mai",
+        language="en",
+        audio_input_format="mp3",
+        audio_selection_mode="generated",
+        audio_preparation_implementation="mp3_mono_64k_v1",
+    )
+
+    assert route.model == "mai-transcribe-1.5"
+    assert route.provider_audio_capability_id == "azure_mai:llm_speech_batch:mai-transcribe-1.5"
+    assert route.provider_audio_capability_revision == "provider-audio-formats-v2"
+    assert route.audio_input_format_verified is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("workload", ["file", "youtube"])
+async def test_queued_openrouter_legacy_route_survives_model_upgrade(tmp_path, workload):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    controller = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    rec = _record(
+        transcript_id=f"legacy-openrouter-{workload}",
+        transcript_type=workload,
+        source=tmp_path / "source.wav",
+    )
+    current = controller._freeze_background_provider_route(
+        workload=workload,
+        provider="openrouter_stt",
+        language="de",
+        audio_input_format="wav_pcm16",
+        audio_selection_mode="original_passthrough",
+        audio_preparation_implementation="original_passthrough",
+    )
+    # Reproduce a pre-upgrade serialized contract independently of the current
+    # registry. Reconstructing it must keep both its model and exact capability.
+    legacy = replace(
+        current,
+        model="microsoft/mai-transcribe-1.5",
+        provider_audio_capability_id="openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5",
+    )
+    job = store.enqueue(
+        transcript_id=rec.id,
+        job_type=JobType(workload),
+        payload={"executionRoute": controller._job_execution_route(legacy)},
+    )
+    controller._remember_job_id(rec.id, job.id)
+
+    with patch("src.web_api._validate_provider_ready") as ready:
+        restored = await controller._load_or_freeze_background_route(rec, workload=workload)
+
+    assert restored == legacy
+    assert current.model == "microsoft/mai-transcribe-2"
+    ready.assert_called_once_with("openrouter_stt")
 
 
 @pytest.mark.asyncio

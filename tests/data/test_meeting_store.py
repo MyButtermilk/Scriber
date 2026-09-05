@@ -64,6 +64,61 @@ def test_transcription_mode_is_first_class_and_validated(store: MeetingStore):
         store.create(MeetingCreate(title="Invalid mode", transcription_mode="minute_chunks"))
 
 
+@pytest.mark.parametrize(
+    ("stored_model", "expected_model"),
+    [
+        ("muse-spark-1.2", "muse-spark-1.3"),
+        ("muse-spark-1.2-contributor", "muse-spark-1.3-contributor"),
+        ("Muse-Spark-1.2", "muse-spark-1.3"),
+        ("muse-spark-1.3-contributor", "muse-spark-1.3-contributor"),
+        ("custom/muse-spark-1.2", "custom/muse-spark-1.2"),
+        ("", ""),
+    ],
+)
+def test_initialize_migrates_retired_meeting_model_without_rewriting_analysis_history(
+    store: MeetingStore,
+    stored_model: str,
+    expected_model: str,
+):
+    meeting = store.create(create_request(analysis_model=stored_model))
+    for title in ("First analysis", "Revised analysis"):
+        store.save_output(
+            meeting["id"],
+            kind="analysis",
+            payload={"title": title, "model": stored_model},
+            provider=stored_model,
+        )
+    store.put_analysis_chunk(
+        meeting["id"],
+        stage="single",
+        input_sha256="a" * 64,
+        model=stored_model,
+        schema_version="1",
+        payload={"summary": "Existing provider result"},
+    )
+    before = store.detail(meeting["id"])
+    database._close_all_connections()
+
+    restarted = MeetingStore()
+    restarted.initialize()
+    restarted.initialize()
+    database._close_all_connections()
+
+    # Read from another connection to prove the migration was durably committed.
+    after = MeetingStore().detail(meeting["id"])
+    assert after["analysisModel"] == expected_model
+    assert {key: value for key, value in after.items() if key != "analysisModel"} == {
+        key: value for key, value in before.items() if key != "analysisModel"
+    }
+    assert MeetingStore().get_analysis_chunk(
+        meeting["id"],
+        stage="single",
+        input_sha256="a" * 64,
+        model=stored_model,
+        schema_version="1",
+    ) == {"summary": "Existing provider result"}
+
+
 def test_completed_meeting_title_can_be_renamed_without_changing_its_state(store: MeetingStore):
     meeting = store.create(MeetingCreate(title="Original title"))
     database.save_transcript(
