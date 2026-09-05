@@ -1,5 +1,3 @@
-import { formatMeetingOffset } from "./meeting-playback";
-
 export function alphabeticalLabel(index: number): string {
   let value = Math.max(0, Math.floor(index));
   let result = "";
@@ -10,12 +8,7 @@ export function alphabeticalLabel(index: number): string {
   return result;
 }
 
-export function citationDisplayLabel(index: number, startMs: number): string {
-  return `Segment ${alphabeticalLabel(index)} · from ${formatMeetingOffset(startMs)}`;
-}
-
-const TECHNICAL_SPEAKER_LABEL =
-  /^(?:speaker|sprecher|remote)(?:[\s_-]*(?:\d+|[a-z]|[a-f0-9]{4,}))?$/i;
+const TECHNICAL_SPEAKER_LABEL = /^(?:speaker|sprecher|remote)(?:[\s_-]*(?:\d+|[a-z]|[a-f0-9]{4,}))?$/i;
 
 export function genericMeetingSpeakerLabel(rawLabel: string, index: number): string | null {
   return TECHNICAL_SPEAKER_LABEL.test(rawLabel.trim()) ? `Speaker ${alphabeticalLabel(index)}` : null;

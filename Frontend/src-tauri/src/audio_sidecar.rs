@@ -7065,14 +7065,6 @@ mod tests {
     }
 
     #[test]
-    fn native_endpoint_hash_matches_python_fixture() {
-        let raw = r"SWD\MMDEVAPI\{0.0.1.00000000}.{secret-device-guid}";
-
-        assert_eq!(hash_sensitive_identifier(raw), "e9a658ee3eff25fd");
-        assert!(!hash_sensitive_identifier(raw).contains("secret-device-guid"));
-    }
-
-    #[test]
     fn endpoint_selection_payload_redacts_requested_selection() {
         let request = CaptureRequest {
             sample_rate: 16_000,

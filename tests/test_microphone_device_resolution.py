@@ -5,9 +5,8 @@ import types
 import pytest
 
 import src.pipeline as pipeline
-from src.audio_devices import get_default_input_device_index
+from src.audio_devices import get_default_input_device_index, normalize_device_name
 from src.config import Config
-from src.pipeline import _normalize_device_name as normalize_pipeline_device_name
 from src.pipeline import _resolve_live_mic_capture_device, _resolve_mic_device, invalidate_mic_device_resolution_cache
 from src.web_api import ScriberWebController
 
@@ -82,13 +81,13 @@ def _install_fake_sounddevice(
 def test_normalize_device_name_ignores_hostapi_and_unstable_index():
     a = "Mikrofon (5- Dock Mic), Windows WASAPI"
     b = "Mikrofon (2- Dock Mic), MME"
-    assert normalize_pipeline_device_name(a) == normalize_pipeline_device_name(b)
+    assert normalize_device_name(a) == normalize_device_name(b)
 
 
 def test_normalize_device_name_matches_mic_wrapper_and_plain_name():
     a = "Mikrofon (5- Dock Mic), Windows WASAPI"
     b = "Dock Mic, MME"
-    assert normalize_pipeline_device_name(a) == normalize_pipeline_device_name(b)
+    assert normalize_device_name(a) == normalize_device_name(b)
 
 
 def test_get_default_input_device_index_supports_pair_like_default_device() -> None:

@@ -612,20 +612,6 @@ def get_transcript(transcript_id: str) -> dict | None:
     return None
 
 
-def transcript_exists(transcript_id: str) -> bool:
-    """Check whether a transcript ID exists."""
-    try:
-        with _get_connection() as conn:
-            row = conn.execute(
-                "SELECT 1 FROM transcripts WHERE id = ? LIMIT 1",
-                (transcript_id,),
-            ).fetchone()
-            return row is not None
-    except Exception as e:
-        logger.error(f"Failed to check transcript existence: {e}")
-        return False
-
-
 def transcript_exists_or_raise(transcript_id: str) -> bool:
     """Check exact parent existence without collapsing storage failure into absence."""
     with _get_connection() as conn:

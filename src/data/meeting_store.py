@@ -5590,18 +5590,6 @@ class MeetingStore:
             is not None
         )
 
-    def next_segment_sequence(self, meeting_id: str, revision: str, source: str) -> int:
-        row = (
-            db._get_connection()
-            .execute(
-                """SELECT COALESCE(MAX(sequence), -1) + 1 FROM meeting_segments
-               WHERE meeting_id = ? AND revision = ? AND source = ?""",
-                (meeting_id, revision, source),
-            )
-            .fetchone()
-        )
-        return int(row[0])
-
     def search_segments(self, meeting_id: str, query: str, *, limit: int = 40) -> builtins.list[dict[str, Any]]:
         self.get(meeting_id)
         terms = [term for term in re.findall(r"[\w-]+", query, flags=re.UNICODE) if len(term) > 1]

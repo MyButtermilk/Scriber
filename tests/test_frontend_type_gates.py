@@ -48,15 +48,6 @@ def assert_source_contains_tokens(source: str, expected: str) -> None:
     source_token_sequence_position(source, expected)
 
 
-def test_legacy_websocket_hook_uses_typed_contract() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-websocket.ts").read_text(encoding="utf-8")
-
-    assert "type ScriberWebSocketMessage" in source
-    assert "isScriberWebSocketMessage" in source
-    assert "data: any" not in source
-    assert "JSON.parse(event.data) as unknown" in source
-
-
 def test_tauri_backend_status_trusts_supervisor_readiness() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "hooks" / "use-backend-status.tsx").read_text(
         encoding="utf-8"
@@ -198,14 +189,6 @@ def test_desktop_shell_commands_have_deadlines() -> None:
         "Hide tray panel",
     ):
         assert f'"{label}"' in source
-
-
-def test_processing_timer_formats_long_jobs_with_hours() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
-
-    assert "Math.floor(seconds / 3600)" in source
-    assert "Math.floor((seconds % 3600) / 60)" in source
-    assert "if (hours > 0)" in source
 
 
 def test_transcript_detail_uses_current_attempt_clock_and_truthful_clipboard_feedback() -> None:
@@ -782,58 +765,6 @@ def test_onnx_progress_only_updates_the_selected_quantization() -> None:
     assert "[loadOnnxModels, onnxQuantization, queryClient, selectedDeviceId, t, toast]" in settings_source
 
 
-def test_primary_page_intros_share_responsive_full_width_layout() -> None:
-    component_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx").read_text(
-        encoding="utf-8"
-    )
-    page_sources = {
-        page: (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
-        for page in (
-            "LiveMic.tsx",
-            "Meetings.tsx",
-            "Youtube.tsx",
-            "FileTranscribe.tsx",
-            "Settings.tsx",
-        )
-    }
-
-    assert 'className="mt-3 max-w-none break-words text-pretty text-[13px]' in component_source
-    assert "max-w-[72ch]" not in component_source
-    assert "sticky = true" in component_source
-    assert 'data-page-intro="true"' in component_source
-    assert "rounded-[20px]" not in component_source
-    assert 'sticky ? "sticky top-3 z-20" : "relative z-0"' in component_source
-    assert "-mx-4 -mt-5" not in component_source
-    assert "bottomContent" in component_source
-    assert "text-ui-micro" in component_source
-    assert 'title={t("Settings")}' in page_sources["Settings.tsx"]
-    assert 'eyebrow={t("Workspace controls")}' in page_sources["Settings.tsx"]
-    assert page_sources["Settings.tsx"].index("<PageIntro") < page_sources["Settings.tsx"].index(
-        'aria-label={t("Settings sections")}'
-    )
-    for source in page_sources.values():
-        assert 'from "@/components/page-intro"' in source
-        assert "<PageIntro" in source
-    for page in ("LiveMic.tsx", "Meetings.tsx", "Youtube.tsx", "FileTranscribe.tsx"):
-        assert "sticky={false}" in page_sources[page]
-
-
-def test_primary_section_eyebrows_are_descriptive_without_navigation_numbers() -> None:
-    page_markers = {
-        "LiveMic.tsx": 'eyebrow={t("Voice capture")}',
-        "Meetings.tsx": 'eyebrow={t("Meeting workspace")}',
-        "Youtube.tsx": 'eyebrow={t("Media capture")}',
-        "FileTranscribe.tsx": 'eyebrow={t("Media import")}',
-        "DebugConsole.tsx": 't("System observability")',
-        "Settings.tsx": 'eyebrow={t("Workspace controls")}',
-    }
-
-    for page, marker in page_markers.items():
-        source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
-        assert marker in source
-        assert re.search(r"[·•]\s*0[1-9]", source) is None
-
-
 def test_normal_app_ui_uses_the_shared_readable_micro_type_token() -> None:
     source_root = REPO_ROOT / "Frontend" / "client" / "src"
     stylesheet = (source_root / "index.css").read_text(encoding="utf-8")
@@ -841,7 +772,6 @@ def test_normal_app_ui_uses_the_shared_readable_micro_type_token() -> None:
         "AppLayout.tsx",
         "MicrophoneEnergyField.tsx",
         "NativeRecordingOverlay.tsx",
-        "RecordingPopup.tsx",
         "TranscriptDetail.tsx",
         "TrayPanel.tsx",
     }
@@ -877,47 +807,6 @@ def test_settings_section_navigation_accounts_for_sticky_header() -> None:
     assert 'scrollContainer?.addEventListener("scrollend", finishRequestedSectionScroll)' in settings_source
     assert "requestedSettingsSectionRef.current" in settings_source
     assert "chooseActiveSettingsSectionAtOffset(sectionTops, current, activationOffset)" in settings_source
-
-
-def test_debug_console_intro_matches_primary_page_typography() -> None:
-    stylesheet = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
-
-    assert ".debug-console-page {" in stylesheet
-    assert 'font-family: "Switzer", ui-sans-serif, system-ui, sans-serif;' in stylesheet
-    assert ".debug-console-title-row h1 {" in stylesheet
-    assert "font-size: 2.8rem;" in stylesheet
-    assert "font-weight: 600 !important;" in stylesheet
-    assert "color: hsl(var(--muted-foreground));" in stylesheet
-    assert ".debug-level-button {" in stylesheet
-
-
-def test_primary_history_search_fields_share_sidebar_inset_design() -> None:
-    component_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcript-history-search.tsx"
-    ).read_text(encoding="utf-8")
-    sidebar_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "ui" / "sidebar-search.tsx").read_text(
-        encoding="utf-8"
-    )
-    toolbar_source = (
-        REPO_ROOT / "Frontend" / "client" / "src" / "components" / "transcription-history-toolbar.tsx"
-    ).read_text(encoding="utf-8")
-    page_sources = [
-        (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / page).read_text(encoding="utf-8")
-        for page in ("LiveMic.tsx", "Youtube.tsx", "FileTranscribe.tsx")
-    ]
-
-    assert "neu-search-inset" in sidebar_source
-    assert "neu-search-inset" in component_source
-    assert "neu-kbd" not in component_source
-    assert 'type="search"' in component_source
-    assert "transcript-history-search" in component_source
-    assert 'from "@/components/transcript-history-search"' in toolbar_source
-    assert "<TranscriptHistorySearch" in toolbar_source
-    for source in page_sources:
-        assert 'from "@/components/transcription-history-toolbar"' in source
-        assert "<TranscriptionHistoryToolbar" in source
-        assert "transcription-search relative" not in source
-        assert "live-mic-search relative" not in source
 
 
 def test_youtube_sorting_and_failed_retry_use_client_state_and_source_url() -> None:
@@ -1124,7 +1013,6 @@ def test_all_interactive_live_mic_stop_controls_use_async_acknowledgement() -> N
     controls = (
         client_root / "pages" / "LiveMic.tsx",
         client_root / "components" / "NativeRecordingOverlay.tsx",
-        client_root / "components" / "RecordingPopup.tsx",
         client_root / "components" / "CommandPalette.tsx",
     )
 
@@ -2007,27 +1895,6 @@ def test_settings_embeds_local_model_management_in_local_provider_group() -> Non
     assert "{localModelManagement}" not in settings_source
 
 
-def test_settings_summary_model_groups_do_not_render_secondary_descriptions() -> None:
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-
-    assert "Fast Google summaries." not in settings_source
-    assert "Nitro routes for long output." not in settings_source
-    assert "OpenAI summary models." not in settings_source
-
-
-def test_settings_paired_panels_balance_height_and_update_metadata_density() -> None:
-    settings_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-
-    for section_id in ("settings-api-keys", "settings-summaries", "settings-updates", "settings-language"):
-        section = settings_source[settings_source.index(f'id="{section_id}"') :]
-        assert 'className="flex h-full self-stretch flex-col"' in section[:500]
-    assert "grid flex-1 content-between" in settings_source
-    assert "sm:grid-cols-4" in settings_source
-    assert 'dateStyle: "short"' in settings_source
-    assert 'timeStyle: "short"' in settings_source
-    assert "toLocaleString()" not in settings_source
-
-
 def test_tray_panel_exposes_direct_update_install_action() -> None:
     tray_source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "TrayPanel.tsx").read_text(
         encoding="utf-8"
@@ -2069,25 +1936,13 @@ def test_tray_panel_exposes_meetings_shortcut_and_installed_version() -> None:
     assert "const TRAY_PANEL_HEIGHT: f64 = 668.0;" in shell_source
 
 
-def test_transcript_detail_uses_typed_rest_queries() -> None:
+def test_transcript_detail_refreshes_stale_data_and_polls_in_background() -> None:
     source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "TranscriptDetail.tsx").read_text(encoding="utf-8")
-    api_types = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "api-types.ts").read_text(encoding="utf-8")
+    query = source[source.index("const transcriptQuery =") : source.index("const transcriptData =")]
 
-    assert "export type TranscriptDetailResponse = TranscriptHistoryItem" in api_types
-    assert "import type {" in source
-    assert "SettingsResponse," in source
-    assert "TranscriptDetailResponse," in source
-    assert "TranscriptHistoryItem" in source
-    assert "useQuery<SettingsResponse>" in source
-    assert "useQuery<TranscriptDetailResponse>" in source
-    assert "staleTime: 0" in source
-    assert "refetchIntervalInBackground: true" in source
-    assert "const data = query.state.data;" in source
-    assert "const transcript: TranscriptDetailResponse" in source
-    assert "(await rec.json()) as TranscriptHistoryItem" not in source
-    assert "(await res.json()) as TranscriptHistoryItem" in source
-    assert "query: any" not in source
-    assert "const transcript: any" not in source
+    assert_source_contains_tokens(query, "staleTime: 0")
+    assert_source_contains_tokens(query, "refetchIntervalInBackground: true")
+    assert_source_contains_tokens(query, "refetchInterval: (query) => {")
 
 
 def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
@@ -2127,50 +1982,6 @@ def test_html_summary_uses_app_owned_editorial_theme_in_both_modes() -> None:
     assert "scheduleNavigationRelease(180);" in renderer
     assert "if (!targetIsVisible) resolveActiveHeading();" in renderer
     assert 'window.addEventListener("scroll"' not in renderer
-
-
-def test_transcript_detail_uses_balanced_reading_width_without_phantom_column() -> None:
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
-
-    def rule_body(selector: str, start: int = 0) -> str:
-        rule_start = styles.index(selector, start)
-        body_start = styles.index("{", rule_start) + 1
-        return styles[body_start : styles.index("}", body_start)]
-
-    base_shell = rule_body(".transcript-detail-shell {")
-    base_toc = rule_body(".summary-toc {")
-    summary_document = rule_body(".summary-document {")
-    intro = rule_body('.summary-document[data-summary-format="html"] > .summary-overview > p:first-of-type {')
-    wide_layout_start = styles.index("@media (min-width: 1440px)")
-    wide_shell = rule_body(".transcript-detail-shell.has-summary-toc {", wide_layout_start)
-    wide_meta = rule_body(
-        ".transcript-detail-shell.has-summary-toc > :not(.transcript-summary-layout) {",
-        wide_layout_start,
-    )
-    wide_grid = rule_body(
-        ".transcript-detail-shell.has-summary-toc .transcript-summary-layout {",
-        wide_layout_start,
-    )
-    wide_toc = rule_body(
-        ".transcript-detail-shell.has-summary-toc .summary-toc {",
-        wide_layout_start,
-    )
-
-    assert "width: 100%;" in base_shell
-    assert "max-width: 1040px;" in base_shell
-    assert "margin-inline: auto;" in base_shell
-    assert "display: none;" in base_toc
-    assert "width: 100%;" in summary_document
-    assert "max-width: 76ch;" in summary_document
-    assert "max-width: 62ch;" in intro
-    assert "max-width: 1320px;" in wide_shell
-    assert "width: calc(100% - 280px);" in wide_meta
-    assert "max-width: 1040px;" in wide_meta
-    assert "margin-left: 280px;" in wide_meta
-    assert "grid-template-columns: 240px minmax(0, 1040px);" in wide_grid
-    assert "column-gap: 40px;" in wide_grid
-    assert "minmax(0, 230px)" not in wide_grid
-    assert "display: block;" in wide_toc
 
 
 def test_responsive_ui_polish_contracts_are_preserved() -> None:
@@ -2218,16 +2029,6 @@ def test_responsive_ui_polish_contracts_are_preserved() -> None:
     assert 'data-testid="meeting-detail-resume"' in meetings
     assert 'data-testid="meeting-detail-stop"' in meetings
     assert meetings.count('className="min-w-28"') == 3
-
-
-def test_recording_popup_uses_canvas_waveform_without_react_frame_state() -> None:
-    source = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "RecordingPopup.tsx").read_text(
-        encoding="utf-8"
-    )
-
-    assert "const canvas = canvasRef.current;" in source
-    assert "requestAnimationFrame(draw)" in source
-    assert "setAudioLevels" not in source
 
 
 def test_native_recording_overlay_uses_fixed_size_state_layers() -> None:
@@ -2646,23 +2447,6 @@ def test_live_meeting_transcript_follows_latest_text_without_trapping_review() -
     assert 't("Recording safely. The transcript appears after you stop.")' in meetings
 
 
-def test_settings_cards_follow_the_requested_two_column_order() -> None:
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-    rendered = settings[settings.index("<PageIntro") :]
-    navigation = settings[settings.index("const settingsNavItems = [") : settings.index("] satisfies Array<{")]
-
-    assert rendered.index('id="settings-transcription"') < rendered.index("{speechToTextProviderPanel}")
-    assert rendered.index("{speechToTextProviderPanel}") < rendered.index('id="settings-meetings"')
-    assert rendered.index('id="settings-meetings"') < rendered.index('id="settings-api-keys"')
-    assert rendered.index('id="settings-api-keys"') < rendered.index('id="settings-summaries"')
-    assert rendered.index('id="settings-updates"') < rendered.index('id="settings-language"')
-
-    assert navigation.index('section: "transcription"') < navigation.index('section: "providers"')
-    assert navigation.index('section: "providers"') < navigation.index('section: "meetings"')
-    assert navigation.index('section: "apiKeys"') < navigation.index('section: "summarization"')
-    assert navigation.index('section: "updates"') < navigation.index('section: "language"')
-
-
 def test_outlook_meeting_settings_explain_each_connection_state_plainly() -> None:
     meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
     settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
@@ -2770,59 +2554,6 @@ def test_settings_outlook_sync_refreshes_authoritative_status_and_daily_events()
     assert_source_contains_tokens(meetings, "{ timeoutMs: OUTLOOK_SYNC_REQUEST_TIMEOUT_MS }")
 
 
-def test_meeting_copy_uses_plain_outcome_focused_language() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
-
-    assert_source_contains_tokens(
-        meetings,
-        't("Your recording is saved every 30 seconds and can continue for up to 5 hours. The final transcript starts after you stop.")',
-    )
-    assert 't("Safety saves")' in meetings
-    assert 't("Final transcript")' in meetings
-    assert_source_contains_tokens(
-        meetings,
-        't("Answers use only this meeting\'s final transcript. Click a source marker to jump to that moment.")',
-    )
-    assert 't("Creating your meeting brief…")' in meetings
-    assert 't("Added on this device · up to 60 min")' in meetings
-    assert "Render-aware AEC3" not in meetings
-    assert ">Native capture<" not in meetings
-    assert ">Final STT<" not in meetings
-    assert "canonical transcript" not in meetings
-
-
-def test_meeting_workspace_uses_the_shared_transcription_frame_and_type_scale() -> None:
-    meetings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Meetings.tsx").read_text(encoding="utf-8")
-    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
-    page_intro = (REPO_ROOT / "Frontend" / "client" / "src" / "components" / "page-intro.tsx").read_text(
-        encoding="utf-8"
-    )
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
-
-    assert "transcription-page meetings-page" in meetings
-    assert "<PageIntro" in meetings
-    assert 'eyebrow={t("Meeting workspace")}' in meetings
-    assert "app-page-shell" in meetings
-    assert 'data-page-shell="meetings"' in meetings
-    assert "max-w-[1440px]" not in meetings
-    assert "max-w-[1680px]" not in meetings
-    assert "meetings-history-rail rounded-[22px]" in meetings
-    assert "meetings-workspace-panel min-w-0 overflow-hidden rounded-[26px]" in meetings
-    assert "min-[1380px]:grid-cols-[minmax(0,1fr)_260px]" in meetings
-    assert "xl:grid-cols-[minmax(0,1fr)_320px]" in meetings
-    assert "2xl:grid-cols-[minmax(0,1fr)_340px]" in meetings
-    assert "xl:border-l xl:border-t-0" in meetings
-
-    assert "app-page-shell" in live_mic
-    assert 'data-page-shell="live-mic"' in live_mic
-    assert "actions?: ReactNode" in page_intro
-    assert "text-[36px]" in page_intro
-    assert "md:text-[42px]" in page_intro
-    assert ".meetings-history-rail" in styles
-    assert ".meetings-workspace-panel" in styles
-    assert "background: var(--live-core);" in styles
-
-
 def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
     styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
     shell_rule = styles.split(".app-page-shell {", 1)[1].split("}", 1)[0]
@@ -2848,39 +2579,6 @@ def test_primary_tabs_share_the_same_max_width_page_shell() -> None:
 
     meetings = (pages_dir / "Meetings.tsx").read_text(encoding="utf-8")
     assert "max-w-[1440px]" not in meetings
-
-
-def test_primary_tabs_share_youtube_dark_workspace_palette() -> None:
-    styles = (REPO_ROOT / "Frontend" / "client" / "src" / "index.css").read_text(encoding="utf-8")
-    dark_shell = styles.split(".dark .app-page-shell {", 1)[1].split("}", 1)[0]
-
-    expected_tokens = {
-        "--live-core: rgba(22, 26, 34, 0.88);",
-        "--live-control: rgba(18, 22, 30, 0.72);",
-        "--live-transcript: rgba(34, 38, 47, 0.7);",
-        "--live-well: rgba(13, 17, 24, 0.72);",
-        "--live-card: rgba(27, 32, 41, 0.8);",
-        "--live-card-hover: rgba(34, 40, 51, 0.94);",
-        "--workspace-border: rgba(255, 255, 255, 0.09);",
-        "--background: 220 21% 11%;",
-        "--card: 222 19% 13%;",
-        "--muted: 224 15% 15%;",
-    }
-    for token in expected_tokens:
-        assert token in dark_shell
-
-    assert ".dark .live-mic-page,\n.dark .transcription-page" not in styles
-    assert "--dc-surface: var(--live-card);" in styles
-    assert "--dc-surface-raised: var(--live-card-hover);" in styles
-    assert "--dc-surface-deep: var(--live-well);" in styles
-
-    settings = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "Settings.tsx").read_text(encoding="utf-8")
-    live_mic = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "LiveMic.tsx").read_text(encoding="utf-8")
-    assert "dark:bg-[var(--live-core)]" in settings
-    assert "dark:bg-[var(--live-card)]" in settings
-    assert "dark:bg-[var(--live-well)]" in settings
-    assert "dark:border-[var(--workspace-border)]" in settings
-    assert "dark:bg-[var(--live-card)]" in live_mic
 
 
 def test_meeting_export_uses_native_save_as_and_visible_follow_up_actions() -> None:

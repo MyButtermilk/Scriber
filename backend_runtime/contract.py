@@ -90,8 +90,7 @@ REQUIRED_PACKAGE_VERSIONS: tuple[tuple[str, str], ...] = (
 
 # Direct non-stdlib import roots allowed in ``src``.  A test derives the roots
 # from the application AST so adding a new dependency cannot silently bypass
-# the stable runtime contract.  Optional imports that are intentionally not
-# frozen are tracked separately rather than disappearing from this boundary.
+# the stable runtime contract.
 APPLICATION_EXTERNAL_IMPORT_ROOTS = frozenset(
     {
         "aiohttp",
@@ -115,14 +114,5 @@ APPLICATION_EXTERNAL_IMPORT_ROOTS = frozenset(
         "tqdm",
         "websockets",
         "yt_dlp",
-    }
-)
-
-APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS = frozenset(
-    {
-        # ``src.gemini_transcribe`` keeps a compatibility-only optional import.
-        # The current supported Gemini path does not require this legacy SDK,
-        # and the PyInstaller spec excludes it deliberately.
-        ("src/gemini_transcribe.py", "google.generativeai"),
     }
 )

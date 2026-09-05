@@ -56,7 +56,7 @@ def _summary_for_export(summary: str | None, summary_format: str) -> str | None:
 def _parse_markdown_line(line: str) -> tuple[str, dict]:
     """Parse one Markdown line into its text and block-level metadata."""
 
-    metadata = {"heading_level": 0, "is_bullet": False, "is_bold": False}
+    metadata = {"heading_level": 0, "is_bullet": False}
     text = line.strip()
 
     heading_match = re.match(r"^(#{1,6})\s+(.+)$", text)
@@ -99,16 +99,6 @@ def _parse_inline_markdown(text: str) -> tuple[_InlineSpan, ...]:
     if not spans and text:
         spans.append(_InlineSpan(text))
     return tuple(spans)
-
-
-def _convert_markdown_to_html(text: str) -> str:
-    """Retain the historical helper for callers that need basic safe HTML."""
-
-    escaped = html.escape(text, quote=False)
-    escaped = re.sub(r"\*\*\*(.+?)\*\*\*", r"<b><i>\1</i></b>", escaped)
-    escaped = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", escaped)
-    escaped = re.sub(r"\*(.+?)\*", r"<i>\1</i>", escaped)
-    return re.sub(r"`(.+?)`", r'<font face="Courier">\1</font>', escaped)
 
 
 def _build_export_blocks(

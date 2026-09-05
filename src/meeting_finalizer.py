@@ -2222,47 +2222,6 @@ class MeetingFinalizer:
         return destination, round(total_frames * 1000 / params[2]), timeline_origin_ms
 
     @staticmethod
-    def _segments_from_text(
-        source: str, text: str, duration_ms: int, timeline_origin_ms: int = 0
-    ) -> list[dict[str, Any]]:
-        blocks: list[tuple[str, str]] = []
-        pattern = re.compile(r"^\s*\[?(Speaker\s+\w+|[^\]\n:]{1,48})\]?\s*:\s*(.+)$", re.IGNORECASE)
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            match = pattern.match(line)
-            if match:
-                blocks.append((match.group(1).strip(), match.group(2).strip()))
-            else:
-                blocks.append(("You" if source == "microphone" else "Meeting audio", line))
-        if not blocks:
-            return []
-        weights = [max(1, len(block_text)) for _, block_text in blocks]
-        total_weight = sum(weights)
-        cursor = max(0, timeline_origin_ms)
-        timeline_end_ms = cursor + duration_ms
-        segments = []
-        for index, ((label, block_text), weight) in enumerate(zip(blocks, weights, strict=True)):
-            end = timeline_end_ms if index == len(blocks) - 1 else cursor + round(duration_ms * weight / total_weight)
-            segments.append(
-                {
-                    "revision": "canonical",
-                    "source": source,
-                    "speakerLabel": label,
-                    "providerSegmentId": f"fallback-estimated-{index}",
-                    "startMs": cursor,
-                    "endMs": max(cursor, end),
-                    "text": block_text,
-                    "confidence": None,
-                    "alignmentQuality": "estimated",
-                    "isFinal": True,
-                }
-            )
-            cursor = end
-        return segments
-
-    @staticmethod
     def _cross_track_segments_are_echoes(
         item: dict[str, Any],
         candidate: dict[str, Any],

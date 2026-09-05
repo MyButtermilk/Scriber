@@ -21,7 +21,7 @@ import tempfile
 import wave
 from collections.abc import Awaitable, Callable, Iterable
 from contextlib import suppress
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -330,9 +330,6 @@ class SherpaOnnxDiarizer:
             status = await asyncio.to_thread(self._verify_status_sync, force)
             status["activeJobs"] = self._active_jobs
             return status
-
-    async def is_installed(self) -> bool:
-        return bool((await self.status_async()).get("installed"))
 
     def _verify_status_sync(self, force: bool = False) -> dict[str, Any]:
         signature = self._filesystem_signature()
@@ -1078,7 +1075,3 @@ async def diarization_component_installed(component: Any) -> bool:
         return bool(status.get("installed")) if isinstance(status, dict) else False
     status = component.status()
     return bool(status.get("installed")) if isinstance(status, dict) else False
-
-
-def turns_as_dicts(turns: list[DiarizationTurn]) -> list[dict[str, int]]:
-    return [asdict(turn) for turn in turns]

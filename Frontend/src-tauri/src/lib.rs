@@ -27,7 +27,7 @@ use std::{
 };
 use tauri::{
     image::Image,
-    menu::{IsMenuItem, Menu, MenuBuilder, MenuItem, Submenu},
+    menu::Menu,
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalPosition, Manager, Runtime, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
@@ -459,10 +459,6 @@ const MENU_ITEM_RESTART_BACKEND: &str = "scriber-restart-backend";
 const MENU_ITEM_REFRESH_RECENT: &str = "scriber-refresh-recent";
 const MENU_ITEM_QUIT: &str = "scriber-quit";
 const MENU_ITEM_COPY_TRANSCRIPT_PREFIX: &str = "scriber-copy-transcript-";
-#[allow(dead_code)]
-const MENU_RECENT_TRANSCRIPTS: &str = "scriber-recent-transcripts";
-#[allow(dead_code)]
-const MENU_ITEM_EMPTY_RECENT: &str = "scriber-empty-recent";
 const MIN_MAIN_WINDOW_VISIBLE_PX: i32 = 96;
 const TRAY_RECENT_TRANSCRIPT_LIMIT: usize = 5;
 #[cfg(windows)]
@@ -579,15 +575,6 @@ pub struct BackendAccess {
     base_url: String,
     session_token: String,
     benchmark_activation_enabled: bool,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-struct RecentTranscriptMenuEntry {
-    id: String,
-    title: String,
-    date: String,
-    transcript_type: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2103,136 +2090,6 @@ fn install_tray<R: Runtime>(app: &tauri::App<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn build_tray_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let status = tray_status_for_app(app);
-    let live_label = if status.recording_active {
-        "Stop Recording"
-    } else {
-        "Start Live Transcription"
-    };
-    let live_item = MenuItem::with_id(app, MENU_ITEM_START_LIVE, live_label, true, None::<&str>)?;
-    let youtube_item = MenuItem::with_id(
-        app,
-        MENU_ITEM_YOUTUBE,
-        "YouTube Transcription",
-        true,
-        None::<&str>,
-    )?;
-    let file_item = MenuItem::with_id(app, MENU_ITEM_FILE, "Transcribe File", true, None::<&str>)?;
-    let show_item = MenuItem::with_id(
-        app,
-        MENU_ITEM_SHOW_WINDOW,
-        "Open Main Window",
-        true,
-        None::<&str>,
-    )?;
-    let settings_item = MenuItem::with_id(app, MENU_ITEM_SETTINGS, "Settings", true, None::<&str>)?;
-    let update_label = match &status.update_version {
-        Some(version) if !version.trim().is_empty() => {
-            format!("Update available: Scriber {version}")
-        }
-        _ => "Update available, install now".to_string(),
-    };
-    let update_item = MenuItem::with_id(
-        app,
-        MENU_ITEM_INSTALL_UPDATE,
-        update_label,
-        status.update_available || status.update_installing,
-        None::<&str>,
-    )?;
-    let refresh_item = MenuItem::with_id(
-        app,
-        MENU_ITEM_REFRESH_RECENT,
-        "Refresh Recent Transcripts",
-        true,
-        None::<&str>,
-    )?;
-    let restart_item = MenuItem::with_id(
-        app,
-        MENU_ITEM_RESTART_BACKEND,
-        "Restart Backend",
-        true,
-        None::<&str>,
-    )?;
-    let quit_item = MenuItem::with_id(app, MENU_ITEM_QUIT, "Quit", true, None::<&str>)?;
-    let recent_submenu = build_recent_transcripts_submenu(app)?;
-
-    let builder = MenuBuilder::new(app)
-        .item(&live_item)
-        .item(&youtube_item)
-        .item(&file_item)
-        .separator()
-        .item(&recent_submenu)
-        .item(&refresh_item)
-        .item(&show_item)
-        .separator()
-        .item(&settings_item);
-
-    let builder = if status.update_available || status.update_installing {
-        builder.item(&update_item)
-    } else {
-        builder
-    };
-
-    builder
-        .separator()
-        .item(&restart_item)
-        .separator()
-        .item(&quit_item)
-        .build()
-}
-
-#[allow(dead_code)]
-fn build_recent_transcripts_submenu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Submenu<R>> {
-    let mut recent_items: Vec<MenuItem<R>> = Vec::new();
-    if let Some(manager) = app.try_state::<BackendManager>() {
-        let status = manager.status();
-        if status.ready {
-            match fetch_recent_transcripts(&manager.access()) {
-                Ok(entries) => {
-                    for entry in entries {
-                        let label = recent_transcript_label(&entry);
-                        let item_id = format!("{MENU_ITEM_COPY_TRANSCRIPT_PREFIX}{}", entry.id);
-                        recent_items.push(MenuItem::with_id(
-                            app,
-                            item_id,
-                            label,
-                            true,
-                            None::<&str>,
-                        )?);
-                    }
-                }
-                Err(err) => {
-                    write_shell_log(&format!("recent transcripts tray fetch failed: {err}"));
-                }
-            }
-        }
-    }
-
-    if recent_items.is_empty() {
-        recent_items.push(MenuItem::with_id(
-            app,
-            MENU_ITEM_EMPTY_RECENT,
-            "No completed transcripts",
-            false,
-            None::<&str>,
-        )?);
-    }
-
-    let recent_refs: Vec<&dyn IsMenuItem<R>> = recent_items
-        .iter()
-        .map(|item| item as &dyn IsMenuItem<R>)
-        .collect();
-    Submenu::with_id_and_items(
-        app,
-        MENU_RECENT_TRANSCRIPTS,
-        "Recent Transcripts",
-        true,
-        &recent_refs,
-    )
-}
-
 fn handle_shell_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
     if !is_shell_menu_item(item_id) {
         return;
@@ -2588,21 +2445,21 @@ fn run_shell_menu_smoke_copy_recent<R: Runtime>(app: &AppHandle<R>) {
         ));
         return;
     }
-    match fetch_recent_transcripts(&manager.access()) {
-        Ok(entries) => {
-            let Some(entry) = entries.first() else {
+    match fetch_recent_transcript_ids(&manager.access()) {
+        Ok(ids) => {
+            let Some(transcript_id) = ids.first() else {
                 write_shell_log(&format!(
                     "shell menu smoke action copy-recent completed elapsedMs={} copied=false reason=empty",
                     started.elapsed().as_millis()
                 ));
                 return;
             };
-            let copied = copy_recent_transcript_from_shell(app, &entry.id);
+            let copied = copy_recent_transcript_from_shell(app, transcript_id);
             write_shell_log(&format!(
                 "shell menu smoke action copy-recent completed elapsedMs={} copied={} transcriptId={}",
                 started.elapsed().as_millis(),
                 copied,
-                entry.id
+                transcript_id
             ));
         }
         Err(err) => write_shell_log(&format!(
@@ -3383,19 +3240,17 @@ fn sanitize_update_field(value: &str, max_chars: usize) -> String {
     truncated
 }
 
-fn fetch_recent_transcripts(
-    access: &BackendAccess,
-) -> Result<Vec<RecentTranscriptMenuEntry>, String> {
+fn fetch_recent_transcript_ids(access: &BackendAccess) -> Result<Vec<String>, String> {
     let value = request_backend_json(access, "GET", "/api/transcripts?limit=20&offset=0")?;
-    recent_transcripts_from_value(&value)
+    recent_transcript_ids_from_value(&value)
 }
 
-fn recent_transcripts_from_value(value: &Value) -> Result<Vec<RecentTranscriptMenuEntry>, String> {
+fn recent_transcript_ids_from_value(value: &Value) -> Result<Vec<String>, String> {
     let items = value
         .get("items")
         .and_then(Value::as_array)
         .ok_or_else(|| "backend transcript list did not include items".to_string())?;
-    let mut entries = Vec::new();
+    let mut ids = Vec::new();
 
     for item in items {
         let status = value_string(item, "status");
@@ -3403,21 +3258,16 @@ fn recent_transcripts_from_value(value: &Value) -> Result<Vec<RecentTranscriptMe
             continue;
         }
         let id = value_string(item, "id");
-        if id.is_empty() || !is_safe_transcript_id(&id) {
+        if !is_safe_transcript_id(&id) {
             continue;
         }
-        entries.push(RecentTranscriptMenuEntry {
-            id,
-            title: value_string(item, "title"),
-            date: value_string(item, "date"),
-            transcript_type: value_string(item, "type"),
-        });
-        if entries.len() >= TRAY_RECENT_TRANSCRIPT_LIMIT {
+        ids.push(id);
+        if ids.len() >= TRAY_RECENT_TRANSCRIPT_LIMIT {
             break;
         }
     }
 
-    Ok(entries)
+    Ok(ids)
 }
 
 fn copy_recent_transcript_from_shell<R: Runtime>(app: &AppHandle<R>, transcript_id: &str) -> bool {
@@ -3475,46 +3325,6 @@ fn is_safe_transcript_id(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-#[allow(dead_code)]
-fn recent_transcript_label(entry: &RecentTranscriptMenuEntry) -> String {
-    let kind = match entry.transcript_type.as_str() {
-        "youtube" => "YouTube",
-        "file" => "File",
-        "mic" => "Mic",
-        _ => "Transcript",
-    };
-    let title = sanitize_menu_label(&entry.title, "Untitled transcript", 48);
-    let date = sanitize_menu_label(&entry.date, "", 22);
-    if date.is_empty() {
-        format!("{kind}: {title}")
-    } else {
-        format!("{kind}: {title} ({date})")
-    }
-}
-
-#[allow(dead_code)]
-fn sanitize_menu_label(value: &str, fallback: &str, max_chars: usize) -> String {
-    let mut collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if collapsed.is_empty() {
-        collapsed = fallback.to_string();
-    }
-    if max_chars == 0 {
-        return String::new();
-    }
-    if collapsed.chars().count() <= max_chars {
-        return collapsed;
-    }
-    if max_chars <= 3 {
-        return ".".repeat(max_chars);
-    }
-    let mut truncated = collapsed
-        .chars()
-        .take(max_chars.saturating_sub(3))
-        .collect::<String>();
-    truncated.push_str("...");
-    truncated
 }
 
 fn sanitize_shell_log_token(value: &str) -> String {
@@ -5657,17 +5467,17 @@ mod tests {
         normalize_benchmark_uuid, normalize_global_shortcut, normalize_hotkey_mode,
         parse_desktop_autostart_user_choice, parse_loopback_backend_url,
         parse_shell_menu_smoke_actions, parse_youtube_deep_link, provider_replay_run_id_for_child,
-        python_runtime_environment, read_backend_response_limited, recent_transcript_label,
-        recent_transcripts_from_value, request_backend_shutdown, resolve_session_token,
-        sanitize_menu_label, shell_ipc, shell_ipc_env_pairs, shortcut_id_for_hotkey,
-        should_attach_benchmark_hotkey_marker, should_hide_window_instead_of_closing,
+        python_runtime_environment, read_backend_response_limited, recent_transcript_ids_from_value,
+        request_backend_shutdown, resolve_session_token, shell_ipc, shell_ipc_env_pairs,
+        shortcut_id_for_hotkey, should_attach_benchmark_hotkey_marker,
+        should_hide_window_instead_of_closing,
         should_refresh_hotkey_after_backend_ready, should_show_initializing_overlay_for_hotkey,
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
         wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
         BackendAccess, BackendCommandSpec, BackendStatus, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, RecentTranscriptMenuEntry, ShellMenuSmokeAction,
-        TrayIconKind, TrayStatus, TrayStatusInner, UiLocale, YoutubeDeepLinkRequest,
+        NativeDeviceObserveOnlyLogState, ShellMenuSmokeAction, TrayIconKind, TrayStatus,
+        TrayStatusInner, UiLocale, YoutubeDeepLinkRequest,
         AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST,
         HOTKEY_DISPATCH_DEBOUNCE, MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT,
         MENU_ITEM_REFRESH_RECENT, MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
@@ -6193,13 +6003,6 @@ mod tests {
         assert!(!super::physical_rect_has_min_visible_area(
             1900, 100, 900, 700, 0, 0, 1920, 1080, 96
         ));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn window_frame_policy_is_theme_invariant() {
-        assert_eq!(super::DWM_COLOR_NONE, 0xFFFF_FFFE);
-        assert_eq!(super::DWMWCP_ROUND.0, 2);
     }
 
     #[test]
@@ -7197,27 +7000,7 @@ mod tests {
     }
 
     #[test]
-    fn recent_transcript_menu_labels_are_short_and_stable() {
-        let entry = RecentTranscriptMenuEntry {
-            id: "mic-00001".to_string(),
-            title: "A very long transcript title with a lot of extra whitespace".to_string(),
-            date: "Today, 15:26".to_string(),
-            transcript_type: "mic".to_string(),
-        };
-
-        let label = recent_transcript_label(&entry);
-
-        assert!(label.starts_with("Mic: A very long transcript title"));
-        assert!(label.ends_with("(Today, 15:26)"));
-        assert_eq!(
-            sanitize_menu_label("  one\n two\tthree  ", "fallback", 20),
-            "one two three"
-        );
-        assert_eq!(sanitize_menu_label("", "fallback", 20), "fallback");
-    }
-
-    #[test]
-    fn recent_transcript_entries_filter_invalid_ids_status_and_limit() {
+    fn recent_transcript_ids_filter_invalid_ids_status_and_limit() {
         let mut items = vec![
             serde_json::json!({
                 "id": "mic-failed",
@@ -7252,21 +7035,18 @@ mod tests {
         }
         let value = serde_json::json!({ "items": items });
 
-        let entries = recent_transcripts_from_value(&value).expect("entries");
+        let ids = recent_transcript_ids_from_value(&value).expect("transcript ids");
 
-        assert_eq!(entries.len(), TRAY_RECENT_TRANSCRIPT_LIMIT);
-        assert!(entries.iter().all(|entry| is_safe_transcript_id(&entry.id)));
-        assert_eq!(entries[0].id, "mic-00000");
-        assert_eq!(
-            entries.last().map(|entry| entry.id.as_str()),
-            Some("mic-00004")
-        );
-        assert!(!entries.iter().any(|entry| entry.id == "mic-failed"));
+        assert_eq!(ids.len(), TRAY_RECENT_TRANSCRIPT_LIMIT);
+        assert!(ids.iter().all(|id| is_safe_transcript_id(id)));
+        assert_eq!(ids[0], "mic-00000");
+        assert_eq!(ids.last().map(String::as_str), Some("mic-00004"));
+        assert!(!ids.iter().any(|id| id == "mic-failed"));
     }
 
     #[test]
-    fn recent_transcript_entries_reject_missing_items_array() {
-        let err = recent_transcripts_from_value(&serde_json::json!({"items": null}))
+    fn recent_transcript_ids_reject_missing_items_array() {
+        let err = recent_transcript_ids_from_value(&serde_json::json!({"items": null}))
             .expect_err("missing items must be rejected");
 
         assert_eq!(err, "backend transcript list did not include items");

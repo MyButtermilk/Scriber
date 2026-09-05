@@ -1659,12 +1659,6 @@ def _tokens_equivalent(left: str, right: str) -> bool:
     return frozenset({left_normalized, right_normalized}) in _REVIEWED_LEXICAL_EQUIVALENTS
 
 
-def _contexts_equivalent(left: tuple[str, ...], right: tuple[str, ...]) -> bool:
-    if len(left) != len(right):
-        return False
-    return all(_tokens_equivalent(source, candidate) for source, candidate in zip(left, right, strict=True))
-
-
 def _validate_bound_spoken_format_commands(source: str, candidate: str) -> None:
     _, anchors = _spoken_format_command_plan(source)
     if not anchors:

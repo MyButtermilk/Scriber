@@ -242,10 +242,10 @@ class RustAudioPrewarmManager:
                 "active": bool(self._prewarm_id),
                 "temporaryIdlePrewarm": bool(self._temporary_idle_prewarm),
                 "hasStream": bool(self._prewarm_id),
-                "prewarmIdHash": self._hash_hint(self._prewarm_id),
+                "prewarmIdHash": _hash_diagnostic_hint(self._prewarm_id),
                 "activeCaptureAttached": self._active_capture_attached,
                 "adoptionPending": bool(self._pending_adoption_prewarm_id),
-                "pendingAdoptionPrewarmIdHash": self._hash_hint(self._pending_adoption_prewarm_id),
+                "pendingAdoptionPrewarmIdHash": _hash_diagnostic_hint(self._pending_adoption_prewarm_id),
                 "pausedForActiveCapture": self._paused_for_active_capture,
                 "pausedForDeviceRefresh": self._paused_for_device_refresh,
                 "streamStartedAgoSeconds": (
@@ -320,43 +320,39 @@ class RustAudioPrewarmManager:
         self._last_transition_reason = reason
         self._last_transition_at = time.monotonic()
 
-    @staticmethod
-    def _hash_hint(value: str | None) -> str | None:
-        return _hash_diagnostic_hint(value)
-
     def _record_event_locked(self, event: str, reason: str = "", **fields: object) -> None:
         _append_prewarm_event(self._recent_events, event, reason, **fields)
 
     def _redacted_start_payload_locked(self) -> dict[str, Any]:
         payload = dict(self._prewarm_payload)
         if "prewarmId" in payload:
-            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
+            payload["prewarmIdHash"] = _hash_diagnostic_hint(str(payload.pop("prewarmId") or ""))
         sidecar_payload = payload.get("sidecarPayload")
         if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
             sidecar_payload = dict(sidecar_payload)
-            sidecar_payload["prewarmIdHash"] = self._hash_hint(str(sidecar_payload.pop("prewarmId") or ""))
+            sidecar_payload["prewarmIdHash"] = _hash_diagnostic_hint(str(sidecar_payload.pop("prewarmId") or ""))
             payload["sidecarPayload"] = sidecar_payload
         return payload
 
     def _redacted_stop_payload_locked(self) -> dict[str, Any]:
         payload = dict(self._last_stop_payload)
         if "prewarmId" in payload:
-            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
+            payload["prewarmIdHash"] = _hash_diagnostic_hint(str(payload.pop("prewarmId") or ""))
         return payload
 
     def _redacted_status_payload_locked(self) -> dict[str, Any]:
         payload = dict(self._last_status_payload)
         if "prewarmId" in payload:
-            payload["prewarmIdHash"] = self._hash_hint(str(payload.pop("prewarmId") or ""))
+            payload["prewarmIdHash"] = _hash_diagnostic_hint(str(payload.pop("prewarmId") or ""))
         sidecar_payload = payload.get("sidecarPayload")
         if isinstance(sidecar_payload, dict) and "prewarmId" in sidecar_payload:
             sidecar_payload = dict(sidecar_payload)
-            sidecar_payload["prewarmIdHash"] = self._hash_hint(str(sidecar_payload.pop("prewarmId") or ""))
+            sidecar_payload["prewarmIdHash"] = _hash_diagnostic_hint(str(sidecar_payload.pop("prewarmId") or ""))
             payload["sidecarPayload"] = sidecar_payload
         stop_payload = payload.get("stop")
         if isinstance(stop_payload, dict) and "prewarmId" in stop_payload:
             stop_payload = dict(stop_payload)
-            stop_payload["prewarmIdHash"] = self._hash_hint(str(stop_payload.pop("prewarmId") or ""))
+            stop_payload["prewarmIdHash"] = _hash_diagnostic_hint(str(stop_payload.pop("prewarmId") or ""))
             payload["stop"] = stop_payload
         return payload
 
@@ -466,7 +462,7 @@ class RustAudioPrewarmManager:
                     self._record_event_locked(
                         "start_discarded",
                         "disabled_after_start",
-                        prewarmIdHash=self._hash_hint(prewarm_id),
+                        prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     )
                 return False
 
@@ -482,7 +478,7 @@ class RustAudioPrewarmManager:
                     self._record_event_locked(
                         "start_discarded",
                         "superseded_after_start",
-                        prewarmIdHash=self._hash_hint(prewarm_id),
+                        prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     )
                     return False
                 self._prewarm_payload = dict(response_payload)
@@ -539,7 +535,7 @@ class RustAudioPrewarmManager:
                 self._record_event_locked(
                     "started",
                     "start",
-                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     sampleRate=int(payload["sampleRate"]),
                     channels=int(payload["channels"]),
                     blockSize=int(payload["blockSize"]),
@@ -813,7 +809,7 @@ class RustAudioPrewarmManager:
                 self._record_event_locked(
                     "adoption_rejected",
                     rejection_reason,
-                    prewarmIdHash=self._hash_hint(candidate_prewarm_id),
+                    prewarmIdHash=_hash_diagnostic_hint(candidate_prewarm_id),
                     storedNativeEndpointIdHash=stored_endpoint_hash or None,
                     routeGeneration=signature.get("route_generation"),
                 )
@@ -826,12 +822,12 @@ class RustAudioPrewarmManager:
             self._pending_adoption_prewarm_id = prewarm_id
             self._active_capture_pause_count += 1
             self._adoption_count += 1
-            self._last_adopted_prewarm_id_hash = self._hash_hint(prewarm_id)
+            self._last_adopted_prewarm_id_hash = _hash_diagnostic_hint(prewarm_id)
             self._record_transition_locked("adopted_for_capture", "active_capture")
             self._record_event_locked(
                 "adopted_for_capture",
                 "active_capture",
-                prewarmIdHash=self._hash_hint(prewarm_id),
+                prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                 sampleRate=sample_rate,
                 targetChannels=target_channels,
                 blockSize=block_size,
@@ -906,7 +902,7 @@ class RustAudioPrewarmManager:
             self._record_event_locked(
                 "adoption_committed",
                 "active_capture",
-                prewarmIdHash=self._hash_hint(prewarm_id),
+                prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
             )
             return True
 
@@ -923,7 +919,7 @@ class RustAudioPrewarmManager:
             self._record_event_locked(
                 "adoption_rolled_back",
                 "capture_start_failed",
-                prewarmIdHash=self._hash_hint(prewarm_id),
+                prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
             )
         # The shell may have consumed the prewarm before its capture response was
         # lost. Querying through the normal health boundary either keeps a still
@@ -1102,7 +1098,7 @@ class RustAudioPrewarmManager:
                 self._record_event_locked(
                     "health_restart",
                     reason,
-                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     statusActive=status_active,
                     healthError=self._last_health_error or "inactive",
                     responseMs=response_ms,
@@ -1168,7 +1164,7 @@ class RustAudioPrewarmManager:
                 self._record_event_locked(
                     "stopped" if response_success else "stop_failed",
                     reason,
-                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     success=self._last_stop_success,
                     error=response_error or None,
                     responseMs=stop_response_ms,
@@ -1191,7 +1187,7 @@ class RustAudioPrewarmManager:
                 self._record_event_locked(
                     "stop_failed",
                     reason,
-                    prewarmIdHash=self._hash_hint(prewarm_id),
+                    prewarmIdHash=_hash_diagnostic_hint(prewarm_id),
                     errorType=type(exc).__name__,
                     error=str(exc),
                     responseMs=self._last_stop_response_ms,

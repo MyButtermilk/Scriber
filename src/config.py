@@ -893,12 +893,6 @@ ${output}"""
         }
 
     @classmethod
-    def set_mic_post_recording_prewarm_seconds(cls, seconds: float) -> None:
-        value = max(0.0, min(600.0, float(seconds)))
-        cls.MIC_POST_RECORDING_PREWARM_SECONDS = value
-        os.environ["SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS"] = f"{value:g}"
-
-    @classmethod
     def set_visualizer_bar_count(cls, count: int) -> None:
         cls.VISUALIZER_BAR_COUNT = max(16, min(128, int(count)))
         os.environ["SCRIBER_VISUALIZER_BAR_COUNT"] = str(cls.VISUALIZER_BAR_COUNT)

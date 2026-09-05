@@ -1274,28 +1274,6 @@ class TranscriptArtifactStore:
         row = self._connect().execute("SELECT * FROM transcription_attempts WHERE id = ?", (attempt_id,)).fetchone()
         return self._attempt_from_row(row) if row else None
 
-    def latest_attempt_for_transcript(
-        self,
-        transcript_id: str,
-    ) -> AttemptRecord | None:
-        """Return the newest attempt without changing or bypassing its lease."""
-
-        transcript_id = _safe_scalar(transcript_id, field_name="transcript_id")
-        row = (
-            self._connect()
-            .execute(
-                """
-            SELECT * FROM transcription_attempts
-            WHERE transcript_id = ?
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 1
-            """,
-                (transcript_id,),
-            )
-            .fetchone()
-        )
-        return self._attempt_from_row(row) if row else None
-
     def require_attempt(self, attempt_id: str) -> AttemptRecord:
         record = self.get_attempt(attempt_id)
         if record is None:

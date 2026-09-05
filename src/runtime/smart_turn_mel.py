@@ -13,10 +13,6 @@ _EXPECTED_FILTER_SHAPE = (201, 80)
 _INSTALL_LOCK = threading.Lock()
 
 
-def _sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
 class _TransposeMatmul:
     def __init__(self, session: Any):
         self._session = session
@@ -76,12 +72,12 @@ def install_smart_turn_mel_acceleration(*, force: bool = False) -> bool:
         if filters.shape != _EXPECTED_FILTER_SHAPE:
             raise RuntimeError(f"Unsupported Pipecat mel-filter shape: {filters.shape}")
         matrix = np.ascontiguousarray(filters.T)
-        if _sha256_bytes(matrix.tobytes()) != _MEL_FILTERS_SHA256:
+        if hashlib.sha256(matrix.tobytes()).hexdigest() != _MEL_FILTERS_SHA256:
             raise RuntimeError("Pipecat mel filters do not match the attested SmartTurn model")
 
         model_path = Path(__file__).with_name(_MODEL_NAME)
         model_bytes = model_path.read_bytes()
-        if _sha256_bytes(model_bytes) != _MODEL_SHA256:
+        if hashlib.sha256(model_bytes).hexdigest() != _MODEL_SHA256:
             raise RuntimeError("SmartTurn mel model does not match its attested SHA-256")
 
         options = ort.SessionOptions()
