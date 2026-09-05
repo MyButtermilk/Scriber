@@ -212,6 +212,83 @@ describe("MeetingNotesEditor autosave", () => {
     expect(screen.getByLabelText("Notes autosave and AI regeneration never overwrites them.")).toBeInTheDocument();
   });
 
+  it("saves a reverted draft on pagehide before an older autosave can overwrite it", async () => {
+    const olderSave = deferred<MeetingNote>();
+    const revertedSave = deferred<MeetingNote>();
+    const saveNote = vi.fn<SaveMeetingNote>(() => olderSave.promise);
+    const teardownSave = vi.fn<SaveMeetingNote>(() => revertedSave.promise);
+    const onSaved = vi.fn();
+
+    render(
+      <NotesHarness
+        initialBody="original"
+        meetingId="meeting-reverted"
+        onSaved={onSaved}
+        saveNote={saveNote}
+        saveNoteOnTeardown={teardownSave}
+      />,
+    );
+    const editor = screen.getByRole("textbox", { name: "Live notes" });
+    fireEvent.change(editor, { target: { value: "temporary edit" } });
+    await advanceAutosave();
+    fireEvent.change(editor, { target: { value: "original" } });
+
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(teardownSave).toHaveBeenCalledWith("meeting-reverted", "original", {
+      writerId: TEST_WRITER_ID,
+      generation: 2,
+    });
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(teardownSave).toHaveBeenCalledTimes(1);
+
+    await resolveSave(revertedSave, note("original", { generation: 2, applied: true }));
+    act(() => window.dispatchEvent(new Event("pagehide")));
+    expect(teardownSave).toHaveBeenCalledTimes(1);
+    await resolveSave(olderSave, note("original", { generation: 2, applied: false }));
+    expect(saveNote).toHaveBeenCalledTimes(1);
+    expect(onSaved).toHaveBeenLastCalledWith(expect.objectContaining({ body: "original" }), "meeting-reverted");
+  });
+
+  it.each([false, true])(
+    "persists a draft matching an older request after a newer pagehide save (completed: %s)",
+    async (newerSaveCompleted) => {
+      const meetingId = `meeting-superseded-${newerSaveCompleted}`;
+      const olderSave = deferred<MeetingNote>();
+      const newerSave = deferred<MeetingNote>();
+      const latestSave = deferred<MeetingNote>();
+      const saveNote = vi.fn<SaveMeetingNote>(() => olderSave.promise);
+      const teardownSave = vi
+        .fn<SaveMeetingNote>()
+        .mockImplementationOnce(() => newerSave.promise)
+        .mockImplementationOnce(() => latestSave.promise);
+
+      render(<NotesHarness meetingId={meetingId} saveNote={saveNote} saveNoteOnTeardown={teardownSave} />);
+      const editor = screen.getByRole("textbox", { name: "Live notes" });
+      fireEvent.change(editor, { target: { value: "A" } });
+      await advanceAutosave();
+      fireEvent.change(editor, { target: { value: "B" } });
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      if (newerSaveCompleted) {
+        await resolveSave(newerSave, note("B", { generation: 2, applied: true }));
+      }
+
+      fireEvent.change(editor, { target: { value: "A" } });
+      act(() => window.dispatchEvent(new Event("pagehide")));
+      expect(teardownSave).toHaveBeenLastCalledWith(meetingId, "A", {
+        writerId: TEST_WRITER_ID,
+        generation: 3,
+      });
+      expect(teardownSave).toHaveBeenCalledTimes(2);
+
+      await resolveSave(latestSave, note("A", { generation: 3, applied: true }));
+      if (!newerSaveCompleted) {
+        await resolveSave(newerSave, note("A", { generation: 3, applied: false }));
+      }
+      await resolveSave(olderSave, note("A", { generation: 3, applied: false }));
+      expect(saveNote).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("raises its generation floor and retries after a stale response", async () => {
     const retry = deferred<MeetingNote>();
     const saveNote = vi
