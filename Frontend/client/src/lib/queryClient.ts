@@ -48,42 +48,29 @@ export async function apiRequest(
   }
 }
 
-type UnauthorizedBehavior = "returnNull" | "throw";
-export const getQueryFn =
-  <T>({ on401: unauthorizedBehavior }: { on401: UnauthorizedBehavior }): QueryFunction<T> =>
-  async ({ queryKey, signal }) => {
-    try {
-      const res = await fetchWithTimeout(
-        apiUrl(queryKey.join("/") as string),
-        {
-          credentials: "include",
-          cache: "no-store",
-          signal,
-        },
-        15_000,
-      );
+const defaultQueryFn: QueryFunction = async ({ queryKey, signal }) => {
+  try {
+    const res = await fetchWithTimeout(
+      apiUrl(queryKey.join("/")),
+      {
+        credentials: "include",
+        cache: "no-store",
+        signal,
+      },
+      15_000,
+    );
 
-      if (unauthorizedBehavior === "returnNull" && res.status === 401) {
-        return null as T;
-      }
-
-      await throwIfResNotOk(res);
-      return (await res.json()) as T;
-    } catch (error) {
-      if (unauthorizedBehavior === "returnNull") {
-        // Backend offline / not yet ready / CORS blocked: treat as empty and let the UI render.
-        // The BackendOfflineBanner will handle showing the user a friendly message.
-        return null as T;
-      }
-      // In strict mode surface the failure to React Query instead of silently returning null.
-      throw error instanceof Error ? error : new Error(translateNow("Query failed"));
-    }
-  };
+    await throwIfResNotOk(res);
+    return await res.json();
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(translateNow("Query failed"));
+  }
+};
 
 export const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      queryFn: getQueryFn({ on401: "throw" }),
+      queryFn: defaultQueryFn,
       refetchInterval: false,
       refetchOnWindowFocus: false,
       staleTime: Infinity,

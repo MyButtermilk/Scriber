@@ -155,6 +155,12 @@ manual stop, and native activation binding.
 
 Frontend:
 
+Frontend tests exercise user interactions and observable state. TypeScript checks
+own type correctness; avoid Python source snapshots for CSS values, class names,
+SVG paths, and internal type spellings. Keep source checks when they enforce a
+security, packaging, native integration, or performance contract that is not
+covered by the behavior suites.
+
 ```powershell
 cd Frontend
 npm ci

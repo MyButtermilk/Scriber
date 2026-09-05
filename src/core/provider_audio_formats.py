@@ -1053,31 +1053,6 @@ def select_audio_input_format(
     raise UnsupportedAudioInputFormat("Provider route/model has no verified generated audio representation.")
 
 
-def select_provider_audio_input_format(
-    *,
-    provider: str,
-    route: str,
-    model_family: str,
-    route_kind: ProviderAudioRouteKind | str,
-    original_format: AudioInputFormat | str | None = None,
-    custom_endpoint: bool = False,
-    include_inactive: bool = False,
-) -> AudioInputSelection:
-    capability = resolve_provider_audio_capabilities(
-        provider,
-        route,
-        model_family,
-        custom_endpoint=custom_endpoint,
-        include_inactive=include_inactive,
-    )
-    return select_audio_input_format(
-        capability,
-        route_kind=route_kind,
-        original_format=original_format,
-        allow_inactive=include_inactive,
-    )
-
-
 def _validate_registry() -> None:
     if len(_CAPABILITY_INDEX) != len(PROVIDER_AUDIO_CAPABILITY_MATRIX):
         raise RuntimeError("Provider audio capability keys must be unique.")

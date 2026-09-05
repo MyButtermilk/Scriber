@@ -25,16 +25,6 @@ describe("transitions.dev feedback primitives", () => {
     expect(tooltip).toHaveTextContent("Refresh logs");
   });
 
-  it("allows overlay tooltips to override the shared relative wrapper", () => {
-    const { container } = render(
-      <TransitionTooltip content="Show credential" style={{ position: "absolute" }}>
-        <button type="button">Show</button>
-      </TransitionTooltip>,
-    );
-
-    expect(container.querySelector(".t-tt-wrap")).toHaveStyle({ position: "absolute" });
-  });
-
   it("does not repeat an identical accessible name as the tooltip description", () => {
     const { container } = render(
       <TransitionTooltip content="Refresh logs">

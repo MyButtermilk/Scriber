@@ -48,11 +48,6 @@ export interface FileUploadSnapshot {
   updatedAt: number;
 }
 
-interface StartFileUploadOptions {
-  serverProcessingLabel: string;
-  serverProcessingValues?: TranslationValues;
-}
-
 interface StartFileUploadBatchOptions {
   getServerProcessingText: (file: File) => FileUploadLocalizedText;
 }
@@ -126,14 +121,6 @@ export function getFileUploadSnapshot(): FileUploadSnapshot {
 
 export function isFileUploadActive(): boolean {
   return Boolean(activeUpload) || snapshot.status === "uploading" || snapshot.status === "server_processing";
-}
-
-export function resetFileUploadSnapshot(): void {
-  if (isFileUploadActive()) {
-    return;
-  }
-  snapshot = idleSnapshot;
-  listeners.forEach((listener) => listener());
 }
 
 function uploadSingleFile(
@@ -266,26 +253,6 @@ function uploadSingleFile(
     };
 
     xhr.send(formData);
-  });
-}
-
-export function startFileUpload(
-  file: File,
-  { serverProcessingLabel, serverProcessingValues }: StartFileUploadOptions,
-): Promise<FileTranscribeResponse> {
-  const batchPromise = startFileUploadBatch([file], {
-    getServerProcessingText: () => ({
-      key: serverProcessingLabel,
-      values: serverProcessingValues,
-    }),
-  });
-
-  return batchPromise.then((result) => {
-    const response = result.responses[0];
-    if (response) {
-      return response;
-    }
-    throw new Error(result.failures[0]?.error || translateNow("Upload failed"));
   });
 }
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import math
-import os
 import socket
 import threading
 import time
@@ -27,6 +26,7 @@ from uuid import uuid4
 import aiohttp
 
 from src.runtime.cancellation import await_with_delayed_cancellation
+from src.runtime.env_values import env_float, env_int
 
 _TRACE_LIMIT = 128
 _PROVIDER_LIMIT = 48
@@ -124,24 +124,6 @@ class _ProviderHttpBorrow:
         )
 
 
-def _env_float(name: str, default: float, *, minimum: float, maximum: float) -> float:
-    try:
-        value = float(os.environ.get(name, default))
-    except TypeError, ValueError:
-        value = default
-    if not math.isfinite(value):
-        value = default
-    return min(maximum, max(minimum, value))
-
-
-def _env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
-    try:
-        value = int(os.environ.get(name, default))
-    except TypeError, ValueError:
-        value = default
-    return min(maximum, max(minimum, value))
-
-
 def _bounded_label(value: Any, *, limit: int) -> str:
     text = str(value or "").strip().lower()
     if not text or len(text) > limit:
@@ -217,32 +199,32 @@ class ProviderHttpTransport:
         self._loop = loop
         connector = aiohttp.TCPConnector(
             family=socket.AF_UNSPEC,
-            happy_eyeballs_delay=_env_float(
+            happy_eyeballs_delay=env_float(
                 "SCRIBER_PROVIDER_HTTP_HAPPY_EYEBALLS_DELAY_SECONDS",
                 0.25,
                 minimum=0.0,
                 maximum=2.0,
             ),
             interleave=1,
-            ttl_dns_cache=_env_int(
+            ttl_dns_cache=env_int(
                 "SCRIBER_PROVIDER_HTTP_DNS_TTL_SECONDS",
                 300,
                 minimum=0,
                 maximum=3600,
             ),
-            keepalive_timeout=_env_float(
+            keepalive_timeout=env_float(
                 "SCRIBER_PROVIDER_HTTP_KEEPALIVE_SECONDS",
                 60.0,
                 minimum=5.0,
                 maximum=300.0,
             ),
-            limit=_env_int(
+            limit=env_int(
                 "SCRIBER_PROVIDER_HTTP_CONNECTION_LIMIT",
                 32,
                 minimum=1,
                 maximum=128,
             ),
-            limit_per_host=_env_int(
+            limit_per_host=env_int(
                 "SCRIBER_PROVIDER_HTTP_CONNECTIONS_PER_HOST",
                 8,
                 minimum=1,
@@ -251,13 +233,13 @@ class ProviderHttpTransport:
         )
         timeout = aiohttp.ClientTimeout(
             total=None,
-            connect=_env_float(
+            connect=env_float(
                 "SCRIBER_PROVIDER_HTTP_CONNECT_TIMEOUT_SECONDS",
                 15.0,
                 minimum=1.0,
                 maximum=120.0,
             ),
-            sock_connect=_env_float(
+            sock_connect=env_float(
                 "SCRIBER_PROVIDER_HTTP_SOCKET_CONNECT_TIMEOUT_SECONDS",
                 15.0,
                 minimum=1.0,

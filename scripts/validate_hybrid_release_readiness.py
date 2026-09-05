@@ -2453,10 +2453,6 @@ def is_https_url(value: str) -> bool:
     return parsed.scheme == "https" and bool(parsed.netloc)
 
 
-def read_updater_artifact_names(metadata_path: Path) -> list[str]:
-    return list(read_updater_artifact_identities(metadata_path))
-
-
 def read_updater_artifact_identities(
     metadata_path: Path,
 ) -> dict[str, dict[str, Any]]:

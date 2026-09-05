@@ -12,7 +12,6 @@ import pytest
 
 from backend_runtime.contract import (
     APPLICATION_EXTERNAL_IMPORT_ROOTS,
-    APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS,
     RUNTIME_CONTRACT_NAME,
     RUNTIME_CONTRACT_REVISION,
     RUNTIME_REQUIRED_IMPORTS,
@@ -151,22 +150,15 @@ def test_physical_application_import_check_is_repeatable_without_bytecode(
     )
 
 
-def test_src_external_imports_are_explicit_runtime_or_optional_exclusions() -> None:
+def test_src_external_imports_are_explicit_runtime_dependencies() -> None:
     roots: set[str] = set()
     for source in (REPO_ROOT / "src").rglob("*.py"):
-        source_relative = source.relative_to(REPO_ROOT).as_posix()
         tree = ast.parse(source.read_text(encoding="utf-8-sig"), filename=str(source))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 for alias in node.names:
-                    if (source_relative, alias.name) not in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS:
-                        roots.add(alias.name.split(".", 1)[0])
-            elif (
-                isinstance(node, ast.ImportFrom)
-                and node.level == 0
-                and node.module
-                and (source_relative, node.module) not in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS
-            ):
+                    roots.add(alias.name.split(".", 1)[0])
+            elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 roots.add(node.module.split(".", 1)[0])
 
     external = (
@@ -180,10 +172,6 @@ def test_src_external_imports_are_explicit_runtime_or_optional_exclusions() -> N
     )
     declared = set(APPLICATION_EXTERNAL_IMPORT_ROOTS)
     assert external <= declared, f"Undeclared application imports: {sorted(external - declared)}"
-    assert (
-        "src/gemini_transcribe.py",
-        "google.generativeai",
-    ) in APPLICATION_OPTIONAL_IMPORT_EXEMPTIONS
     assert all(root != "google" for root in APPLICATION_EXTERNAL_IMPORT_ROOTS)
 
 

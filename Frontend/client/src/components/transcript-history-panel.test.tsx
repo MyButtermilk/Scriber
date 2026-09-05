@@ -65,17 +65,4 @@ describe("TranscriptHistoryPanel", () => {
     );
     expect(screen.getByText("No matches")).toBeInTheDocument();
   });
-
-  it("marks the reveal container for the taller responsive grid reserve", () => {
-    const { container } = render(
-      <LocaleProvider>
-        <TranscriptHistoryPanel {...baseProps} isLoading viewMode="grid">
-          <div>Transcript card</div>
-        </TranscriptHistoryPanel>
-      </LocaleProvider>,
-    );
-
-    expect(container.querySelector(".transcript-history-reveal")).toHaveClass("is-grid");
-    expect(container.querySelectorAll(".transcript-history-skeleton-item")).toHaveLength(4);
-  });
 });

@@ -30,7 +30,7 @@ def _install_fake_sounddevice(monkeypatch):
     _FakeInputStream.instances.clear()
     fake_sd = types.SimpleNamespace(
         default=types.SimpleNamespace(device=(0, None), hostapi=0),
-        InputStream=lambda **kwargs: _FakeInputStream(**kwargs),
+        InputStream=_FakeInputStream,
         query_hostapis=lambda: [{"name": "MME"}],
         query_devices=lambda device=None, kind=None: (
             [
@@ -346,7 +346,7 @@ def test_rust_audio_prewarm_rejects_changed_device_then_restarts_with_new_identi
     assert rejected["recentEvents"][-1] == {
         "event": "adoption_rejected",
         "reason": "device_route_generation_mismatch",
-        "prewarmIdHash": manager._hash_hint("prewarm-mic-a"),
+        "prewarmIdHash": mic_prewarm._hash_diagnostic_hint("prewarm-mic-a"),
         "storedNativeEndpointIdHash": "endpoint-hash-a",
         "routeGeneration": 1,
         "ageSeconds": rejected["recentEvents"][-1]["ageSeconds"],

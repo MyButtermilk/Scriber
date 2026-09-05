@@ -245,8 +245,7 @@ from src.runtime.cancellation import (
     remove_tree_if_exists,
     to_thread_cancellation_barrier,
 )
-from src.runtime.env_values import env_float as _safe_env_float
-from src.runtime.env_values import env_int as _safe_env_int
+from src.runtime.env_values import env_float, env_int
 from src.runtime.ffmpeg_commands import classify_ffmpeg_stderr, ffprobe_duration_args
 from src.runtime.media_tools import find_media_tool, require_media_tool
 from src.runtime.paths import data_dir, downloads_dir, is_frozen, logs_dir, repo_root
@@ -938,7 +937,7 @@ def _backend_loop_exception_handler(
 
 
 def _force_process_exit_after_shutdown_timeout_seconds() -> float:
-    return _env_float(_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV, 5.0, minimum=0.5, maximum=30.0)
+    return env_float(_FORCE_EXIT_AFTER_SHUTDOWN_TIMEOUT_ENV, 5.0, minimum=0.5, maximum=30.0)
 
 
 def _arm_force_process_exit_after_shutdown() -> threading.Timer:
@@ -1018,10 +1017,6 @@ def _rust_audio_fallback_circuit_diagnostics() -> dict[str, Any]:
         "remainingSeconds": None,
         "cooldownSeconds": None,
     }
-
-
-def _create_mic_prewarm_manager() -> Any:
-    return RustAudioPrewarmManager()
 
 
 def _bounded_hint_string(value: Any, *, default: str = "") -> str:
@@ -1616,14 +1611,6 @@ def _preview_from_words(words: list[str], max_words: int = 5, *, has_more: bool 
     return preview
 
 
-def _env_float(name: str, default: float, *, minimum: float | None = None, maximum: float | None = None) -> float:
-    return _safe_env_float(name, default, minimum=minimum, maximum=maximum)
-
-
-def _env_int(name: str, default: int, *, minimum: int | None = None, maximum: int | None = None) -> int:
-    return _safe_env_int(name, default, minimum=minimum, maximum=maximum)
-
-
 def _live_pipeline_uses_async_finalization(pipeline: Any | None) -> bool:
     service_name = str(getattr(pipeline, "service_name", "") or "")
     return service_name in {
@@ -1678,7 +1665,7 @@ def _audio_diagnostics_indicate_silence(diagnostics: dict[str, Any] | None) -> b
         max_rms = float(diagnostics.get("maxObservedRms") or 0.0)
     except Exception:
         max_rms = 0.0
-    threshold = _env_float(_LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV, 0.0007, minimum=0.0, maximum=0.05)
+    threshold = env_float(_LIVE_MIC_SILENCE_RMS_THRESHOLD_ENV, 0.0007, minimum=0.0, maximum=0.05)
     return max_rms <= threshold
 
 
@@ -1750,10 +1737,6 @@ def _hotkey_to_display(hotkey: str) -> str:
         else:
             out.append(p.upper() if len(p) == 1 else p)
     return " + ".join(out) if out else ""
-
-
-def _normalize_device_name(name: str) -> str:
-    return normalize_device_name(name)
 
 
 @dataclass
@@ -3411,7 +3394,7 @@ class ScriberWebController:
         # keeps test and extension mocks that implement the legacy signature
         # source-compatible.
         self._scheduled_frozen_routes: dict[str, FrozenTranscriptionRoute] = {}
-        self._job_id_cache_limit = _env_int(
+        self._job_id_cache_limit = env_int(
             "SCRIBER_JOB_ID_CACHE_LIMIT",
             1000,
             minimum=25,
@@ -3427,15 +3410,15 @@ class ScriberWebController:
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._detached_task_supervisor = AsyncTaskSupervisor(owner="web controller")
-        self._job_max_attempts = _env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
-        self._job_concurrency_limit = _env_int(
+        self._job_max_attempts = env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
+        self._job_concurrency_limit = env_int(
             "SCRIBER_JOB_CONCURRENCY",
             25,
             minimum=1,
             maximum=100,
         )
-        self._job_retry_base_seconds = _env_float("SCRIBER_JOB_RETRY_BASE_SEC", 5.0, minimum=0.1, maximum=3600.0)
-        self._job_retry_max_seconds = _env_float(
+        self._job_retry_base_seconds = env_float("SCRIBER_JOB_RETRY_BASE_SEC", 5.0, minimum=0.1, maximum=3600.0)
+        self._job_retry_max_seconds = env_float(
             "SCRIBER_JOB_RETRY_MAX_SEC",
             120.0,
             minimum=self._job_retry_base_seconds,
@@ -3443,8 +3426,8 @@ class ScriberWebController:
         )
         provider_fallbacks = [p.strip() for p in os.getenv("SCRIBER_STT_FALLBACKS", "").split(",") if p.strip()]
         breaker = ProviderCircuitBreaker(
-            failure_threshold=_env_int("SCRIBER_BREAKER_FAILURE_THRESHOLD", 3, minimum=1, maximum=100),
-            cooldown_seconds=_env_float("SCRIBER_BREAKER_COOLDOWN_SEC", 30.0, minimum=1.0, maximum=86_400.0),
+            failure_threshold=env_int("SCRIBER_BREAKER_FAILURE_THRESHOLD", 3, minimum=1, maximum=100),
+            cooldown_seconds=env_float("SCRIBER_BREAKER_COOLDOWN_SEC", 30.0, minimum=1.0, maximum=86_400.0),
         )
         self._provider_breaker = breaker
         self._provider_router = ProviderRouter(
@@ -3472,7 +3455,7 @@ class ScriberWebController:
         self._pending_post_processing_fallback_event: tuple[float, dict[str, Any]] | None = None
         self._live_mic_stop_owner: object | None = None
         self._listening_lock = asyncio.Lock()  # Prevent race conditions on rapid hotkey presses
-        self._mic_prewarm = _create_mic_prewarm_manager()
+        self._mic_prewarm = RustAudioPrewarmManager()
         self._mic_prewarm_task: asyncio.Task | None = None
         self._mic_post_recording_prewarm_handle: asyncio.TimerHandle | None = None
         self._mic_post_recording_prewarm_stop_task: asyncio.Task | None = None
@@ -3510,7 +3493,7 @@ class ScriberWebController:
             )
         except Exception:
             self._hotkey_dispatch_debounce_seconds = 0.25
-        self._live_toggle_start_grace_seconds = _env_float(
+        self._live_toggle_start_grace_seconds = env_float(
             _LIVE_MIC_TOGGLE_START_GRACE_ENV,
             0.35,
             minimum=0.0,
@@ -3541,7 +3524,7 @@ class ScriberWebController:
         self._history_by_id: dict[str, TranscriptRecord] = {}
         self._history_cache_limit = max(
             25,
-            _env_int("SCRIBER_HISTORY_CACHE_LIMIT", 250, minimum=25, maximum=1000),
+            env_int("SCRIBER_HISTORY_CACHE_LIMIT", 250, minimum=25, maximum=1000),
         )
         self._transcript_persistence_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
             weakref.WeakValueDictionary()
@@ -5273,9 +5256,6 @@ class ScriberWebController:
             oldest = next(iter(self._deleted_transcript_ids))
             self._deleted_transcript_ids.pop(oldest, None)
 
-    def _unmark_transcript_deleted(self, transcript_id: str) -> None:
-        self._deleted_transcript_ids.pop(transcript_id, None)
-
     def _enqueue_background_job(
         self,
         rec: TranscriptRecord,
@@ -5382,12 +5362,6 @@ class ScriberWebController:
 
     async def _set_job_running_async(self, transcript_id: str) -> bool:
         return await asyncio.to_thread(self._set_job_running, transcript_id)
-
-    def _background_job_id(self, transcript_id: str) -> str:
-        job_id = self._job_ids_by_transcript.get(transcript_id)
-        if not job_id:
-            raise TranscriptPersistenceError("Background job is missing persisted lifecycle state")
-        return job_id
 
     async def _mark_job_provider_request_may_be_committed(
         self,
@@ -8166,7 +8140,7 @@ class ScriberWebController:
     def get_runtime_info(self) -> dict[str, Any]:
         recording_state = self._recording_state_machine.state
         host = os.getenv(_WEB_HOST_ENV, "127.0.0.1")
-        port = _env_int(_WEB_PORT_ENV, 8765, minimum=1, maximum=65535)
+        port = env_int(_WEB_PORT_ENV, 8765, minimum=1, maximum=65535)
         return {
             "version": app_version(),
             "apiVersion": _API_VERSION,
@@ -8758,9 +8732,6 @@ class ScriberWebController:
             self._client_count = len(self._clients)
             self._clients_dirty = True
 
-    def _has_ws_clients(self) -> bool:
-        return self._client_count > 0
-
     async def send_client_text(self, ws: web.WebSocketResponse, message: str) -> bool:
         """Serialize all writes to one WebSocket and enforce a send deadline."""
         if ws.closed:
@@ -8996,7 +8967,7 @@ class ScriberWebController:
             self._mark_hot_path(session_id or self._session_id, "first_audible_audio_frame")
         self._update_input_warning(level, session_id=session_id)
 
-        has_ws_clients = self._has_ws_clients()
+        has_ws_clients = self._client_count > 0
         if not has_ws_clients and not self._overlay_audio_enabled:
             return
 
@@ -9716,13 +9687,6 @@ class ScriberWebController:
                 updated_at=payload.get("updatedAt"),
                 reason=payload.get("reason"),
             )
-        )
-
-    def _touch_history(self, record: TranscriptRecord | None = None, *, reason: str = "") -> None:
-        """Thread-safe schedule for history update broadcast."""
-        self._spawn_detached_threadsafe(
-            lambda: self._broadcast_history_updated(record=record, reason=reason),
-            name="history_broadcast_touch",
         )
 
     def _begin_transcript_artifact(
@@ -12410,7 +12374,7 @@ class ScriberWebController:
                 # Pipecat import. Using the same default executor concurrently
                 # was not capture-first when only one worker was available.
                 if mic_prewarm_manager is None and pipeline_runtime_was_cold:
-                    cold_start_prebuffer_ms = _env_int(
+                    cold_start_prebuffer_ms = env_int(
                         _LIVE_MIC_COLD_START_PREBUFFER_MS_ENV,
                         6000,
                         minimum=400,
@@ -12817,13 +12781,13 @@ class ScriberWebController:
         if not async_finalization:
             return None
         if quiet_recording:
-            return _env_float(_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV, 4.0, minimum=1.0, maximum=30.0)
+            return env_float(_LIVE_MIC_SILENT_STOP_TIMEOUT_ENV, 4.0, minimum=1.0, maximum=30.0)
 
         elapsed = 0.0
         if current is not None and current._started_at_monotonic is not None:
             elapsed = max(0.0, time.monotonic() - current._started_at_monotonic)
         dynamic_default = min(90.0, max(12.0, 8.0 + elapsed * 0.35))
-        return _env_float(
+        return env_float(
             _LIVE_MIC_ASYNC_STOP_TIMEOUT_ENV,
             dynamic_default,
             minimum=5.0,
@@ -17420,7 +17384,7 @@ class ScriberWebController:
             available = set(available_ids)
             normalized_to_id: dict[str, str] = {}
             for dev_id in available_ids:
-                norm = _normalize_device_name(dev_id)
+                norm = normalize_device_name(dev_id)
                 if norm and norm not in normalized_to_id:
                     normalized_to_id[norm] = dev_id
 
@@ -17429,7 +17393,7 @@ class ScriberWebController:
                     return None
                 if device_id in available:
                     return device_id
-                norm = _normalize_device_name(device_id)
+                norm = normalize_device_name(device_id)
                 if norm in normalized_to_id:
                     return normalized_to_id[norm]
                 try:
@@ -17445,7 +17409,7 @@ class ScriberWebController:
                     if name:
                         if name in available:
                             return name
-                        name_norm = _normalize_device_name(name)
+                        name_norm = normalize_device_name(name)
                         if name_norm in normalized_to_id:
                             return normalized_to_id[name_norm]
                 except Exception:
@@ -18289,13 +18253,13 @@ class ScriberWebController:
 
         try:
             target = device_name.strip()
-            target_norm = _normalize_device_name(target)
+            target_norm = normalize_device_name(target)
 
             def _matches(dev_name: str) -> bool:
                 if dev_name == target:
                     return True
                 if target_norm:
-                    return _normalize_device_name(dev_name) == target_norm
+                    return normalize_device_name(dev_name) == target_norm
                 return False
 
             with get_device_guard_lock():
@@ -20125,7 +20089,7 @@ async def _background_init(controller: ScriberWebController) -> None:
 
             # In installed Tauri builds, this verifies the shell IPC overlay
             # endpoint without importing any GUI runtime into the backend.
-            await asyncio.to_thread(lambda: get_overlay(on_stop=None))
+            await asyncio.to_thread(get_overlay, on_stop=None)
             logger.info("Native overlay endpoint prewarmed")
         except Exception as e:
             logger.debug(f"Overlay prewarm skipped: {e}")
@@ -20275,7 +20239,7 @@ def main() -> None:
     }
     setup_logging(component="web_api", force=True, add_stderr=add_stderr)
     host = os.getenv("SCRIBER_WEB_HOST", "127.0.0.1")
-    port = _env_int("SCRIBER_WEB_PORT", 8765, minimum=1, maximum=65535)
+    port = env_int("SCRIBER_WEB_PORT", 8765, minimum=1, maximum=65535)
     asyncio.run(run_server(host, port))
 
 

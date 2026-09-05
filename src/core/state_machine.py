@@ -53,11 +53,6 @@ class RecordingStateMachine:
     def history(self) -> tuple[TransitionEvent, ...]:
         return tuple(self._history)
 
-    def can_transition(self, target: RecordingState) -> bool:
-        if target == self._state:
-            return True
-        return target in _VALID_TRANSITIONS.get(self._state, set())
-
     def transition(self, target: RecordingState) -> TransitionEvent | None:
         if target == self._state:
             return None
