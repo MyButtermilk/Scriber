@@ -11,9 +11,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from pipecat.frames.frames import (
+    CancelFrame,
     EndFrame,
     InputAudioRawFrame,
     StartFrame,
+    StopFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -2965,7 +2967,8 @@ async def test_live_vad_finalization_flushes_when_hotkey_stops_during_speech():
 
 
 @pytest.mark.asyncio
-async def test_segmented_stt_gate_defaults_to_whole_recording_segment():
+@pytest.mark.parametrize("terminal_frame", [EndFrame, StopFrame])
+async def test_segmented_stt_gate_defaults_to_whole_recording_segment(terminal_frame):
     gate = SegmentedSTTRecordingGate(vad_segmentation_enabled=False)
     pushed = []
 
@@ -2976,13 +2979,35 @@ async def test_segmented_stt_gate_defaults_to_whole_recording_segment():
 
     await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     await gate.process_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-    await gate.process_frame(EndFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(terminal_frame(), FrameDirection.DOWNSTREAM)
 
     assert pushed == [
         (VADUserStartedSpeakingFrame, FrameDirection.DOWNSTREAM),
         (VADUserStoppedSpeakingFrame, FrameDirection.DOWNSTREAM),
-        (EndFrame, FrameDirection.DOWNSTREAM),
+        (terminal_frame, FrameDirection.DOWNSTREAM),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vad_enabled", [False, True])
+async def test_segmented_stt_gate_cancel_never_commits_buffered_speech(vad_enabled):
+    gate = SegmentedSTTRecordingGate(vad_segmentation_enabled=vad_enabled)
+    gate.push_frame = AsyncMock()
+    await gate.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await gate.process_frame(
+        InputAudioRawFrame(audio=b"\x01\x00" * 1600, sample_rate=16000, num_channels=1),
+        FrameDirection.DOWNSTREAM,
+    )
+    gate.push_frame.reset_mock()
+
+    cancel = CancelFrame()
+    await gate.process_frame(cancel, FrameDirection.DOWNSTREAM)
+
+    # A VAD stop tells segmented providers to upload the buffered recording.
+    # Cancellation must discard that boundary, including a later cleanup flush.
+    gate.push_frame.assert_awaited_once_with(cancel, FrameDirection.DOWNSTREAM)
+    assert await gate.flush_segment() is False
+    gate.push_frame.assert_awaited_once_with(cancel, FrameDirection.DOWNSTREAM)
 
 
 @pytest.mark.asyncio

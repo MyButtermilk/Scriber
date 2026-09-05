@@ -273,7 +273,7 @@ class ModulateAsyncProcessor(FrameProcessor):
                     logger.info("Modulate async: skipping terminal transcription for silent recording")
                 elif self._oversized:
                     logger.warning("Modulate async recording exceeded the provider upload limit")
-                elif self._buffer_size:
+                elif self._buffer_size and not isinstance(frame, CancelFrame):
                     _report_progress(self._on_progress, "Transcribing...")
                     wav_source = await asyncio.to_thread(
                         pcm_stream_to_wav,

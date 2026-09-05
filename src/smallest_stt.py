@@ -293,7 +293,7 @@ class SmallestAsyncProcessor(FrameProcessor):
                     self._reset_buffer()
                     await self.push_frame(frame, direction)
                     return
-                if self._buffer_size:
+                if self._buffer_size and not isinstance(frame, CancelFrame):
                     _report_progress(self._on_progress, "Transcribing...")
                     wav_source = await asyncio.to_thread(
                         pcm_stream_to_wav,

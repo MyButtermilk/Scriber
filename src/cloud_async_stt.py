@@ -1164,7 +1164,8 @@ class _BufferedAsyncProcessor(FrameProcessor):
                     self._reset_buffer()
                     await self.push_frame(frame, direction)
                     return
-                if self._buffer_size:
+                # Cancellation releases both audio owners without starting an upload.
+                if self._buffer_size and not isinstance(frame, CancelFrame):
                     _report_progress(self._on_progress, "Transcribing...")
                     if artifact is not None and artifact.matches_pcm(
                         sample_rate=self._sample_rate,

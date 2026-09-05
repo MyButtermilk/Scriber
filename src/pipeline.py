@@ -819,7 +819,9 @@ class SonioxAsyncProcessor(FrameProcessor):
             await self.push_frame(frame, direction)
         elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
             try:
-                if getattr(self, "_skip_terminal_transcription", False):
+                if isinstance(frame, CancelFrame):
+                    logger.debug("Soniox async: discarding canceled recording")
+                elif getattr(self, "_skip_terminal_transcription", False):
                     logger.info("Soniox async: skipping terminal transcription for silent recording")
                 elif not self._buffer_size:
                     logger.debug("Soniox async: no audio buffered; skipping transcription")
@@ -1723,6 +1725,15 @@ class SegmentedSTTRecordingGate(FrameProcessor):
                 await self.push_frame(VADUserStartedSpeakingFrame(), direction)
             return
 
+        if isinstance(frame, CancelFrame):
+            # A synthetic VAD stop commits buffered audio at the provider.
+            # Abandon the boundary so cancellation and cleanup cannot upload it.
+            self._whole_recording_open = False
+            self._whole_recording_closed = True
+            self._vad_user_speaking = False
+            await self.push_frame(frame, direction)
+            return
+
         if self.vad_segmentation_enabled:
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 self._vad_user_speaking = True
@@ -1736,7 +1747,7 @@ class SegmentedSTTRecordingGate(FrameProcessor):
             # split HTTP upload-based STT providers unless the user opted in.
             return
 
-        if isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+        if isinstance(frame, (EndFrame, StopFrame)):
             await self.flush_segment(direction=direction)
             await self.push_frame(frame, direction)
             return
