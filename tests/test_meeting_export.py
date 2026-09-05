@@ -4,12 +4,15 @@ import copy
 from email import policy
 from email.parser import BytesParser
 
+import pytest
+
 from src.meeting_export import (
     build_eml_draft,
     build_meeting_email,
     build_meeting_markdown,
     build_meeting_summary_markdown,
     build_meeting_transcript_text,
+    meeting_duration_ms,
     meeting_email_recipients,
     meeting_export_labels,
     meeting_export_language,
@@ -133,6 +136,32 @@ def test_meeting_templates_keep_summary_and_timestamped_transcript_distinct():
     assert "**Duration:** 0:08" in markdown
     assert "### 0:01 → 0:04 · Alex" in markdown
     assert markdown.count("# Roadmap review") == 1
+
+
+@pytest.mark.parametrize("include_segments", [True, False])
+def test_meeting_export_duration_preserves_silence_in_retained_recording(include_segments):
+    detail = meeting_detail()
+    if not include_segments:
+        detail["segments"] = []
+    detail["audioAssets"] = [
+        {"kind": "playback_microphone", "durationMs": 90_000},
+        {
+            "kind": "playback_mix",
+            "durationMs": 30_000,
+            "trackManifest": [{"source": "mixed", "timelineOriginMs": 2_000}],
+        },
+    ]
+
+    assert meeting_duration_ms(detail) == 32_000
+    assert "**Duration:** 0:32" in build_meeting_markdown(detail)
+    assert "Duration: 0:32" in build_meeting_email(detail)["body"]
+
+
+def test_meeting_export_duration_falls_back_to_segments_without_retained_mix():
+    detail = meeting_detail()
+    detail["audioAssets"] = [{"kind": "playback_microphone", "durationMs": 90_000}]
+
+    assert meeting_duration_ms(detail) == 8_250
 
 
 def test_email_template_uses_unique_valid_outlook_participants_without_false_attachment_claim():

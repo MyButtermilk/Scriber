@@ -252,6 +252,13 @@ def _single_line(value: Any, *, limit: int) -> str:
 
 
 def meeting_duration_ms(detail: dict[str, Any]) -> int:
+    # Speech timestamps omit trailing silence. Use the retained playback mix's
+    # full Meeting-clock extent, matching the review player's timeline.
+    mix = next((item for item in detail.get("audioAssets", []) if item.get("kind") == "playback_mix"), None)
+    if mix is not None and mix.get("durationMs") is not None:
+        tracks = mix.get("trackManifest") or []
+        track = next((item for item in tracks if item.get("source") == "mixed"), tracks[0] if tracks else {})
+        return max(0, int(track.get("timelineOriginMs") or 0)) + max(0, int(mix["durationMs"]))
     return max((int(item.get("endMs", 0)) for item in detail.get("segments", [])), default=0)
 
 

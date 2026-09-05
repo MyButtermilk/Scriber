@@ -779,24 +779,27 @@ def search_transcript_metadata(
                 total = conn.execute(total_sql, [fts_q, *params]).fetchone()["c"]
                 rows = conn.execute(rows_sql, [fts_q, *params, limit, offset]).fetchall() if limit > 0 else []
             else:
-                like = f"%{q.lower()}%"
+                # Punctuation-only searches are literal substrings. LIKE would
+                # interpret a searched percent sign as an SQL wildcard.
+                literal = q.lower()
                 total_sql = (
                     "SELECT COUNT(*) AS c FROM transcripts t "
-                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR "
-                    "LOWER(scriber_summary_text(t.summary, t.summary_format)) LIKE ? OR LOWER(t.channel) LIKE ?) "
-                    + ("AND t.type = ?" if transcript_type else "")
+                    "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
+                    "instr(LOWER(scriber_summary_text(t.summary, t.summary_format)), ?) > 0 OR "
+                    "instr(LOWER(t.channel), ?) > 0) " + ("AND t.type = ?" if transcript_type else "")
                 )
                 rows_sql = (
                     "SELECT t.id, t.title, t.date, t.duration, t.status, t.type, t.language, t.step, "
                     "t.source_url, t.channel, t.thumbnail_url, t.created_at, t.updated_at, t.preview, "
                     "t.summary_format, t.summary_status, t.summary_error, t.summary_updated_at "
                     "FROM transcripts t "
-                    "WHERE (LOWER(t.title) LIKE ? OR LOWER(t.content) LIKE ? OR "
-                    "LOWER(scriber_summary_text(t.summary, t.summary_format)) LIKE ? OR LOWER(t.channel) LIKE ?) "
+                    "WHERE (instr(LOWER(t.title), ?) > 0 OR instr(LOWER(t.content), ?) > 0 OR "
+                    "instr(LOWER(scriber_summary_text(t.summary, t.summary_format)), ?) > 0 OR "
+                    "instr(LOWER(t.channel), ?) > 0) "
                     + ("AND t.type = ? " if transcript_type else "")
                     + "ORDER BY t.created_at DESC, t.id DESC LIMIT ? OFFSET ?"
                 )
-                args = [like, like, like, like]
+                args = [literal, literal, literal, literal]
                 if transcript_type:
                     args.append(transcript_type)
                 total = conn.execute(total_sql, args).fetchone()["c"]

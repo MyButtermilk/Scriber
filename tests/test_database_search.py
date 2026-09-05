@@ -32,6 +32,29 @@ def test_fts_query_preserves_unicode_words():
     assert _search_count("Grüße aus München", "München") == 1
 
 
+def test_punctuation_search_treats_sql_wildcards_as_literal_text(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        for record_id, content in (
+            ("percentage", "Margin improved by 10%."),
+            ("unrelated", "The next meeting is on Friday."),
+        ):
+            database.save_transcript(
+                {"id": record_id, "title": record_id, "status": "completed", "type": "file", "content": content}
+            )
+
+        result = database.search_transcript_metadata("%", transcript_type="file", limit=1)
+
+        assert result["total"] == 1
+        assert [item["id"] for item in result["items"]] == ["percentage"]
+        assert result["hasMore"] is False
+        assert database.search_transcript_metadata("%%")["total"] == 0
+    finally:
+        database._close_all_connections()
+
+
 def test_save_transcript_propagates_storage_failure(monkeypatch):
     class _FailingConnection:
         def __enter__(self):

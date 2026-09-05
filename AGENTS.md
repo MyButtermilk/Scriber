@@ -274,6 +274,10 @@ Frontend and shell:
   note hand-off owner. Playback may follow the active virtual row only while
   Follow is enabled; a manual review scroll must turn Follow off rather than
   fight the user. Keep live Latest-text following as a separate behavior.
+- Meeting note teardown saves compare the current draft with the newest
+  effective write generation. Matching older saved or in-flight text must not
+  skip a newer write needed to preserve a user revert; discard superseded
+  queued drafts before deduplicating the teardown save.
 - `Frontend/client/src/contexts/WebSocketContext.tsx`: shared WebSocket.
 - `Frontend/client/src/lib/backend.ts`: backend URL and Tauri token bridge.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
@@ -845,13 +849,17 @@ Packaging and scripts:
 - Meeting and canonical transcript FTS5 projections use base-table `rowid` as
   their FTS `rowid`. Keep schema-versioned atomic rebuilds, rowid-based trigger
   deletes/parity checks, Meeting-scoped MATCH expressions, and the explicit
-  single-snapshot transaction in `MeetingStore.detail`.
+  single-snapshot transaction in `MeetingStore.detail`. Punctuation-only
+  transcript searches use literal substrings, never SQL wildcard semantics.
 - Durable File/YouTube job claims and terminal transitions are SQL CAS updates.
   Preserve idempotent `queued/running/completed -> completed` reconciliation,
   but never allow a late completion to overwrite `canceled` or `failed`.
 - Meeting exports must use `src/meeting_export.py` as the shared template
-  boundary. Email headers must remain single-line and participant addresses
-  validated/deduplicated; body-only drafts must not claim an attachment exists.
+  boundary. Their duration uses the retained playback mix's duration plus
+  Meeting-clock origin, including trailing silence; segment end times are the
+  fallback when no mix duration is available. Email headers must remain
+  single-line and participant addresses validated/deduplicated; body-only drafts
+  must not claim an attachment exists.
   Saved `.eml` drafts use SMTP CRLF line endings, an ASCII-safe
   quoted-printable UTF-8 body, plus `X-Unsent: 1`, and the
   selected PDF, DOCX, or Markdown attachment must remain a real MIME part when
@@ -1187,6 +1195,10 @@ Packaging and scripts:
   and must consume `STTUpdateSettingsFrame.delta`; do not restore legacy
   `frame.settings` dictionaries or constructors that leave Pipecat settings as
   `NOT_GIVEN`.
+- Buffered STT cancellation discards PCM and releases adopted WAV artifacts
+  without encoding, uploading, or emitting final text. Recording gates discard
+  active boundaries on `CancelFrame`, including later cleanup flushes;
+  `EndFrame` and `StopFrame` retain their normal finalization behavior.
 - Do not add Pipecat's `local-smart-turn` extra to the standard sidecar: in
   Pipecat 1.5 it pulls Torch, Torchaudio, and Transformers. SmartTurn remains
   optional; import `LocalSmartTurnAnalyzerV3` directly and do not couple it to

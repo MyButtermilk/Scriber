@@ -356,11 +356,22 @@ class MeetingNotesSaveQueue {
 
   flushForTeardown = (): void => {
     const body = normalizeBody(this.draftBody);
-    if (body === this.savedBody || body === this.inFlightWrite?.body || body === this.teardownWrite?.body) {
+    // Compare against the newest effective write. Matching the last saved body
+    // or a superseded request does not protect a revert from a later write.
+    let latestBody = this.savedBody;
+    let latestGeneration = this.lastAppliedWrite;
+    for (const pending of [this.inFlightWrite, this.teardownWrite]) {
+      if (pending && pending.generation > latestGeneration) {
+        latestBody = pending.body;
+        latestGeneration = pending.generation;
+      }
+    }
+    this.queuedBody = null;
+    if (body === latestBody) {
+      this.emit();
       return;
     }
 
-    this.queuedBody = null;
     this.error = null;
     const generation = this.nextGeneration();
     const pending = { body, generation };
