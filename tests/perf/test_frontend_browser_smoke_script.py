@@ -35,13 +35,14 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     assert payload["summary"]["routeCount"] == 11
     assert "/meetings" in payload["summary"]["routes"]
     assert payload["summary"]["criticalConsoleErrorCount"] == 0
-    assert payload["summary"]["interactionCheckCount"] == 21
+    assert payload["summary"]["interactionCheckCount"] == 22
     assert set(payload["summary"]["interactionChecks"]) == {
         "history-search-copy-navigation",
         "youtube-history-actions",
         "youtube-thumbnails",
         "youtube-start-transcription",
         "file-history-actions",
+        "parallel-file-imports",
         "file-upload-error",
         "file-drag-drop",
         "meeting-end-to-end",
@@ -85,6 +86,7 @@ def test_frontend_browser_smoke_validate_only_writes_artifact(tmp_path: Path) ->
     ]
     file = next(item for item in payload["scenarios"] if item["route"] == "/file")
     assert file["interactionChecks"] == [
+        {"name": "parallel-file-imports", "ok": True},
         {"name": "file-history-actions", "ok": True},
         {"name": "file-upload-error", "ok": True},
         {"name": "file-drag-drop", "ok": True},
@@ -145,7 +147,7 @@ def test_frontend_browser_smoke_validate_only_can_include_fast_tab_switch(tmp_pa
     assert result.returncode == 0, result.stderr
     payload = json.loads(output_path.read_text(encoding="utf-8"))
     assert payload["ok"] is True
-    assert payload["summary"]["interactionCheckCount"] == 22
+    assert payload["summary"]["interactionCheckCount"] == 23
     assert "fast-tab-switch" in payload["summary"]["interactionChecks"]
     assert payload["fastTabSwitchCheck"]["name"] == "fast-tab-switch"
     assert payload["fastTabSwitchCheck"]["ok"] is True

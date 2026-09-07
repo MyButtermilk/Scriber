@@ -2,9 +2,8 @@ import { useCallback, useState, useEffect, memo, useMemo, useRef, useSyncExterna
 import { useDropzone } from "react-dropzone";
 import { AlertCircle, UploadCloud, FileAudio, XCircle, Square, ArrowRight } from "lucide-react";
 import { Card } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { FileImportQueue } from "@/components/file-import-queue";
 import { Button } from "@/components/ui/button";
-import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Badge } from "@/components/ui/badge";
 import { useLocation } from "wouter";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -25,7 +24,6 @@ import { ErrorShake } from "@/components/ui/error-shake";
 import { transcriptHistoryQueryKey, useTranscriptHistoryQuery } from "@/hooks/use-transcript-history-query";
 import {
   getFileUploadSnapshot,
-  isFileUploadActive,
   startFileUploadBatch,
   subscribeFileUpload,
   type FileUploadLocalizedText,
@@ -41,7 +39,7 @@ import { formatNumberNow, translateNow, useI18n } from "@/i18n";
 import { useTranscriptHistoryPanelState } from "@/hooks/use-transcript-history-panel-state";
 
 const DEFAULT_COMPRESSION_THRESHOLD_BYTES = 50 * 1024 * 1024;
-const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"]);
+const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".flv", ".wmv"]);
 
 interface FileDropError {
   reason: string;
@@ -56,12 +54,12 @@ function getFileExtension(fileName: string): string {
 function inferServerProcessingText(file: File, compressionThresholdBytes: number): FileUploadLocalizedText {
   const ext = getFileExtension(file.name);
   if (VIDEO_EXTENSIONS.has(ext)) {
-    return { key: "Extracting audio from {{file}}…", values: { file: file.name } };
+    return { key: "Extracting audio…" };
   }
   if (file.size > compressionThresholdBytes) {
-    return { key: "Compressing {{file}}…", values: { file: file.name } };
+    return { key: "Optimizing audio…" };
   }
-  return { key: "Preparing {{file}}…", values: { file: file.name } };
+  return { key: "Preparing audio…" };
 }
 
 function localizedProcessingStep(
@@ -165,7 +163,7 @@ const FileCard = memo(function FileCard({
                 ) : historyStatus === "summary_failed" ? (
                   <AlertCircle className="w-5 h-5" />
                 ) : historyStatus === "processing" ? (
-                  <WavePhysicsLoader size="compact" />
+                  <FileAudio className="h-5 w-5" aria-hidden="true" />
                 ) : historyStatus === "stopped" ? (
                   <Square className="w-5 h-5" />
                 ) : (
@@ -200,7 +198,10 @@ const FileCard = memo(function FileCard({
                   variant="outline"
                   className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
                 >
-                  <WavePhysicsLoader size="micro" />
+                  <span
+                    className="h-1.5 w-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse"
+                    aria-hidden="true"
+                  />
                   {item.summaryStatus === "pending"
                     ? t("Summarizing…")
                     : localizedProcessingStep(item.step, "Processing", t, formatNumber)}
@@ -258,7 +259,7 @@ const FileCard = memo(function FileCard({
                 ) : historyStatus === "summary_failed" ? (
                   <AlertCircle className="w-6 h-6" />
                 ) : historyStatus === "processing" ? (
-                  <WavePhysicsLoader size="compact" />
+                  <FileAudio className="h-5 w-5" aria-hidden="true" />
                 ) : historyStatus === "stopped" ? (
                   <Square className="w-6 h-6" />
                 ) : (
@@ -271,7 +272,10 @@ const FileCard = memo(function FileCard({
                     variant="outline"
                     className="text-blue-600 border-blue-200 bg-blue-50 text-ui-micro flex items-center gap-1"
                   >
-                    <WavePhysicsLoader size="micro" />
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse"
+                      aria-hidden="true"
+                    />
                     {item.summaryStatus === "pending" ? t("Summarizing…") : null}
                   </Badge>
                 ) : historyStatus === "failed" ? (
@@ -336,7 +340,7 @@ const FileCard = memo(function FileCard({
 });
 
 export default function FileTranscribe() {
-  const [location, setLocation] = useLocation();
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
   const { formatNumber, t } = useI18n();
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -347,13 +351,6 @@ export default function FileTranscribe() {
   const copyResetTimerRef = useRef<number | null>(null);
   const uploadSnapshot = useSyncExternalStore(subscribeFileUpload, getFileUploadSnapshot, getFileUploadSnapshot);
   const isUploading = uploadSnapshot.status === "uploading" || uploadSnapshot.status === "server_processing";
-  const uploadProgress = uploadSnapshot.progress;
-  const uploadingFileName = uploadSnapshot.fileName;
-  const uploadStatusText = uploadSnapshot.statusText;
-  const uploadStatusValues = uploadSnapshot.statusValues;
-  const uploadQueueItems = uploadSnapshot.items;
-  const uploadTotalFiles = uploadSnapshot.totalFiles;
-  const uploadFinishedFiles = uploadSnapshot.completedFiles + uploadSnapshot.failedFiles;
   const queryClient = useQueryClient();
   const {
     debouncedSearch,
@@ -390,13 +387,12 @@ export default function FileTranscribe() {
     Number(fileUploadLimits?.compressionThresholdBytes) || DEFAULT_COMPRESSION_THRESHOLD_BYTES;
   const uploadHint = useMemo(() => {
     if (!fileUploadLimits) {
-      return t("Audio and video up to 2 GB · files over 50 MB are optimized automatically");
+      return t("Video: only the extracted audio counts towards the transcription limit.");
     }
 
     const providerLabel = fileUploadLimits.providerLabel || t("Selected provider");
     const compressionThresholdLabel = fileUploadLimits.compressionThresholdLabel || "50MB";
     const audioLimitLabel = fileUploadLimits.audioMaxLabel || t("unknown");
-    const videoLimitLabel = fileUploadLimits.videoMaxLabel || "2GB";
 
     const audioHint = fileUploadLimits.usesDirectProviderLimit
       ? t("{{provider}} accepts audio up to {{limit}}", { provider: providerLabel, limit: audioLimitLabel })
@@ -405,21 +401,24 @@ export default function FileTranscribe() {
           limit: audioLimitLabel,
         });
 
-    return t("{{audioHint}} · video up to {{videoLimit}} · files over {{threshold}} are optimized automatically", {
-      audioHint,
-      videoLimit: videoLimitLabel,
-      threshold: compressionThresholdLabel,
-    });
+    return t(
+      "{{audioHint}} · video: the limit applies after audio extraction · files over {{threshold}} are optimized automatically",
+      {
+        audioHint,
+        threshold: compressionThresholdLabel,
+      },
+    );
   }, [fileUploadLimits, t]);
-  const maxUploadBytes = useMemo(
-    () =>
-      Math.max(
-        Number(fileUploadLimits?.rawAudioIngestMaxBytes) || 0,
-        Number(fileUploadLimits?.videoMaxBytes) || 0,
-        2 * 1024 * 1024 * 1024,
-      ),
-    [fileUploadLimits],
-  );
+  const rawAudioLimit = fileUploadLimits?.rawAudioIngestMaxBytes || 2 * 1024 * 1024 * 1024;
+
+  useEffect(() => {
+    if (uploadSnapshot.completedFiles > 0) {
+      void queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "file",
+      });
+    }
+  }, [uploadSnapshot.completedFiles, queryClient]);
 
   useTranscriptAutoRefresh({
     queryKey: transcriptsQueryKey,
@@ -470,13 +469,6 @@ export default function FileTranscribe() {
           predicate: (query) =>
             query.queryKey[0] === "/api/transcripts" && (query.queryKey[1] as { type?: string })?.type === "file",
         });
-
-        // Stay out of the user's way if they intentionally switched tabs while
-        // the long upload/extraction request was still running.
-        const currentPath = typeof window !== "undefined" ? window.location.pathname : location;
-        if (selectedFiles.length === 1 && result.responses[0]?.id && currentPath === "/file") {
-          setLocation(`/transcript/${result.responses[0].id}`);
-        }
       } catch (e: any) {
         toast({
           title: translateNow("Upload failed"),
@@ -485,7 +477,7 @@ export default function FileTranscribe() {
         });
       }
     },
-    [compressionThresholdBytes, location, queryClient, setLocation, toast],
+    [compressionThresholdBytes, queryClient, toast],
   );
 
   const deleteTranscript = useCallback(
@@ -613,7 +605,7 @@ export default function FileTranscribe() {
 
   const onDrop = useCallback(
     (acceptedFiles: File[]) => {
-      if (acceptedFiles.length > 0 && !isFileUploadActive()) {
+      if (acceptedFiles.length > 0) {
         setDropError(null);
         uploadFiles(acceptedFiles);
       }
@@ -625,16 +617,20 @@ export default function FileTranscribe() {
     onDrop,
     accept: {
       "audio/*": [".mp3", ".m4a", ".wav", ".ogg", ".flac", ".aac"],
-      "video/*": [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v"],
+      "video/*": [".mp4", ".mov", ".webm", ".avi", ".mkv", ".m4v", ".flv", ".wmv"],
     },
     multiple: true,
-    maxSize: maxUploadBytes,
-    disabled: isUploading,
+    validator: (file) =>
+      // During drag-enter the browser may expose only a DataTransferItem;
+      // its filename and size become available on drop.
+      file.name && !VIDEO_EXTENSIONS.has(getFileExtension(file.name)) && file.size > rawAudioLimit
+        ? { code: "file-too-large", message: "Audio file exceeds the raw import limit." }
+        : null,
     onDropRejected: (rejections) => {
       const first = rejections[0];
       const reason =
         first?.errors?.[0]?.code === "file-too-large"
-          ? "This file is larger than the current 2 GB import limit."
+          ? "Audio file exceeds the raw import limit."
           : "Choose a supported audio or video file.";
       setDropError({ reason, fileName: first?.file?.name });
     },
@@ -653,122 +649,53 @@ export default function FileTranscribe() {
         sticky={false}
       />
 
-      {/* Import workbench */}
+      {/* The picker remains usable while imports run in the shared queue. */}
       <div
         {...getRootProps({
           role: "button",
           "aria-label": t("Upload file for transcription"),
           "aria-describedby": "file-upload-formats file-upload-limits",
-          "aria-busy": isUploading,
         })}
-        className={`file-upload-shell mb-7 cursor-pointer group
-          ${isDragActive ? "is-drag-active" : ""}
-          ${isUploading ? "is-uploading" : ""}
-        `}
+        className={`file-upload-shell mb-5 cursor-pointer group ${isDragActive ? "is-drag-active" : ""}`}
       >
-        <div className="file-upload-core flex flex-col items-center justify-center gap-4 p-6 text-center md:p-8">
-          <input {...getInputProps()} />
-          <div className="file-upload-mark flex h-[72px] w-[72px] items-center justify-center rounded-full">
-            {isUploading ? (
-              <WavePhysicsLoader size="panel" label={t("Loading…")} />
-            ) : (
-              <UploadCloud
-                className={`h-8 w-8 stroke-[1.45px] ${isDragActive ? "text-primary" : "text-muted-foreground"}`}
-              />
-            )}
+        <input {...getInputProps()} />
+        <div
+          className={`file-upload-core flex items-center gap-5 p-6 md:p-7 ${isUploading ? "file-upload-compact" : "flex-col justify-center text-center"}`}
+        >
+          <div className="file-upload-mark flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-primary">
+            <UploadCloud className="h-7 w-7 stroke-[1.5px]" aria-hidden="true" />
           </div>
-          <div className="space-y-1">
-            {isUploading ? (
-              <>
-                <p className="text-pretty font-heading text-[17px] font-semibold">
-                  {uploadTotalFiles > 1
-                    ? `${t("File {{current}} of {{total}}: ", {
-                        current: formatNumber(uploadSnapshot.currentIndex + 1),
-                        total: formatNumber(uploadTotalFiles),
-                      })}${t(uploadStatusText || "Uploading {{file}}…", {
-                        file: uploadingFileName,
-                        ...uploadStatusValues,
-                      })}`
-                    : t(uploadStatusText || "Uploading {{file}}…", {
-                        file: uploadingFileName,
-                        ...uploadStatusValues,
-                      })}
-                </p>
-                <Progress value={uploadProgress} className="mx-auto mt-3 h-2 w-[min(18rem,70vw)]" />
-                {uploadTotalFiles > 1 && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {t("{{finished}} of {{total}} files prepared", {
-                      finished: formatNumber(uploadFinishedFiles),
-                      total: formatNumber(uploadTotalFiles),
-                    })}
-                  </p>
-                )}
-              </>
-            ) : (
-              <>
-                <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">
-                  {t("Choose audio or video")}
-                </p>
-                <p id="file-upload-formats" className="text-[12px] leading-5 text-muted-foreground">
-                  {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
-                </p>
-                <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-[12px] font-semibold text-primary">
-                  <UploadCloud className="h-4 w-4" aria-hidden="true" />
-                  {t("Browse files")}
-                </span>
-                <p className="text-[11px] text-muted-foreground">{t("or drop them anywhere in this panel")}</p>
-              </>
-            )}
-          </div>
-          {dropError && !isUploading ? (
-            <ErrorShake active trigger={dropError}>
-              <div
-                className="file-upload-error max-w-xl rounded-[12px] px-3 py-2 text-left text-[12px] leading-5 text-destructive"
-                role="alert"
-              >
-                {dropError.fileName
-                  ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
-                  : t(dropError.reason)}
-              </div>
-            </ErrorShake>
-          ) : null}
-          {isUploading && uploadQueueItems.length > 1 && (
-            <div className="w-full max-w-md space-y-2 text-left">
-              {uploadQueueItems.map((item) => (
-                <div key={item.id} className="flex items-center gap-3 text-xs">
-                  <span
-                    className={`h-2 w-2 rounded-full shrink-0 ${
-                      item.status === "failed"
-                        ? "bg-red-500"
-                        : item.status === "completed"
-                          ? "bg-green-500"
-                          : item.status === "queued"
-                            ? "bg-muted-foreground/40"
-                            : "bg-primary"
-                    }`}
-                  />
-                  <span className="min-w-0 flex-1 truncate text-foreground">{item.fileName}</span>
-                  <span className="text-muted-foreground tabular-nums">
-                    {item.status === "queued"
-                      ? t("Queued")
-                      : item.status === "failed"
-                        ? t("Failed")
-                        : formatNumber(item.progress / 100, { style: "percent", maximumFractionDigits: 0 })}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-          {!isUploading && (
-            <p
-              id="file-upload-limits"
-              className="file-upload-formats mt-1 max-w-3xl text-pretty text-ui-micro leading-5 text-muted-foreground"
-            >
-              {uploadHint}
+          <div className="min-w-0 space-y-1.5">
+            <p className="font-heading text-[19px] font-semibold tracking-[-0.02em]">
+              {isUploading ? t("Add more files") : t("Choose audio or video")}
             </p>
-          )}
+            <p id="file-upload-formats" className="text-xs leading-5 text-muted-foreground">
+              {t("MP3, M4A, WAV, FLAC, MP4, MOV and WebM · multiple files supported")}
+            </p>
+            <span className="file-upload-cta mt-2 inline-flex h-10 items-center gap-2 rounded-[11px] px-4 text-xs font-semibold text-primary">
+              {t("Browse files")}
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+            <p className="text-[11px] text-muted-foreground">{t("or drop them anywhere in this panel")}</p>
+          </div>
         </div>
       </div>
+      <p id="file-upload-limits" className="mb-6 px-1 text-xs leading-5 text-muted-foreground">
+        {uploadHint}
+      </p>
+      {dropError && (
+        <ErrorShake active trigger={dropError}>
+          <div
+            className="file-upload-error mb-5 break-words rounded-xl px-4 py-3 text-xs leading-5 text-destructive"
+            role="alert"
+          >
+            {dropError.fileName
+              ? t("{{file}}: {{error}}", { file: dropError.fileName, error: t(dropError.reason) })
+              : t(dropError.reason)}
+          </div>
+        </ErrorShake>
+      )}
+      <FileImportQueue items={uploadSnapshot.items} />
 
       {/* Processing Queue */}
       {processingItems.length > 0 && (
@@ -805,7 +732,10 @@ export default function FileTranscribe() {
                     variant="outline"
                     className="inline-flex h-9 shrink-0 items-center gap-1.5 border-primary/20 bg-primary/[0.06] px-2.5 text-ui-micro leading-none text-primary"
                   >
-                    <WavePhysicsLoader size="inline" />
+                    <span
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-current motion-safe:animate-pulse"
+                      aria-hidden="true"
+                    />
                     {localizedProcessingStep(item.step, "Processing", t, formatNumber)}
                   </Badge>
                   <TranscriptStopButton

@@ -129,6 +129,7 @@ class FrontendSmokeBackend:
         self.runtime_logs_deleted = False
         self.support_bundle_count = 0
         self.file_uploads: list[dict[str, Any]] = []
+        self.file_preparation_gate: asyncio.Event | None = None
         self.runtime_logs_count = 0
         self.youtube_search_requests: list[str] = []
         self.youtube_transcribe_requests: list[dict[str, Any]] = []
@@ -1457,6 +1458,8 @@ class FrontendSmokeBackend:
             filename = str(getattr(file_field, "filename", "") or "")
         self.file_uploads.append({"filename": filename})
         self.request_log.append({"path": "/api/file/transcribe", "filename": filename})
+        if filename.startswith("parallel-import-") and self.file_preparation_gate is not None:
+            await self.file_preparation_gate.wait()
         if filename == "too-large-smoke.wav":
             return web.json_response({"message": "Synthetic upload limit exceeded"}, status=413)
         return web.json_response(
@@ -1955,7 +1958,8 @@ class FrontendSmokeBackend:
                 "providerLabel": "Soniox",
                 "audioMaxLabel": "2GB",
                 "rawAudioIngestMaxLabel": "2GB",
-                "videoMaxLabel": "2GB",
+                "videoMaxBytes": None,
+                "videoMaxLabel": None,
                 "usesDirectProviderLimit": False,
             },
         }
@@ -5352,11 +5356,11 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
       && document.querySelectorAll('.perf-scroll-item').length > 0
       && text.includes('Synthetic File 00001')
       && text.includes('Soniox processes files in the app up to 2GB')
-      && text.includes('video up to 2GB'),
+      && text.includes('video: the limit applies after audio extraction'),
     view: root?.getAttribute('data-history-view') || '',
     visibleCards: document.querySelectorAll('.perf-scroll-item').length,
     hasUploadLimitHint: text.includes('Soniox processes files in the app up to 2GB'),
-    hasVideoLimitHint: text.includes('video up to 2GB'),
+    hasVideoLimitHint: text.includes('video: the limit applies after audio extraction'),
     hasFirstFile: text.includes('Synthetic File 00001')
   };
 })()
@@ -5661,6 +5665,155 @@ async def exercise_file_history_interactions(cdp: CdpClient, *, timeout_sec: flo
     }
 
 
+async def exercise_parallel_file_imports(
+    cdp: CdpClient,
+    *,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+    screenshot_dir: Path | None = None,
+) -> dict[str, Any]:
+    backend.file_preparation_gate = asyncio.Event()
+    baseline = len(backend.file_uploads)
+    layouts = []
+    try:
+        await cdp.evaluate(r"""
+(() => {
+  window.__dropImportFiles = (names) => {
+    const transfer = new DataTransfer();
+    names.forEach((name) => {
+      const file = new File(['small test body'], name, {type: 'video/mp4'});
+      // Exercise the picker's large-video admission without allocating GBs.
+      Object.defineProperty(file, 'size', {value: 4 * 1024 ** 3});
+      transfer.items.add(file);
+    });
+    const target = document.querySelector('[aria-label="Upload file for transcription"]');
+    for (const type of ['dragenter', 'dragover', 'drop']) {
+      target.dispatchEvent(new DragEvent(type, {bubbles: true, dataTransfer: transfer}));
+    }
+  };
+  window.__dropImportFiles([
+    'parallel-import-1-Live Steuergestaltung in 2026 SteuerMentoring mit einem sehr langen Dateinamen.mp4',
+    'parallel-import-2.mp4', 'parallel-import-3.mp4'
+  ]);
+})()
+""")
+        await wait_for_interaction_state(
+            cdp,
+            label="parallel-file-preparation",
+            timeout_sec=timeout_sec,
+            expression="""({
+              ok: document.querySelectorAll('.file-import-row[data-status="server_processing"]').length === 2
+                && document.querySelectorAll('.file-import-row[data-status="queued"]').length === 1
+            })""",
+        )
+        await cdp.evaluate("window.__dropImportFiles(['parallel-import-4.mp4'])")
+        await wait_for_interaction_state(
+            cdp,
+            label="append-running-file-queue",
+            timeout_sec=timeout_sec,
+            expression="""({
+              ok: document.querySelectorAll('.file-import-row[data-status="queued"]').length === 2
+                && !document.querySelector('input[type="file"]').disabled
+            })""",
+        )
+        assert len(backend.file_uploads) - baseline == 2, "Import preparation concurrency exceeded two"
+        await cdp.evaluate("document.querySelector('a[href=\"/settings\"]').click()")
+        await wait_for_interaction_state(
+            cdp, label="leave-import", timeout_sec=timeout_sec, expression="({ok: location.pathname === '/settings'})"
+        )
+        for event_type in ("mousePressed", "mouseReleased"):
+            await cdp.call(
+                "Input.dispatchMouseEvent",
+                {
+                    "type": event_type,
+                    "x": 600,
+                    "y": 300,
+                    "button": "back",
+                    "clickCount": 1,
+                },
+            )
+        await wait_for_interaction_state(
+            cdp,
+            label="return-running-file-queue",
+            timeout_sec=timeout_sec,
+            expression="({ok: location.pathname === '/file' && document.querySelectorAll('.file-import-row').length === 4})",
+        )
+        for width, theme in ((1280, "light"), (960, "dark"), (390, "light")):
+            await cdp.call(
+                "Emulation.setDeviceMetricsOverride",
+                {
+                    "width": width,
+                    "height": 940,
+                    "deviceScaleFactor": 1,
+                    "mobile": False,
+                },
+            )
+            await cdp.evaluate(f"document.documentElement.classList.toggle('dark', {str(theme == 'dark').lower()})")
+            await asyncio.sleep(0.2)
+            layout = await cdp.evaluate("""(() => {
+              const rows = [...document.querySelectorAll('.file-import-row')];
+              const bars = [...document.querySelectorAll('.file-import-progress')];
+              return {
+                ok: rows.length === 4
+                  && rows.every(row => row.scrollWidth <= row.clientWidth + 1)
+                  && bars.every(bar => getComputedStyle(bar).overflow === 'hidden')
+                  && !document.querySelector('.file-import-list .wave-physics-loader'),
+                rows: rows.length,
+                horizontalOverflow: document.documentElement.scrollWidth > innerWidth + 1,
+                indeterminateBars: bars.filter(bar => !bar.hasAttribute('aria-valuenow')).length,
+              };
+            })()""")
+            assert layout["ok"] and not layout["horizontalOverflow"], f"Import layout overflow: {layout}"
+            layout.update({"width": width, "theme": theme})
+            if screenshot_dir is not None:
+                layout["screenshot"] = await capture_page_screenshot(
+                    cdp,
+                    output_dir=screenshot_dir,
+                    label=f"file-import-{width}-{theme}",
+                )
+            layouts.append(layout)
+        await cdp.call(
+            "Emulation.setEmulatedMedia", {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]}
+        )
+        reduced = await cdp.evaluate("""[...document.querySelectorAll('.file-import-progress > span')]
+          .every(bar => getComputedStyle(bar).animationName === 'none')""")
+        assert reduced, "Preparation motion must stop under reduced motion"
+    finally:
+        backend.file_preparation_gate.set()
+        backend.file_preparation_gate = None
+        await cdp.call("Emulation.setEmulatedMedia", {"features": []})
+        await cdp.call(
+            "Emulation.setDeviceMetricsOverride",
+            {
+                "width": 1280,
+                "height": 860,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+            },
+        )
+        await cdp.evaluate("document.documentElement.classList.remove('dark')")
+    await wait_for_interaction_state(
+        cdp,
+        label="parallel-file-imports-complete",
+        timeout_sec=timeout_sec,
+        expression="({ok: !document.querySelector('.file-import-row')})",
+    )
+    assert len(backend.file_uploads) - baseline == 4
+    errors = await cdp.evaluate("window.__scriberSmoke")
+    assert not errors.get("consoleErrors") and not errors.get("pageErrors") and not errors.get("unhandledRejections"), (
+        errors
+    )
+    return {
+        "name": "parallel-file-imports",
+        "ok": True,
+        "layouts": layouts,
+        "reducedMotion": reduced,
+        "parallelPreparations": 2,
+        "filesAccepted": 4,
+        "queueSurvivesNavigation": True,
+    }
+
+
 async def exercise_file_upload_error_interaction(cdp: CdpClient, *, timeout_sec: float) -> dict[str, Any]:
     drop_started = await cdp.evaluate(
         r"""
@@ -5730,10 +5883,10 @@ async def exercise_file_drop_interaction(cdp: CdpClient, *, timeout_sec: float) 
 (() => {
   const text = document.body ? document.body.innerText : '';
   return {
-    ok: window.location.pathname === '/transcript/file-upload-smoke' && text.includes('Summary') && text.includes('Transcript'),
+    ok: window.location.pathname === '/file' && text.includes('File uploaded') && text.includes('Transcription started'),
     route: window.location.pathname,
-    hasSummary: text.includes('Summary'),
-    hasTranscript: text.includes('Transcript')
+    hasUploadConfirmation: text.includes('File uploaded'),
+    pickerEnabled: !document.querySelector('input[type="file"]')?.disabled
   };
 })()
 """,
@@ -7934,6 +8087,14 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                     )
                 elif route == "/file":
                     interaction_checks.append(
+                        await exercise_parallel_file_imports(
+                            cdp,
+                            backend=backend,
+                            timeout_sec=args.page_timeout_sec,
+                            screenshot_dir=screenshot_dir,
+                        )
+                    )
+                    interaction_checks.append(
                         await exercise_file_history_interactions(cdp, timeout_sec=args.page_timeout_sec)
                     )
                     interaction_checks.append(
@@ -8247,6 +8408,7 @@ def build_validate_result(args: argparse.Namespace) -> dict[str, Any]:
             ]
             if route == "/youtube"
             else [
+                {"name": "parallel-file-imports", "ok": True},
                 {"name": "file-history-actions", "ok": True},
                 {"name": "file-upload-error", "ok": True},
                 {"name": "file-drag-drop", "ok": True},

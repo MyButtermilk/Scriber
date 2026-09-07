@@ -863,8 +863,13 @@ the latest unleased StageResult for that transcript and skips provider work.
 Empty StageResults are terminal invalid evidence rather than recoverable poison.
 
 File ingest freezes an immutable `FileUploadPlan` before it accepts the
-multipart body. The plan binds one provider/route, source kind, raw-ingest byte
-limit, and prepared-audio byte limit; the queued job persists that evidence and
+multipart body. The plan binds one provider/route, source kind, an optional
+raw-ingest byte limit, and the prepared-audio byte limit. Video source bytes
+have no fixed size ceiling: the route streams them locally in bounded batches,
+extracts/optimizes audio, and checks that audio against the frozen provider
+limit before admission. Audio sources retain their raw-ingest limit. Schema-3
+evidence represents unbounded video ingest with null bytes/label; old schema-1/2
+jobs retain their original exact bounds. The queued job persists that evidence and
 rebuilds it after restart without rereading changed Settings. The controller
 owns the source from `start_file_transcription` onward. Enqueue uses a
 preallocated id equal to the transcript id, so a post-commit exception can read
@@ -877,6 +882,17 @@ excluded from ordinary pending scans. Cancellation before enqueue waits for all
 file workers then cleans; cancellation after commit finishes in-process adoption
 and exactly-once scheduling before propagating. YouTube uses the same ownership
 barrier even though it has no local upload source at that point.
+
+The frontend File queue owns at most two simultaneous upload/preparation
+requests. New selections append to that queue while existing requests run, and
+each selection resolves with its own successes/failures. The queue survives
+route changes; admission refreshes history per file and keeps the picker open
+instead of navigating automatically. Each file has a contained progress bar:
+measured percent during upload, indeterminate progress during audio preparation.
+Provider transcription jobs keep their independent durable backend scheduling.
+AppLayout routes mouse side buttons, browser navigation keys, and Alt+arrows
+through the browser History API, including forward traversal, without replacing
+the route history or reloading the app.
 
 Terminal File/YouTube settlement is one restart-safe state machine. The complete
 persisted parent is authoritative. It is committed first, then the exact job is
@@ -1187,7 +1203,8 @@ Key modules:
   normalization, the accepted audio/video extensions, and one immutable
   provider-bound `FileUploadLimits` value containing raw-ingest and final-audio
   boundaries with their reviewed public labels; both ingest paths call it
-  directly.
+  directly. File video ingest has no raw byte ceiling. The resumable Meeting
+  import protocol retains its separate 2 GB original-video admission bound.
 - `src/pipeline.py`: STT orchestration, service factory, VAD/analyzer caching,
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact

@@ -149,7 +149,10 @@ port, and the exact admitted provider route. Upload-policy tests separately
 cover the 180 UTF-16-code-unit filename bound, Windows reserved-device names
 and invalid surrogates, accepted media extensions, and immutable
 provider-bound raw/final limits used by both File transcription and Meeting
-imports.
+imports. File tests also cover large declared video requests, extracted audio
+above/below the admitted limit, parallel preparation with separate workspaces,
+schema-1/2 compatibility, schema-3 video evidence, and partial-file cleanup on
+disk exhaustion. Meeting imports retain their original-video bound.
 WebSocket route tests register that domain alone and exercise the real aiohttp
 upgrade, initial state event, ping/pong path, origin rejection, failed-initial-
 send cleanup, and the exact four-member production controller port.
@@ -278,8 +281,12 @@ scripts\project-python.cmd scripts\smoke_real_file_upload_browser.py --output tm
 Unlike the broad synthetic frontend smoke, this narrow vertical slice runs the
 real React/Vite File page in Chrome against `src.web_api.create_app`, the
 extracted File Transcription handler, the real transcript database, and a real
-`JobStore`. It requires the route to persist one exact provider-bound queued job
-and keep the owned source before navigation succeeds. The same browser run also
+`JobStore`. It requires two provider-bound queued jobs with separate owned
+sources, preserves the File page, opens a transcript, and checks actual browser
+back/forward mouse input. The synthetic File browser scenario additionally
+holds two preparations, appends more files, leaves/reopens the queue, and checks
+long-filename containment at 1280, 960, and 390 px plus reduced motion.
+The same production browser run also
 opens the production `/ws` route, requires its initial `state` event, sends
 `ping`, receives `pong`, and verifies that composition resolves the extracted
 WebSocket handler. The provider worker is deliberately held at the queued

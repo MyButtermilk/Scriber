@@ -24,6 +24,7 @@ import { LanguageToggle } from "@/components/language-toggle";
 import { useI18n } from "@/i18n";
 import { AppScrollContainerContext } from "@/contexts/AppScrollContainerContext";
 import { AppOverlayScrollbar } from "@/components/layout/AppOverlayScrollbar";
+import { useHistoryNavigation } from "@/hooks/use-history-navigation";
 
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/CommandPalette");
@@ -42,6 +43,7 @@ type NavigationItem = {
 };
 
 export function AppLayout({ children, path }: AppLayoutProps) {
+  useHistoryNavigation();
   const [location] = useLocation();
   const { t } = useI18n();
   const currentKey = path || location;

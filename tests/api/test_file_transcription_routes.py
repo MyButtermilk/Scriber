@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,7 +20,7 @@ from src.api.file_transcription_routes import (
     FileUploadPlan,
     register_file_transcription_routes,
 )
-from src.api.upload_policy import FileUploadLimits, UploadLimit
+from src.api.upload_policy import FileUploadLimits, UploadLimit, file_upload_limits
 from src.data.job_store import JobStore
 from src.transcript_artifacts import FrozenTranscriptionRoute
 
@@ -110,6 +112,126 @@ async def test_file_upload_reaches_durable_admission_through_the_domain_route(tm
     assert admitted_path.read_bytes() == b"RIFF-WAVE"
     assert admitted_name == "admitted.wav"
     assert admitted_plan is controller._plan
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("audio_bytes, expected_status", [(4, 200), (9, 413)])
+async def test_large_video_is_admitted_by_its_extracted_audio(monkeypatch, tmp_path, audio_bytes, expected_status):
+    monkeypatch.setenv("SCRIBER_UPLOAD_MAX_BYTES", "8")
+    plan = FileUploadPlan(route=_route(), limits=file_upload_limits("assemblyai", source_is_video=True))
+    controller = _Controller(tmp_path / "files", plan=plan)
+
+    class VideoField:
+        name = "file"
+        filename = "large-video.mp4"
+
+        def __init__(self):
+            self.chunks = iter([b"bounded-video-chunk", b""])
+
+        async def read_chunk(self, *, size):
+            return next(self.chunks)
+
+    async def fields():
+        yield VideoField()
+
+    # A large declared video must reach the bounded stream writer, not the old
+    # Content-Length pre-rejection. No multi-GB allocation is needed by the test.
+    request = SimpleNamespace(
+        content_type="multipart/form-data",
+        content_length=3 * 1024**3,
+        multipart=AsyncMock(return_value=fields()),
+        app={file_transcription_routes.APP_FILE_TRANSCRIPTION_SERVICE: SimpleNamespace(controller=controller)},
+    )
+
+    async def extract(path, root):
+        assert path.read_bytes() == b"bounded-video-chunk"
+        audio = root / "prepared.webm"
+        audio.write_bytes(b"a" * audio_bytes)
+        return audio
+
+    monkeypatch.setattr(file_transcription_routes, "extract_audio_from_video", extract)
+    monkeypatch.setattr(
+        file_transcription_routes, "maybe_compress_audio_upload", AsyncMock(side_effect=lambda path, **_: path)
+    )
+    response = await file_transcription_routes.transcribe_file(request)
+    assert response.status == expected_status
+    if expected_status == 200:
+        path, name, admitted_plan = controller.started[0]
+        assert path.read_bytes() == b"a" * audio_bytes
+        assert name == "large-video.mp4"
+        assert not (path.parent / name).exists()
+        assert admitted_plan.final_audio_max_bytes == 8
+    else:
+        assert controller.started == []
+        assert list(controller.file_upload_root.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_parallel_video_preparations_keep_separate_sources_and_jobs(monkeypatch, tmp_path):
+    controller = _Controller(tmp_path / "files", plan=_plan(source_is_video=True))
+    entered: list[Path] = []
+    both_entered = asyncio.Event()
+
+    async def extract(path, root):
+        entered.append(path)
+        if len(entered) == 2:
+            both_entered.set()
+        await asyncio.wait_for(both_entered.wait(), timeout=5)
+        audio = root / "prepared.webm"
+        audio.write_bytes(path.read_bytes())
+        return audio
+
+    monkeypatch.setattr(file_transcription_routes, "extract_audio_from_video", extract)
+    client = await _client(controller)
+    try:
+        forms = []
+        for name in ("first", "second"):
+            form = FormData()
+            form.add_field("file", name.encode(), filename=f"{name}.mp4", content_type="video/mp4")
+            forms.append(form)
+        responses = await asyncio.gather(*(client.post("/api/file/transcribe", data=form) for form in forms))
+        assert [response.status for response in responses] == [200, 200]
+    finally:
+        await client.close()
+    assert len({path.parent for path, _, _ in controller.started}) == 2
+    assert {path.read_bytes() for path, _, _ in controller.started} == {b"first", b"second"}
+
+
+def test_unbounded_video_evidence_roundtrips_and_legacy_bounds_are_preserved(monkeypatch):
+    monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
+    plan = FileUploadPlan(route=_route(), limits=file_upload_limits("assemblyai", source_is_video=True))
+    evidence = plan.durable_evidence()
+    assert evidence["ingestMaxBytes"] is None
+    assert FileUploadPlan.from_durable_evidence(route=_route(), evidence=evidence) == plan
+    for version in (1, 2):
+        legacy = {**evidence, "schemaVersion": version, "ingestMaxBytes": 2 * 1024**3, "ingestLimitLabel": "2GB"}
+        assert FileUploadPlan.from_durable_evidence(route=_route(), evidence=legacy).ingest_max_bytes == 2 * 1024**3
+    with pytest.raises(ValueError):
+        FileUploadPlan.from_durable_evidence(route=_route(), evidence={**evidence, "sourceKind": "audio"})
+    with pytest.raises(ValueError):
+        FileUploadPlan.from_durable_evidence(route=_route(), evidence={**evidence, "finalAudioMaxBytes": None})
+
+
+@pytest.mark.asyncio
+async def test_full_disk_returns_actionable_error_and_cleans_partial_upload(monkeypatch, tmp_path):
+    controller = _Controller(tmp_path / "files")
+
+    async def disk_full(_field, path, **_kwargs):
+        path.write_bytes(b"partial")
+        raise OSError(errno.ENOSPC, "disk full")
+
+    monkeypatch.setattr(file_transcription_routes, "write_upload_stream_to_disk", disk_full)
+    client = await _client(controller)
+    try:
+        form = FormData()
+        form.add_field("file", b"audio", filename="audio.wav")
+        response = await client.post("/api/file/transcribe", data=form)
+        assert response.status == 507
+        assert await response.json() == {"message": "Not enough disk space to prepare this file."}
+    finally:
+        await client.close()
+    assert controller.started == []
+    assert list(controller.file_upload_root.iterdir()) == []
 
 
 @pytest.mark.asyncio

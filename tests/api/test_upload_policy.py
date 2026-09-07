@@ -220,12 +220,12 @@ def test_environment_override_is_frozen_into_both_limits(monkeypatch):
     assert file_upload_limits("soniox", source_is_video=False).final_audio.max_bytes == 300 * 1024 * 1024
 
 
-def test_video_admission_uses_the_shared_raw_boundary(monkeypatch):
+def test_video_admission_limits_the_extracted_audio_not_the_video(monkeypatch):
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("SCRIBER_UPLOAD_MAX_MB", raising=False)
 
     limits = file_upload_limits("smallest", source_is_video=True)
 
     assert limits.source_is_video is True
-    assert limits.ingest.max_bytes == 2048 * 1024 * 1024
+    assert limits.ingest is None
     assert limits.final_audio.max_bytes == 25 * 1024 * 1024

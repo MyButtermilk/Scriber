@@ -137,9 +137,11 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
         data_root = temp_root / "data"
         data_root.mkdir(parents=True, exist_ok=True)
         fixture = temp_root / "real-browser.wav"
+        second_fixture = temp_root / "second-browser.wav"
         profile = temp_root / "browser-profile"
         profile.mkdir()
         _write_fixture(fixture)
+        _write_fixture(second_fixture)
 
         runner, controller, store = await _start_real_backend(port=backend_port, data_root=data_root)
         backend_url = f"http://127.0.0.1:{backend_port}"
@@ -176,7 +178,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                 cdp,
                 label="real-file-input",
                 selector='input[type="file"]',
-                files=[fixture],
+                files=[fixture, second_fixture],
                 timeout_sec=args.page_timeout_sec,
             )
             browser_state = await wait_for_interaction_state(
@@ -188,8 +190,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
   const text = document.body?.innerText || '';
   const smoke = window.__scriberSmoke || {};
   return {
-    ok: window.location.pathname.startsWith('/transcript/')
+    ok: window.location.pathname === '/file'
       && text.includes('real-browser.wav')
+      && text.includes('second-browser.wav')
       && text.includes('Queued'),
     route: window.location.pathname,
     hasTitle: text.includes('real-browser.wav'),
@@ -202,7 +205,40 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
 """,
             )
 
-            transcript_id = str(browser_state["route"]).rsplit("/", 1)[-1]
+            jobs = store.list_pending()
+            separate_sources = len(jobs) == 2 and len({job.payload.get("path") for job in jobs}) == 2
+            await cdp.evaluate("document.querySelector('[aria-label=\"View transcript real-browser.wav\"]').click()")
+            detail_state = await wait_for_interaction_state(
+                cdp,
+                label="real-file-detail",
+                timeout_sec=args.page_timeout_sec,
+                expression="({ok: location.pathname.startsWith('/transcript/'), route: location.pathname})",
+            )
+            # CDP sends actual browser input, rather than calling our handler.
+            for event_type in ("mousePressed", "mouseReleased"):
+                await cdp.call(
+                    "Input.dispatchMouseEvent",
+                    {"type": event_type, "x": 600, "y": 300, "button": "back", "clickCount": 1},
+                )
+            back_state = await wait_for_interaction_state(
+                cdp,
+                label="real-file-mouse-back",
+                timeout_sec=args.page_timeout_sec,
+                expression="({ok: location.pathname === '/file'})",
+            )
+            for event_type in ("mousePressed", "mouseReleased"):
+                await cdp.call(
+                    "Input.dispatchMouseEvent",
+                    {"type": event_type, "x": 600, "y": 300, "button": "forward", "clickCount": 1},
+                )
+            forward_state = await wait_for_interaction_state(
+                cdp,
+                label="real-file-mouse-forward",
+                timeout_sec=args.page_timeout_sec,
+                expression=f"({{ok: location.pathname === {json.dumps(detail_state['route'])}}})",
+            )
+
+            transcript_id = str(detail_state["route"]).rsplit("/", 1)[-1]
             job = store.get(transcript_id)
             source_path = Path(str(job.payload.get("path") or "")) if job is not None else Path()
             route_handler_module = next(
@@ -231,6 +267,9 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     and job.payload.get("executionRoute", {}).get("provider") == "assemblyai"
                     and source_path.is_file()
                     and browser_state.get("ok") is True
+                    and separate_sources
+                    and back_state.get("ok") is True
+                    and forward_state.get("ok") is True
                     and route_handler_module == "src.api.file_transcription_routes"
                     and websocket_state.get("ok") is True
                     and websocket_handler_module == "src.api.websocket_routes"
@@ -249,6 +288,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
                     "externalProvider": False,
                 },
                 "browser": browser_state,
+                "parallelImports": {"jobCount": len(jobs), "separateSources": separate_sources},
+                "mouseNavigation": {"back": back_state, "forward": forward_state},
                 "websocket": websocket_state,
                 "durableJob": {
                     "idMatchesTranscript": bool(job and job.id == transcript_id == job.transcript_id),

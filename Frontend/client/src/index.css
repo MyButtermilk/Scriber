@@ -1665,8 +1665,55 @@ html[data-theme-reveal-active="true"] .theme-reveal-overlay {
     opacity var(--duration-quick) var(--ease-smooth-out);
 }
 
-.file-upload-shell.is-uploading {
-  cursor: wait;
+.file-upload-core.file-upload-compact {
+  min-height: 0;
+}
+
+.file-import-list {
+  background: var(--live-core);
+}
+
+.file-import-progress {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: hsl(var(--primary) / 0.12);
+  contain: paint;
+}
+
+.file-import-progress > span {
+  display: block;
+  height: 100%;
+  width: 100%;
+  transform-origin: left;
+  border-radius: inherit;
+  background: hsl(var(--primary));
+  transition: transform var(--duration-fast) var(--ease-smooth-out);
+}
+
+.file-import-progress.is-preparing > span {
+  width: 36%;
+  animation: fileAudioPreparation 1.6s var(--ease-in-out) infinite alternate;
+}
+
+@keyframes fileAudioPreparation {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(178%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-import-progress > span {
+    transition: none;
+  }
+  .file-import-progress.is-preparing > span {
+    animation: none;
+    width: 100%;
+    opacity: 0.5;
+  }
 }
 
 .file-upload-shell:focus-visible,

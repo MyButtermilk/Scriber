@@ -45,7 +45,6 @@ _UPLOAD_MAX_BYTES_ENV = "SCRIBER_UPLOAD_MAX_BYTES"
 _UPLOAD_MAX_MB_ENV = "SCRIBER_UPLOAD_MAX_MB"
 _DEFAULT_UPLOAD_MAX_MB = 200
 _DEFAULT_AUDIO_INGEST_MAX_BYTES = 2048 * 1024 * 1024
-_DEFAULT_VIDEO_MAX_BYTES = 2048 * 1024 * 1024
 
 _PROVIDER_AUDIO_UPLOAD_LIMITS: dict[str, tuple[int, str]] = {
     "soniox": (524_288_000, "500MB"),
@@ -86,8 +85,12 @@ class FileUploadLimits:
     """The complete immutable size policy for one admitted File upload."""
 
     source_is_video: bool
-    ingest: UploadLimit
+    ingest: UploadLimit | None
     final_audio: UploadLimit
+
+    def __post_init__(self) -> None:
+        if self.ingest is None and not self.source_is_video:
+            raise ValueError("Audio uploads require a raw ingest limit")
 
 
 def _upload_limit_override_bytes() -> int | None:
@@ -132,7 +135,8 @@ def file_upload_limits(provider: str | None, *, source_is_video: bool) -> FileUp
 
     final_audio = _provider_audio_limit(provider)
     if source_is_video:
-        ingest = UploadLimit(_DEFAULT_VIDEO_MAX_BYTES, format_upload_limit(_DEFAULT_VIDEO_MAX_BYTES))
+        # Video bytes stay local and do not count towards the provider's audio limit.
+        ingest = None
     else:
         ingest_bytes = max(_DEFAULT_AUDIO_INGEST_MAX_BYTES, final_audio.max_bytes)
         ingest_label = (

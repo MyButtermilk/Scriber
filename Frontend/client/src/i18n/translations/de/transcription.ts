@@ -1,6 +1,19 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const transcriptionTranslations = {
+  "Add more files": "Weitere Dateien hinzufügen",
+  "Preparing files": "Dateien vorbereiten",
+  "Two files at a time · you can add more anytime": "Zwei Dateien gleichzeitig · jederzeit weitere hinzufügen",
+  "Import progress for {{file}}": "Importfortschritt für {{file}}",
+  "Extracting audio…": "Audio wird extrahiert…",
+  "Optimizing audio…": "Audio wird optimiert…",
+  "Preparing audio…": "Audio wird vorbereitet…",
+  "Video: only the extracted audio counts towards the transcription limit.":
+    "Video: Für das Transkriptionslimit zählt nur die extrahierte Audiodatei.",
+  "{{audioHint}} · video: the limit applies after audio extraction · files over {{threshold}} are optimized automatically":
+    "{{audioHint}} · bei Videos gilt das Limit nach der Audioextraktion · Dateien über {{threshold}} werden automatisch optimiert",
+  "Audio file exceeds the raw import limit.": "Die Audiodatei überschreitet das Importlimit vor der Optimierung.",
+  "Not enough disk space to prepare this file.": "Nicht genügend Speicherplatz, um diese Datei vorzubereiten.",
   "Capture thoughts or longer dictation and watch the transcript appear as you speak.":
     "Halte Gedanken oder längere Diktate fest und sieh zu, wie das Transkript beim Sprechen entsteht.",
   "Check Microphone Privacy": "Mikrofon-Datenschutz prüfen",

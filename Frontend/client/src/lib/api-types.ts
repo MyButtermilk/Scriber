@@ -1055,8 +1055,8 @@ export interface FileUploadLimits {
   audioMaxLabel: string;
   rawAudioIngestMaxBytes: number;
   rawAudioIngestMaxLabel: string;
-  videoMaxBytes: number;
-  videoMaxLabel: string;
+  videoMaxBytes: number | null;
+  videoMaxLabel: string | null;
   compressionThresholdBytes: number;
   compressionThresholdLabel: string;
 }

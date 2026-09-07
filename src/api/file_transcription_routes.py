@@ -8,6 +8,7 @@ and the single ownership hand-off to the durable background-job controller.
 from __future__ import annotations
 
 import asyncio
+import errno
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,12 +58,12 @@ class FileUploadPlan:
         return self.limits.source_is_video
 
     @property
-    def ingest_max_bytes(self) -> int:
-        return self.limits.ingest.max_bytes
+    def ingest_max_bytes(self) -> int | None:
+        return self.limits.ingest.max_bytes if self.limits.ingest else None
 
     @property
-    def ingest_limit_label(self) -> str:
-        return self.limits.ingest.label
+    def ingest_limit_label(self) -> str | None:
+        return self.limits.ingest.label if self.limits.ingest else None
 
     @property
     def final_audio_max_bytes(self) -> int:
@@ -74,7 +75,7 @@ class FileUploadPlan:
 
     def durable_evidence(self) -> dict[str, Any]:
         return {
-            "schemaVersion": 2,
+            "schemaVersion": 3,
             "sourceKind": "video" if self.source_is_video else "audio",
             "provider": self.route.provider,
             "ingestMaxBytes": self.ingest_max_bytes,
@@ -95,7 +96,7 @@ class FileUploadPlan:
         if not isinstance(evidence, Mapping) or type(evidence.get("schemaVersion")) is not int:
             raise ValueError("File upload plan evidence is invalid")
         schema_version = evidence["schemaVersion"]
-        if schema_version not in {1, 2}:
+        if schema_version not in {1, 2, 3}:
             raise ValueError("File upload plan evidence version is unsupported")
         source_kind = evidence.get("sourceKind")
         if source_kind not in {"audio", "video"}:
@@ -110,7 +111,15 @@ class FileUploadPlan:
                 raise ValueError(f"File upload plan {key} is invalid")
             return value
 
-        ingest_bytes = positive_bytes("ingestMaxBytes")
+        unbounded_video = (
+            schema_version == 3
+            and source_kind == "video"
+            and "ingestMaxBytes" in evidence
+            and evidence["ingestMaxBytes"] is None
+            and "ingestLimitLabel" in evidence
+            and evidence["ingestLimitLabel"] is None
+        )
+        ingest_bytes = None if unbounded_video else positive_bytes("ingestMaxBytes")
         final_audio_bytes = positive_bytes("finalAudioMaxBytes")
 
         def reviewed_label(key: str, max_bytes: int) -> str:
@@ -125,7 +134,11 @@ class FileUploadPlan:
             route=route,
             limits=FileUploadLimits(
                 source_is_video=source_kind == "video",
-                ingest=UploadLimit(ingest_bytes, reviewed_label("ingestLimitLabel", ingest_bytes)),
+                ingest=(
+                    UploadLimit(ingest_bytes, reviewed_label("ingestLimitLabel", ingest_bytes))
+                    if ingest_bytes is not None
+                    else None
+                ),
                 final_audio=UploadLimit(
                     final_audio_bytes,
                     reviewed_label("finalAudioLimitLabel", final_audio_bytes),
@@ -165,11 +178,11 @@ APP_FILE_TRANSCRIPTION_SERVICE: web.AppKey[FileTranscriptionRoutesService] = web
 def _multipart_request_is_definitely_oversized(
     content_length: int | None,
     *,
-    file_limit: int,
+    file_limit: int | None,
 ) -> bool:
     """Pre-reject only when multipart framing cannot explain the excess bytes."""
 
-    if content_length is None:
+    if content_length is None or file_limit is None:
         return False
     return content_length > file_limit + _MULTIPART_CONTENT_LENGTH_ALLOWANCE_BYTES
 
@@ -280,7 +293,7 @@ async def write_upload_stream_to_disk(
     file_field: Any,
     save_path: Path,
     *,
-    max_bytes: int,
+    max_bytes: int | None,
     chunk_size: int = 1024 * 1024,
     write_batch_size: int = 8 * 1024 * 1024,
 ) -> tuple[int, bool]:
@@ -300,7 +313,7 @@ async def write_upload_stream_to_disk(
             if not chunk:
                 break
             bytes_read += len(chunk)
-            if bytes_read > max_bytes:
+            if max_bytes is not None and bytes_read > max_bytes:
                 too_large = True
                 break
             pending.extend(chunk)
@@ -431,7 +444,6 @@ async def transcribe_file(request: web.Request) -> web.Response:
                 except Exception as exc:
                     logger.warning("Failed to delete video after extraction: {}", exc)
                 transcribe_path = audio_path
-                safe_filename = audio_path.name
             except RuntimeError as exc:
                 logger.error("Audio extraction failed (error_type={})", type(exc).__name__)
                 return web.json_response({"message": "Failed to extract audio from video."}, status=500)
@@ -462,6 +474,11 @@ async def transcribe_file(request: web.Request) -> web.Response:
         return web.json_response(record.to_public(include_content=True))
     except ValueError as exc:
         return web.json_response({"message": str(exc)}, status=400)
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            return web.json_response({"message": "Not enough disk space to prepare this file."}, status=507)
+        logger.exception("Failed to store file upload")
+        return web.json_response({"message": "Failed to process file upload"}, status=500)
     except Exception:
         logger.exception("Failed to process file upload")
         return web.json_response({"message": "Failed to process file upload"}, status=500)

@@ -42,6 +42,7 @@ from src.api.upload_policy import (
     ALLOWED_UPLOAD_EXTENSIONS,
     VIDEO_EXTENSIONS,
     FileUploadLimits,
+    UploadLimit,
     safe_upload_filename,
 )
 from src.config import Config
@@ -234,10 +235,12 @@ async def create_import(request: web.Request) -> web.Response:
         provider = Config.MEETING_FINAL_PROVIDER
         deps.validate_provider_ready(provider)
         limits = deps.upload_limits(provider, source_is_video=extension in VIDEO_EXTENSIONS)
-        max_bytes = limits.ingest.max_bytes
+        # Meeting's resumable protocol still admits the original recording.
+        ingest = limits.ingest or UploadLimit(2 * 1024 * 1024 * 1024, "2GB")
+        max_bytes = ingest.max_bytes
         if expected_bytes > max_bytes:
             return web.json_response(
-                {"message": f"Meeting recording is too large (max {limits.ingest.label})."},
+                {"message": f"Meeting recording is too large (max {ingest.label})."},
                 status=413,
             )
         profile = {
