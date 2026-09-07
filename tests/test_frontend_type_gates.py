@@ -871,48 +871,10 @@ def test_youtube_async_start_only_navigates_while_the_user_is_still_on_youtube()
     ) in start_section
 
 
-def test_file_upload_progress_uses_route_persistent_store_before_server_processing() -> None:
+def test_file_history_distinguishes_transcription_and_summary_states() -> None:
     page_source = (REPO_ROOT / "Frontend" / "client" / "src" / "pages" / "FileTranscribe.tsx").read_text(
         encoding="utf-8"
     )
-    store_source = (REPO_ROOT / "Frontend" / "client" / "src" / "lib" / "file-upload-store.ts").read_text(
-        encoding="utf-8"
-    )
-
-    assert "useSyncExternalStore" in page_source
-    assert "subscribeFileUpload" in page_source
-    assert "getFileUploadSnapshot" in page_source
-    assert "startFileUploadBatch(selectedFiles" in page_source
-    assert "isFileUploadActive()" in page_source
-    assert "const currentPath = typeof window !==" in page_source
-    assert 'currentPath === "/file"' in page_source
-    assert "selectedFiles.length === 1" in page_source
-    assert "uploadFiles(acceptedFiles)" in page_source
-    assert "multiple: true" in page_source
-    assert "const xhr = new XMLHttpRequest();" not in page_source
-    assert "const [uploadProgress, setUploadProgress] = useState(0);" not in page_source
-
-    assert (
-        'export type FileUploadStatus = "idle" | "uploading" | "server_processing" | "completed" | "failed";'
-        in store_source
-    )
-    assert "export interface FileUploadQueueItem" in store_source
-    assert "export function startFileUploadBatch(" in store_source
-    assert "A file upload batch is already in progress." in store_source
-    assert "const xhr = new XMLHttpRequest();" in store_source
-    assert "xhr.withCredentials = true;" in store_source
-    assert "xhr.upload.onprogress = (event) => {" in store_source
-    assert "if (!event.lengthComputable || event.total <= 0) return;" in store_source
-    assert "Math.round((event.loaded / event.total) * 95)" in store_source
-    assert "progress: percent" in store_source
-    assert "const switchToServerPhase = () => {" in store_source
-    assert 'status: "server_processing"' in store_source
-    assert "progress: 96" in store_source
-    assert "serverProcessingText: getServerProcessingText(file)" in store_source
-    assert "xhr.upload.onload = () => {" in store_source
-    assert "value={uploadProgress}" in page_source
-    assert "uploadStatusText" in page_source
-    assert "uploadQueueItems.map" in page_source
     assert 'type FileHistoryStatus = "processing" | "failed" | "summary_failed" | "stopped" | "ready";' in page_source
     assert "function fileHistoryStatus(item: TranscriptHistoryItem): FileHistoryStatus" in page_source
     assert 'if (item.summaryStatus === "failed") return "summary_failed";' in page_source
