@@ -1360,6 +1360,11 @@ Packaging and scripts:
   `qad_q4_0` model. It must never fall through to a cloud provider after a local
   failure. In every failure case retain and insert the raw transcript. Do not
   route File or YouTube jobs through this path.
+  Local prewarm must wake an existing idle llama.cpp process as well as start
+  a missing one. Its authenticated empty `/tokenize` request resumes b10158
+  without inference or prompt-cache changes; `/health` and `/props` do not
+  wake sleeping models. Keep this work under the manager's runtime lock and
+  scheduled at capture start so reload latency overlaps dictation.
 - Azure MAI defaults to `MAI-Transcribe-2`.
 - Migrate the exact app-persisted `mai-transcribe-1.5` default to that model;
   preserve explicit process overrides and unrelated custom model values.

@@ -79,6 +79,7 @@ class GenerationRuntime(Protocol):
     def backend_name(self) -> str: ...
 
     async def properties(self) -> dict[str, Any]: ...
+    async def wake(self) -> None: ...
     async def apply_template(self, messages: list[dict[str, str]]) -> str: ...
     async def complete(self, prompt: str, *, max_new_tokens: int) -> CompletionResult: ...
     async def close(self) -> None: ...
@@ -827,6 +828,19 @@ class LlamaServerRuntime:
 
     async def properties(self) -> dict[str, Any]:
         return await self._request("GET", "/props")
+
+    async def wake(self) -> None:
+        # b10158 exempts /health and /props from waking an idle model. An
+        # empty tokenize task reloads it without generating text or changing
+        # the inference prompt/KV cache. Live Mic schedules this during capture.
+        value = await self._request(
+            "POST",
+            "/tokenize",
+            body={"content": "", "add_special": False},
+            limit=1024,
+        )
+        if value.get("tokens") != []:
+            raise LlamaRuntimeError("llama-server returned invalid wake evidence")
 
     async def apply_template(self, messages: list[dict[str, str]]) -> str:
         value = await self._request(

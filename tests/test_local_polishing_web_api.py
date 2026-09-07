@@ -172,6 +172,9 @@ class _CancellableDownloader(_AnonymousDownloader):
 class _Runtime:
     backend_name = "fixture-cpu"
 
+    async def wake(self):
+        return None
+
     async def properties(self):
         return {"chat_template": "fixture-template"}
 

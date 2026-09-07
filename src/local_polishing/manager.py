@@ -644,7 +644,8 @@ class LocalPolishing:
             return False
         async with self._runtime_lock:
             try:
-                await self._ensure_runtime_locked(selected, installation)
+                runtime = await self._ensure_runtime_locked(selected, installation)
+                await runtime.wake()
             except LocalPolishingError as error:
                 self._runtime_ready_by_variant[selected] = False
                 self._runtime_error_by_variant[selected] = error.code

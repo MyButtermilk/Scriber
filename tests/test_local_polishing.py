@@ -196,6 +196,12 @@ class FakeRuntime:
         self.applied_templates = 0
         self.prompts: list[str] = []
         self.max_new_token_requests: list[int] = []
+        self.sleeping = False
+        self.wake_calls = 0
+
+    async def wake(self):
+        self.wake_calls += 1
+        self.sleeping = False
 
     async def properties(self):
         return {"chat_template": "fixture-template"}
@@ -235,6 +241,34 @@ class FakeRuntimeFactory:
         if self.fail:
             raise RuntimeError("fixture backend unavailable")
         return self.runtime
+
+
+@pytest.mark.asyncio
+async def test_prewarm_wakes_reused_sleeping_runtime_without_generating_text(tmp_path: Path) -> None:
+    payloads: dict[str, bytes] = {}
+    catalog = _catalog(payloads, plain_completion=True)
+    runtime = FakeRuntime(output="Hallo Welt.")
+    factory = FakeRuntimeFactory(runtime)
+    manager = LocalPolishing(
+        root=tmp_path,
+        catalog=catalog,
+        downloader=FakeDownloader(payloads),
+        token_provider=lambda: "read-token",
+        runtime_factories=(factory,),
+    )
+    try:
+        operation = await manager.install("q8_0")
+        assert (await manager.wait_for_operation(operation)).status == "ready"
+        assert await manager.prewarm("q8_0") is True
+        runtime.sleeping = True
+        assert await manager.prewarm("q8_0") is True
+        assert runtime.sleeping is False
+        assert runtime.wake_calls == 2
+        assert factory.calls == 1
+        assert runtime.prompts == []
+        assert runtime.applied_templates == 0
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio
@@ -2514,6 +2548,28 @@ async def test_llama_completion_rejects_unpinned_termination_shape(monkeypatch, 
 
 def test_legacy_promotion_surface_is_removed() -> None:
     assert not hasattr(LocalPolishing, "remove_legacy_revision")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [{"tokens": []}, {}, {"tokens": [1]}])
+async def test_llama_wake_uses_bounded_empty_tokenization(monkeypatch, tmp_path: Path, response: dict) -> None:
+    runtime = local_runtime.LlamaServerRuntime(
+        binary=RuntimeBinary("cpu", tmp_path / "llama-server.exe", "2" * 64, "none", "0"),
+        model_path=tmp_path / "model.gguf",
+        model_sha256="3" * 64,
+        launch_spec=LlamaServerLaunchSpec(),
+    )
+    request = AsyncMock(return_value=response)
+    monkeypatch.setattr(runtime, "_request", request)
+    try:
+        if response == {"tokens": []}:
+            await runtime.wake()
+        else:
+            with pytest.raises(local_runtime.LlamaRuntimeError, match="wake evidence"):
+                await runtime.wake()
+        request.assert_awaited_once_with("POST", "/tokenize", body={"content": "", "add_special": False}, limit=1024)
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

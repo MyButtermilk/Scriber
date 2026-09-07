@@ -1096,6 +1096,13 @@ Release workflow:
 
 Local live-mic transcript polishing deliberately uses one inference stack:
 
+The capture-start prewarm also resumes an existing process after its ten-minute
+idle sleep. It uses an authenticated empty `/tokenize` task on the pinned
+b10158 server; health and properties requests leave that server asleep.
+The wake task generates no text, preserves the prompt/cache contract, and is
+serialized by the manager's runtime lock. Model reload therefore overlaps
+dictation instead of delaying insertion after the final transcript arrives.
+
 - Release builds stage the checksum-locked official llama.cpp b10158 Windows
   Vulkan distribution under `backend\tools\local-polishing`. That same archive
   includes the CPU dispatch libraries, so unsupported/missing Vulkan devices
