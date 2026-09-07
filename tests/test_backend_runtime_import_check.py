@@ -430,6 +430,7 @@ def test_nsis_upgrade_hook_removes_only_obsolete_frozen_runtime_files_and_direct
         (repo_root / "packaging" / "python-314-upgrade-from-v0.5.47.json").read_text(encoding="utf-8")
     )
     obsolete_installed_paths = {
+        "backend/app/src/gemini_transcribe.py",
         *(f"backend/{path}" for path in python314_upgrade_manifest["obsoleteBundledToolFiles"]),
         *(f"backend/_internal/{path}" for path in obsolete_paths),
     }

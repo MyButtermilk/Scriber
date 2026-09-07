@@ -1,4 +1,7 @@
 !macro NSIS_HOOK_POSTINSTALL
+  ; Retired in 0.5.99. An overlay from 0.5.98 otherwise leaves an unlisted
+  ; application module behind and the backend correctly refuses to start.
+  Delete "$INSTDIR\backend\app\src\gemini_transcribe.py"
   ; Same-version NSIS installs overlay the existing tree. Remove only files
   ; that the frozen runtime intentionally stopped shipping so an upgrade is
   ; byte-for-byte equivalent to a clean install.

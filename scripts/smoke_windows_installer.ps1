@@ -826,7 +826,15 @@ try {
         $sentinelPath = Join-Path $DataDir "upgrade-sentinel.txt"
         Set-Content -LiteralPath $sentinelPath -Value "preserve across installer rerun" -Encoding UTF8
 
+        # Reproduce the 0.5.98 -> 0.5.99 overlay failure with the retired module.
+        # The actual installer must remove it before the strict backend can start.
+        $retiredApplicationPath = Join-Path $InstallDir "backend\app\src\gemini_transcribe.py"
+        Set-Content -LiteralPath $retiredApplicationPath -Value "# Retired application module upgrade fixture" -Encoding UTF8
+
         Invoke-ProcessChecked -FilePath $InstallerPath -ArgumentList @("/S", "/D=$InstallDir") -Label "Silent installer upgrade"
+        if (Test-Path -LiteralPath $retiredApplicationPath) {
+            throw "Installer upgrade retained the retired application module."
+        }
         $appExe = Resolve-InstalledAppExe -Root $InstallDir
         $audioSidecarExe = Resolve-InstalledAudioSidecarExe -Root $InstallDir
         $frontendAssetOwnership = Test-InstalledFrontendAssetOwnership -Root $InstallDir
@@ -841,6 +849,7 @@ try {
         $upgrade = [pscustomobject]@{
             verified = $true
             sentinelPreserved = $true
+            retiredApplicationModuleRemoved = $true
             secondRuntimeMode = $secondSmoke.runtimeMode
             secondLaunchKind = $secondSmoke.launchKind
             secondCleanupVerified = $secondSmoke.cleanupVerified

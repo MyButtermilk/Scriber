@@ -4,6 +4,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -83,6 +84,25 @@ def test_application_layer_is_physical_complete_and_bound_to_runtime(tmp_path: P
     assert (runtime_root / "app" / "scripts" / "check_backend_runtime_imports.py").is_file()
     assert not any("__pycache__" in path.parts for path in (runtime_root / "app").rglob("*"))
     assert not any(path.suffix in {".pyc", ".pyo"} for path in (runtime_root / "app").rglob("*"))
+
+
+def test_nsis_overlay_removes_retired_application_module_before_runtime_validation(tmp_path: Path) -> None:
+    runtime_root, _, runtime_manifest = _layered_runtime(tmp_path)
+    retired = runtime_root / "app" / "src" / "gemini_transcribe.py"
+    retired.write_text("# Legacy v0.5.98 application module\n", encoding="utf-8")
+    sentinel = tmp_path / "user-data.txt"
+    sentinel.write_text("preserved", encoding="utf-8")
+    with pytest.raises(LayerValidationError, match="unlisted or missing"):
+        validate_application_layer(runtime_root, runtime_manifest)
+
+    hooks = (REPO_ROOT / "Frontend/src-tauri/windows/installer-hooks.nsh").read_text(encoding="utf-8")
+    paths = re.findall(r'^\s*Delete "\$INSTDIR\\backend\\app\\([^"\r\n]+)"', hooks, re.MULTILINE)
+    for relative in paths:
+        assert not any(part in relative for part in ("*", "?", ".."))
+        (runtime_root / "app" / Path(relative.replace("\\", "/"))).unlink(missing_ok=True)
+
+    validate_application_layer(runtime_root, runtime_manifest)
+    assert sentinel.read_text(encoding="utf-8") == "preserved"
 
 
 def test_application_layer_rejects_tampering_and_unlisted_files(tmp_path: Path) -> None:

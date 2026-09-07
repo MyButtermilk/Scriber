@@ -2311,6 +2311,7 @@ jobs:
             -PythonExecutable $smokePython `
             -InstallerPath (Join-Path $downloadRoot ([string]$installers[0].name)) `
             -OutputPath tmp\installer-smoke\downloaded-release-candidate.json `
+            -SimulateUpgrade `
             -VerifyFrontend `
             -VerifyMediaPreparation `
             -VerifySupportBundle `

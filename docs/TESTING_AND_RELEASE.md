@@ -5,6 +5,13 @@ Last verified: 2026-08-23
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
 
+Tagged releases run the downloaded installer smoke with `-SimulateUpgrade`.
+The overlay fixture restores the retired `backend/app/src/gemini_transcribe.py`
+module from the v0.5.98 layout before rerunning the installer. Require its
+removal, a ready backend after the overlay, preservation of the user-data
+sentinel, and strict uninstall. Clean installation alone cannot detect stale
+application files rejected by the backend's exact manifest validation.
+
 ## Core Test Commands
 
 Muse Voice Transcribe regression coverage is in `tests/test_meta_stt.py`.

@@ -502,6 +502,11 @@ Packaging and scripts:
 - `scripts/ffmpeg/build_profile_b_msys2.ps1`: Profile B custom ffmpeg build.
 - `scripts/smoke_*.ps1` and `scripts/smoke_*.py`: installed app, desktop,
   frontend, media, and workflow gates.
+  Tagged installer smoke must include `-SimulateUpgrade`, seed the retired
+  `backend/app/src/gemini_transcribe.py` module, and verify that the actual
+  NSIS overlay removes it before backend startup while preserving user data.
+  Keep application-layer cleanup exact; never weaken manifest validation or
+  recursively remove the application directory to accommodate stale files.
 - `scripts/fixtures/installed-youtube-video-matrix-v1.json`,
   `scripts/run_installed_youtube_video_matrix.ps1`, and
   `scripts/installed_youtube_video_matrix.py`: install-once five-lane YouTube
