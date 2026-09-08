@@ -21,6 +21,7 @@ from src.runtime.task_supervisor import AsyncTaskSupervisor
 
 REFRESH_SECONDS = 30 * 60
 MAX_CACHE_BYTES = 2 * 1024 * 1024 * 1024
+PROCESSING_WORKERS = 3
 
 
 class PodcastService:
@@ -41,6 +42,7 @@ class PodcastService:
         self._supervisor = AsyncTaskSupervisor(owner="podcasts")
         self._ready_lock = asyncio.Lock()
         self._subscription_lock = asyncio.Lock()
+        self._download_lock = asyncio.Lock()
         self._ready = False
         self._closed = False
         self._wake = asyncio.Event()
@@ -48,7 +50,8 @@ class PodcastService:
         self._refreshing = False
         self._startup_delay = startup_delay
         self._refresh_seconds = refresh_seconds
-        self._active_episode: str | None = None
+        self._active_episodes: set[str] = set()
+        self._started = False
 
     async def _ensure_ready(self) -> None:
         if self._closed:
@@ -59,7 +62,11 @@ class PodcastService:
                 self._ready = True
 
     def start(self) -> None:
-        self._supervisor.spawn(self._run(), name="podcast_subscription_worker")
+        if self._started or self._closed:
+            return
+        self._started = True
+        for index in range(PROCESSING_WORKERS):
+            self._supervisor.spawn(self._run(), name=f"podcast_subscription_worker_{index}")
         self._supervisor.spawn(self._run_refresh(), name="podcast_feed_refresh")
 
     async def close(self) -> None:
@@ -113,13 +120,12 @@ class PodcastService:
     async def unsubscribe(self, identifier: str) -> bool:
         await self._ensure_ready()
         async with self._subscription_lock:
-            active = (
-                await asyncio.to_thread(self._store.episode, self._active_episode) if self._active_episode else None
-            )
-            if active and active["subscription_id"] == identifier:
-                raise PodcastError(
-                    "Pause automatic processing and wait for the current episode before removing this subscription."
-                )
+            for episode_id in tuple(self._active_episodes):
+                active = await asyncio.to_thread(self._store.episode, episode_id)
+                if active and active["subscription_id"] == identifier:
+                    raise PodcastError(
+                        "Pause automatic processing and wait for the current episode before removing this subscription."
+                    )
 
             def remove_subscription() -> bool:
                 self._store.set_subscription(identifier, auto_process=False)
@@ -176,7 +182,7 @@ class PodcastService:
             episode = await asyncio.to_thread(self._store.episode, identifier)
             if episode is None:
                 return False
-            if identifier == self._active_episode or episode["status"] not in {"available", "completed", "failed"}:
+            if identifier in self._active_episodes or episode["status"] not in {"available", "completed", "failed"}:
                 raise PodcastError("Wait for this episode to finish before removing its download.")
             path = await self.audio_path(identifier)
             if path is None:
@@ -250,17 +256,20 @@ class PodcastService:
             if view is None and not download_only:
                 plan = self._processor.plan()
             if not target.is_file():
-                used = await asyncio.to_thread(self._cache_size)
-                remaining = MAX_CACHE_BYTES - used
-                if remaining < 10 * 1024 * 1024:
-                    raise PodcastError("Podcast download storage is full. Remove an older download and retry.")
-                self._root.mkdir(parents=True, exist_ok=True)
-                free = (await asyncio.to_thread(shutil.disk_usage, self._root)).free
-                provider_limit = plan.ingest_max_bytes if plan else MAX_AUDIO_BYTES
-                limit = min(MAX_AUDIO_BYTES, provider_limit, remaining, free - 256 * 1024 * 1024)
-                if limit <= 0:
-                    raise PodcastError("There is not enough free disk space for a podcast download.")
-                size = await self._http.download(episode["media_url"], target, max_bytes=limit)
+                # Serialize capacity checks with downloads, while provider work
+                # and summaries overlap. No two downloads spend the same space.
+                async with self._download_lock:
+                    used = await asyncio.to_thread(self._cache_size)
+                    remaining = MAX_CACHE_BYTES - used
+                    if remaining < 10 * 1024 * 1024:
+                        raise PodcastError("Podcast download storage is full. Remove an older download and retry.")
+                    self._root.mkdir(parents=True, exist_ok=True)
+                    free = (await asyncio.to_thread(shutil.disk_usage, self._root)).free
+                    provider_limit = plan.ingest_max_bytes if plan else MAX_AUDIO_BYTES
+                    limit = min(MAX_AUDIO_BYTES, provider_limit, remaining, free - 256 * 1024 * 1024)
+                    if limit <= 0:
+                        raise PodcastError("There is not enough free disk space for a podcast download.")
+                    size = await self._http.download(episode["media_url"], target, max_bytes=limit)
             else:
                 # A crash can occur after the atomic audio rename but before
                 # its byte-count commit. Recover playback without downloading
@@ -299,12 +308,13 @@ class PodcastService:
                 self._wake.clear()
                 async with self._subscription_lock:
                     episode = await to_thread_cancellation_barrier(self._store.claim)
-                    self._active_episode = episode["id"] if episode else None
+                    if episode:
+                        self._active_episodes.add(episode["id"])
                 if episode is not None:
                     try:
                         await self._process(episode)
                     finally:
-                        self._active_episode = None
+                        self._active_episodes.discard(episode["id"])
                     continue
                 await self._wake.wait()
             except asyncio.CancelledError:

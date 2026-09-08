@@ -174,8 +174,9 @@ Backend and runtime:
   from `PATH`.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
 - `src/podcasts/`: public-only RSS/directory transport, durable subscription and
-  episode state, retained downloads, independent feed refresh, and one sequential
-  processing worker. Its processor alone adapts to File admission and Transcript
+  episode state, retained downloads, independent feed refresh, and three concurrent
+  processing workers. Downloads serialize their capacity check and write to preserve
+  the shared cache limit. Its processor alone adapts to File admission and Transcript
   summaries. Commit the transcript ID before admission and resume that identity;
   only explicit retry may allocate a new attempt after failure. The first
   subscription queues its latest episode, subsequent new episodes queue while
@@ -1300,6 +1301,12 @@ Packaging and scripts:
   diarization. Keep `enable_speaker_diarization=False` for live pipelines so
   single-speaker dictation inserts plain text. File and YouTube jobs may enable
   diarization where the provider adapter has stable anonymous speaker output.
+- Azure `MAI-Transcribe-2` defaults to `enhancedMode.modelOptions.transcribeStyle=clean`
+  in the shared request builder for every product workflow, including Live Mic.
+  Direct File/YouTube/Podcast and Meeting finalization additionally request
+  top-level `diarization.enabled=true` and `modelOptions.timestamps=word`.
+  Preserve native phrase speaker IDs, complete word timestamps, and the live
+  no-diarization boundary. Legacy explicit MAI-1.5 verbatim callers remain valid.
 - Live Mic may broadcast `InterimTranscriptionFrame` text as replaceable UI
   preview, but it must never append, persist, or inject that text. Only provider
   `TranscriptionFrame` finals enter the transcript and text injector; this also

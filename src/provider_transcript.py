@@ -137,6 +137,39 @@ def _azure_phrase_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
 
+def _azure_timed_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Prefer MAI-2 word timing, inheriting each phrase's native speaker."""
+    phrases = payload.get("phrases") or payload.get("recognizedPhrases") or []
+    result: list[dict[str, Any]] = []
+    if not isinstance(phrases, list):
+        return result
+    for phrase in phrases:
+        if not isinstance(phrase, dict):
+            continue
+        raw_words = phrase.get("words")
+        words = _duration_timed_items(
+            raw_words if isinstance(raw_words, list) else [],
+            offset_key="offsetMilliseconds",
+            duration_key="durationMilliseconds",
+            scale=1,
+        )
+        # Never drop phrase text because a response contains incomplete words.
+        phrase_text = str(phrase.get("text") or phrase.get("displayText") or phrase.get("display") or "")
+        complete_words = bool(words) and "".join("".join(w["text"].split()) for w in words) == "".join(
+            phrase_text.split()
+        )
+        if complete_words:
+            for word in words:
+                word["speaker"] = word["speaker"] or _speaker_key(phrase.get("speaker"))
+                word["alignmentQuality"] = "exact_word"
+            result.extend(words)
+        else:
+            for item in _azure_phrase_items({"phrases": [phrase]}):
+                item["alignmentQuality"] = "provider_segment"
+                result.append(item)
+    return result
+
+
 def _gemini_offset_ms(value: Any) -> int | None:
     raw = str(value or "").strip()
     if not _GEMINI_OFFSET_RE.fullmatch(raw):
@@ -343,10 +376,9 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
 
     if provider == "azure_mai":
         return group_provider_words(
-            _azure_phrase_items(payload),
+            _azure_timed_items(payload),
             source,
             origin_ms,
-            alignment_quality="provider_segment",
         )
 
     if provider == "deepgram_async":
@@ -441,7 +473,7 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
         words = _speechmatics_words(payload)
         alignment_quality = "exact_word"
     elif key == "azure_mai":
-        words = _azure_phrase_items(payload)
+        words = _azure_timed_items(payload)
         alignment_quality = "provider_segment"
     elif key == "deepgram_async":
         try:
@@ -462,5 +494,5 @@ def normalize_provider_words(provider: str, payload: Any, origin_ms: int = 0) ->
         word["startMs"] += max(0, int(origin_ms))
         word["endMs"] += max(0, int(origin_ms))
         word["concatenate"] = concatenate
-        word["alignmentQuality"] = alignment_quality
+        word.setdefault("alignmentQuality", alignment_quality)
     return words

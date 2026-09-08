@@ -4739,6 +4739,7 @@ class ScriberPipeline:
                                 language=self._execution_language(),
                                 model=self._execution_model(Config.AZURE_MAI_MODEL),
                                 custom_vocab=self._execution_custom_vocab(),
+                                diarize=self.direct_file_speaker_diarization,
                                 on_progress=self.on_progress,
                                 timeout_secs=batch_timeout_seconds,
                             )

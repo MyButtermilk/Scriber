@@ -11,8 +11,8 @@ export const podcastTranslations: TranslationCatalog = {
   "1 episode in progress": "1 Folge in Verarbeitung",
   "The podcast download could not be removed safely.": "Der Podcast-Download konnte nicht sicher entfernt werden.",
   "How podcast subscriptions work": "So funktionieren Podcast-Abos",
-  "New episodes are checked every 30 minutes while Scriber is running. Downloads, transcripts and summaries are processed one at a time.":
-    "Solange Scriber läuft, werden alle 30 Minuten neue Folgen gesucht. Downloads, Transkripte und Zusammenfassungen werden nacheinander verarbeitet.",
+  "New episodes are checked every 30 minutes while Scriber is running. Up to three episodes are transcribed and summarized at the same time.":
+    "Solange Scriber läuft, werden alle 30 Minuten neue Folgen gesucht. Bis zu drei Folgen werden gleichzeitig transkribiert und zusammengefasst.",
   "A new subscription starts with the latest episode. Older episodes are available on demand. Your configured transcription and summary providers apply; their normal usage charges may apply.":
     "Ein neues Abo beginnt mit der neuesten Folge. Ältere Folgen lassen sich einzeln abrufen. Deine eingestellten Anbieter für Transkription und Zusammenfassung werden verwendet; dabei können deren übliche Nutzungskosten anfallen.",
   "Search uses Apple's public podcast directory without an API key. Audio comes directly from the publisher's public RSS feed. Downloads are limited to 256 MB per episode and 2 GB in total.":

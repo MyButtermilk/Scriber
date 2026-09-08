@@ -500,6 +500,27 @@ async def test_known_speaker_count_is_strictly_bounded(tmp_path: Path, invalid):
 
 
 @pytest.mark.asyncio
+async def test_fallback_splits_azure_phrase_across_local_speakers(monkeypatch, tmp_path):
+    manager = SherpaOnnxDiarizer(tmp_path / "component")
+
+    async def diarize(_path, **_kwargs):
+        return [DiarizationTurn(0, 1000, 0), DiarizationTurn(1000, 2000, 1)]
+
+    monkeypatch.setattr(manager, "diarize", diarize)
+    segments, _ = await manager.transcribe_with_fallback_speakers(
+        audio_path=tmp_path / "audio.wav",
+        provider="azure_mai",
+        payload={
+            "phrases": [{"text": "First speaker second speaker", "offsetMilliseconds": 0, "durationMilliseconds": 2000}]
+        },
+        text="First speaker second speaker",
+    )
+    assert [s["speakerLabel"] for s in segments] == ["Speaker 1", "Speaker 2"]
+    assert " ".join(s["text"] for s in segments) == "First speaker second speaker"
+    assert {s["alignmentQuality"] for s in segments} == {"estimated"}
+
+
+@pytest.mark.asyncio
 async def test_fallback_prefers_provider_word_timestamps(monkeypatch, tmp_path: Path):
     manager = SherpaOnnxDiarizer(tmp_path / "component")
 

@@ -75,7 +75,7 @@ function PodcastInfo() {
     <InfoTooltip compact label={t("How podcast subscriptions work")}>
       <p>
         {t(
-          "New episodes are checked every 30 minutes while Scriber is running. Downloads, transcripts and summaries are processed one at a time.",
+          "New episodes are checked every 30 minutes while Scriber is running. Up to three episodes are transcribed and summarized at the same time.",
         )}
       </p>
       <p>

@@ -310,6 +310,132 @@ async def test_processor_reuses_committed_transcript_after_restart(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_service_processes_three_episodes_concurrently(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    release = asyncio.Event()
+    all_started = asyncio.Event()
+    original = controller.summarize_transcript
+
+    async def summarize(identifier):
+        if len(controller.started) == 3:
+            all_started.set()
+        await release.wait()
+        return await original(identifier)
+
+    controller.summarize_transcript = summarize
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=FakeTransport(_feed(4, 3, 2, 1)),
+        startup_delay=0,
+    )
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    for episode in (await service.episodes(subscription))["items"]:
+        assert await service.queue(episode["id"])
+    service.start()
+    try:
+        await asyncio.wait_for(all_started.wait(), 2)
+        assert len(controller.started) == 3
+        with pytest.raises(PodcastError):
+            await service.unsubscribe(subscription)
+        release.set()
+        async with asyncio.timeout(3):
+            while (await service.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        assert len(set(controller.started)) == len(controller.started) == 4
+        assert len(controller.summaries) == 4
+    finally:
+        release.set()
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_parallel_shutdown_preserves_all_episode_identities(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    started = asyncio.Event()
+    original = controller.summarize_transcript
+    waiting = set()
+
+    async def hold(identifier):
+        waiting.add(identifier)
+        if len(waiting) == 3:
+            started.set()
+        await asyncio.Event().wait()
+
+    controller.summarize_transcript = hold
+    service = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=FakeTransport(),
+        startup_delay=0,
+    )
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    for row in (await service.episodes(subscription))["items"]:
+        await service.queue(row["id"])
+    service.start()
+    try:
+        await asyncio.wait_for(started.wait(), 3)
+        for row in (await service.episodes(subscription))["items"]:
+            with pytest.raises(PodcastError):
+                await service.remove_download(row["id"])
+    finally:
+        await service.close()
+    assert len(controller.started) == 3
+    assert not service._active_episodes
+    assert {r["status"] for r in service._store.episodes(subscription)["items"]} == {"queued"}
+    controller.summarize_transcript = original
+    restarted = PodcastService(
+        tmp_path / "podcasts",
+        PodcastProcessor(controller, poll_seconds=0.001),
+        transport=FakeTransport(),
+        startup_delay=0,
+    )
+    restarted.start()
+    try:
+        async with asyncio.timeout(3):
+            while (await restarted.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        assert len(controller.started) == 3
+        assert set(controller.summaries) == waiting
+    finally:
+        await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_parallel_downloads_recheck_remaining_cache_before_writing(tmp_path: Path, monkeypatch) -> None:
+    import src.podcasts.service as service_module
+
+    transport = FakeTransport()
+    limits = []
+    original = transport.download
+
+    async def download(url, target, *, max_bytes):
+        limits.append(max_bytes)
+        await asyncio.sleep(0.02)
+        return await original(url, target, max_bytes=max_bytes)
+
+    transport.download = download
+    service = PodcastService(
+        tmp_path / "podcasts", PodcastProcessor(FakeController(tmp_path)), transport=transport, startup_delay=0
+    )
+    monkeypatch.setattr(service_module, "MAX_CACHE_BYTES", 12 * 1024 * 1024)
+    # Simulate large retained files without allocating them on disk.
+    monkeypatch.setattr(service, "_cache_size", lambda: len(transport.downloads) * 3 * 1024 * 1024)
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    for row in (await service.episodes(subscription))["items"]:
+        await service.queue(row["id"])
+    service.start()
+    try:
+        async with asyncio.timeout(3):
+            while (await service.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        assert len(limits) == 1
+        assert sum(r["status"] == "failed" for r in (await service.episodes(subscription))["items"]) == 2
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     transport = FakeTransport()

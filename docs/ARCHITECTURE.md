@@ -1045,7 +1045,7 @@ Podcast subscriptions form a separate domain under `src/podcasts`. `feeds.py`
 owns public HTTP/RSS parsing and the cached, rate-limited Apple directory search;
 the actual connector DNS results and every redirect must resolve to public
 addresses. `store.py` owns subscription/episode state in a separate WAL database.
-`service.py` supervises one sequential processor and an independent 30-minute
+`service.py` supervises three concurrent processors and an independent 30-minute
 feed checker, starting after the initial desktop startup window. The first
 subscription queues only its latest episode; subsequent genuinely new episodes
 queue automatically. Historical entries remain manual and automatic processing
@@ -1058,7 +1058,9 @@ admission, reuses an already committed transcript after restart, and retains the
 download while the durable File job owns its separate upload copy. Failures do
 not create repeated automatic paid attempts. Downloads have a 256-MiB episode
 limit, 2-GiB aggregate cache, provider-specific admission limits, and a free-space
-reserve. The controller-free `src/api/podcast_routes.py` maps strict bounded
+reserve. Downloads serialize the capacity check and write; transcription and
+summary stages overlap across up to three episodes, with independent durable
+identities and active-removal guards. The controller-free `src/api/podcast_routes.py` maps strict bounded
 requests onto this domain; the frontend does not own its scheduler.
 
 Diagnostic collection and writing have separate owners. `operation_diagnostics`
@@ -1850,6 +1852,17 @@ provider timestamps. Meeting finalization first creates a task-owned 64-kbit/s
 WebM/Opus derivative and caps this route at three hours, keeping normal
 multi-hour recordings below that file boundary without claiming five-hour
 support.
+
+Azure `MAI-Transcribe-2` requests native diarization with top-level
+`diarization.enabled=true` and `enhancedMode.modelOptions.timestamps="word"`
+for File, YouTube, Podcasts, and Meeting finalization. Every MAI-2 product
+request, including Live Mic, defaults to `modelOptions.transcribeStyle="clean"`;
+Live Mic omits diarization. Native phrase speaker IDs and complete word timing
+are preserved. Incomplete word lists retain their complete provider phrase.
+The local fallback splits phrase-only text across local turns with explicitly
+estimated alignment, rather than assigning a recording-wide phrase to one voice.
+The request contract follows the [Microsoft MAI documentation](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe),
+verified 2026-09-08. Legacy MAI-1.5 explicit verbatim callers keep their contract.
 
 Speaker diarization is a batch-transcription feature, not a live dictation
 feature. File and YouTube jobs enable provider diarization where the current

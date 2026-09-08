@@ -149,6 +149,32 @@ def test_speechmatics_json_v2_words_keep_seconds_speakers_and_punctuation():
     assert result[1]["alignmentQuality"] == "exact_word"
 
 
+def test_azure_mai_native_speakers_and_word_timing_survive_normalization():
+    payload = {
+        "phrases": [
+            {
+                "speaker": speaker,
+                "offsetMilliseconds": start,
+                "durationMilliseconds": 500,
+                "text": text,
+                "words": [{"text": text, "offsetMilliseconds": start + 20, "durationMilliseconds": 300}],
+            }
+            for speaker, start, text in [(0, 0, "Hello."), (1, 1000, "Welcome."), (0, 2000, "Thanks.")]
+        ]
+    }
+    segments = normalize_provider_segments("azure_mai", payload, "system", 5000)
+    assert [s["speakerLabel"] for s in segments] == ["Speaker 1", "Speaker 2", "Speaker 1"]
+    assert [s["startMs"] for s in segments] == [5020, 6020, 7020]
+    assert {s["alignmentQuality"] for s in segments} == {"exact_word"}
+    words = normalize_provider_words("azure_mai", payload)
+    assert [w["speaker"] for w in words] == ["0", "1", "0"]
+    assert {w["alignmentQuality"] for w in words} == {"exact_word"}
+    payload["phrases"][0]["text"] = "Hello. Missing word."
+    segments = normalize_provider_segments("azure_mai", payload, "system")
+    assert segments[0]["text"] == "Hello. Missing word."
+    assert segments[0]["alignmentQuality"] == "provider_segment"
+
+
 def test_azure_mai_phrases_preserve_real_provider_intervals_without_claiming_word_precision():
     payload = {
         "phrases": [

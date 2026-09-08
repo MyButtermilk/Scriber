@@ -51,6 +51,7 @@ _AZURE_MAI_API_VERSION = "2025-10-15"
 _AZURE_MAI_DEFAULT_REGION = "northeurope"
 _AZURE_MAI_SUPPORTED_REGIONS = {"eastus", "northeurope", "southeastasia", "westus"}
 _AZURE_MAI_PHRASE_LIST_MODELS = frozenset({"mai-transcribe-1.5", "mai-transcribe-2"})
+_AZURE_MAI_SUPPORTED_TRANSCRIBE_STYLES = {"verbatim"}
 _AZURE_MAI_DIRECT_UPLOAD_EXTENSIONS = {".mp3"}
 _AZURE_MAI_CONTENT_TYPES = {
     ".wav": "audio/wav",
@@ -107,11 +108,33 @@ def azure_mai_phrase_list(custom_vocab: str | None = None) -> list[str]:
     return [term.strip() for term in str(raw or "").split(",") if term.strip()]
 
 
+def azure_mai_transcribe_style(
+    transcribe_style: str | None,
+    *,
+    model: str | None = None,
+) -> str | None:
+    selected_model = azure_mai_model(model)
+    raw = str(transcribe_style or "").strip().lower()
+    if not raw:
+        return "clean" if selected_model.casefold() == "mai-transcribe-2" else None
+    if selected_model.casefold() not in {"mai-transcribe-1.5", "mai-transcribe-2"}:
+        raise ValueError("Azure MAI transcribeStyle requires mai-transcribe-1.5 or MAI-Transcribe-2")
+    supported = _AZURE_MAI_SUPPORTED_TRANSCRIBE_STYLES | (
+        {"clean"} if selected_model.casefold() == "mai-transcribe-2" else set()
+    )
+    if raw not in supported:
+        allowed = ", ".join(sorted(supported))
+        raise ValueError(f"Unsupported Azure MAI transcribeStyle {raw!r}; use one of: {allowed}")
+    return raw
+
+
 def build_azure_mai_definition(
     language: Language | str | None,
     *,
     model: str | None = None,
     custom_vocab: str | None = None,
+    transcribe_style: str | None = None,
+    diarize: bool = False,
 ) -> dict[str, Any]:
     selected_model = azure_mai_model(model)
     definition: dict[str, Any] = {
@@ -124,8 +147,18 @@ def build_azure_mai_definition(
     if locales:
         definition["locales"] = locales
     phrases = azure_mai_phrase_list(custom_vocab)
+    is_v2 = selected_model.casefold() == "mai-transcribe-2"
     if selected_model.casefold() in _AZURE_MAI_PHRASE_LIST_MODELS and phrases:
         definition["phraseList"] = {"phrases": phrases}
+    if is_v2 and diarize:
+        definition["diarization"] = {"enabled": True}
+        definition["enhancedMode"]["modelOptions"] = {"timestamps": "word"}
+    selected_style = azure_mai_transcribe_style(transcribe_style, model=selected_model)
+    if selected_style is not None:
+        if is_v2:
+            definition["enhancedMode"].setdefault("modelOptions", {})["transcribeStyle"] = selected_style
+        else:
+            definition["enhancedMode"]["transcribeStyle"] = selected_style
     return definition
 
 
@@ -336,6 +369,8 @@ async def transcribe_with_azure_mai(
     language: Language | str | None,
     model: str | None = None,
     custom_vocab: str | None = None,
+    transcribe_style: str | None = None,
+    diarize: bool = False,
     on_progress: Callable[[str], None] | None = None,
     timeout_secs: float = 900.0,
     raw_transport: AzureMaiRawTransport | None = None,
@@ -351,6 +386,8 @@ async def transcribe_with_azure_mai(
         language,
         model=model,
         custom_vocab=custom_vocab,
+        transcribe_style=transcribe_style,
+        diarize=diarize,
     )
 
     _report_progress(on_progress, "Uploading audio...")

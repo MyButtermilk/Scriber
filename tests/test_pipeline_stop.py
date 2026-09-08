@@ -1026,7 +1026,8 @@ async def test_gemini_direct_uses_frozen_model_after_config_changes(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(monkeypatch, tmp_path):
+@pytest.mark.parametrize("diarize", [True, False])
+async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes(monkeypatch, tmp_path, diarize):
     source = tmp_path / "azure.mp3"
     source.write_bytes(b"audio")
     captured = {}
@@ -1040,6 +1041,7 @@ async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes
     monkeypatch.setattr(Config, "AZURE_MAI_REGION", "northeurope")
     pipeline = ScriberPipeline(
         service_name="azure_mai",
+        direct_file_speaker_diarization=diarize,
         execution_route={
             "model": "frozen-azure-model",
             "language": "de-DE",
@@ -1055,6 +1057,7 @@ async def test_azure_mai_direct_uses_frozen_model_and_vocab_after_config_changes
     assert captured["model"] == "frozen-azure-model"
     assert captured["language"] == "de-DE"
     assert captured["custom_vocab"] == "Frozen Azure term"
+    assert captured["diarize"] is diarize
 
 
 @pytest.mark.asyncio

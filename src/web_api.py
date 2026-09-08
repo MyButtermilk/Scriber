@@ -19179,8 +19179,12 @@ def create_app(controller: ScriberWebController) -> web.Application:
             "azure_mai": {
                 "label": "Microsoft MAI",
                 "model": Config.AZURE_MAI_MODEL,
-                "diarization": False,
-                "recommendation": "Uses the optional local Sherpa-ONNX speaker fallback.",
+                "diarization": Config.AZURE_MAI_MODEL.casefold() == "mai-transcribe-2",
+                "recommendation": (
+                    "Native speaker diarization and word timestamps."
+                    if Config.AZURE_MAI_MODEL.casefold() == "mai-transcribe-2"
+                    else "Uses the optional local Sherpa-ONNX speaker fallback."
+                ),
             },
             "onnx_local": {
                 "label": "Local ONNX STT",

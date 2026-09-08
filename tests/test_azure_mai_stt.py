@@ -15,6 +15,7 @@ from src.azure_mai_stt import (
     azure_mai_model,
     azure_mai_phrase_list,
     azure_mai_region,
+    azure_mai_transcribe_style,
     azure_mai_transcript_payload_to_text,
     build_azure_mai_definition,
     prepared_azure_mai_audio_file,
@@ -88,12 +89,14 @@ def test_build_azure_mai_definition_sets_model_and_optional_locale():
         "enhancedMode": {
             "enabled": True,
             "model": "MAI-Transcribe-2",
+            "modelOptions": {"transcribeStyle": "clean"},
         }
     }
     assert build_azure_mai_definition("de", custom_vocab="") == {
         "enhancedMode": {
             "enabled": True,
             "model": "MAI-Transcribe-2",
+            "modelOptions": {"transcribeStyle": "clean"},
         },
         "locales": ["de"],
     }
@@ -131,8 +134,49 @@ def test_azure_mai_phrase_list_uses_custom_vocab_for_transcribe_2():
     assert "phraseList" not in old_model_definition
 
 
+def test_azure_mai_two_requests_native_speakers_and_word_timestamps():
+    definition = build_azure_mai_definition("de", model="MAI-Transcribe-2", custom_vocab="Scriber", diarize=True)
+    assert definition["diarization"] == {"enabled": True}
+    assert definition["enhancedMode"]["modelOptions"]["timestamps"] == "word"
+    assert definition["phraseList"] == {"phrases": ["Scriber"]}
+    assert definition["enhancedMode"]["modelOptions"]["transcribeStyle"] == "clean"
+
+
+def test_azure_mai_two_live_defaults_to_clean_without_diarization():
+    definition = build_azure_mai_definition("de", model="MAI-Transcribe-2", custom_vocab="")
+    assert definition["enhancedMode"]["modelOptions"] == {"transcribeStyle": "clean"}
+    assert "diarization" not in definition
+
+
+@pytest.mark.parametrize("model,diarize", [("MAI-Transcribe-2", False), ("mai-transcribe-1.5", True)])
+def test_azure_mai_preserves_live_and_legacy_requests(model, diarize):
+    definition = build_azure_mai_definition("de", model=model, custom_vocab="", diarize=diarize)
+    assert "diarization" not in definition
+    assert "timestamps" not in definition["enhancedMode"].get("modelOptions", {})
+
+
+def test_azure_mai_verbatim_style_is_explicit_and_model_locked():
+    definition = build_azure_mai_definition(
+        "de",
+        model="mai-transcribe-1.5",
+        custom_vocab="",
+        transcribe_style="verbatim",
+    )
+
+    assert definition["enhancedMode"]["transcribeStyle"] == "verbatim"
+    assert azure_mai_transcribe_style(" VERBATIM ", model="mai-transcribe-1.5") == "verbatim"
+    with pytest.raises(ValueError, match="Unsupported Azure MAI transcribeStyle"):
+        build_azure_mai_definition("de", transcribe_style="readability")
+    with pytest.raises(ValueError, match="requires mai-transcribe-1.5"):
+        build_azure_mai_definition(
+            "de",
+            model="mai-transcribe-1",
+            transcribe_style="verbatim",
+        )
+
+
 @pytest.mark.asyncio
-async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatch):
+async def test_azure_mai_request_uses_explicit_frozen_model_vocab_and_style(monkeypatch):
     monkeypatch.setattr(Config, "AZURE_MAI_MODEL", "changed-after-route-freeze")
     monkeypatch.setattr(Config, "CUSTOM_VOCAB", "Changed term")
 
@@ -167,12 +211,28 @@ async def test_azure_mai_request_uses_explicit_frozen_model_and_vocab(monkeypatc
         language="de-DE",
         model="MAI-Transcribe-2",
         custom_vocab="Frozen term",
+        transcribe_style="verbatim",
     )
 
     fields = {str(field[0].get("name")): field[2] for field in session.posts[0][1]["data"]._fields}
     assert payload["combinedPhrases"][0]["text"] == "done"
     assert '"model": "MAI-Transcribe-2"' in fields["definition"]
     assert '"phrases": ["Frozen term"]' in fields["definition"]
+    assert '"transcribeStyle": "verbatim"' in fields["definition"]
+
+
+@pytest.mark.asyncio
+async def test_azure_mai_live_service_sends_clean_at_transport_boundary():
+    async def transport(**kwargs):
+        definition = kwargs["definition"]
+        assert definition["enhancedMode"]["modelOptions"] == {"transcribeStyle": "clean"}
+        assert "diarization" not in definition
+        return 200, '{"combinedPhrases":[{"text":"Clean output."}]}'
+
+    service = AzureMaiTranscribeSTTService(
+        speech_key="test", region="northeurope", language="de", model="MAI-Transcribe-2", raw_transport=transport
+    )
+    assert await service._transcribe_mp3(b"mp3") == "Clean output."
 
 
 @pytest.mark.asyncio

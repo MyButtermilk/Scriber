@@ -183,6 +183,29 @@ def align_words_to_speakers(
     aligned: list[dict[str, Any]] = []
     for word in words:
         item = dict(word)
+        if item.get("alignmentQuality") == "provider_segment":
+            # A timed phrase can cover many speakers (MAI may return the whole
+            # episode as one phrase). Its interval is real, but word positions
+            # inside it are unknown: split on local turns and mark estimates.
+            start, end = int(item.get("startMs", 0)), int(item.get("endMs", 0))
+            overlaps = [
+                DiarizationTurn(max(start, turn.start_ms), min(end, turn.end_ms), turn.speaker)
+                for turn in turns
+                if turn.start_ms < end and turn.end_ms > start
+            ]
+            if len({turn.speaker for turn in overlaps}) > 1:
+                for segment in distribute_text_over_turns(str(item["text"]), overlaps, source=source):
+                    aligned.append(
+                        {
+                            **item,
+                            "text": segment["text"],
+                            "startMs": segment["startMs"],
+                            "endMs": segment["endMs"],
+                            "speaker": segment["speakerLabel"],
+                            "alignmentQuality": "estimated",
+                        }
+                    )
+                continue
         turn = _best_turn(int(item.get("startMs", 0)), int(item.get("endMs", 0)), turns)
         item["speaker"] = f"Speaker {(turn.speaker if turn else 0) + 1}"
         aligned.append(item)
