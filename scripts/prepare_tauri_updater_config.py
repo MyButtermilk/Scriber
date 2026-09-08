@@ -43,7 +43,9 @@ def configure_tauri_updater(
     updater = plugins.setdefault("updater", {})
     updater["pubkey"] = public_key.strip()
     updater["endpoints"] = endpoints
-    updater.setdefault("windows", {})["installMode"] = "passive"
+    # Scriber ships per-user. Keep tray and main-window updates on Tauri's
+    # unattended NSIS /S + /R path, including generated release overlays.
+    updater.setdefault("windows", {})["installMode"] = "quiet"
     return config
 
 

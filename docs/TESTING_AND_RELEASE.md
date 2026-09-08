@@ -1,6 +1,6 @@
 # Testing And Release
 
-Last verified: 2026-08-23
+Last verified: 2026-09-08
 
 This document consolidates test, smoke, installer, release, signing, and updater
 notes.
@@ -28,6 +28,38 @@ with Voice access; local protocol tests do not prove account entitlement or
 recognition quality. No installer was built as part of this provider change.
 
 Run from repository root unless specified.
+
+The 2026-09 diagnostics/podcast work adds these focused checks and reproducible
+performance experiments. Reports contain synthetic timings/counts, not user text:
+
+```powershell
+scripts\project-python.cmd -m pytest tests/test_podcasts.py tests/api/test_podcast_routes.py tests/test_database_search.py tests/test_health_projection.py tests/test_logging_opt_out.py tests/runtime/test_diagnostic_preferences.py tests/runtime/test_debug_logs.py tests/api/test_operation_diagnostics.py
+scripts\project-python.cmd scripts/diagnostics/benchmark_debug_console.py --output tmp/debug-console-benchmark.json
+scripts\project-python.cmd scripts/diagnostics/benchmark_diagnostic_logging.py --output tmp/logging-benchmark.json
+scripts\project-python.cmd scripts/diagnostics/benchmark_health_projection.py --output tmp/health-benchmark.json
+scripts\project-python.cmd scripts/diagnostics/benchmark_transcript_history.py --output tmp/history-benchmark.json
+```
+
+`scripts/diagnostics/smoke_diagnostics_runtime.py` validates startup with logging
+disabled, actual operation logging after enabling, zero file growth after
+disabling, and strict boolean input against an explicitly isolated backend port
+and data directory. `benchmark_runtime_reads.py` measures ordinary read routes
+without exporting responses. Both read their inert test token from
+`SCRIBER_SMOKE_SESSION_TOKEN` and reject the production port.
+
+The real Windows clipboard and Office probes are deliberately separate from
+parallel tests: `tests/windows/test_clipboard_paste_latency.py` requires
+`SCRIBER_RUN_WINDOWS_CLIPBOARD_SMOKE=1`; `tests/windows/test_office_text_insert_windows.py`
+requires `SCRIBER_RUN_WINDOWS_OFFICE_SMOKE=1`. Run them serially. The clipboard
+probe owns a hidden Edit target and preserves the prior clipboard; the Office
+probe creates/discards its own document and restores focus if still owned.
+Source tests do not establish an installed-app target matrix by themselves.
+
+Frozen validation must exercise the new RSS parser/DTD policy and Office's lazy
+`comtypes.client.dynamic` path plus UTF-16 BSTR behavior, not merely import
+`src.pipeline`. A fresh staged application must include every new first-party
+module in the Git-derived application manifest. Runtime revision 8 invalidates
+older interpreter caches lacking the explicit podcast standard-library imports.
 
 Python (always through Scriber's project environment, never bare `python`):
 
@@ -1771,7 +1803,7 @@ Authenticode additionally uses these values only when explicitly enabled:
 `scripts\prepare_tauri_updater_config.py` prepares the generated release Tauri
 config overlay: it writes only the concrete app version, release-only
 `beforeBundleCommand = null`, optional NSIS compression, updater artifacts, the
-public key/endpoints, and Windows updater passive install mode. It should write
+public key/endpoints, and Windows updater quiet install mode. It should write
 to `build\tauri-release-config\...` for release builds instead of mutating or
 copying the checked-in `tauri.conf.json`. An empty
 `SCRIBER_TAURI_UPDATER_ENDPOINT` falls back to the standard GitHub

@@ -1,6 +1,6 @@
 # Scriber Architecture
 
-Last verified: 2026-08-23
+Last verified: 2026-09-08
 
 This document describes the current implementation. It replaces older scattered
 architecture notes and should be updated when ownership boundaries change.
@@ -73,6 +73,9 @@ freezes the `audioop-lts` PCM RMS runtime, while preserving the revision-4
 bounded installer-research YouTube holdout probe and revision-3
 `pipecat.transports.base_input` addition. Changing that revision invalidates the
 stable runtime cache instead of reusing an incomplete packaged interpreter.
+Revision 8 additionally binds the RSS parser's standard-library dependencies
+(`html`, `email.utils`, `ipaddress`, and `xml.etree.ElementTree`), with an offline
+feed/DTD-rejection probe in the frozen-runtime import check.
 
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
@@ -1038,6 +1041,51 @@ items.
 
 ## Backend
 
+Podcast subscriptions form a separate domain under `src/podcasts`. `feeds.py`
+owns public HTTP/RSS parsing and the cached, rate-limited Apple directory search;
+the actual connector DNS results and every redirect must resolve to public
+addresses. `store.py` owns subscription/episode state in a separate WAL database.
+`service.py` supervises one sequential processor and an independent 30-minute
+feed checker, starting after the initial desktop startup window. The first
+subscription queues only its latest episode; subsequent genuinely new episodes
+queue automatically. Historical entries remain manual and automatic processing
+can be paused per subscription. Explicitly re-downloading removed audio uses a
+durable audio-only job and never reruns transcription or summary generation.
+
+`processor.py` is the only adapter to existing File admission and Transcript
+summary lifecycles. It commits a deterministic transcript identity before
+admission, reuses an already committed transcript after restart, and retains the
+download while the durable File job owns its separate upload copy. Failures do
+not create repeated automatic paid attempts. Downloads have a 256-MiB episode
+limit, 2-GiB aggregate cache, provider-specific admission limits, and a free-space
+reserve. The controller-free `src/api/podcast_routes.py` maps strict bounded
+requests onto this domain; the frontend does not own its scheduler.
+
+Diagnostic collection and writing have separate owners. `operation_diagnostics`
+times authenticated mutations using registered route templates, never concrete
+path parameters, request bodies, query strings, or exception messages. HTTP
+completion is distinct from background processing stages. `debug_logs.py`
+provides a bounded redacted snapshot cache; `runtime-diagnostics.ts` owns frontend
+workflow classification, indexed search, and distinct latency samples.
+`diagnostic_preferences.py` synchronizes a persisted logging preference with the
+native shell and Python, behind settings serialization and a cancellation
+barrier. The native owner closes its write gate and continues draining child
+pipes; Python removes its sinks and drains admitted optional metric writes.
+The preference changes neither transcript persistence nor durable job state.
+Frequent health polls use a narrow live status projection with no filesystem or
+feature-inventory work. Transcript and summary persistence synchronize FTS through
+the indexed parent ID and shared rowid, avoiding an unindexed FTS-content scan;
+startup retains the authoritative legacy rowid repair.
+
+Python's automatic text-insertion owner first offers an exact focused classic
+Office editor to `office_text_insert.py`. NativeOM comes from its `_WwG` HWND,
+with matching process/target checks, UTF-16-correct BSTR allocation, and bounded
+COM cancellation. A successful write leaves the clipboard untouched; an
+uncertain write never falls through to a duplicate paste. For verified standard
+Edit consumers, `windows_clipboard_lease.py` owns delayed rendering and confirmed
+read completion before restoring the bounded original formats. Unknown readers
+retain the conservative fallback, and newer user copies always win.
+
 Key modules:
 
 - `src/web_api.py`: aiohttp application composition, controller state, jobs,
@@ -1334,6 +1382,10 @@ state with a blue download indicator and exposes a direct install-and-restart
 action when an update is available. It also shows the installed app version,
 links directly to the Meeting workspace, and displays the effective registered
 Meeting shortcut, including a Windows registration fallback when necessary.
+Both entry points call the same updater guest API and acquire a native
+cross-window installation gate. Its owner is released after cancellation or
+failure; a successful installation keeps it through restart. Both checked-in
+and generated updater configurations select quiet NSIS installation.
 Unsigned/dev builds keep the updater plugin wired but are expected to report
 that release updater configuration is missing.
 
@@ -1421,7 +1473,7 @@ configuration.
   successful audio lifecycle starts.
 - Initialize the Tauri updater plugin. Release builds provide updater endpoint,
   public key, and signed artifacts through build-time configuration; Windows
-  updater installation runs in Tauri's passive mode.
+  updater installation runs in Tauri's quiet mode from both tray and main window.
 - Run worker crash recovery and write crash metadata. A managed worker that
   remains alive but fails `/api/health` is given a bounded 30-second recovery
   window, then is gracefully stopped (hard-killed only as fallback) and

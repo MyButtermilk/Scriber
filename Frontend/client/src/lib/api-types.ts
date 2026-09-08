@@ -854,6 +854,7 @@ export interface RuntimeLogsResponse {
   sources: string[];
   limit: number;
   truncated: boolean;
+  loggingEnabled?: boolean;
 }
 
 export interface RuntimeLogsClearResponse {
@@ -1085,7 +1086,7 @@ export interface SettingsApiKeys {
   youtubeApiKey?: string;
 }
 
-export type OverlayVisualizerStyle = "bars" | "energy_wave";
+export type OverlayVisualizerStyle = "bars" | "energy_wave" | "blue_flame";
 
 export interface SettingsResponse {
   hotkey?: string;
@@ -1104,6 +1105,7 @@ export interface SettingsResponse {
   micAlwaysOn?: boolean;
   segmentSpeechWithVad?: boolean;
   debug?: boolean;
+  diagnosticLoggingEnabled?: boolean;
   customVocab?: string;
   summarizationPrompt?: string;
   summarizationModel?: string;
@@ -1152,6 +1154,7 @@ export interface SettingsUpdatePayload {
   micAlwaysOn?: boolean;
   segmentSpeechWithVad?: boolean;
   debug?: boolean;
+  diagnosticLoggingEnabled?: boolean;
   customVocab?: string;
   summarizationPrompt?: string;
   summarizationModel?: string;

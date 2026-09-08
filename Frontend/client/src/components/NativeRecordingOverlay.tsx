@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState, wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
 import MicrophoneEnergyField from "@/components/MicrophoneEnergyField";
+import MicrophoneBlueFlame, { BLUE_FLAME_PILL_BACKGROUND } from "@/components/MicrophoneBlueFlame";
 import type { OverlayVisualizerStyle } from "@/lib/api-types";
 import { overlayVisualizerLevelFromRms } from "@/lib/native-overlay-visualizer";
 import {
@@ -90,7 +91,7 @@ function devOverlayRmsFromLocation(): number {
 function devOverlayStyleOverrideFromLocation(): OverlayVisualizerStyle | null {
   if (typeof window === "undefined") return null;
   const value = new URLSearchParams(window.location.search).get("overlayStyle");
-  return value === "bars" || value === "energy_wave" ? value : null;
+  return value === "bars" || value === "energy_wave" || value === "blue_flame" ? value : null;
 }
 
 function devOverlayStyleFromLocation(): OverlayVisualizerStyle {
@@ -306,6 +307,7 @@ export default function NativeRecordingOverlay() {
   const visible = mode !== "hidden";
   const energyWaveSelected = overlayVisualizerStyle === "energy_wave";
   const energyWaveActive = mode === "recording" && overlayVisualizerStyle === "energy_wave";
+  const blueFlameActive = mode === "recording" && overlayVisualizerStyle === "blue_flame";
   const barsActive = mode === "recording" && overlayVisualizerStyle === "bars";
 
   const refreshVisualizerSettings = useCallback(async () => {
@@ -539,7 +541,11 @@ export default function NativeRecordingOverlay() {
               boxShadow: OVERLAY_INSET_SHADOW,
               width: PILL_WIDTH,
               height: PILL_HEIGHT,
-              background: energyWaveSelected ? ENERGY_PILL_BACKGROUND : "#000",
+              background: energyWaveSelected
+                ? ENERGY_PILL_BACKGROUND
+                : overlayVisualizerStyle === "blue_flame"
+                  ? BLUE_FLAME_PILL_BACKGROUND
+                  : "#000",
             }}
           >
             {energyWaveActive && (
@@ -555,6 +561,7 @@ export default function NativeRecordingOverlay() {
                 plotHeight={WAVEFORM_CANVAS_HEIGHT}
               />
             )}
+            {blueFlameActive && <MicrophoneBlueFlame active rmsRef={rmsRef} width={PILL_WIDTH} height={PILL_HEIGHT} />}
             {barsActive && (
               <OverlayBarWaveform
                 active

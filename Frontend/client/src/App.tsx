@@ -34,12 +34,13 @@ import {
   type DesktopUpdateStatus,
 } from "@/lib/desktop-updates";
 
-// All five primary product tabs stay eager so every navigation path is immediate.
+// All six primary product tabs stay eager so every navigation path is immediate.
 import LiveMic from "@/pages/LiveMic";
 import Youtube from "@/pages/Youtube";
 import FileTranscribe from "@/pages/FileTranscribe";
 import Meetings from "@/pages/Meetings";
 import Settings from "@/pages/Settings";
+import Podcasts from "@/pages/Podcasts";
 const DebugConsole = lazy(() => import("@/pages/DebugConsole"));
 
 // Lazy load only rarely accessed pages for slightly smaller initial bundle
@@ -68,6 +69,7 @@ function TabRoutes() {
             <Route path="/meetings" component={Meetings} />
             <Route path="/youtube" component={Youtube} />
             <Route path="/file" component={FileTranscribe} />
+            <Route path="/podcasts" component={Podcasts} />
             <Route path="/debug" component={DebugConsole} />
             <Route path="/settings" component={Settings} />
             <Route path="/transcript/:id" component={TranscriptDetail} />
@@ -458,13 +460,14 @@ function DesktopUpdateAutoCheckBridge() {
       try {
         await installDesktopUpdate();
       } catch (error) {
-        installingFromToastRef.current = false;
         toast({
           variant: "destructive",
           title: t("Update failed"),
           description: error instanceof Error ? error.message : String(error || t("Update installation failed.")),
           duration: 7000,
         });
+      } finally {
+        installingFromToastRef.current = false;
       }
     },
     [t, toast],

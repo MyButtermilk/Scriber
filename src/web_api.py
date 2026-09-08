@@ -88,6 +88,7 @@ from src.api.meeting_workspace_routes import (
 )
 from src.api.onnx_routes import register_onnx_routes
 from src.api.outlook_calendar_routes import register_outlook_calendar_routes
+from src.api.podcast_routes import register_podcast_routes
 from src.api.runtime_routes import APP_SHUTDOWN_EVENT, register_runtime_routes
 from src.api.settings_routes import register_settings_routes
 from src.api.transcript_routes import (
@@ -129,7 +130,7 @@ from src.audio_prepare import (
 from src.config import Config
 from src.core.error_taxonomy import ErrorCategory, classify_error_message, is_retryable
 from src.core.hot_path_tracer import HotPathTracer
-from src.core.logging_setup import emit_event, setup_logging
+from src.core.logging_setup import emit_event, run_diagnostic_write, setup_logging
 from src.core.provider_audio_formats import (
     SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
     AudioInputFormat,
@@ -238,6 +239,8 @@ from src.native_overlay import (
     update_overlay_audio,
 )
 from src.outlook_calendar import OutlookCalendarService
+from src.podcasts.processor import PodcastProcessor
+from src.podcasts.service import PodcastService
 from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
 from src.runtime.audio_admission import AudioAdmissionLossHandler, AudioAdmissionOwner
 from src.runtime.cancellation import (
@@ -7664,11 +7667,16 @@ class ScriberWebController:
         session_id: str,
         report: dict[str, float],
     ) -> None:
+        if not Config.DIAGNOSTIC_LOGGING_ENABLED:
+            return
         report_snapshot = dict(report)
 
         async def persist() -> None:
+            if not Config.DIAGNOSTIC_LOGGING_ENABLED:
+                return
             try:
                 await asyncio.to_thread(
+                    run_diagnostic_write,
                     self._latency_metrics_store.record,
                     session_id,
                     report_snapshot,
@@ -8137,7 +8145,8 @@ class ScriberWebController:
             "pendingPostProcessingFallback": pending_fallback_event,
         }
 
-    def get_runtime_info(self) -> dict[str, Any]:
+    def _runtime_status_snapshot(self) -> dict[str, Any]:
+        """Cheap live status shared by health and the full diagnostic inventory."""
         recording_state = self._recording_state_machine.state
         host = os.getenv(_WEB_HOST_ENV, "127.0.0.1")
         port = env_int(_WEB_PORT_ENV, 8765, minimum=1, maximum=65535)
@@ -8146,17 +8155,22 @@ class ScriberWebController:
             "apiVersion": _API_VERSION,
             "workerVersion": os.getenv(_WORKER_VERSION_ENV, _API_VERSION),
             "runtimeMode": os.getenv(_RUNTIME_MODE_ENV, "python-web"),
-            "launchKind": os.getenv(_BACKEND_LAUNCH_KIND_ENV, "python-module"),
             "pid": os.getpid(),
             "host": host,
             "port": port,
             "startedAt": self._started_at_iso,
             "uptimeSeconds": max(0.0, time.monotonic() - self._started_at_monotonic),
+            "activeSession": self._session_id,
+            "recordingState": recording_state.value,
+        }
+
+    def get_runtime_info(self) -> dict[str, Any]:
+        return {
+            **self._runtime_status_snapshot(),
+            "launchKind": os.getenv(_BACKEND_LAUNCH_KIND_ENV, "python-module"),
             "dataDir": str(data_dir()),
             "downloadsDir": str(self._downloads_dir),
             "logsDir": str(logs_dir()),
-            "activeSession": self._session_id,
-            "recordingState": recording_state.value,
             "capabilities": {
                 "rest": True,
                 "websocket": True,
@@ -8231,21 +8245,10 @@ class ScriberWebController:
         }
 
     def get_health(self) -> dict[str, Any]:
-        runtime = self.get_runtime_info()
         return {
             "ok": True,
             "ready": True,
-            "version": runtime["version"],
-            "apiVersion": runtime["apiVersion"],
-            "workerVersion": runtime["workerVersion"],
-            "pid": runtime["pid"],
-            "host": runtime["host"],
-            "port": runtime["port"],
-            "startedAt": runtime["startedAt"],
-            "uptimeSeconds": runtime["uptimeSeconds"],
-            "activeSession": runtime["activeSession"],
-            "recordingState": runtime["recordingState"],
-            "runtimeMode": runtime["runtimeMode"],
+            **self._runtime_status_snapshot(),
         }
 
     def record_frontend_ready(self, payload: dict[str, Any], request: web.Request) -> dict[str, Any]:
@@ -8507,6 +8510,8 @@ class ScriberWebController:
         return f"{exc.__class__.__name__} during live mic post-processing"
 
     def _record_post_processing_diagnostic(self, entry: dict[str, Any]) -> None:
+        if not Config.DIAGNOSTIC_LOGGING_ENABLED:
+            return
         allowed = {
             "apiVersion",
             "createdAt",
@@ -11230,6 +11235,7 @@ class ScriberWebController:
         original_filename: str,
         *,
         plan: FileUploadPlan,
+        transcript_id: str | None = None,
     ) -> TranscriptRecord:
         """Adopt an upload and bind it atomically to one durable queued job.
 
@@ -11314,7 +11320,7 @@ class ScriberWebController:
 
             started_at = datetime.now()
             rec = TranscriptRecord(
-                id=uuid4().hex,
+                id=transcript_id or uuid4().hex,
                 title=title,
                 date=_format_date_label(started_at),
                 duration=duration_label,
@@ -17489,6 +17495,7 @@ class ScriberWebController:
             "onnxUseGpu": bool(Config.ONNX_USE_GPU),
             "visualizerBarCount": Config.VISUALIZER_BAR_COUNT,
             "overlayVisualizerStyle": Config.OVERLAY_VISUALIZER_STYLE,
+            "diagnosticLoggingEnabled": bool(Config.DIAGNOSTIC_LOGGING_ENABLED),
             "fileUploadLimits": file_upload_limits,
             "apiKeys": {
                 "soniox": Config.SONIOX_API_KEY or "",
@@ -17521,6 +17528,9 @@ class ScriberWebController:
 
     async def _update_settings_unlocked(self, payload: dict[str, Any]) -> dict[str, Any]:
         _validate_settings_text_lengths(payload)
+        diagnostic_logging_enabled = payload.get("diagnosticLoggingEnabled")
+        if "diagnosticLoggingEnabled" in payload and not isinstance(diagnostic_logging_enabled, bool):
+            raise ValueError("Diagnostic logging must be a boolean.")
         old_hotkey = Config.HOTKEY
         old_post_processing_hotkey = Config.POST_PROCESSING_HOTKEY
         old_meeting_hotkey = Config.MEETING_HOTKEY
@@ -17630,7 +17640,7 @@ class ScriberWebController:
             if not isinstance(payload["overlayVisualizerStyle"], str):
                 raise ValueError("Overlay visualizer style must be a string.")
             candidate_overlay_visualizer_style = payload["overlayVisualizerStyle"].strip().lower()
-            if candidate_overlay_visualizer_style not in {"bars", "energy_wave"}:
+            if candidate_overlay_visualizer_style not in {"bars", "energy_wave", "blue_flame"}:
                 raise ValueError("Unsupported overlay visualizer style.")
             validated_overlay_visualizer_style = candidate_overlay_visualizer_style
 
@@ -17850,6 +17860,11 @@ class ScriberWebController:
 
         if validated_overlay_visualizer_style is not None:
             Config.set_overlay_visualizer_style(validated_overlay_visualizer_style)
+
+        if diagnostic_logging_enabled is not None:
+            from src.runtime.diagnostic_preferences import apply_diagnostic_logging_preference
+
+            await to_thread_cancellation_barrier(apply_diagnostic_logging_preference, diagnostic_logging_enabled)
 
         api_keys = payload.get("apiKeys")
         if isinstance(api_keys, dict):
@@ -18622,6 +18637,8 @@ def _group_meeting_audio_endpoints(endpoints: Any) -> dict[str, list[dict[str, A
 
 
 def create_app(controller: ScriberWebController) -> web.Application:
+    from src.api.operation_diagnostics import operation_diagnostics_middleware
+
     replay_fixture_duration_ms = provider_replay_fixture_duration_ms_from_environment()
     replay_gate = ProviderReplayRuntimeGate.from_environment()
     document_export_gate = _DocumentExportGate()
@@ -18671,6 +18688,7 @@ def create_app(controller: ScriberWebController) -> web.Application:
             cors_middleware,
             provider_replay_visibility_middleware,
             session_token_middleware,
+            operation_diagnostics_middleware,
         ]
     )
     app[APP_CONTROLLER] = controller
@@ -19971,6 +19989,10 @@ def create_app(controller: ScriberWebController) -> web.Application:
     )
     register_youtube_routes(app, controller=controller)
     register_file_transcription_routes(app, controller=controller)
+    register_podcast_routes(
+        app,
+        factory=lambda: PodcastService(data_dir() / "podcasts", PodcastProcessor(controller)),
+    )
 
     register_onnx_routes(app, controller=controller)
 

@@ -353,6 +353,45 @@ def test_database_init_repairs_equal_count_fts_rowid_corruption(monkeypatch, tmp
         database._close_all_connections()
 
 
+def test_fts_indexed_mutations_preserve_search_after_repair_delete_and_restore(monkeypatch, tmp_path):
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
+    try:
+        database.init_database()
+        record = _summary_record("changed", "Initial summary", "markdown")
+        database.save_transcript({**record, "content": "Beforecontent"})
+        database.save_transcript({**record, "id": "other", "content": "Unrelatedcontent"})
+        conn = database._get_connection()
+        # Simulate a legacy index before initialization repairs its rowid mapping.
+        conn.execute("UPDATE transcripts_fts SET rowid=rowid+1000 WHERE id='changed'")
+        conn.commit()
+        database.init_database()
+
+        statements = []
+        conn.set_trace_callback(statements.append)
+        database.save_transcript({**record, "content": "Aftercontent"})
+        assert database.search_transcript_metadata("Beforecontent")["total"] == 0
+        assert database.search_transcript_metadata("Aftercontent")["total"] == 1
+        assert database.update_transcript_summary("changed", "<p>Freshsummary</p>")
+        assert database.search_transcript_metadata("Freshsummary")["total"] == 1
+        assert database.delete_transcript("changed")
+        assert database.search_transcript_metadata("Freshsummary")["total"] == 0
+        assert database.search_transcript_metadata("Aftercontent")["total"] == 0
+        assert not database.delete_transcript("changed")
+        database.save_transcript({**record, "content": "Restoredcontent"})
+        assert database.search_transcript_metadata("Restoredcontent")["total"] == 1
+        assert database.search_transcript_metadata("Unrelatedcontent")["total"] == 1
+        conn.set_trace_callback(None)
+        deletions = [sql for sql in statements if sql.startswith("DELETE FROM transcripts_fts WHERE")]
+        assert deletions
+        for deletion in deletions:
+            plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + deletion)]
+            assert any("INDEX 0:=" in step for step in plan), plan
+            assert any("SEARCH transcripts USING COVERING INDEX" in step for step in plan), plan
+    finally:
+        database._close_all_connections()
+
+
 def test_metadata_page_order_is_stable_when_timestamps_match(monkeypatch, tmp_path):
     database._close_all_connections()
     monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")

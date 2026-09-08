@@ -1,4 +1,5 @@
 import ctypes
+import functools
 import math
 import os
 import sys
@@ -21,13 +22,27 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from src.config import Config
+from src.runtime.office_text_insert import OfficeInsertOutcome, try_insert_office_text
 from src.runtime.shell_ipc import call_shell_ipc, record_command_diagnostic
+from src.runtime.windows_clipboard_lease import WindowsClipboardLease
 
 HAS_GUI = not (sys.platform.startswith("linux") and "DISPLAY" not in os.environ)
 pyautogui = None
 keyboard = None
 _GUI_MODULES_LOCK = threading.Lock()
 _GUI_IMPORT_ATTEMPTED = False
+_CLIPBOARD_PASTE_LOCK = threading.Lock()
+_CLIPBOARD_API_LOCK = threading.RLock()
+_ACTIVE_CLIPBOARD_LEASE: WindowsClipboardLease | None = None
+
+
+def _serialize_clipboard_access(function):
+    """Protect ownerless Win32 fallback calls from same-process reentrancy."""
+    @functools.wraps(function)
+    def synchronized(*args, **kwargs):
+        with _CLIPBOARD_API_LOCK:
+            return function(*args, **kwargs)
+    return synchronized
 
 
 def _ensure_gui_modules() -> bool:
@@ -91,6 +106,7 @@ class _ClipboardSnapshot:
     formats: list[_ClipboardFormatSnapshot]
     unsupported_format_count: int = 0
     total_bytes: int = 0
+    sequence_number: int | None = None
 
 
 @dataclass(frozen=True)
@@ -264,10 +280,20 @@ class KEYBDINPUT(ctypes.Structure):
     ]
 
 
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", wintypes.LONG), ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
 class INPUT(ctypes.Structure):
     class _INPUT_UNION(ctypes.Union):
         # ctypes reads _fields_ at class creation; it must stay a plain list.
-        _fields_ = [("ki", KEYBDINPUT)]  # noqa: RUF012
+        # INPUT's ABI includes the larger mouse member even for keyboard-only
+        # dispatch. Without it SendInput rejects cbSize on 64-bit Windows.
+        _fields_ = [("ki", KEYBDINPUT), ("mi", MOUSEINPUT)]  # noqa: RUF012
 
     _anonymous_ = ("_input",)
     _fields_ = [
@@ -276,62 +302,80 @@ class INPUT(ctypes.Structure):
     ]
 
 
-def _send_input_text(text: str) -> bool:
-    """
-    Inject text instantly using Windows SendInput API with Unicode events.
-    This batches all characters into a single system call for maximum speed.
+def _send_paste_shortcut() -> None:
+    """Dispatch one indivisible Ctrl+V chord with no legacy GUI import."""
+    user32 = ctypes.windll.user32
+    user32.GetAsyncKeyState.argtypes = [ctypes.c_int]
+    user32.GetAsyncKeyState.restype = wintypes.SHORT
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
+    control_held = bool(user32.GetAsyncKeyState(0x11) & 0x8000)
+    events = [(0x56, 0), (0x56, KEYEVENTF_KEYUP)]
+    if not control_held:
+        events = [(0x11, 0), *events, (0x11, KEYEVENTF_KEYUP)]
+    inputs = (INPUT * len(events))()
+    for item, (virtual_key, flags) in zip(inputs, events, strict=True):
+        item.type = INPUT_KEYBOARD
+        item.ki.wVk = virtual_key
+        item.ki.dwFlags = flags
+    sent = int(user32.SendInput(len(inputs), inputs, ctypes.sizeof(INPUT)))
+    if sent != len(inputs):
+        # Release only synthetic downs that the accepted prefix left held.
+        # This is key-up cleanup, never another V-down or paste attempt. A
+        # control key held by the user was never added to our event batch.
+        held: list[int] = []
+        for virtual_key, flags in events[:max(0, sent)]:
+            if flags & KEYEVENTF_KEYUP:
+                if virtual_key in held:
+                    held.remove(virtual_key)
+            else:
+                held.append(virtual_key)
+        if held:
+            releases = (INPUT * len(held))()
+            for item, virtual_key in zip(releases, reversed(held), strict=True):
+                item.type = INPUT_KEYBOARD
+                item.ki.wVk = virtual_key
+                item.ki.dwFlags = KEYEVENTF_KEYUP
+            try:
+                user32.SendInput(len(releases), releases, ctypes.sizeof(INPUT))
+            except Exception:
+                logger.debug("Incomplete paste key-up cleanup")
+        # Partial input is terminal: callers must never retry this paste.
+        raise OSError(f"pasteInputDispatchUncertain:{sent}/{len(inputs)}")
 
-    Performance: ~10ms for any text length (vs 10ms PER CHARACTER with keyboard.write)
-    For 500 chars: keyboard.write = 5000ms, SendInput = ~10ms (500x faster)
-    """
+
+def _send_input_text(text: str) -> bool:
+    """Batch Unicode keyboard events; target rendering still depends on its app."""
     if sys.platform != "win32":
         return False
-
+    dispatch_started = False
     try:
         user32 = ctypes.windll.user32
-
-        # Build input events: each character needs key-down + key-up
+        _set_ctypes_signature(
+            user32.SendInput, argtypes=[wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int], restype=wintypes.UINT,
+        )
+        # wScan is a UTF-16 code unit, not a Python Unicode code point.
+        encoded = text.encode("utf-16-le")
         inputs = []
-        for char in text:
-            # Key down
-            ki_down = KEYBDINPUT(
-                wVk=0,
-                wScan=ord(char),
-                dwFlags=KEYEVENTF_UNICODE,
-                time=0,
-                dwExtraInfo=None,
-            )
-            input_down = INPUT(type=INPUT_KEYBOARD)
-            input_down.ki = ki_down
-            inputs.append(input_down)
-
-            # Key up
-            ki_up = KEYBDINPUT(
-                wVk=0,
-                wScan=ord(char),
-                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
-                time=0,
-                dwExtraInfo=None,
-            )
-            input_up = INPUT(type=INPUT_KEYBOARD)
-            input_up.ki = ki_up
-            inputs.append(input_up)
-
+        for offset in range(0, len(encoded), 2):
+            code_unit = int.from_bytes(encoded[offset:offset + 2], "little")
+            for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
+                item = INPUT(type=INPUT_KEYBOARD)
+                item.ki = KEYBDINPUT(wVk=0, wScan=code_unit, dwFlags=flags, time=0, dwExtraInfo=None)
+                inputs.append(item)
         if not inputs:
             return True
-
-        # Convert to array and send all at once
         input_array = (INPUT * len(inputs))(*inputs)
+        dispatch_started = True
         sent = user32.SendInput(len(inputs), input_array, ctypes.sizeof(INPUT))
-
         if sent != len(inputs):
             logger.warning(f"SendInput: sent {sent}/{len(inputs)} events")
-            return False
-
+            # A partial write is terminal; auto must not type it a second time.
+            return sent > 0
         return True
-    except Exception as e:
-        logger.debug(f"SendInput failed: {e}")
-        return False
+    except Exception as exc:
+        logger.debug(f"SendInput failed ({type(exc).__name__})")
+        return dispatch_started
 
 
 def _active_window_title() -> str:
@@ -524,6 +568,7 @@ def _get_pre_delay_for_window() -> int:
     return 0
 
 
+@_serialize_clipboard_access
 def _windows_clipboard_get_text(
     *,
     retries: int = 5,
@@ -566,6 +611,7 @@ def _windows_clipboard_get_text(
     return _CLIPBOARD_ACCESS_FAILED
 
 
+@_serialize_clipboard_access
 def _windows_clipboard_set_text(text: str, *, retries: int = 5, delay_secs: float = 0.005) -> bool:
     """
     Set text to Windows clipboard with optimized retry loop.
@@ -631,6 +677,7 @@ def _windows_clipboard_sequence_number() -> int | None:
         return None
 
 
+@_serialize_clipboard_access
 def _windows_clipboard_snapshot(
     *,
     retries: int = 5,
@@ -708,6 +755,7 @@ def _windows_clipboard_snapshot(
             if not snapshot.formats and snapshot.unsupported_format_count:
                 logger.warning("Clipboard contains only unsupported formats; refusing to overwrite clipboard")
                 return _CLIPBOARD_ACCESS_FAILED
+            snapshot.sequence_number = _windows_clipboard_sequence_number()
             return snapshot
         finally:
             user32.CloseClipboard()
@@ -716,11 +764,13 @@ def _windows_clipboard_snapshot(
     return _CLIPBOARD_ACCESS_FAILED
 
 
+@_serialize_clipboard_access
 def _windows_clipboard_restore_snapshot(
     snapshot: _ClipboardSnapshot,
     *,
     retries: int = 5,
     delay_secs: float = 0.005,
+    expected_sequence: int | None = None,
 ) -> bool:
     if sys.platform != "win32":
         return False
@@ -748,6 +798,8 @@ def _windows_clipboard_restore_snapshot(
             time.sleep(delay_secs)
             continue
         try:
+            if expected_sequence is not None and _windows_clipboard_sequence_number() != expected_sequence:
+                return False
             if not user32.EmptyClipboard():
                 return False
 
@@ -790,6 +842,25 @@ def _paste_text(
     on_marker: Callable[[str], None] | None = None,
     target_guard: InjectionTargetGuard | None = None,
 ) -> bool:
+    # Two streamed finals must never snapshot the preceding temporary
+    # transcript as if it were the user's original clipboard.
+    with _CLIPBOARD_PASTE_LOCK:
+        if _ACTIVE_CLIPBOARD_LEASE is not None and not _ACTIVE_CLIPBOARD_LEASE.wait(2):
+            logger.warning("Clipboard paste deferred because the preceding consumer still owns its lease")
+            return False
+        return _paste_text_locked(
+            text, skip_clipboard_restore=skip_clipboard_restore,
+            on_marker=on_marker, target_guard=target_guard,
+        )
+
+
+def _paste_text_locked(
+    text: str,
+    *,
+    skip_clipboard_restore: bool = False,
+    on_marker: Callable[[str], None] | None = None,
+    target_guard: InjectionTargetGuard | None = None,
+) -> bool:
     """
     Inject text via clipboard paste (Ctrl+V).
 
@@ -800,7 +871,7 @@ def _paste_text(
     """
     if not HAS_GUI:
         return False
-    if not _ensure_gui_modules():
+    if not Config.PASTE_ACKNOWLEDGED_RESTORE and not _ensure_gui_modules():
         return False
     if sys.platform != "win32":
         return False
@@ -823,7 +894,26 @@ def _paste_text(
         logger.warning("Current clipboard could not be snapshotted; skipping paste to avoid overwriting it")
         return False
 
-    if not _windows_clipboard_set_text(text):
+    global _ACTIVE_CLIPBOARD_LEASE
+    lease = None
+    if isinstance(previous_clipboard, _ClipboardSnapshot) and Config.PASTE_ACKNOWLEDGED_RESTORE:
+        foreground = _active_foreground_target_snapshot()
+        if foreground is not None and foreground.process_id:
+            lease = WindowsClipboardLease(
+                text,
+                [(item.format_id, item.data) for item in previous_clipboard.formats],
+                target_process_id=foreground.process_id,
+                restore_delay_ms=Config.PASTE_RESTORE_DELAY_MS,
+                expected_sequence=previous_clipboard.sequence_number,
+            )
+            if not lease.publish():
+                # Publication failed before input dispatch. The lease owns
+                # any recovery; no retry may race its owner thread.
+                _ACTIVE_CLIPBOARD_LEASE = lease
+                return False
+            _ACTIVE_CLIPBOARD_LEASE = lease
+
+    if lease is None and not _windows_clipboard_set_text(text):
         if isinstance(previous_clipboard, _ClipboardSnapshot):
             _windows_clipboard_restore_snapshot(previous_clipboard)
         return False
@@ -834,7 +924,9 @@ def _paste_text(
     paste_dispatched = False
     try:
         # OPTIMIZED: App-specific pre-delay (0ms for most apps, ~80ms only for Word/Outlook)
-        pre_delay_ms = _get_pre_delay_for_window()
+        # The delayed-render owner supplies text synchronously on request; it
+        # needs no arbitrary clipboard settling delay, including in Office.
+        pre_delay_ms = 0 if lease is not None else _get_pre_delay_for_window()
         if pre_delay_ms:
             time.sleep(pre_delay_ms / 1000.0)
 
@@ -856,7 +948,9 @@ def _paste_text(
             pyautogui.hotkey("ctrl", "v", interval=0.05)
 
         dispatch: Callable[[], None] | None = None
-        if keyboard and hasattr(keyboard, "press_and_release"):
+        if lease is not None:
+            dispatch = _send_paste_shortcut
+        elif _ensure_gui_modules() and keyboard and hasattr(keyboard, "press_and_release"):
             dispatch = dispatch_keyboard
         elif pyautogui and hasattr(pyautogui, "hotkey"):
             dispatch = dispatch_pyautogui
@@ -864,6 +958,8 @@ def _paste_text(
             return False
 
         paste_dispatched = True
+        if lease is not None:
+            lease.arm_for_paste()
         if on_marker:
             on_marker("paste_requested")
         try:
@@ -897,7 +993,13 @@ def _paste_text(
             )
         return True
     finally:
-        if skip_clipboard_restore or not isinstance(previous_clipboard, _ClipboardSnapshot):
+        if lease is not None:
+            lease.finish(dispatched=paste_dispatched)
+            # Usually the consumer has already read the clipboard by the time
+            # its paste keystroke returns. Give the owner a short bounded chance
+            # to restore before the injection completion callback becomes visible.
+            lease.wait(0.06)
+        elif skip_clipboard_restore or not isinstance(previous_clipboard, _ClipboardSnapshot):
             pass  # Skip restoration for speed or no previous content
         else:
             restore_delay_ms = max(0, int(getattr(Config, "PASTE_RESTORE_DELAY_MS", 0) or 0)) if paste_dispatched else 0
@@ -911,7 +1013,7 @@ def _paste_text(
                         or current_sequence != clipboard_sequence_after_set
                     ):
                         return
-                    _windows_clipboard_restore_snapshot(previous_clipboard)
+                    _windows_clipboard_restore_snapshot(previous_clipboard, expected_sequence=clipboard_sequence_after_set)
                 except Exception:
                     pass
 
@@ -1116,25 +1218,12 @@ class TextInjector(FrameProcessor):
             return False
 
     def _inject_text(self, text: str):
-        """
-        Inject text into the active application.
+        """Insert into the current target with no retry after an uncertain write.
 
-        INJECTION PRIORITY (most reliable to fastest):
-        1. Clipboard paste (~25-50ms) - RELIABLE, works in all apps including elevated ones
-        2. SendInput API (~10ms) - faster but often blocked by UIPI privilege isolation
-        3. keyboard.write (10ms/char) - legacy fallback, very slow
-
-        For 500 chars:
-        - Clipboard: ~50ms (RELIABLE)
-        - SendInput: ~10ms (often fails due to UIPI)
-        - keyboard.write: 5000ms (5 seconds)
-
-        NOTE: Clipboard is the default because SendInput frequently fails when:
-        - Target app runs with higher privileges (Admin)
-        - UIPI (User Interface Privilege Isolation) blocks the input
-        - App has certain security features enabled
-
-        The ~20-40ms speed difference is negligible compared to reliability.
+        Auto first uses the focused classic Office editor's native object
+        model, then clipboard paste, Unicode SendInput, and legacy typing.
+        Explicit modes and process-bound benchmark targets retain their strict
+        routes. Dispatch completion alone is not proof of visible target text.
         """
         if getattr(Config, "DISABLE_TEXT_INJECTION", False):
             logger.info("Text injection disabled via SCRIBER_DISABLE_TEXT_INJECTION")
@@ -1212,6 +1301,20 @@ class TextInjector(FrameProcessor):
             return
 
         if method == "auto":
+            if not strict_target_guard:
+                office_result = try_insert_office_text(
+                    text,
+                    validate_target=lambda: _foreground_target_guard_allows_dispatch(
+                        target_guard, phase="before_office_dispatch",
+                    ),
+                    on_marker=self._notify_injection_marker,
+                )
+                if office_result is OfficeInsertOutcome.INSERTED:
+                    self._notify_injected(text)
+                    return
+                if office_result in {OfficeInsertOutcome.UNCERTAIN, OfficeInsertOutcome.CANCELLED}:
+                    logger.warning("Office insertion interrupted; transcript retained and unsafe retries disabled")
+                    return
             if _paste_text(text, **paste_kwargs):
                 self._notify_injected(text)
                 return

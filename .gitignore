@@ -89,3 +89,6 @@ tmp/
 /praxist_task/hub/
 /praxist_task/xet/
 /praxist_task/**/__pycache__/
+
+# Local podcast subscriptions and downloaded publisher audio.
+/podcasts/

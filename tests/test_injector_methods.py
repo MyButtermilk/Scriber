@@ -10,6 +10,14 @@ from src.injector import (
     inject_text_once,
 )
 from src.runtime import shell_ipc
+from src.runtime.office_text_insert import OfficeInsertOutcome
+
+
+@pytest.fixture(autouse=True)
+def isolate_native_office_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        "src.injector.try_insert_office_text", lambda *_args, **_kwargs: OfficeInsertOutcome.UNAVAILABLE
+    )
 
 
 def test_inject_text_once_preserves_strict_replay_target_and_method():

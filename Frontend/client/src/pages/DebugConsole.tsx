@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -29,6 +30,7 @@ import {
   Search,
   Terminal,
   Trash2,
+  Timer,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -57,6 +59,13 @@ import type {
   RuntimeLogsResponse,
 } from "@/lib/api-types";
 import { useI18n, type TranslationValues } from "@/i18n";
+import {
+  DIAGNOSTIC_WORKFLOWS,
+  indexRuntimeLogs,
+  runtimeLatencySamples,
+  workflowCounts,
+  type DiagnosticWorkflow,
+} from "@/lib/runtime-diagnostics";
 
 const LEVELS = ["ALL", "CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"] as const;
 const ALL_DATES_VALUE = "all";
@@ -246,8 +255,10 @@ export default function DebugConsole() {
   const [postProcessingDiagnostics, setPostProcessingDiagnostics] = useState<PostProcessingDiagnostic[]>([]);
   const [selectedLevel, setSelectedLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [selectedSource, setSelectedSource] = useState("all");
+  const [selectedWorkflow, setSelectedWorkflow] = useState<DiagnosticWorkflow>("all");
   const [dateFilter, setDateFilter] = useState(defaultDateFilter);
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [autoScroll, setAutoScroll] = useState(true);
   const [newestFirst, setNewestFirst] = useState(true);
@@ -262,28 +273,38 @@ export default function DebugConsole() {
   const [copiedLogDetailKey, setCopiedLogDetailKey] = useState("");
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [truncated, setTruncated] = useState(false);
+  const [loggingEnabled, setLoggingEnabled] = useState(true);
   const logScrollRef = useRef<HTMLElement | null>(null);
   const logLoadGenerationRef = useRef(0);
   const logLoadInFlightRef = useRef(false);
   const copyResetTimerRef = useRef<number | null>(null);
+  const logSnapshotRef = useRef("");
 
-  const loadLogs = useCallback(async () => {
+  const loadLogs = useCallback(async (interactive = true) => {
     if (logLoadInFlightRef.current) return;
     logLoadInFlightRef.current = true;
     const loadGeneration = logLoadGenerationRef.current + 1;
     logLoadGenerationRef.current = loadGeneration;
-    setLoading(true);
-    setError(null);
+    if (interactive) {
+      setLoading(true);
+      setError(null);
+    }
     try {
       const res = await fetchWithTimeout(apiUrl("/api/runtime/logs?limit=1200"), { credentials: "include" }, 8_000);
       if (!res.ok) {
         throw new Error((await res.text()) || res.statusText);
       }
-      const payload = (await res.json()) as RuntimeLogsResponse;
+      const snapshot = await res.text();
       if (loadGeneration !== logLoadGenerationRef.current) return;
-      setLogs(payload.items || []);
-      setSources(payload.sources || []);
-      setTruncated(payload.truncated === true);
+      if (snapshot !== logSnapshotRef.current) {
+        const payload = JSON.parse(snapshot) as RuntimeLogsResponse;
+        logSnapshotRef.current = snapshot;
+        setLogs(payload.items || []);
+        setSources(payload.sources || []);
+        setTruncated(payload.truncated === true);
+        setLoggingEnabled(payload.loggingEnabled !== false);
+      }
+      setError(null);
       void fetchWithTimeout(
         apiUrl("/api/runtime/post-processing-diagnostics?limit=8"),
         { credentials: "include" },
@@ -318,6 +339,7 @@ export default function DebugConsole() {
 
   useEffect(
     () => () => {
+      logLoadGenerationRef.current += 1;
       if (copyResetTimerRef.current !== null) {
         window.clearTimeout(copyResetTimerRef.current);
       }
@@ -331,7 +353,7 @@ export default function DebugConsole() {
     let timer = 0;
     const scheduleNextRefresh = () => {
       timer = window.setTimeout(async () => {
-        await loadLogs();
+        if (document.visibilityState !== "hidden") await loadLogs(false);
         if (!cancelled) scheduleNextRefresh();
       }, 2500);
     };
@@ -342,33 +364,37 @@ export default function DebugConsole() {
     };
   }, [autoRefresh, loadLogs]);
 
+  const indexedLogs = useMemo(() => indexRuntimeLogs(logs), [logs]);
+  const countsByWorkflow = useMemo(() => workflowCounts(logs), [logs]);
+  const latencySamples = useMemo(() => runtimeLatencySamples(logs), [logs]);
   const filteredLogs = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return logs.filter((entry) => {
-      if (clearedLogKeys.has(logEntryKey(entry))) return false;
-      const level = normalizeLevel(entry.level);
-      if (selectedLevel !== "ALL" && level !== selectedLevel) return false;
-      if (selectedSource !== "all" && entry.source !== selectedSource) return false;
-      if (dateFilter !== ALL_DATES_VALUE) {
-        const dateKey = entryDateKey(entry);
-        if (dateKey && dateKey !== dateFilter) return false;
-        if (!dateKey && dateFilter !== defaultDateFilter) return false;
-      }
-      if (!needle) return true;
-      return [
-        entry.message,
-        entry.source,
-        entry.component || "",
-        entry.context ? JSON.stringify(entry.context) : "",
-        level,
-        entry.timestamp || "",
-        String(entry.timestampMs || ""),
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle);
-    });
-  }, [clearedLogKeys, dateFilter, defaultDateFilter, logs, query, selectedLevel, selectedSource]);
+    const needle = deferredQuery.trim().toLowerCase();
+    return indexedLogs
+      .filter(({ entry, workflow, search }) => {
+        if (clearedLogKeys.has(logEntryKey(entry))) return false;
+        if (selectedWorkflow !== "all" && selectedWorkflow !== workflow) return false;
+        const level = normalizeLevel(entry.level);
+        if (selectedLevel !== "ALL" && level !== selectedLevel) return false;
+        if (selectedSource !== "all" && entry.source !== selectedSource) return false;
+        if (dateFilter !== ALL_DATES_VALUE) {
+          const dateKey = entryDateKey(entry);
+          if (dateKey && dateKey !== dateFilter) return false;
+          if (!dateKey && dateFilter !== defaultDateFilter) return false;
+        }
+        if (!needle) return true;
+        return search.includes(needle);
+      })
+      .map(({ entry }) => entry);
+  }, [
+    clearedLogKeys,
+    dateFilter,
+    defaultDateFilter,
+    indexedLogs,
+    deferredQuery,
+    selectedLevel,
+    selectedSource,
+    selectedWorkflow,
+  ]);
 
   const displayedLogs = useMemo(() => {
     return filteredLogs
@@ -380,6 +406,23 @@ export default function DebugConsole() {
       })
       .map((item) => item.entry);
   }, [filteredLogs, newestFirst]);
+
+  const logVirtualizer = useVirtualizer({
+    count: displayedLogs.length,
+    getScrollElement: () => logScrollRef.current,
+    estimateSize: () => 94,
+    overscan: 5,
+    getItemKey: (index) => `${logEntryKey(displayedLogs[index])}-${index}`,
+  });
+
+  useLayoutEffect(() => {
+    // Filtering changes the measured row geometry. Discard the previous
+    // window's measurements before resetting, otherwise resize compensation
+    // can put the stream back at its old offset after the reset.
+    logVirtualizer.measure();
+    if (logScrollRef.current) logScrollRef.current.scrollTop = 0;
+    logVirtualizer.scrollToOffset(0);
+  }, [selectedWorkflow, selectedSource, selectedLevel, dateFilter, deferredQuery, newestFirst, logVirtualizer]);
 
   useEffect(() => {
     if (!autoScroll || newestFirst) return;
@@ -401,11 +444,16 @@ export default function DebugConsole() {
     return formatDate(localDate, { dateStyle: "medium" });
   }, [dateFilter, formatDate, t]);
   const hasActiveFilters =
-    selectedLevel !== "ALL" || selectedSource !== "all" || dateFilter !== defaultDateFilter || query.trim().length > 0;
+    selectedLevel !== "ALL" ||
+    selectedSource !== "all" ||
+    selectedWorkflow !== "all" ||
+    dateFilter !== defaultDateFilter ||
+    query.trim().length > 0;
 
   const resetFilters = () => {
     setSelectedLevel("ALL");
     setSelectedSource("all");
+    setSelectedWorkflow("all");
     setDateFilter(defaultDateFilter);
     setQuery("");
   };
@@ -454,6 +502,7 @@ export default function DebugConsole() {
       }
 
       logLoadGenerationRef.current += 1;
+      logSnapshotRef.current = "";
       setLogs([]);
       setSources([]);
       setClearedLogKeys(new Set());
@@ -721,6 +770,26 @@ export default function DebugConsole() {
           </div>
         </header>
 
+        <nav className="debug-workflow-nav" aria-label={t("Filter by workflow")}>
+          {(Object.entries(DIAGNOSTIC_WORKFLOWS) as Array<[DiagnosticWorkflow, string]>)
+            .filter(
+              ([workflow]) =>
+                workflow === "all" || workflow === selectedWorkflow || (countsByWorkflow[workflow] || 0) > 0,
+            )
+            .map(([workflow, label]) => (
+              <button
+                key={workflow}
+                type="button"
+                aria-pressed={selectedWorkflow === workflow}
+                className="debug-workflow-button"
+                onClick={() => setSelectedWorkflow(workflow)}
+              >
+                {t(label)}
+                <span>{formatNumber(countsByWorkflow[workflow] || 0)}</span>
+              </button>
+            ))}
+        </nav>
+
         <section className="debug-command-deck" aria-label={t("Log controls")}>
           <div className="debug-command-primary">
             <div className="debug-search-field">
@@ -851,8 +920,8 @@ export default function DebugConsole() {
               {newestFirst ? t("Jump to top") : t("Jump to bottom")}
             </Button>
             <div className="debug-updated-status">
-              <span className={cn("debug-live-dot", autoRefresh && "is-live")} />
-              <span>{autoRefresh ? t("Live") : t("Paused")}</span>
+              <span className={cn("debug-live-dot", autoRefresh && loggingEnabled && "is-live")} />
+              <span>{!loggingEnabled ? t("Logging is off") : autoRefresh ? t("Live") : t("Paused")}</span>
               <span className="debug-updated-time">
                 {lastUpdated ? formatDate(lastUpdated, { timeStyle: "medium" }) : "--:--:--"}
               </span>
@@ -861,7 +930,10 @@ export default function DebugConsole() {
 
           {actionStatus && (
             <div className="debug-action-status" aria-live="polite">
-              <span className="debug-action-status-message" title={renderLocalizedMessage(actionStatus, t, formatNumber)}>
+              <span
+                className="debug-action-status-message"
+                title={renderLocalizedMessage(actionStatus, t, formatNumber)}
+              >
                 {renderLocalizedMessage(actionStatus, t, formatNumber)}
               </span>
               {lastSupportBundle && (
@@ -874,7 +946,12 @@ export default function DebugConsole() {
                     <FolderOpen className="mr-1.5 h-3.5 w-3.5" />
                     {t("Open folder")}
                   </Button>
-                  <Button type="button" size="sm" variant="ghost" onClick={() => void runSupportBundleAction("copy-file")}>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void runSupportBundleAction("copy-file")}
+                  >
                     <Clipboard className="mr-1.5 h-3.5 w-3.5" />
                     {t("Copy file")}
                   </Button>
@@ -914,15 +991,25 @@ export default function DebugConsole() {
                   )}
                 </div>
               ) : (
-                <div className="debug-log-list">
-                  {displayedLogs.map((entry, index) => {
+                <div className="debug-log-list" style={{ height: logVirtualizer.getTotalSize(), position: "relative" }}>
+                  {logVirtualizer.getVirtualItems().map((virtualRow) => {
+                    const entry = displayedLogs[virtualRow.index];
                     const level = normalizeLevel(entry.level);
                     const Icon = iconForLevel(level);
                     return (
                       <article
-                        key={`${logEntryKey(entry)}-${index}`}
+                        key={virtualRow.key}
+                        data-index={virtualRow.index}
+                        ref={logVirtualizer.measureElement}
                         className={cn("debug-log-row", rowStyles[level] || rowStyles.INFO)}
                         data-level={level.toLowerCase()}
+                        style={{
+                          position: "absolute",
+                          top: 0,
+                          left: 0,
+                          width: "100%",
+                          transform: `translateY(${virtualRow.start}px)`,
+                        }}
                       >
                         <time className="debug-log-time" title={entry.timestamp || ""}>
                           {formatEntryTime(entry, localeTag)}
@@ -953,6 +1040,31 @@ export default function DebugConsole() {
           </section>
 
           <aside className="debug-diagnostics-panel" aria-label={t("Post-processing diagnostics")}>
+            <section className="debug-latency-section" aria-label={t("Latest pipeline timings")}>
+              <div className="debug-latency-heading">
+                <Timer aria-hidden="true" />
+                <h2>{t("Latest pipeline timings")}</h2>
+              </div>
+              <p>{t("Measured stages from the current log window.")}</p>
+              <dl className="debug-latency-list">
+                {latencySamples.map((sample) => (
+                  <div key={sample.key}>
+                    <dt>
+                      <TransitionTooltip content={t(sample.detail)}>
+                        <span tabIndex={0}>{t(sample.label)}</span>
+                      </TransitionTooltip>
+                    </dt>
+                    <dd>
+                      {sample.durationMs === null ? (
+                        <span className="debug-no-sample">{t("No sample")}</span>
+                      ) : (
+                        formatMs(sample.durationMs, formatNumber)
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
             <div className="debug-diagnostics-heading">
               <div className="debug-diagnostics-mark">
                 <Bug className="h-4 w-4" />

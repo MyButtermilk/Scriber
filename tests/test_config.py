@@ -202,6 +202,7 @@ def test_overlay_visualizer_style_defaults_invalid_values_to_bars(tmp_path):
     assert _read_fresh_overlay_visualizer_style(tmp_path, None) == "bars"
     assert _read_fresh_overlay_visualizer_style(tmp_path, "unknown") == "bars"
     assert _read_fresh_overlay_visualizer_style(tmp_path, " ENERGY_WAVE ") == "energy_wave"
+    assert _read_fresh_overlay_visualizer_style(tmp_path, " BLUE_FLAME ") == "blue_flame"
 
 
 def test_fresh_post_processing_fallback_model_preserves_precedence_and_legacy_aliases(tmp_path):
@@ -681,6 +682,10 @@ def test_overlay_visualizer_style_is_validated_and_persisted(monkeypatch, tmp_pa
     assert Config.OVERLAY_VISUALIZER_STYLE == "energy_wave"
     assert os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] == "energy_wave"
     assert "SCRIBER_OVERLAY_VISUALIZER_STYLE=energy_wave" in target.read_text(encoding="utf-8")
+    Config.set_overlay_visualizer_style(" BLUE_FLAME ")
+    Config.persist_to_env_file(str(target))
+    assert Config.OVERLAY_VISUALIZER_STYLE == "blue_flame"
+    assert "SCRIBER_OVERLAY_VISUALIZER_STYLE=blue_flame" in target.read_text(encoding="utf-8")
     with pytest.raises(ValueError, match="bars.*energy_wave"):
         Config.set_overlay_visualizer_style("unknown")
 

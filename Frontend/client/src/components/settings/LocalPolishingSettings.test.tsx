@@ -68,6 +68,7 @@ describe("LocalPolishingSettings", () => {
 
   it("describes the conditional local-processing privacy boundary without claiming a public download", () => {
     renderSettings();
+    fireEvent.focus(screen.getByRole("button", { name: "Experimental" }));
 
     expect(
       screen.getByText(
@@ -106,9 +107,7 @@ describe("LocalPolishingSettings", () => {
       },
     });
 
-    expect(
-      screen.getByText("The local polishing model is unavailable in this build."),
-    ).toBeInTheDocument();
+    expect(screen.getByText("The local polishing model is unavailable in this build.")).toBeInTheDocument();
     expect(screen.queryByTestId("local-polishing-model-qad_q4_0")).not.toBeInTheDocument();
   });
 
@@ -141,10 +140,7 @@ describe("LocalPolishingSettings", () => {
     const qadCard = screen.getByTestId("local-polishing-model-qad_q4_0");
     expect(
       within(qadCard).getByRole("progressbar", { name: "LFM2.5 350M · QAD Q4_0 download progress" }),
-    ).toHaveAttribute(
-      "aria-valuenow",
-      "38",
-    );
+    ).toHaveAttribute("aria-valuenow", "38");
     fireEvent.click(within(qadCard).getByRole("button", { name: "Cancel" }));
     expect(onCancel).toHaveBeenCalledWith("operation-17");
   });

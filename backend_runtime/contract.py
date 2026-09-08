@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 RUNTIME_CONTRACT_NAME = "scriber-frozen-python-runtime"
-RUNTIME_CONTRACT_REVISION = 7
+RUNTIME_CONTRACT_REVISION = 8
 APPLICATION_LAYER_SCHEMA_VERSION = 1
 RUNTIME_LAYER_SCHEMA_VERSION = 1
 APPLICATION_ENTRY_POINT = "src.backend_worker:main"
@@ -28,6 +28,9 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("cryptography.fernet", "native OpenSSL-backed cryptography runtime"),
     ("docx", "DOCX meeting export runtime"),
     ("dotenv", "local settings environment loader"),
+    ("email.utils", "RSS podcast publication date parsing"),
+    ("html", "RSS podcast plain-text metadata decoding"),
+    ("ipaddress", "public-only podcast transport address validation"),
     ("grpc", "native provider gRPC transport runtime"),
     ("huggingface_hub", "local ONNX model download runtime"),
     ("keyboard", "compatibility hotkey runtime"),
@@ -78,6 +81,7 @@ RUNTIME_REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
     ("ssl", "CPython OpenSSL transport runtime"),
     ("tqdm", "model download progress runtime"),
     ("websockets.asyncio.client", "provider WebSocket client runtime"),
+    ("xml.etree.ElementTree", "bounded RSS podcast parser with DTD rejection"),
     ("yt_dlp", "YouTube media extraction runtime"),
     ("yt_dlp_ejs", "YouTube JavaScript challenge runtime"),
 )

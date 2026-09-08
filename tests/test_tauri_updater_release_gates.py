@@ -246,9 +246,16 @@ def test_prepare_tauri_updater_config_writes_signed_release_config(tmp_path: Pat
     updated = json.loads(config.read_text(encoding="utf-8"))
     assert updated["bundle"]["createUpdaterArtifacts"] is True
     assert updated["plugins"]["updater"]["pubkey"] == "PUBLIC_KEY"
+    assert updated["plugins"]["updater"]["windows"]["installMode"] == "quiet"
     assert updated["plugins"]["updater"]["endpoints"] == [
         "https://github.com/MyButtermilk/Scriber/releases/latest/download/latest.json"
     ]
+
+
+def test_shipped_updater_is_unattended_and_per_user() -> None:
+    config = json.loads((REPO_ROOT / "Frontend" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8"))
+    assert config["bundle"]["windows"]["nsis"]["installMode"] == "currentUser"
+    assert config["plugins"]["updater"]["windows"]["installMode"] == "quiet"
 
 
 def test_prepare_tauri_updater_config_writes_release_overlay_without_mutating_source(tmp_path: Path) -> None:

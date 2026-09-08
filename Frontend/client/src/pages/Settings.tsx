@@ -10,6 +10,7 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Flame,
   Globe,
   Keyboard,
   Key,
@@ -60,6 +61,7 @@ import { Slider } from "@/components/ui/slider";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { SuccessCheckIcon, TransitionIcon, TransitionText } from "@/components/ui/transition-state";
 import { TransitionTooltip } from "@/components/ui/transition-tooltip";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import {
   apiUrl,
   refreshGlobalHotkey,
@@ -1375,13 +1377,8 @@ function ProviderChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
-          {option.routeNote ? (
-            <span className="mt-0.5 block text-ui-micro font-medium leading-[14px] text-blue-700 dark:text-blue-300">
-              {option.routeNote}
-            </span>
-          ) : null}
           {disabled ? (
-            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
+            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-medium leading-3 text-slate-500 dark:text-slate-400">
               <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
               {t("Key missing")}
             </span>
@@ -1399,6 +1396,11 @@ function ProviderChoice({
           {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
         </span>
       </button>
+      {option.routeNote ? (
+        <InfoTooltip label={option.label} compact className="mr-1 self-center">
+          {option.routeNote}
+        </InfoTooltip>
+      ) : null}
     </div>
   );
 }
@@ -1449,13 +1451,8 @@ function SummaryModelChoice({
           <span className="block truncate text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
             {option.detail}
           </span>
-          {option.note ? (
-            <span className="mt-0.5 block text-ui-micro leading-[14px] text-slate-500 dark:text-slate-400">
-              {option.note}
-            </span>
-          ) : null}
           {disabled ? (
-            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-semibold leading-3 text-amber-700 dark:text-amber-300">
+            <span className="mt-0.5 flex items-center gap-1 text-ui-micro font-medium leading-3 text-slate-500 dark:text-slate-400">
               <Key className="h-3 w-3 shrink-0" aria-hidden="true" />
               {t("Key missing")}
             </span>
@@ -1473,37 +1470,40 @@ function SummaryModelChoice({
           {selected ? <span className="h-1.5 w-1.5 rounded-full bg-white" /> : null}
         </span>
       </button>
+      {option.value === META_MUSE_SPARK_CONTRIBUTOR_MODEL ? (
+        <MetaContributorWarning active compact />
+      ) : option.note ? (
+        <InfoTooltip label={option.label} compact className="mr-1 self-center">
+          {option.note}
+        </InfoTooltip>
+      ) : null}
     </div>
   );
 }
 
-function MetaContributorWarning({ active }: { active: boolean }) {
+function MetaContributorWarning({ active, compact = false }: { active: boolean; compact?: boolean }) {
   const { t } = useI18n();
   if (!active) {
     return null;
   }
 
   return (
-    <div
-      role="note"
-      aria-label={t("Meta Contributor data-use warning")}
-      className="flex gap-2 rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] leading-4 text-amber-950 shadow-[inset_0_0_0_1px_rgba(217,119,6,0.2)] dark:bg-amber-950/35 dark:text-amber-100"
+    <InfoTooltip
+      label={t("Contributor data use")}
+      compact={compact}
+      className={compact ? "mr-1 self-center" : undefined}
     >
-      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-      <div>
-        <p className="font-semibold">{t("Contributor data use")}</p>
-        <p>
-          {t(
-            "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. This model is not recommended for sensitive or confidential content.",
-          )}
-        </p>
-        <p className="mt-1">
-          {t(
-            "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.3 Standard or request Contributor access in the Meta dashboard.",
-          )}
-        </p>
-      </div>
-    </div>
+      <p>
+        {t(
+          "Meta may use prompts and responses sent with the Contributor model to improve future Meta models. This model is not recommended for sensitive or confidential content.",
+        )}
+      </p>
+      <p className="mt-1">
+        {t(
+          "Contributor availability depends on access for your Meta project. If Meta does not list this model for the project, use Muse Spark 1.3 Standard or request Contributor access in the Meta dashboard.",
+        )}
+      </p>
+    </InfoTooltip>
   );
 }
 
@@ -1565,9 +1565,15 @@ function CustomOpenRouterModelField({
 function FieldShell({ label, children, detail }: { label: string; children: ReactNode; detail?: string }) {
   return (
     <div className="space-y-1.5">
-      <Label className="text-[12px] font-bold text-slate-700 dark:text-slate-300">{label}</Label>
+      <div className="flex items-center gap-1">
+        <Label className="text-[12px] font-bold text-slate-700 dark:text-slate-300">{label}</Label>
+        {detail ? (
+          <InfoTooltip label={label} compact>
+            {detail}
+          </InfoTooltip>
+        ) : null}
+      </div>
       {children}
-      {detail ? <p className="text-[12px] leading-4 text-slate-600 dark:text-slate-400">{detail}</p> : null}
     </div>
   );
 }
@@ -1635,43 +1641,39 @@ function SonioxRegionPicker({
             );
           })}
         </div>
-        <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-3 text-[11px] leading-[16px] text-amber-950 dark:bg-amber-950/30 dark:text-amber-100">
-          <div className="flex items-start gap-2.5">
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300" aria-hidden="true" />
-            <div>
-              <p className="font-semibold">{t("EU access must be enabled by Soniox first")}</p>
-              <p className="mt-1">
-                {t(
-                  "Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.",
-                )}
-              </p>
-              <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-                <button
-                  type="button"
-                  onClick={() => void openExternalHelpUrl(API_KEY_HELP_LINKS.soniox.href)}
-                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
-                >
-                  {t("Open Soniox API Console")}
-                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void openExternalHelpUrl(SONIOX_REGION_SUPPORT_URL)}
-                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
-                >
-                  {t("Email Soniox support")}
-                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void openExternalHelpUrl(SONIOX_DATA_RESIDENCY_URL)}
-                  className="inline-flex items-center gap-1 rounded-md font-semibold text-amber-950 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/60 dark:text-amber-100"
-                >
-                  {t("Read the official setup guide")}
-                  <ExternalLink className="h-3 w-3" aria-hidden="true" />
-                </button>
-              </div>
-            </div>
+        <div className="text-[11px] leading-4 text-slate-600 dark:text-slate-400">
+          <InfoTooltip label={t("EU access must be enabled by Soniox first")}>
+            <p>
+              {t(
+                "Email Soniox with your Organization ID so they can enable regional deployments. Then open the Soniox API Console, create a new project with the European Union region, and paste that separate EU project's API key above. The selected region and API key must match.",
+              )}
+            </p>
+          </InfoTooltip>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+            <button
+              type="button"
+              onClick={() => void openExternalHelpUrl(API_KEY_HELP_LINKS.soniox.href)}
+              className="inline-flex items-center gap-1 rounded-md font-medium underline decoration-slate-300 underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("Open Soniox API Console")}
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void openExternalHelpUrl(SONIOX_REGION_SUPPORT_URL)}
+              className="inline-flex items-center gap-1 rounded-md font-medium underline decoration-slate-300 underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("Email Soniox support")}
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void openExternalHelpUrl(SONIOX_DATA_RESIDENCY_URL)}
+              className="inline-flex items-center gap-1 rounded-md font-medium underline decoration-slate-300 underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {t("Read the official setup guide")}
+              <ExternalLink className="h-3 w-3" aria-hidden="true" />
+            </button>
           </div>
         </div>
       </fieldset>
@@ -1978,6 +1980,9 @@ export default function Settings() {
   const overlayVisualizerStyleSavingRef = useRef(false);
   const [autostartEnabled, setAutostartEnabled] = useState(false);
   const [autostartAvailable, setAutostartAvailable] = useState(false);
+  const [diagnosticLoggingEnabled, setDiagnosticLoggingEnabled] = useState(true);
+  const [diagnosticLoggingSaving, setDiagnosticLoggingSaving] = useState(false);
+  const diagnosticLoggingSavingRef = useRef(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [settingsError, setSettingsError] = useState("");
   const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateStatus>(initialDesktopUpdateStatus);
@@ -2875,6 +2880,7 @@ export default function Settings() {
         setVisualizerBarCount(loadedVisualizerBarCount);
         setSavedVisualizerBarCount(loadedVisualizerBarCount);
         setOverlayVisualizerStyle(normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle));
+        setDiagnosticLoggingEnabled(settings.diagnosticLoggingEnabled !== false);
         setMicAlwaysOn(settings.micAlwaysOn === true);
         setSegmentSpeechWithVad(settings.segmentSpeechWithVad === true);
         setFavoriteMic(settings.favoriteMic || "");
@@ -4216,6 +4222,25 @@ export default function Settings() {
     }
   };
 
+  const handleDiagnosticLoggingChange = async (enabled: boolean) => {
+    if (diagnosticLoggingSavingRef.current || enabled === diagnosticLoggingEnabled) return;
+    diagnosticLoggingSavingRef.current = true;
+    setDiagnosticLoggingSaving(true);
+    try {
+      const settings = await updateSettings({ diagnosticLoggingEnabled: enabled });
+      setDiagnosticLoggingEnabled(settings.diagnosticLoggingEnabled !== false);
+    } catch (error) {
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        duration: 4000,
+      });
+    } finally {
+      diagnosticLoggingSavingRef.current = false;
+      setDiagnosticLoggingSaving(false);
+    }
+  };
+
   const handleVisualizerBarCountChange = (value: number[]) => {
     const count = normalizeVisualizerBarCount(value[0], savedVisualizerBarCount);
     setVisualizerBarCount(count);
@@ -4791,7 +4816,7 @@ export default function Settings() {
                               {option.detail}
                             </span>
                             {disabledReason ? (
-                              <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-ui-micro font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                              <span className="mt-0.5 inline-flex w-fit text-ui-micro font-medium leading-3 text-slate-500 dark:text-slate-400">
                                 {disabledReason}
                               </span>
                             ) : null}
@@ -4806,19 +4831,19 @@ export default function Settings() {
                 <button
                   type="button"
                   onClick={() => openCredentialDialog(missingPostProcessingCredentialRequirement)}
-                  className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-ui-micro font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                  className="inline-flex w-fit items-center gap-1 rounded-md px-1.5 py-1 text-ui-micro font-medium leading-4 text-slate-600 underline decoration-slate-300 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-slate-400"
                 >
                   {t(MISSING_CREDENTIAL_CTA)}
                 </button>
               ) : null}
-              <p className="text-ui-micro leading-4 text-slate-500 dark:text-slate-400">
+              <InfoTooltip label={t("Benchmark notes")}>
                 {t(
                   "Blended token price uses the listed benchmark blend when available; otherwise it averages input and output rates.",
                 )}{" "}
                 {t("Euro estimates use a fixed rate of {{rate}}. Provider prices may change.", {
                   rate: estimateExchangeRateLabel,
                 })}
-              </p>
+              </InfoTooltip>
             </FieldShell>
 
             <CustomOpenRouterModelField
@@ -4871,7 +4896,7 @@ export default function Settings() {
                               {option.detail}
                             </span>
                             {disabledReason ? (
-                              <span className="mt-0.5 inline-flex w-fit rounded-full bg-amber-100 px-1.5 py-0.5 text-ui-micro font-semibold leading-3 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300">
+                              <span className="mt-0.5 inline-flex w-fit text-ui-micro font-medium leading-3 text-slate-500 dark:text-slate-400">
                                 {disabledReason}
                               </span>
                             ) : null}
@@ -4886,7 +4911,7 @@ export default function Settings() {
                 <button
                   type="button"
                   onClick={() => openCredentialDialog(missingPostProcessingFallbackCredentialRequirement)}
-                  className="inline-flex w-fit rounded-full bg-amber-100 px-2 py-1 text-ui-micro font-semibold leading-4 text-amber-700 transition-colors hover:bg-amber-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:bg-amber-950/50 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                  className="inline-flex w-fit items-center gap-1 rounded-md px-1.5 py-1 text-ui-micro font-medium leading-4 text-slate-600 underline decoration-slate-300 underline-offset-4 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-slate-400"
                 >
                   {t(MISSING_CREDENTIAL_CTA)}
                 </button>
@@ -5165,11 +5190,7 @@ export default function Settings() {
             </div>
           ))}
         </div>
-        <div
-          role="note"
-          aria-label={t("Benchmark notes")}
-          className="border-t border-slate-200/80 px-1 pt-3 text-ui-micro leading-4 text-slate-500 dark:border-[var(--workspace-border)] dark:text-slate-400"
-        >
+        <InfoTooltip label={t("Benchmark notes")}>
           <p>
             {t("WER (word error rate) is the share of words a benchmark transcribed incorrectly; lower is better.")}
           </p>
@@ -5178,7 +5199,7 @@ export default function Settings() {
               rate: estimateExchangeRateLabel,
             })}
           </p>
-        </div>
+        </InfoTooltip>
       </div>
     </SectionPanel>
   );
@@ -5263,12 +5284,12 @@ export default function Settings() {
           icon={Mic}
         >
           <div className="space-y-3">
-            {autostartAvailable && (
-              <SettingsSubsection
-                title={t("Startup")}
-                description={t("Control whether Scriber is ready after Windows login.")}
-                icon={Shield}
-              >
+            <SettingsSubsection
+              title={t("App behavior")}
+              description={t("Choose startup and diagnostic preferences.")}
+              icon={Shield}
+            >
+              {autostartAvailable && (
                 <SettingLine
                   label={t("Start with Windows")}
                   description={t("Launch Scriber when you log in.")}
@@ -5276,8 +5297,24 @@ export default function Settings() {
                 >
                   <Switch checked={autostartEnabled} onCheckedChange={handleAutostartChange} />
                 </SettingLine>
-              </SettingsSubsection>
-            )}
+              )}
+              <SettingLine label={t("Diagnostic logging")} description={t("Record local logs for troubleshooting.")}>
+                <div className="flex items-center gap-2">
+                  <InfoTooltip label={t("Diagnostic logging")} compact>
+                    {t(
+                      "When disabled, Scriber stops recording diagnostic logs in the app and backend. Existing logs are kept. You can turn logging back on whenever you need to investigate a problem.",
+                    )}
+                  </InfoTooltip>
+                  <Switch
+                    checked={diagnosticLoggingEnabled}
+                    onCheckedChange={(enabled) => void handleDiagnosticLoggingChange(enabled)}
+                    disabled={diagnosticLoggingSaving}
+                    aria-busy={diagnosticLoggingSaving}
+                    aria-label={t("Record diagnostic logs")}
+                  />
+                </div>
+              </SettingLine>
+            </SettingsSubsection>
 
             <SettingsSubsection
               title={t("Microphone input")}
@@ -5483,10 +5520,15 @@ export default function Settings() {
                   </Dialog>
                 </SettingLine>
 
-                <SettingLine
-                  label={t("Overlay visualization")}
-                  description={t("Choose how microphone activity appears in the recording overlay.")}
-                >
+                <div className="space-y-2.5 py-3">
+                  <div className="flex items-center gap-1">
+                    <Label className="text-[13px] font-semibold text-slate-950 dark:text-slate-100">
+                      {t("Overlay visualization")}
+                    </Label>
+                    <InfoTooltip label={t("Overlay visualization")} compact>
+                      {t("Choose how microphone activity appears in the recording overlay.")}
+                    </InfoTooltip>
+                  </div>
                   <ToggleGroup
                     type="single"
                     value={overlayVisualizerStyle}
@@ -5494,24 +5536,31 @@ export default function Settings() {
                     disabled={overlayVisualizerStyleSaving}
                     aria-busy={overlayVisualizerStyleSaving}
                     aria-label={t("Overlay visualization style")}
-                    className="grid w-[220px] max-w-full grid-cols-2 rounded-lg bg-slate-100 p-1 dark:bg-[var(--live-well)]"
+                    className="grid w-full grid-cols-1 gap-2 sm:grid-cols-3"
                   >
                     <ToggleGroupItem
                       value="bars"
-                      className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800"
+                      className="h-10 justify-start gap-2.5 rounded-lg border border-slate-200/80 px-3 text-[12px] text-slate-600 data-[state=on]:border-slate-400 data-[state=on]:bg-slate-100 data-[state=on]:text-slate-950 dark:border-[var(--workspace-border)] dark:text-slate-400 dark:data-[state=on]:border-slate-500 dark:data-[state=on]:bg-[var(--live-well)] dark:data-[state=on]:text-slate-100"
                     >
                       <BarChart3 className="h-4 w-4" />
                       {t("Bars")}
                     </ToggleGroupItem>
                     <ToggleGroupItem
                       value="energy_wave"
-                      className="h-8 rounded-md text-[11px] data-[state=on]:bg-white data-[state=on]:text-blue-700 data-[state=on]:shadow-sm dark:data-[state=on]:bg-slate-800"
+                      className="h-10 justify-start gap-2.5 rounded-lg border border-slate-200/80 px-3 text-[12px] text-slate-600 data-[state=on]:border-slate-400 data-[state=on]:bg-slate-100 data-[state=on]:text-slate-950 dark:border-[var(--workspace-border)] dark:text-slate-400 dark:data-[state=on]:border-slate-500 dark:data-[state=on]:bg-[var(--live-well)] dark:data-[state=on]:text-slate-100"
                     >
                       <Sparkles className="h-4 w-4" />
                       {t("Energy wave")}
                     </ToggleGroupItem>
+                    <ToggleGroupItem
+                      value="blue_flame"
+                      className="h-10 justify-start gap-2.5 rounded-lg border border-slate-200/80 px-3 text-[12px] text-slate-600 data-[state=on]:border-slate-400 data-[state=on]:bg-slate-100 data-[state=on]:text-slate-950 dark:border-[var(--workspace-border)] dark:text-slate-400 dark:data-[state=on]:border-slate-500 dark:data-[state=on]:bg-[var(--live-well)] dark:data-[state=on]:text-slate-100"
+                    >
+                      <Flame className="h-4 w-4" />
+                      {t("Blue flame")}
+                    </ToggleGroupItem>
                   </ToggleGroup>
-                </SettingLine>
+                </div>
 
                 <SettingLine
                   label={t("Visualizer bars")}
@@ -5877,17 +5926,15 @@ export default function Settings() {
                     />
                   </SettingLine>
                 )}
-                <details className="group py-3 text-[11px]">
-                  <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-slate-700 marker:content-none dark:text-slate-200">
-                    {t("Why Scriber does not upload one-minute pieces")}
-                    <ChevronDown className="h-3.5 w-3.5 text-slate-500 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
-                  </summary>
-                  <p className="mt-2 max-w-[70ch] leading-5 text-slate-600 dark:text-slate-300">
-                    {t(
-                      "Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.",
-                    )}
-                  </p>
-                </details>
+                <div className="py-2">
+                  <InfoTooltip label={t("Why Scriber does not upload one-minute pieces")}>
+                    <p>
+                      {t(
+                        "Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.",
+                      )}
+                    </p>
+                  </InfoTooltip>
+                </div>
                 <SettingLine
                   label={t("Reduce speaker echo")}
                   description={t(
@@ -6011,17 +6058,13 @@ export default function Settings() {
                   </Select>
                 </SettingLine>
                 <div className="py-3">
-                  <div className="flex items-start gap-2.5 rounded-lg bg-slate-50 px-3 py-2.5 text-[11.5px] leading-4 text-slate-600 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.06)] dark:bg-[var(--live-card)] dark:text-slate-300">
-                    <Shield className="mt-0.5 h-4 w-4 shrink-0 text-blue-600 dark:text-blue-300" />
+                  <InfoTooltip label={t("Protected every 30 seconds.")}>
                     <p>
-                      <span className="font-semibold text-slate-950 dark:text-slate-100">
-                        {t("Protected every 30 seconds.")}
-                      </span>{" "}
                       {t(
                         "Scriber saves audio and transcript progress while the meeting runs, so a crash should not lose the whole meeting.",
                       )}
                     </p>
-                  </div>
+                  </InfoTooltip>
                 </div>
               </div>
             </SettingsSubsection>
@@ -6604,10 +6647,10 @@ export default function Settings() {
         >
           <div className="flex flex-1 flex-col gap-3.5">
             {missingActiveCredentialRequirements.length > 0 && (
-              <div className="rounded-xl border border-amber-500/35 bg-amber-50 p-2.5 text-[11px] leading-[15px] text-amber-900 dark:bg-amber-950/30 dark:text-amber-100">
+              <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-600 dark:border-[var(--workspace-border)] dark:bg-[var(--live-well)] dark:text-slate-400">
                 <div className="flex gap-2">
-                  <AlertTriangle
-                    className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300"
+                  <Key
+                    className="mt-0.5 h-4 w-4 shrink-0 text-slate-500"
                     aria-hidden="true"
                   />
                   <div>
@@ -6620,7 +6663,7 @@ export default function Settings() {
                           <button
                             type="button"
                             onClick={() => openCredentialDialog(requirement)}
-                            className="rounded-md px-1.5 py-0.5 font-semibold text-amber-950 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-500/50 dark:text-amber-100"
+                            className="rounded-md px-1.5 py-0.5 font-semibold text-foreground underline decoration-slate-300 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
                             {t(requirement.label)}
                           </button>
@@ -6970,19 +7013,14 @@ export default function Settings() {
                 }}
                 onUse={() => void handleCustomSummarizationModelUse()}
               />
-              <MetaContributorWarning active={summarizationModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL} />
-              <div
-                role="note"
-                aria-label={t("Benchmark notes")}
-                className="rounded-lg bg-slate-50/80 px-2.5 py-2 text-ui-micro leading-4 text-slate-500 shadow-[inset_0_0_0_1px_rgba(15,23,42,0.05)] dark:bg-[var(--live-well)] dark:text-slate-400"
-              >
+              <InfoTooltip label={t("Benchmark notes")}>
                 <p>{t("AA score compares model answer quality in an independent benchmark; higher is better.")}</p>
                 <p className="mt-0.5">
                   {t("Euro estimates use a fixed rate of {{rate}}. Provider prices may change.", {
                     rate: estimateExchangeRateLabel,
                   })}
                 </p>
-              </div>
+              </InfoTooltip>
             </div>
 
             <div className="grid gap-x-4 border-t border-slate-200/80 pt-2 dark:border-[var(--workspace-border)] sm:grid-cols-2">

@@ -21,7 +21,7 @@ export function normalizeVisualizerBarCount(value: unknown, fallback = DEFAULT_V
 }
 
 export function normalizeOverlayVisualizerStyle(value: unknown): OverlayVisualizerStyle {
-  return value === "energy_wave" ? "energy_wave" : DEFAULT_OVERLAY_VISUALIZER_STYLE;
+  return value === "energy_wave" || value === "blue_flame" ? value : DEFAULT_OVERLAY_VISUALIZER_STYLE;
 }
 
 export async function loadVisualizerSettings(signal?: AbortSignal): Promise<VisualizerSettings> {

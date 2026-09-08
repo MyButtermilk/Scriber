@@ -284,6 +284,7 @@ async function performDesktopUpdateInstall(
 
   const { check } = await import("@tauri-apps/plugin-updater");
   const { relaunch } = await import("@tauri-apps/plugin-process");
+  const { invoke } = await import("@tauri-apps/api/core");
   const update = await withPromiseTimeout(check(), UPDATE_CHECK_TIMEOUT_MS, "Desktop update check");
   if (!update) {
     const status = cacheAndBuildStatus({
@@ -298,6 +299,7 @@ async function performDesktopUpdateInstall(
   }
 
   if (!isVersionNewerThanCurrent(update.version, currentVersion)) {
+    await update.close();
     const status = cacheAndBuildStatus({
       phase: "current",
       enabled: true,
@@ -309,55 +311,105 @@ async function performDesktopUpdateInstall(
     return status;
   }
 
-  let downloadedBytes = 0;
-  let totalBytes: number | undefined;
-  await update.downloadAndInstall((event: DownloadEvent) => {
-    if (event.event === "Started") {
-      downloadedBytes = 0;
-      totalBytes = event.data?.contentLength;
-      onProgress?.({
-        downloadedBytes,
-        totalBytes,
-        percent: 0,
-        message: "Download started.",
-      });
-      return;
-    }
+  // Main and tray are separate WebViews: a module-level promise cannot prevent
+  // them from launching two installers. The native shell owns that admission.
+  let admitted: boolean;
+  try {
+    admitted = await invoke<boolean>("begin_desktop_update_install");
+  } catch (error) {
+    await update.close().catch(() => undefined);
+    throw error;
+  }
+  if (!admitted) {
+    await update.close();
+    return { ...getCachedDesktopUpdateStatus(), phase: "installing", message: "Installing update" };
+  }
+  try {
+    emitStatus(
+      cacheAndBuildStatus({
+        phase: "installing",
+        enabled: true,
+        available: true,
+        currentVersion,
+        version: update.version,
+        date: update.date,
+        notes: update.body,
+        message: "Installing update",
+      }),
+    );
+    let downloadedBytes = 0;
+    let totalBytes: number | undefined;
+    await update.downloadAndInstall((event: DownloadEvent) => {
+      if (event.event === "Started") {
+        downloadedBytes = 0;
+        totalBytes = event.data?.contentLength;
+        onProgress?.({
+          downloadedBytes,
+          totalBytes,
+          percent: 0,
+          message: "Download started.",
+        });
+        return;
+      }
 
-    if (event.event === "Progress") {
-      downloadedBytes += event.data?.chunkLength || 0;
-      onProgress?.({
-        downloadedBytes,
-        totalBytes,
-        percent: totalBytes ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : undefined,
-        message: "Downloading update.",
-      });
-      return;
-    }
+      if (event.event === "Progress") {
+        downloadedBytes += event.data?.chunkLength || 0;
+        onProgress?.({
+          downloadedBytes,
+          totalBytes,
+          percent: totalBytes ? Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)) : undefined,
+          message: "Downloading update.",
+        });
+        return;
+      }
 
-    if (event.event === "Finished") {
-      onProgress?.({
-        downloadedBytes,
-        totalBytes,
-        percent: 100,
-        message: "Download finished.",
-      });
-    }
-  });
+      if (event.event === "Finished") {
+        onProgress?.({
+          downloadedBytes,
+          totalBytes,
+          percent: 100,
+          message: "Download finished.",
+        });
+      }
+    });
 
-  const status = cacheAndBuildStatus({
-    phase: "installing",
-    enabled: true,
-    available: true,
-    currentVersion,
-    version: update.version,
-    date: update.date,
-    notes: update.body,
-    message: "Update installed. Scriber is restarting.",
-  });
-  emitStatus(status);
-  await relaunch();
-  return status;
+    const status = cacheAndBuildStatus({
+      phase: "installing",
+      enabled: true,
+      available: true,
+      currentVersion,
+      version: update.version,
+      date: update.date,
+      notes: update.body,
+      message: "Update installed. Scriber is restarting.",
+    });
+    emitStatus(status);
+    await relaunch();
+    return status;
+  } catch (error) {
+    emitStatus(
+      cacheAndBuildStatus({
+        phase: "available",
+        enabled: true,
+        available: true,
+        currentVersion,
+        version: update.version,
+        date: update.date,
+        notes: update.body,
+        message: "Update installation failed.",
+      }),
+    );
+    throw error;
+  } finally {
+    // On Windows downloadAndInstall starts quiet NSIS and exits the process.
+    // This cleanup covers download/check failures and other platform returns.
+    await invoke("finish_desktop_update_install").catch(() => {
+      console.debug("Update admission cleanup did not complete.");
+    });
+    await update.close().catch(() => {
+      console.debug("Update resource cleanup did not complete.");
+    });
+  }
 }
 
 function sharedDesktopUpdateCheck(): Promise<DesktopUpdateStatus> {

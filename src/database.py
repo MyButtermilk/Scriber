@@ -54,7 +54,13 @@ def _build_fts_query(query: str) -> str:
 
 
 def _sync_fts_row(conn: sqlite3.Connection, transcript_id: str) -> None:
-    conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (transcript_id,))
+    # init_database repairs legacy rowid drift before any controller writes.
+    # FTS5's id column is UNINDEXED: deleting by that value reads every stored
+    # document. The shared rowid permits one indexed parent lookup and one FTS row.
+    conn.execute(
+        "DELETE FROM transcripts_fts WHERE rowid = (SELECT rowid FROM transcripts WHERE id = ?)",
+        (transcript_id,),
+    )
     conn.execute(
         """
         INSERT INTO transcripts_fts(rowid, id, title, content, summary, channel)
@@ -648,7 +654,11 @@ def delete_transcript(transcript_id: str) -> bool:
     """Delete a transcript by ID."""
     try:
         with _get_connection() as conn:
-            conn.execute("DELETE FROM transcripts_fts WHERE id = ?", (transcript_id,))
+            # Resolve the shared FTS rowid while its parent still exists.
+            conn.execute(
+                "DELETE FROM transcripts_fts WHERE rowid = (SELECT rowid FROM transcripts WHERE id = ?)",
+                (transcript_id,),
+            )
             cursor = conn.execute("DELETE FROM transcripts WHERE id = ?", (transcript_id,))
             conn.commit()
             return int(cursor.rowcount or 0) > 0

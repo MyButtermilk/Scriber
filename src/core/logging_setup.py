@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import os
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +18,46 @@ STRUCTURED_LOG_PATH = PROJECT_ROOT / "latest.structured.jsonl"
 
 
 _CONFIGURED = False
+_LOGGING_ENABLED = True
+_LAST_COMPONENT = "app"
+_LAST_STDERR = True
+_DIAGNOSTIC_WRITE_LOCK = threading.RLock()
+
+
+def diagnostic_logging_enabled() -> bool:
+    return _LOGGING_ENABLED
+
+
+def set_diagnostic_logging_enabled(enabled: bool) -> None:
+    """Stop message construction/sinks immediately; resume without truncating logs."""
+    global _LOGGING_ENABLED, _CONFIGURED
+    with _DIAGNOSTIC_WRITE_LOCK:
+        if not enabled:
+            _LOGGING_ENABLED = False
+            logger.disable("")
+            logger.disable(None)
+            logging.disable(logging.CRITICAL)
+            # Removing synchronous sinks waits for a writer that already passed
+            # its filter. The returned preference is therefore a write barrier,
+            # including concurrent metrics workers guarded below.
+            logger.remove()
+            _CONFIGURED = False
+            return
+        if not _CONFIGURED:
+            setup_logging(component=_LAST_COMPONENT, force=True, add_stderr=_LAST_STDERR, append=True, enabled=True)
+        else:
+            _LOGGING_ENABLED = True
+            logger.enable("")
+            logger.enable(None)
+            logging.disable(logging.NOTSET)
+
+
+def run_diagnostic_write(write: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+    """Admit optional persisted diagnostics behind the same off barrier."""
+    with _DIAGNOSTIC_WRITE_LOCK:
+        if not _LOGGING_ENABLED:
+            return None
+        return write(*args, **kwargs)
 
 
 def _normalize_level(level: str | None) -> str:
@@ -35,18 +78,64 @@ def setup_logging(
     component: str = "app",
     force: bool = False,
     add_stderr: bool = True,
+    append: bool = False,
+    enabled: bool | None = None,
 ) -> dict[str, str]:
-    global _CONFIGURED
+    with _DIAGNOSTIC_WRITE_LOCK:
+        try:
+            return _setup_logging(
+                component=component, force=force, add_stderr=add_stderr, append=append, enabled=enabled
+            )
+        except Exception:
+            # A file may become unwritable while logging is off. Do not leave a
+            # successful stderr/pretty sink, or report enabled, when another
+            # sink failed to open. The preference owner can now roll back safely.
+            set_diagnostic_logging_enabled(False)
+            raise
+
+
+def _setup_logging(
+    *,
+    component: str,
+    force: bool,
+    add_stderr: bool,
+    append: bool,
+    enabled: bool | None,
+) -> dict[str, str]:
+    global _CONFIGURED, _LOGGING_ENABLED, _LAST_COMPONENT, _LAST_STDERR
+    _LAST_COMPONENT, _LAST_STDERR = component, add_stderr
     pretty_log_path, structured_log_path = _log_paths()
 
+    effective_enabled = (
+        enabled
+        if enabled is not None
+        else os.getenv("SCRIBER_DIAGNOSTIC_LOGGING_ENABLED", "1").strip().lower() not in {"0", "false", "off", "no"}
+    )
+    if not effective_enabled:
+        if force:
+            logger.remove()
+            _CONFIGURED = False
+        set_diagnostic_logging_enabled(False)
+        return {"pretty": str(pretty_log_path), "structured": str(structured_log_path)}
     if _CONFIGURED and not force:
+        _LOGGING_ENABLED = True
+        logger.enable("")
+        logger.enable(None)
+        logging.disable(logging.NOTSET)
         return {
             "pretty": str(pretty_log_path),
             "structured": str(structured_log_path),
         }
 
+    # Keep admission closed until every sink is ready, including during a
+    # resume that fails after opening only one of the files.
+    _LOGGING_ENABLED = False
+    logger.disable("")
+    logger.disable(None)
+    logging.disable(logging.CRITICAL)
     if force:
         logger.remove()
+    _CONFIGURED = False
 
     pretty_log_path.parent.mkdir(parents=True, exist_ok=True)
     structured_log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +157,7 @@ def setup_logging(
             enqueue=False,
             backtrace=False,
             diagnose=False,
+            filter=lambda _record: _LOGGING_ENABLED,
         )
 
     logger.add(
@@ -77,9 +167,10 @@ def setup_logging(
         colorize=False,
         enqueue=False,
         encoding="utf-8",
-        mode="w",
+        mode="a" if append else "w",
         backtrace=False,
         diagnose=False,
+        filter=lambda _record: _LOGGING_ENABLED,
     )
 
     logger.add(
@@ -88,12 +179,17 @@ def setup_logging(
         serialize=True,
         enqueue=False,
         encoding="utf-8",
-        mode="w",
+        mode="a" if append else "w",
         backtrace=False,
         diagnose=False,
+        filter=lambda _record: _LOGGING_ENABLED,
     )
 
     _CONFIGURED = True
+    _LOGGING_ENABLED = True
+    logger.enable("")
+    logger.enable(None)
+    logging.disable(logging.NOTSET)
     return {
         "pretty": str(pretty_log_path),
         "structured": str(structured_log_path),
@@ -119,6 +215,8 @@ def emit_event(
     error_category: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> None:
+    if not _LOGGING_ENABLED:
+        return
     extras: dict[str, Any] = {}
     if event is not None:
         extras["event"] = event

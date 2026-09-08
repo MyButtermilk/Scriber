@@ -2193,9 +2193,11 @@ async def test_update_settings_disabling_vad_discards_unused_silero_warmup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("style", ["energy_wave", "blue_flame", "bars"])
 async def test_settings_round_trip_overlay_visualizer_style_without_partial_invalid_update(
     monkeypatch,
     tmp_path,
+    style,
 ):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
@@ -2206,20 +2208,20 @@ async def test_settings_round_trip_overlay_visualizer_style_without_partial_inva
     monkeypatch.setattr(web_api.Config, "persist_settings_files", MagicMock())
     ctl = ScriberWebController(asyncio.get_running_loop())
 
-    settings = await ctl.update_settings({"overlayVisualizerStyle": "energy_wave"})
+    settings = await ctl.update_settings({"overlayVisualizerStyle": style})
 
-    assert settings["overlayVisualizerStyle"] == "energy_wave"
-    assert web_api.Config.OVERLAY_VISUALIZER_STYLE == "energy_wave"
-    assert os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] == "energy_wave"
+    assert settings["overlayVisualizerStyle"] == style
+    assert style == web_api.Config.OVERLAY_VISUALIZER_STYLE
+    assert os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] == style
 
     with pytest.raises(ValueError, match="Unsupported overlay visualizer style"):
         await ctl.update_settings({"language": "de", "overlayVisualizerStyle": "unknown"})
     assert web_api.Config.LANGUAGE == "en"
-    assert web_api.Config.OVERLAY_VISUALIZER_STYLE == "energy_wave"
+    assert style == web_api.Config.OVERLAY_VISUALIZER_STYLE
 
     with pytest.raises(ValueError, match="must be a string"):
         await ctl.update_settings({"overlayVisualizerStyle": 1})
-    assert web_api.Config.OVERLAY_VISUALIZER_STYLE == "energy_wave"
+    assert style == web_api.Config.OVERLAY_VISUALIZER_STYLE
     ctl.shutdown()
 
 

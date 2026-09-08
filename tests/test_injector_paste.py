@@ -21,6 +21,13 @@ from src.injector import (
 )
 
 
+@pytest.fixture(autouse=True)
+def legacy_clipboard_path(monkeypatch):
+    # These tests exercise legacy fallback seams. The opt-in real Win32 probe
+    # and the lease tests exercise acknowledged restoration independently.
+    monkeypatch.setattr(Config, "PASTE_ACKNOWLEDGED_RESTORE", False)
+
+
 def _snapshot() -> _ClipboardSnapshot:
     return _ClipboardSnapshot(
         formats=[_ClipboardFormatSnapshot(format_id=13, data=b"old\x00")],
@@ -524,4 +531,4 @@ async def test_auto_injection_uses_one_clipboard_paste_with_registered_only_clip
     mock_keyboard.press_and_release.assert_called_once_with("ctrl+v")
     mock_keyboard.write.assert_not_called()
     send_input.assert_not_called()
-    restore_clipboard.assert_called_once_with(registered_snapshot)
+    restore_clipboard.assert_called_once_with(registered_snapshot, expected_sequence=100)

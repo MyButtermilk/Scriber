@@ -9,7 +9,15 @@ from aiohttp.test_utils import TestClient, TestServer
 from src import web_api
 from src.config import Config
 from src.injector import TextInjector
+from src.runtime.office_text_insert import OfficeInsertOutcome
 from src.web_api import ScriberWebController
+
+
+@pytest.fixture(autouse=True)
+def isolate_native_office_dispatch(monkeypatch):
+    monkeypatch.setattr(
+        "src.injector.try_insert_office_text", lambda *_args, **_kwargs: OfficeInsertOutcome.UNAVAILABLE
+    )
 
 
 @dataclass
@@ -265,7 +273,12 @@ async def test_hotkey_ptt_press_release_burst_stress_end_to_end(monkeypatch, tmp
             await ctl.stop_listening()
             ptt_task.cancel()
             await asyncio.gather(ptt_task, return_exceptions=True)
-            await asyncio.sleep(0.05)
+            # A previous release can already own finalization. stop_listening
+            # acknowledges that owner; its durable-store barrier may outlive
+            # an arbitrary 50 ms on a busy build host.
+            async with asyncio.timeout(3):
+                while ctl._is_stopping or ctl._is_listening:
+                    await asyncio.sleep(0.01)
 
     _assert_controller_clean(ctl)
     _assert_pipeline_invariants()

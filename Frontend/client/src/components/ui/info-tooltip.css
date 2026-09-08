@@ -1,0 +1,110 @@
+.info-tooltip-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  max-width: 100%;
+  min-height: 1.75rem;
+  padding: 0.2rem 0.35rem;
+  margin-left: -0.35rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: hsl(var(--muted-foreground));
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  cursor: help;
+  transition:
+    color var(--duration-quick) var(--ease-out),
+    background-color var(--duration-quick) var(--ease-out);
+}
+.info-tooltip-trigger > svg {
+  flex: none;
+}
+.info-tooltip-trigger > span {
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+}
+.info-tooltip-trigger.is-compact {
+  padding: 0.35rem;
+  margin: 0;
+  min-width: 1.75rem;
+  justify-content: center;
+}
+.info-tooltip-trigger:focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+.info-tooltip-trigger:focus-visible,
+.info-tooltip-trigger[aria-describedby] {
+  color: hsl(var(--foreground));
+  background: hsl(var(--foreground) / 0.05);
+}
+.info-tooltip-panel {
+  position: fixed;
+  z-index: 100;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100dvh - 24px);
+  overflow-y: auto;
+  padding: 0.85rem 1rem;
+  border: 1px solid hsl(var(--foreground) / 0.12);
+  border-radius: 0.85rem;
+  background: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+  box-shadow:
+    0 12px 34px -12px rgb(10 18 28 / 0.24),
+    0 2px 6px rgb(10 18 28 / 0.04);
+  pointer-events: auto;
+  transform: translateY(-100%);
+  animation: info-tooltip-enter var(--tt-in-dur) var(--tt-in-ease);
+}
+.info-tooltip-panel[data-side="bottom"] {
+  transform: none;
+}
+.info-tooltip-title {
+  margin: 0 0 0.4rem;
+  font-size: 12px;
+  line-height: 1.4;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.info-tooltip-copy {
+  font-size: 12px;
+  line-height: 1.65;
+  color: hsl(var(--popover-foreground) / 0.8);
+  text-wrap: pretty;
+  overflow-wrap: anywhere;
+}
+.info-tooltip-copy p {
+  margin: 0;
+}
+.info-tooltip-copy p + p {
+  margin-top: 0.55rem;
+}
+@keyframes info-tooltip-enter {
+  from {
+    opacity: 0;
+    scale: var(--tt-scale);
+  }
+  to {
+    opacity: 1;
+    scale: 1;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .info-tooltip-trigger:hover {
+    color: hsl(var(--foreground));
+    background: hsl(var(--foreground) / 0.05);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .info-tooltip-panel {
+    animation: none;
+  }
+  .info-tooltip-trigger {
+    transition: none;
+  }
+}

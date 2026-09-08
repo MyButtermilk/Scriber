@@ -854,4 +854,12 @@ export const settingsTranslations = {
   "Delete all saved voice data?": "Alle gespeicherten Stimmdaten löschen?",
   "This removes every saved speaker and the local voice-recognition download, then turns off future recognition. Existing meetings and transcripts remain available.":
     "Dadurch werden alle gespeicherten Sprecher und der lokale Download für die Stimmerkennung entfernt und die künftige Erkennung deaktiviert. Bestehende Meetings und Transkripte bleiben verfügbar.",
+  "Blue flame": "Blaue Flamme",
+  "App behavior": "App-Verhalten",
+  "Choose startup and diagnostic preferences.": "Startverhalten und Diagnose einstellen.",
+  "Diagnostic logging": "Diagnoseprotokoll",
+  "Record local logs for troubleshooting.": "Lokale Protokolle zur Fehlersuche aufzeichnen.",
+  "Record diagnostic logs": "Diagnoseprotokolle aufzeichnen",
+  "When disabled, Scriber stops recording diagnostic logs in the app and backend. Existing logs are kept. You can turn logging back on whenever you need to investigate a problem.":
+    "Wenn ausgeschaltet, zeichnet Scriber keine Diagnoseprotokolle mehr in der App und im Hintergrunddienst auf. Vorhandene Protokolle bleiben erhalten. Für die Fehlersuche kannst du die Aufzeichnung jederzeit wieder einschalten.",
 } satisfies TranslationCatalog;

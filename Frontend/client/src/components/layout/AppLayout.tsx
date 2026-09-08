@@ -1,6 +1,7 @@
 import { Link, useLocation } from "wouter";
 import {
   CalendarClock,
+  Radio,
   Mic,
   Settings,
   Youtube,
@@ -90,6 +91,7 @@ export function AppLayout({ children, path }: AppLayoutProps) {
     { href: "/meetings", icon: CalendarClock, label: t("Meetings") },
     { href: "/youtube", icon: Youtube, label: t("YouTube") },
     { href: "/file", icon: FolderOpen, label: t("File") },
+    { href: "/podcasts", icon: Radio, label: t("Podcasts") },
     { href: "/settings", icon: Settings, label: t("Settings") },
   ];
 

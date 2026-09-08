@@ -53,6 +53,10 @@ CORE_RUNTIME_IMPORTS: tuple[tuple[str, str], ...] = (
     ("src.microphone", "live microphone application runtime"),
     ("src.audio_file_input", "file audio application runtime"),
     ("src.pipeline", "transcription pipeline application runtime"),
+    ("comtypes.client.dynamic", "clipboard-free Office dynamic dispatch runtime"),
+    ("src.runtime.office_text_insert", "focused Office editor insertion runtime"),
+    ("src.podcasts.feeds", "public RSS podcast parsing and download runtime"),
+    ("src.podcasts.service", "durable podcast subscription worker runtime"),
     ("src.web_api", "backend API entry point"),
 )
 REQUIRED_IMPORTS: tuple[tuple[str, str], ...] = (
@@ -572,6 +576,14 @@ def check_python314_native_runtime(
         comtypes_module.CoInitialize()
         com_initialized = True
 
+        active_module = "src.runtime.office_text_insert"
+        office_insert = import_module(active_module)
+        office_unicode = "Scriber Ä\n🙂 Unicode"
+        office_value = office_insert._unicode_variant(office_unicode)
+        if office_value.value != office_unicode:
+            raise RuntimeError("Office UTF-16 BSTR round trip failed")
+        del office_value
+
         active_module = "compression.zstd"
         zstd = loaded["compression.zstd"]
         zstd_payload = b"scriber-python314" * 128
@@ -905,6 +917,39 @@ def check_frozen_numpy_noblas(
     return []
 
 
+def check_podcast_feed_runtime() -> list[dict[str, str]]:
+    """Exercise native Expat/ElementTree callbacks in source and installed trees."""
+    try:
+        from src.podcasts.feeds import PodcastError, parse_feed
+
+        feed = parse_feed(
+            b"<rss><channel><title>Podcast runtime</title><item><title>Episode</title>"
+            b"<guid>runtime-probe</guid><pubDate>Mon, 07 Sep 2026 10:00:00 GMT</pubDate>"
+            b'<enclosure url="https://example.com/episode.mp3" type="audio/mpeg" />'
+            b"</item></channel></rss>"
+        )
+        if len(feed.episodes) != 1 or feed.episodes[0].published_at != "2026-09-07T10:00:00+00:00":
+            raise RuntimeError("RSS parser runtime probe failed")
+        for encoding in ("utf-8", "utf-16"):
+            payload = '<!DOCTYPE rss [<!ENTITY payload "blocked">]><rss><channel><title>&payload;</title></channel></rss>'.encode(
+                encoding
+            )
+            try:
+                parse_feed(payload)
+            except PodcastError:
+                continue
+            raise RuntimeError("RSS parser accepted a DTD")
+    except Exception as exc:
+        return [
+            {
+                "module": "podcast-feed-runtime",
+                "reason": "bounded public RSS parsing and DTD rejection",
+                "error": f"{type(exc).__name__}: podcast parser runtime check failed",
+            }
+        ]
+    return []
+
+
 def check_runtime_requirements() -> list[dict[str, str]]:
     segmentation_failures = check_sentence_segmentation()
     version_failures = check_package_versions()
@@ -924,6 +969,7 @@ def check_runtime_requirements() -> list[dict[str, str]]:
         *check_frozen_docstring_pruning(),
         *check_frozen_provider_pruning(),
         *check_frozen_numpy_noblas(),
+        *check_podcast_feed_runtime(),
     ]
 
 

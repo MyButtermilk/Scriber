@@ -2,6 +2,8 @@ mod audio_codec;
 mod audio_devices;
 mod audio_frame_pipe;
 mod audio_sidecar_client;
+mod desktop_update;
+mod diagnostic_logging;
 mod export_dialog;
 mod native_overlay;
 mod outlook_config;
@@ -1449,7 +1451,8 @@ fn set_tray_update_status(
 ) -> Result<TrayStatus, String> {
     let next = update_tray_status_for_app(&app, |state| {
         state.update_available = status.available;
-        state.update_installing = status.installing;
+        state.update_installing = status.installing
+            || app.state::<desktop_update::DesktopUpdateInstallGate>().is_active();
         state.update_version = status
             .version
             .map(|value| sanitize_update_field(&value, 32))
@@ -1846,6 +1849,7 @@ pub fn run() {
         .manage(DesktopHotkeyState::new())
         .manage(PendingNavigationState::default())
         .manage(TrayState::default())
+        .manage(desktop_update::DesktopUpdateInstallGate::default())
         .manage(UiLocaleState::default())
         .manage(NativeDeviceEventsState::new())
         .manage(ShellIpcState::new(shell_ipc_config, shell_ipc_handle))
@@ -1923,6 +1927,8 @@ pub fn run() {
             set_ui_locale,
             tray_status,
             set_tray_update_status,
+            desktop_update::begin_desktop_update_install,
+            desktop_update::finish_desktop_update_install,
             set_tray_recording_state,
             show_tray_panel,
             hide_tray_panel,
@@ -4866,19 +4872,6 @@ fn spawn_backend(
         &backend_starting_log_message(&spec.launch_kind, &spec.program, port, &data_dir),
     );
     let log_path = data_dir.join("logs").join("tauri-backend.log");
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("Could not create log directory: {err}"))?;
-    }
-    let stdout = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-        .map_err(|err| format!("Could not open backend log: {err}"))?;
-    let stderr = stdout
-        .try_clone()
-        .map_err(|err| format!("Could not clone backend log handle: {err}"))?;
-
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
@@ -4891,10 +4884,11 @@ fn spawn_backend(
         .env(SESSION_TOKEN_ENV, session_token)
         .env(DISABLE_HOTKEYS_ENV, "1")
         .env("SCRIBER_LOG_STDERR", "1")
+        .env(diagnostic_logging::ENABLED_ENV, if diagnostic_logging::enabled() { "1" } else { "0" })
         .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for name in [
         PYTHON_JIT_ENV,
         PYTHON_GIL_ENV,
@@ -4934,7 +4928,21 @@ fn spawn_backend(
     }
     hide_child_console_window(&mut command);
     match command.spawn() {
-        Ok(child) => {
+        Ok(mut child) => {
+            let output_forwarders = (|| -> std::io::Result<()> {
+                if let Some(stdout) = child.stdout.take() {
+                    diagnostic_logging::forward_backend_output(stdout, log_path.clone())?;
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    diagnostic_logging::forward_backend_output(stderr, log_path.clone())?;
+                }
+                Ok(())
+            })();
+            if output_forwarders.is_err() {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Could not start managed-backend output handling.".to_string());
+            }
             write_shell_log_to_dir(
                 &data_dir,
                 &backend_started_log_message(child.id(), &spec.launch_kind),
@@ -5188,30 +5196,20 @@ fn write_shell_log(message: &str) {
 }
 
 fn write_shell_log_to_dir(data_dir: &Path, message: &str) {
-    let log_dir = data_dir.join("logs");
-    if fs::create_dir_all(&log_dir).is_err() {
-        return;
-    }
-    let path = log_dir.join("tauri-shell.log");
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(file, "{} {}", timestamp_millis(), message);
-    }
+    diagnostic_logging::append(
+        &data_dir.join("logs").join("tauri-shell.log"),
+        format!("{} {}\n", timestamp_millis(), message).as_bytes(),
+    );
 }
 
 fn write_backend_exit_metadata(pid: u32, launch_kind: &str, status: &str) {
     let data_dir = scriber_data_dir();
     let log_dir = data_dir.join("logs");
-    if fs::create_dir_all(&log_dir).is_err() {
-        return;
-    }
     let payload = backend_exit_metadata_payload(pid, launch_kind, status);
-    if let Ok(mut file) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_dir.join("backend-crash-metadata.jsonl"))
-    {
-        let _ = writeln!(file, "{payload}");
-    }
+    diagnostic_logging::append(
+        &log_dir.join("backend-crash-metadata.jsonl"),
+        format!("{payload}\n").as_bytes(),
+    );
     write_shell_log_to_dir(
         &data_dir,
         &format!(

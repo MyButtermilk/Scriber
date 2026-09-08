@@ -3,11 +3,15 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
+from collections import OrderedDict
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeGuard
 
+from src.core.logging_setup import diagnostic_logging_enabled
 from src.core.rest_contracts import REST_API_VERSION
 from src.runtime.log_clear_state import clear_offset_for_path, load_clear_offsets, record_clear_state
 from src.runtime.paths import data_dir, logs_dir, repo_root
@@ -40,12 +44,16 @@ _PUBLIC_META_KEYS = {
     "lastHealthCheckActive",
     "lastStartSuccess",
     "mode",
+    "method",
     "model",
     "post_processed",
     "provider",
     "provider_error_code",
     "reason",
     "region",
+    "route",
+    "restore_mode",
+    "consumer_confirmed",
     "retryable",
     "sample_rate_hz",
     "sampleRateHz",
@@ -60,6 +68,12 @@ _MAX_PUBLIC_META_DEPTH = 4
 # diagnostic subset.
 _MAX_PUBLIC_META_ITEMS = 128
 _MAX_PUBLIC_META_STRING_CHARS = 640
+
+# Retain only the bounded, redacted projection. File identity, nanosecond write
+# times, size, clear boundary and requested limit all participate in freshness.
+# No raw log content or unbounded per-request cache keys survive a collection.
+_CACHE_LOCK = threading.Lock()
+_FILE_CACHE: OrderedDict[Path, tuple[tuple[int, ...], tuple[DebugLogEntry, ...], bool]] = OrderedDict()
 
 
 @dataclass(frozen=True)
@@ -84,7 +98,7 @@ class DebugLogEntry:
             "component": self.component,
         }
         if self.context:
-            payload["context"] = self.context
+            payload["context"] = deepcopy(self.context)
         return payload
 
 
@@ -99,29 +113,22 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
         source = path.name
         sources.append(source)
         try:
-            text, file_truncated = _read_tail(path, start_offset=clear_offset_for_path(path, clear_offsets))
-            fallback_timestamp_ms = path.stat().st_mtime * 1000.0
+            stat = path.stat()
+            fallback_timestamp_ms = stat.st_mtime * 1000.0
+            entries, file_truncated = _read_entries(
+                path, stat=stat, start_offset=clear_offset_for_path(path, clear_offsets), limit=limit
+            )
         except OSError:
             continue
         truncated = truncated or file_truncated
-        lines = text.splitlines()
-        if len(lines) > limit:
-            truncated = True
-            start_line = max(1, len(lines) - limit + 1)
-            selected = lines[-limit:]
-        else:
-            start_line = 1
-            selected = lines
-        for offset, line in enumerate(selected):
-            entry = _parse_log_line(line, source=source, line_number=start_line + offset)
-            if entry is not None:
-                ranked_entries.append(
-                    (
-                        _entry_sort_value(entry, fallback_timestamp_ms),
-                        source_index,
-                        entry,
-                    )
+        for entry in entries:
+            ranked_entries.append(
+                (
+                    _entry_sort_value(entry, fallback_timestamp_ms),
+                    source_index,
+                    entry,
                 )
+            )
 
     if len(ranked_entries) > limit:
         truncated = True
@@ -131,19 +138,51 @@ def collect_debug_logs(*, limit: int = _DEFAULT_LIMIT) -> dict[str, Any]:
         )[-limit:]
     else:
         ranked_entries.sort(key=lambda item: (item[0], item[1], item[2].line))
-    entries = [entry for _, _, entry in ranked_entries]
+    final_entries = [entry for _, _, entry in ranked_entries]
 
     return {
         "apiVersion": REST_API_VERSION,
-        "items": [entry.to_public() for entry in entries],
+        "items": [entry.to_public() for entry in final_entries],
         "sources": sorted(set(sources)),
         "limit": limit,
         "truncated": truncated,
+        "loggingEnabled": diagnostic_logging_enabled(),
     }
+
+
+def _read_entries(path: Path, *, stat: Any, start_offset: int, limit: int) -> tuple[tuple[DebugLogEntry, ...], bool]:
+    key = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, start_offset, limit)
+    with _CACHE_LOCK:
+        cached = _FILE_CACHE.get(path)
+        if cached is not None and cached[0] == key:
+            _FILE_CACHE.move_to_end(path)
+            return cached[1], cached[2]
+
+    text, truncated = _read_tail(path, start_offset=start_offset)
+    lines = text.splitlines()
+    truncated = truncated or len(lines) > limit
+    start_line = max(1, len(lines) - limit + 1)
+    entries = tuple(
+        entry
+        for offset, line in enumerate(lines[-limit:])
+        if (entry := _parse_log_line(line, source=path.name, line_number=start_line + offset)) is not None
+    )
+    # If a writer changed the file while it was read, return this bounded view
+    # but do not label it a reusable snapshot of either generation.
+    after = path.stat()
+    if (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns) == key[:5]:
+        with _CACHE_LOCK:
+            _FILE_CACHE[path] = (key, entries, truncated)
+            _FILE_CACHE.move_to_end(path)
+            while len(_FILE_CACHE) > _MAX_FILES:
+                _FILE_CACHE.popitem(last=False)
+    return entries, truncated
 
 
 def clear_debug_logs() -> dict[str, Any]:
     cleared, failed = record_clear_state(_candidate_log_files())
+    with _CACHE_LOCK:
+        _FILE_CACHE.clear()
 
     return {
         "apiVersion": REST_API_VERSION,
@@ -202,23 +241,33 @@ def _read_tail(path: Path, *, start_offset: int = 0) -> tuple[str, bool]:
     truncated = readable_size > _MAX_BYTES_PER_FILE
     with path.open("rb") as handle:
         if truncated:
-            handle.seek(size - _MAX_BYTES_PER_FILE)
+            handle.seek(size - _MAX_BYTES_PER_FILE - 1)
+            starts_on_line = handle.read(1) == b"\n"
         elif start_offset:
             handle.seek(start_offset)
         raw = handle.read(_MAX_BYTES_PER_FILE if truncated else readable_size)
+    if truncated and not starts_on_line:
+        raw = raw.partition(b"\n")[2]
     return raw.decode("utf-8", errors="replace"), truncated
 
 
 def _parse_log_line(line: str, *, source: str, line_number: int) -> DebugLogEntry | None:
-    message = redact_text(line).strip()
-    if not message:
+    raw_line = line.replace("\x00", "").strip()
+    if not raw_line:
         return None
 
-    if source.endswith(".jsonl") or message.startswith("{"):
-        parsed = _parse_json_log_line(message, source=source, line_number=line_number)
+    if source.endswith(".jsonl") or raw_line.startswith("{"):
+        # Decode before projecting/redacting: redacting serialized text can
+        # miss escaped credentials or invalidate JSON containing quoted paths.
+        parsed = _parse_json_log_line(raw_line, source=source, line_number=line_number)
         if parsed is not None:
             return parsed
+        if source.endswith(".jsonl"):
+            # A partial write/tail or corrupt structured record is not a safe
+            # plain-text event: its extras may contain private transcript data.
+            return None
 
+    message = redact_text(raw_line)
     pretty = _PRETTY_LOG_RE.match(message)
     if pretty:
         level = _normalize_level(pretty.group("level"))
@@ -259,7 +308,8 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
 
     record = payload.get("record")
     if isinstance(record, dict):
-        text = str(record.get("message") or "").strip()
+        # Only decoded, redacted values may enter the public projection/cache.
+        text = redact_text(str(record.get("message") or "")).strip()
         level_data = record.get("level")
         level_name = ""
         if isinstance(level_data, dict):
@@ -267,9 +317,9 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
         time_data = record.get("time")
         timestamp = None
         if isinstance(time_data, dict):
-            timestamp = str(time_data.get("repr") or time_data.get("timestamp") or "") or None
+            timestamp = redact_text(str(time_data.get("repr") or time_data.get("timestamp") or "")) or None
         extra = record.get("extra")
-        component = str(extra.get("component") or "") if isinstance(extra, dict) else ""
+        component = redact_text(str(extra.get("component") or "")) if isinstance(extra, dict) else ""
         return DebugLogEntry(
             source=source,
             line=line_number,
@@ -277,17 +327,17 @@ def _parse_json_log_line(message: str, *, source: str, line_number: int) -> Debu
             timestamp=timestamp,
             component=component or None,
             context=_public_log_context(extra),
-            message=text or message,
+            message=text or "Structured diagnostic event",
         )
 
-    text = str(payload.get("message") or payload.get("event") or message).strip()
+    text = redact_text(str(payload.get("message") or payload.get("event") or "Structured diagnostic event")).strip()
     return DebugLogEntry(
         source=source,
         line=line_number,
         level=_normalize_level(str(payload.get("level") or _infer_level(text))),
-        timestamp=str(payload.get("timestamp") or "") or None,
+        timestamp=redact_text(str(payload.get("timestamp") or "")) or None,
         timestamp_ms=_safe_int(payload.get("timestampMs")),
-        component=str(payload.get("component") or "") or None,
+        component=redact_text(str(payload.get("component") or "")) or None,
         context=_public_log_context(payload),
         message=text,
     )
@@ -451,13 +501,16 @@ def _entry_sort_value(entry: DebugLogEntry, fallback_timestamp_ms: float) -> flo
         if time_match:
             fallback = datetime.fromtimestamp(fallback_timestamp_ms / 1000.0)
             fraction = (time_match.group("fraction") or "")[:6].ljust(6, "0")
-            parsed = fallback.replace(
-                hour=int(time_match.group("hour")),
-                minute=int(time_match.group("minute")),
-                second=int(time_match.group("second") or 0),
-                microsecond=int(fraction or 0),
-            )
-            return parsed.timestamp() * 1000.0
+            try:
+                parsed = fallback.replace(
+                    hour=int(time_match.group("hour")),
+                    minute=int(time_match.group("minute")),
+                    second=int(time_match.group("second") or 0),
+                    microsecond=int(fraction or 0),
+                )
+                return parsed.timestamp() * 1000.0
+            except ValueError, OSError, OverflowError:
+                pass
 
     # Preserve file-local order for unstructured lines while using mtime as the
     # best available cross-file approximation.

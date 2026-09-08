@@ -180,7 +180,7 @@ def test_backend_runtime_import_check_covers_audio_startup_dependencies():
 def test_frozen_runtime_contract_covers_direct_pipecat_pipeline_imports():
     frozen_modules = {module for module, _reason in RUNTIME_REQUIRED_IMPORTS}
 
-    assert RUNTIME_CONTRACT_REVISION == 7
+    assert RUNTIME_CONTRACT_REVISION == 8
     assert {
         "pipecat.pipeline.pipeline",
         "pipecat.pipeline.worker",

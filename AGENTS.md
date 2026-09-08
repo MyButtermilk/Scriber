@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-09-05
+Last verified: 2026-09-08
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -29,7 +29,7 @@ the user explicitly asks for a temporary investigation note.
 ## Product Snapshot
 
 - Scriber is an AI transcription app for live microphone dictation, bot-free
-  meeting capture, YouTube transcription, file transcription, transcript
+  meeting capture, YouTube transcription, file transcription, podcast subscriptions, transcript
   management, summaries, and PDF/DOCX export.
 - Primary desktop runtime: Tauri 2 shell, React frontend, Python backend sidecar.
 - Backend default: `127.0.0.1:8765`, implemented with `aiohttp`, WebSocket
@@ -173,6 +173,15 @@ Backend and runtime:
   `SCRIBER_QUICKJS_DEV_WRAPPER_PATH` override, but never an arbitrary `qjs`
   from `PATH`.
 - `src/database.py`: SQLite WAL persistence, metadata loading, FTS5 search.
+- `src/podcasts/`: public-only RSS/directory transport, durable subscription and
+  episode state, retained downloads, independent feed refresh, and one sequential
+  processing worker. Its processor alone adapts to File admission and Transcript
+  summaries. Commit the transcript ID before admission and resume that identity;
+  only explicit retry may allocate a new attempt after failure. The first
+  subscription queues its latest episode, subsequent new episodes queue while
+  the app runs. Preserve the per-episode/cache limits and cancellation barriers.
+  `src/api/podcast_routes.py` owns the strict controller-free HTTP boundary and
+  local collaborator port; never add scheduler logic or private paths to the UI.
 - `src/data/job_store.py`: persistent file/YouTube jobs.
 - `src/data/latency_metrics_store.py`: hot-path metrics.
 - `src/core/`: contracts, state machine, circuit breaker, logging, tracing.
@@ -258,9 +267,9 @@ Frontend and shell:
   `scriber://youtube/transcribe` protocol; it must never receive the backend
   session token or add localhost/network permissions. Keep the injected action
   compatible with YouTube SPA navigation and preserve the toolbar popup fallback.
-- `Frontend/client/src/App.tsx`: routes; the five primary user tabs are eager,
+- `Frontend/client/src/App.tsx`: routes; the six primary user tabs are eager,
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
-- `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Settings,
+- `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Podcasts, Settings,
   Debug Console, Transcript Detail.
 - `Frontend/client/src/hooks/use-browser-youtube-import.ts` owns one-shot
   browser handoff consumption. It must subscribe to search-string changes so a
@@ -283,7 +292,7 @@ Frontend and shell:
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing TS types.
 - `Frontend/client/src/components/NativeRecordingOverlay.tsx` owns recording
   overlay state, settings, the static full-pill CSS gradient, and the classic
-  full-pill bar renderer. Both selectable styles begin at the far-left pill
+  full-pill bar renderer. All three selectable styles begin at the far-left pill
   edge, draw at most 60 FPS on their normal paths, cap DPR at 3, and keep their
   per-frame buffers out of React state;
   `MicrophoneEnergyField.tsx` owns the allocation-bounded transparent Canvas
@@ -295,13 +304,20 @@ Frontend and shell:
   promote the low-latency `desynchronized` path into an opaque rectangular
   layer. Keep the drop shadow on a static, isolated, pill-shaped sibling behind
   the clipped surface so its spread and fade cannot become box-shaped. The stop
-  control stays in the DOM for both styles but is visually hidden only for
+  control stays in the DOM for all three styles but is visually hidden only for
   fine-pointer hover devices, then revealed by pill hover or keyboard focus;
   the default remains visible for touch-only devices. Do not add an
   `any-pointer: coarse` override:
   hybrid Windows devices can report both coarse and fine pointers. Keep this
   interaction CSS-only, keep per-frame RMS out of React state, and preserve the
   listener-before-`native_overlay_renderer_ready` handshake described above.
+  `MicrophoneBlueFlame.tsx` and `blue-flame-visualizer.ts` own `blue_flame`:
+  16 fine strands with 96 samples each and one reused Float32 buffer, bounded
+  frame rate/DPR, reduced-motion behavior, normal alpha composition, and the
+  same static pill background, rounded clip, shadow, and stop interaction.
+  `ui/info-tooltip.tsx` owns neutral supplementary information with hover,
+  keyboard focus, tap, and Escape support. Contributor data-sharing information
+  stays directly adjacent to its model choice as well as in its tooltip.
 - `Frontend/client/src/i18n/`: persistent `de`/`en` interface locale,
   translation catalogs, locale-aware formatting, and catalog completeness
   tests. Keep interface locale separate from STT/output language. Every
@@ -309,7 +325,7 @@ Frontend and shell:
   Tauri `set_ui_locale` bridge must keep native tray tooltips synchronized.
 - `Frontend/client/src/components/transcription-history-toolbar.tsx`: shared
   count/search/list-grid toolbar for Live Mic, YouTube, and File history.
-- `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system. The six
+- `Frontend/client/src/index.css`: Tailwind v4 CSS-first design system. The seven
   primary tabs share the `app-page-shell` 1320 px desktop frame and expose a
   stable `data-page-shell` hook; do not introduce per-tab maximum widths.
   The main app viewport uses a document-owned, auto-hiding overlay scrollbar
@@ -668,6 +684,9 @@ Packaging and scripts:
   checks and user-facing update UX. Keep update checks non-blocking, cached,
   about weekly by default, and suppress automatic prompts while recording or
   transcription is active. Do not add a Python backend updater cron or ping.
+  Tray and main-window installs share `desktop-updates.ts` and the native
+  cross-window installation gate. Both checked-in and generated updater configs
+  use quiet installation; cancellation/failure releases the gate for retry.
   Production update builds must use signed Tauri updater artifacts, a public
   HTTPS `latest.json`, and publication verification. `scripts/build_windows.ps1`
   may accept a local `TAURI_SIGNING_PRIVATE_KEY_PATH`, but it must normalize it
@@ -697,9 +716,17 @@ Packaging and scripts:
   postcondition failure, restore that exact release ID to a verified draft; if
   rollback cannot be verified, delete only that ID and require an HTTP 404.
 - Rust also exposes a private shell IPC channel for opt-in native text
-  injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` must stay on the
-  existing Python paste path until installed target-app evidence justifies a
-  default change. Clipboard-based injection paths, including the default Python
+  injection. `SCRIBER_INJECT_METHOD=tauri` is strict; `auto` stays Python-owned.
+  `office_text_insert.py` first binds the exact focused classic Office `_WwG`
+  editor by HWND and inserts via NativeOM without touching the clipboard.
+  Preserve the UTF-16 BSTR length, repeated target checks, bounded COM
+  cancellation, conservative unsupported-selection fallback, and terminal
+  outcome after an uncertain write; never retry that write through paste.
+  `windows_clipboard_lease.py` restores verified standard Edit consumers after
+  their confirmed read completes. Unknown readers, including RichEdit, keep the
+  conservative delay because
+  Office and other consumers may reread formats during one paste operation.
+  Clipboard-based injection paths, including the default Python
   paste path and Tauri `injectText`, must preserve a bounded snapshot of safe
   HGLOBAL-backed clipboard formats before setting transcript text. This includes
   application-registered formats in the Windows `0xC000..=0xFFFF` range (for
@@ -1852,6 +1879,18 @@ Packaging and scripts:
   metrics snapshot. In Tauri, support bundles use native Save As plus the same
   opaque export-token Open file/Open folder/Copy file boundary as other
   exports; never accept a WebView-supplied path for those follow-up actions.
+
+- Diagnostic logging is an explicit persisted boolean shared by Python and the
+  native shell. `diagnostic_preferences.py` applies it behind the settings lock
+  and a cancellation barrier; the atomic `.env` write is its durable commit.
+  Off closes and drains diagnostic writers, including optional metric workers,
+  while shell child pipes continue draining without writing files. Re-enabling
+  appends to existing logs. Transcript and durable job writes are unaffected.
+  `operation_diagnostics.py` records authenticated mutations by route template,
+  never bodies, query strings, concrete IDs, or raw exception messages. Keep
+  HTTP completion separate from background-job completion and distinct latency
+  stages separate in the UI. Debug snapshots cache only bounded redacted entries;
+  malformed or message-less JSON must never expose raw structured extras.
 
 ## Performance Status To Preserve
 

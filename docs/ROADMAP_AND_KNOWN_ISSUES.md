@@ -1,6 +1,6 @@
 # Roadmap And Known Issues
 
-Last verified: 2026-08-16
+Last verified: 2026-09-08
 
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
@@ -15,6 +15,26 @@ background job. Current constraints: ten minutes per file/Meeting final,
 timestamps. HTTP SSE is available from Meta but not used by Scriber; realtime
 previews use the WebSocket endpoint. Protocol tests are local; production
 account access and installed microphone smoke still require verification.
+
+September runtime and workflow work:
+
+- Podcast directory search, RSS subscriptions, sequential automatic download/
+  transcription/summary processing, retained playback, explicit retries, and
+  restart recovery are implemented. Feed checks run while Scriber is running;
+  there is no separate Windows background scheduler. The configured provider's
+  ordinary usage charges still apply, and unsupported/private feeds are rejected.
+- Debug Console now has workflow filtering, indexed metadata search, virtualized
+  rows, separate stage timings, and a bounded redacted snapshot cache. A persisted
+  diagnostic-logging opt-out covers Python, shell output, and timing persistence.
+- Large-history writes use indexed FTS synchronization; frequent health checks
+  avoid filesystem work. Reproducible measurements live in the performance guide.
+- The third pill visualization, Blue flame, preserves bars and energy wave.
+  Settings use accessible neutral tooltips for supplementary information.
+- Classic Word/Outlook insertion can leave the clipboard untouched. Verified
+  standard Edit controls restore it promptly after consumption; unknown readers
+  and unsupported selections retain the conservative delay for correctness.
+- Tray and main-window updates use quiet installation and one native installation
+  owner, with retry after cancellation or failure.
 
 Desktop runtime:
 

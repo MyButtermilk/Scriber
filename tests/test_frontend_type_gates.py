@@ -540,7 +540,8 @@ def test_settings_exposes_meta_muse_spark_models_and_contributor_warning() -> No
         "This model is not recommended for sensitive or confidential content."
     )
     assert_source_contains_tokens(settings_source, f't("{warning}")')
-    assert "active={summarizationModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL}" in settings_source
+    assert "option.value === META_MUSE_SPARK_CONTRIBUTOR_MODEL" in settings_source
+    assert "<MetaContributorWarning active compact />" in settings_source
     assert "active={meetingAnalysisModel === META_MUSE_SPARK_CONTRIBUTOR_MODEL}" in settings_source
     assert f'"{warning}":' in translations
     assert "zur Verbesserung künftiger Meta-Modelle verwenden" in translations
@@ -1173,7 +1174,7 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "export const MIN_VISUALIZER_BAR_COUNT = 16;" in helper_source
     assert "export const MAX_VISUALIZER_BAR_COUNT = 128;" in helper_source
     assert 'DEFAULT_OVERLAY_VISUALIZER_STYLE: OverlayVisualizerStyle = "bars"' in helper_source
-    assert 'value === "energy_wave" ? "energy_wave" : DEFAULT_OVERLAY_VISUALIZER_STYLE' in helper_source
+    assert 'value === "energy_wave" || value === "blue_flame" ? value : DEFAULT_OVERLAY_VISUALIZER_STYLE' in helper_source
     assert "loadVisualizerSettings" in helper_source
     assert "Number.isFinite(numeric)" in helper_source
     assert "Math.round(numeric)" in helper_source
@@ -1192,6 +1193,7 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle)" in settings_source
     assert 'value="bars"' in settings_source
     assert 'value="energy_wave"' in settings_source
+    assert 'value="blue_flame"' in settings_source
     assert "min={MIN_VISUALIZER_BAR_COUNT}" in settings_source
     assert "max={MAX_VISUALIZER_BAR_COUNT}" in settings_source
     assert "settings.visualizerBarCount || 45" not in settings_source
@@ -1216,7 +1218,7 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "width={PILL_WIDTH}" in overlay_source
     assert "height={PILL_HEIGHT}" in overlay_source
     assert "const BAR_COUNT =" not in overlay_source
-    assert 'export type OverlayVisualizerStyle = "bars" | "energy_wave";' in api_types
+    assert 'export type OverlayVisualizerStyle = "bars" | "energy_wave" | "blue_flame";' in api_types
     assert "new Float32Array(" in energy_field_source
     assert "setState" not in energy_field_source
 
@@ -1294,7 +1296,9 @@ def test_debug_and_settings_controls_have_responsive_density() -> None:
     assert 't("Post-processing diagnostics")' in debug_source
     assert 't("Raw fallback")' in debug_source
     assert 'className="compact-impact-switch"' in debug_source
-    assert "entry.context ? JSON.stringify(entry.context)" in debug_source
+    diagnostics_source = (REPO_ROOT / "Frontend/client/src/lib/runtime-diagnostics.ts").read_text(encoding="utf-8")
+    assert "indexRuntimeLogs(logs)" in debug_source
+    assert "entry.context ? JSON.stringify(entry.context)" in diagnostics_source
     assert "RuntimeLogMessage" in debug_source
 
     assert "HOT_PATH_METRICS" in structured_log_source
@@ -2039,7 +2043,7 @@ def test_native_overlay_energy_wave_is_full_bleed_thin_and_allocation_bounded() 
     )
 
     assert "ENERGY_PILL_BACKGROUND" in overlay_source
-    assert "energyWaveSelected ? ENERGY_PILL_BACKGROUND" in overlay_source
+    assert_source_contains_tokens(overlay_source, "energyWaveSelected ? ENERGY_PILL_BACKGROUND")
     assert 'visualizerStyle === "energy_wave" ? "energy" : "blue"' in overlay_source
     assert "const ENERGY_WAVE_PLOT_X = 0;" in overlay_source
     assert "const ENERGY_WAVE_PLOT_WIDTH = PILL_WIDTH;" in overlay_source

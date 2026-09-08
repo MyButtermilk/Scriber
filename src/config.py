@@ -365,6 +365,12 @@ class Config:
         DEFAULT_GEMINI_REALTIME_STT_MODEL,
     )
     DEBUG = os.getenv("SCRIBER_DEBUG", "0") in ("1", "true", "True")
+    DIAGNOSTIC_LOGGING_ENABLED = os.getenv("SCRIBER_DIAGNOSTIC_LOGGING_ENABLED", "1").strip().lower() not in {
+        "0",
+        "false",
+        "off",
+        "no",
+    }
     LANGUAGE = os.getenv("SCRIBER_LANGUAGE", "auto")
     MIC_DEVICE = os.getenv("SCRIBER_MIC_DEVICE", "default")
     FAVORITE_MIC = os.getenv("SCRIBER_FAVORITE_MIC", "")  # Preferred mic - used when available
@@ -392,6 +398,9 @@ class Config:
     # Clipboard paste tuning (Windows). Some apps (Word/Outlook) process paste asynchronously.
     PASTE_PRE_DELAY_MS = _env_int("SCRIBER_PASTE_PRE_DELAY_MS", 80, minimum=0, maximum=5000)
     PASTE_RESTORE_DELAY_MS = _env_int("SCRIBER_PASTE_RESTORE_DELAY_MS", 1500, minimum=0, maximum=60_000)
+    # Restore as soon as the intended Win32 consumer has read and released the
+    # temporary clipboard; the delay above remains the unconfirmed-reader fallback.
+    PASTE_ACKNOWLEDGED_RESTORE = os.getenv("SCRIBER_PASTE_ACKNOWLEDGED_RESTORE", "1") not in ("0", "false", "False")
 
     # Local providers map to None: they need no API key.
     SERVICE_API_KEY_MAP: ClassVar[dict[str, str | None]] = {
@@ -673,7 +682,7 @@ ${output}"""
     VISUALIZER_BAR_COUNT = _env_int("SCRIBER_VISUALIZER_BAR_COUNT", 60, minimum=16, maximum=128)
     _overlay_visualizer_style = os.getenv("SCRIBER_OVERLAY_VISUALIZER_STYLE", "bars").strip().lower()
     OVERLAY_VISUALIZER_STYLE = (
-        _overlay_visualizer_style if _overlay_visualizer_style in {"bars", "energy_wave"} else "bars"
+        _overlay_visualizer_style if _overlay_visualizer_style in {"bars", "energy_wave", "blue_flame"} else "bars"
     )
 
     @classmethod
@@ -786,6 +795,13 @@ ${output}"""
     def set_debug(cls, enabled: bool) -> None:
         cls.DEBUG = bool(enabled)
         os.environ["SCRIBER_DEBUG"] = "1" if enabled else "0"
+
+    @classmethod
+    def set_diagnostic_logging_enabled(cls, enabled: bool) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("Diagnostic logging must be a boolean.")
+        cls.DIAGNOSTIC_LOGGING_ENABLED = enabled
+        os.environ["SCRIBER_DIAGNOSTIC_LOGGING_ENABLED"] = "1" if enabled else "0"
 
     @classmethod
     def set_language(cls, code: str) -> None:
@@ -914,8 +930,8 @@ ${output}"""
     @classmethod
     def set_overlay_visualizer_style(cls, style: str) -> None:
         normalized = str(style or "").strip().lower()
-        if normalized not in {"bars", "energy_wave"}:
-            raise ValueError("Overlay visualizer style must be 'bars' or 'energy_wave'.")
+        if normalized not in {"bars", "energy_wave", "blue_flame"}:
+            raise ValueError("Overlay visualizer style must be 'bars', 'energy_wave', or 'blue_flame'.")
         cls.OVERLAY_VISUALIZER_STYLE = normalized
         os.environ["SCRIBER_OVERLAY_VISUALIZER_STYLE"] = normalized
 
@@ -1103,6 +1119,7 @@ ${output}"""
             cls.POST_PROCESSING_FALLBACK_MODEL or cls.DEFAULT_POST_PROCESSING_FALLBACK_MODEL,
         )
         add("SCRIBER_DEBUG", "1" if cls.DEBUG else "0")
+        add("SCRIBER_DIAGNOSTIC_LOGGING_ENABLED", "1" if cls.DIAGNOSTIC_LOGGING_ENABLED else "0")
         add("SCRIBER_LANGUAGE", cls.LANGUAGE)
         add("SCRIBER_OPENAI_STT_MODEL", cls.OPENAI_STT_MODEL)
         add("SCRIBER_OPENAI_REALTIME_STT_MODEL", cls.OPENAI_REALTIME_STT_MODEL)

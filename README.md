@@ -44,6 +44,9 @@
 - **Richer results:** German and English interface localization, synchronized
   summary navigation, transcript search, and polished PDF/DOCX export across
   Live Mic, Meetings, YouTube, and File.
+- **Podcast subscriptions:** search the public Apple podcast directory or add an
+  RSS feed, then automatically download, transcribe, and summarize new episodes
+  with your configured models while Scriber is running.
 
 ## One desktop. Every spoken workflow.
 
@@ -70,8 +73,8 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
   preserved
 - Rust and WASAPI microphone capture
 - Optional microphone pre-warming for lower startup latency
-- Native recording overlay with selectable classic bars or an audio-reactive
-  energy wave
+- Native recording overlay with classic bars, an audio-reactive energy wave,
+  or a blue flame made of fine moving strands
 - Raw dictation or cloud/local prompt-driven post-processing
 - Cloud post-processing keeps provider fallback inside a short bounded deadline
   and then inserts the raw transcript instead of delaying through a long serial
@@ -119,6 +122,22 @@ session token never leaves the app.
 
 Privacy details are documented in the
 [Chrome extension privacy policy](docs/CHROME_EXTENSION_PRIVACY.md).
+
+### 🎧 Follow podcasts and keep their ideas searchable
+
+Search podcasts without another account or API key, or paste a public RSS feed.
+Subscribing with automatic processing starts the latest episode; older episodes
+remain available for manual processing. Scriber checks feeds every 30 minutes
+while running and processes new episodes one at a time using the transcription
+provider and summary model selected in Settings. Those providers' normal usage
+charges still apply.
+
+Pause automatic processing for an individual subscription, play downloaded
+audio, open transcripts and summaries, retry a failed step, or remove downloads.
+Downloads are limited to 256 MiB per episode and a 2 GiB local cache. Removing
+a subscription also removes its downloaded audio and keeps completed transcripts.
+An interrupted job retains its transcript identity; a failed transcription needs
+an explicit retry before Scriber creates another provider attempt.
 
 ### 📁 Bring recordings in without upload gymnastics
 
@@ -344,13 +363,19 @@ Transcription crosses microphones, media tools, model APIs, networking, and desk
 
 ![Scriber debugging console](docs/screenshots/debug_console.png)
 
-- Severity, source, date, component, and message filters
+- Workflow, severity, source, date, component, message, and metadata filters
+- Latest microphone-ready, text-insertion, and clipboard-restoration timings,
+  shown separately so unrelated operation durations are never averaged together
+- A virtualized log list and cached unchanged log snapshots for responsive browsing
 - Clear selected view or persisted runtime logs
 - Copy visible diagnostics
 - Generate a redacted support bundle; the Windows app asks where to save it and
   then offers Open file, Open folder, and Copy file actions
 - Inspect post-processing health without logging transcript text
 - Track live runtime state and provider failures
+- Turn diagnostic logging off in Settings → Transcription → App behavior. The
+  preference also stops native shell logs, backend output capture, and persisted
+  timing diagnostics; turning it back on appends to the existing logs
 
 ## Windows-native by design
 
@@ -358,10 +383,12 @@ The installed app is more than a packaged website:
 
 - **Tauri 2 shell** for tray actions, autostart, global shortcuts, single-instance behavior, updates, and backend supervision
 - **Rust audio sidecar** for crash-isolated WASAPI microphone capture and pre-warming
-- **React workspace** for fast navigation across Live Mic, Meetings, YouTube, File, Settings, Console, and transcript details
+- **React workspace** for fast navigation across Live Mic, Meetings, YouTube, File, Podcasts, Settings, Console, and transcript details
 - **Python backend sidecar** for provider routing, job state, summaries, local storage, and support tooling
 - **Bundled media stack** with ffmpeg, ffprobe, yt-dlp extraction support, and a bounded QuickJS-ng runtime
 - **Signed updater artifacts** with published checksums and release diagnostics
+- **Quiet update installation** from both the main window and tray, with one
+  shared installation owner to prevent duplicate installers
 
 ## Download and start
 

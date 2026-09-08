@@ -513,8 +513,9 @@ export default function TrayPanel() {
     try {
       await installDesktopUpdate(setProgress);
     } catch (err) {
-      setInstalling(false);
       setError(err instanceof Error ? err.message : String(err || t("Update installation failed.")));
+    } finally {
+      setInstalling(false);
     }
   }, [installing, status.updateAvailable, status.updateInstalling, t]);
 

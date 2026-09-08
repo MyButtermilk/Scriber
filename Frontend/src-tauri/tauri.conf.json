@@ -62,7 +62,7 @@
       "endpoints": [],
       "pubkey": "",
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }

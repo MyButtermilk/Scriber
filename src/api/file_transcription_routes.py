@@ -161,6 +161,7 @@ class FileTranscriptionControllerPort(Protocol):
         original_filename: str,
         *,
         plan: FileUploadPlan,
+        transcript_id: str | None = None,
     ) -> PublicRecordPort: ...
 
 

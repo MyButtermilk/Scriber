@@ -80,6 +80,7 @@ class _Controller:
         original_filename: str,
         *,
         plan: FileUploadPlan,
+        transcript_id: str | None = None,
     ) -> _PublicRecord:
         self.started.append((file_path, original_filename, plan))
         return _PublicRecord()

@@ -1,9 +1,10 @@
-import { Check, Cloud, Cpu, Download, HardDrive, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
+import { Check, Cloud, Cpu, Download, HardDrive, RefreshCw, Trash2, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
+import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { useI18n } from "@/i18n";
 import type {
   LocalPolishingModelInfo,
@@ -163,33 +164,22 @@ export function LocalPolishingSettings({
         </p>
       ) : null}
 
-      <div className="rounded-xl border border-amber-200/80 bg-amber-50/70 px-3 py-2.5 dark:border-amber-900/60 dark:bg-amber-950/25">
-        <div className="flex items-start gap-2">
-          <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-300" aria-hidden="true" />
-          <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <p className="text-[12px] font-semibold text-amber-950 dark:text-amber-100">
-                {t("Local polishing model")}
-              </p>
-              <Badge
-                variant="outline"
-                className="border-amber-300 bg-amber-100/80 text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
-              >
-                {t("Experimental")}
-              </Badge>
-            </div>
-            <p className="mt-1 text-[11px] leading-4 text-amber-900/80 dark:text-amber-200/80">
+      <div className="py-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-[12px] font-semibold text-slate-800 dark:text-slate-200">{t("Local polishing model")}</p>
+          <InfoTooltip label={t("Experimental")}>
+            <p>
               {t(
                 "When local polishing is available, transcript text stays on this device. Cloud speech recognition may still upload audio.",
               )}
             </p>
-            <p className="mt-2 border-t border-amber-200/80 pt-2 text-[11px] font-medium leading-4 text-amber-950 dark:border-amber-900/70 dark:text-amber-100">
-              {t(
-                "Scriber supports only one local model: LFM2.5 350M quantized with QAD to Q4_0. Praxist by Sapient Intelligence.",
-              )}
-            </p>
-          </div>
+          </InfoTooltip>
         </div>
+        <p className="mt-1 text-[11px] leading-4 text-slate-500 dark:text-slate-400">
+          {t(
+            "Scriber supports only one local model: LFM2.5 350M quantized with QAD to Q4_0. Praxist by Sapient Intelligence.",
+          )}
+        </p>
       </div>
 
       {loading && !catalog ? (

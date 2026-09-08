@@ -313,6 +313,7 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                     "capabilities",
                     "benchmarkProviderReplayArm",
                     "injectText",
+                    "setDiagnosticLoggingEnabled",
                     "nativeDeviceEventsStatus",
                     "audioEndpointInventory",
                     "audioProbe",
@@ -372,6 +373,16 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
                 ),
             }
         }
+        "setDiagnosticLoggingEnabled" => match payload.get("enabled").and_then(Value::as_bool) {
+            Some(enabled) => {
+                crate::diagnostic_logging::set_enabled(enabled);
+                response_line(request_id, true, "", "", started, json!({"enabled": enabled}))
+            }
+            None => response_line(
+                request_id, false, "invalidDiagnosticLoggingSetting",
+                "enabled must be a boolean", started, json!({}),
+            ),
+        },
         "injectText" => {
             let _mutation_guard = inject_text_mutation_lock();
             match inject_text(payload) {
@@ -3982,6 +3993,21 @@ mod tests {
         assert_eq!(value["requestId"], "r1");
         assert_eq!(value["success"], true);
         assert_eq!(value["payload"]["pong"], true);
+    }
+
+    #[test]
+    fn diagnostic_logging_command_rejects_non_boolean_input() {
+        for enabled in [json!("false"), json!(0), serde_json::Value::Null] {
+            let request = json!({
+                "apiVersion": API_VERSION, "requestId": "logging-validation",
+                "command": "setDiagnosticLoggingEnabled", "token": "secret",
+                "payload": {"enabled": enabled},
+            }).to_string();
+            let response = handle_shell_ipc_request(&request, "secret");
+            let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+            assert_eq!(value["success"], false);
+            assert_eq!(value["errorCode"], "invalidDiagnosticLoggingSetting");
+        }
     }
 
     #[test]

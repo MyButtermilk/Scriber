@@ -1,6 +1,6 @@
 # Performance And Packaging
 
-Last verified: 2026-08-24
+Last verified: 2026-09-08
 
 This document consolidates the previous performance, startup, mic, FFmpeg,
 installer-size, and optimization notes.
@@ -114,6 +114,97 @@ That build still carried Deno. QuickJS-ng replaces it in H16; Profile B ffmpeg
 and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
+
+### Diagnostic-console measurements (2026-09-08)
+
+The target for this change was at least a 50% reduction in repeated collection
+of unchanged log files. `scripts/diagnostics/benchmark_debug_console.py` measures
+the same bounded collector with a deterministic six-file, 9,600-event fixture;
+`--live` reads configured local logs without changing them. Each sample includes
+the public redacted projection, sorting, and the requested result limit.
+
+| Warm collection | Before median | After median | Reduction | After p95 |
+| --- | ---: | ---: | ---: | ---: |
+| Synthetic fixture, 1,200 returned events | 1,046.822 ms | 29.862 ms | 97.1% | 41.441 ms |
+| Existing local logs, 485 returned events | 205.104 ms | 19.116 ms | 90.7% | 26.845 ms |
+
+The cache retains only bounded, already-redacted entries for at most 24 files.
+Its identity includes file identity, size, nanosecond modification/creation
+times, clear offset, and limit. Appends, replacement, rotation, and clearing
+invalidate the relevant result; a changed-during-read snapshot is never cached.
+Public responses copy mutable context. Incomplete JSONL records and private
+structured extras never become fallback message text. JSON is decoded before
+redacting the selected public fields, so escaped credentials cannot bypass the
+filter and regex replacement cannot corrupt serialized records. These figures describe
+warm Debug Console reads, not cold startup or overall transcription latency.
+The final local-log run overlapped application tests; an earlier run measured
+9.576 ms median. The table retains the slower final result rather than selecting
+the best run.
+
+The frontend compares unchanged payloads before parsing, pre-indexes metadata
+search, defers filtering while typing, and virtualizes variable-height rows.
+Browser checks with 1,200 entries rendered 7–15 rows for the tested viewports;
+copy/export and filtering still use the complete result set. Filter changes
+reset the actual scroll owner before paint, and hidden-window polling pauses.
+
+`scripts/diagnostics/benchmark_diagnostic_logging.py` measured a 40-event burst
+with the real text/JSON sinks: median 3.386 ms enabled versus 0.009 ms disabled.
+This does not establish perceptible logging latency for every workflow. The new
+persisted opt-out removes that optional work: no event construction through
+`emit_event`, no diagnostic file sinks, no new metric writes, and native output
+is drained without file writes. Disabling waits for admitted diagnostic writers;
+re-enabling appends rather than truncating earlier evidence.
+
+### Broader runtime and persistence improvements (2026-09-08)
+
+The expanded target was at least an 80% reduction in large-history write costs
+and at least a 95% reduction in the synchronous health projection's work,
+alongside the diagnostic-console target above and faster clipboard availability.
+
+FTS synchronization previously deleted by its unindexed `id` field, scanning
+every search document for each transcript or summary update. Initialization
+already repairs and enforces matching parent/FTS rowids. Updates and deletion
+now resolve the parent through its indexed ID and delete the exact FTS rowid
+before rewriting it. Search semantics and legacy repair are unchanged.
+`benchmark_transcript_history.py` measures real `save_transcript` and
+`update_transcript_summary` calls, interleaves baseline/candidate order across
+15 warm blocks, and checks actual list/search results after every change.
+
+| 10,000 synthetic transcripts, 11 KB text each | Before median | After median | Reduction |
+| --- | ---: | ---: | ---: |
+| Save transcript | 88.580 ms | 0.817 ms | 99.1% |
+| Save summary | 87.673 ms | 0.806 ms | 99.1% |
+
+These are local persistence timings, not provider processing or overall app
+speed. List/search reads were already indexed and remain essentially unchanged.
+
+The supervisor's frequent health check now uses a narrow live-status snapshot
+instead of constructing the full runtime inventory, resolving data/log paths,
+and collecting feature flags on the event loop. A paired 200-iteration test
+with actual isolated path resolution reduced median projection time from
+2.7643 ms to 0.0123 ms (99.55%), with identical public status fields and no
+cached recording/session state. The real loopback endpoint also passed; network
+and scheduler overhead are not included in this projection-only figure.
+
+Auto text insertion now uses the exact focused classic Word/Outlook editor's
+NativeOM interface. The clipboard stays untouched, including for Unicode,
+emoji, paragraph breaks, and selected-text replacement. Real Word and classic
+Outlook probes created and discarded only their own documents/drafts; complete
+preflight plus insertion took approximately 99–188 ms in the verified cases.
+Read-only/protected documents and unsupported editors/selections retain the
+existing clipboard path. Once a COM write begins, uncertain completion is
+terminal rather than retried through paste.
+
+Standard Win32 Edit consumers additionally use confirmed delayed-render reads
+to restore the original clipboard promptly. A real hidden-Edit A/B test reduced
+median restoration from approximately 1,517 ms to 21 ms, with p95 around 45 ms;
+the rapid second paste produced zero duplicate dictations in the verified
+candidate series. Unknown readers, including RichEdit, browser editors, and
+unsupported Office selections, retain the conservative restore delay. This is
+intentional: a consumer may read multiple clipboard formats during one paste.
+Every path preserves the bounded original formats and respects newer user copies.
+
+### Existing startup and runtime work
 
 Startup and imports:
 

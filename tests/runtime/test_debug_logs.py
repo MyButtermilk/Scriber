@@ -240,3 +240,92 @@ def test_clear_marker_resets_when_log_file_is_replaced(monkeypatch, tmp_path):
     payload = debug_logs.collect_debug_logs(limit=20)
 
     assert [item["message"] for item in payload["items"]] == ["replacement entry that is intentionally longer"]
+
+
+def test_unchanged_poll_reuses_redacted_entries_but_sees_append_rewrite_and_clear(monkeypatch, tmp_path):
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs)
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: tmp_path)
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr(log_clear_state, "logs_dir", lambda: logs)
+    path = logs / "latest.jsonl"
+    path.write_text('{"message":"first","meta":{"status":"ready"}}\n', encoding="utf-8")
+    original_read = debug_logs._read_tail
+    reads = []
+
+    def observed_read(*args, **kwargs):
+        reads.append(args[0])
+        return original_read(*args, **kwargs)
+
+    monkeypatch.setattr(debug_logs, "_read_tail", observed_read)
+    first = debug_logs.collect_debug_logs(limit=20)
+    assert debug_logs.collect_debug_logs(limit=20) == first
+    assert len(reads) == 1
+    # A caller cannot poison the next response's cached public context.
+    first["items"][0]["context"]["meta"]["status"] = "caller mutated"
+    assert debug_logs.collect_debug_logs(limit=20)["items"][0]["context"]["meta"]["status"] == "ready"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('{"message":"second"}\n')
+    assert [item["message"] for item in debug_logs.collect_debug_logs(limit=20)["items"]] == ["first", "second"]
+    assert len(reads) == 2
+    assert [item["message"] for item in debug_logs.collect_debug_logs(limit=1)["items"]] == ["second"]
+    path.write_text('{"message":"replacement"}\n', encoding="utf-8")
+    assert [item["message"] for item in debug_logs.collect_debug_logs(limit=20)["items"]] == ["replacement"]
+    assert debug_logs.clear_debug_logs()["ok"]
+    assert debug_logs.collect_debug_logs(limit=20)["items"] == []
+
+
+def test_partial_jsonl_tail_is_not_exposed_as_raw_log_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(debug_logs, "_candidate_log_files", lambda: [tmp_path / "latest.jsonl"])
+    monkeypatch.setattr(debug_logs, "load_clear_offsets", lambda: {})
+    path = tmp_path / "latest.jsonl"
+    path.write_text('{"message":"complete"}\n{"message":"unfinished private transcript', encoding="utf-8")
+    payload = debug_logs.collect_debug_logs(limit=20)
+    assert [item["message"] for item in payload["items"]] == ["complete"]
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write('","meta":{"transcript":"private content"}}\n')
+    assert len(debug_logs.collect_debug_logs(limit=20)["items"]) == 2
+
+
+def test_invalid_log_timestamp_does_not_fail_entire_console():
+    entry = debug_logs.DebugLogEntry("a.log", 1, "INFO", "hello", timestamp="99:99:99")
+    assert debug_logs._entry_sort_value(entry, 1700000000000) > 0
+
+
+def test_empty_structured_message_never_falls_back_to_private_record():
+    for payload in (
+        {"record": {"message": "", "extra": {"transcript": "PRIVATE_CONTENT_PROBE"}}},
+        {"transcript": "PRIVATE_CONTENT_PROBE"},
+    ):
+        entry = debug_logs._parse_log_line(json.dumps(payload), source="latest.structured.jsonl", line_number=1)
+        assert entry is not None
+        assert "PRIVATE_CONTENT_PROBE" not in json.dumps(entry.to_public())
+        assert entry.message == "Structured diagnostic event"
+
+
+@pytest.mark.parametrize("nested_record", [False, True])
+def test_json_escaped_credentials_are_redacted_after_decoding(nested_record):
+    synthetic_key = "sk-" + "a" * 12
+    payload = {
+        "message": synthetic_key,
+        "timestamp": synthetic_key,
+        "component": synthetic_key,
+    }
+    if nested_record:
+        payload = {
+            "record": {
+                "message": synthetic_key,
+                "time": {"repr": synthetic_key},
+                "extra": {"component": synthetic_key},
+            }
+        }
+    encoded = json.dumps(payload).replace(synthetic_key, "sk-" + "\\u0061" * 12)
+
+    entry = debug_logs._parse_log_line(encoded, source="latest.structured.jsonl", line_number=1)
+
+    assert entry is not None
+    assert entry.message == "[REDACTED]"
+    assert entry.component == "[REDACTED]"
+    assert entry.timestamp == "[REDACTED]"
+    assert synthetic_key not in json.dumps(entry.to_public())
