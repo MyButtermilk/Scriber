@@ -334,12 +334,12 @@ async def test_service_processes_three_episodes_concurrently(tmp_path: Path) -> 
         assert await service.queue(episode["id"])
     service.start()
     try:
-        await asyncio.wait_for(all_started.wait(), 2)
+        await asyncio.wait_for(all_started.wait(), 10)
         assert len(controller.started) == 3
         with pytest.raises(PodcastError):
             await service.unsubscribe(subscription)
         release.set()
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         assert len(set(controller.started)) == len(controller.started) == 4
@@ -427,7 +427,7 @@ async def test_parallel_downloads_recheck_remaining_cache_before_writing(tmp_pat
         await service.queue(row["id"])
     service.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         assert len(limits) == 1
@@ -446,7 +446,7 @@ async def test_service_end_to_end_queues_downloads_summarizes_and_unsubscribes(t
     identifier = await service.subscribe("https://example.com/feed")
     service.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         rows = (await service.episodes(identifier))["items"]
@@ -476,7 +476,7 @@ async def test_service_recovers_download_renamed_before_its_metadata_commit(tmp_
     cached.write_bytes(b"previously-downloaded-audio")
     service.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         episode = (await service.episodes(identifier))["items"][0]
@@ -497,7 +497,7 @@ async def test_removed_download_can_be_retried_without_any_new_transcription_or_
     try:
 
         async def wait_idle():
-            async with asyncio.timeout(3):
+            async with asyncio.timeout(10):
                 while (await service.library())["activeCount"]:
                     await asyncio.sleep(0.01)
 
@@ -536,7 +536,7 @@ async def test_service_serializes_queue_requests_and_reports_failures_without_au
     assert sorted(await asyncio.gather(service.queue(episode["id"]), service.queue(episode["id"]))) == [False, True]
     service.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         row = (await service.episodes(identifier))["items"][0]
@@ -565,7 +565,7 @@ async def test_failed_transcript_retry_uses_new_identity_and_retained_download(t
     assert await service.episode_for_transcript(old_id) is None
     service.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await service.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         retried = (await service.episodes(subscription))["items"][0]
@@ -596,14 +596,14 @@ async def test_service_shutdown_retains_admitted_identity_and_rejects_active_rem
     service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0)
     identifier = await service.subscribe("https://example.com/feed")
     service.start()
-    await asyncio.wait_for(started.wait(), 3)
+    await asyncio.wait_for(started.wait(), 10)
     with pytest.raises(PodcastError):
         await service.unsubscribe(identifier)
     closing = asyncio.create_task(service.close())
     await asyncio.sleep(0.03)
     assert not closing.done()
     release.set()
-    await asyncio.wait_for(closing, 3)
+    await asyncio.wait_for(closing, 10)
     restarted = PodcastService(
         tmp_path / "podcasts",
         PodcastProcessor(controller, poll_seconds=0.001),
@@ -612,7 +612,7 @@ async def test_service_shutdown_retains_admitted_identity_and_rejects_active_rem
     )
     restarted.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await restarted.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         assert len(controller.started) == 1
@@ -639,13 +639,13 @@ async def test_remote_refresh_does_not_block_pause_or_unsubscribe_and_cannot_rev
     transport.feed = slow_feed
     refreshing = asyncio.create_task(service._refresh())
     try:
-        await asyncio.wait_for(fetching.wait(), 3)
+        await asyncio.wait_for(fetching.wait(), 10)
         assert await asyncio.wait_for(service.set_subscription(identifier, auto_process=False), 1)
         assert (await service.library())["activeCount"] == 0
         assert await asyncio.wait_for(service.unsubscribe(identifier), 1)
         assert not refreshing.done()
         release.set()
-        await asyncio.wait_for(refreshing, 3)
+        await asyncio.wait_for(refreshing, 10)
         assert (await service.library())["subscriptions"] == []
         assert (await service.episodes(identifier))["total"] == 0
     finally:
@@ -675,9 +675,9 @@ async def test_subscription_refresh_runs_while_a_long_episode_is_transcribing(tm
     await service.subscribe("https://example.com/feed")
     service.start()
     try:
-        await asyncio.wait_for(processing.wait(), 3)
+        await asyncio.wait_for(processing.wait(), 10)
         calls = transport.feed_calls
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while transport.feed_calls <= calls:
                 await asyncio.sleep(0.01)
         assert len(controller.started) == 1

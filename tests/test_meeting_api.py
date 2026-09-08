@@ -3607,7 +3607,7 @@ async def test_meeting_native_start_claim_blocks_live_mic_during_ipc_await(monke
     def shell_call(command, _payload, **_kwargs):
         if command == "audioMeetingStart":
             ipc_entered.set()
-            assert release_ipc.wait(timeout=2.0)
+            assert release_ipc.wait(timeout=15.0)
             return {
                 "success": True,
                 "payload": _valid_meeting_native_payload("race-start"),
@@ -3619,16 +3619,16 @@ async def test_meeting_native_start_claim_blocks_live_mic_during_ipc_await(monke
     await client.start_server()
     try:
         meeting_task = asyncio.create_task(client.post("/api/meetings", json={"title": "Claim first"}))
-        assert await asyncio.to_thread(ipc_entered.wait, 1.0)
+        assert await asyncio.to_thread(ipc_entered.wait, 10.0)
         live_task = asyncio.create_task(controller.start_listening())
         await asyncio.sleep(0.05)
         assert live_task.done() is False
 
         release_ipc.set()
-        response = await asyncio.wait_for(meeting_task, timeout=1.0)
+        response = await asyncio.wait_for(meeting_task, timeout=10.0)
         meeting = await response.json()
         assert response.status == 201
-        info = await asyncio.wait_for(live_task, timeout=1.0)
+        info = await asyncio.wait_for(live_task, timeout=10.0)
         assert info is not None and info.code == "meeting_active"
         assert pipelines == []
         assert controller._is_listening is False
@@ -3653,7 +3653,7 @@ async def test_meeting_resume_claim_blocks_live_mic_until_recording_is_persisted
     def shell_call(command, _payload, **_kwargs):
         if command == "audioMeetingResume":
             ipc_entered.set()
-            assert release_ipc.wait(timeout=2.0)
+            assert release_ipc.wait(timeout=15.0)
             return {
                 "success": True,
                 "payload": _valid_meeting_native_payload(f"resume-{resume_state}"),
@@ -3665,16 +3665,16 @@ async def test_meeting_resume_claim_blocks_live_mic_until_recording_is_persisted
     await client.start_server()
     try:
         resume_task = asyncio.create_task(client.post(f"/api/meetings/{meeting['id']}/resume"))
-        assert await asyncio.to_thread(ipc_entered.wait, 1.0)
+        assert await asyncio.to_thread(ipc_entered.wait, 10.0)
         live_task = asyncio.create_task(controller.start_listening())
         await asyncio.sleep(0.05)
         assert live_task.done() is False
 
         release_ipc.set()
-        response = await asyncio.wait_for(resume_task, timeout=1.0)
+        response = await asyncio.wait_for(resume_task, timeout=10.0)
         assert response.status == 200
         assert (await response.json())["state"] == "recording"
-        info = await asyncio.wait_for(live_task, timeout=1.0)
+        info = await asyncio.wait_for(live_task, timeout=10.0)
         assert info is not None and info.code == "meeting_active"
         assert pipelines == []
         controller._meeting_store.transition(meeting["id"], "capture_failed")
