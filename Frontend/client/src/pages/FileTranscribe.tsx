@@ -314,7 +314,7 @@ const FileCard = memo(function FileCard({
               <span>•</span>
               <span>{dateLabel}</span>
             </div>
-            <div className="flex items-center justify-end mt-2 gap-1">
+            <div className="flex flex-wrap items-center justify-end mt-2 gap-1">
               {historyStatus === "failed" && <PodcastTranscriptRetryButton transcriptId={item.id} />}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}

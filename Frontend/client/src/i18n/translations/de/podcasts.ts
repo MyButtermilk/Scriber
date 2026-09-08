@@ -1,6 +1,7 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const podcastTranslations: TranslationCatalog = {
+  Retry: "Wiederholen",
   "Please try again.": "Bitte versuche es erneut.",
   "Podcast retry queued": "Podcast wird erneut verarbeitet",
   "The new attempt will appear in File history.": "Der neue Versuch erscheint im Dateiverlauf.",

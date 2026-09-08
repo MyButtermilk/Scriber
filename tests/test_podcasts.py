@@ -374,7 +374,8 @@ async def test_parallel_shutdown_preserves_all_episode_identities(tmp_path: Path
         await service.queue(row["id"])
     service.start()
     try:
-        await asyncio.wait_for(started.wait(), 3)
+        # This checks durable ownership, not disk latency on shared Windows CI.
+        await asyncio.wait_for(started.wait(), 10)
         for row in (await service.episodes(subscription))["items"]:
             with pytest.raises(PodcastError):
                 await service.remove_download(row["id"])
@@ -392,7 +393,7 @@ async def test_parallel_shutdown_preserves_all_episode_identities(tmp_path: Path
     )
     restarted.start()
     try:
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while (await restarted.library())["activeCount"]:
                 await asyncio.sleep(0.01)
         assert len(controller.started) == 3

@@ -1644,7 +1644,7 @@ def test_settings_exposes_microsoft_mai_through_openrouter_with_one_key() -> Non
     )
     assert_source_contains_tokens(
         provider_options_source,
-        'benchmarkOption("azure_mai", t("Microsoft MAI · Azure direct"), 1.6667, 2.0, "cloud_async", "azure", t("Separate Azure Speech key and region · no OpenRouter fee"))',
+        'benchmarkOption("azure_mai", t("Microsoft MAI · Azure direct"), 1.6667, 2.0, "cloud_async", "azure", t("Azure direct · $0.10/audio hour through December 31, 2026 · no OpenRouter fee"))',
     )
     assert source_token_sequence_position(
         provider_options_source, 'benchmarkOption("openrouter_stt",'

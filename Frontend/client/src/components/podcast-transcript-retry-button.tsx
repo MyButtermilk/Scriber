@@ -59,9 +59,10 @@ export function PodcastTranscriptRetryButton({ transcriptId }: { transcriptId: s
       onClick={retry}
       disabled={state !== "idle"}
       aria-busy={state === "pending"}
+      aria-label={state === "idle" ? t("Retry transcription") : undefined}
     >
       <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
-      {state === "queued" ? t("Queued") : state === "pending" ? t("Retrying…") : t("Retry transcription")}
+      {state === "queued" ? t("Queued") : state === "pending" ? t("Retrying…") : t("Retry")}
     </Button>
   );
 }

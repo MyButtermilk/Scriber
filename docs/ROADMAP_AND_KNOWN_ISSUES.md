@@ -32,8 +32,8 @@ account access and installed microphone smoke still require verification.
 
 September runtime and workflow work:
 
-- Podcast directory search, RSS subscriptions, three parallel transcription/
-  transcription/summary processing, retained playback, explicit retries, and
+- Podcast directory search, RSS subscriptions, three parallel transcription
+  and summary workers, retained playback, explicit retries, and
   restart recovery are implemented. Feed checks run while Scriber is running;
   there is no separate Windows background scheduler. The configured provider's
   ordinary usage charges still apply, and unsupported/private feeds are rejected.
