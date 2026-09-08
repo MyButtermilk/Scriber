@@ -24,6 +24,7 @@ from src.azure_mai_stt import (
 )
 from src.config import Config
 from src.core.provider_audio_formats import ProviderAudioCapabilityError
+from src.core.provider_errors import ProviderTransportError
 from src.pipeline import ScriberPipeline
 from src.runtime.capture_time_encoder import CaptureTimeEncoderError, CaptureTimeFfmpegEncoder
 from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
@@ -34,6 +35,30 @@ def test_azure_mai_region_defaults_to_northeurope():
     assert azure_mai_region("") == "northeurope"
     assert azure_mai_region(None) == "northeurope"
     assert azure_mai_region("NorthEurope") == "northeurope"
+
+
+@pytest.mark.asyncio
+async def test_azure_wrapped_invalid_audio_preserves_only_safe_code():
+    async def transport(**kwargs):
+        return (
+            400,
+            'MAI service returned an error: BadRequest - {"error":{"code":"invalid_audio","message":"private audio details"}}',
+        )
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_azure_mai(
+            session=object(),
+            speech_key="test",
+            region="northeurope",
+            audio_source=b"audio",
+            filename="audio.mp3",
+            content_type="audio/mpeg",
+            language="de",
+            raw_transport=transport,
+        )
+    assert caught.value.status == 400
+    assert caught.value.code == "unsupported_audio"
+    assert "private" not in str(caught.value)
 
 
 def test_azure_mai_service_initializes_complete_pipecat_1_5_settings():

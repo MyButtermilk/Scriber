@@ -548,6 +548,36 @@ async def test_service_serializes_queue_requests_and_reports_failures_without_au
 
 
 @pytest.mark.asyncio
+async def test_failed_transcript_retry_uses_new_identity_and_retained_download(tmp_path: Path) -> None:
+    controller = FakeController(tmp_path)
+    transport = FakeTransport()
+    service = PodcastService(tmp_path / "podcasts", PodcastProcessor(controller), transport=transport, startup_delay=0)
+    subscription = await service.subscribe("https://example.com/feed", auto_process=False)
+    episode = (await service.episodes(subscription))["items"][0]
+    old_id = "a" * 32
+    controller.views[old_id] = _view(old_id, status="failed")
+    service._audio.mkdir(parents=True, exist_ok=True)
+    (service._audio / f"{episode['id']}.mp3").write_bytes(b"audio-fixture")
+    service._store.update(episode["id"], status="failed", transcript_id=old_id, downloaded_bytes=13)
+    assert await service.episode_for_transcript(old_id) == {"id": episode["id"], "status": "failed"}
+    assert sorted(await asyncio.gather(service.queue(episode["id"]), service.queue(episode["id"]))) == [False, True]
+    assert await service.episode_for_transcript(old_id) is None
+    service.start()
+    try:
+        async with asyncio.timeout(3):
+            while (await service.library())["activeCount"]:
+                await asyncio.sleep(0.01)
+        retried = (await service.episodes(subscription))["items"][0]
+        assert retried["status"] == "completed"
+        assert retried["transcript_id"] != old_id
+        assert controller.started == controller.summaries == [retried["transcript_id"]]
+        assert transport.downloads == []
+        assert controller.views[old_id].status == "failed"
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
 async def test_service_shutdown_retains_admitted_identity_and_rejects_active_removal(tmp_path: Path) -> None:
     controller = FakeController(tmp_path)
     started = asyncio.Event()
@@ -684,6 +714,14 @@ async def test_podcast_http_contract_strict_inputs_and_redacted_projection(tmp_p
         result = await client.get(f"/api/podcasts/subscriptions/{identifier}/episodes?offset=-1")
         assert result.status == 400
         assert (await client.get("/api/podcasts/episodes/invalid/audio")).status == 404
+        assert (await client.get("/api/podcasts/transcripts/invalid")).status == 404
+        transcript_id = "b" * 32
+        assert await (await client.get(f"/api/podcasts/transcripts/{transcript_id}")).json() == {"episode": None}
+        episode_id = page["items"][0]["id"]
+        service._store.update(episode_id, status="failed", transcript_id=transcript_id)
+        assert await (await client.get(f"/api/podcasts/transcripts/{transcript_id}")).json() == {
+            "episode": {"id": episode_id, "status": "failed"}
+        }
 
         async def oversized_chunked_json():
             yield b'{"feedUrl":"https://example.com/'

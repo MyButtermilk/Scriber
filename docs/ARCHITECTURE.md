@@ -1864,6 +1864,17 @@ estimated alignment, rather than assigning a recording-wide phrase to one voice.
 The request contract follows the [Microsoft MAI documentation](https://learn.microsoft.com/en-us/azure/ai-services/speech-service/mai-transcribe),
 verified 2026-09-08. Legacy MAI-1.5 explicit verbatim callers keep their contract.
 
+MAI-2 MP3 inputs carrying ID3 metadata use a frozen `audio_only_remux` preparation:
+ffmpeg copies the first audio stream without metadata or cover images, preserving
+the original file and avoiding lossy recompression. This repairs the reproduced
+Azure `invalid_audio` rejection of podcast #145 before the first provider request.
+An HTTP 400 remains a bounded provider error instead of being hidden by the
+unknown-outcome message; the durable no-replay fence still prevents automatic
+paid retries. Failed podcast transcripts expose their exact current episode link
+through the Podcast API, so File history and transcript detail can use the same
+explicit queue operation as the Podcast page. A retry allocates a new transcript
+identity and reuses retained audio; it never overwrites the old failed attempt.
+
 Speaker diarization is a batch-transcription feature, not a live dictation
 feature. File and YouTube jobs enable provider diarization where the current
 backend adapter has both a supported provider request flag and a stable

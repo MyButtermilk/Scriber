@@ -18,6 +18,7 @@ import { PageIntro } from "@/components/page-intro";
 import { TranscriptionHistoryToolbar } from "@/components/transcription-history-toolbar";
 import { TranscriptHistoryPanel } from "@/components/transcript-history-panel";
 import { TranscriptSummaryRetryButton } from "@/components/transcript-summary-retry-button";
+import { PodcastTranscriptRetryButton } from "@/components/podcast-transcript-retry-button";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
 import { VirtualTranscriptHistory } from "@/components/virtual-transcript-history";
 import { ErrorShake } from "@/components/ui/error-shake";
@@ -221,6 +222,7 @@ const FileCard = memo(function FileCard({
                   {t("Stopped")}
                 </Badge>
               ) : null}
+              {historyStatus === "failed" && <PodcastTranscriptRetryButton transcriptId={item.id} />}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}
@@ -313,6 +315,7 @@ const FileCard = memo(function FileCard({
               <span>{dateLabel}</span>
             </div>
             <div className="flex items-center justify-end mt-2 gap-1">
+              {historyStatus === "failed" && <PodcastTranscriptRetryButton transcriptId={item.id} />}
               <CopyActionButton
                 onClick={(e) => onCopy(e, item.id)}
                 disabled={isCopying}

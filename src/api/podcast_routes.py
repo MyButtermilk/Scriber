@@ -35,6 +35,8 @@ class PodcastServicePort(Protocol):
 
     async def queue(self, identifier: str) -> bool: ...
 
+    async def episode_for_transcript(self, transcript_id: str) -> dict[str, Any] | None: ...
+
     async def request_refresh(self) -> None: ...
 
     async def audio_path(self, identifier: str) -> Path | None: ...
@@ -144,6 +146,11 @@ async def podcast_episodes(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def podcast_transcript_episode(request: web.Request) -> web.Response:
+    episode = await request.app[APP_PODCASTS].episode_for_transcript(_id(request))
+    return web.json_response({"episode": episode})
+
+
 async def podcast_queue(request: web.Request) -> web.Response:
     if not await request.app[APP_PODCASTS].queue(_id(request)):
         return web.json_response({"message": "This episode is already queued or processed."}, status=409)
@@ -203,5 +210,6 @@ def register_podcast_routes(app: web.Application, *, factory: Callable[[], Podca
     app.router.add_delete("/api/podcasts/subscriptions/{id}", guarded(podcast_unsubscribe))
     app.router.add_get("/api/podcasts/subscriptions/{id}/episodes", guarded(podcast_episodes))
     app.router.add_post("/api/podcasts/episodes/{id}/queue", guarded(podcast_queue))
+    app.router.add_get("/api/podcasts/transcripts/{id}", guarded(podcast_transcript_episode))
     app.router.add_get("/api/podcasts/episodes/{id}/audio", guarded(podcast_audio))
     app.router.add_delete("/api/podcasts/episodes/{id}/audio", guarded(podcast_remove_download))

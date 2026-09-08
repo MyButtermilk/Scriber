@@ -143,6 +143,10 @@ class PodcastService:
         await self._ensure_ready()
         return await asyncio.to_thread(self._store.episodes, identifier, offset=offset)
 
+    async def episode_for_transcript(self, transcript_id: str) -> dict[str, Any] | None:
+        await self._ensure_ready()
+        return await asyncio.to_thread(self._store.episode_for_transcript, transcript_id)
+
     async def queue(self, identifier: str) -> bool:
         await self._ensure_ready()
         async with self._subscription_lock:

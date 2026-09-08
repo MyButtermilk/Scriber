@@ -410,11 +410,15 @@ async def transcribe_with_azure_mai(
     if on_response_complete is not None:
         on_response_complete()
     if status >= 400:
+        # Azure's MAI gateway sometimes wraps the decoder error in plain text.
+        # Retain only the exact allowlisted code, never its response text.
+        rejected_audio = status == 400 and '"code":"invalid_audio"' in raw.replace(" ", "")
         raise provider_transport_error(
             "azure_mai",
             "transcription",
             status=status,
             response_body=raw,
+            code="unsupported_audio" if rejected_audio else "",
         )
 
     if not raw:

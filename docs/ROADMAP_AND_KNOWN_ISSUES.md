@@ -5,6 +5,20 @@ Last verified: 2026-09-08
 This document replaces old bug lists, code-review notes, and proposal journals.
 It tracks current status only.
 
+## Azure MAI-2 native diarization availability
+
+On 2026-09-08, full-length native diarization requests for podcasts #93 (33:57)
+and #145 (33:29) returned HTTP 503 with `diarization_unavailable`; Azure reports
+an HTTP 400 from its own diarization service. A two-minute excerpt correctly
+returned three speakers. Removing MP3 metadata repairs #145's separate
+`invalid_audio` rejection, but neither a lossless remux nor a 16 kHz mono copy
+removed the full-length diarization service failure. This is observed behavior,
+not a documented duration limit. Scriber must not silently drop speaker
+separation, invent cross-chunk identities, or automatically repeat paid requests.
+The complete native result for these episodes remains unverified until Azure
+accepts the request; manual episode retry is available from File history,
+transcript detail, and the Podcast page.
+
 ## Recently Completed
 
 Meta Muse Voice Transcribe integration (2026-09-02): separate Realtime and Async
@@ -18,7 +32,7 @@ account access and installed microphone smoke still require verification.
 
 September runtime and workflow work:
 
-- Podcast directory search, RSS subscriptions, sequential automatic download/
+- Podcast directory search, RSS subscriptions, three parallel transcription/
   transcription/summary processing, retained playback, explicit retries, and
   restart recovery are implemented. Feed checks run while Scriber is running;
   there is no separate Windows background scheduler. The configured provider's

@@ -162,6 +162,7 @@ class CapabilityEvidenceKind(StrEnum):
 class AudioSelectionMode(StrEnum):
     ORIGINAL_PASSTHROUGH = "original_passthrough"
     GENERATED = "generated"
+    AUDIO_ONLY_REMUX = "audio_only_remux"
 
 
 class ProviderAudioCapabilityError(ValueError):

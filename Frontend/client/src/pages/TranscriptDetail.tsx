@@ -18,6 +18,7 @@ import ReactMarkdown from "react-markdown";
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { SummaryTableOfContents, TranscriptSummaryDocument } from "@/components/transcript-summary-document";
 import { TranscriptStopButton } from "@/components/transcript-stop-button";
+import { PodcastTranscriptRetryButton } from "@/components/podcast-transcript-retry-button";
 import { useAppScrollContainerRef } from "@/contexts/AppScrollContainerContext";
 import { useTranscriptAutoRefresh } from "@/hooks/use-transcript-auto-refresh";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -838,6 +839,9 @@ export default function TranscriptDetail() {
                 transcriptId={id!}
                 onStop={() => queryClient.invalidateQueries({ queryKey: ["/api/transcripts", id] })}
               />
+            )}
+            {transcript.status === "failed" && transcript.type === "file" && (
+              <PodcastTranscriptRetryButton transcriptId={id!} />
             )}
             {showHeaderSummaryAction && (
               <div className="hidden md:block">

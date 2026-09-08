@@ -53,6 +53,7 @@ class PodcastStore:
                     UNIQUE(subscription_id, guid), UNIQUE(subscription_id, media_url)
                 );
                 CREATE INDEX IF NOT EXISTS podcast_episode_queue ON episodes(status, discovered_at);
+                CREATE INDEX IF NOT EXISTS podcast_episode_transcript ON episodes(transcript_id);
                 CREATE INDEX IF NOT EXISTS podcast_episode_subscription ON episodes(subscription_id, published_at DESC);
             """)
             if "download_only" not in {row["name"] for row in con.execute("PRAGMA table_info(episodes)")}:
@@ -230,6 +231,14 @@ class PodcastStore:
                 0
             ]
             return {"items": [dict(row) for row in rows], "total": total}
+
+    def episode_for_transcript(self, transcript_id: str) -> dict[str, Any] | None:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT id,status FROM episodes WHERE transcript_id=? AND transcript_id<>'' LIMIT 1",
+                (transcript_id,),
+            ).fetchone()
+            return dict(row) if row else None
 
     def episode(self, identifier: str) -> dict[str, Any] | None:
         with self._connect() as con:

@@ -10937,7 +10937,7 @@ class ScriberWebController:
                         rec,
                         provider=provider,
                     )
-                if request_may_be_committed:
+                if request_may_be_committed and not (isinstance(exc, ProviderTransportError) and exc.status == 400):
                     raise ProviderRequestAcceptanceUnknown(provider) from exc
                 raise
 
@@ -11597,7 +11597,7 @@ class ScriberWebController:
                     rec,
                     provider=provider,
                 )
-            if request_may_be_committed:
+            if request_may_be_committed and not (isinstance(exc, ProviderTransportError) and exc.status == 400):
                 raise ProviderRequestAcceptanceUnknown(provider) from exc
             raise
 

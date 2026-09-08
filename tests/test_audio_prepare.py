@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -126,6 +127,43 @@ def test_selection_passes_through_exact_azure_mp3() -> None:
     assert capability.provider == "azure_mai"
     assert selection.audio_format == AudioInputFormat.MP3
     assert selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
+
+
+@pytest.mark.asyncio
+async def test_mai_tagged_mp3_remux_preserves_audio_and_cleans_copy(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "podcast.mp3"
+    source.write_bytes(b"ID3metadata-audio")
+    tagged = replace(_probe(AudioInputFormat.MP3), has_id3_metadata=True)
+    monkeypatch.setattr(
+        audio_prepare, "probe_audio_input_file", lambda path: tagged if path == source else _probe(AudioInputFormat.MP3)
+    )
+    monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")
+    commands = []
+
+    async def remux(command, target):
+        commands.append(command)
+        target.write_bytes(b"audio")
+
+    monkeypatch.setattr(audio_prepare, "_run_generated_preparation", remux)
+    _, selection = audio_prepare.resolve_provider_audio_selection(
+        provider="azure_mai", model="MAI-Transcribe-2", probe=tagged
+    )
+    assert selection.mode == AudioSelectionMode.AUDIO_ONLY_REMUX
+    async with audio_prepare.prepare_provider_audio_file(
+        source, provider="azure_mai", model="MAI-Transcribe-2", frozen_selection=selection
+    ) as prepared:
+        output = prepared.path
+        assert output.read_bytes() == b"audio"
+        assert prepared.implementation == "ffmpeg_mp3_audio_only_remux"
+        assert prepared.generated
+    assert not output.exists()
+    assert source.read_bytes() == b"ID3metadata-audio"
+    assert commands[0][commands[0].index("-c:a") + 1] == "copy"
+    assert commands[0][commands[0].index("-id3v2_version") + 1] == "0"
+    _, other = audio_prepare.resolve_provider_audio_selection(
+        provider="azure_mai", model="mai-transcribe-1.5", probe=tagged
+    )
+    assert other.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
 
 
 def test_azure_unaccepted_source_retains_promoted_mp3_control() -> None:

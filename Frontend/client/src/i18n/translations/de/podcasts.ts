@@ -1,6 +1,11 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const podcastTranslations: TranslationCatalog = {
+  "Please try again.": "Bitte versuche es erneut.",
+  "Podcast retry queued": "Podcast wird erneut verarbeitet",
+  "The new attempt will appear in File history.": "Der neue Versuch erscheint im Dateiverlauf.",
+  "Podcast retry failed": "Podcast konnte nicht erneut gestartet werden",
+  "Retry transcription": "Transkription wiederholen",
   "Download audio again": "Audio erneut laden",
   "The podcast host returned unsupported compressed data.":
     "Der Podcast-Anbieter hat nicht unterstützte komprimierte Daten geliefert.",

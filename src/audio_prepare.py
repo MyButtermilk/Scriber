@@ -15,7 +15,7 @@ import math
 import subprocess
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -67,6 +67,7 @@ class ProbedAudioInput:
     channels: int | None
     duration_ms: int | None
     byte_length: int
+    has_id3_metadata: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +142,8 @@ def audio_preparation_implementation(
 
     if selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH:
         return "original_passthrough"
+    if selection.mode == AudioSelectionMode.AUDIO_ONLY_REMUX:
+        return "ffmpeg_mp3_audio_only_remux"
     implementation = _GENERATED_IMPLEMENTATIONS.get(selection.audio_format, "")
     if not implementation:
         raise ProviderAudioPreparationError("Selected provider format has no promoted local implementation.")
@@ -271,6 +274,8 @@ def probe_audio_input_file(
             duration = 0.0
         if math.isfinite(duration) and duration > 0:
             duration_ms = max(1, round(duration * 1000))
+    with source.open("rb") as header:
+        has_id3_metadata = audio_format == AudioInputFormat.MP3 and header.read(3) == b"ID3"
     return ProbedAudioInput(
         audio_format=audio_format,
         container_name=container[:96],
@@ -279,6 +284,7 @@ def probe_audio_input_file(
         channels=_positive_int(stream.get("channels")),
         duration_ms=duration_ms,
         byte_length=source.stat().st_size,
+        has_id3_metadata=has_id3_metadata,
     )
 
 
@@ -311,6 +317,17 @@ def resolve_provider_audio_selection(
         route_kind=ProviderAudioRouteKind.BATCH,
         original_format=original,
     )
+    if (
+        provider == "azure_mai"
+        and model.casefold() == "mai-transcribe-2"
+        and selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
+        and probe.audio_format == AudioInputFormat.MP3
+        and probe.has_id3_metadata
+    ):
+        # MAI can reject otherwise valid podcast MP3s with ID3/cover data as
+        # invalid_audio. Copy only the audio packets before the first upload;
+        # never replay a paid request or recompress the source to repair this.
+        selection = replace(selection, mode=AudioSelectionMode.AUDIO_ONLY_REMUX)
     return capability, selection
 
 
@@ -399,6 +416,11 @@ async def prepare_provider_audio_file(
             raise ProviderAudioPreparationError("Frozen Meta WAV must be mono PCM16 at 16 or 24 kHz.")
         selected = frozen_selection
 
+    if selected.mode == AudioSelectionMode.AUDIO_ONLY_REMUX and (
+        provider != "azure_mai" or model.casefold() != "mai-transcribe-2" or probe.audio_format != AudioInputFormat.MP3
+    ):
+        raise ProviderAudioPreparationError("Audio-only remux requires the exact Azure MAI-2 MP3 route.")
+
     generated = selected.mode != AudioSelectionMode.ORIGINAL_PASSTHROUGH
     generated_path: Path | None = None
     output_path = source
@@ -412,12 +434,33 @@ async def prepare_provider_audio_file(
             destination = destination.resolve()
             destination.mkdir(parents=True, exist_ok=True)
             generated_path = destination / f"provider-audio-{uuid4().hex}{suffix}"
-            command = _generated_command(
-                ffmpeg=require_media_tool("ffmpeg"),
-                source=source,
-                target=generated_path,
-                audio_format=selected.audio_format,
-            )
+            if selected.mode == AudioSelectionMode.AUDIO_ONLY_REMUX:
+                command = [
+                    require_media_tool("ffmpeg"),
+                    "-v",
+                    "error",
+                    "-y",
+                    "-i",
+                    str(source),
+                    "-map",
+                    "0:a:0",
+                    "-c:a",
+                    "copy",
+                    "-map_metadata",
+                    "-1",
+                    "-id3v2_version",
+                    "0",
+                    "-write_id3v1",
+                    "0",
+                    str(generated_path),
+                ]
+            else:
+                command = _generated_command(
+                    ffmpeg=require_media_tool("ffmpeg"),
+                    source=source,
+                    target=generated_path,
+                    audio_format=selected.audio_format,
+                )
             await _run_generated_preparation(command, generated_path)
             generated_probe = await asyncio.to_thread(
                 probe_audio_input_file,
