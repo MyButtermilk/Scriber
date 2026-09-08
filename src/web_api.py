@@ -670,7 +670,7 @@ _MEETING_FINAL_STT_PROVIDERS = frozenset(
     }
 )
 _MEETING_TRANSCRIPTION_MODES = frozenset({"live_final", "final_only"})
-_MEETING_PRICING_UPDATED_AT = "2026-09-04"
+_MEETING_PRICING_UPDATED_AT = "2026-09-08"
 _MEETING_LIVE_SONIOX_USD_PER_TRACK_HOUR = 0.12
 _MEETING_FINAL_COSTS: dict[str, dict[str, Any]] = {
     "soniox_async": {
@@ -817,6 +817,11 @@ def _meeting_stt_cost_estimate(provider: str, mode: str) -> dict[str, Any]:
             + (
                 " Deepgram uses the conservative multilingual Nova-3 rate; a fixed monolingual language can cost less."
                 if provider_key == "deepgram_async"
+                else ""
+            )
+            + (
+                " Azure MAI-Transcribe-2 launch pricing applies through December 31, 2026."
+                if provider_key == "azure_mai"
                 else ""
             )
         ),

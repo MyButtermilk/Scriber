@@ -66,12 +66,14 @@ export const settingsTranslations = {
   "Euro estimates use a fixed rate of {{rate}}. Provider prices may change.":
     "Euro-Beträge sind Schätzungen mit dem festen Kurs {{rate}}. Anbieterpreise können sich ändern.",
   "Provider rate varies": "Anbieterpreis variiert",
+  "Estimate for one hour with separate microphone and system-audio tracks. Actual invoices can vary with speech volume, token output, plan, taxes, retries, and provider changes. Azure MAI-Transcribe-2 launch pricing applies through December 31, 2026.":
+    "Schätzung für eine Stunde mit getrennten Mikrofon- und Systemaudiospuren. Tatsächliche Kosten können je nach Sprachanteil, Textausgabe, Tarif, Steuern, Wiederholungen und Anbieteränderungen abweichen. Der Einführungspreis für Azure MAI-Transcribe-2 gilt bis zum 31.12.2026.",
   "Microsoft MAI · OpenRouter": "Microsoft MAI · OpenRouter",
   "Microsoft MAI · Azure direct": "Microsoft MAI · Azure direkt",
   "One key for STT and AI · about 5% credit purchase fee":
     "Ein Schlüssel für STT und KI · rund 5 % Gebühr beim Guthabenkauf",
-  "Separate Azure Speech key and region · no OpenRouter fee":
-    "Separater Azure-Speech-Schlüssel und Region · keine OpenRouter-Gebühr",
+  "Azure direct · $0.10/audio hour through December 31, 2026 · no OpenRouter fee":
+    "Azure direkt · 0,10 $/Audiostunde bis 31.12.2026 · keine OpenRouter-Gebühr",
   "Gemini 3.5 Transcribe": "Gemini 3.5 Transcribe",
   "Gemini 3.5 Transcribe Live": "Gemini 3.5 Transcribe Live",
   "Interim and final text · smart transcription": "Zwischen- und Endergebnisse · intelligente Transkription",
@@ -158,8 +160,8 @@ export const settingsTranslations = {
     "Erstellt das finale Transkript schnell. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
   "Creates the final transcript, then Scriber can add speaker names on this device.":
     "Erstellt das finale Transkript; anschließend kann Scriber auf diesem Gerät Sprechernamen ergänzen.",
-  "Supports long meetings. Scriber can add speaker names on this device.":
-    "Unterstützt lange Meetings. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
+  "MAI-Transcribe-2 creates the final transcript with native speaker separation, word timestamps, and clean text. Optional live captions use Soniox. Azure launch price: $0.10/audio hour through December 31, 2026.":
+    "MAI-Transcribe-2 erstellt das fertige Transkript mit eigener Sprechertrennung, Wortzeitstempeln und bereinigtem Text. Optionale Live-Untertitel verwenden Soniox. Azure-Einführungspreis: 0,10 $/Audiostunde bis 31.12.2026.",
   "Uses the Microsoft MAI model through OpenRouter with the same key as summaries and cloud cleanup. Scriber can add speaker names on this device.":
     "Verwendet das Microsoft-MAI-Modell über OpenRouter mit demselben Schlüssel wie Zusammenfassungen und Cloud-Bereinigung. Scriber kann auf diesem Gerät Sprechernamen ergänzen.",
   "Creates one multilingual final transcript for meetings up to 3 hours without Modulate enrichment signals. Scriber can add speaker names on this device.":

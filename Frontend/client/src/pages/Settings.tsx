@@ -950,7 +950,7 @@ function createProviderModelOptions(
       2.0,
       "cloud_async",
       "azure",
-      t("Separate Azure Speech key and region · no OpenRouter fee"),
+      t("Azure direct · $0.10/audio hour through December 31, 2026 · no OpenRouter fee"),
     ),
     benchmarkOption("assemblyai", "AssemblyAI", 3.5, 3.1, "cloud_async", "assemblyai"),
     benchmarkOption("mistral-async", "Mistral Batch", 3.0, 3.6, "cloud_async", "mistral"),
@@ -1090,10 +1090,11 @@ const MEETING_FINAL_STT_OPTIONS = [
     label: "Microsoft MAI · Azure direct",
     model: "MAI-Transcribe-2",
     credentialModel: "azure_mai",
-    recommended: false,
-    nativeDiarization: false,
+    recommended: true,
+    nativeDiarization: true,
     fiveHourSupported: true,
-    detail: "Supports long meetings. Scriber can add speaker names on this device.",
+    detail:
+      "MAI-Transcribe-2 creates the final transcript with native speaker separation, word timestamps, and clean text. Optional live captions use Soniox. Azure launch price: $0.10/audio hour through December 31, 2026.",
   },
   {
     value: "groq",

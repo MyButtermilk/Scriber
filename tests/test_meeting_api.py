@@ -1902,7 +1902,8 @@ def test_azure_mai_meeting_cost_uses_published_transcribe_2_price_and_source():
 
     assert estimate["singleTrackFinalPerAudioHour"] == 0.10
     assert estimate["finalPerMeetingHour"] == 0.20
-    assert estimate["pricingUpdatedAt"] == "2026-09-04"
+    assert estimate["pricingUpdatedAt"] == "2026-09-08"
+    assert "December 31, 2026" in estimate["assumption"]
     assert estimate["estimateKind"] == "published_hourly"
     assert estimate["sources"] == [
         {

@@ -228,6 +228,14 @@ the OpenRouter option. With OpenRouter, the same API key covers MAI
 transcription and Scriber's existing OpenRouter summaries and post-processing.
 The published limited-time model price is **$0.10 per audio hour through the
 end of 2026**.
+The Azure direct option is also recommended for Meeting final transcription:
+MAI-Transcribe-2 supplies native speaker separation, word timestamps, and clean
+text. Optional live Meeting captions still use Soniox. A recorded Meeting has
+two audio tracks, so final transcription is estimated at **$0.20 per meeting
+hour**, plus live-caption costs when enabled; a single imported audio track is
+**$0.10 per audio hour**.
+[Microsoft's launch pricing announcement](https://techcommunity.microsoft.com/blog/azure-ai-foundry-blog/mai-transcribe-2-highest-quality-transcription-at-the-fastest-speed-and-lowest-c/4550972)
+specifies December 31, 2026 as the end of the introductory price.
 OpenRouter currently charges **5.5% (minimum $0.80) on standard credit
 purchases** or **5% on cryptocurrency purchases**; this is an account-funding
 fee, not a markup on the model's inference price.
