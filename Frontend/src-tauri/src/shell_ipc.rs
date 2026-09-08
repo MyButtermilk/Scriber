@@ -376,11 +376,22 @@ fn handle_shell_ipc_request_unchecked(raw: &str, expected_token: &str) -> String
         "setDiagnosticLoggingEnabled" => match payload.get("enabled").and_then(Value::as_bool) {
             Some(enabled) => {
                 crate::diagnostic_logging::set_enabled(enabled);
-                response_line(request_id, true, "", "", started, json!({"enabled": enabled}))
+                response_line(
+                    request_id,
+                    true,
+                    "",
+                    "",
+                    started,
+                    json!({"enabled": enabled}),
+                )
             }
             None => response_line(
-                request_id, false, "invalidDiagnosticLoggingSetting",
-                "enabled must be a boolean", started, json!({}),
+                request_id,
+                false,
+                "invalidDiagnosticLoggingSetting",
+                "enabled must be a boolean",
+                started,
+                json!({}),
             ),
         },
         "injectText" => {
@@ -4002,7 +4013,8 @@ mod tests {
                 "apiVersion": API_VERSION, "requestId": "logging-validation",
                 "command": "setDiagnosticLoggingEnabled", "token": "secret",
                 "payload": {"enabled": enabled},
-            }).to_string();
+            })
+            .to_string();
             let response = handle_shell_ipc_request(&request, "secret");
             let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
             assert_eq!(value["success"], false);

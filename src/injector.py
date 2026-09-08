@@ -38,10 +38,12 @@ _ACTIVE_CLIPBOARD_LEASE: WindowsClipboardLease | None = None
 
 def _serialize_clipboard_access(function):
     """Protect ownerless Win32 fallback calls from same-process reentrancy."""
+
     @functools.wraps(function)
     def synchronized(*args, **kwargs):
         with _CLIPBOARD_API_LOCK:
             return function(*args, **kwargs)
+
     return synchronized
 
 
@@ -282,9 +284,12 @@ class KEYBDINPUT(ctypes.Structure):
 
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
-        ("dx", wintypes.LONG), ("dy", wintypes.LONG),
-        ("mouseData", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
-        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t),
+        ("dx", wintypes.LONG),
+        ("dy", wintypes.LONG),
+        ("mouseData", wintypes.DWORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
     ]
 
 
@@ -324,7 +329,7 @@ def _send_paste_shortcut() -> None:
         # This is key-up cleanup, never another V-down or paste attempt. A
         # control key held by the user was never added to our event batch.
         held: list[int] = []
-        for virtual_key, flags in events[:max(0, sent)]:
+        for virtual_key, flags in events[: max(0, sent)]:
             if flags & KEYEVENTF_KEYUP:
                 if virtual_key in held:
                     held.remove(virtual_key)
@@ -352,13 +357,15 @@ def _send_input_text(text: str) -> bool:
     try:
         user32 = ctypes.windll.user32
         _set_ctypes_signature(
-            user32.SendInput, argtypes=[wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int], restype=wintypes.UINT,
+            user32.SendInput,
+            argtypes=[wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int],
+            restype=wintypes.UINT,
         )
         # wScan is a UTF-16 code unit, not a Python Unicode code point.
         encoded = text.encode("utf-16-le")
         inputs = []
         for offset in range(0, len(encoded), 2):
-            code_unit = int.from_bytes(encoded[offset:offset + 2], "little")
+            code_unit = int.from_bytes(encoded[offset : offset + 2], "little")
             for flags in (KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP):
                 item = INPUT(type=INPUT_KEYBOARD)
                 item.ki = KEYBDINPUT(wVk=0, wScan=code_unit, dwFlags=flags, time=0, dwExtraInfo=None)
@@ -849,8 +856,10 @@ def _paste_text(
             logger.warning("Clipboard paste deferred because the preceding consumer still owns its lease")
             return False
         return _paste_text_locked(
-            text, skip_clipboard_restore=skip_clipboard_restore,
-            on_marker=on_marker, target_guard=target_guard,
+            text,
+            skip_clipboard_restore=skip_clipboard_restore,
+            on_marker=on_marker,
+            target_guard=target_guard,
         )
 
 
@@ -1013,7 +1022,9 @@ def _paste_text_locked(
                         or current_sequence != clipboard_sequence_after_set
                     ):
                         return
-                    _windows_clipboard_restore_snapshot(previous_clipboard, expected_sequence=clipboard_sequence_after_set)
+                    _windows_clipboard_restore_snapshot(
+                        previous_clipboard, expected_sequence=clipboard_sequence_after_set
+                    )
                 except Exception:
                     pass
 
@@ -1305,7 +1316,8 @@ class TextInjector(FrameProcessor):
                 office_result = try_insert_office_text(
                     text,
                     validate_target=lambda: _foreground_target_guard_allows_dispatch(
-                        target_guard, phase="before_office_dispatch",
+                        target_guard,
+                        phase="before_office_dispatch",
                     ),
                     on_marker=self._notify_injection_marker,
                 )

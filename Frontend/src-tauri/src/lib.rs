@@ -1452,7 +1452,9 @@ fn set_tray_update_status(
     let next = update_tray_status_for_app(&app, |state| {
         state.update_available = status.available;
         state.update_installing = status.installing
-            || app.state::<desktop_update::DesktopUpdateInstallGate>().is_active();
+            || app
+                .state::<desktop_update::DesktopUpdateInstallGate>()
+                .is_active();
         state.update_version = status
             .version
             .map(|value| sanitize_update_field(&value, 32))
@@ -4884,7 +4886,14 @@ fn spawn_backend(
         .env(SESSION_TOKEN_ENV, session_token)
         .env(DISABLE_HOTKEYS_ENV, "1")
         .env("SCRIBER_LOG_STDERR", "1")
-        .env(diagnostic_logging::ENABLED_ENV, if diagnostic_logging::enabled() { "1" } else { "0" })
+        .env(
+            diagnostic_logging::ENABLED_ENV,
+            if diagnostic_logging::enabled() {
+                "1"
+            } else {
+                "0"
+            },
+        )
         .env("SCRIBER_DATA_DIR", &data_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

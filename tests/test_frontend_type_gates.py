@@ -1174,7 +1174,9 @@ def test_visualizer_bar_count_flows_to_live_mic_and_native_overlay() -> None:
     assert "export const MIN_VISUALIZER_BAR_COUNT = 16;" in helper_source
     assert "export const MAX_VISUALIZER_BAR_COUNT = 128;" in helper_source
     assert 'DEFAULT_OVERLAY_VISUALIZER_STYLE: OverlayVisualizerStyle = "bars"' in helper_source
-    assert 'value === "energy_wave" || value === "blue_flame" ? value : DEFAULT_OVERLAY_VISUALIZER_STYLE' in helper_source
+    assert (
+        'value === "energy_wave" || value === "blue_flame" ? value : DEFAULT_OVERLAY_VISUALIZER_STYLE' in helper_source
+    )
     assert "loadVisualizerSettings" in helper_source
     assert "Number.isFinite(numeric)" in helper_source
     assert "Math.round(numeric)" in helper_source
