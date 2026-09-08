@@ -5525,11 +5525,11 @@ async def test_meeting_api_runs_capture_lifecycle_without_fabricated_consent(mon
             "smallest_async",
             "speechmatics_async",
             "gemini_stt",
+            "azure_mai",
         }
         local_fallback_providers = {
             "openai_async",
             "openrouter_stt",
-            "azure_mai",
             "onnx_local",
             "groq",
             "modulate_async",
