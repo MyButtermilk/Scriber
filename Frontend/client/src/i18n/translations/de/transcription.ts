@@ -1,6 +1,8 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const transcriptionTranslations = {
+  "Azure speaker diarization was unavailable. The transcript was completed without speaker labels.":
+    "Die Azure-Sprechertrennung war nicht verfügbar. Das Transkript wurde ohne Sprecherzuordnung fertiggestellt.",
   "Add more files": "Weitere Dateien hinzufügen",
   "Preparing files": "Dateien vorbereiten",
   "Two files at a time · you can add more anytime": "Zwei Dateien gleichzeitig · jederzeit weitere hinzufügen",

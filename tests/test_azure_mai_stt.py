@@ -19,22 +19,152 @@ from src.azure_mai_stt import (
     azure_mai_transcript_payload_to_text,
     build_azure_mai_definition,
     prepared_azure_mai_audio_file,
+    transcribe_azure_mai_file,
     transcribe_with_azure_mai,
     validate_azure_mai_region,
 )
 from src.config import Config
 from src.core.provider_audio_formats import ProviderAudioCapabilityError
-from src.core.provider_errors import ProviderTransportError
+from src.core.provider_errors import ProviderTransportError, provider_user_error
 from src.pipeline import ScriberPipeline
 from src.runtime.capture_time_encoder import CaptureTimeEncoderError, CaptureTimeFfmpegEncoder
 from src.runtime.ffmpeg_commands import mp3_encode_pcm_pipe_args
 from src.runtime.media_tools import find_media_tool
 
 
+@pytest.mark.asyncio
+async def test_native_diarization_rejection_reopens_file_for_one_clean_fallback(tmp_path):
+    audio = tmp_path / "podcast.mp3"
+    audio.write_bytes(b"complete audio")
+    definitions = []
+    handles = []
+
+    async def transport(**kwargs):
+        handle = kwargs["audio_source"]
+        handles.append(handle)
+        assert handle.read() == b"complete audio"
+        handle.close()  # aiohttp closes each multipart file after uploading it.
+        definitions.append(kwargs["definition"])
+        if len(definitions) == 1:
+            return (
+                503,
+                'MAI service returned an error: ServiceUnavailable - {"error":{"code":"diarization_unavailable"}}',
+            )
+        return 200, '{"combinedPhrases":[{"text":"Complete clean transcript."}]}'
+
+    payload = await transcribe_azure_mai_file(
+        audio_path=audio,
+        session=object(),
+        speech_key="test",
+        region="northeurope",
+        content_type="audio/mpeg",
+        language="de",
+        model="MAI-Transcribe-2",
+        diarize=True,
+        raw_transport=transport,
+    )
+    assert len(definitions) == 2
+    assert definitions[0]["diarization"] == {"enabled": True}
+    assert definitions[0]["enhancedMode"]["modelOptions"] == {"timestamps": "word", "transcribeStyle": "clean"}
+    assert "diarization" not in definitions[1]
+    assert definitions[1]["enhancedMode"]["modelOptions"]["transcribeStyle"] == "clean"
+    assert handles[0] is not handles[1]
+    assert all(handle.closed for handle in handles)
+    assert payload["_scriberDiarizationFallback"] == "diarization_unavailable"
+    assert azure_mai_transcript_payload_to_text(payload) == "Complete clean transcript."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status,body", [(408, "{}"), (503, '{"error":{"code":"ServiceUnavailable"}}')])
+async def test_azure_file_does_not_replay_other_rejections(tmp_path, status, body):
+    audio = tmp_path / "podcast.mp3"
+    audio.write_bytes(b"audio")
+    calls = 0
+
+    async def transport(**kwargs):
+        nonlocal calls
+        calls += 1
+        return status, body
+
+    with pytest.raises(ProviderTransportError):
+        await transcribe_azure_mai_file(
+            audio_path=audio,
+            session=object(),
+            speech_key="test",
+            region="northeurope",
+            content_type="audio/mpeg",
+            language="de",
+            model="MAI-Transcribe-2",
+            diarize=True,
+            raw_transport=transport,
+        )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_text_recovery_never_uploads_a_third_time(tmp_path):
+    audio = tmp_path / "podcast.mp3"
+    audio.write_bytes(b"audio")
+    calls = 0
+
+    async def transport(**kwargs):
+        nonlocal calls
+        calls += 1
+        return 503, '{"error":{"code":"diarization_unavailable"}}'
+
+    with pytest.raises(ProviderTransportError):
+        await transcribe_azure_mai_file(
+            audio_path=audio,
+            session=object(),
+            speech_key="test",
+            region="northeurope",
+            content_type="audio/mpeg",
+            language="de",
+            model="MAI-Transcribe-2",
+            diarize=True,
+            raw_transport=transport,
+        )
+    assert calls == 2
+
+
 def test_azure_mai_region_defaults_to_northeurope():
     assert azure_mai_region("") == "northeurope"
     assert azure_mai_region(None) == "northeurope"
     assert azure_mai_region("NorthEurope") == "northeurope"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix", ["", "MAI service returned an error: ServiceUnavailable - "])
+async def test_azure_diarization_rejection_preserves_safe_cause(prefix):
+    async def transport(**kwargs):
+        return 503, prefix + '{"error":{"code":"diarization_unavailable","message":"private transcript details"}}'
+
+    with pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_azure_mai(
+            session=object(),
+            speech_key="test",
+            region="northeurope",
+            audio_source=b"audio",
+            filename="audio.mp3",
+            content_type="audio/mpeg",
+            language="de",
+            raw_transport=transport,
+        )
+    error = caught.value
+    assert error.status == 503
+    assert error.code == "diarization_unavailable"
+    assert "private" not in str(error)
+    message = provider_user_error("azure_mai", error).message
+    assert "speaker diarization" in message
+    assert "503" in message
+    assert "private" not in message
+
+
+def test_azure_server_timeout_has_specific_user_message():
+    error = ProviderTransportError(provider="azure_mai", operation="transcription", status=408)
+    message = provider_user_error("azure_mai", error).message
+    assert "408" in message
+    assert "timed out while processing" in message
 
 
 @pytest.mark.asyncio

@@ -4706,7 +4706,7 @@ class ScriberPipeline:
                     azure_mai_content_type,
                     azure_mai_transcript_payload_to_text,
                     prepared_azure_mai_audio_file,
-                    transcribe_with_azure_mai,
+                    transcribe_azure_mai_file,
                     validate_azure_mai_region,
                 )
 
@@ -4726,23 +4726,19 @@ class ScriberPipeline:
                         contextlib.nullcontext(path) if capability_prepared else prepared_azure_mai_audio_file(path)
                     )
                     async with upload_context as upload_path:
-                        with open(upload_path, "rb") as f:
-                            payload = await transcribe_with_azure_mai(
-                                session=session,
-                                speech_key=api_key,
-                                region=region,
-                                audio_source=f,
-                                filename=upload_path.name,
-                                content_type=(
-                                    content_type if capability_prepared else azure_mai_content_type(upload_path)
-                                ),
-                                language=self._execution_language(),
-                                model=self._execution_model(Config.AZURE_MAI_MODEL),
-                                custom_vocab=self._execution_custom_vocab(),
-                                diarize=self.direct_file_speaker_diarization,
-                                on_progress=self.on_progress,
-                                timeout_secs=batch_timeout_seconds,
-                            )
+                        payload = await transcribe_azure_mai_file(
+                            audio_path=upload_path,
+                            session=session,
+                            speech_key=api_key,
+                            region=region,
+                            content_type=content_type if capability_prepared else azure_mai_content_type(upload_path),
+                            language=self._execution_language(),
+                            model=self._execution_model(Config.AZURE_MAI_MODEL),
+                            custom_vocab=self._execution_custom_vocab(),
+                            diarize=self.direct_file_speaker_diarization,
+                            on_progress=self.on_progress,
+                            timeout_secs=batch_timeout_seconds,
+                        )
 
                 text = azure_mai_transcript_payload_to_text(payload)
                 self.last_structured_transcript_payload = payload

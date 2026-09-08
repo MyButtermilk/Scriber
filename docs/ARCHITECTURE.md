@@ -1868,9 +1868,15 @@ MAI-2 MP3 inputs carrying ID3 metadata use a frozen `audio_only_remux` preparati
 ffmpeg copies the first audio stream without metadata or cover images, preserving
 the original file and avoiding lossy recompression. This repairs the reproduced
 Azure `invalid_audio` rejection of podcast #145 before the first provider request.
-An HTTP 400 remains a bounded provider error instead of being hidden by the
-unknown-outcome message; the durable no-replay fence still prevents automatic
-paid retries. Failed podcast transcripts expose their exact current episode link
+Received HTTP errors remain bounded provider errors instead of being hidden by
+the unknown-outcome message. Only the explicit Azure HTTP 503
+`diarization_unavailable` rejection permits one additional MAI-2 file request:
+the adapter reopens the same audio and requests clean text without diarization.
+Generic service errors, HTTP 408, and transport ambiguity never trigger it.
+The durable job fence remains active, including after a failed recovery request.
+Successful text-only recovery is persisted in stage evidence and shown in
+Transcript/Meeting detail; local speaker assignment is skipped for that result.
+Failed podcast transcripts expose their exact current episode link
 through the Podcast API, so File history and transcript detail can use the same
 explicit queue operation as the Podcast page. A retry allocates a new transcript
 identity and reuses retained audio; it never overwrites the old failed attempt.

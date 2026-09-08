@@ -18,6 +18,7 @@ from src.core.provider_audio_formats import (
     AudioInputFormat,
     AudioSelectionMode,
 )
+from src.core.provider_errors import ProviderTransportError
 from src.data.job_store import JobStore, JobType
 from src.runtime.provider_http import ProviderRequestAcceptanceUnknown
 from src.transcript_artifacts import freeze_provider_route
@@ -27,6 +28,43 @@ from src.web_api import (
     TranscriptRecord,
 )
 from src.youtube_download import YouTubeDownloadError
+
+
+@pytest.mark.asyncio
+async def test_text_fallback_skips_optional_local_diarizer(monkeypatch, tmp_path):
+    monkeypatch.setattr(Config, "SPEAKER_DIARIZATION_FALLBACK_ENABLED", True)
+    controller = ScriberWebController(asyncio.get_running_loop())
+    rec = _record(transcript_id="fallback", transcript_type="file", source=tmp_path / "source.mp3")
+    pipeline = SimpleNamespace(
+        last_structured_transcript_payload={"_scriberDiarizationFallback": "diarization_unavailable"}
+    )
+    with patch("src.web_api.diarization_component_installed", new=AsyncMock()) as local:
+        assert (
+            await controller._apply_speaker_diarization_fallback(
+                rec, provider="azure_mai", pipeline=pipeline, audio_path=tmp_path / "source.mp3"
+            )
+            == []
+        )
+    local.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_transcript_detail_restores_durable_fallback_notice(tmp_path):
+    controller = ScriberWebController(asyncio.get_running_loop())
+    controller._transcript_artifacts = SimpleNamespace(
+        get_head=lambda _id: SimpleNamespace(artifact_id="head"),
+        get_artifact=lambda _id: SimpleNamespace(attempt_id="attempt"),
+        get_stage_result=lambda _id: SimpleNamespace(
+            evidence={"diarizationFallback": "diarization_unavailable", "private": "not public"}
+        ),
+    )
+    with (
+        patch.object(controller, "_get_history_record", return_value=None),
+        patch("src.web_api.db.get_transcript", return_value={"id": "fallback", "content": "Clean text."}),
+    ):
+        detail = await controller.get_transcript("fallback")
+    assert detail["diarizationFallback"] == "diarization_unavailable"
+    assert "private" not in detail
 
 
 def _record(*, transcript_id: str, transcript_type: str, source: Path | str) -> TranscriptRecord:
@@ -327,6 +365,75 @@ async def test_request_acceptance_unknown_is_never_automatically_retried(tmp_pat
     assert persisted is not None
     assert persisted.status.value == "running"
     assert persisted.next_retry_at == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [408, 503])
+async def test_file_preserves_received_azure_error_without_replaying(tmp_path: Path, status: int):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    controller = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    source = tmp_path / "source.mp3"
+    rec = _record(transcript_id="azure-response", transcript_type="file", source=source)
+    job = store.enqueue(transcript_id=rec.id, job_type=JobType.FILE, payload={"path": str(source)})
+    assert store.mark_running(job.id)
+    controller._remember_job_id(rec.id, job.id)
+    route = controller._freeze_background_provider_route(workload="file", provider="azure_mai", language="de")
+    error = ProviderTransportError(provider="azure_mai", operation="transcription", status=status)
+    pipeline = SimpleNamespace(_provider_request_started=True, transcribe_file_direct=AsyncMock(side_effect=error))
+    with (
+        patch("src.web_api._probe_media_duration_seconds", return_value=1966),
+        patch("src.web_api._create_scriber_pipeline_off_loop", new=AsyncMock(return_value=pipeline)),
+        patch.object(controller, "_pipeline_transcription_timeout_seconds", return_value=900),
+        patch.object(controller, "_ensure_artifact_transcript_row", new=AsyncMock()),
+        patch.object(controller, "_register_transcript_source_asset", new=AsyncMock(return_value="source")),
+        patch.object(
+            controller,
+            "_begin_transcript_artifact_async",
+            new=AsyncMock(return_value=(SimpleNamespace(id="attempt"), "owner", None)),
+        ),
+        patch.object(controller, "_start_transcript_artifact_lease_guard", return_value=(None, None)),
+        patch.object(controller, "_stop_transcript_artifact_lease_guard", new=AsyncMock()),
+        patch.object(controller, "_terminate_artifact_attempt_before_result_async", new=AsyncMock()),
+        pytest.raises(ProviderTransportError) as caught,
+    ):
+        await controller._transcribe_file_route_to_canonical_artifact(
+            rec, source, provider="azure_mai", provider_file_path=source, route=route, prepared_audio=None
+        )
+    assert caught.value is error
+    assert not await controller._schedule_retry_if_allowed(rec, error)
+    assert pipeline.transcribe_file_direct.await_count == 1
+    assert store.get(job.id).next_retry_at == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status,code,expected", [(408, "", "HTTP 408"), (503, "diarization_unavailable", "speaker diarization")]
+)
+async def test_failed_file_displays_received_provider_cause(tmp_path, status, code, expected):
+    store = JobStore(db_path=tmp_path / "jobs.db")
+    controller = ScriberWebController(asyncio.get_running_loop(), job_store=store)
+    source = tmp_path / "source.mp3"
+    source.write_bytes(b"audio")
+    rec = _record(transcript_id="azure-visible-error", transcript_type="file", source=source)
+    job = store.enqueue(transcript_id=rec.id, job_type=JobType.FILE, payload={"path": str(source)})
+    assert store.mark_running(job.id)
+    assert store.mark_provider_request_may_be_committed(job.id)
+    controller._remember_job_id(rec.id, job.id)
+    call = AsyncMock(
+        side_effect=ProviderTransportError(provider="azure_mai", operation="transcription", status=status, code=code)
+    )
+    with (
+        patch.object(controller, "_transcribe_file_to_canonical_artifact", new=call),
+        patch.object(controller, "_save_transcript_to_db_async", new=AsyncMock()),
+        patch.object(controller, "_broadcast_history_updated", new=AsyncMock()),
+        patch.object(controller, "_cleanup_owned_file_source", new=AsyncMock()),
+    ):
+        await controller._run_file_transcription(rec, source, provider="azure_mai")
+    assert rec.status == "failed"
+    assert expected in rec.content_text()
+    assert "outcome is unknown" not in rec.content_text()
+    assert call.await_count == 1
+    assert store.get(job.id).next_retry_at == ""
 
 
 @pytest.mark.asyncio

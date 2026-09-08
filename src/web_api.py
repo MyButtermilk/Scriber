@@ -241,7 +241,7 @@ from src.native_overlay import (
 from src.outlook_calendar import OutlookCalendarService
 from src.podcasts.processor import PodcastProcessor
 from src.podcasts.service import PodcastService
-from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
+from src.provider_transcript import azure_mai_used_text_fallback, has_speaker_evidence, normalize_provider_segments
 from src.runtime.audio_admission import AudioAdmissionLossHandler, AudioAdmissionOwner
 from src.runtime.cancellation import (
     await_with_delayed_cancellation,
@@ -10474,6 +10474,8 @@ class ScriberWebController:
         if not Config.SPEAKER_DIARIZATION_FALLBACK_ENABLED:
             return []
         payload = getattr(pipeline, "last_structured_transcript_payload", None)
+        if provider == "azure_mai" and azure_mai_used_text_fallback(payload):
+            return []
         provider_segments = normalize_provider_segments(provider, payload, source)
         if has_speaker_evidence(provider_segments):
             return []
@@ -10937,7 +10939,9 @@ class ScriberWebController:
                         rec,
                         provider=provider,
                     )
-                if request_may_be_committed and not (isinstance(exc, ProviderTransportError) and exc.status == 400):
+                if request_may_be_committed and not (
+                    isinstance(exc, ProviderTransportError) and exc.status is not None and exc.status >= 400
+                ):
                     raise ProviderRequestAcceptanceUnknown(provider) from exc
                 raise
 
@@ -11137,7 +11141,12 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            rec.append_final_text(f"[Error] {exc}")
+            message = (
+                self._provider_user_error(exc, provider=provider).message
+                if isinstance(exc, ProviderTransportError)
+                else str(exc)
+            )
+            rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
                 message="YouTube job failed",
                 event="api.job.failed",
@@ -11597,7 +11606,11 @@ class ScriberWebController:
                     rec,
                     provider=provider,
                 )
-            if request_may_be_committed and not (isinstance(exc, ProviderTransportError) and exc.status == 400):
+            # A complete HTTP rejection is known, even if billing remains
+            # uncertain. Keep the durable no-replay fence but retain the cause.
+            if request_may_be_committed and not (
+                isinstance(exc, ProviderTransportError) and exc.status is not None and exc.status >= 400
+            ):
                 raise ProviderRequestAcceptanceUnknown(provider) from exc
             raise
 
@@ -11930,7 +11943,12 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            rec.append_final_text(f"[Error] {exc}")
+            message = (
+                self._provider_user_error(exc, provider=provider).message
+                if isinstance(exc, ProviderTransportError)
+                else str(exc)
+            )
+            rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
                 message="File job failed",
                 event="api.job.failed",
@@ -14374,6 +14392,8 @@ class ScriberWebController:
                 track_results=track_results,
                 track_derivations=track_derivations,
             )
+            if any(item.evidence.get("diarizationFallback") == "diarization_unavailable" for item in track_results):
+                detail["diarizationFallback"] = "diarization_unavailable"
             detail["reprocessing"] = await _meeting_reprocessing_capabilities(
                 self,
                 detail,
@@ -18484,9 +18504,23 @@ class ScriberWebController:
                         rec._preview = full_data.get("preview", "") or rec._preview
                 rec._content_loaded = True
                 rec._summary_loaded = True
-            return rec.to_public(include_content=True)
-        # Not found in memory - try database directly
-        return await asyncio.to_thread(db.get_transcript, transcript_id)
+            result = rec.to_public(include_content=True)
+        else:
+            result = await asyncio.to_thread(db.get_transcript, transcript_id)
+        if result is not None:
+            artifact_store = getattr(self, "_transcript_artifacts", None)
+            if artifact_store is not None:
+
+                def fallback_code() -> str | None:
+                    head = artifact_store.get_head(transcript_id)
+                    artifact = artifact_store.get_artifact(head.artifact_id) if head else None
+                    stage = artifact_store.get_stage_result(artifact.attempt_id) if artifact else None
+                    if stage and stage.evidence.get("diarizationFallback") == "diarization_unavailable":
+                        return "diarization_unavailable"
+                    return None
+
+                result["diarizationFallback"] = await asyncio.to_thread(fallback_code)
+        return result
 
 
 APP_CONTROLLER: web.AppKey[ScriberWebController] = web.AppKey("controller", ScriberWebController)

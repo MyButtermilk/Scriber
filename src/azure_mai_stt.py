@@ -31,7 +31,8 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
-from src.core.provider_errors import provider_transport_error, provider_user_error
+from src.core.provider_errors import ProviderTransportError, provider_transport_error, provider_user_error
+from src.provider_transcript import AZURE_MAI_DIARIZATION_FALLBACK_KEY
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool
 from src.runtime.capture_time_encoder import (
     CaptureTimeEncoderError,
@@ -60,6 +61,67 @@ _AZURE_MAI_CONTENT_TYPES = {
 }
 
 AzureMaiRawTransport = Callable[..., Awaitable[tuple[int, str]]]
+
+
+async def transcribe_azure_mai_file(
+    *,
+    audio_path: Path,
+    session: aiohttp.ClientSession,
+    speech_key: str,
+    region: str,
+    content_type: str,
+    language: Language | str | None,
+    model: str | None = None,
+    custom_vocab: str | None = None,
+    diarize: bool = False,
+    on_progress: Callable[[str], None] | None = None,
+    timeout_secs: float = 900.0,
+    raw_transport: AzureMaiRawTransport | None = None,
+) -> dict[str, Any]:
+    """One explicit text-only recovery after Azure rejects native diarization.
+
+    Never replay transport ambiguity, timeouts, or generic service errors.
+    Reopen the file: aiohttp owns and closes each multipart upload stream.
+    The durable outer job fence remains active across both requests.
+    """
+    fallback = False
+    for attempt in range(2):
+        try:
+            with audio_path.open("rb") as audio:
+                payload = await transcribe_with_azure_mai(
+                    session=session,
+                    speech_key=speech_key,
+                    region=region,
+                    audio_source=audio,
+                    filename=audio_path.name,
+                    content_type=content_type,
+                    language=language,
+                    model=model,
+                    custom_vocab=custom_vocab,
+                    transcribe_style="clean" if fallback else None,
+                    diarize=diarize and not fallback,
+                    on_progress=on_progress,
+                    timeout_secs=timeout_secs,
+                    raw_transport=raw_transport,
+                )
+            # This marker belongs to Scriber, never to the provider response.
+            payload.pop(AZURE_MAI_DIARIZATION_FALLBACK_KEY, None)
+            if fallback:
+                payload[AZURE_MAI_DIARIZATION_FALLBACK_KEY] = "diarization_unavailable"
+            return payload
+        except ProviderTransportError as exc:
+            if not (
+                attempt == 0
+                and diarize
+                and azure_mai_model(model).casefold() == "mai-transcribe-2"
+                and exc.status == 503
+                and exc.code == "diarization_unavailable"
+            ):
+                raise
+            fallback = True
+            logger.warning("Azure MAI native diarization unavailable; attempting one clean text-only transcription")
+            _report_progress(on_progress, "Speaker diarization unavailable; transcribing without speaker labels...")
+    raise AssertionError("unreachable MAI transcription attempt")
 
 
 def _capture_time_mp3_enabled() -> bool:
@@ -412,13 +474,23 @@ async def transcribe_with_azure_mai(
     if status >= 400:
         # Azure's MAI gateway sometimes wraps the decoder error in plain text.
         # Retain only the exact allowlisted code, never its response text.
-        rejected_audio = status == 400 and '"code":"invalid_audio"' in raw.replace(" ", "")
+        try:
+            error_payload = json.loads(raw[raw.index("{") :])
+            error_detail = error_payload.get("error", {}) if isinstance(error_payload, dict) else {}
+            response_code = error_detail.get("code") if isinstance(error_detail, dict) else None
+        except ValueError, TypeError:
+            response_code = None
+        safe_code = ""
+        if status == 400 and response_code == "invalid_audio":
+            safe_code = "unsupported_audio"
+        elif status == 503 and response_code == "diarization_unavailable":
+            safe_code = "diarization_unavailable"
         raise provider_transport_error(
             "azure_mai",
             "transcription",
             status=status,
             response_body=raw,
-            code="unsupported_audio" if rejected_audio else "",
+            code=safe_code,
         )
 
     if not raw:

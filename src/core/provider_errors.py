@@ -86,6 +86,7 @@ _KNOWN_CODES = (
     "INVALID_AUTH",
     "INSUFFICIENT_PERMISSIONS",
     "unsupported_audio",
+    "diarization_unavailable",
     "audio_limit_exceeded",
     "audio_error",
     "missing_upload_url",
@@ -794,6 +795,25 @@ def _classify_soniox(provider: str, label: str, text: str, status: int | None, c
 
 
 def _classify_azure(provider: str, label: str, text: str, status: int | None, code: str) -> ProviderUserError | None:
+    if status == 503 and code == "diarization_unavailable":
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_PROVIDER,
+            f"{label} could not complete speaker diarization (HTTP 503). "
+            "Azure's speaker diarization service is unavailable for this request. "
+            "Retry later or select another transcription provider.",
+            code=code,
+        )
+    if status == 408:
+        return _make_error(
+            provider,
+            label,
+            ErrorCategory.TRANSIENT_NETWORK,
+            f"{label} timed out while processing the audio (HTTP 408). "
+            "Retry later or select another transcription provider.",
+            code=code or "408",
+        )
     if status in {401, 403} or _has(text, "unauthorized", "forbidden", "invalid subscription", "authentication"):
         return _make_error(
             provider,

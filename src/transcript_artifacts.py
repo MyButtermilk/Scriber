@@ -33,7 +33,7 @@ from src.data.transcript_artifact_store import (
     RouteSnapshotDraft,
     StageUnit,
 )
-from src.provider_transcript import has_speaker_evidence, normalize_provider_segments
+from src.provider_transcript import azure_mai_used_text_fallback, has_speaker_evidence, normalize_provider_segments
 from src.youtube_download import YouTubeCaptionCue
 
 PARSER_ID = "scriber-provider-transcript"
@@ -509,6 +509,8 @@ def stage_units_from_provider(
     }
     if duration_ms > 0:
         evidence["sourceMediaDurationMs"] = int(duration_ms)
+    if provider == "azure_mai" and azure_mai_used_text_fallback(payload):
+        evidence["diarizationFallback"] = "diarization_unavailable"
     return tuple(units), evidence
 
 

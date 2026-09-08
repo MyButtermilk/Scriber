@@ -7,6 +7,11 @@ from collections.abc import Iterable
 from typing import Any
 
 _GEMINI_OFFSET_RE = re.compile(r"^(?:0|[1-9]\d*)(?:\.\d+)?s$")
+AZURE_MAI_DIARIZATION_FALLBACK_KEY = "_scriberDiarizationFallback"
+
+
+def azure_mai_used_text_fallback(payload: Any) -> bool:
+    return isinstance(payload, dict) and payload.get(AZURE_MAI_DIARIZATION_FALLBACK_KEY) == "diarization_unavailable"
 
 
 def _number(value: Any) -> float | None:
@@ -375,8 +380,12 @@ def normalize_provider_segments(provider: str, payload: Any, source: str, origin
         return group_provider_words(_speechmatics_words(payload), source, origin_ms)
 
     if provider == "azure_mai":
+        words = _azure_timed_items(payload)
+        if azure_mai_used_text_fallback(payload):
+            for word in words:
+                word["speaker"] = ""
         return group_provider_words(
-            _azure_timed_items(payload),
+            words,
             source,
             origin_ms,
         )

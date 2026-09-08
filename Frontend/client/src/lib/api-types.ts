@@ -251,6 +251,7 @@ export interface MeetingAudioAsset {
 }
 
 export interface MeetingDetail extends MeetingSummary {
+  diarizationFallback?: "diarization_unavailable" | null;
   apiVersion: typeof REST_API_VERSION;
   segments: MeetingSegment[];
   speakers: Array<{
@@ -910,6 +911,7 @@ export interface ApiMessageResponse {
 }
 
 export interface TranscriptHistoryItem {
+  diarizationFallback?: "diarization_unavailable" | null;
   id: string;
   title: string;
   date: string;

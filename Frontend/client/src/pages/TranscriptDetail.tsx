@@ -1,4 +1,5 @@
 import { useParams, Link, useLocation } from "wouter";
+import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
 import { ArrowLeft, Download, Copy, Check, Sparkles, FileText, Youtube, ExternalLink } from "lucide-react";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import { Button } from "@/components/ui/button";
@@ -923,6 +924,7 @@ export default function TranscriptDetail() {
             </div>
           )}
 
+          <TranscriptionDiarizationNotice code={transcript.diarizationFallback} />
           <div key={id} className="transcript-summary-layout">
             {showSummaryToc && (
               <SummaryTableOfContents

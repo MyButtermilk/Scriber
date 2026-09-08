@@ -14,6 +14,19 @@ from src.transcript_artifacts import (
 from src.youtube_download import YouTubeCaptionCue
 
 
+def test_azure_text_fallback_persists_warning_without_claiming_speakers():
+    units, evidence = stage_units_from_provider(
+        provider="azure_mai",
+        payload={"_scriberDiarizationFallback": "diarization_unavailable"},
+        text="Clean transcript.",
+        duration_ms=1966000,
+    )
+    assert units
+    assert evidence["diarizationFallback"] == "diarization_unavailable"
+    assert evidence["nativeSpeakerEvidence"] is False
+    assert evidence["nativeSpeakerIntervals"] == 0
+
+
 def test_frozen_route_persists_only_vocabulary_metadata():
     route = freeze_provider_route(
         workload="file",

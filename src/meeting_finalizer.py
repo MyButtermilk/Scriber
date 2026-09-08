@@ -841,6 +841,7 @@ class MeetingFinalizer:
                 elif (
                     source in {"microphone", "system"}
                     and not native_speaker_evidence
+                    and track_result.evidence.get("diarizationFallback") != "diarization_unavailable"
                     and self.speaker_diarizer is not None
                     and await diarization_component_installed(self.speaker_diarizer)
                 ):

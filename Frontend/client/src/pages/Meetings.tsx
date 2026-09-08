@@ -1,4 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { TranscriptionDiarizationNotice } from "@/components/transcription-diarization-notice";
 import { useLocation } from "wouter";
 import { type QueryClient, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -4052,6 +4053,11 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                 </div>
               )}
 
+              {detail.diarizationFallback && (
+                <div className="mx-5 mt-3 sm:mx-6">
+                  <TranscriptionDiarizationNotice code={detail.diarizationFallback} />
+                </div>
+              )}
               {outputsStale && (
                 <div
                   className="mx-5 mt-3 flex flex-col gap-3 rounded-xl border border-amber-300/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-950 dark:text-amber-100 sm:mx-6 sm:flex-row sm:items-center sm:justify-between"

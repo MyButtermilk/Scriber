@@ -13,8 +13,19 @@ an HTTP 400 from its own diarization service. A two-minute excerpt correctly
 returned three speakers. Removing MP3 metadata repairs #145's separate
 `invalid_audio` rejection, but neither a lossless remux nor a 16 kHz mono copy
 removed the full-length diarization service failure. This is observed behavior,
-not a documented duration limit. Scriber must not silently drop speaker
-separation, invent cross-chunk identities, or automatically repeat paid requests.
+not a documented duration limit. Context7's current MicrosoftDocs MAI-2 page
+and Microsoft Learn confirm the implemented request: `enhancedMode.model`,
+`enhancedMode.enabled`, top-level `diarization.enabled`, and
+`enhancedMode.modelOptions` containing `transcribeStyle` and `timestamps`.
+The full #149 (32:46) also fails with native diarization as 16 kHz mono FLAC,
+while that same FLAC succeeds with clean text and diarization disabled.
+After explicit owner authorization, Scriber now permits exactly one fresh
+clean text-only upload after the specific HTTP 503 `diarization_unavailable`
+rejection. It records the fallback in durable stage evidence, displays a
+notice, and skips local speaker assignment. Generic 503, HTTP 408, connection
+loss, and ambiguous acceptance never trigger this fallback. Known HTTP
+responses retain their sanitized cause rather than becoming "outcome unknown";
+the durable job replay fence remains active throughout both requests.
 The complete native result for these episodes remains unverified until Azure
 accepts the request; manual episode retry is available from File history,
 transcript detail, and the Podcast page.
