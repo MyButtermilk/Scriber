@@ -73,6 +73,10 @@ Use the normal hotkey for fast, faithful speech-to-text. Use the separate post-p
   preserved
 - Rust and WASAPI microphone capture
 - Optional microphone pre-warming for lower startup latency
+- Optional automatic stop after 1–10 seconds of silence, configurable under
+  Settings → Recording control (off by default; five seconds when enabled)
+- Start another dictation while earlier text is transcribing or being polished.
+  Each recording stays in history and text is inserted in recording order.
 - Native recording overlay with classic bars, an audio-reactive energy wave,
   or a blue flame made of fine moving strands
 - Raw dictation or cloud/local prompt-driven post-processing

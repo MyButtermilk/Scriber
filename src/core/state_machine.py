@@ -19,7 +19,9 @@ _VALID_TRANSITIONS: dict[RecordingState, set[RecordingState]] = {
     # Users can cancel while the microphone is still warming up.
     RecordingState.INITIALIZING: {RecordingState.RECORDING, RecordingState.FINALIZING, RecordingState.FAILED},
     RecordingState.RECORDING: {RecordingState.FINALIZING, RecordingState.FAILED},
-    RecordingState.FINALIZING: {RecordingState.COMPLETED, RecordingState.FAILED},
+    # The next capture may start after native release while the previous
+    # transcript finishes in its session-owned background task.
+    RecordingState.FINALIZING: {RecordingState.COMPLETED, RecordingState.FAILED, RecordingState.INITIALIZING},
     RecordingState.COMPLETED: {RecordingState.IDLE},
     RecordingState.FAILED: {RecordingState.IDLE},
 }

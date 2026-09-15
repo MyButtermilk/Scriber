@@ -10,7 +10,7 @@ import tempfile
 import threading
 import time
 import wave
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, BinaryIO
 
 import aiohttp
@@ -65,6 +65,7 @@ from src.core.provider_audio_formats import (
     speechmatics_realtime_base_url,
 )
 from src.core.provider_capabilities import get_capabilities
+from src.mic_silence_stop import MicSilenceStopObserver
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_json_limited, read_response_text_limited
@@ -595,9 +596,12 @@ def _ordered_live_pipeline_steps(
     transcript_callback: FrameProcessor | None,
     text_injector: FrameProcessor,
     provider_ingress_drain: FrameProcessor | None = None,
+    silence_stop_observer: FrameProcessor | None = None,
 ) -> list[FrameProcessor]:
     """Return the canonical Pipecat 1.5 live-microphone processor order."""
     steps: list[FrameProcessor] = [audio_input]
+    if silence_stop_observer is not None:
+        steps.append(silence_stop_observer)
     if vad_processor is not None:
         steps.append(vad_processor)
     if vad_observer is not None:
@@ -1871,10 +1875,17 @@ class ScriberPipeline:
         on_soniox_last_final_token_received: Callable[[], None] | None = None,
         soniox_replay_model: str | None = None,
         provider_http_transport: ProviderHttpTransport | None = None,
+        on_silence_timeout: Callable[[], None] | None = None,
+        on_capture_stopped: Callable[[], Awaitable[None]] | None = None,
     ):
         self.service_name = service_name
         self.on_status_change = on_status_change
         self.on_audio_level = on_audio_level
+        self.on_silence_timeout = on_silence_timeout
+        self.on_capture_stopped = on_capture_stopped
+        self._capture_stopped_notified = False
+        self._capture_stop_drained = False
+        self._silence_stop_observer: MicSilenceStopObserver | None = None
         self.on_transcription = on_transcription
         self.on_text_injected = on_text_injected
         self.on_injection_marker = on_injection_marker
@@ -2579,7 +2590,40 @@ class ScriberPipeline:
             stop_call_completed=False,
         )
 
+    async def _notify_capture_stopped(self) -> None:
+        """Hand confirmed capture release to the controller before provider work."""
+        if (
+            self._capture_stopped_notified
+            or self.on_capture_stopped is None
+            or not self._capture_stop_drained
+            or self.native_audio_stop_confirmed() is not True
+        ):
+            return
+        self._capture_stopped_notified = True
+        # A new capture can begin as soon as the controller callback returns.
+        # The old provider's later cleanup must never detach/resume that new
+        # session through the shared idle-prewarm manager.
+        self.mic_prewarm_manager = None
+        await self.on_capture_stopped()
+
+    def _create_silence_stop_observer(self) -> MicSilenceStopObserver | None:
+        if not Config.MIC_AUTO_STOP_ENABLED or self.on_silence_timeout is None:
+            return None
+        # This independent analyzer only observes speech; it never emits
+        # provider turn boundaries, including on native streaming routes.
+        analyzer = _create_vad_analyzer(quiet_mic=True)
+        if analyzer is None:
+            logger.warning("Microphone silence stop is unavailable because Silero VAD is unavailable")
+            return None
+        return MicSilenceStopObserver(
+            analyzer=analyzer,
+            silence_seconds=Config.MIC_AUTO_STOP_SILENCE_SECONDS,
+            on_timeout=self.on_silence_timeout,
+        )
+
     async def _cleanup_audio_input(self) -> None:
+        if self._silence_stop_observer is not None:
+            self._silence_stop_observer.disarm()
         audio_input = self.audio_input
         if not audio_input:
             return
@@ -2599,6 +2643,7 @@ class ScriberPipeline:
                 # resources; a real always-on mic needs an app-level manager.
                 await audio_input.stop(EndFrame(), close_stream=True)
                 stop_call_completed = True
+                self._capture_stop_drained = True
             except Exception as exc:
                 logger.debug(f"Audio input cleanup warning: {exc}")
             finally:
@@ -2646,13 +2691,13 @@ class ScriberPipeline:
                 # back to normal cleanup, which retries before capture closes.
                 use_normal_cleanup = True
             else:
+                stop_call_completed = False
                 stop_capture = getattr(
                     audio_input,
                     "stop_capture_for_finalization",
                     None,
                 )
                 if callable(stop_capture):
-                    stop_call_completed = False
                     try:
                         await stop_capture(close_stream=True)
                         stop_call_completed = True
@@ -2663,14 +2708,18 @@ class ScriberPipeline:
                             audio_input,
                             stop_call_completed=stop_call_completed,
                         )
+                queue_drain_completed = False
                 try:
                     audio_queue = getattr(audio_input, "_audio_in_queue", None)
                     if audio_queue is not None and callable(getattr(audio_queue, "join", None)):
                         await asyncio.wait_for(audio_queue.join(), timeout=1.0)
+                    queue_drain_completed = True
                 except TimeoutError:
                     logger.debug("Timed out waiting for segmented STT audio queue to drain")
                 except Exception as exc:
                     logger.debug(f"Segmented STT audio queue drain warning: {exc}")
+                if stop_call_completed and queue_drain_completed:
+                    self._capture_stop_drained = True
 
         if use_normal_cleanup:
             logger.warning("Segmented STT prewarm handoff was not ready; using normal audio cleanup")
@@ -3777,6 +3826,9 @@ class ScriberPipeline:
         self._provider_replay_capture_attestation = None
         self._terminal_error = None
         self._vad_observer = None
+        self._silence_stop_observer = None
+        self._capture_stopped_notified = False
+        self._capture_stop_drained = False
         self._provider_ingress_drain_processor = None
         self._final_transcription_received.clear()
         self._start_done.clear()
@@ -3810,6 +3862,7 @@ class ScriberPipeline:
                         )
 
                 vad_processor = VADProcessor(vad_analyzer=vad_analyzer) if vad_analyzer is not None else None
+                self._silence_stop_observer = self._create_silence_stop_observer()
                 smart_turn_processor = None
                 if uses_smart_turn:
                     if vad_processor is None:
@@ -3980,6 +4033,7 @@ class ScriberPipeline:
                     transcript_callback=transcript_cb,
                     text_injector=text_injector,
                     provider_ingress_drain=(self._provider_ingress_drain_processor),
+                    silence_stop_observer=self._silence_stop_observer,
                 )
 
                 self.pipeline = Pipeline(steps)
@@ -5054,6 +5108,8 @@ class ScriberPipeline:
             raise
 
     async def stop(self, timeout_secs: float | None = None):
+        if self._silence_stop_observer is not None:
+            self._silence_stop_observer.disarm()
         if self.task and self.task.has_finished():
             self.is_active = False
             if self.on_status_change:
@@ -5084,6 +5140,7 @@ class ScriberPipeline:
             final_generation_before_commit = self._final_transcription_generation
             await self._stop_audio_capture_for_segmented_finalization()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
+            await self._notify_capture_stopped()
             boundary_flushed = await self._flush_segmented_stt_buffers()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,
@@ -5099,6 +5156,7 @@ class ScriberPipeline:
             # remains continuous while transcription finalizes.
             await self._cleanup_audio_input()
             await self._await_provider_ingress_audio_drain(provider_ingress_audio_input)
+            await self._notify_capture_stopped()
             boundary_flushed = await self._flush_live_vad_finalization_turn()
             await self._await_async_vad_commit_final(
                 after_generation=final_generation_before_commit,

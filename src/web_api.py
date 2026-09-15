@@ -3418,6 +3418,7 @@ class ScriberWebController:
         self._metrics_persist_tasks: set[asyncio.Task] = set()
         self._transcript_persist_tasks: set[asyncio.Task] = set()
         self._detached_task_supervisor = AsyncTaskSupervisor(owner="web controller")
+        self._live_mic_finalizer_supervisor = AsyncTaskSupervisor(owner="live mic finalization")
         self._job_max_attempts = env_int("SCRIBER_JOB_MAX_ATTEMPTS", 3, minimum=1, maximum=20)
         self._job_concurrency_limit = env_int(
             "SCRIBER_JOB_CONCURRENCY",
@@ -3486,6 +3487,12 @@ class ScriberWebController:
             self._mic_watchdog_callback_gap_seconds = 15.0
         self._pending_hotkey_toggle = False
         self._background_stop_task: asyncio.Task | None = None
+        self._pending_live_mic_start: LiveMicStartCommand | None = None
+        self._live_mic_finalizer_tasks: set[asyncio.Task] = set()
+        self._live_mic_finalizer_owners: dict[object, tuple[str, asyncio.Task]] = {}
+        self._live_mic_finalizing_records: dict[str, TranscriptRecord] = {}
+        self._live_mic_finalization_done: dict[str, asyncio.Future[None]] = {}
+        self._live_mic_injection_predecessors: dict[str, asyncio.Future[None]] = {}
         self._live_mic_start_generation = 0
         self._live_mic_start_in_progress_generation: int | None = None
         self._live_mic_cancel_start_generation: int | None = None
@@ -7785,6 +7792,8 @@ class ScriberWebController:
             try:
                 self._mark_hot_path(session_id, f"{marker_prefix}_started")
                 async with self._overlay_lock:
+                    if name != "initializing" and session_id is not None and self._session_id not in {None, session_id}:
+                        return
                     response = await asyncio.to_thread(command)
                 if isinstance(response, dict) and response.get("success") is not True:
                     self._mark_hot_path(session_id, f"{marker_prefix}_failed")
@@ -8125,7 +8134,10 @@ class ScriberWebController:
     def get_state(self) -> dict[str, Any]:
         with self._current_lock:
             current = self._current
-        has_background_processing = any(task is not None and not task.done() for task in self._running_tasks.values())
+        has_background_processing = any(
+            task is not None and not task.done()
+            for task in (*self._running_tasks.values(), *self._live_mic_finalizer_tasks)
+        )
         recording_state = self._recording_state_machine.state
         pending_fallback_event: dict[str, Any] | None = None
         pending_fallback = self._pending_post_processing_fallback_event
@@ -8137,6 +8149,7 @@ class ScriberWebController:
                 self._pending_post_processing_fallback_event = None
         return {
             "listening": self._is_listening,
+            "micStartPending": self._pending_live_mic_start is not None,
             "voiceEnrollmentActive": bool(self._voice_enrollment_active),
             "status": self._status,
             "inputWarning": self._mic_input_warning,
@@ -8871,6 +8884,7 @@ class ScriberWebController:
         payload = status_event(status, self._is_listening, session_id=session_id)
         payload["recordingState"] = self._recording_state_machine.state.value
         payload["transcribing"] = bool(self._live_transcribing_visible)
+        payload["micStartPending"] = self._pending_live_mic_start is not None
         payload["inputWarning"] = self._mic_input_warning
         payload["inputWarningCode"] = self._mic_input_warning_code
         payload["inputWarningActions"] = [dict(item) for item in self._mic_input_warning_actions]
@@ -9000,7 +9014,8 @@ class ScriberWebController:
         )
 
     def _on_transcription(self, text: str, is_final: bool, *, session_id: str | None = None) -> None:
-        if session_id is not None and session_id != self._session_id:
+        finalizing_record = self._live_mic_finalizing_records.get(session_id or "")
+        if session_id is not None and session_id != self._session_id and finalizing_record is None:
             return
         logger.debug(f"Transcription received: final={is_final}, len={len(text) if text else 0}")
         if is_final and text:
@@ -9008,8 +9023,9 @@ class ScriberWebController:
             self._mark_hot_path(session_id or self._session_id, "provider_final_received")
             self._mark_hot_path(session_id or self._session_id, "transcript_parsed")
             with self._current_lock:
-                if self._current and (session_id is None or self._current.id == session_id):
-                    self._current.append_final_text(text)
+                record = finalizing_record or self._current
+                if record and (session_id is None or record.id == session_id):
+                    record.append_final_text(text)
             self._emit_workflow_event(
                 message="Final transcript chunk received",
                 event="pipeline.transcript.final",
@@ -9017,7 +9033,7 @@ class ScriberWebController:
                 stage="transcript_done",
                 component="pipeline",
                 session_id=session_id or self._session_id,
-                record=self._current,
+                record=record,
                 provider=self._active_provider,
                 outcome="success",
                 meta={"chars": len(text or "")},
@@ -9169,6 +9185,9 @@ class ScriberWebController:
                     self._session_id = None
                 self._set_recording_state(RecordingState.IDLE, context="_on_pipeline_done_cleanup")
                 self._clear_hot_path_tracer(session_id)
+                if session_id is not None:
+                    self._live_mic_injection_predecessors.pop(session_id, None)
+                    self._post_processing_session_ids.discard(session_id)
             if replay_execution is not None:
                 replay_execution.fail("pipeline_failed")
                 await replay_execution.close()
@@ -11995,8 +12014,12 @@ class ScriberWebController:
         controller_entry_ns = time.perf_counter_ns()
         # Acquire lock for entire operation - no parallel start/stop allowed
         async with _audio_admission_lock(self):
-            # Don't start if already listening or if stop is in progress
-            if self._is_listening or self._is_stopping:
+            if self._shutting_down:
+                return None
+            if self._is_stopping or (self._background_stop_task is not None and not self._background_stop_task.done()):
+                self._queue_live_mic_start(post_process=post_process, tauri_hotkey_marker=tauri_hotkey_marker)
+                return None
+            if self._is_listening:
                 return None
 
             if (
@@ -12055,7 +12078,8 @@ class ScriberWebController:
                     self._clear_hot_path_tracer(session_id)
                     raise ProviderReplayConflict("another provider replay is active")
 
-            self._post_processing_session_ids.clear()
+            predecessor = next(reversed(self._live_mic_finalization_done.values()), None)
+            defer_injection = predecessor is not None and not predecessor.done()
 
             live_provider: str | None = None
             try:
@@ -12515,6 +12539,10 @@ class ScriberWebController:
                     on_text_injected=on_text_injected,
                     on_injection_marker=on_injection_marker,
                     on_mic_ready=on_mic_ready,
+                    on_silence_timeout=lambda: self._request_live_mic_silence_stop(session_id),
+                    on_capture_stopped=lambda: self._on_live_mic_capture_stopped(
+                        session_id=session_id, pipeline=pipeline
+                    ),
                     on_last_audio_chunk_sent=on_last_audio_chunk_sent,
                     on_audio_start_marker=lambda marker, timestamp_ns=None: self._mark_hot_path(
                         session_id,
@@ -12527,7 +12555,8 @@ class ScriberWebController:
                     on_error=on_pipeline_error,
                     mic_prewarm_manager=mic_prewarm_manager,
                     enable_speaker_diarization=False,
-                    text_injection_enabled=not (post_process and Config.POST_PROCESSING_ENABLED),
+                    text_injection_enabled=not (post_process and Config.POST_PROCESSING_ENABLED)
+                    and not defer_injection,
                     execution_route=live_execution_route,
                     injection_target_guard=(
                         provider_replay_execution.injection_target_guard
@@ -12616,6 +12645,8 @@ class ScriberWebController:
             with self._current_lock:
                 self._current = rec
             self._session_id = session_id
+            if defer_injection and predecessor is not None:
+                self._live_mic_injection_predecessors[session_id] = predecessor
             self._live_transcribing_visible = False
             if post_process and Config.POST_PROCESSING_ENABLED:
                 self._post_processing_session_ids.add(session_id)
@@ -12745,6 +12776,9 @@ class ScriberWebController:
                 self._set_recording_state(RecordingState.FAILED, context="emergency_stop")
                 self._set_recording_state(RecordingState.IDLE, context="emergency_stop")
                 self._clear_hot_path_tracer(session_id)
+                if session_id is not None:
+                    self._live_mic_injection_predecessors.pop(session_id, None)
+                    self._post_processing_session_ids.discard(session_id)
 
             # Stop the previous pipeline instance outside the lock.
             if pipeline:
@@ -12832,6 +12866,70 @@ class ScriberWebController:
             return
         except Exception as exc:
             logger.warning(f"Background live mic stop failed: {exc}")
+
+    def _queue_live_mic_start(
+        self, *, post_process: bool = False, tauri_hotkey_marker: dict[str, Any] | None = None
+    ) -> None:
+        if self._shutting_down or self._pending_live_mic_start is not None:
+            return
+        self._pending_live_mic_start = LiveMicStartCommand(
+            post_process=post_process,
+            tauri_hotkey_marker=tauri_hotkey_marker,
+            provider_replay_activation=False,
+        )
+        self._pending_hotkey_toggle = True
+        self._schedule_state_snapshot_broadcast()
+
+    def _cancel_pending_live_mic_start(self) -> bool:
+        pending = self._pending_live_mic_start is not None
+        self._pending_live_mic_start = None
+        self._pending_hotkey_toggle = False
+        if pending:
+            self._schedule_state_snapshot_broadcast()
+        return pending
+
+    async def _start_pending_live_mic(self) -> None:
+        command = self._pending_live_mic_start
+        self._cancel_pending_live_mic_start()
+        if command is not None and not self._shutting_down:
+            await self.start_live_mic(command)
+
+    def _request_live_mic_silence_stop(self, session_id: str) -> None:
+        if session_id == self._session_id and self._is_listening and not self._is_stopping:
+            self.request_async_stop_listening()
+
+    async def _on_live_mic_capture_stopped(self, *, session_id: str, pipeline: Any) -> None:
+        """Release only confirmed native capture; provider work keeps its own session."""
+        if _pipeline_native_audio_stop_confirmation(pipeline, pipeline_stop_completed=False) is not True:
+            return
+        async with self._listening_lock:
+            if session_id != self._session_id or not self._is_stopping:
+                return
+            claim = _audio_admission_owner(self).current
+            if claim is not None:
+                if claim.owner_kind != "live_mic" or claim.owner_id != session_id:
+                    return
+                try:
+                    await _release_persistent_audio(self, claim)
+                except Exception as exc:
+                    logger.warning("Early Live Mic admission release deferred: {}", type(exc).__name__)
+                    return
+            # An unknown durable release must not admit another native capture.
+            if _audio_admission_owner(self).current is not None:
+                return
+            self._is_stopping = False
+            self._live_mic_stop_owner = None
+            self._background_stop_task = None
+            if self._pending_live_mic_start is not None and not self._shutting_down:
+                self._spawn_detached(self._start_pending_live_mic(), name="live_mic_continuation_start")
+
+    def _complete_live_mic_finalizer(self, task: asyncio.Task, *, session_id: str) -> None:
+        self._live_mic_finalizer_tasks.discard(task)
+        self._live_mic_finalizing_records.pop(session_id, None)
+        self._live_mic_injection_predecessors.pop(session_id, None)
+        completed = self._live_mic_finalization_done.pop(session_id, None)
+        if completed is not None and not completed.done():
+            completed.set_result(None)
 
     def _begin_live_mic_start_transition(self) -> int:
         self._live_mic_start_generation += 1
@@ -12932,12 +13030,19 @@ class ScriberWebController:
                 status=400,
                 payload=version_event_payload(self._provider_error_event_from_info(start_error)),
             )
-        return LiveMicOutcome(status=200, payload=self.get_state())
+        return LiveMicOutcome(
+            status=202 if self._pending_live_mic_start is not None else 200,
+            payload=self.get_state(),
+        )
 
     async def resolve_live_mic_toggle(self) -> LiveMicOutcome | None:
         """Resolve an active toggle, or return ``None`` when it should start."""
 
-        if not (self._live_mic_start_in_progress_generation is not None or self._is_listening or self._is_stopping):
+        if self._cancel_pending_live_mic_start():
+            return LiveMicOutcome(status=200, payload=self.get_state())
+        if self._is_stopping:
+            return None
+        if not (self._live_mic_start_in_progress_generation is not None or self._is_listening):
             return None
         if self._should_ignore_duplicate_start_toggle():
             start_task = self._live_mic_start_task
@@ -12957,6 +13062,7 @@ class ScriberWebController:
     async def stop_live_mic(self) -> LiveMicOutcome:
         """Stop Live Mic and project its public result."""
 
+        self._cancel_pending_live_mic_start()
         stop_error = await self.stop_listening()
         if stop_error is not None:
             return LiveMicOutcome(
@@ -12996,6 +13102,7 @@ class ScriberWebController:
         never arm ``_pending_hotkey_toggle`` (which would start a new session
         after the current one finishes).
         """
+        self._cancel_pending_live_mic_start()
         if self._loop.is_closed():
             return {
                 "stopAccepted": False,
@@ -13061,11 +13168,7 @@ class ScriberWebController:
             self._background_stop_task.add_done_callback(self._on_background_stop_done)
             return True
         if self._is_stopping:
-            self._pending_hotkey_toggle = True
-            now = time.monotonic()
-            if now - self._last_hotkey_deferred_log >= 1.0:
-                self._last_hotkey_deferred_log = now
-                logger.info("Toggle requested while stop is in progress; deferring until stop completes.")
+            self._queue_live_mic_start()
             return True
         if not self._is_listening:
             return False
@@ -13105,9 +13208,30 @@ class ScriberWebController:
         return True
 
     async def stop_listening(self) -> ProviderUserError | None:
+        stop_owner = object()
+
+        async def finalize() -> ProviderUserError | None:
+            try:
+                return await self._stop_listening_session(stop_owner)
+            finally:
+                owned = self._live_mic_finalizer_owners.pop(stop_owner, None)
+                if owned is not None:
+                    session_id, task = owned
+                    self._complete_live_mic_finalizer(task, session_id=session_id)
+
+        # An HTTP disconnect or cancelled hotkey waiter cannot abandon audio,
+        # transcript persistence, or ordered injection owned by this stop.
+        finalizer = self._live_mic_finalizer_supervisor.spawn(finalize(), name="live_mic_finalize")
+        if finalizer is None:
+            return None
+        result, pending_cancel = await await_with_delayed_cancellation(finalizer)
+        if pending_cancel is not None:
+            raise pending_cancel
+        return result
+
+    async def _stop_listening_session(self, stop_owner: object) -> ProviderUserError | None:
         self._mark_live_mic_stop_requested()
         # Acquire lock for entire operation - no parallel start/stop allowed
-        stop_owner = object()
         async with self._listening_lock:
             if not self._is_listening:
                 return None
@@ -13123,6 +13247,13 @@ class ScriberWebController:
             with self._current_lock:
                 current = self._current
             session_id = self._session_id
+            task = asyncio.current_task()
+            if session_id is not None and task is not None:
+                self._live_mic_finalizer_tasks.add(task)
+                self._live_mic_finalizer_owners[stop_owner] = (session_id, task)
+                self._live_mic_finalization_done[session_id] = self._loop.create_future()
+                if current is not None:
+                    self._live_mic_finalizing_records[session_id] = current
             self._live_mic_stop_owner = stop_owner
             audio_claim = _audio_admission_owner(self).current
             provider_used = self._active_provider
@@ -13302,7 +13433,7 @@ class ScriberWebController:
                     self._current = None
 
             # Hide overlay for async services after processing completes
-            if not is_realtime_service and not post_processing_requested:
+            if not is_realtime_service and not post_processing_requested and self._session_id == session_id:
                 self._overlay_audio_enabled = False
                 self._hide_recording_overlay_async(session_id=session_id)
 
@@ -13311,6 +13442,9 @@ class ScriberWebController:
                 with contextlib.suppress(asyncio.CancelledError):
                     await pipeline_task
 
+            predecessor = self._live_mic_injection_predecessors.get(session_id or "")
+            if predecessor is not None:
+                await asyncio.shield(predecessor)
             if post_processing_requested and current and not silent_early_exit:
                 await self._post_process_and_inject_live_transcript(
                     current,
@@ -13318,8 +13452,17 @@ class ScriberWebController:
                     provider=provider_used,
                     provider_replay_execution=provider_replay_execution,
                 )
-                self._overlay_audio_enabled = False
-                self._hide_recording_overlay_async(session_id=session_id)
+                if self._session_id == session_id:
+                    self._overlay_audio_enabled = False
+                    self._hide_recording_overlay_async(session_id=session_id)
+            elif predecessor is not None and current and not silent_early_exit:
+                await self._inject_live_transcript_text(
+                    current.content_text(),
+                    record=current,
+                    session_id=session_id,
+                    provider=provider_used,
+                    post_processed=False,
+                )
         except Exception as exc:
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
@@ -13344,8 +13487,9 @@ class ScriberWebController:
                     "provider_error_code": stop_error_info.code,
                 },
             )
-            self._overlay_audio_enabled = False
-            self._hide_recording_overlay_async(session_id=session_id)
+            if self._session_id == session_id:
+                self._overlay_audio_enabled = False
+                self._hide_recording_overlay_async(session_id=session_id)
             error_payload = self._provider_error_event(exc, provider=provider_used, session_id=session_id)
             await self.broadcast(error_payload)
         finally:
@@ -13370,23 +13514,22 @@ class ScriberWebController:
                 if getattr(self, "_live_mic_stop_owner", None) is stop_owner:
                     self._live_mic_stop_owner = None
                     self._is_stopping = False
-                self._live_transcribing_visible = False
-                self._clear_input_warning_state(session_id=session_id, broadcast=True)
-                self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                 if session_id is None or self._session_id == session_id:
+                    self._live_transcribing_visible = False
+                    self._clear_input_warning_state(session_id=session_id, broadcast=True)
+                    self._set_status("Error" if stop_error else "Stopped", session_id=session_id)
                     self._session_id = None
-                self._active_provider = None
-                if stop_error:
-                    self._set_recording_state(RecordingState.FAILED, context="stop_listening")
-                else:
-                    self._set_recording_state(RecordingState.COMPLETED, context="stop_listening")
-                self._set_recording_state(RecordingState.IDLE, context="stop_listening")
-                if self._pending_hotkey_toggle:
+                    self._active_provider = None
                     if stop_error:
-                        logger.warning("Dropping deferred hotkey event because stop finished with an error.")
+                        self._set_recording_state(RecordingState.FAILED, context="stop_listening")
                     else:
-                        retrigger_hotkey_toggle = True
-                    self._pending_hotkey_toggle = False
+                        self._set_recording_state(RecordingState.COMPLETED, context="stop_listening")
+                    self._set_recording_state(RecordingState.IDLE, context="stop_listening")
+                    if self._pending_hotkey_toggle:
+                        if stop_error:
+                            self._cancel_pending_live_mic_start()
+                        else:
+                            retrigger_hotkey_toggle = True
 
             if current:
                 current.finish("failed" if stop_error else "completed")
@@ -13431,7 +13574,13 @@ class ScriberWebController:
             self._mark_hot_path(session_id, "session_finished")
             self._emit_hot_path_report_once(session_id, required_marker=None)
             self._clear_hot_path_tracer(session_id)
-            if not retrigger_hotkey_toggle:
+            if (
+                not retrigger_hotkey_toggle
+                and not self._is_listening
+                and not self._is_stopping
+                and not self._shutting_down
+                and _audio_admission_owner(self).current is None
+            ):
                 self._resume_idle_mic_prewarm_after_capture()
             if session_id:
                 self._post_processing_session_ids.discard(session_id)
@@ -13443,17 +13592,23 @@ class ScriberWebController:
                     self._provider_replay_execution = None
         if retrigger_hotkey_toggle:
             logger.info("Applying deferred hotkey event after stop completed.")
-            await self.start_listening()
+            if self._pending_live_mic_start is not None:
+                self._spawn_detached(self._start_pending_live_mic(), name="live_mic_continuation_start")
+            else:
+                self._pending_hotkey_toggle = False
+                await self.start_listening()
         return stop_error_info
 
     async def toggle_listening(self, *, post_process: bool = False) -> None:
+        if self._cancel_pending_live_mic_start():
+            return
         if self._live_mic_start_in_progress_generation is not None:
             if self._should_ignore_duplicate_start_toggle():
                 return
             self.request_background_stop_listening()
             return
-        # Quick check without lock - if finalization is in progress, ignore.
         if self._is_stopping:
+            self._queue_live_mic_start(post_process=post_process)
             return
 
         if self._is_listening:
@@ -13512,17 +13667,15 @@ class ScriberWebController:
             await asyncio.sleep(0.05)
 
     async def _handle_hotkey_toggle(self) -> None:
+        if self._cancel_pending_live_mic_start():
+            return
         if self._live_mic_start_in_progress_generation is not None:
             if self._should_ignore_duplicate_start_toggle():
                 return
             self.request_background_stop_listening()
             return
         if self._is_stopping:
-            self._pending_hotkey_toggle = True
-            now = time.monotonic()
-            if now - self._last_hotkey_deferred_log >= 1.0:
-                self._last_hotkey_deferred_log = now
-                logger.info("Hotkey pressed while stop is in progress; deferring until stop completes.")
+            self._queue_live_mic_start()
             return
         if self._is_listening:
             if self._should_ignore_duplicate_start_toggle():
@@ -13532,17 +13685,15 @@ class ScriberWebController:
         await self.start_listening()
 
     async def _handle_post_processing_hotkey_toggle(self) -> None:
+        if self._cancel_pending_live_mic_start():
+            return
         if self._live_mic_start_in_progress_generation is not None:
             if self._should_ignore_duplicate_start_toggle():
                 return
             self.request_background_stop_listening()
             return
         if self._is_stopping:
-            self._pending_hotkey_toggle = True
-            now = time.monotonic()
-            if now - self._last_hotkey_deferred_log >= 1.0:
-                self._last_hotkey_deferred_log = now
-                logger.info("Post-processing hotkey pressed while stop is in progress; deferring until stop completes.")
+            self._queue_live_mic_start(post_process=True)
             return
         if self._is_listening:
             if self._should_ignore_duplicate_start_toggle():
@@ -13657,6 +13808,7 @@ class ScriberWebController:
     def begin_shutdown(self) -> None:
         """Close admission to new work before the asynchronous drain."""
         self._shutting_down = True
+        self._cancel_pending_live_mic_start()
         self._cancel_live_mic_start_transition()
         self._retry_scheduler.cancel(cancel_running=True)
 
@@ -17071,10 +17223,16 @@ class ScriberWebController:
         for task in tasks:
             task.cancel()
 
+        async def close_polisher_after_live_finalizers() -> None:
+            finalizers = tuple(task for task in self._live_mic_finalizer_tasks if task is not current)
+            if finalizers:
+                await asyncio.gather(*(asyncio.shield(task) for task in finalizers), return_exceptions=True)
+            await self._local_polisher.close()
+
         local_polishing_close_task = self._local_polishing_close_task
         if local_polishing_close_task is None:
             local_polishing_close_task = self._loop.create_task(
-                self._local_polisher.close(),
+                close_polisher_after_live_finalizers(),
                 name="local_polishing_shutdown",
             )
             self._local_polishing_close_task = local_polishing_close_task
@@ -17090,6 +17248,7 @@ class ScriberWebController:
         background_stop_task = getattr(self, "_background_stop_task", None)
         if background_stop_task is not None and background_stop_task is not current and not background_stop_task.done():
             wait_tasks.add(background_stop_task)
+        wait_tasks.update(task for task in self._live_mic_finalizer_tasks if task is not current and not task.done())
         pending: set[asyncio.Task] = set()
         if wait_tasks:
             done, pending = await asyncio.wait(
@@ -17103,6 +17262,10 @@ class ScriberWebController:
                     "Timed out waiting for {} background task(s) during shutdown",
                     len(pending),
                 )
+
+        # Finalizers outlive a timed-out caller drain. Retain and observe them
+        # without the cancellation used for generic background work below.
+        await self._live_mic_finalizer_supervisor.close(timeout_seconds=0.0)
 
         settings_task = self._settings_persist_task
         if settings_task is not None and not settings_task.done():
@@ -17273,6 +17436,7 @@ class ScriberWebController:
                     name="provider_replay_shutdown_cleanup",
                 )
         self._detached_task_supervisor.seal()
+        self._live_mic_finalizer_supervisor.seal()
         for task in (
             *self._running_tasks.values(),
             *self._summary_tasks.values(),
@@ -17485,6 +17649,8 @@ class ScriberWebController:
             "favoriteMic": _resolved_favorite or (Config.FAVORITE_MIC or ""),
             "favoriteMicAvailable": _favorite_mic_available,
             "micAlwaysOn": bool(Config.MIC_ALWAYS_ON),
+            "micAutoStopEnabled": bool(Config.MIC_AUTO_STOP_ENABLED),
+            "micAutoStopSilenceSeconds": Config.MIC_AUTO_STOP_SILENCE_SECONDS,
             "segmentSpeechWithVad": bool(getattr(Config, "SEGMENT_SPEECH_WITH_VAD", False)),
             "debug": bool(Config.DEBUG),
             "customVocab": Config.CUSTOM_VOCAB or "",
@@ -17580,6 +17746,12 @@ class ScriberWebController:
         mic_route_changed = False
 
         # Validate first to avoid partial updates on invalid payloads.
+        if "micAutoStopEnabled" in payload and type(payload["micAutoStopEnabled"]) is not bool:
+            raise ValueError("Automatic microphone stop must be a boolean.")
+        if "micAutoStopSilenceSeconds" in payload:
+            silence_seconds = payload["micAutoStopSilenceSeconds"]
+            if type(silence_seconds) is not int or not 1 <= silence_seconds <= 10:
+                raise ValueError("Microphone silence timeout must be an integer from 1 to 10 seconds.")
         if "mode" in payload and isinstance(payload["mode"], str):
             validated_mode = _validate_mode(payload["mode"])
         if "defaultSttService" in payload and isinstance(payload["defaultSttService"], str):
@@ -17760,6 +17932,10 @@ class ScriberWebController:
                 str(getattr(Config, "FAVORITE_MIC", "") or "") != old_favorite_mic
             )
 
+        if "micAutoStopEnabled" in payload:
+            Config.set_mic_auto_stop_enabled(payload["micAutoStopEnabled"])
+        if "micAutoStopSilenceSeconds" in payload:
+            Config.set_mic_auto_stop_silence_seconds(payload["micAutoStopSilenceSeconds"])
         mic_always_on = _payload_bool(payload, "micAlwaysOn")
         if mic_always_on is not None:
             Config.set_mic_always_on(mic_always_on)

@@ -126,6 +126,20 @@ class FrontendSmokeBackend:
         self.cancel_counts: dict[str, int] = {}
         self.settings_patches: list[dict[str, Any]] = []
         self.settings_get_count = 0
+        self.live_mic_state: dict[str, Any] = {
+            "apiVersion": "1",
+            "type": "state",
+            "sessionId": None,
+            "listening": False,
+            "voiceEnrollmentActive": False,
+            "status": "Stopped",
+            "current": None,
+            "backgroundProcessing": False,
+            "recordingState": "idle",
+            "transcribing": False,
+            "micStartPending": False,
+        }
+        self.live_mic_controls: list[str] = []
         self.runtime_logs_deleted = False
         self.support_bundle_count = 0
         self.file_uploads: list[dict[str, Any]] = []
@@ -223,6 +237,9 @@ class FrontendSmokeBackend:
         app.router.add_get("/api/health", self.health)
         app.router.add_get("/api/settings", self.get_settings)
         app.router.add_put("/api/settings", self.put_settings)
+        app.router.add_get("/api/state", self.live_mic_get_state)
+        app.router.add_post("/api/live-mic/start", self.live_mic_start)
+        app.router.add_post("/api/live-mic/stop-request", self.live_mic_stop)
         app.router.add_get("/api/autostart", self.autostart)
         app.router.add_post("/api/autostart", self.autostart)
         app.router.add_get("/api/microphones", self.microphones)
@@ -1887,23 +1904,27 @@ class FrontendSmokeBackend:
             self.cancel_counts[transcript_id] = self.cancel_counts.get(transcript_id, 0) + 1
         return web.json_response({"success": True})
 
+    async def live_mic_get_state(self, request: web.Request) -> web.Response:
+        return web.json_response(self.live_mic_state)
+
+    async def live_mic_start(self, request: web.Request) -> web.Response:
+        self.live_mic_controls.append("start")
+        self.live_mic_state["micStartPending"] = True
+        await self.broadcast_event(self.live_mic_state)
+        return web.json_response(self.live_mic_state, status=202)
+
+    async def live_mic_stop(self, request: web.Request) -> web.Response:
+        self.live_mic_controls.append("stop")
+        self.live_mic_state["micStartPending"] = False
+        await self.broadcast_event(self.live_mic_state)
+        return web.json_response({"apiVersion": "1", "stopAccepted": True})
+
     async def websocket(self, request: web.Request) -> web.StreamResponse:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         self.websockets.add(ws)
         try:
-            await ws.send_json(
-                {
-                    "apiVersion": "1",
-                    "type": "state",
-                    "listening": False,
-                    "status": "Stopped",
-                    "current": None,
-                    "backgroundProcessing": False,
-                    "recordingState": "idle",
-                    "transcribing": False,
-                }
-            )
+            await ws.send_json(self.live_mic_state)
             async for message in ws:
                 if message.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
                     break
@@ -1943,6 +1964,8 @@ class FrontendSmokeBackend:
             "visualizerBarCount": 45,
             "overlayVisualizerStyle": "bars",
             "micAlwaysOn": False,
+            "micAutoStopEnabled": False,
+            "micAutoStopSilenceSeconds": 5,
             "onnxModel": "",
             "apiKeys": {
                 "soniox": "smoke-initial-soniox-key",
@@ -2397,12 +2420,13 @@ def evidence_path_for_report(path: Path) -> str:
         return str(resolved)
 
 
-async def capture_page_screenshot(cdp: CdpClient, *, output_dir: Path, label: str) -> str:
+async def capture_page_screenshot(cdp: CdpClient, *, output_dir: Path, label: str, reset_scroll: bool = True) -> str:
     output_dir.mkdir(parents=True, exist_ok=True)
     safe_label = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in label).strip("-")
     path = output_dir / f"{safe_label or 'screenshot'}.png"
-    await cdp.evaluate(
-        r"""
+    if reset_scroll:
+        await cdp.evaluate(
+            r"""
 (async () => {
   window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
   document.documentElement.scrollLeft = 0;
@@ -2418,8 +2442,8 @@ async def capture_page_screenshot(cdp: CdpClient, *, output_dir: Path, label: st
   return { scrollX: window.scrollX, scrollY: window.scrollY };
 })()
 """,
-        timeout=5,
-    )
+            timeout=5,
+        )
     result = await cdp.call("Page.captureScreenshot", {"format": "png", "fromSurface": True}, timeout=10)
     data = result.get("data")
     if not isinstance(data, str) or not data:
@@ -4460,6 +4484,170 @@ async def exercise_meeting_identity_settings(
         "ok": True,
         "state": state,
         "requests": sorted(required_requests),
+    }
+
+
+async def exercise_live_mic_auto_stop_settings(
+    cdp: CdpClient,
+    *,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+    screenshot_dir: Path | None,
+) -> dict[str, Any]:
+    controls = r"""
+  const label = Array.from(document.querySelectorAll('label')).find(node => node.textContent.trim() === 'Stop after silence');
+  const toggle = label && document.getElementById(label.htmlFor);
+  const secondsLabel = Array.from(document.querySelectorAll('label')).find(node => node.textContent.trim() === 'Silence duration');
+  const seconds = secondsLabel && document.getElementById(secondsLabel.htmlFor);
+"""
+    initial = await wait_for_interaction_state(
+        cdp,
+        label="live-mic-auto-stop-defaults",
+        timeout_sec=timeout_sec,
+        expression="(() => {"
+        + controls
+        + """
+  return { ok: !!toggle && !!seconds && toggle.getAttribute('aria-checked') === 'false'
+    && seconds.disabled && seconds.value === '5' && seconds.options.length === 10 };
+})()
+""",
+    )
+    await cdp.evaluate("(() => {" + controls + "toggle.click(); return true; })()")
+    await wait_for_interaction_state(
+        cdp,
+        label="live-mic-auto-stop-enabled",
+        timeout_sec=timeout_sec,
+        expression="(() => {"
+        + controls
+        + "return { ok: !toggle.disabled && !seconds.disabled && toggle.getAttribute('aria-checked') === 'true' }; })()",
+    )
+    await cdp.evaluate(
+        "(() => {"
+        + controls
+        + """
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(seconds, '10');
+  seconds.dispatchEvent(new Event('change', { bubbles: true }));
+  return true;
+})()
+"""
+    )
+    selected = await wait_for_interaction_state(
+        cdp,
+        label="live-mic-auto-stop-silence-duration",
+        timeout_sec=timeout_sec,
+        expression="(() => {"
+        + controls
+        + "return { ok: seconds.value === '10' && !seconds.disabled, value: seconds.value }; })()",
+    )
+    if (
+        backend.settings.get("micAutoStopEnabled") is not True
+        or backend.settings.get("micAutoStopSilenceSeconds") != 10
+    ):
+        raise RuntimeError("Live Mic automatic stop settings were not persisted by the browser.")
+    screenshot = None
+    if screenshot_dir is not None:
+        await cdp.evaluate(
+            "(() => {" + controls + "label.scrollIntoView({ block: 'center', behavior: 'instant' }); return true; })()"
+        )
+        await asyncio.sleep(0.3)
+        screenshot = await capture_page_screenshot(
+            cdp, output_dir=screenshot_dir, label="live-mic-auto-stop-settings", reset_scroll=False
+        )
+    return {
+        "name": "live-mic-auto-stop-settings",
+        "ok": True,
+        "initial": initial,
+        "selected": selected,
+        "screenshot": screenshot,
+    }
+
+
+async def exercise_live_mic_consecutive_recordings(
+    cdp: CdpClient,
+    *,
+    backend: FrontendSmokeBackend,
+    timeout_sec: float,
+    screenshot_dir: Path | None,
+) -> dict[str, Any]:
+    original_state = dict(backend.live_mic_state)
+    backend.live_mic_controls.clear()
+    backend.live_mic_state.update(
+        sessionId="smoke-previous-mic",
+        recordingState="finalizing",
+        status="Transcribing...",
+        transcribing=True,
+        backgroundProcessing=True,
+    )
+    await backend.broadcast_event(backend.live_mic_state)
+    await wait_for_interaction_state(
+        cdp,
+        label="live-mic-can-restart",
+        timeout_sec=timeout_sec,
+        expression="(() => { const button = document.getElementById('live-mic-toggle-button'); return { ok: button?.getAttribute('aria-label') === 'Start next recording' && !button.disabled }; })()",
+    )
+    await cdp.evaluate("document.getElementById('live-mic-toggle-button').click()")
+    queued = await wait_for_interaction_state(
+        cdp,
+        label="live-mic-start-queued",
+        timeout_sec=timeout_sec,
+        expression="(() => { const button = document.getElementById('live-mic-toggle-button'); return { ok: button?.getAttribute('aria-label') === 'Cancel next recording' && !button.disabled && document.body.innerText.includes('Starts as soon as the microphone is ready') }; })()",
+    )
+    screenshot = None
+    if screenshot_dir is not None:
+        screenshot = await capture_page_screenshot(cdp, output_dir=screenshot_dir, label="live-mic-next-recording")
+    await cdp.evaluate("document.getElementById('live-mic-toggle-button').click()")
+    await wait_for_interaction_state(
+        cdp,
+        label="live-mic-start-canceled",
+        timeout_sec=timeout_sec,
+        expression="(() => { const button = document.getElementById('live-mic-toggle-button'); return { ok: button?.getAttribute('aria-label') === 'Start next recording' && !button.disabled }; })()",
+    )
+    if backend.live_mic_controls != ["start", "stop"] or backend.live_mic_state["micStartPending"]:
+        raise RuntimeError("Live Mic queued start did not expose a working cancellation.")
+    await backend.broadcast_event(
+        {"apiVersion": "1", "type": "session_started", "sessionId": "smoke-next-mic", "session": {}}
+    )
+    backend.live_mic_state.update(
+        sessionId="smoke-next-mic",
+        recordingState="recording",
+        listening=True,
+        status="Listening",
+        transcribing=False,
+        micStartPending=False,
+    )
+    await backend.broadcast_event(backend.live_mic_state)
+    await backend.broadcast_event(
+        {
+            "apiVersion": "1",
+            "type": "transcript",
+            "sessionId": "smoke-next-mic",
+            "isFinal": True,
+            "text": "The next dictation stays visible.",
+        }
+    )
+    await backend.broadcast_event(
+        {
+            "apiVersion": "1",
+            "type": "session_finished",
+            "sessionId": "smoke-previous-mic",
+            "session": {"content": "Previous dictation."},
+        }
+    )
+    overlapping = await wait_for_interaction_state(
+        cdp,
+        label="live-mic-late-finalizer",
+        timeout_sec=timeout_sec,
+        expression="(() => { const button = document.getElementById('live-mic-toggle-button'); const text = document.querySelector('[data-testid=\"live-mic-transcript-output\"]')?.textContent || ''; return { ok: button?.getAttribute('aria-label') === 'Stop recording' && text.includes('The next dictation stays visible.') && !text.includes('Previous dictation.'), text }; })()",
+    )
+    backend.live_mic_state = original_state
+    await backend.broadcast_event(original_state)
+    return {
+        "name": "live-mic-consecutive-recordings",
+        "ok": True,
+        "queued": queued,
+        "overlapping": overlapping,
+        "controls": list(backend.live_mic_controls),
+        "screenshot": screenshot,
     }
 
 
@@ -8063,6 +8251,14 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                 interaction_checks: list[dict[str, Any]] = []
                 if route == "/":
                     interaction_checks.append(
+                        await exercise_live_mic_consecutive_recordings(
+                            cdp,
+                            backend=backend,
+                            timeout_sec=args.page_timeout_sec,
+                            screenshot_dir=screenshot_dir,
+                        )
+                    )
+                    interaction_checks.append(
                         await exercise_history_interactions(
                             cdp,
                             backend=backend,
@@ -8122,6 +8318,14 @@ async def run_browser_smoke(args: argparse.Namespace) -> dict[str, Any]:
                         )
                     )
                 elif route == "/settings":
+                    interaction_checks.append(
+                        await exercise_live_mic_auto_stop_settings(
+                            cdp,
+                            backend=backend,
+                            timeout_sec=args.page_timeout_sec,
+                            screenshot_dir=screenshot_dir,
+                        )
+                    )
                     interaction_checks.append(
                         await exercise_settings_interactions(
                             cdp,

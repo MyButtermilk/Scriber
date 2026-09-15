@@ -378,6 +378,16 @@ class Config:
     SEGMENT_SPEECH_WITH_VAD = str(
         _json_settings.get("segmentSpeechWithVad", os.getenv("SCRIBER_SEGMENT_SPEECH_WITH_VAD", "0"))
     ).strip().lower() in {"1", "true", "yes", "on"}
+    MIC_AUTO_STOP_ENABLED = str(_json_settings.get("micAutoStopEnabled", False)).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    _mic_auto_stop_seconds = _json_settings.get("micAutoStopSilenceSeconds", 5)
+    MIC_AUTO_STOP_SILENCE_SECONDS = (
+        _mic_auto_stop_seconds if type(_mic_auto_stop_seconds) is int and 1 <= _mic_auto_stop_seconds <= 10 else 5
+    )
     MIC_POST_RECORDING_PREWARM_SECONDS = _env_float(
         "SCRIBER_MIC_POST_RECORDING_PREWARM_SECONDS",
         120.0,
@@ -855,6 +865,18 @@ ${output}"""
         os.environ["SCRIBER_SEGMENT_SPEECH_WITH_VAD"] = "1" if cls.SEGMENT_SPEECH_WITH_VAD else "0"
         global _json_settings
         _json_settings["segmentSpeechWithVad"] = cls.SEGMENT_SPEECH_WITH_VAD
+
+    @classmethod
+    def set_mic_auto_stop_enabled(cls, enabled: bool) -> None:
+        cls.MIC_AUTO_STOP_ENABLED = bool(enabled)
+        _json_settings["micAutoStopEnabled"] = cls.MIC_AUTO_STOP_ENABLED
+
+    @classmethod
+    def set_mic_auto_stop_silence_seconds(cls, seconds: int) -> None:
+        if type(seconds) is not int or not 1 <= seconds <= 10:
+            raise ValueError("Microphone silence timeout must be an integer from 1 to 10 seconds")
+        cls.MIC_AUTO_STOP_SILENCE_SECONDS = seconds
+        _json_settings["micAutoStopSilenceSeconds"] = seconds
 
     @classmethod
     def transcription_provider_models(cls) -> dict[str, str]:
