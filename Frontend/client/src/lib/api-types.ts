@@ -705,6 +705,7 @@ export interface BackendStateResponse {
   backgroundProcessing: boolean;
   recordingState: string;
   transcribing: boolean;
+  micStartPending?: boolean;
 }
 
 export interface LiveMicStopRequestResponse {
@@ -1105,6 +1106,8 @@ export interface SettingsResponse {
   favoriteMic?: string;
   favoriteMicAvailable?: boolean;
   micAlwaysOn?: boolean;
+  micAutoStopEnabled?: boolean;
+  micAutoStopSilenceSeconds?: number;
   segmentSpeechWithVad?: boolean;
   debug?: boolean;
   diagnosticLoggingEnabled?: boolean;
@@ -1154,6 +1157,8 @@ export interface SettingsUpdatePayload {
   micDevice?: string;
   favoriteMic?: string;
   micAlwaysOn?: boolean;
+  micAutoStopEnabled?: boolean;
+  micAutoStopSilenceSeconds?: number;
   segmentSpeechWithVad?: boolean;
   debug?: boolean;
   diagnosticLoggingEnabled?: boolean;

@@ -1,6 +1,13 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const transcriptionTranslations = {
+  "Preparing next recording": "Nächste Aufnahme wird vorbereitet",
+  "Starts as soon as the microphone is ready": "Startet, sobald das Mikrofon bereit ist",
+  "You can start your next recording now": "Du kannst jetzt die nächste Aufnahme starten",
+  "Cancel next recording": "Nächste Aufnahme abbrechen",
+  "Start next recording": "Nächste Aufnahme starten",
+  "Next recording queued. Starts as soon as the microphone is ready.":
+    "Nächste Aufnahme vorgemerkt. Sie startet, sobald das Mikrofon bereit ist.",
   "Azure speaker diarization was unavailable. The transcript was completed without speaker labels.":
     "Die Azure-Sprechertrennung war nicht verfügbar. Das Transkript wurde ohne Sprecherzuordnung fertiggestellt.",
   "Add more files": "Weitere Dateien hinzufügen",

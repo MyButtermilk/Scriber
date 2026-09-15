@@ -576,7 +576,7 @@ def test_started_replay_completes_only_after_bound_session_finished_marker():
 def test_manual_stop_is_ready_requested_and_completed_with_bound_attestations():
     assert 0.5 <= PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS <= 2.0
     assert "await asyncio.sleep(PROVIDER_REPLAY_MANUAL_STOP_VISIBLE_HOLD_SECONDS)" in inspect.getsource(
-        ScriberWebController.stop_listening
+        ScriberWebController._stop_listening_session
     )
     ticks = iter((101, 102, 103))
     registry = ProviderReplayRegistry(

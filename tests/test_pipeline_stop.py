@@ -32,6 +32,7 @@ from websockets.protocol import State
 
 import src.pipeline as pipeline_module
 from src.config import Config
+from src.mic_silence_stop import MicSilenceStopObserver
 from src.microphone import MicrophoneInput
 from src.pipeline import (
     LIVE_STT_STOP_END_FRAME_FINALIZES,
@@ -64,6 +65,65 @@ def test_microphone_transport_has_no_silently_ignored_analyzer_arguments():
 
     assert "vad_analyzer" not in parameters
     assert "turn_analyzer" not in parameters
+
+
+@pytest.mark.asyncio
+async def test_pipeline_worker_silence_stop_preserves_audio():
+    from pipecat.audio.vad.vad_analyzer import VADState
+
+    clock = SimpleNamespace(now=0.0)
+    timed_out = asyncio.Event()
+    received = []
+
+    async def _analyze(_pcm):
+        clock.now += 0.032
+        return VADState.QUIET
+
+    analyzer = SimpleNamespace(
+        set_sample_rate=lambda _rate: None,
+        analyze_audio=_analyze,
+        cleanup=AsyncMock(),
+    )
+    observer = MicSilenceStopObserver(
+        analyzer=analyzer,
+        silence_seconds=1,
+        on_timeout=timed_out.set,
+        clock=lambda: clock.now,
+    )
+
+    class _Provider(FrameProcessor):
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if direction == FrameDirection.DOWNSTREAM:
+                received.append(frame)
+            await self.push_frame(frame, direction)
+
+    worker = PipelineWorker(
+        Pipeline([observer, _Provider()]),
+        params=PipelineParams(),
+        enable_rtvi=False,
+        enable_turn_tracking=False,
+    )
+    runner = WorkerRunner(handle_sigint=False, handle_sigterm=False)
+    await runner.add_workers(worker)
+    run_task = asyncio.create_task(runner.run())
+    audio = [InputAudioRawFrame(audio=bytes(1024), sample_rate=16_000, num_channels=1) for _ in range(40)]
+    try:
+        await worker.queue_frames(audio)
+        await asyncio.wait_for(timed_out.wait(), timeout=2.0)
+        await worker.stop_when_done()
+        await asyncio.wait_for(run_task, timeout=2.0)
+        assert [frame for frame in received if isinstance(frame, InputAudioRawFrame)] == audio
+        assert not any(
+            isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)) for frame in received
+        )
+    finally:
+        if not worker.has_finished():
+            await worker.cancel(reason="test cleanup")
+        if not run_task.done():
+            await runner.cancel()
+        await asyncio.gather(run_task, return_exceptions=True)
+    analyzer.cleanup.assert_awaited_once()
 
 
 def test_rust_capture_wav_plan_is_limited_to_exact_speechmatics_batch_route(monkeypatch):
@@ -2622,6 +2682,89 @@ async def test_terminal_buffered_provider_skips_segmented_final_wait():
     assert events.index("audio_stop") < events.index("task_stop_when_done")
     assert events.index("audio_stop") < events.index("provider_ingress_drained")
     assert events.index("provider_ingress_drained") < events.index("task_stop_when_done")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openai", "azure_mai"])
+async def test_capture_release_callback_precedes_provider_finalization_and_retires_prewarm(monkeypatch, provider):
+    monkeypatch.setattr(Config, "MIC_ALWAYS_ON", True)
+    events: list[str] = []
+    prewarm = _DummyPrewarmManager(events)
+    counts_at_release = []
+
+    async def _capture_stopped():
+        assert pipeline.native_audio_stop_confirmed() is True
+        assert pipeline.mic_prewarm_manager is None
+        counts_at_release.append((prewarm.detach_calls, prewarm.resume_calls))
+        events.append("capture_released")
+
+    pipeline = ScriberPipeline(
+        service_name=provider,
+        mic_prewarm_manager=prewarm,
+        on_capture_stopped=_capture_stopped,
+    )
+    pipeline.is_active = True
+    pipeline._start_done.clear()
+    pipeline.task = _RecordingStopTask(pipeline._start_done, events)
+    pipeline.audio_input = _SegmentedFinalizationAudioInput(events)
+    pipeline.pipeline = _DummyRuntimePipelineGraph(
+        [
+            SegmentedSTTRecordingGate(
+                vad_segmentation_enabled=False,
+                stop_strategy=_live_stt_stop_strategy(provider),
+            )
+        ]
+    )
+
+    async def _drain(_audio_input):
+        events.append("provider_ingress_drained")
+        return True
+
+    async def _flush():
+        events.append("provider_finalization")
+        return False
+
+    pipeline._await_provider_ingress_audio_drain = AsyncMock(side_effect=_drain)
+    pipeline._flush_segmented_stt_buffers = AsyncMock(side_effect=_flush)
+    pipeline._flush_live_vad_finalization_turn = AsyncMock(side_effect=_flush)
+    await pipeline.stop(timeout_secs=1.0)
+    await pipeline._notify_capture_stopped()
+
+    assert events.index("provider_ingress_drained") < events.index("capture_released")
+    assert events.index("capture_released") < events.index("provider_finalization")
+    assert events.count("capture_released") == 1
+    assert counts_at_release == [(prewarm.detach_calls, prewarm.resume_calls)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirmation", [False, None])
+async def test_unknown_native_stop_cannot_notify_capture_released(confirmation):
+    callback = AsyncMock()
+    manager = object()
+    pipeline = ScriberPipeline(on_capture_stopped=callback, mic_prewarm_manager=manager)
+    pipeline._native_audio_stop_confirmation = confirmation
+    await pipeline._notify_capture_stopped()
+    callback.assert_not_awaited()
+    assert pipeline.mic_prewarm_manager is manager
+    assert pipeline._capture_stopped_notified is False
+
+
+@pytest.mark.asyncio
+async def test_native_stop_without_successful_eos_drain_cannot_release_early():
+    class _FailedDrainAudioInput:
+        async def stop(self, _frame, *, close_stream):
+            raise RuntimeError("rustFramePipeMissingEndOfStream")
+
+        def native_audio_stop_confirmed(self):
+            return True
+
+    callback = AsyncMock()
+    pipeline = ScriberPipeline(on_capture_stopped=callback)
+    pipeline.audio_input = _FailedDrainAudioInput()
+    await pipeline._cleanup_audio_input()
+    assert pipeline.native_audio_stop_confirmed() is True
+    await pipeline._notify_capture_stopped()
+    callback.assert_not_awaited()
 
 
 @pytest.mark.asyncio

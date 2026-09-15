@@ -63,6 +63,7 @@ export type ScriberWebSocketMessage =
       backgroundProcessing: boolean;
       recordingState: string;
       transcribing: boolean;
+      micStartPending?: boolean;
       pendingPostProcessingFallback?: PostProcessingFallbackMessage | null;
     })
   | (BaseWsMessage & {
@@ -71,6 +72,7 @@ export type ScriberWebSocketMessage =
       listening: boolean;
       recordingState?: string;
       transcribing?: boolean;
+      micStartPending?: boolean;
       inputWarning?: string;
       inputWarningCode?: string;
       inputWarningActions?: InputWarningAction[];

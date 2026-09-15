@@ -1,6 +1,15 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Stop after silence": "Bei Stille stoppen",
+  "Automatically stops Live Mic after you finish speaking. Applies to new recordings.":
+    "Stoppt Live Mic automatisch, wenn du nicht mehr sprichst. Gilt für neue Aufnahmen.",
+  "Silence duration": "Dauer der Stille",
+  "1 second": "1 Sekunde",
+  "{{seconds}} seconds": "{{seconds}} Sekunden",
+  "Automatic stop settings updated.": "Einstellungen für den automatischen Stopp aktualisiert.",
+  "Automatic stop settings could not be saved.":
+    "Die Einstellungen für den automatischen Stopp konnten nicht gespeichert werden.",
   "Live partials and completed turns · up to 60 minutes · Meta Model API key":
     "Live-Zwischenstände und abgeschlossene Äußerungen · bis 60 Minuten · Meta-Model-API-Schlüssel",
   "Transcribes after stop · files up to 10 minutes · Meta Model API key":

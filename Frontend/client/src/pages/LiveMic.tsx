@@ -564,6 +564,7 @@ export default function LiveMic() {
   const { checkNow: checkBackendStatus } = useBackendStatus();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
+  const [micStartPending, setMicStartPending] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [status, setStatus] = useState<string>("Stopped");
   const [inputWarning, setInputWarning] = useState("");
@@ -593,7 +594,10 @@ export default function LiveMic() {
   const transcriptsQueryKey = useMemo(() => transcriptHistoryQueryKey("mic", debouncedSearch), [debouncedSearch]);
   const { refreshNow: refreshMicHistory } = useTranscriptAutoRefresh({ queryKey: transcriptsQueryKey });
   const hasActiveSession =
-    recordingState === "initializing" || recordingState === "recording" || recordingState === "finalizing";
+    micStartPending ||
+    recordingState === "initializing" ||
+    recordingState === "recording" ||
+    recordingState === "finalizing";
   const isMicCaptureActive = recordingState === "initializing" || recordingState === "recording";
   const isPreparing = recordingState === "initializing";
   const isTranscribing = recordingState === "finalizing";
@@ -688,6 +692,7 @@ export default function LiveMic() {
       }
 
       const nextState = coerceRecordingState(state.recordingState, state.listening ? "recording" : "idle");
+      setMicStartPending(state.micStartPending === true);
       setRecordingState(nextState);
       setIsRecording(nextState === "recording");
       if (nextState === "recording") {
@@ -751,6 +756,9 @@ export default function LiveMic() {
           }
           {
             const nextState = coerceRecordingState(msg.recordingState, msg.listening ? "recording" : "idle");
+            if (typeof msg.micStartPending === "boolean") {
+              setMicStartPending(msg.micStartPending);
+            }
             setRecordingState(nextState);
             setIsRecording(nextState === "recording");
             if (nextState !== "recording") {
@@ -798,6 +806,7 @@ export default function LiveMic() {
             activeSessionIdRef.current = msgSessionId;
           }
           audioLevelRef.current = 0;
+          setMicStartPending(false);
           recordingStartedAtMsRef.current = Date.now();
           setElapsed(0);
           setRecordingState("initializing");
@@ -909,7 +918,7 @@ export default function LiveMic() {
   const handleToggle = async () => {
     if (toggleRequestInFlightRef.current) return;
     toggleRequestInFlightRef.current = true;
-    const action = hasActiveSession ? "stop" : "start";
+    const action = isMicCaptureActive || micStartPending ? "stop" : "start";
     setToggleAction(action);
     if (action === "start") {
       recordingStartedAtMsRef.current = Date.now();
@@ -1044,30 +1053,34 @@ export default function LiveMic() {
       ? t("Starting")
       : toggleAction === "stop"
         ? t("Stopping")
-        : isRecording
-          ? t("Listening")
-          : isPreparing
-            ? t("Preparing microphone")
-            : isTranscribing
-              ? t("Transcribing")
-              : isConnected
-                ? t("Ready")
-                : t("Offline");
+        : micStartPending
+          ? t("Preparing next recording")
+          : isRecording
+            ? t("Listening")
+            : isPreparing
+              ? t("Preparing microphone")
+              : isTranscribing
+                ? t("Transcribing")
+                : isConnected
+                  ? t("Ready")
+                  : t("Offline");
 
   const stageStatusHint =
     toggleAction === "start"
       ? t("Connecting to your input device")
       : toggleAction === "stop"
         ? t("Saving your recording")
-        : isRecording
-          ? t("Use the microphone button to stop")
-          : isPreparing
-            ? t("Connecting to your input device")
-            : isTranscribing
-              ? t("Finalizing your transcript")
-              : isConnected
-                ? t("Use the microphone button to start")
-                : t("Reconnecting to Scriber");
+        : micStartPending
+          ? t("Starts as soon as the microphone is ready")
+          : isRecording
+            ? t("Use the microphone button to stop")
+            : isPreparing
+              ? t("Connecting to your input device")
+              : isTranscribing
+                ? t("You can start your next recording now")
+                : isConnected
+                  ? t("Use the microphone button to start")
+                  : t("Reconnecting to Scriber");
 
   return (
     <div className="app-page-shell live-mic-page px-4 py-5 md:px-6 md:py-6" data-page-shell="live-mic">
@@ -1087,7 +1100,7 @@ export default function LiveMic() {
                   className={`h-2 w-2 rounded-full ${
                     isRecording
                       ? "bg-red-500 shadow-[0_0_0_4px_rgba(239,68,68,0.12)]"
-                      : toggleAction !== null || isPreparing || isTranscribing
+                      : toggleAction !== null || micStartPending || isPreparing || isTranscribing
                         ? "bg-amber-400"
                         : isConnected
                           ? "bg-emerald-500"
@@ -1102,18 +1115,20 @@ export default function LiveMic() {
                 {/* Controls */}
                 <GlossyMicButton
                   isActive={isMicCaptureActive}
-                  disabled={isTranscribing || toggleAction !== null || (!isConnected && !hasActiveSession)}
-                  busy={toggleAction !== null || isPreparing || isTranscribing}
+                  disabled={toggleAction !== null || (!isConnected && !isMicCaptureActive && !micStartPending)}
+                  busy={toggleAction !== null || micStartPending || isPreparing}
                   label={
                     toggleAction === "start"
                       ? t("Starting recording")
                       : toggleAction === "stop"
                         ? t("Stopping recording")
-                        : isTranscribing
-                          ? t("Transcribing recording")
-                          : hasActiveSession
+                        : micStartPending
+                          ? t("Cancel next recording")
+                          : isMicCaptureActive
                             ? t("Stop recording")
-                            : t("Start recording")
+                            : isTranscribing
+                              ? t("Start next recording")
+                              : t("Start recording")
                   }
                   audioLevelRef={audioLevelRef}
                   onToggle={handleToggle}
@@ -1142,7 +1157,7 @@ export default function LiveMic() {
                       : t("Speech appears here while you record.")}
                   </p>
                 </div>
-                {(isPreparing || isTranscribing) && (
+                {(micStartPending || isPreparing || isTranscribing) && (
                   <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 text-ui-micro font-semibold text-amber-700 dark:bg-amber-950/40 dark:text-amber-300">
                     <WavePhysicsLoader size="micro" />
                     {stageStatusLabel}
@@ -1153,13 +1168,15 @@ export default function LiveMic() {
               {/* Live Text Output - Debossed status well for unified design */}
               <div className="live-mic-transcript-well flex min-h-[140px] flex-1 items-center p-5 text-left md:min-h-[168px] md:p-6">
                 <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-                  {isRecording
-                    ? t("Recording started.")
-                    : isPreparing
-                      ? t("Preparing microphone.")
-                      : isTranscribing
-                        ? t("Transcribing recording.")
-                        : t("Recording stopped.")}
+                  {micStartPending
+                    ? t("Next recording queued. Starts as soon as the microphone is ready.")
+                    : isRecording
+                      ? t("Recording started.")
+                      : isPreparing
+                        ? t("Preparing microphone.")
+                        : isTranscribing
+                          ? t("Transcribing recording.")
+                          : t("Recording stopped.")}
                 </p>
                 <div
                   ref={transcriptScrollRef}

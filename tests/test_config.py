@@ -12,6 +12,57 @@ import src.config as config_module
 from src.config import Config
 
 
+def _read_fresh_mic_auto_stop(tmp_path):
+    env = os.environ.copy()
+    env["SCRIBER_DATA_DIR"] = str(tmp_path)
+    env["SCRIBER_SKIP_LEGACY_DATA_MIGRATION"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json; from src.config import Config; "
+            "print(json.dumps([Config.MIC_AUTO_STOP_ENABLED, Config.MIC_AUTO_STOP_SILENCE_SECONDS]))",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return json.loads(result.stdout.strip())
+
+
+def test_microphone_auto_stop_defaults_off_with_five_second_timeout(tmp_path):
+    assert _read_fresh_mic_auto_stop(tmp_path) == [False, 5]
+
+
+def test_microphone_auto_stop_persists_enabled_and_timeout_across_restart(tmp_path, monkeypatch):
+    monkeypatch.setattr(config_module, "_json_settings", {})
+    monkeypatch.setattr(config_module, "_JSON_SETTINGS_PATH", tmp_path / "settings.json")
+    monkeypatch.setattr(Config, "MIC_AUTO_STOP_ENABLED", False)
+    monkeypatch.setattr(Config, "MIC_AUTO_STOP_SILENCE_SECONDS", 5)
+    Config.set_mic_auto_stop_enabled(True)
+    Config.set_mic_auto_stop_silence_seconds(7)
+    Config.persist_json_settings()
+    assert _read_fresh_mic_auto_stop(tmp_path) == [True, 7]
+
+
+@pytest.mark.parametrize("invalid", [0, 11, True, 1.5, None, "5"])
+def test_microphone_auto_stop_rejects_invalid_timeout_without_mutation(monkeypatch, invalid):
+    monkeypatch.setattr(config_module, "_json_settings", {"micAutoStopSilenceSeconds": 7})
+    monkeypatch.setattr(Config, "MIC_AUTO_STOP_SILENCE_SECONDS", 7)
+    with pytest.raises(ValueError, match="integer from 1 to 10"):
+        Config.set_mic_auto_stop_silence_seconds(invalid)
+    assert Config.MIC_AUTO_STOP_SILENCE_SECONDS == 7
+    assert config_module._json_settings["micAutoStopSilenceSeconds"] == 7
+
+
+@pytest.mark.parametrize("invalid", [0, 11, True, "invalid"])
+def test_invalid_persisted_microphone_timeout_safely_uses_default(tmp_path, invalid):
+    (tmp_path / "settings.json").write_text(json.dumps({"micAutoStopSilenceSeconds": invalid}), encoding="utf-8")
+    assert _read_fresh_mic_auto_stop(tmp_path) == [False, 5]
+
+
 def _read_fresh_shortcut_config(tmp_path: Path) -> dict[str, str]:
     env = os.environ.copy()
     env["SCRIBER_DATA_DIR"] = str(tmp_path)

@@ -148,6 +148,15 @@ Backend and runtime:
   conflicts, the shared native-audio lease, prewarm, or the global active flag.
 - `src/pipeline.py`: STT pipeline orchestration, provider factory, analyzer
   cache, mic resolution, async/direct transcription.
+- `src/mic_silence_stop.py`: optional session-local Silero silence observer for
+  Live Mic (`micAutoStopEnabled`, default off; `micAutoStopSilenceSeconds`, 1–10,
+  default 5). It passes PCM through without provider VAD/turn frames and requests
+  one normal stop. Confirmed native stop plus EOS/provider-ingress drain may
+  release audio admission before provider finalization. Keep finalizing records
+  and ordered insertion futures session-owned, preserve raw/polishing mode for
+  a queued start, and prevent old UI/overlay callbacks or prewarm cleanup from
+  affecting a newer recording. Caller cancellation must wait for finalization;
+  shutdown joins every finalizer before closing the shared polisher.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
   provider/route/model audio-format registry, ffprobe container+codec
   validation, pass-through-first batch selection, bounded ffmpeg preparation,

@@ -22,7 +22,11 @@ import { ToastAction } from "@/components/ui/toast";
 import { Download } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { SETTINGS_CREDENTIAL_REQUEST_STORAGE_KEY, SETTINGS_SECTION_REQUEST_STORAGE_KEY } from "@/lib/storage-keys";
-import { isBusyForUpdatePrompt, trayRecordingStateFromMessage } from "@/lib/runtime-message-state";
+import {
+  createLiveMicSessionMessageGate,
+  isBusyForUpdatePrompt,
+  trayRecordingStateFromMessage,
+} from "@/lib/runtime-message-state";
 import { WavePhysicsLoader } from "@/components/ui/wave-physics-loader";
 import {
   checkDesktopUpdateIfDue,
@@ -314,6 +318,7 @@ const DESKTOP_UPDATE_BACKGROUND_POLL_MS = 6 * 60 * 60 * 1000;
 
 function TrayRecordingStateBridge() {
   const lastStateRef = useRef("");
+  const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
 
   const publish = useCallback((active: boolean, mode: string) => {
     if (!isTauriRuntime()) {
@@ -331,13 +336,14 @@ function TrayRecordingStateBridge() {
 
   const handleWsMessage = useCallback(
     (msg: ScriberWebSocketMessage) => {
+      if (!acceptSessionMessage(msg)) return;
       const next = trayRecordingStateFromMessage(msg);
       if (!next) {
         return;
       }
       publish(next.active, next.mode);
     },
-    [publish],
+    [acceptSessionMessage, publish],
   );
 
   useSharedWebSocket(handleWsMessage);
@@ -415,6 +421,7 @@ function TauriNavigationBridge() {
 }
 
 function DesktopUpdateAutoCheckBridge() {
+  const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const { toast, dismiss } = useToast();
   const [, setLocation] = useLocation();
   const { t } = useI18n();
@@ -523,6 +530,7 @@ function DesktopUpdateAutoCheckBridge() {
 
   const handleWsMessage = useCallback(
     (msg: ScriberWebSocketMessage) => {
+      if (!acceptSessionMessage(msg)) return;
       const busy = isBusyForUpdatePrompt(msg);
       if (busy === null) {
         return;
@@ -533,7 +541,7 @@ function DesktopUpdateAutoCheckBridge() {
         maybeNotify(getCachedDesktopUpdateStatus());
       }
     },
-    [maybeNotify],
+    [acceptSessionMessage, maybeNotify],
   );
 
   useSharedWebSocket(handleWsMessage);

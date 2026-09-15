@@ -1,5 +1,33 @@
 import type { ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 
+/** Follow the current capture while older recordings finish independently. */
+export function createLiveMicSessionMessageGate(): (message: ScriberWebSocketMessage) => boolean {
+  let activeSessionId: string | null = null;
+  return (message) => {
+    const sessionId = typeof message.sessionId === "string" && message.sessionId ? message.sessionId : null;
+    if (message.type === "state" || message.type === "session_started") {
+      activeSessionId = sessionId;
+      return true;
+    }
+    if (
+      !["status", "audio_level", "input_warning", "transcript", "transcribing", "session_finished", "error"].includes(
+        message.type,
+      )
+    ) {
+      return true;
+    }
+    if (sessionId && activeSessionId && sessionId !== activeSessionId) {
+      return false;
+    }
+    if (message.type === "session_finished" || message.type === "error") {
+      activeSessionId = null;
+    } else if (sessionId && !activeSessionId) {
+      activeSessionId = sessionId;
+    }
+    return true;
+  };
+}
+
 export function isBusyForUpdatePrompt(message: ScriberWebSocketMessage): boolean | null {
   if (message.type === "meeting_state") {
     return ["starting", "recording", "paused", "stopping", "finalizing", "analyzing"].includes(
@@ -16,6 +44,8 @@ export function isBusyForUpdatePrompt(message: ScriberWebSocketMessage): boolean
     const recordingState = String(message.recordingState || "").toLowerCase();
     return Boolean(
       message.listening ||
+      message.micStartPending ||
+      (message.type === "state" && message.backgroundProcessing) ||
       (message.type === "state" && message.voiceEnrollmentActive) ||
       message.transcribing ||
       (recordingState && !["idle", "completed", "failed", "stopped"].includes(recordingState)),
@@ -51,6 +81,9 @@ export function trayRecordingStateFromMessage(
   }
 
   const recordingState = String(message.recordingState || "").toLowerCase();
+  if (message.micStartPending) {
+    return { active: true, mode: "initializing" };
+  }
   if (recordingState === "initializing") {
     return { active: true, mode: "initializing" };
   }

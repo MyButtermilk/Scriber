@@ -103,6 +103,7 @@ import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/Web
 import { QueryErrorState } from "@/components/ui/query-error-state";
 import { PageIntro } from "@/components/page-intro";
 import { LocalPolishingSettings } from "@/components/settings/LocalPolishingSettings";
+import { LiveMicAutoStopSettings } from "@/components/settings/LiveMicAutoStopSettings";
 import {
   checkDesktopUpdate,
   checkDesktopUpdateIfDue,
@@ -1991,6 +1992,9 @@ export default function Settings() {
   const [isCheckingDesktopUpdate, setIsCheckingDesktopUpdate] = useState(false);
   const [isInstallingDesktopUpdate, setIsInstallingDesktopUpdate] = useState(false);
   const [micAlwaysOn, setMicAlwaysOn] = useState(false);
+  const [micAutoStopEnabled, setMicAutoStopEnabled] = useState(false);
+  const [micAutoStopSilenceSeconds, setMicAutoStopSilenceSeconds] = useState(5);
+  const [micAutoStopSaving, setMicAutoStopSaving] = useState(false);
   const [segmentSpeechWithVad, setSegmentSpeechWithVad] = useState(false);
   const [segmentSpeechWithVadSaving, setSegmentSpeechWithVadSaving] = useState(false);
   const [favoriteMic, setFavoriteMic] = useState("");
@@ -2883,6 +2887,8 @@ export default function Settings() {
         setOverlayVisualizerStyle(normalizeOverlayVisualizerStyle(settings.overlayVisualizerStyle));
         setDiagnosticLoggingEnabled(settings.diagnosticLoggingEnabled !== false);
         setMicAlwaysOn(settings.micAlwaysOn === true);
+        setMicAutoStopEnabled(settings.micAutoStopEnabled === true);
+        setMicAutoStopSilenceSeconds(settings.micAutoStopSilenceSeconds ?? 5);
         setSegmentSpeechWithVad(settings.segmentSpeechWithVad === true);
         setFavoriteMic(settings.favoriteMic || "");
 
@@ -4433,6 +4439,27 @@ export default function Settings() {
     }
   };
 
+  const handleMicAutoStopChange = async (
+    patch: Pick<SettingsUpdatePayload, "micAutoStopEnabled" | "micAutoStopSilenceSeconds">,
+  ) => {
+    if (micAutoStopSaving) return;
+    setMicAutoStopSaving(true);
+    try {
+      const updated = await updateSettings(patch);
+      setMicAutoStopEnabled(updated.micAutoStopEnabled === true);
+      setMicAutoStopSilenceSeconds(updated.micAutoStopSilenceSeconds ?? 5);
+      toast({ title: t("Saved"), description: t("Automatic stop settings updated."), duration: 2000 });
+    } catch (error) {
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "Automatic stop settings could not be saved.", locale, t),
+        duration: 4000,
+      });
+    } finally {
+      setMicAutoStopSaving(false);
+    }
+  };
+
   const handleSegmentSpeechWithVadChange = async (enabled: boolean) => {
     if (segmentSpeechWithVadSaving) return;
     const previousValue = segmentSpeechWithVad;
@@ -5484,6 +5511,13 @@ export default function Settings() {
                     onCheckedChange={handleSegmentSpeechWithVadChange}
                   />
                 </SettingLine>
+
+                <LiveMicAutoStopSettings
+                  enabled={micAutoStopEnabled}
+                  silenceSeconds={micAutoStopSilenceSeconds}
+                  saving={micAutoStopSaving}
+                  onChange={handleMicAutoStopChange}
+                />
 
                 <SettingLine label={t("Global hotkey")} description={t("Shortcut to start or stop recording.")}>
                   <Dialog open={isRecordingHotkey} onOpenChange={setIsRecordingHotkey}>
@@ -6650,10 +6684,7 @@ export default function Settings() {
             {missingActiveCredentialRequirements.length > 0 && (
               <div className="rounded-xl border border-slate-200/80 bg-slate-50 p-2.5 text-[11px] leading-[15px] text-slate-600 dark:border-[var(--workspace-border)] dark:bg-[var(--live-well)] dark:text-slate-400">
                 <div className="flex gap-2">
-                  <Key
-                    className="mt-0.5 h-4 w-4 shrink-0 text-slate-500"
-                    aria-hidden="true"
-                  />
+                  <Key className="mt-0.5 h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
                   <div>
                     <p className="font-semibold">{t("Credential required before model selection.")}</p>
                     <p className="mt-1">

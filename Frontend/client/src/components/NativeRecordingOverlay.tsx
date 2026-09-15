@@ -5,6 +5,7 @@ import { Square } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { isTauriRuntime, loadBackendBaseUrlFromTauri, setTrayRecordingState, wsUrl } from "@/lib/backend";
 import { requestLiveMicStop } from "@/lib/live-mic-control";
+import { createLiveMicSessionMessageGate } from "@/lib/runtime-message-state";
 import MicrophoneEnergyField from "@/components/MicrophoneEnergyField";
 import MicrophoneBlueFlame, { BLUE_FLAME_PILL_BACKGROUND } from "@/components/MicrophoneBlueFlame";
 import type { OverlayVisualizerStyle } from "@/lib/api-types";
@@ -300,7 +301,7 @@ export default function NativeRecordingOverlay() {
     devOverlayStyleFromLocation(),
   );
   const rmsRef = useRef(devOverlayRmsFromLocation());
-  const activeSessionIdRef = useRef<string | null>(null);
+  const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const lastWsRmsAtRef = useRef(Number.NEGATIVE_INFINITY);
   const visualizerSettingsRequestRef = useRef<AbortController | null>(null);
   const isDevOverlayPreview = !isTauriRuntime() && devOverlayModeFromLocation() !== "hidden";
@@ -338,11 +339,7 @@ export default function NativeRecordingOverlay() {
 
   const applyWsMessage = useCallback(
     (msg: ScriberWebSocketMessage) => {
-      const msgSessionId = typeof msg.sessionId === "string" ? msg.sessionId : null;
-      const activeSessionId = activeSessionIdRef.current;
-      if (msgSessionId && activeSessionId && msgSessionId !== activeSessionId) {
-        return;
-      }
+      if (!acceptSessionMessage(msg)) return;
 
       switch (msg.type) {
         case "audio_level":
@@ -351,21 +348,17 @@ export default function NativeRecordingOverlay() {
           break;
         case "state":
         case "status":
-          if (msgSessionId && !activeSessionId) {
-            activeSessionIdRef.current = msgSessionId;
-          }
-          if (msg.recordingState === "finalizing" || msg.transcribing) {
-            setMode("transcribing");
+          if (msg.micStartPending) {
+            setMode("initializing");
           } else if (msg.recordingState === "recording" || msg.listening) {
             setMode("recording");
           } else if (msg.recordingState === "initializing") {
             setMode("initializing");
+          } else if (msg.recordingState === "finalizing" || msg.transcribing) {
+            setMode("transcribing");
           }
           break;
         case "session_started":
-          if (msgSessionId) {
-            activeSessionIdRef.current = msgSessionId;
-          }
           rmsRef.current = 0;
           setMode("initializing");
           break;
@@ -374,7 +367,6 @@ export default function NativeRecordingOverlay() {
           break;
         case "session_finished":
         case "error":
-          activeSessionIdRef.current = null;
           // In the desktop runtime, only the native overlay event may hide the
           // renderer. A terminal WebSocket message does not prove that the
           // always-on-top native window has completed its physical hide.
@@ -387,7 +379,7 @@ export default function NativeRecordingOverlay() {
           break;
       }
     },
-    [refreshVisualizerSettings],
+    [acceptSessionMessage, refreshVisualizerSettings],
   );
 
   useEffect(() => {

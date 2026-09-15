@@ -1029,6 +1029,23 @@ Live Mic claims before pipeline construction and releases before `_is_stopping`
 becomes false, so a queued toggle cannot enter between idle publication and
 lease release.
 
+Live Mic releases confirmed native capture after EOS and provider-ingress drain,
+before waiting for provider final text or polishing. Session-owned finalizers
+retain their transcript records and survive caller cancellation. A subsequent
+capture can start immediately after that release; its insertion waits on the
+previous finalizer, including across several overlapping recordings. Old
+callbacks cannot change a newer capture's status, overlay, or audio lease.
+An explicit start during native shutdown is cancellable and preserves its raw
+or post-processing mode. Shutdown drains all finalizers before closing polishing.
+
+The optional `micAutoStopEnabled` setting creates a session-local Silero
+observer before provider processing. `micAutoStopSilenceSeconds` is an integer
+from 1 through 10, default 5; the feature defaults off. The observer passes
+original audio through unchanged and emits no provider turn boundaries. Both
+quiet captured audio and elapsed time must reach the threshold; speech resets
+it, and stop/cancel disarms it. Its callback requests the ordinary supervised
+Live Mic stop only for the matching active session.
+
 Derived projections share the commit of their source generation. In particular,
 an analysis output and its automatic action-item snapshot are one transaction.
 Regeneration deletes automatic rows absent from the new generation; explicitly

@@ -17,6 +17,7 @@ import { fetchWithTimeout } from "@/lib/fetch-with-timeout";
 import { useSharedWebSocket, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
 import { useToast } from "@/hooks/use-toast";
 import { presentLiveMicControlFailure, requestLiveMicStart, requestLiveMicStop } from "@/lib/live-mic-control";
+import { createLiveMicSessionMessageGate } from "@/lib/runtime-message-state";
 import type { SettingsResponse } from "@/lib/api-types";
 import { useBackendStatus } from "@/hooks/use-backend-status";
 import { useI18n } from "@/i18n";
@@ -37,27 +38,32 @@ interface Transcript {
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [, setLocation] = useLocation();
   const [isRecording, setIsRecording] = useState(false);
+  const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const { toast } = useToast();
   const { checkNow: checkBackendStatus } = useBackendStatus();
   const { formatDate: formatLocalizedDate, t } = useI18n();
 
   // Track recording state via WebSocket
-  const handleWsMessage = useCallback((msg: ScriberWebSocketMessage) => {
-    if (!msg || typeof msg !== "object") return;
+  const handleWsMessage = useCallback(
+    (msg: ScriberWebSocketMessage) => {
+      if (!msg || typeof msg !== "object") return;
+      if (!acceptSessionMessage(msg)) return;
 
-    switch (msg.type) {
-      case "state":
-      case "status":
-        setIsRecording(!!msg.listening);
-        break;
-      case "session_started":
-        setIsRecording(true);
-        break;
-      case "session_finished":
-        setIsRecording(false);
-        break;
-    }
-  }, []);
+      switch (msg.type) {
+        case "state":
+        case "status":
+          setIsRecording(!!msg.listening || !!msg.micStartPending || msg.recordingState === "initializing");
+          break;
+        case "session_started":
+          setIsRecording(true);
+          break;
+        case "session_finished":
+          setIsRecording(false);
+          break;
+      }
+    },
+    [acceptSessionMessage],
+  );
 
   useSharedWebSocket(handleWsMessage);
 
