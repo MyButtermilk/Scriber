@@ -3488,7 +3488,7 @@ class ScriberWebController:
         self._pending_hotkey_toggle = False
         self._background_stop_task: asyncio.Task | None = None
         self._pending_live_mic_start: LiveMicStartCommand | None = None
-        self._live_mic_finalizer_tasks: set[asyncio.Task] = set()
+        self._live_mic_finalizer_tasks: set[asyncio.Future[Any]] = set()
         self._live_mic_finalizer_owners: dict[object, tuple[str, asyncio.Task]] = {}
         self._live_mic_finalizing_records: dict[str, TranscriptRecord] = {}
         self._live_mic_finalization_done: dict[str, asyncio.Future[None]] = {}
@@ -12017,6 +12017,12 @@ class ScriberWebController:
             if self._shutting_down:
                 return None
             if self._is_stopping or (self._background_stop_task is not None and not self._background_stop_task.done()):
+                if provider_replay_execution is not None:
+                    # Replay activation must retain its exact execution binding;
+                    # the ordinary continuation queue cannot carry that binding.
+                    raise ProviderReplayConflict(
+                        "provider replay cannot activate while live microphone stop is pending"
+                    )
                 self._queue_live_mic_start(post_process=post_process, tauri_hotkey_marker=tauri_hotkey_marker)
                 return None
             if self._is_listening:
@@ -13207,7 +13213,8 @@ class ScriberWebController:
             logger.info("Ignoring duplicate live mic toggle during startup grace window.")
         return True
 
-    async def stop_listening(self) -> ProviderUserError | None:
+    def _admit_live_mic_finalizer(self) -> asyncio.Future[ProviderUserError | None] | None:
+        """Register cleanup before it can wait on another capture transition."""
         stop_owner = object()
 
         async def finalize() -> ProviderUserError | None:
@@ -13219,9 +13226,16 @@ class ScriberWebController:
                     session_id, task = owned
                     self._complete_live_mic_finalizer(task, session_id=session_id)
 
+        finalizer = self._live_mic_finalizer_supervisor.spawn(finalize(), name="live_mic_finalize")
+        if finalizer is not None:
+            self._live_mic_finalizer_tasks.add(finalizer)
+            finalizer.add_done_callback(self._live_mic_finalizer_tasks.discard)
+        return finalizer
+
+    async def stop_listening(self) -> ProviderUserError | None:
         # An HTTP disconnect or cancelled hotkey waiter cannot abandon audio,
         # transcript persistence, or ordered injection owned by this stop.
-        finalizer = self._live_mic_finalizer_supervisor.spawn(finalize(), name="live_mic_finalize")
+        finalizer = self._admit_live_mic_finalizer()
         if finalizer is None:
             return None
         result, pending_cancel = await await_with_delayed_cancellation(finalizer)
@@ -13249,7 +13263,6 @@ class ScriberWebController:
             session_id = self._session_id
             task = asyncio.current_task()
             if session_id is not None and task is not None:
-                self._live_mic_finalizer_tasks.add(task)
                 self._live_mic_finalizer_owners[stop_owner] = (session_id, task)
                 self._live_mic_finalization_done[session_id] = self._loop.create_future()
                 if current is not None:
@@ -17190,6 +17203,13 @@ class ScriberWebController:
     ) -> int:
         """Cancel controller-owned work and wait briefly for resource cleanup."""
         self.begin_shutdown()
+        # A stop-request waiter may still be queued, or its finalizer may be
+        # waiting for startup to release the capture lock. Admit the shutdown
+        # stop before sealing, then every accepted finalizer is in the join
+        # below and no later stop can enter after the polisher snapshot.
+        if self._is_listening or self._live_mic_start_in_progress_generation is not None:
+            self._admit_live_mic_finalizer()
+        self._live_mic_finalizer_supervisor.seal()
         replay_execution, self._provider_replay_execution = (
             self._provider_replay_execution,
             None,

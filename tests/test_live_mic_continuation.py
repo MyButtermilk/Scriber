@@ -485,3 +485,97 @@ async def test_shutdown_timeout_does_not_cancel_transcript_finalization(continua
     assert first_record.content_text() == "Spätes Ergebnis bleibt erhalten."
     assert first_record.status == "completed"
     assert continuation.injected == ["Spätes Ergebnis bleibt erhalten."]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_admitted_finalizer_blocked_on_capture_lock(continuation, monkeypatch):
+    ctl = continuation.controller
+    pipeline, _record = await continuation.start("Noch glätten.", post_process=True)
+    admitted = asyncio.Event()
+    spawn = ctl._live_mic_finalizer_supervisor.spawn
+
+    def observe_admission(*args, **kwargs):
+        task = spawn(*args, **kwargs)
+        admitted.set()
+        return task
+
+    close = AsyncMock(side_effect=lambda: continuation.injected.append("polisher closed"))
+
+    async def polish(record, **_kwargs):
+        close.assert_not_awaited()
+        continuation.injected.append("Poliert: " + record.content_text())
+
+    monkeypatch.setattr(ctl._live_mic_finalizer_supervisor, "spawn", observe_admission)
+    monkeypatch.setattr(ctl._local_polisher, "close", close)
+    monkeypatch.setattr(ctl, "_post_process_and_inject_live_transcript", polish)
+    await ctl._listening_lock.acquire()
+    lock_held_by_test = True
+    try:
+        stop_task = continuation.stop()
+        await asyncio.wait_for(admitted.wait(), 2)
+        assert not pipeline.stop_started.is_set()
+        drain = asyncio.create_task(ctl.drain_background_tasks_for_shutdown(timeout_seconds=2))
+        continuation.stop_tasks.append(drain)
+        done, _pending = await asyncio.wait({drain}, timeout=0.05)
+        assert not done
+        close.assert_not_awaited()
+        ctl._listening_lock.release()
+        lock_held_by_test = False
+        await asyncio.wait_for(pipeline.capture_stopped.wait(), 2)
+        close.assert_not_awaited()
+        pipeline.provider_gate.set()
+        await asyncio.wait_for(stop_task, 2)
+        assert await asyncio.wait_for(drain, 3) == 0
+    finally:
+        if lock_held_by_test:
+            ctl._listening_lock.release()
+
+    assert continuation.injected == ["Poliert: Noch glätten.", "polisher closed"]
+    assert ctl._live_mic_finalizer_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_admits_queued_stop_before_sealing_polisher_dependencies(continuation, monkeypatch):
+    ctl = continuation.controller
+    pipeline, record = await continuation.start("Vorgemerkter Stopp.", post_process=True)
+    close = AsyncMock(side_effect=lambda: continuation.injected.append("polisher closed"))
+
+    async def polish(record, **_kwargs):
+        close.assert_not_awaited()
+        continuation.injected.append("Poliert: " + record.content_text())
+
+    monkeypatch.setattr(ctl._local_polisher, "close", close)
+    monkeypatch.setattr(ctl, "_post_process_and_inject_live_transcript", polish)
+    stop_task = continuation.stop()
+    pipeline.provider_gate.set()
+    # Enter shutdown before the scheduled stop-request waiter gets a turn.
+    assert await ctl.drain_background_tasks_for_shutdown(timeout_seconds=2) == 0
+    await asyncio.wait_for(stop_task, 2)
+
+    assert record.status == "completed"
+    assert continuation.injected == ["Poliert: Vorgemerkter Stopp.", "polisher closed"]
+    assert ctl._live_mic_finalizer_supervisor.sealed
+
+
+@pytest.mark.asyncio
+async def test_shutdown_seals_finalizer_admission_before_polisher_close(continuation, monkeypatch):
+    ctl = continuation.controller
+    closing = asyncio.Event()
+    allow_close = asyncio.Event()
+    continuation.cleanup_gates.append(allow_close)
+
+    async def close_polisher():
+        closing.set()
+        await allow_close.wait()
+
+    monkeypatch.setattr(ctl._local_polisher, "close", close_polisher)
+    finalize = AsyncMock()
+    monkeypatch.setattr(ctl, "_stop_listening_session", finalize)
+    drain = asyncio.create_task(ctl.drain_background_tasks_for_shutdown(timeout_seconds=2))
+    continuation.stop_tasks.append(drain)
+    await asyncio.wait_for(closing.wait(), 2)
+    assert ctl._live_mic_finalizer_supervisor.sealed
+    assert await ctl.stop_listening() is None
+    finalize.assert_not_awaited()
+    allow_close.set()
+    assert await asyncio.wait_for(drain, 3) == 0

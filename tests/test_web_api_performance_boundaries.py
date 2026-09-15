@@ -35,6 +35,8 @@ def _shutdown_controller(store) -> web_api.ScriberWebController:
     controller._persistent_audio_claim = _audio_claim()
     controller._live_mic_start_in_progress_generation = None
     controller._live_mic_cancel_start_generation = None
+    controller._pending_live_mic_start = None
+    controller._pending_hotkey_toggle = False
 
     async def confirm_native_stop(**_kwargs) -> bool:
         return True
