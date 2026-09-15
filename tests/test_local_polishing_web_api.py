@@ -10,8 +10,9 @@ from unittest.mock import AsyncMock
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
 
-from src import web_api
+from src import database, web_api
 from src.config import Config
+from src.data.audio_admission_store import AudioAdmissionStore
 from src.local_polishing import (
     ArtifactSpec,
     CompletionResult,
@@ -1011,10 +1012,26 @@ async def test_live_controller_cloud_deadline_injects_raw_before_failure_broadca
     controller.shutdown()
 
 
+@pytest.fixture
+def occupied_import_database(monkeypatch, tmp_path):
+    """Model another worker holding the database resolved before test setup."""
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "other-worker" / "transcripts.db")
+    store = AudioAdmissionStore()
+    store.initialize()
+    claim = store.acquire(owner_kind="live_mic", owner_id="other-session", controller_id="other-worker")
+    try:
+        yield store, claim
+    finally:
+        store.release(claim)
+        database._close_all_connections()
+
+
 @pytest.mark.asyncio
 async def test_post_processing_start_schedules_local_prewarm_without_blocking_provider_rejection(
     monkeypatch,
     tmp_path,
+    occupied_import_database,
 ):
     class Snapshot:
         def to_dict(self):
@@ -1043,6 +1060,9 @@ async def test_post_processing_start_schedules_local_prewarm_without_blocking_pr
             self.prewarm_calls.append(variant)
             return True
 
+        async def close(self):
+            return None
+
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path / "data"))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
     monkeypatch.setattr(Config, "POST_PROCESSING_ENABLED", True, raising=False)
@@ -1050,6 +1070,8 @@ async def test_post_processing_start_schedules_local_prewarm_without_blocking_pr
     monkeypatch.setattr(Config, "LOCAL_POLISHING_VARIANT", "qad_q4_0", raising=False)
     monkeypatch.setattr(Config, "DEFAULT_STT_SERVICE", "soniox", raising=False)
     monkeypatch.setattr(Config, "SONIOX_API_KEY", "", raising=False)
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "data" / "transcripts.db")
     polisher = RecordingPolisher()
     controller = ScriberWebController(
         asyncio.get_running_loop(),
@@ -1057,13 +1079,19 @@ async def test_post_processing_start_schedules_local_prewarm_without_blocking_pr
     )
     controller.broadcast = AsyncMock()  # type: ignore[method-assign]
 
-    rejection = await controller.start_listening(post_process=True)
-    await asyncio.sleep(0)
+    try:
+        rejection = await controller.start_listening(post_process=True)
+        await asyncio.sleep(0)
 
-    assert rejection is not None
-    assert rejection.code == "missing_api_key"
-    assert polisher.prewarm_calls == ["qad_q4_0"]
-    controller.shutdown()
+        assert rejection is not None
+        assert rejection.code == "missing_api_key"
+        assert polisher.prewarm_calls == ["qad_q4_0"]
+        other_store, other_claim = occupied_import_database
+        assert other_store.active() == other_claim
+    finally:
+        await controller.drain_background_tasks_for_shutdown(timeout_seconds=1)
+        controller.shutdown()
+        controller.close_persistence_stores()
 
 
 @pytest.mark.asyncio

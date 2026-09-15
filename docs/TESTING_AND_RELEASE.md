@@ -94,6 +94,12 @@ Python in `src`, `tests`, and `scripts`; mypy currently covers `src/api`,
 also pins the pip resolver version and validates the complete test environment
 with `pip check`.
 
+Real-controller Live Mic tests bind the already-imported `src.database._DB_PATH`
+to a per-test temporary database, close cached connections before rebinding,
+and close persistence stores after controller cleanup. Setting only
+`SCRIBER_DATA_DIR` after import leaves the SQLite path unchanged and permits
+parallel pytest workers to contend for the same native-audio lease.
+
 Ruff's `RUF006` catches a bare discarded `asyncio.create_task(...)` result, but
 cannot prove ownership when task creation is hidden inside scheduler callbacks.
 Intentionally concurrent runtime work must therefore use

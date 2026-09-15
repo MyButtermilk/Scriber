@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src import web_api
+from src import database, web_api
 from src.api.live_mic_routes import LiveMicStartCommand
 from src.runtime.provider_replay import ProviderReplayConflict, ProviderReplayExecution
 
@@ -19,6 +19,8 @@ async def test_replay_activation_during_stop_never_enters_ordinary_queue(
     monkeypatch, tmp_path, stop_state, existing_start
 ):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
     monkeypatch.setenv("SCRIBER_PREWARM_MODELS_ON_STARTUP", "0")
     monkeypatch.setenv("SCRIBER_PREWARM_STT_ON_STARTUP", "0")
     monkeypatch.setattr(web_api.Config, "MIC_ALWAYS_ON", False)
@@ -73,3 +75,4 @@ async def test_replay_activation_during_stop_never_enters_ordinary_queue(
         controller._cancel_pending_live_mic_start()
         await controller.drain_background_tasks_for_shutdown(timeout_seconds=1)
         controller.shutdown()
+        controller.close_persistence_stores()
