@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import pytest_asyncio
 
-from src import web_api
+from src import database, web_api
 from src.api.live_mic_routes import LiveMicStartCommand
 
 
@@ -93,6 +93,8 @@ class _Harness:
 @pytest_asyncio.fixture
 async def continuation(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    database._close_all_connections()
+    monkeypatch.setattr(database, "_DB_PATH", tmp_path / "transcripts.db")
     monkeypatch.setenv("SCRIBER_MIC_WATCHDOG_INTERVAL_SEC", "0")
     monkeypatch.setenv("SCRIBER_PREWARM_MODELS_ON_STARTUP", "0")
     monkeypatch.setenv("SCRIBER_PREWARM_STT_ON_STARTUP", "0")
@@ -153,6 +155,7 @@ async def continuation(monkeypatch, tmp_path):
             await web_api._release_persistent_audio(controller, claim)
         await controller.drain_background_tasks_for_shutdown(timeout_seconds=1)
         controller.shutdown()
+        controller.close_persistence_stores()
 
 
 @pytest.mark.asyncio

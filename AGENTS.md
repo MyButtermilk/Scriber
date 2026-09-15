@@ -2216,6 +2216,14 @@ AutoResearch session files. Keep the scoped mypy gate limited to `src/api`,
 `src/core`, `src/runtime`, and `src/data` until a separately reviewed branch
 expands the baseline.
 
+Real-controller tests that acquire native-audio ownership must bind
+`src.database._DB_PATH` to a per-test temporary database before constructing the
+controller. Changing `SCRIBER_DATA_DIR` after import does not relocate that
+cached path. Close cached database connections before rebinding, then drain the
+controller and close its persistence stores before fixture teardown. Otherwise
+parallel pytest workers can correctly reject one another's simulated captures
+as `recording_conflict`.
+
 ```powershell
 cd Frontend
 npm run check
