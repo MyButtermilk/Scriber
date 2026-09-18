@@ -19,7 +19,10 @@ their default staged smoke. Publication requires the installed gate's successful
 outcome and a complete passing report tied to the exact downloaded installer;
 missing reports or failed startup, upgrade, frontend, media, support, cleanup,
 or uninstall checks stop the release. The report is retained with draft
-verification evidence.
+verification evidence even when that check fails. Startup failures must retain
+bounded, redacted local diagnostics before cleanup, including failures before
+the backend has opened its HTTP listener. Diagnose the same hash-bound installer
+before rebuilding or raising startup timeouts.
 
 ## Core Test Commands
 

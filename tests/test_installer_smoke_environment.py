@@ -234,3 +234,6 @@ def test_release_consolidates_startup_smoke_on_required_installed_candidate_gate
         "tmp/installer-smoke/downloaded-release-candidate.json"
         in steps["Upload draft verification evidence"]["with"]["path"]
     )
+    evidence_condition = steps["Upload draft verification evidence"]["if"]
+    assert "always()" in evidence_condition
+    assert "steps.installed-smoke.outcome != 'skipped'" in evidence_condition

@@ -2487,7 +2487,7 @@ jobs:
           }
 
       - name: Upload draft verification evidence
-        if: needs.release-plan.outputs.official-release == 'true'
+        if: always() && needs.release-plan.outputs.official-release == 'true' && steps.installed-smoke.outcome != 'skipped'
         uses: actions/upload-artifact@v7
         with:
           name: scriber-windows-draft-verification

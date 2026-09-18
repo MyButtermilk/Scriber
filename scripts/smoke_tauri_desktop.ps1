@@ -146,6 +146,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $DefaultBackendPort = 8765
+Import-Module (Join-Path $PSScriptRoot "SmokeStartupDiagnostics.psm1") -Force
 
 try {
     Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
@@ -3576,6 +3577,7 @@ if ($VerifyShellMenuSmoke) {
 }
 
 $app = $null
+$listener = $null
 $result = $null
 $failure = $null
 $defaultPortBlocker = $null
@@ -3624,7 +3626,11 @@ try {
         $defaultPortBlocker.Start()
     }
 
-    $app = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -WindowStyle Hidden -PassThru
+    $shellOutputDir = Join-Path $DataDir 'logs'
+    New-Item -ItemType Directory -Force -Path $shellOutputDir | Out-Null
+    $app = Start-Process -FilePath $ExePath -WorkingDirectory (Split-Path $ExePath) -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput (Join-Path $shellOutputDir 'smoke-shell.stdout.log') `
+        -RedirectStandardError (Join-Path $shellOutputDir 'smoke-shell.stderr.log')
     $startupTimeout = $null
     if ($AttachExternalBackend) {
         Start-Sleep -Seconds 3
@@ -3934,10 +3940,19 @@ try {
 } catch {
     $failure = $_
     $failureMessage = $_.Exception.Message
-    $failureDiagnostics = $null
+    $managedBackendCount = $null
+    try {
+        $managedBackendCount = @(Get-ManagedBackendProcesses | Where-Object {
+            $baseline -notcontains [int]$_.ProcessId
+        }).Count
+    } catch {}
+    $startupDiagnostics = Get-SmokeStartupFailureDiagnostics `
+        -RuntimeDataDir $DataDir -AppProcess $app -ManagedBackendCount $managedBackendCount -Token $SessionToken
+    $failureDiagnostics = [pscustomobject]@{}
     if ($listener) {
         $failureDiagnostics = Get-SmokeFailureDiagnostics -Port ([int]$listener.Port) -Token $SessionToken
     }
+    $failureDiagnostics | Add-Member -NotePropertyName startup -NotePropertyValue $startupDiagnostics
     $failureLiveRecording = $null
     if ($LiveRecordingDurationSec -gt 0) {
         $failureLiveRecording = [pscustomobject]@{
@@ -3981,6 +3996,8 @@ try {
         failureDiagnostics = $failureDiagnostics
         cleanupVerified = $false
     }
+    # Preserve pre-cleanup evidence even if cleanup itself later throws.
+    Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot | Out-Null
 } finally {
     $cleanupFailure = $null
     if (-not $KeepAppOpen -and $app -and -not $app.HasExited) {
@@ -4090,6 +4107,9 @@ try {
     }
 
     if ($cleanupFailure) {
+        $result.ok = $false
+        $result | Add-Member -NotePropertyName cleanupError -NotePropertyValue $cleanupFailure -Force
+        Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot | Out-Null
         throw $cleanupFailure
     }
 }
