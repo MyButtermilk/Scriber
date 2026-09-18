@@ -709,6 +709,11 @@ Packaging and scripts:
   Tray and main-window installs share `desktop-updates.ts` and the native
   cross-window installation gate. Both checked-in and generated updater configs
   use quiet installation; cancellation/failure releases the gate for retry.
+  Keep the installing phase process-local: Windows exits before the installer
+  finishes, so localStorage must retain only the stable available/current
+  result. Migrate old persisted installing entries against the running build
+  version and clear their last-check timestamp so startup can check again.
+  Reading that cache must never claim a new native installation is active.
   Production update builds must use signed Tauri updater artifacts, a public
   HTTPS `latest.json`, and publication verification. `scripts/build_windows.ps1`
   may accept a local `TAURI_SIGNING_PRIVATE_KEY_PATH`, but it must normalize it

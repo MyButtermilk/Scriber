@@ -81,6 +81,7 @@ const APP_VERSION_TIMEOUT_MS = 5_000;
 
 let updateCheckInFlight: Promise<DesktopUpdateStatus> | null = null;
 let updateInstallInFlight: Promise<DesktopUpdateStatus> | null = null;
+let liveUpdateInstallStatus: DesktopUpdateStatus | null = null;
 
 export const DESKTOP_UPDATE_RELEASE_NOTES_URL = "https://github.com/MyButtermilk/Scriber/releases/latest";
 
@@ -105,6 +106,9 @@ export function initialDesktopUpdateStatus(): DesktopUpdateStatus {
 }
 
 export function getCachedDesktopUpdateStatus(): DesktopUpdateStatus {
+  if (updateInstallInFlight && liveUpdateInstallStatus) {
+    return liveUpdateInstallStatus;
+  }
   return statusFromCache(readCache(), readDesktopUpdateSettings());
 }
 
@@ -262,10 +266,16 @@ export function installDesktopUpdate(
   updateInstallInFlight = request;
   request.then(
     () => {
-      if (updateInstallInFlight === request) updateInstallInFlight = null;
+      if (updateInstallInFlight === request) {
+        updateInstallInFlight = null;
+        liveUpdateInstallStatus = null;
+      }
     },
     () => {
-      if (updateInstallInFlight === request) updateInstallInFlight = null;
+      if (updateInstallInFlight === request) {
+        updateInstallInFlight = null;
+        liveUpdateInstallStatus = null;
+      }
     },
   );
   return request;
@@ -515,22 +525,42 @@ function cacheAndBuildStatus(input: {
   const previous = readCache();
   const inputAvailable = Boolean(input.available && isVersionNewerThanCurrent(input.version, input.currentVersion));
   const sameVersion = Boolean(input.version && input.version === previous?.version);
+  // Installation belongs to this process's native admission. Windows exits as
+  // NSIS starts, so persisting that transient phase would revive it after boot.
+  const installing = input.phase === "installing";
+  const phase = installing ? (inputAvailable ? "available" : "current") : input.phase;
   const cache: DesktopUpdateCache = {
-    phase: inputAvailable ? input.phase : input.phase === "available" ? "current" : input.phase,
+    phase: inputAvailable ? phase : phase === "available" ? "current" : phase,
     enabled: input.enabled,
     currentVersion: input.currentVersion,
     version: inputAvailable ? input.version : undefined,
     date: inputAvailable ? input.date : undefined,
     notes: inputAvailable ? input.notes : undefined,
     lastCheckedAt: new Date().toISOString(),
-    message: inputAvailable || input.phase !== "available" ? input.message : "Scriber is up to date.",
-    messageValues: inputAvailable || input.phase !== "available" ? input.messageValues : undefined,
+    message: installing
+      ? inputAvailable
+        ? "Scriber {{version}} is available."
+        : "Scriber is up to date."
+      : inputAvailable || input.phase !== "available"
+        ? input.message
+        : "Scriber is up to date.",
+    messageValues: installing
+      ? inputAvailable
+        ? { version: input.version! }
+        : undefined
+      : inputAvailable || input.phase !== "available"
+        ? input.messageValues
+        : undefined,
     dismissedVersion: sameVersion ? previous?.dismissedVersion : undefined,
     deferredVersion: sameVersion ? previous?.deferredVersion : undefined,
     deferredUntil: sameVersion ? previous?.deferredUntil : undefined,
   };
   writeCache(cache);
-  return statusFromCache(cache, readDesktopUpdateSettings());
+  const status = statusFromCache(cache, readDesktopUpdateSettings());
+  liveUpdateInstallStatus = installing
+    ? { ...status, phase: "installing", available: false, message: input.message, messageValues: input.messageValues }
+    : null;
+  return liveUpdateInstallStatus || status;
 }
 
 function statusFromCache(cache: DesktopUpdateCache | null, settings: DesktopUpdateSettings): DesktopUpdateStatus {
@@ -636,7 +666,26 @@ function normalizeSettings(value: Partial<DesktopUpdateSettings> | null): Deskto
 }
 
 function readCache(): DesktopUpdateCache | null {
-  return readJson<DesktopUpdateCache>(CACHE_KEY);
+  const cache = readJson<DesktopUpdateCache>(CACHE_KEY);
+  if (cache?.phase !== "installing") return cache;
+
+  // Migrate updates started by older builds. The stored old app version and
+  // timestamp cannot prove an install is still active in this fresh process.
+  const currentVersion = latestKnownCurrentVersion(cache.currentVersion);
+  const available = isVersionNewerThanCurrent(cache.version, currentVersion);
+  const migrated: DesktopUpdateCache = {
+    ...cache,
+    phase: available ? "available" : "current",
+    currentVersion,
+    version: available ? cache.version : undefined,
+    date: available ? cache.date : undefined,
+    notes: available ? cache.notes : undefined,
+    lastCheckedAt: undefined,
+    message: available ? "Scriber {{version}} is available." : "Scriber is up to date.",
+    messageValues: available ? { version: cache.version! } : undefined,
+  };
+  writeCache(migrated);
+  return migrated;
 }
 
 function writeCache(cache: DesktopUpdateCache): void {

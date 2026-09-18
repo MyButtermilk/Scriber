@@ -1361,7 +1361,10 @@ Key modules:
   handling.
 - `Frontend/client/src/lib/desktop-updates.ts`: Tauri updater guest API wrapper,
   local update cache, weekly automatic-check policy, per-version dismissal,
-  reminder deferral, and release-notes opener.
+  reminder deferral, and release-notes opener. The active install status belongs
+  to the pending operation and native cross-window admission, never persistent
+  storage. Legacy installing entries recover to available/current using the
+  running build version and allow a fresh startup check.
 - `Frontend/client/src/lib/api-types.ts`: shared REST-facing types.
 - `Frontend/client/src/i18n/`: the German/English interface boundary. English
   source text is the stable catalog key, German translations are split by
