@@ -67,7 +67,8 @@ def test_frontend_package_is_vite_only() -> None:
     assert package["engines"] == {"node": ">=26.5.0 <27"}
     assert scripts["dev:client"] == "vite dev --port 5000"
     assert scripts["dev:tauri"] == (
-        "cargo build --manifest-path src-tauri/Cargo.toml --bin scriber-audio-sidecar && vite dev --port 5000"
+        "cargo build --locked --manifest-path ../native/scriber-audio-sidecar/Cargo.toml "
+        "--target-dir src-tauri/target && node ../scripts/stage_audio_worker.mjs --profile debug && vite dev --port 5000"
     )
     assert scripts["dev"] == "vite dev --port 5000"
     assert scripts["build"] == "npm run build:webview"

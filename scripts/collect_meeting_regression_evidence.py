@@ -161,12 +161,35 @@ def collect(
 
     npm = shutil.which("npm.cmd") or shutil.which("npm")
     cargo = shutil.which("cargo.exe") or shutil.which("cargo")
-    if not npm or not cargo:
-        raise ValueError("npm and cargo are required for regression evidence")
+    node = shutil.which("node.exe") or shutil.which("node")
+    if not npm or not cargo or not node:
+        raise ValueError("npm, node and cargo are required for regression evidence")
     _run([npm, "run", "check"], cwd=REPO_ROOT / "Frontend", timeout=180)
+    _run(
+        [
+            cargo,
+            "build",
+            "--locked",
+            "--manifest-path",
+            "native/scriber-audio-sidecar/Cargo.toml",
+            "--target-dir",
+            "Frontend/src-tauri/target",
+        ],
+        cwd=REPO_ROOT,
+        timeout=600,
+    )
+    _run([node, "scripts/stage_audio_worker.mjs", "--profile", "debug"], cwd=REPO_ROOT, timeout=30)
     rust_audio_output = _run(
-        [cargo, "test", "--bin", "scriber-audio-sidecar"],
-        cwd=REPO_ROOT / "Frontend" / "src-tauri",
+        [
+            cargo,
+            "test",
+            "--locked",
+            "--manifest-path",
+            "native/scriber-audio-sidecar/Cargo.toml",
+            "--target-dir",
+            "Frontend/src-tauri/target",
+        ],
+        cwd=REPO_ROOT,
         timeout=600,
     )
     rust_lib_output = _run(

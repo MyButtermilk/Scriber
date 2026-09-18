@@ -60,6 +60,18 @@ def test_rust_quality_cache_cannot_publish_from_a_pr_or_replace_tests() -> None:
     for name in ("Check Rust formatting", "Run Rust clippy", "Run Rust tests"):
         assert not {"if", "continue-on-error"} & steps[name].keys()
         assert names.index(restore["name"]) < names.index(name) < names.index(save["name"])
+    for name in (
+        "Check standalone audio formatting",
+        "Build and stage the standalone audio worker",
+        "Run standalone audio clippy",
+        "Run standalone audio tests",
+    ):
+        assert not {"if", "continue-on-error"} & steps[name].keys()
+        assert names.index(restore["name"]) < names.index(name) < names.index(save["name"])
+    assert names.index("Build and stage the standalone audio worker") < names.index("Run Rust clippy")
+    assert (
+        "scripts/stage_audio_worker.mjs --profile debug" in steps["Build and stage the standalone audio worker"]["run"]
+    )
 
 
 def test_rust_quality_cache_binds_build_environment_and_excludes_release_or_credentials() -> None:
@@ -99,6 +111,11 @@ def test_rust_quality_cache_binds_build_environment_and_excludes_release_or_cred
         ".cargo/config.toml",
         "Frontend/src-tauri/.cargo/config",
         "Frontend/src-tauri/.cargo/config.toml",
+        "native/scriber-audio-sidecar/Cargo.toml",
+        "native/scriber-audio-sidecar/Cargo.lock",
+        "native/scriber-audio-sidecar/build.rs",
+        "native/scriber-audio-sidecar/windows-app-manifest.xml",
+        "scripts/stage_audio_worker.mjs",
         ".github/workflows/quality-gates.yml",
     ):
         assert f"'{path}'" in key

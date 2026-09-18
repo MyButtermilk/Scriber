@@ -146,7 +146,8 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "prebufferMs": clamp_prebuffer_ms(args.prebuffer_ms),
         },
         "requirements": [
-            "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
+            "Build the worker from the repository root with cargo build --locked "
+            "--manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target.",
             ("The synthetic mode uses SCRIBER_RUST_AUDIO_SYNTHETIC_CAPTURE=1 through the shared sidecar client."),
             (
                 "The wasapi mode starts a real passive WASAPI idle capture stream; "

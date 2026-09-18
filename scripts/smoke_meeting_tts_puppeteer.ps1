@@ -561,10 +561,23 @@ if (-not $SkipBuild) {
     Invoke-CheckedCommand `
         -FilePath $CargoPath `
         -ArgumentList @(
-            "build",
+            "build", "--locked",
+            "--manifest-path", (Join-Path $RepoRoot "native\scriber-audio-sidecar\Cargo.toml"),
+            "--target-dir", (Join-Path $TauriRoot "target")
+        ) `
+        -WorkingDirectory $RepoRoot `
+        -FailureMessage "Standalone audio debug worker could not be built"
+    Invoke-CheckedCommand `
+        -FilePath $NodePath `
+        -ArgumentList @((Join-Path $RepoRoot "scripts\stage_audio_worker.mjs"), "--profile", "debug") `
+        -WorkingDirectory $RepoRoot `
+        -FailureMessage "Standalone audio debug worker could not be staged"
+    Invoke-CheckedCommand `
+        -FilePath $CargoPath `
+        -ArgumentList @(
+            "build", "--locked",
             "--manifest-path", (Join-Path $TauriRoot "Cargo.toml"),
-            "--bin", "scriber-desktop",
-            "--bin", "scriber-audio-sidecar"
+            "--bin", "scriber-desktop"
         ) `
         -WorkingDirectory $RepoRoot `
         -FailureMessage "Tauri debug binaries could not be built"

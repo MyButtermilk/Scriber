@@ -284,7 +284,8 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
         "mode": args.mode,
         "requested": requested_payload(args),
         "requirements": [
-            "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
+            "Build the worker from the repository root with cargo build --locked "
+            "--manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target.",
             (
                 "Run with SCRIBER_AUDIO_ENGINE=rust-wasapi semantics; this smoke "
                 "uses RustAudioPrewarmManager plus RustPrototypeFrameSource."

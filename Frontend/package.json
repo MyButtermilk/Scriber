@@ -1,6 +1,6 @@
 {
   "name": "scriber",
-  "version": "0.5.115",
+  "version": "0.5.116",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -8,7 +8,7 @@
   },
   "scripts": {
     "dev:client": "vite dev --port 5000",
-    "dev:tauri": "cargo build --manifest-path src-tauri/Cargo.toml --bin scriber-audio-sidecar && vite dev --port 5000",
+    "dev:tauri": "cargo build --locked --manifest-path ../native/scriber-audio-sidecar/Cargo.toml --target-dir src-tauri/target && node ../scripts/stage_audio_worker.mjs --profile debug && vite dev --port 5000",
     "dev": "vite dev --port 5000",
     "build": "npm run build:webview",
     "build:webview": "vite build",

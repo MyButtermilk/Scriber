@@ -107,10 +107,10 @@ function Normalize-CargoToml {
 }
 
 function Normalize-CargoLock {
-    param([string]$Text)
+    param([string]$Text, [string]$PackageName = "scriber-desktop")
     return [regex]::Replace(
         $Text,
-        '(?ms)(\[\[package\]\]\s+name = "scriber-desktop"\s+version = )"[^"]+"',
+        ('(?ms)(\[\[package\]\]\s+name = "' + [regex]::Escape($PackageName) + '"\s+version = )"[^"]+"'),
         '${1}"__app_version__"'
     )
 }
@@ -265,10 +265,14 @@ Write-KeyFile -Name "frontend-dependencies.txt" -Entries $frontendEntries
 
 $cargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.toml") -Raw
 $cargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/Cargo.lock") -Raw
+$audioCargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.toml") -Raw
+$audioCargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.lock") -Raw
 
 $rustDependencyEntries = New-EntryList
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
+Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sidecar/Cargo.toml" -Content (Normalize-CargoToml -Text $audioCargoToml)
+Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sidecar/Cargo.lock" -Content (Normalize-CargoLock -Text $audioCargoLock -PackageName "scriber-audio-sidecar")
 $rustDependencyEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
 $rustDependencyEntries.Add("constant`tprofile`trelease-incremental")
 Write-KeyFile -Name "rust-dependencies.txt" -Entries $rustDependencyEntries
@@ -277,6 +281,10 @@ $rustEntries = New-EntryList
 $rustEntries.Add("constant`ttoolchain`trust-1.97.0")
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
+Add-ContentEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/Cargo.toml" -Content (Normalize-CargoToml -Text $audioCargoToml)
+Add-ContentEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/Cargo.lock" -Content (Normalize-CargoLock -Text $audioCargoLock -PackageName "scriber-audio-sidecar")
+Add-RawFileEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/build.rs"
+Add-RawFileEntry -Entries $rustEntries -Path "native/scriber-audio-sidecar/windows-app-manifest.xml"
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/build.rs"
 Add-RawFileEntry -Entries $rustEntries -Path "Frontend/src-tauri/tauri.conf.json"
 Add-RawFileEntry -Entries $rustEntries -Path "THIRD_PARTY_NOTICES.md"
@@ -318,12 +326,14 @@ Write-KeyFile -Name "tauri-app-binary.txt" -Entries $tauriAppEntries
 
 $rustAudioEntries = New-EntryList
 $rustAudioEntries.Add("constant`ttoolchain`trust-1.97.0")
-$rustAudioEntries.Add("constant`tapplication-version`t$applicationVersion")
-Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
-Add-ContentEntry -Entries $rustAudioEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
+$rustAudioEntries.Add("constant`tbuild-contract`tstandalone-audio-worker-v1")
+$rustAudioEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
+$rustAudioEntries.Add("constant`tprofile`trelease-default-features")
 foreach ($path in @(
-    "Frontend/src-tauri/build.rs",
-    "Frontend/src-tauri/tauri.conf.json",
+    "native/scriber-audio-sidecar/Cargo.toml",
+    "native/scriber-audio-sidecar/Cargo.lock",
+    "native/scriber-audio-sidecar/build.rs",
+    "native/scriber-audio-sidecar/windows-app-manifest.xml",
     "Frontend/src-tauri/icons/icon.ico",
     "Frontend/src-tauri/src/audio_sidecar.rs",
     "Frontend/src-tauri/src/audio_codec.rs",
@@ -333,6 +343,17 @@ foreach ($path in @(
     "Frontend/src-tauri/src/redaction.rs"
 )) {
     Add-RawFileEntry -Entries $rustAudioEntries -Path $path
+}
+foreach ($path in @(
+    ".cargo/config", ".cargo/config.toml",
+    "native/.cargo/config", "native/.cargo/config.toml",
+    "native/scriber-audio-sidecar/.cargo/config", "native/scriber-audio-sidecar/.cargo/config.toml",
+    "rust-toolchain", "rust-toolchain.toml", "native/rust-toolchain", "native/rust-toolchain.toml",
+    "native/scriber-audio-sidecar/rust-toolchain", "native/scriber-audio-sidecar/rust-toolchain.toml"
+)) {
+    if (Test-Path -LiteralPath (Join-Path $RepoRoot $path) -PathType Leaf) {
+        Add-RawFileEntry -Entries $rustAudioEntries -Path $path
+    }
 }
 Write-KeyFile -Name "rust-audio-sidecar.txt" -Entries $rustAudioEntries
 

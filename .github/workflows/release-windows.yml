@@ -42,6 +42,8 @@ env:
 jobs:
   quality-gates:
     name: Exact-revision quality gates
+    needs: release-plan
+    if: needs.release-plan.outputs.reuse-quality != 'true'
     uses: ./.github/workflows/quality-gates.yml
     permissions:
       contents: read
@@ -61,6 +63,9 @@ jobs:
       backend-sidecar-hash: ${{ steps.cache-keys.outputs.backend-sidecar-hash }}
       backend-runtime-hash: ${{ steps.cache-keys.outputs.backend-runtime-hash }}
       tauri-app-binary-hash: ${{ steps.cache-keys.outputs.tauri-app-binary-hash }}
+      reuse-quality: ${{ steps.quality-source.outputs.reuse-quality }}
+      quality-source-run-id: ${{ steps.quality-source.outputs.quality-source-run-id }}
+      quality-source-run-attempt: ${{ steps.quality-source.outputs.quality-source-run-attempt }}
     env:
       SCRIBER_OUTLOOK_CLIENT_ID: ${{ vars.SCRIBER_OUTLOOK_CLIENT_ID }}
     steps:
@@ -88,6 +93,28 @@ jobs:
             --github-output $env:GITHUB_OUTPUT
           if ($LASTEXITCODE -ne 0) {
             throw "Canonical official release authorization failed."
+          }
+
+      - name: Set up release planning Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
+
+      - name: Select exact-revision quality evidence
+        id: quality-source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python -m scripts.ci.release_quality_source select `
+            --repo "${{ github.repository }}" `
+            --run-id "${{ github.run_id }}" `
+            --run-attempt "${{ github.run_attempt }}" `
+            --head-sha "${{ github.sha }}" `
+            --evidence build/test-results/release-quality-source.json `
+            --github-output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) {
+            throw "Quality evidence selection rejected this release revision."
           }
 
       - name: Validate Outlook release configuration
@@ -211,6 +238,7 @@ jobs:
             -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
 
       - name: Restore Rust dependency state
+        id: cold-rust-dependencies
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -270,6 +298,46 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
+
+      # The packager may consume the ready product above while these optional
+      # dependency snapshots finish. Publication on main is detached entirely.
+      - name: Export current build dependencies after product readiness
+        id: build-dependency-snapshot
+        if: >-
+          needs.release-plan.outputs.official-release == 'true' &&
+          (steps.cold-rust-dependencies.outputs.cache-hit != 'true' ||
+           steps.cold-frontend-node-modules.outputs.cache-hit != 'true')
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $arguments = @(
+            "scripts/ci/release_build_dependency_snapshot.py", "export",
+            "--snapshot", "build/release-build-dependencies",
+            "--repository", "${{ github.repository }}",
+            "--source-run-id", "${{ github.run_id }}",
+            "--source-run-attempt", "${{ github.run_attempt }}",
+            "--source-sha", "${{ github.sha }}",
+            "--source-ref", "${{ github.ref }}"
+          )
+          if ("${{ steps.cold-rust-dependencies.outputs.cache-hit }}" -ne "true") {
+            $arguments += @("--rust-key", "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}")
+          }
+          if ("${{ steps.cold-frontend-node-modules.outputs.cache-hit }}" -ne "true") {
+            $arguments += @("--frontend-key", "scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}")
+          }
+          python @arguments
+          if ($LASTEXITCODE -ne 0) { throw "Optional dependency snapshot did not complete." }
+
+      - name: Upload passive build dependency snapshot
+        if: steps.build-dependency-snapshot.outcome == 'success'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: scriber-release-build-dependencies
+          path: build/release-build-dependencies
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 2
 
   prepare-backend-cold:
     name: Prepare backend product (cold path)
@@ -584,8 +652,6 @@ jobs:
     name: Build and sign Windows installer
     needs:
       - release-plan
-      - prepare-backend-cold
-      - prepare-tauri-cold
     if: >-
       always() &&
       !cancelled() &&
@@ -714,6 +780,30 @@ jobs:
         with:
           python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
 
+      # Restore the already-tested dependency closure while the cold producers
+      # compile. It is selected only after the backend product is attested.
+      - name: Identify reusable installer smoke environment
+        id: smoke-environment-key
+        if: needs.release-plan.outputs.official-release == 'true' && env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS != 'true'
+        shell: pwsh
+        run: python scripts/ci/prepare_python_quality_environment.py identity --github-output $env:GITHUB_OUTPUT
+
+      - name: Restore reusable installer smoke environment
+        if: needs.release-plan.outputs.official-release == 'true' && env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS != 'true'
+        uses: actions/cache/restore@v6
+        with:
+          path: venv
+          key: ${{ steps.smoke-environment-key.outputs.cache-key }}
+
+      - name: Validate reusable installer smoke environment
+        id: smoke-environment
+        if: needs.release-plan.outputs.official-release == 'true' && env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS != 'true'
+        shell: pwsh
+        run: >-
+          python -m scripts.ci.reuse_installer_smoke_environment validate
+          --github-output $env:GITHUB_OUTPUT
+          --output build/test-results/installer-smoke-environment-validation.json
+
       - name: Set up Node
         id: setup-node
         uses: actions/setup-node@v6
@@ -766,17 +856,34 @@ jobs:
             Write-Warning "Linux planner and Windows packager cache keys differed; cold artifacts will be ignored and the normal path retained."
           }
 
+      - name: Wait for attested cold products
+        id: cold-products-ready
+        if: >-
+          needs.release-plan.outputs.use-cold-path == 'true' &&
+          steps.cache-key-parity.outputs.matches == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python -m scripts.ci.wait_release_cold_products
+          --repo "${{ github.repository }}"
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --head-sha "${{ github.sha }}"
+          --evidence build/test-results/release-cold-products-ready.json
+          --github-output $env:GITHUB_OUTPUT
+
       - name: Download cold products in parallel
         id: cold-products-download
         if: >-
           needs.release-plan.outputs.use-cold-path == 'true' &&
           steps.cache-key-parity.outputs.matches == 'true' &&
-          needs.prepare-backend-cold.result == 'success' &&
-          needs.prepare-tauri-cold.result == 'success'
+          steps.cold-products-ready.outcome == 'success'
         continue-on-error: true
         uses: actions/download-artifact@v8
         with:
-          pattern: scriber-cold-*-product
+          artifact-ids: ${{ steps.cold-products-ready.outputs.artifact-ids }}
           path: build/cold-transfer
           merge-multiple: true
 
@@ -996,7 +1103,7 @@ jobs:
       - name: Restore Python dependency cache
         id: python-venv-cache
         if: >-
-          needs.release-plan.outputs.official-release == 'true' ||
+          (needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1009,7 +1116,7 @@ jobs:
       - name: Restore Python venv release artifact
         id: python-venv-artifact
         if: >-
-          (needs.release-plan.outputs.official-release == 'true' ||
+          ((needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
            env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1028,7 +1135,7 @@ jobs:
       - name: Validate restored Python environment
         id: python-venv-validation
         if: >-
-          needs.release-plan.outputs.official-release == 'true' ||
+          (needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1067,7 +1174,7 @@ jobs:
       - name: Restore Python wheelhouse cache
         id: python-wheelhouse-cache
         if: >-
-          (needs.release-plan.outputs.official-release == 'true' ||
+          ((needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
            env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1099,7 +1206,7 @@ jobs:
       - name: Restore Python wheelhouse release artifact
         id: python-wheelhouse-artifact
         if: >-
-          (needs.release-plan.outputs.official-release == 'true' ||
+          ((needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
            env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1165,7 +1272,7 @@ jobs:
       - name: Restore pip package store
         id: python-pip-store-cache
         if: >-
-          (needs.release-plan.outputs.official-release == 'true' ||
+          ((needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
            env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
            (steps.cold-products.outputs.usable != 'true' &&
             steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1265,7 +1372,9 @@ jobs:
           $backendRuntimeReady = $coldProductsUsed -or $backendSidecarPrebuilt -or $backendRuntimeValidated -eq "true"
           $officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"
           $pythonCacheRefresh = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"
-          $pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh
+          $qualitySmokeEnvironmentUsable = "${{ steps.smoke-environment.outputs.usable }}" -eq "true"
+          $qualitySmokeEnvironmentSelected = $officialRelease -and $qualitySmokeEnvironmentUsable -and $backendRuntimeReady -and -not $pythonCacheRefresh
+          $pythonEnvironmentRequired = ($officialRelease -and -not $qualitySmokeEnvironmentSelected) -or $pythonCacheRefresh
           $rustBuildCacheHit = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-hit }}"
           $rustBuildCacheMatchedKey = Normalize-CacheOutput "${{ steps.rust-build-cache.outputs.cache-matched-key }}"
           $rustBuildArtifactRestored = Normalize-CacheOutput "${{ steps.rust-build-artifact.outputs.restored }}"
@@ -1300,13 +1409,15 @@ jobs:
           $backendSidecarEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarValidated -eq "true") { Get-EffectiveCacheSource $backendSidecarCacheHit $backendSidecarArtifactRestored } else { "invalid-or-miss" }
           $backendRuntimeEffective = if ($coldProductsUsed) { "cold-product-artifact" } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeValidated -eq "true") { Get-EffectiveCacheSource $backendRuntimeCacheHit $backendRuntimeArtifactRestored } else { "miss" }
           $tauriAppEffective = if ($coldProductsUsed) { "cold-product-artifact" } else { Get-EffectiveCacheSource $tauriAppBinaryCacheHit "empty" }
-          $pythonVenvEffective = if ($pythonEnvironmentRequired -and $pythonVenvValidated -eq "true") { "validated-restored-environment" } elseif ($pythonEnvironmentRequired) { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
-          $pythonWheelhouseEffective = if ($pythonCacheRefresh) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($officialRelease -and $pythonVenvValidated -eq "true") { "not-needed-validated-venv" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
+          $pythonVenvEffective = if ($qualitySmokeEnvironmentSelected) { "validated-quality-environment" } elseif ($pythonEnvironmentRequired -and $pythonVenvValidated -eq "true") { "validated-restored-environment" } elseif ($pythonEnvironmentRequired) { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "validated-restored-environment" } else { Get-EffectiveCacheSource $pythonVenvCacheHit $pythonVenvArtifactRestored }
+          $pythonWheelhouseEffective = if ($pythonCacheRefresh) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($qualitySmokeEnvironmentSelected) { "not-needed-validated-quality-environment" } elseif ($officialRelease -and $pythonVenvValidated -eq "true") { "not-needed-validated-venv" } elseif ($officialRelease) { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored } elseif ($backendSidecarPrebuilt) { "not-needed-prebuilt-sidecar" } elseif ($backendRuntimeReady) { "not-needed-prebuilt-runtime" } elseif ($pythonVenvValidated -eq "true") { "not-needed-validated-venv" } else { Get-EffectiveCacheSource $pythonWheelhouseCacheHit $pythonWheelhouseArtifactRestored }
           $pythonPipStoreNotNeeded = if ($pythonCacheRefresh) {
             (
               $pythonWheelhouseCacheHit -eq "true" -or
               $pythonWheelhouseArtifactRestored -eq "true"
             )
+          } elseif ($qualitySmokeEnvironmentSelected) {
+            $true
           } elseif ($officialRelease) {
             (
               $pythonVenvValidated -eq "true" -or
@@ -1465,7 +1576,7 @@ jobs:
       - name: Install Python dependencies
         id: python-dependencies
         if: >-
-          needs.release-plan.outputs.official-release == 'true' ||
+          (needs.release-plan.outputs.official-release == 'true' && steps.smoke-environment.outputs.usable != 'true') ||
           env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' ||
           (steps.cold-products.outputs.usable != 'true' &&
            steps.backend-sidecar-validation.outputs.usable != 'true' &&
@@ -1581,6 +1692,21 @@ jobs:
             "venv-ready=$(if ($venvReady) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             "wheelhouse-ready=$(if ($wheelhouseReady) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           }
+
+      - name: Select explicit installer Python environment
+        id: installer-python
+        shell: pwsh
+        run: >-
+          python -m scripts.ci.reuse_installer_smoke_environment select
+          --official "${{ needs.release-plan.outputs.official-release == 'true' && 'true' || 'false' }}"
+          --refresh "${{ env.SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS == 'true' && 'true' || 'false' }}"
+          --cold-product "${{ steps.cold-products.outputs.usable == 'true' && 'true' || 'false' }}"
+          --backend-sidecar "${{ steps.backend-sidecar-validation.outputs.usable == 'true' && 'true' || 'false' }}"
+          --backend-runtime "${{ steps.backend-runtime-validation.outputs.usable == 'true' && 'true' || 'false' }}"
+          --quality-usable "${{ steps.smoke-environment.outputs.usable == 'true' && 'true' || 'false' }}"
+          --github-output $env:GITHUB_OUTPUT
+          --github-path $env:GITHUB_PATH
+          --output build/test-results/installer-python-selection.json
 
       - name: Publish Python venv release artifact
         id: python-venv-publication
@@ -1800,18 +1926,21 @@ jobs:
 
       # Preparation can overlap tests, but this boundary must pass before any
       # installer build/signing or publication in this job. The waiter binds
-      # GitHub's effective jobs to this exact run, attempt and source revision.
+      # GitHub's effective jobs to this release and the identical main revision,
+      # or to this release's own complete quality suite when no source exists.
       - name: Require successful release quality gates
         id: release-quality
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python scripts\ci\wait_release_quality_gates.py `
+          python -m scripts.ci.release_quality_source wait `
             --repo "${{ github.repository }}" `
             --run-id "${{ github.run_id }}" `
             --run-attempt "${{ github.run_attempt }}" `
             --head-sha "${{ github.sha }}" `
+            --source-run-id "${{ needs.release-plan.outputs.quality-source-run-id }}" `
+            --source-run-attempt "${{ needs.release-plan.outputs.quality-source-run-attempt }}" `
             --evidence build\test-results\release-quality-gates.json
           if ($LASTEXITCODE -ne 0) {
             throw "Required quality gates did not pass for this release revision."
@@ -1838,6 +1967,8 @@ jobs:
             "Bypass",
             "-File",
             "scripts\build_windows.ps1",
+            "-PythonExecutable",
+            "${{ steps.installer-python.outputs.python }}",
             "-PythonRuntimeFlavor",
             $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR,
             "-PythonJitMode",
@@ -1870,8 +2001,8 @@ jobs:
           if (-not $isOfficialRelease) {
             $buildArgs += "-SkipSmoke"
           }
-          $pythonDependenciesReady = "${{ steps.python-dependencies.outcome }}" -eq "success"
-          if ($pythonDependenciesReady -or (Test-Path -LiteralPath ".\.venv\Scripts\python.exe" -PathType Leaf)) {
+          $pythonDependenciesReady = "${{ steps.installer-python.outputs.mode }}" -ne "base"
+          if ($pythonDependenciesReady) {
             $buildArgs += "-RunMediaPreparationSmoke"
           } else {
             Write-Host "Skipping source media preparation smoke because this cached sidecar fast path did not install Python dependencies."
@@ -2020,6 +2151,9 @@ jobs:
           }
           if (Test-Path -LiteralPath build\test-results\release-quality-gates.json -PathType Leaf) {
             Copy-Item -LiteralPath build\test-results\release-quality-gates.json -Destination release-diagnostics\
+          }
+          if (Test-Path -LiteralPath build\test-results\release-cold-products-ready.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\test-results\release-cold-products-ready.json -Destination release-diagnostics\
           }
           if (Test-Path -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -PathType Leaf) {
             Copy-Item -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -Destination release-diagnostics\
@@ -2199,6 +2333,12 @@ jobs:
             Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-artifacts\
           }
           Copy-Item -LiteralPath build\test-results\release-quality-gates.json -Destination release-artifacts\
+          foreach ($report in @("release-cold-products-ready.json", "installer-smoke-environment-validation.json", "installer-python-selection.json")) {
+            $reportPath = Join-Path build\test-results $report
+            if (Test-Path -LiteralPath $reportPath -PathType Leaf) {
+              Copy-Item -LiteralPath $reportPath -Destination release-artifacts\
+            }
+          }
           if (Test-Path -LiteralPath build\backend-sidecar-cache-selection.json -PathType Leaf) {
             Copy-Item -LiteralPath build\backend-sidecar-cache-selection.json -Destination release-artifacts\
           }
@@ -2314,7 +2454,7 @@ jobs:
         if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         run: |
-          $smokePython = (Resolve-Path -LiteralPath ".\.venv\Scripts\python.exe" -ErrorAction Stop).Path
+          $smokePython = (Resolve-Path -LiteralPath "${{ steps.installer-python.outputs.python }}" -ErrorAction Stop).Path
           & $smokePython -c "import aiohttp"
           if ($LASTEXITCODE -ne 0) {
             throw "The exact release Python environment cannot import aiohttp."

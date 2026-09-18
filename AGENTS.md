@@ -1,6 +1,6 @@
 # Scriber Agent Guide
 
-Last verified: 2026-09-08
+Last verified: 2026-09-18
 
 This is the working guide for agents editing Scriber. Keep it current when the
 implementation changes. Prefer code and tests over older prose when they
@@ -480,7 +480,8 @@ Packaging and scripts:
 - `scripts/build_windows.ps1`: Windows installer orchestration. Official GitHub
   releases use `-ParallelizeIndependentBuilds`: frontend typecheck, Python
   sidecar preparation, and the Tauri `--no-bundle` app compile overlap. That
-  compile uses a generated overlay whose `bundle.resources` is JSON `[]`, so
+  compile uses a generated overlay whose `bundle.resources` and `bundle.externalBin`
+  are JSON `[]`, so
   Tauri does not validate the not-yet-staged backend during compile; the final
   `tauri bundle` always waits for every producer and uses the original complete
   config, revalidating and packaging all resources. Rust audio uses the shared,
@@ -496,22 +497,24 @@ Packaging and scripts:
   configure Tauri with SHA-256 plus an HTTPS RFC 3161 timestamp, and validate
   the desktop, backend, NSIS installer, and timestamp/publisher evidence.
   Never call an updater-signed-only installer Authenticode-signed.
-- `.github/workflows/release-windows.yml`: adaptive release DAG. Release
-  planning and exact-revision quality gates start together. On a
-  planner-confirmed cold backend/Tauri double miss, both read-only cold
-  producers start as soon as planning succeeds and may overlap the remaining
-  gates; they may emit only attested short-lived workflow artifacts. The final
-  job prepares its dependencies as soon as the producers finish, overlapping
-  remaining checks. Before assembly/signing, `wait_release_quality_gates.py`
-  verifies every required effective GitHub job against the current repository,
-  run, attempt, and source SHA. Failure, missing evidence, or skipped checks
-  block shipping; preserve this barrier when changing job names or graph edges.
+- `.github/workflows/release-windows.yml`: adaptive release DAG. Planning may
+  select canonical main quality evidence for the identical SHA, under 24 hours
+  old, with immutable reusable-workflow provenance. Missing evidence starts
+  the complete local suite; a known failed matching run blocks release.
+  Cold producers and final-job dependency preparation start after planning.
+  The packager accepts exact current-run artifact IDs after successful producer
+  build/upload steps without waiting for optional cache export. Before assembly
+  and signing, `release_quality_source.py` verifies all six required jobs and
+  rechecks current-release and selected-source run/attempt/SHA identities.
+  Failure, missing evidence, or skipped required checks block shipping.
+  Never reuse quality evidence across different SHAs without a separately
+  implemented complete-input proof.
   The planner must probe with the same direct single-file Actions
   `hashFiles(...)` expressions used by producers and the final job; keep the
   finalizer's raw key-file SHA-256 outputs separate for cross-runner parity.
   The cold backend producer must restore and prune the same
   dependency/toolchain-keyed Rust state as the Tauri producer, keep a
-  version-bound audio rebuild on the shared `Frontend\src-tauri\target`, and
+  independent worker rebuild on the shared `Frontend\src-tauri\target`, and
   parallelize only the standalone diarization worker inside the sidecar build.
 - `scripts/perf/profiles/installer-size/`, `scripts/perf/installer_size/`, and
   `scripts/run_installer_size_packet.ps1`: isolated installer-size
@@ -2005,21 +2008,20 @@ Already implemented and should not be regressed:
   when `target\release\backend` already matches the current cache key and
   release resource flags.
 - Rust audio sidecar hash cache that avoids recompiling when inputs are
-  unchanged. The exact finished worker is not version-neutral:
-  `tauri_build` embeds the current `Frontend\package.json` version in its PE
-  resource, so a version-only release must invalidate that exact cache. Reuse
-  the dependency/toolchain-keyed Cargo and incremental layers for the bounded
-  rebuild; keep the standalone diarization worker reusable when its own inputs
-  are unchanged. The normal Tauri Cargo target is used by default. GitHub
-  release builds keep
+  unchanged. `native/scriber-audio-sidecar` owns the independent worker version
+  and PE resources; it compiles the existing audited audio source modules.
+  App-version changes must preserve this finished product. Source, dependency,
+  worker-version, toolchain, and resource changes still invalidate it. Tauri
+  bundles the validated worker as an external binary and must not rebuild it as
+  a desktop Cargo target. GitHub release builds keep
   `build\rust-audio-sidecar-cache` in a separate Actions cache from the Python
   backend sidecar cache so Python/backend changes do not force an audio sidecar
   executable rebuild.
 - Release workflow cache keys normalize app-version-only files before hashing
   dependency/build caches, so patch version bumps do not invalidate frontend,
   Rust, or backend scratch caches without real input changes. Exact
-  version-bearing outputs are excluded from this rule: composed backend, Tauri
-  app, and Rust audio sidecar must all change. The main Rust release key still
+  version-bearing outputs are excluded from this rule: composed backend and
+  Tauri app must change, while audio retains its own worker version. The main Rust release key still
   includes real Tauri shell inputs such as `tauri.conf.json`, capabilities, and
   icons.
 - Frontend dependency reuse in GitHub release builds is two-layered: restore
@@ -2096,9 +2098,11 @@ Already implemented and should not be regressed:
   miss. The main Rust/Tauri release artifact supports a latest-prefix fallback
   only when Actions reports no matched key; a partial Actions restore must not
   trigger the 1.6-GB fallback. Ordinary `main` pushes do not run the full
-  installer workflow. Exact Actions caches and large Cargo/venv/wheelhouse
-  snapshots are refreshed only by the manual `release-windows.yml`
-  `refresh_release_cache_artifacts=true` maintenance path. Tag releases do,
+  installer workflow. Cold Tauri producers export current missing Rust/frontend
+  dependency snapshots after product readiness; a detached main-branch job
+  verifies canonical publication/source provenance and passively seeds caches
+  visible to future tags. Large durable Cargo/venv/wheelhouse snapshots still
+  use the explicit `refresh_release_cache_artifacts=true` maintenance path. Tag releases do,
   however, self-heal a missing bounded exact backend, FFmpeg, audio, or
   diarization finished-product artifact after a successful rebuild. Manual
   cache publication is allowed only from `main` with

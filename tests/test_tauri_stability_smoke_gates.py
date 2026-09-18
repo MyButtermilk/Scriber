@@ -375,7 +375,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "$metadataRustDiarizationSidecarCopied = $RustDiarizationSidecarCopied" in sidecar
     assert "rustDiarizationSidecarCopied = $metadataRustDiarizationSidecarCopied" in sidecar
     assert "function Copy-RustAudioSidecarToTauriRelease" in sidecar
-    assert "cargo build --release --bin scriber-audio-sidecar" in sidecar
+    assert "cargo build --locked --release --bin scriber-audio-sidecar" in sidecar
     assert "--target-dir $cargoTargetDir" in sidecar
     assert "rust-audio-sidecar-cache" in sidecar
     assert "rust-audio-sidecar-target" in sidecar
@@ -425,7 +425,7 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "durationMs = [int64]$rustAudioWatch.ElapsedMilliseconds" in sidecar
     assert 'Get-ObjectPropertyValue -Object $rustAudioParallelPayload -Name "durationMs"' in sidecar
     assert "overlappedWallDurationMs = $rustAudioParallelJoinDurationMs" in sidecar
-    assert "Stale audio sidecar resource" in sidecar
+    assert "Stale audio sidecar external binary" in sidecar
     assert "Stale packaged audio sidecar resource" in sidecar
     assert "function Get-Sha256Hex" in sidecar
     assert "sha256 = Get-Sha256Hex -Path $item.FullName" in sidecar
@@ -1047,7 +1047,7 @@ def test_parallel_tauri_prepare_helper_keeps_compile_and_bundle_contracts_separa
     assert '$writer.WriteLine(("{0}`t{1}"' in helper
 
 
-def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Path) -> None:
+def test_parallel_tauri_compile_config_strips_independently_produced_bundle_inputs(tmp_path: Path) -> None:
     for bundle_mode in ("with-resources", "without-resources", "without-bundle"):
         case_root = tmp_path / bundle_mode
         frontend = case_root / "Frontend"
@@ -1066,6 +1066,7 @@ def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Pa
         if bundle_mode != "without-bundle":
             source["bundle"] = {"active": True}
         if bundle_mode == "with-resources":
+            source["bundle"]["externalBin"] = ["resources/audio-sidecar/scriber-audio-sidecar"]
             source["bundle"]["resources"] = {
                 "target/release/backend/": "backend/",
                 "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
@@ -1106,8 +1107,9 @@ def test_parallel_tauri_compile_config_strips_only_bundle_resources(tmp_path: Pa
 
         compile_config = json.loads((config_path.parent / "tauri.compile-only.conf.json").read_text(encoding="utf-8"))
         assert compile_config["bundle"]["resources"] == []
+        assert compile_config["bundle"]["externalBin"] == []
         if bundle_mode == "without-bundle":
-            assert compile_config["bundle"] == {"resources": []}
+            assert compile_config["bundle"] == {"resources": [], "externalBin": []}
         else:
             assert compile_config["bundle"]["active"] is True
         assert compile_config["plugins"] == source["plugins"]
@@ -1347,7 +1349,7 @@ def test_release_cache_key_outputs_invalidate_exact_product_artifacts_for_versio
         assert before == after
         assert tauri_before != tauri_after
         assert backend_before != backend_after
-        assert rust_audio_before != rust_audio_after
+        assert rust_audio_before == rust_audio_after
         assert before["backend-runtime.txt"] == after["backend-runtime.txt"]
     finally:
         for path, content in original_bytes.items():
@@ -1355,21 +1357,22 @@ def test_release_cache_key_outputs_invalidate_exact_product_artifacts_for_versio
         shutil.rmtree(output_root, ignore_errors=True)
 
 
-def test_rust_audio_sidecar_exact_cache_key_binds_canonical_application_version() -> None:
+def test_rust_audio_sidecar_exact_cache_key_binds_independent_worker_contract() -> None:
     script = read_script("scripts/build_tauri_backend_sidecar.ps1")
     manifest_function = script.split("function Get-RustAudioSidecarInputManifest", 1)[1].split(
         "function Get-RustAudioSidecarCacheKey", 1
     )[0]
 
-    assert "Normalize-CargoTomlForCache" in script
-    assert "Normalize-CargoLockForCache" in script
-    assert 'version = "__app_version__"' in script
-    assert "scriber-desktop" in script
-    assert '"Frontend\\package.json"' in script
-    assert 'apiVersion = "2"' in manifest_function
-    assert "applicationVersion" in manifest_function
-    assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.toml"' in script
-    assert 'Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\\src-tauri\\Cargo.lock"' in script
+    assert 'apiVersion = "3"' in manifest_function
+    assert "workerVersion = Get-RustAudioWorkerVersion" in manifest_function
+    assert 'buildContract = "standalone-audio-worker-v1"' in manifest_function
+    assert '"native\\scriber-audio-sidecar\\Cargo.toml"' in manifest_function
+    assert '"native\\scriber-audio-sidecar\\Cargo.lock"' in manifest_function
+    assert 'compiler = "rust-1.97.0"' in manifest_function
+    assert "& rustc" not in manifest_function
+    assert "applicationVersion" not in manifest_function
+    assert "Frontend\\package.json" not in manifest_function
+    assert "Frontend\\src-tauri\\Cargo.toml" not in manifest_function
 
 
 def _runtime_attestation_version_fixture(
@@ -1380,6 +1383,9 @@ def _runtime_attestation_version_fixture(
     install_root = tmp_path / "install"
     (repo_root / "Frontend").mkdir(parents=True)
     (repo_root / "Frontend" / "package.json").write_text('{"version":"0.5.48"}\n', encoding="utf-8")
+    worker_dir = repo_root / "native" / "scriber-audio-sidecar"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "Cargo.toml").write_text('[package]\nversion = "0.1.0"\n', encoding="utf-8")
     (install_root / "backend").mkdir(parents=True)
     (install_root / "scriber-desktop.exe").write_bytes(b"desktop")
     (install_root / "backend" / "scriber-backend.exe").write_bytes(b"backend")
@@ -1400,13 +1406,13 @@ def test_runtime_attestation_write_rejects_stale_audio_sidecar_pe_version(
     repo_root, install_root = _runtime_attestation_version_fixture(tmp_path, monkeypatch)
 
     def version_reader(path: Path) -> str:
-        return "0.5.47" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
+        return "0.0.9" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
 
     with pytest.raises(runtime_attestation.AttestationError) as raised:
         runtime_attestation.write_attestation(repo_root, install_root, version_reader=version_reader)
 
     assert raised.value.code == "component_version_mismatch"
-    assert "audioSidecar version 0.5.47" in str(raised.value)
+    assert "audioSidecar version 0.0.9" in str(raised.value)
 
 
 def test_runtime_attestation_verify_rejects_audio_sidecar_pe_version_drift(
@@ -1418,11 +1424,11 @@ def test_runtime_attestation_verify_rejects_audio_sidecar_pe_version_drift(
     runtime_attestation.write_attestation(
         repo_root,
         install_root,
-        version_reader=lambda path: "0.5.48" if path.suffix == ".exe" else "",
+        version_reader=lambda path: "0.1.0" if path.name == "scriber-audio-sidecar.exe" else "0.5.48",
     )
 
     def stale_audio_version_reader(path: Path) -> str:
-        return "0.5.47" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
+        return "0.0.9" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
 
     result = runtime_attestation.verify_attestation(
         repo_root,
@@ -1435,6 +1441,34 @@ def test_runtime_attestation_verify_rejects_audio_sidecar_pe_version_drift(
         error["code"] == "component_version_mismatch" and error.get("component") == "audioSidecar"
         for error in result["errors"]
     )
+
+
+def test_runtime_attestation_accepts_worker_version_independent_of_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, install_root = _runtime_attestation_version_fixture(tmp_path, monkeypatch)
+
+    def version_reader(path: Path) -> str:
+        return "0.1.0" if path.name == "scriber-audio-sidecar.exe" else "0.5.48"
+
+    runtime_attestation.write_attestation(repo_root, install_root, version_reader=version_reader)
+    result = runtime_attestation.verify_attestation(repo_root, install_root, version_reader=version_reader)
+    assert result["ok"] is True
+    manifest = json.loads((install_root / runtime_attestation.MANIFEST_NAME).read_text(encoding="utf-8"))
+    assert manifest["applicationVersion"] == "0.5.48"
+    assert manifest["audioWorkerVersion"] == "0.1.0"
+
+
+def test_runtime_attestation_rejects_missing_worker_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo_root, install_root = _runtime_attestation_version_fixture(tmp_path, monkeypatch)
+    (repo_root / "native/scriber-audio-sidecar/Cargo.toml").unlink()
+    with pytest.raises(runtime_attestation.AttestationError, match="Cargo.toml") as raised:
+        runtime_attestation.write_attestation(repo_root, install_root, version_reader=lambda _path: "0.5.48")
+    assert raised.value.code == "invalid_audio_worker_version"
 
 
 def test_native_recording_overlay_is_tauri_owned() -> None:

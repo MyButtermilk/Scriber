@@ -1368,6 +1368,8 @@ function Invoke-CompressionRepack {
     Copy-Item -LiteralPath (Join-Path $PayloadRoot "backend") -Destination (Join-Path $releaseRoot "backend") -Recurse -Force
     Copy-Item -LiteralPath (Join-Path $PayloadRoot "scriber-desktop.exe") -Destination (Join-Path $releaseRoot "scriber-desktop.exe") -Force
     Copy-Item -LiteralPath (Join-Path $PayloadRoot "scriber-audio-sidecar.exe") -Destination (Join-Path $releaseRoot "scriber-audio-sidecar.exe") -Force
+    $isolatedAudioAlias = Join-Path $releaseRoot "scriber-audio-sidecar-x86_64-pc-windows-msvc.exe"
+    Copy-Item -LiteralPath (Join-Path $PayloadRoot "scriber-audio-sidecar.exe") -Destination $isolatedAudioAlias -Force
     $null = Assert-NoReparsePath -Root $BuildRoot -Path $releaseRoot -Code "unsafe_isolated_repack_payload" -Recurse
     if ((Get-Sha256File -Path (Join-Path $PayloadRoot "THIRD_PARTY_NOTICES.md")) -ne (Get-Sha256File -Path (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md"))) {
         throw "repack_notice_drift"
@@ -1405,13 +1407,20 @@ function Invoke-CompressionRepack {
     $isolatedResources[$isolatedBackendSource] = "backend/"
     $isolatedResources[$noticesSource] = "THIRD_PARTY_NOTICES.md"
     $repackConfig.bundle.resources = [pscustomobject]$isolatedResources
+    # The external worker must come from this attested payload, never from the
+    # workspace alias inherited from the application's normal bundle config.
+    $isolatedAudioSource = (Convert-ToFullPath -Path (Join-Path $releaseRoot "scriber-audio-sidecar")).Replace('\', '/')
+    $repackConfig.bundle.externalBin = @($isolatedAudioSource)
     Write-JsonAtomic -Path $configPath -Payload $repackConfig
     $verifiedRepackConfig = Read-JsonObject -Path $configPath -Code "repack_config_invalid"
     $resourceProperties = @($verifiedRepackConfig.bundle.resources.PSObject.Properties)
     if (
         $resourceProperties.Count -ne 2 -or
         [string]$verifiedRepackConfig.bundle.resources.$isolatedBackendSource -ne "backend/" -or
-        [string]$verifiedRepackConfig.bundle.resources.$noticesSource -ne "THIRD_PARTY_NOTICES.md"
+        [string]$verifiedRepackConfig.bundle.resources.$noticesSource -ne "THIRD_PARTY_NOTICES.md" -or
+        @($verifiedRepackConfig.bundle.externalBin).Count -ne 1 -or
+        [string]$verifiedRepackConfig.bundle.externalBin[0] -cne $isolatedAudioSource -or
+        (Get-Sha256File -Path $isolatedAudioAlias) -ne (Get-Sha256File -Path (Join-Path $PayloadRoot "scriber-audio-sidecar.exe"))
     ) {
         throw "repack_resource_binding_failed"
     }
@@ -2835,15 +2844,33 @@ function Invoke-FinalFullSuite {
             }
             rustCargoTest = {
                 Push-Location (Join-Path $RepoRoot "Frontend\src-tauri")
-                try { & $cargo test --locked } finally { Pop-Location }
+                try {
+                    $workerManifest = Join-Path $RepoRoot "native\scriber-audio-sidecar\Cargo.toml"
+                    $workerTarget = Join-Path $RepoRoot "Frontend\src-tauri\target"
+                    & $cargo build --locked --manifest-path $workerManifest --target-dir $workerTarget
+                    if ($LASTEXITCODE -ne 0) { throw "full_suite_audio_build_failed" }
+                    & $node (Join-Path $RepoRoot "scripts\stage_audio_worker.mjs") --profile debug
+                    if ($LASTEXITCODE -ne 0) { throw "full_suite_audio_stage_failed" }
+                    & $cargo test --locked --manifest-path $workerManifest --target-dir $workerTarget
+                    if ($LASTEXITCODE -ne 0) { throw "full_suite_audio_test_failed" }
+                    & $cargo test --locked
+                } finally { Pop-Location }
             }
             rustFmt = {
                 Push-Location (Join-Path $RepoRoot "Frontend\src-tauri")
-                try { & $cargo fmt --check } finally { Pop-Location }
+                try {
+                    & $cargo fmt --manifest-path (Join-Path $RepoRoot "native\scriber-audio-sidecar\Cargo.toml") -- --check
+                    if ($LASTEXITCODE -ne 0) { throw "full_suite_audio_fmt_failed" }
+                    & $cargo fmt --check
+                } finally { Pop-Location }
             }
             rustClippy = {
                 Push-Location (Join-Path $RepoRoot "Frontend\src-tauri")
-                try { & $cargo clippy --locked --all-targets --all-features -- -D warnings } finally { Pop-Location }
+                try {
+                    & $cargo clippy --locked --manifest-path (Join-Path $RepoRoot "native\scriber-audio-sidecar\Cargo.toml") --target-dir (Join-Path $RepoRoot "Frontend\src-tauri\target") --all-targets --all-features -- -D warnings
+                    if ($LASTEXITCODE -ne 0) { throw "full_suite_audio_clippy_failed" }
+                    & $cargo clippy --locked --all-targets --all-features -- -D warnings
+                } finally { Pop-Location }
             }
         }
         $results = [ordered]@{}

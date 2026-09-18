@@ -528,7 +528,8 @@ def build_plan_payload(args: argparse.Namespace) -> dict[str, Any]:
             "skipSelectedHash": bool(args.skip_selected_hash),
         },
         "requirements": [
-            "Build scriber-audio-sidecar first with cargo build --bin scriber-audio-sidecar.",
+            "Build the worker from the repository root with cargo build --locked "
+            "--manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target.",
             "Run on Windows for WASAPI capture evidence.",
             "Use --duration-sec 600 for the 10-minute physical stability gate.",
             "Scriber now uses Rust/WASAPI as the standard live-mic capture path.",

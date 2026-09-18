@@ -67,6 +67,14 @@ function New-CompileOnlyTauriConfig {
     } else {
         $source.bundle.resources = @()
     }
+    # The independently prepared worker is also unavailable until producers
+    # join. The full configuration still requires and bundles that exact file.
+    $externalBinProperty = $source.bundle.PSObject.Properties["externalBin"]
+    if ($null -eq $externalBinProperty) {
+        Add-Member -InputObject $source.bundle -MemberType NoteProperty -Name "externalBin" -Value @()
+    } else {
+        $source.bundle.externalBin = @()
+    }
     $destination = Join-Path (Split-Path -Parent $SourcePath) "tauri.compile-only.conf.json"
     $destination = Assert-UnderRoot -Path $destination -Label "Compile-only Tauri config"
     $json = $source | ConvertTo-Json -Depth 100

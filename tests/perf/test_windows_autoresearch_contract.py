@@ -646,6 +646,9 @@ def _runtime_fixture(tmp_path: Path):
     install_root = tmp_path / "install"
     (repo_root / "Frontend").mkdir(parents=True)
     (repo_root / "Frontend" / "package.json").write_text('{"version":"1.2.3"}\n', encoding="utf-8")
+    worker_dir = repo_root / "native" / "scriber-audio-sidecar"
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "Cargo.toml").write_text('[package]\nversion = "0.1.0"\n', encoding="utf-8")
     (repo_root / "source.txt").write_text("candidate source\n", encoding="utf-8")
     _git(repo_root, "init")
     _git(repo_root, "add", ".")
@@ -666,7 +669,9 @@ def _runtime_fixture(tmp_path: Path):
     (install_root / "scriber-audio-sidecar.exe").write_bytes(b"audio-current")
 
     def version_reader(path: Path) -> str:
-        if path.name in {"scriber-desktop.exe", "scriber-audio-sidecar.exe"}:
+        if path.name == "scriber-audio-sidecar.exe":
+            return "0.1.0"
+        if path.name == "scriber-desktop.exe":
             return "1.2.3"
         return ""
 

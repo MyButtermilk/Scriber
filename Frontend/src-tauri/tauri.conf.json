@@ -32,6 +32,9 @@
   },
   "bundle": {
     "active": true,
+    "externalBin": [
+      "resources/audio-sidecar/scriber-audio-sidecar"
+    ],
     "targets": [
       "nsis"
     ],

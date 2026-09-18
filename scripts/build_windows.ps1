@@ -1199,11 +1199,10 @@ try {
                 Complete-TrackedReleaseProcesses -Tasks $parallelTasks
                 $parallelTasks = @()
 
-                # The compile-only Tauri build invokes Cargo for every package
-                # binary and can touch target\release\scriber-audio-sidecar.exe.
-                # After all producers join, restore the exact version/hash-bound
-                # cache artifact so bundle input cannot depend on last-writer
-                # timing between the two processes.
+                # Audio is an independent crate, so the Tauri app compile cannot
+                # rebuild it. After producers join, validate and stage its exact
+                # worker-version/hash-bound root executable and target-qualified
+                # externalBin source before bundling with the complete config.
                 Invoke-Checked -Label "Rust audio sidecar final cache stage" -Command {
                     Push-Location $RepoRoot
                     try {
