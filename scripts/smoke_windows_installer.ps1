@@ -679,18 +679,65 @@ function Invoke-InstalledDesktopSmoke {
         $smokeArgs += "-VerifyLegacyDataMigration"
     }
 
+    if (Test-Path -LiteralPath $desktopSmokeOutputPath -PathType Leaf) {
+        Remove-Item -LiteralPath $desktopSmokeOutputPath -Force
+    }
     $smokeJson = powershell @smokeArgs
     $smokeExitCode = $LASTEXITCODE
     $smokeReport = $null
-    if (Test-Path -LiteralPath $desktopSmokeOutputPath -PathType Leaf) {
-        $smokeReport = Get-Content -LiteralPath $desktopSmokeOutputPath -Raw | ConvertFrom-Json
-    } elseif ($smokeJson) {
-        $smokeReport = $smokeJson | ConvertFrom-Json
+    try {
+        if (Test-Path -LiteralPath $desktopSmokeOutputPath -PathType Leaf) {
+            $smokeReport = Get-Content -LiteralPath $desktopSmokeOutputPath -Raw | ConvertFrom-Json
+        } elseif ($smokeJson) {
+            $smokeReport = $smokeJson | ConvertFrom-Json
+        }
+    } catch {
+        $smokeReport = $null
     }
-    if ($smokeExitCode -ne 0 -and -not $smokeReport) {
-        throw "Installed app smoke test failed."
+    if ($null -eq $smokeReport -or $smokeReport.GetType() -ne [System.Management.Automation.PSCustomObject]) {
+        $smokeReport = [pscustomobject]@{
+            ok = $false
+            failureDiagnostics = [pscustomobject]@{
+                reason = "missing_or_invalid_desktop_smoke_report"
+            }
+        }
     }
+    $smokeReport | Add-Member -NotePropertyName processExitCode -NotePropertyValue $smokeExitCode -Force
     return $smokeReport
+}
+
+function Assert-InstalledDesktopSmokeSucceeded {
+    param(
+        [object]$Smoke,
+        [string]$Stage,
+        [object]$CleanInstall,
+        [string]$Installer,
+        [string]$ReportPath,
+        [string]$Root
+    )
+
+    $passed = (
+        $Smoke -and
+        $Smoke.processExitCode -is [int] -and $Smoke.processExitCode -eq 0 -and
+        $Smoke.ok -is [bool] -and $Smoke.ok -and
+        $Smoke.ready -is [bool] -and $Smoke.ready -and
+        $Smoke.cleanupVerified -is [bool] -and $Smoke.cleanupVerified
+    )
+    if ($passed) {
+        return
+    }
+
+    # Keep the failed launch evidence outside the temporary installation before
+    # the caller's finally block removes its data directory.
+    $failureReport = [pscustomobject]@{
+        ok = $false
+        installer = $Installer
+        failedStage = $Stage
+        cleanInstall = $CleanInstall
+        desktopSmokeFailure = $Smoke
+    }
+    Write-SmokeJson -Payload $failureReport -Path $ReportPath -Root $Root
+    throw "Installed app smoke test failed during $Stage."
 }
 
 function Invoke-InstalledMediaPreparationSmoke {
@@ -804,6 +851,7 @@ if (Test-Path $InstallDir) {
 New-Item -ItemType Directory -Force -Path $tmpRoot | Out-Null
 
 $smoke = $null
+$cleanInstall = $null
 $upgrade = $null
 $mediaPreparation = $null
 $audioSidecarExe = $null
@@ -821,6 +869,9 @@ try {
     $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
 
     $smoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
+    $cleanInstall = $smoke
+    Assert-InstalledDesktopSmokeSucceeded -Smoke $smoke -Stage "clean-install" `
+        -CleanInstall $cleanInstall -Installer $InstallerPath -ReportPath $OutputPath -Root $RepoRoot
 
     if ($SimulateUpgrade) {
         $sentinelPath = Join-Path $DataDir "upgrade-sentinel.txt"
@@ -842,6 +893,8 @@ try {
         $localPolishingRuntime = Test-InstalledLocalPolishingRuntime -Root $InstallDir
         $installSize = Get-DirectorySizeReport -Root $InstallDir -MaxSizeMB $MaxInstalledSizeMB
         $secondSmoke = Invoke-InstalledDesktopSmoke -AppExe $appExe -RuntimeDataDir $DataDir
+        Assert-InstalledDesktopSmokeSucceeded -Smoke $secondSmoke -Stage "upgrade" `
+            -CleanInstall $cleanInstall -Installer $InstallerPath -ReportPath $OutputPath -Root $RepoRoot
         if (-not (Test-Path -LiteralPath $sentinelPath -PathType Leaf)) {
             throw "Installer upgrade smoke did not preserve existing data sentinel: $sentinelPath"
         }
@@ -891,6 +944,8 @@ try {
     $result = [ordered]@{
         ok = $smokeOk
         installer = $InstallerPath
+        cleanInstall = $cleanInstall
+        desktopSmokeExitCode = $smoke.processExitCode
         installDir = $InstallDir
         appExe = $appExe
         audioSidecarExe = $audioSidecarExe

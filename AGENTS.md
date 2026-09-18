@@ -507,6 +507,11 @@ Packaging and scripts:
   and signing, `release_quality_source.py` verifies all six required jobs and
   rechecks current-release and selected-source run/attempt/SHA identities.
   Failure, missing evidence, or skipped required checks block shipping.
+  Official packaging omits its duplicate staged-app startup smoke. The mandatory
+  downloaded-installer gate owns clean startup, upgrade, frontend, support,
+  media, cleanup and uninstall evidence before publication; validate its report
+  against the exact candidate and retain the clean-install result separately
+  from the upgrade result. Standalone local builds retain staged startup smoke.
   Never reuse quality evidence across different SHAs without a separately
   implemented complete-input proof.
   The planner must probe with the same direct single-file Actions
