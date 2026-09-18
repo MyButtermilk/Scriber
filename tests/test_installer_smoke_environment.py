@@ -207,3 +207,30 @@ def test_both_build_and_downloaded_installer_smoke_use_selected_python_and_keep_
         "-VerifyUninstall",
     ):
         assert switch in installed
+
+
+def test_release_consolidates_startup_smoke_on_required_installed_candidate_gate() -> None:
+    steps = _steps()
+    names = list(steps)
+    build = steps["Build Windows installer"]["run"]
+    installed = steps["Smoke downloaded installer candidate"]
+    publication = steps["Verify and publish exact GitHub release transaction"]
+    assert '$buildArgs += "-SkipSmoke"' in build
+    assert "if (-not $isOfficialRelease)" not in build
+    assert installed["id"] == "installed-smoke"
+    assert installed["if"] == publication["if"] == "needs.release-plan.outputs.official-release == 'true'"
+    assert not installed.get("continue-on-error", False)
+    assert (
+        names.index("Cryptographically verify downloaded updater signatures")
+        < names.index("Smoke downloaded installer candidate")
+        < names.index("Verify and publish exact GitHub release transaction")
+    )
+    assert "scripts.ci.validate_installer_smoke_report" in installed["run"]
+    assert "--installer (Join-Path $downloadRoot ([string]$installers[0].name))" in installed["run"]
+    assert "if ($LASTEXITCODE -ne 0)" in installed["run"]
+    assert "${{ steps.installed-smoke.outcome }}" in publication["run"]
+    assert ' -ne "success"' in publication["run"]
+    assert (
+        "tmp/installer-smoke/downloaded-release-candidate.json"
+        in steps["Upload draft verification evidence"]["with"]["path"]
+    )

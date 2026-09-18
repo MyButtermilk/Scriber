@@ -12,6 +12,15 @@ removal, a ready backend after the overlay, preservation of the user-data
 sentinel, and strict uninstall. Clean installation alone cannot detect stale
 application files rejected by the backend's exact manifest validation.
 
+The official workflow performs the app startup check on that downloaded,
+installed candidate, and passes `-SkipSmoke` to the earlier packaging command
+to avoid starting the staged app a second time. Standalone local builds retain
+their default staged smoke. Publication requires the installed gate's successful
+outcome and a complete passing report tied to the exact downloaded installer;
+missing reports or failed startup, upgrade, frontend, media, support, cleanup,
+or uninstall checks stop the release. The report is retained with draft
+verification evidence.
+
 ## Core Test Commands
 
 Muse Voice Transcribe regression coverage is in `tests/test_meta_stt.py`.

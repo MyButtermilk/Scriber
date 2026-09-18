@@ -779,8 +779,9 @@ Packaging/build:
   the restores and setup preceding those two heavy producers were serialized
   in the final Windows job even though the compile and PyInstaller phases later
   overlapped.
-- The final Windows job downloads the two cold products with one merged artifact
-  pattern, validates their commit/key/file attestations including the complete
+- The final Windows job waits for successful build/upload steps in the exact
+  current run and downloads the two cold products by their unique artifact IDs.
+  It validates their commit/key/file attestations including the complete
   Tauri bundle-binary set, and then performs only
   fresh final assembly, NSIS/updater signing, publication, and release
   verification. The same attested `minisign-verify.exe` then checks the
@@ -796,7 +797,9 @@ Packaging/build:
   Python tests, browser integration, and typechecking run as separate jobs with
   a validated shared environment cache; Rust checks reuse debug compilation
   state while executing fresh clippy/tests. These changes reduce serial setup
-  and retry work without accepting cross-run test results. A failed quality
+  and retry work. Identical-SHA canonical main quality evidence may be reused
+  only with the separately verified workflow/run/attempt provenance; other
+  cross-revision test-result reuse is not implemented. A failed quality
   gate cannot assemble, sign, or publish an installer. A producer
   failure, corrupt artifact, or parity mismatch discards the cold products and
   safely runs the normal warm build instead.
@@ -806,6 +809,14 @@ Packaging/build:
   cache probes. Measure that added queue/probe time in real releases before
   assigning a fixed number; it is intentionally bounded well below the two
   several-minute cold producer phases it avoids serializing.
+- Official packaging skips its duplicate staged-app startup smoke. The required
+  downloaded-installer gate runs that same startup implementation on both the
+  clean installation and upgrade, retains each result, and additionally checks
+  frontend, support, media and uninstall. Its complete passing report must match
+  the exact candidate before publication. Local standalone builds retain their
+  default staged smoke. In v0.5.116 the redundant staged smoke took 50.65 seconds;
+  in v0.5.115 it took 8.12 seconds. These are avoided stage times, not a forecast
+  for total future release latency.
 - The standard GitHub release passes `-ParallelizeIndependentBuilds`. On one
   runner it starts frontend type checking, sidecar preparation, and the Tauri
   `--no-bundle` app compile together. The compile helper writes a generated

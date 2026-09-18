@@ -1998,9 +1998,10 @@ jobs:
             "6"
           )
           $isOfficialRelease = $env:SCRIBER_OFFICIAL_RELEASE -eq "true"
-          if (-not $isOfficialRelease) {
-            $buildArgs += "-SkipSmoke"
-          }
+          # Official releases run this startup check on the downloaded, installed
+          # candidate below, including upgrade and uninstall, before publication.
+          # Standalone/local build_windows.ps1 keeps its default staged smoke.
+          $buildArgs += "-SkipSmoke"
           $pythonDependenciesReady = "${{ steps.installer-python.outputs.mode }}" -ne "base"
           if ($pythonDependenciesReady) {
             $buildArgs += "-RunMediaPreparationSmoke"
@@ -2451,6 +2452,7 @@ jobs:
           } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath build\release-minisign-verification.json -Encoding utf8
 
       - name: Smoke downloaded installer candidate
+        id: installed-smoke
         if: needs.release-plan.outputs.official-release == 'true'
         shell: pwsh
         run: |
@@ -2477,6 +2479,12 @@ jobs:
             -VerifyMediaPreparation `
             -VerifySupportBundle `
             -VerifyUninstall
+          python -m scripts.ci.validate_installer_smoke_report `
+            --report tmp\installer-smoke\downloaded-release-candidate.json `
+            --installer (Join-Path $downloadRoot ([string]$installers[0].name))
+          if ($LASTEXITCODE -ne 0) {
+            throw "The downloaded installer did not produce complete passing smoke evidence."
+          }
 
       - name: Upload draft verification evidence
         if: needs.release-plan.outputs.official-release == 'true'
@@ -2497,6 +2505,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if ("${{ steps.installed-smoke.outcome }}" -ne "success") {
+            throw "Publishing requires the downloaded installer's successful smoke gate."
+          }
           $prePublishRoot = "build\release-pre-publish-roundtrip"
           $postPublishRoot = "build\release-post-publish-roundtrip"
           foreach ($path in @($prePublishRoot, $postPublishRoot)) {
