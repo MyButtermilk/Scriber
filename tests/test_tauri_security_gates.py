@@ -130,14 +130,16 @@ def test_tauri_does_not_expose_general_shell_plugin() -> None:
     assert "tauri_plugin_opener::init()" in lib_rs
 
 
-def test_rust_audio_sidecar_is_separate_cargo_binary_not_tauri_external_bin() -> None:
+def test_rust_audio_sidecar_is_independent_crate_and_only_approved_external_bin() -> None:
     cargo = tomllib.loads((TAURI_DIR / "Cargo.toml").read_text(encoding="utf-8"))
     bins = {item["name"]: item["path"] for item in cargo.get("bin", [])}
     config = read_json(TAURI_DIR / "tauri.conf.json")
 
-    assert bins["scriber-audio-sidecar"] == "src/audio_sidecar.rs"
+    worker = tomllib.loads((REPO_ROOT / "native/scriber-audio-sidecar/Cargo.toml").read_text(encoding="utf-8"))
+    assert "scriber-audio-sidecar" not in bins
+    assert worker["bin"] == [{"name": "scriber-audio-sidecar", "path": "../../Frontend/src-tauri/src/audio_sidecar.rs"}]
     assert (TAURI_DIR / "src" / "audio_sidecar.rs").is_file()
-    assert "externalBin" not in config.get("bundle", {})
+    assert config["bundle"]["externalBin"] == ["resources/audio-sidecar/scriber-audio-sidecar"]
 
 
 def test_tauri_window_menu_is_not_installed() -> None:
@@ -152,7 +154,7 @@ def test_tauri_window_menu_is_not_installed() -> None:
 def test_tauri_bundle_only_carries_approved_resource_directories() -> None:
     config = read_json(TAURI_DIR / "tauri.conf.json")
 
-    assert "externalBin" not in config.get("bundle", {})
+    assert config["bundle"]["externalBin"] == ["resources/audio-sidecar/scriber-audio-sidecar"]
     assert config["bundle"]["resources"] == {
         "target/release/backend/": "backend/",
         "../../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
