@@ -6400,6 +6400,9 @@ mod tests {
 
     #[test]
     fn remote_desktop_hotkeys_require_explicit_boolean_opt_in() {
+        use super::backend_hotkey_config_from_value;
+        use serde_json::json;
+
         for value in [
             json!({}),
             json!({"remoteDesktopHotkeys": "true"}),
