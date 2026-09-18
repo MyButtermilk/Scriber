@@ -101,7 +101,7 @@ def test_release_cache_summary_carries_run_bound_cross_runner_fingerprints() -> 
     assert "$componentMatches.tauriAppBinary" in script
 
 
-def test_release_quality_suite_blocks_packaging_but_not_cold_preparation() -> None:
+def test_release_quality_suite_blocks_signing_after_parallel_packaging_preparation() -> None:
     raw = _read(".github/workflows/release-windows.yml")
     workflow = yaml.safe_load(raw)
     jobs = workflow["jobs"]
@@ -126,13 +126,34 @@ def test_release_quality_suite_blocks_packaging_but_not_cold_preparation() -> No
     build_condition = " ".join(build["if"].split())
     assert set(build["needs"]) == {
         "release-plan",
-        "quality-gates",
         "prepare-backend-cold",
         "prepare-tauri-cold",
     }
-    assert build_condition == (
-        "always() && !cancelled() && needs.release-plan.result == 'success' && needs.quality-gates.result == 'success'"
-    )
+    assert build_condition == "always() && !cancelled() && needs.release-plan.result == 'success'"
+    steps = build["steps"]
+    names = [step["name"] for step in steps]
+    gate = next(step for step in steps if step["name"] == "Require successful release quality gates")
+    assert "if" not in gate
+    assert not gate.get("continue-on-error", False)
+    assert "wait_release_quality_gates.py" in gate["run"]
+    for identity in ("github.repository", "github.run_id", "github.run_attempt", "github.sha"):
+        assert "${{ " + identity + " }}" in gate["run"]
+    assert "if ($LASTEXITCODE -ne 0)" in gate["run"]
+    gate_index = names.index(gate["name"])
+    assert names.index("Install Python dependencies") < gate_index
+    assert names.index("Install frontend dependencies") < gate_index
+    assert gate_index < names.index("Build Windows installer")
+    assert gate_index < names.index("Create and sync exact-ID draft release assets")
+    assert gate_index < names.index("Verify and publish exact GitHub release transaction")
+    # None of the shipping steps may bypass a failed waiter with always().
+    for name in (
+        "Build Windows installer",
+        "Create and sync exact-ID draft release assets",
+        "Verify and publish exact GitHub release transaction",
+    ):
+        step = next(step for step in steps if step["name"] == name)
+        assert "always()" not in step.get("if", "")
+        assert not step.get("continue-on-error", False)
     assert "cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}" in raw
     assert build["concurrency"] == {
         "group": (
@@ -399,12 +420,12 @@ def test_cold_backend_parallelizes_only_independent_diarization_build() -> None:
         ("success", "success", "skipped", "skipped", False, True),
         ("success", "success", "failure", "success", False, True),
         ("success", "success", "success", "failure", False, True),
-        ("success", "failure", "skipped", "skipped", False, False),
+        ("success", "failure", "skipped", "skipped", False, True),
         ("failure", "success", "skipped", "skipped", False, False),
         ("success", "success", "success", "success", True, False),
     ],
 )
-def test_release_build_gate_truth_table(
+def test_release_preparation_gate_truth_table(
     plan_result: str,
     suite_result: str,
     backend_cold_result: str,
@@ -416,7 +437,10 @@ def test_release_build_gate_truth_table(
     # enter the established single-runner fallback instead of blocking build.
     assert backend_cold_result in {"success", "failure", "skipped"}
     assert tauri_cold_result in {"success", "failure", "skipped"}
-    actual = not cancelled and plan_result == "success" and suite_result == "success"
+    assert suite_result in {"success", "failure"}
+    # Quality still gates the signing/build step through the tested waiter;
+    # it no longer postpones tool and dependency preparation.
+    actual = not cancelled and plan_result == "success"
     assert actual is expected
 
 

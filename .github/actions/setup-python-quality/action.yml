@@ -1,0 +1,48 @@
+name: Set up validated Python quality environment
+description: Reuse the exact Windows test environment, never the packaged backend runtime.
+inputs:
+  python-version:
+    description: Exact CPython version used by all Python quality lanes.
+    required: true
+  publish-cache:
+    description: Only the full-suite lane publishes a fresh validated environment.
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+        cache: pip
+        cache-dependency-path: |
+          requirements-base.txt
+          requirements-dev.txt
+          requirements-test.txt
+          requirements-test-constraints.txt
+          requirements-release-constraints.txt
+
+    - name: Identify exact test environment
+      id: identity
+      shell: pwsh
+      run: python scripts/ci/prepare_python_quality_environment.py identity --github-output $env:GITHUB_OUTPUT
+
+    - name: Restore exact test environment
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: venv
+        key: ${{ steps.identity.outputs.cache-key }}
+
+    - name: Validate or create isolated test environment
+      shell: pwsh
+      run: python scripts/ci/prepare_python_quality_environment.py prepare --github-summary $env:GITHUB_STEP_SUMMARY
+
+    # Publish immediately after validation, before tests can mutate the environment.
+    # PRs and tags can consume the main cache, but cannot publish a new one.
+    - name: Save trusted test environment
+      if: inputs.publish-cache == 'true' && github.repository == 'MyButtermilk/Scriber' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: venv
+        key: ${{ steps.identity.outputs.cache-key }}

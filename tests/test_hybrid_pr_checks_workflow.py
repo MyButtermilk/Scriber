@@ -83,6 +83,22 @@ def test_hybrid_pr_checks_pin_workflow_lint_and_python_gate_dependencies() -> No
     assert "python -m pip check" in python_install
 
 
+def test_release_barrier_is_exercised_against_real_current_run_checks() -> None:
+    job = _workflow_jobs()["release-quality-contract"]
+    assert job["needs"] == "quality-gates"
+    assert job["permissions"] == {"contents": "read", "actions": "read"}
+    invocation = next(step for step in job["steps"] if "wait_release_quality_gates.py" in step.get("run", ""))
+    assert '--job-prefix "Reusable quality gates"' in invocation["run"]
+    for identity in (
+        "github.repository",
+        "github.run_id",
+        "github.run_attempt",
+        "github.event.pull_request.head.sha || github.sha",
+    ):
+        assert "${{ " + identity + " }}" in invocation["run"]
+    assert not invocation.get("continue-on-error", False)
+
+
 def test_ci_and_release_third_party_actions_are_commit_pinned() -> None:
     workflows = [
         yaml.safe_load(WORKFLOW.read_text(encoding="utf-8")),

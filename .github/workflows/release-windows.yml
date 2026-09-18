@@ -584,14 +584,12 @@ jobs:
     name: Build and sign Windows installer
     needs:
       - release-plan
-      - quality-gates
       - prepare-backend-cold
       - prepare-tauri-cold
     if: >-
       always() &&
       !cancelled() &&
-      needs.release-plan.result == 'success' &&
-      needs.quality-gates.result == 'success'
+      needs.release-plan.result == 'success'
     concurrency:
       group: ${{ startsWith(github.ref, 'refs/tags/v') && 'release-windows-tags' || format('release-windows-build-{0}', github.ref) }}
       queue: max
@@ -1800,6 +1798,25 @@ jobs:
             build/ffmpeg-profile-b-msys2/profile-b-msys2-build-report.json
           key: scriber-ffmpeg-profile-b-msys2-${{ runner.os }}-${{ hashFiles('packaging/ffmpeg-profile-b-release-lock-v1.json') }}
 
+      # Preparation can overlap tests, but this boundary must pass before any
+      # installer build/signing or publication in this job. The waiter binds
+      # GitHub's effective jobs to this exact run, attempt and source revision.
+      - name: Require successful release quality gates
+        id: release-quality
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python scripts\ci\wait_release_quality_gates.py `
+            --repo "${{ github.repository }}" `
+            --run-id "${{ github.run_id }}" `
+            --run-attempt "${{ github.run_attempt }}" `
+            --head-sha "${{ github.sha }}" `
+            --evidence build\test-results\release-quality-gates.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Required quality gates did not pass for this release revision."
+          }
+
       - name: Build Windows installer
         shell: pwsh
         env:
@@ -2001,6 +2018,9 @@ jobs:
           if (Test-Path -LiteralPath build\release-cache-summary.json -PathType Leaf) {
             Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-diagnostics\
           }
+          if (Test-Path -LiteralPath build\test-results\release-quality-gates.json -PathType Leaf) {
+            Copy-Item -LiteralPath build\test-results\release-quality-gates.json -Destination release-diagnostics\
+          }
           if (Test-Path -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -PathType Leaf) {
             Copy-Item -LiteralPath build\tauri-release-config\tauri-windows-bundle.log -Destination release-diagnostics\
           }
@@ -2178,6 +2198,7 @@ jobs:
           if (Test-Path -LiteralPath build\release-cache-summary.json -PathType Leaf) {
             Copy-Item -LiteralPath build\release-cache-summary.json -Destination release-artifacts\
           }
+          Copy-Item -LiteralPath build\test-results\release-quality-gates.json -Destination release-artifacts\
           if (Test-Path -LiteralPath build\backend-sidecar-cache-selection.json -PathType Leaf) {
             Copy-Item -LiteralPath build\backend-sidecar-cache-selection.json -Destination release-artifacts\
           }

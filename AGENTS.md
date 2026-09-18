@@ -500,9 +500,13 @@ Packaging and scripts:
   planning and exact-revision quality gates start together. On a
   planner-confirmed cold backend/Tauri double miss, both read-only cold
   producers start as soon as planning succeeds and may overlap the remaining
-  gates; they may emit only attested short-lived workflow artifacts. Final
-  assembly, signing, and publication remain hard-gated on successful quality
-  gates. The planner must probe with the same direct single-file Actions
+  gates; they may emit only attested short-lived workflow artifacts. The final
+  job prepares its dependencies as soon as the producers finish, overlapping
+  remaining checks. Before assembly/signing, `wait_release_quality_gates.py`
+  verifies every required effective GitHub job against the current repository,
+  run, attempt, and source SHA. Failure, missing evidence, or skipped checks
+  block shipping; preserve this barrier when changing job names or graph edges.
+  The planner must probe with the same direct single-file Actions
   `hashFiles(...)` expressions used by producers and the final job; keep the
   finalizer's raw key-file SHA-256 outputs separate for cross-runner parity.
   The cold backend producer must restore and prune the same

@@ -125,6 +125,8 @@ $rollingFamilies = @(
     [pscustomobject]@{ Name = 'python-venv'; Pattern = '^scriber-python-venv-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'python-wheelhouse'; Pattern = '^scriber-python-wheelhouse-v2-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'rust-dependencies'; Pattern = '^scriber-rust-dependencies-v1-Windows-'; Retain = $RetainPerRollingFamily },
+    [pscustomobject]@{ Name = 'rust-quality'; Pattern = '^scriber-rust-quality-v1-'; Retain = $RetainPerRollingFamily },
+    [pscustomobject]@{ Name = 'python-quality'; Pattern = '^scriber-python-quality-venv-v1-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'diarization'; Pattern = '^scriber-rust-diarization-sidecar-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'sherpa'; Pattern = '^scriber-sherpa-onnx-archive-Windows-'; Retain = $RetainPerRollingFamily },
     [pscustomobject]@{ Name = 'ffmpeg'; Pattern = '^scriber-ffmpeg-profile-b-msys2-n7\.0-v4-Windows$'; Retain = $RetainPerRollingFamily },
