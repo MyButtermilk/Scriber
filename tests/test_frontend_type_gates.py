@@ -1874,7 +1874,8 @@ def test_tray_panel_exposes_direct_update_install_action() -> None:
     assert 't("Download, install, and restart Scriber.")' in tray_source
     assert 'label={status.updateAvailable ? t("Check Again") : t("Check for Updates")}' in tray_source
     assert "status.updateInstalling || !status.updateAvailable" in tray_source
-    assert '<Download className="h-2.5 w-2.5"' in tray_source
+    assert "status.recordingActive || !showUpdateInstallBanner" in tray_source
+    assert '<Download className="h-2.5 w-2.5"' not in tray_source
     assert "statusDotClass" not in tray_source
 
     tray_icon_dir = REPO_ROOT / "Frontend" / "src-tauri" / "icons"

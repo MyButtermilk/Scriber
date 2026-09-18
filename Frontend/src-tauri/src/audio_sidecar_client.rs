@@ -2519,6 +2519,9 @@ mod tests {
 
     #[test]
     fn capture_artifact_validation_failure_deletes_untrusted_candidate() {
+        // Match capture admission: concurrent shutdown must not remove the
+        // shared artifact directory between lease preparation and the write.
+        let _lifecycle_guard = lock_audio_lifecycle_lane(AudioLifecycleDomain::Microphone);
         let mut payload = json!({
             "sampleRate": 16000,
             "channels": 1,
