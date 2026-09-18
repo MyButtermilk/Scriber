@@ -1,0 +1,45 @@
+name: Diagnose existing installer startup
+
+on:
+  push:
+    branches: [codex/installer-startup-diagnostics]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  diagnose:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Prepare validated smoke environment
+        uses: ./.github/actions/setup-python-quality
+        with:
+          python-version: "3.14.7"
+      - name: Download original candidate without rebuilding
+        uses: actions/download-artifact@v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: 35361897261
+          artifact-ids: 10554891491
+          path: build/existing-candidate
+          merge-multiple: true
+      - name: Verify exact candidate and run installed smoke
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem build/existing-candidate -Recurse -File -Filter Scriber_0.5.119_x64-setup.exe)
+          if ($files.Count -ne 1) { throw "Expected exactly one original candidate." }
+          $candidate = $files[0].FullName
+          if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash -ne "d6626ac1ea4e9f1d58e61fa8ff69bf62c7b3de7288fffbf72bdf19004d3c657c") { throw "Candidate bytes changed." }
+          & ./scripts/smoke_windows_installer.ps1 -PythonExecutable ./venv/Scripts/python.exe -InstallerPath $candidate -OutputPath tmp/installer-smoke/existing-candidate.json -SimulateUpgrade -VerifyFrontend -VerifyMediaPreparation -VerifySupportBundle -VerifyUninstall
+          ./venv/Scripts/python.exe -m scripts.ci.validate_installer_smoke_report --report tmp/installer-smoke/existing-candidate.json --installer $candidate
+          if ($LASTEXITCODE -ne 0) { throw "Candidate smoke report is incomplete." }
+      - name: Preserve startup evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: existing-installer-startup-evidence
+          path: tmp/installer-smoke/existing-candidate.json
+          if-no-files-found: warn
