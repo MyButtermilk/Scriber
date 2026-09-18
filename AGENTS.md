@@ -288,7 +288,9 @@ Frontend and shell:
   a check; bound listener setup and retain polling/focus recovery. Action-only
   consumers use the stable `useBackendActions` context instead of subscribing to
   every health-check timestamp. The native supervisor emits an empty event only
-  when readiness, running/starting state, or backend URL changes.
+  when readiness, running/starting state, or backend URL changes. `RuntimeShell`
+  consumes only the separate boolean `useBackendOnline` value so its parent
+  render cannot reintroduce timestamp-driven renders of the routed pages.
 - `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Podcasts, Settings,
   Debug Console, Transcript Detail.
 - `Frontend/client/src/hooks/use-browser-youtube-import.ts` owns one-shot

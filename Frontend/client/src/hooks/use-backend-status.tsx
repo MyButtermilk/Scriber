@@ -34,6 +34,7 @@ interface TauriBackendStatus {
 }
 
 const BackendStatusContext = createContext<BackendStatus | null>(null);
+const BackendOnlineContext = createContext<boolean | null>(null);
 type BackendActions = Pick<BackendStatus, "checkNow">;
 const BackendActionsContext = createContext<BackendActions | null>(null);
 
@@ -295,21 +296,23 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
 
   return (
     <BackendActionsContext.Provider value={actions}>
-      <BackendStatusContext.Provider
-        value={{
-          isOnline,
-          isChecking,
-          hasConnected,
-          backendStarting,
-          backendMessage,
-          checkCount,
-          lastChecked,
-          error,
-          checkNow: checkHealth,
-        }}
-      >
-        {children}
-      </BackendStatusContext.Provider>
+      <BackendOnlineContext.Provider value={isOnline}>
+        <BackendStatusContext.Provider
+          value={{
+            isOnline,
+            isChecking,
+            hasConnected,
+            backendStarting,
+            backendMessage,
+            checkCount,
+            lastChecked,
+            error,
+            checkNow: checkHealth,
+          }}
+        >
+          {children}
+        </BackendStatusContext.Provider>
+      </BackendOnlineContext.Provider>
     </BackendActionsContext.Provider>
   );
 }
@@ -326,6 +329,14 @@ export function useBackendActions(): BackendActions {
   const context = useContext(BackendActionsContext);
   if (!context) {
     throw new Error("useBackendActions must be used within a BackendStatusProvider");
+  }
+  return context;
+}
+
+export function useBackendOnline(): boolean {
+  const context = useContext(BackendOnlineContext);
+  if (context === null) {
+    throw new Error("useBackendOnline must be used within a BackendStatusProvider");
   }
   return context;
 }

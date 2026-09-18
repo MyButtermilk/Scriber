@@ -129,7 +129,8 @@ poll after the supervisor detects readiness. Existing supervisor cadence,
 periodic/focus recovery, and authoritative status queries are retained.
 
 Live Mic and Command Palette use a stable action-only context for `checkNow`;
-health-check timestamps and counters no longer trigger their context renders.
+their `RuntimeShell` parent uses a separate boolean online context. Health-check
+timestamps and counters no longer trigger page renders through either path.
 Focused tests cover deferred startup dependencies, listener ordering, event
 coalescing, recovery, cleanup, and action-consumer render counts. These contract
 tests do not constitute an installed latency or memory benchmark. No Meeting

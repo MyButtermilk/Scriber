@@ -86,7 +86,8 @@ registers its listener before querying authoritative status; events request a ne
 query rather than supplying trusted state. An event during a pending query
 reserves one follow-up. Listener setup has a bounded fallback, and periodic/focus
 checks remain available. Live Mic and Command Palette consume the stable health
-action context so timestamp-only updates do not force their context renders.
+action context, and their `RuntimeShell` parent consumes only the separate
+boolean online context, so timestamp-only updates do not rerender routed pages.
 
 Each WebView loads its initial locale catalog and selected main, tray, or overlay
 module concurrently. Rendering waits for both; overlay transparency markers are
