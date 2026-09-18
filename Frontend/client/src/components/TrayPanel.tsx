@@ -115,8 +115,6 @@ function compactTranscriptDetail(
 
 function statusLabel(status: TrayStatus, t: Translate): string {
   if (status.recordingActive) return t("Recording");
-  if (status.updateInstalling) return t("Installing update");
-  if (status.updateAvailable) return t("Update ready");
   return t("Ready");
 }
 
@@ -125,22 +123,6 @@ function StatusIndicator({ status }: { status: TrayStatus }) {
     return (
       <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-white shadow-[0_0_0_4px_rgba(239,68,68,0.12)]">
         <Square className="h-2 w-2 fill-current" aria-hidden="true" />
-      </span>
-    );
-  }
-
-  if (status.updateInstalling) {
-    return (
-      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_0_4px_rgba(37,99,235,0.12)]">
-        <WavePhysicsLoader size="micro" theme="dark" />
-      </span>
-    );
-  }
-
-  if (status.updateAvailable) {
-    return (
-      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-blue-600 text-white shadow-[0_0_0_4px_rgba(37,99,235,0.12)]">
-        <Download className="h-2.5 w-2.5" strokeWidth={2.4} aria-hidden="true" />
       </span>
     );
   }
@@ -591,10 +573,12 @@ export default function TrayPanel() {
                 </span>
               ) : null}
             </div>
-            <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
-              <StatusIndicator status={status} />
-              <span className="truncate">{statusLabel(status, t)}</span>
-            </div>
+            {status.recordingActive || !showUpdateInstallBanner ? (
+              <div className="mt-0.5 flex items-center gap-2 text-[11px] font-medium text-slate-500">
+                <StatusIndicator status={status} />
+                <span className="truncate">{statusLabel(status, t)}</span>
+              </div>
+            ) : null}
           </div>
         </header>
 

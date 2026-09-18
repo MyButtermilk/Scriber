@@ -1397,8 +1397,10 @@ background after startup and then about once per week, cache the result in
 local storage, and suppress update prompts while recording or transcription is
 active. Users can install, defer for a day, skip the current version, or open
 release notes from Settings. The custom tray panel mirrors actionable update
-state with a blue download indicator and exposes a direct install-and-restart
-action when an update is available. It also shows the installed app version,
+state in a single blue update banner and exposes a direct install-and-restart
+action when an update is available. The header omits its idle status during
+updates to avoid a duplicate indicator, but still shows active recording.
+It also shows the installed app version,
 links directly to the Meeting workspace, and displays the effective registered
 Meeting shortcut, including a Windows registration fallback when necessary.
 Both entry points call the same updater guest API and acquire a native
