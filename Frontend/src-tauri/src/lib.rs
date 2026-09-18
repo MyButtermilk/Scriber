@@ -81,7 +81,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 };
 const DEFAULT_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8765;
-const FALLBACK_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 const BACKEND_START_TIMEOUT: Duration = Duration::from_secs(30);
 const BACKEND_START_TIMEOUT_ENV: &str = "SCRIBER_BACKEND_START_TIMEOUT_MS";
 const BACKEND_UNHEALTHY_TIMEOUT: Duration = Duration::from_secs(30);
@@ -697,6 +696,11 @@ impl PendingNavigationState {
     }
 }
 
+struct BackendLaunchConfig {
+    resource_dir: Option<PathBuf>,
+    app_version: String,
+}
+
 struct BackendState {
     base_url: String,
     port: u16,
@@ -706,8 +710,7 @@ struct BackendState {
     unhealthy_since: Option<Instant>,
     message: String,
     launch_kind: String,
-    resource_dir: Option<PathBuf>,
-    app_version: String,
+    launch_config: Option<BackendLaunchConfig>,
     session_token: String,
     shell_ipc_config: Option<shell_ipc::ShellIpcConfig>,
 }
@@ -1149,22 +1152,34 @@ impl BackendManager {
                 job: None,
                 started_at: None,
                 unhealthy_since: None,
-                message: "Backend not started".to_string(),
+                message: "Backend is waiting for desktop setup".to_string(),
                 launch_kind: "none".to_string(),
-                resource_dir: None,
-                app_version: FALLBACK_APP_VERSION.to_string(),
+                launch_config: None,
                 session_token: resolve_session_token(),
                 shell_ipc_config,
             }),
         }
     }
 
-    fn set_app_version(&self, app_version: String) {
-        lock_unpoisoned(&self.state).app_version = app_version;
+    fn configure_launch(
+        &self,
+        app_version: String,
+        resource_dir: Option<PathBuf>,
+    ) -> Result<(), &'static str> {
+        let mut state = lock_unpoisoned(&self.state);
+        if state.launch_config.is_some() {
+            return Err("Backend launch is already configured");
+        }
+        state.launch_config = Some(BackendLaunchConfig {
+            app_version,
+            resource_dir,
+        });
+        state.message = "Backend not started".to_string();
+        Ok(())
     }
 
-    fn set_resource_dir(&self, resource_dir: Option<PathBuf>) {
-        lock_unpoisoned(&self.state).resource_dir = resource_dir;
+    fn is_configured(&self) -> bool {
+        lock_unpoisoned(&self.state).launch_config.is_some()
     }
 
     fn base_url(&self) -> String {
@@ -1184,6 +1199,9 @@ impl BackendManager {
         // Phase 1: snapshot under lock, then release before the blocking health check.
         let (port, force_managed, child_pid, access) = {
             let mut state = lock_unpoisoned(&self.state);
+            if state.launch_config.is_none() {
+                return status_from_state(&state, false);
+            }
             refresh_child_state(&mut state);
             (
                 state.port,
@@ -1260,6 +1278,9 @@ impl BackendManager {
         // Phase 1: snapshot under lock.
         let (port, force_managed, child_pid, access) = {
             let mut state = lock_unpoisoned(&self.state);
+            if state.launch_config.is_none() {
+                return status_from_state(&state, false);
+            }
             refresh_child_state(&mut state);
             (
                 state.port,
@@ -1318,6 +1339,9 @@ impl BackendManager {
         // Phase 1: snapshot under lock.
         let (port, access) = {
             let mut state = lock_unpoisoned(&self.state);
+            if state.launch_config.is_none() {
+                return Err(state.message.clone());
+            }
             refresh_child_state(&mut state);
             (
                 state.port,
@@ -1397,6 +1421,9 @@ fn ensure_backend_running(manager: tauri::State<'_, BackendManager>) -> BackendS
 
 #[tauri::command]
 fn restart_backend(manager: tauri::State<'_, BackendManager>) -> Result<BackendStatus, String> {
+    if !manager.is_configured() {
+        return Err("Backend is waiting for desktop setup".to_string());
+    }
     let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("backendRestartCommand");
     if stopped > 0 {
         write_shell_log(&format!(
@@ -1941,6 +1968,13 @@ pub fn run() {
         .manage(export_dialog::MeetingExportRegistry::default())
         .manage(backend_manager)
         .setup(move |app| {
+            // WebViews may invoke commands even before setup finishes. Publish
+            // both launch inputs atomically before any window is revealed;
+            // earlier requests remain deferred by BackendManager's guards.
+            app.state::<BackendManager>().configure_launch(
+                app.package_info().version.to_string(),
+                app.path().resource_dir().ok(),
+            )?;
             configure_desktop_shell(app)?;
             schedule_initial_main_window_reveal_fallback(app.handle().clone());
             if let Some(request) = initial_youtube_deep_link.as_ref() {
@@ -1973,9 +2007,6 @@ pub fn run() {
                 )),
             }
             apply_desktop_autostart_preference(app.handle());
-            let manager = app.state::<BackendManager>();
-            manager.set_app_version(app.package_info().version.to_string());
-            manager.set_resource_dir(app.path().resource_dir().ok());
             start_backend_supervisor(app.handle().clone());
             write_shell_log(
                 "setup backend ensure and global hotkey registration deferred to supervisor",
@@ -3665,13 +3696,16 @@ fn select_backend_port(current_port: u16) -> u16 {
 }
 
 fn start_managed_backend(state: &mut BackendState, port: u16, message: &str) -> BackendStatus {
+    let Some(config) = state.launch_config.as_ref() else {
+        return status_from_state(state, false);
+    };
     state.port = port;
     state.base_url = base_url(port);
     state.unhealthy_since = None;
     match spawn_backend(
         port,
-        state.resource_dir.as_deref(),
-        &state.app_version,
+        config.resource_dir.as_deref(),
+        &config.app_version,
         &state.session_token,
         state.shell_ipc_config.as_ref(),
     ) {
@@ -5588,10 +5622,11 @@ mod tests {
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
         wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
-        BackendAccess, BackendCommandSpec, BackendStatus, BackendStatusChangeTracker,
-        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, ShellMenuSmokeAction, TrayIconKind,
-        TrayStatus, TrayStatusInner, UiLocale, YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV,
-        BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
+        BackendAccess, BackendCommandSpec, BackendManager, BackendStatus,
+        BackendStatusChangeTracker, DesktopHotkeyState, NativeDeviceObserveOnlyLogState,
+        ShellMenuSmokeAction, TrayIconKind, TrayStatus, TrayStatusInner, UiLocale,
+        YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV, BACKEND_START_TIMEOUT,
+        BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
         MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
         MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
         NATIVE_DEVICE_OBSERVE_ONLY_LOG_EVERY_EVENTS, NATIVE_DEVICE_OBSERVE_ONLY_LOG_INTERVAL,
@@ -5613,6 +5648,64 @@ mod tests {
     };
     use tauri::tray::{MouseButton, MouseButtonState};
     use tauri_plugin_global_shortcut::ShortcutState;
+
+    #[test]
+    fn backend_launch_waits_for_setup_without_probing_or_spawning() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("bind isolated probe port");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let manager = BackendManager::new(None);
+        {
+            let mut state = super::lock_unpoisoned(&manager.state);
+            state.port = port;
+            state.base_url = super::base_url(port);
+        }
+
+        assert!(!manager.is_configured());
+        for status in [manager.ensure_started(), manager.status()] {
+            assert!(!status.ready);
+            assert!(!status.running);
+            assert!(!status.managed);
+            assert!(status.message.contains("waiting for desktop setup"));
+        }
+        assert!(manager.restart().is_err());
+        {
+            let mut state = super::lock_unpoisoned(&manager.state);
+            let status = super::start_managed_backend(&mut state, 1, "must stay deferred");
+            assert!(!status.running);
+            assert_eq!(state.port, port);
+            assert_eq!(state.base_url, super::base_url(port));
+            assert!(state.child.is_none());
+            assert!(state.job.is_none());
+            assert!(state.started_at.is_none());
+            assert!(state.unhealthy_since.is_none());
+        }
+        assert!(matches!(
+            listener.accept(),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock
+        ));
+    }
+
+    #[test]
+    fn backend_launch_configuration_binds_package_version_and_resources_once() {
+        let manager = BackendManager::new(None);
+        let resource_dir = PathBuf::from("installed-resources");
+        manager
+            .configure_launch("9.8.7".to_string(), Some(resource_dir.clone()))
+            .expect("configure from Tauri package information");
+        assert!(manager.is_configured());
+        assert!(manager.configure_launch("0.1.0".to_string(), None).is_err());
+        let state = super::lock_unpoisoned(&manager.state);
+        let config = state
+            .launch_config
+            .as_ref()
+            .expect("complete launch inputs");
+        assert_eq!(config.app_version, "9.8.7");
+        assert_eq!(config.resource_dir.as_ref(), Some(&resource_dir));
+        assert!(state.child.is_none());
+    }
 
     #[test]
     fn health_response_ready_requires_scriber_contract() {
