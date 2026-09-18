@@ -2029,14 +2029,14 @@ credentials for a Speech-to-Text project. Gemini 3.5 Transcribe is separate:
 the async path uses Files API plus the Interactions API in
 `src/cloud_async_stt.py`, while `src/gemini_realtime_stt.py` maps the dedicated
 Transcribe Live WebSocket onto Pipecat interim/final frames and rotates sessions
-before the provider's ten-minute ceiling. At Stop, a related speculative interim
-revision followed by an unmatched SMART final and a fresh `generationComplete`
-uses the existing late-final observation window instead of waiting another full
-15 seconds for a nonexistent final. Completion may precede or follow the final;
-it is never enough to retire an unfinished first turn. Distinct pending speech,
-a final matching the older hypothesis, a new interim after the final, or a
-missing completion marker retain the strict provider deadline. The controller's
-cross-session insertion order stays intact.
+before the provider's ten-minute ceiling. At Stop, ambiguous interim hypotheses
+retain the full 15-second provider deadline: shared prefixes cannot distinguish
+a revision from a separate utterance, and `generationComplete` describes model
+output without correlating an input-transcription turn. A related revision
+arriving after a final remains ambiguous and does not itself cause a terminal
+timeout error; unrelated new speech still requires a final. This conservative
+drain can delay subsequent insertion, but preserves late provider finals and
+the controller's cross-session insertion order.
 Both reuse the stored
 `GOOGLE_API_KEY` used by Gemini summaries and post-processing so users can
 configure the simple Google path with one Gemini API key. Gemini, Meta Muse
