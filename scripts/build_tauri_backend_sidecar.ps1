@@ -1717,24 +1717,22 @@ function Sync-DirectoryContents {
     }
 }
 
-function Get-FrontendApplicationVersion {
+function Get-RustAudioWorkerVersion {
     param([string]$Root)
 
-    $packagePath = Join-Path $Root "Frontend\package.json"
+    $packagePath = Join-Path $Root "native\scriber-audio-sidecar\Cargo.toml"
     if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
-        throw "Frontend package manifest was not found: $packagePath"
+        throw "Audio worker package manifest was not found: $packagePath"
     }
-    try {
-        $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
-    } catch {
-        throw "Frontend package manifest is invalid JSON: $packagePath"
-    }
-    $version = [string](Get-ObjectPropertyValue -Object $package -Name "version")
+    $packageText = Get-Content -LiteralPath $packagePath -Raw
+    $packageSection = [regex]::Match($packageText, '(?ms)^\[package\]\s*\r?\n(.*?)(?=^\[|\z)')
+    $versionMatch = [regex]::Match($packageSection.Groups[1].Value, '(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$')
+    $version = $versionMatch.Groups[1].Value
     if (
         -not $version -or
-        $version -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$'
+        @($version.Split('.') | Where-Object { [int]$_ -gt 65535 }).Count -gt 0
     ) {
-        throw "Frontend package version is not canonical SemVer: $packagePath"
+        throw "Audio worker version must have three numeric PE version components: $packagePath"
     }
     return $version
 }
@@ -1764,8 +1762,10 @@ function Get-RustAudioSidecarInputManifest {
     param([string]$Root)
 
     $relativePaths = @(
-        "Frontend\src-tauri\build.rs",
-        "Frontend\src-tauri\tauri.conf.json",
+        "native\scriber-audio-sidecar\Cargo.toml",
+        "native\scriber-audio-sidecar\Cargo.lock",
+        "native\scriber-audio-sidecar\build.rs",
+        "native\scriber-audio-sidecar\windows-app-manifest.xml",
         "Frontend\src-tauri\icons\icon.ico",
         "Frontend\src-tauri\src\audio_sidecar.rs",
         "Frontend\src-tauri\src\audio_codec.rs",
@@ -1794,13 +1794,36 @@ function Get-RustAudioSidecarInputManifest {
     }
 
     $entries = @()
-    $entries += Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\src-tauri\Cargo.toml" -Normalizer ${function:Normalize-CargoTomlForCache}
-    $entries += Get-NormalizedFileHashEntry -Root $Root -RelativePath "Frontend\src-tauri\Cargo.lock" -Normalizer ${function:Normalize-CargoLockForCache}
     $entries += Get-InputFileEntries -Root $Root -RelativePaths $relativePaths
 
+    foreach ($relative in @(
+        ".cargo\config", ".cargo\config.toml",
+        "native\.cargo\config", "native\.cargo\config.toml",
+        "native\scriber-audio-sidecar\.cargo\config", "native\scriber-audio-sidecar\.cargo\config.toml",
+        "rust-toolchain", "rust-toolchain.toml", "native\rust-toolchain", "native\rust-toolchain.toml",
+        "native\scriber-audio-sidecar\rust-toolchain", "native\scriber-audio-sidecar\rust-toolchain.toml"
+    )) {
+        if (Test-Path -LiteralPath (Join-Path $Root $relative) -PathType Leaf) {
+            $entries += Get-InputFileEntries -Root $Root -RelativePaths @($relative)
+        }
+    }
+    $profileEnvironment = [ordered]@{}
+    foreach ($item in @(Get-ChildItem Env:CARGO_PROFILE_RELEASE_* | Sort-Object Name)) {
+        $profileEnvironment[$item.Name] = $item.Value
+    }
     return [ordered]@{
-        apiVersion = "2"
-        applicationVersion = Get-FrontendApplicationVersion -Root $Root
+        apiVersion = "3"
+        workerVersion = Get-RustAudioWorkerVersion -Root $Root
+        protocolVersion = "1"
+        buildContract = "standalone-audio-worker-v1"
+        # A verified finished worker can be staged on a packager without Rust.
+        # Resolve/check the actual producer compiler only on a build miss.
+        compiler = "rust-1.97.0"
+        target = "x86_64-pc-windows-msvc"
+        profile = "release-default-features"
+        rustFlags = [string]$env:RUSTFLAGS
+        encodedRustFlags = [string]$env:CARGO_ENCODED_RUSTFLAGS
+        profileEnvironment = $profileEnvironment
         files = $entries
     }
 }
@@ -1822,12 +1845,12 @@ function Copy-RustAudioSidecarToTauriRelease {
 
     $tauriDir = Join-Path $Root "Frontend\src-tauri"
     $targetDir = Join-Path $tauriDir "target\release"
-    $staleResourceDir = Join-Path $tauriDir "resources\audio-sidecar"
+    $externalBinaryDir = Join-Path $tauriDir "resources\audio-sidecar"
     $staleTargetResourceDir = Join-Path $targetDir "audio-sidecar"
     $cacheRoot = Join-Path $Root "build\rust-audio-sidecar-cache"
     $cargoTargetDir = if ($UseIsolatedTarget) { Join-Path $Root "build\rust-audio-sidecar-target" } else { Join-Path $tauriDir "target" }
     Assert-UnderRoot -Root $Root -Path $targetDir -Label "Tauri release audio sidecar target"
-    Assert-UnderRoot -Root $Root -Path $staleResourceDir -Label "Stale audio sidecar resource"
+    Assert-UnderRoot -Root $Root -Path $externalBinaryDir -Label "Audio worker external binary source"
     Assert-UnderRoot -Root $Root -Path $staleTargetResourceDir -Label "Stale packaged audio sidecar resource"
     Assert-UnderRoot -Root $Root -Path $cacheRoot -Label "Rust audio sidecar cache"
     Assert-UnderRoot -Root $Root -Path $cargoTargetDir -Label "Rust audio sidecar cargo target"
@@ -1839,7 +1862,7 @@ function Copy-RustAudioSidecarToTauriRelease {
     $inputManifest = Get-RustAudioSidecarInputManifest -Root $Root
     $inputManifestJson = $inputManifest | ConvertTo-Json -Depth 8 -Compress
     $cacheKey = Get-StringSha256 -Value $inputManifestJson
-    $applicationVersion = [string]$inputManifest.applicationVersion
+    $workerVersion = [string]$inputManifest.workerVersion
     $isWindowsHost = [bool]($IsWindows -or $env:OS -eq "Windows_NT")
     $cacheHit = $false
 
@@ -1850,17 +1873,19 @@ function Copy-RustAudioSidecarToTauriRelease {
                 -Path $cacheExe `
                 -Label "Cached Rust audio sidecar"
             $cacheHit = (
-                [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 2 -and
+                [int](Get-ObjectPropertyValue -Object $cacheManifest -Name "apiVersion") -eq 3 -and
                 ([string]$cacheManifest.cacheKey) -eq $cacheKey -and
-                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "applicationVersion") -ceq $applicationVersion -and
+                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "workerVersion") -ceq $workerVersion -and
                 [string]$cacheManifest.executableSha256 -eq (Get-Sha256Hex -Path $cacheExe) -and
-                [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length
+                [int64]$cacheManifest.executableLength -eq [int64](Get-Item -LiteralPath $cacheExe).Length -and
+                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "producerCompiler") -cmatch '(?m)^rustc 1\.97\.0 \(' -and
+                [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "producerCompiler") -cmatch '(?m)^host: x86_64-pc-windows-msvc$'
             )
             if ($isWindowsHost) {
                 $cacheHit = (
                     $cacheHit -and
-                    $cachedPeVersion -ceq $applicationVersion -and
-                    [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "executablePeVersion") -ceq $applicationVersion
+                    $cachedPeVersion -ceq $workerVersion -and
+                    [string](Get-ObjectPropertyValue -Object $cacheManifest -Name "executablePeVersion") -ceq $workerVersion
                 )
             }
         } catch {
@@ -1869,13 +1894,22 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 
     if ($RequireCacheHit -and -not $cacheHit) {
-        throw "Rust audio sidecar cache is missing, stale, or does not match application version $applicationVersion."
+        throw "Rust audio sidecar cache is missing, stale, or does not match worker version $workerVersion."
     }
 
     if (-not $cacheHit) {
-        Push-Location $tauriDir
+        Push-Location (Join-Path $Root "native\scriber-audio-sidecar")
         try {
-            cargo build --release --bin scriber-audio-sidecar --target-dir $cargoTargetDir
+            $compilerIdentity = (& rustc --version --verbose) -join "`n"
+            if (
+                $LASTEXITCODE -ne 0 -or
+                $compilerIdentity -cnotmatch '(?m)^rustc 1\.97\.0 \(' -or
+                $compilerIdentity -cnotmatch '(?m)^host: x86_64-pc-windows-msvc$' -or
+                $env:CARGO_BUILD_TARGET
+            ) {
+                throw "Audio worker release builds require native Rust 1.97.0 for x86_64-pc-windows-msvc without a target override."
+            }
+            cargo build --locked --release --bin scriber-audio-sidecar --target-dir $cargoTargetDir
         } finally {
             Pop-Location
         }
@@ -1890,8 +1924,8 @@ function Copy-RustAudioSidecarToTauriRelease {
         $sourcePeVersion = Get-WindowsPeApplicationVersion `
             -Path $sourceExe `
             -Label "Built Rust audio sidecar"
-        if ($isWindowsHost -and $sourcePeVersion -cne $applicationVersion) {
-            throw "Built Rust audio sidecar PE version mismatch: expected $applicationVersion, got $sourcePeVersion."
+        if ($isWindowsHost -and $sourcePeVersion -cne $workerVersion) {
+            throw "Built Rust audio sidecar PE version mismatch: expected $workerVersion, got $sourcePeVersion."
         }
 
         New-Item -ItemType Directory -Force -Path $cacheRoot | Out-Null
@@ -1899,13 +1933,14 @@ function Copy-RustAudioSidecarToTauriRelease {
         $cachedPeVersion = Get-WindowsPeApplicationVersion `
             -Path $cacheExe `
             -Label "Cached Rust audio sidecar"
-        if ($isWindowsHost -and $cachedPeVersion -cne $applicationVersion) {
-            throw "Cached Rust audio sidecar PE version mismatch: expected $applicationVersion, got $cachedPeVersion."
+        if ($isWindowsHost -and $cachedPeVersion -cne $workerVersion) {
+            throw "Cached Rust audio sidecar PE version mismatch: expected $workerVersion, got $cachedPeVersion."
         }
         $cacheManifestPayload = [ordered]@{
-            apiVersion = "2"
+            apiVersion = "3"
             cacheKey = $cacheKey
-            applicationVersion = $applicationVersion
+            workerVersion = $workerVersion
+            producerCompiler = $compilerIdentity
             executablePeVersion = $cachedPeVersion
             executableSha256 = Get-Sha256Hex -Path $cacheExe
             executableLength = [int64](Get-Item -LiteralPath $cacheExe).Length
@@ -1924,8 +1959,8 @@ function Copy-RustAudioSidecarToTauriRelease {
     $targetPeVersion = Get-WindowsPeApplicationVersion `
         -Path $targetExe `
         -Label "Staged Rust audio sidecar"
-    if ($isWindowsHost -and $targetPeVersion -cne $applicationVersion) {
-        throw "Staged Rust audio sidecar PE version mismatch: expected $applicationVersion, got $targetPeVersion."
+    if ($isWindowsHost -and $targetPeVersion -cne $workerVersion) {
+        throw "Staged Rust audio sidecar PE version mismatch: expected $workerVersion, got $targetPeVersion."
     }
     if (
         (Get-Sha256Hex -Path $targetExe) -ne (Get-Sha256Hex -Path $cacheExe) -or
@@ -1933,22 +1968,32 @@ function Copy-RustAudioSidecarToTauriRelease {
     ) {
         throw "Staged Rust audio sidecar does not match the validated cache executable."
     }
-    & $targetExe --self-test | Out-Null
+    $selfTestJson = & $targetExe --self-test
     if ($LASTEXITCODE -ne 0) {
         throw "Rust audio sidecar self-test failed for packaged executable."
     }
-
-    if (Test-Path -LiteralPath $staleResourceDir -PathType Container) {
-        foreach ($staleItem in Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue) {
-            if ($staleItem.Name -ne ".gitkeep") {
-                $null = Assert-UnderRoot -Root $staleResourceDir -Path $staleItem.FullName -Label "Stale audio sidecar resource" -Recurse
+    $selfTest = $selfTestJson | ConvertFrom-Json
+    if (-not $selfTest.ok -or $selfTest.sidecar -cne "scriber-audio-sidecar" -or $selfTest.workerVersion -cne $workerVersion -or $selfTest.protocolVersion -cne $inputManifest.protocolVersion) {
+        throw "Rust audio worker self-test identity does not match the validated standalone contract."
+    }
+    $targetTriple = $inputManifest.target
+    $externalName = "scriber-audio-sidecar-$targetTriple" + $(if ($isWindowsHost) { ".exe" } else { "" })
+    New-Item -ItemType Directory -Force -Path $externalBinaryDir | Out-Null
+    if (Test-Path -LiteralPath $externalBinaryDir -PathType Container) {
+        foreach ($staleItem in Get-ChildItem -LiteralPath $externalBinaryDir -Force -ErrorAction SilentlyContinue) {
+            if ($staleItem.Name -ne ".gitkeep" -and $staleItem.Name -ne $externalName) {
+                $null = Assert-UnderRoot -Root $externalBinaryDir -Path $staleItem.FullName -Label "Stale audio sidecar external binary" -Recurse
                 Remove-Item -LiteralPath $staleItem.FullName -Recurse -Force
             }
         }
-        if (-not (Get-ChildItem -LiteralPath $staleResourceDir -Force -ErrorAction SilentlyContinue)) {
-            Assert-UnderRoot -Root $Root -Path $staleResourceDir -Label "Empty audio sidecar resource directory"
-            Remove-Item -LiteralPath $staleResourceDir -Force
-        }
+    }
+    $externalBinaryPath = Join-Path $externalBinaryDir $externalName
+    Copy-FileIfChanged -SourcePath $cacheExe -TargetPath $externalBinaryPath | Out-Null
+    if (
+        (Get-Sha256Hex -Path $externalBinaryPath) -ne (Get-Sha256Hex -Path $cacheExe) -or
+        [int64](Get-Item -LiteralPath $externalBinaryPath).Length -ne [int64](Get-Item -LiteralPath $cacheExe).Length
+    ) {
+        throw "Tauri external audio worker does not match the validated cache executable."
     }
 
     if (Test-Path -LiteralPath $staleTargetResourceDir -PathType Container) {
@@ -1957,11 +2002,11 @@ function Copy-RustAudioSidecarToTauriRelease {
     }
 
     $metadata = [ordered]@{
-        apiVersion = "2"
+        apiVersion = "3"
         generatedAt = (Get-Date).ToUniversalTime().ToString("o")
         cacheHit = $cacheHit
         cacheKey = $cacheKey
-        applicationVersion = $applicationVersion
+        workerVersion = $workerVersion
         executablePeVersion = $targetPeVersion
         sourceExe = $cacheExe
         targetExe = $targetExe
@@ -1983,7 +2028,7 @@ function Copy-RustAudioSidecarToTauriRelease {
         length = $metadata.length
         cacheHit = $cacheHit
         cacheKey = $cacheKey
-        applicationVersion = $applicationVersion
+        workerVersion = $workerVersion
         executablePeVersion = $targetPeVersion
         isolatedCargoTarget = [bool]$UseIsolatedTarget
     }
@@ -3784,12 +3829,9 @@ if ($cacheEnabled) {
                 -RuntimeCacheKey $runtimeCacheKey `
                 -LogRoot $WorkRoot
             if ($BundleRustAudioSidecar) {
-                $targetAudioExeName = if ($IsWindows -or $env:OS -eq "Windows_NT") { "scriber-audio-sidecar.exe" } else { "scriber-audio-sidecar" }
-                $targetAudioExe = Join-Path (Split-Path -Parent $targetDir) $targetAudioExeName
-                & $targetAudioExe --self-test | Out-Null
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Target-current Rust audio sidecar self-test failed."
-                }
+                # Revalidate the exact worker and both bundle inputs even if the
+                # Python staging tree is already current (the alias may be absent).
+                $targetMetadata.rustAudioSidecarCopied = Copy-RustAudioSidecarToTauriRelease -Root $RepoRoot
             }
             if ($BundleMediaTools -or $MediaToolsDir) {
                 $targetFfmpeg = Join-Path $targetDir "tools\ffmpeg\ffmpeg.exe"

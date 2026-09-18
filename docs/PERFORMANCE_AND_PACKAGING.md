@@ -554,25 +554,21 @@ Packaging/build:
   `targetCurrent=true` and skips PyInstaller restore, frozen import check,
   backend tree sync, and Rust audio sidecar copy work.
 - The Rust audio sidecar has its own input hash cache under
-  `build\rust-audio-sidecar-cache`. The exact worker is version-bound:
-  `tauri_build` embeds the concrete app version from `Frontend/package.json`
-  into the PE version resource, so a version-only release must invalidate and
-  rebuild this finished-product cache. The restored Cargo dependency and
-  incremental layers remain reusable and keep that rebuild bounded. Official
-  release builds use Tauri's restored shared Cargo target for an audio-cache
-  miss. The app compile and PyInstaller begin together; audio preparation
-  follows the Python sidecar phase and reuses the shared target's dependency
-  objects. Cargo's target lock serializes any small remaining overlap safely.
-  `-RustAudioIsolatedTarget` remains available for diagnostics, but it is not
-  the release default because a cold isolated target took `437.3s` in
-  `v0.5.13` despite a warm main Cargo cache.
+  `build\rust-audio-sidecar-cache`. Its standalone crate
+  `native/scriber-audio-sidecar` owns worker version `0.1.0`, protocol `1`, and
+  independent PE resources, while compiling the same audited source modules.
+  App-version and frontend-only changes preserve the finished worker; its own
+  source, dependencies, toolchain, resources, or worker-version changes rebuild
+  it. Tauri stages it through `externalBin` with the same installed root filename
+  and no duplicate desktop Cargo target. A miss can use the shared Cargo target;
+  a verified product hit performs no audio compilation.
 - The static Rust diarization worker has a separate focused input cache under
   `build\rust-diarization-sidecar-cache`; it hashes only its standalone crate,
   lockfile, static-CRT config, manifest writer, target contract, and pinned
   Sherpa archive identity. The 1.13.3 static-MT archive is checksum-verified in
   `build\sherpa-onnx-archive-cache`. Neither cache is part of the Tauri/audio
   Cargo graph or the Python backend cache, and neither cache contains optional
-  diarization models. Unlike the audio sidecar, this standalone worker does not
+  diarization models. Like the independent audio worker, it does not
   embed the Tauri app version and remains reusable across version-only releases
   when its own inputs are unchanged.
 - Installed frontend assets are owned by the Tauri WebView bundle and are not
@@ -634,12 +630,11 @@ Packaging/build:
   media-copy behavior that is not already represented by a hashed input or
   flag. Logging, timing, and process-parallelism edits must leave it unchanged.
 - GitHub release builds cache `build\rust-audio-sidecar-cache` separately from
-  the Python backend sidecar cache. Cargo dependency and incremental identities
-  normalize the app package version and remain reusable across patch bumps, but
-  the exact audio-sidecar finished-product key includes the concrete
-  application version because `tauri_build` embeds it in the PE resource. A
-  version-only release must therefore rebuild/relink
-  `scriber-audio-sidecar.exe` while reusing the restored shared Cargo target.
+  the Python backend sidecar cache. Both Cargo dependencies and the exact audio
+  finished product are independent of the app version. The worker manifest and
+  native-version checks bind its own package version rather than relabeling an
+  old app-version binary. `tests/test_release_version_invalidation.py` exercises
+  the real key generator before and after an isolated app-version change.
 - GitHub release builds likewise restore
   `build\rust-diarization-sidecar-cache` through a dedicated Actions cache and
   internal release-artifact fallback. The Sherpa static archive has its own
@@ -779,7 +774,7 @@ Packaging/build:
   restore, FFmpeg and Rust audio/diarization component restore/build, and
   PyInstaller backend composition. It restores and prunes the same
   dependency/toolchain-keyed Cargo state as the Tauri producer, so a
-  version-bound audio miss uses the shared `Frontend\src-tauri\target`;
+  worker-input audio miss uses the shared `Frontend\src-tauri\target`;
   diarization may still run in parallel on its standalone target. Previously,
   the restores and setup preceding those two heavy producers were serialized
   in the final Windows job even though the compile and PyInstaller phases later
@@ -815,7 +810,7 @@ Packaging/build:
   runner it starts frontend type checking, sidecar preparation, and the Tauri
   `--no-bundle` app compile together. The compile helper writes a generated
   config overlay identical to the release config except that
-  `bundle.resources` is JSON `[]`; Tauri can therefore compile before
+  `bundle.resources` and `bundle.externalBin` are JSON `[]`; Tauri can therefore compile before
   `target/release/backend` exists without changing compiled runtime behavior.
   After all producers join, `tauri bundle` uses the original full generated
   config, validates the staged backend/resources, and performs NSIS/updater
@@ -1147,12 +1142,12 @@ Release workflow:
 - Main run `29004179335` verified the revert back to `dtolnay`: job time
   returned to `2m34s`, `build_windows.ps1` took `55.1s`, the Tauri bundle took
   `38.7s`, and the log again had only one `scriber-desktop` Cargo compile line.
-- Version-only app releases invalidate exact finished products that embed or
-  attest the concrete version: the composed backend, Tauri app, and Rust audio
-  sidecar. The audio PE receives that version from `Frontend/package.json`
-  through `tauri_build`; reusing an older exact worker would ship stale native
-  version metadata. Keep the expensive Cargo dependency/incremental layers and
-  the standalone diarization worker reusable. The Rust shell passes
+- Version-only app releases recompose the cheap backend application layer and
+  relink the Tauri app that actually displays that version. The standalone
+  audio worker owns a stable worker version and PE resources; it is reusable
+  with unchanged source, dependencies and compiler policy. Neither native
+  worker, the frozen Python runtime nor dependency caches depend on the app
+  release number. The Rust shell passes
   `SCRIBER_VERSION` to the Python backend at launch, so the version-neutral
   frozen backend runtime can still report the installed app version through
   `/api/health`. The Rust shell reads the installed package version from Tauri
@@ -1165,8 +1160,11 @@ Release workflow:
   The artifact is intentionally scoped to reusable dependency build state, not
   a blindly archived final installer output. If no Actions key matched,
   the workflow can import the newest `scriber-rust-build-Windows-*` artifact as
-  a warm-start. Publishing a new exact durable snapshot is manual maintenance,
-  not part of ordinary main/tag runs. The compiled app itself is cached
+  a warm-start. A cold Tauri producer now exports newly populated dependency
+  state after its small app product is ready. Detached post-release maintenance
+  verifies source/publication provenance and publishes current Rust/frontend
+  caches on main so sibling tags can restore them. Full durable snapshot
+  refresh remains explicit maintenance. The compiled app itself is cached
   separately as a small exact attested binary.
 - The signed release workflow installs only `requirements-base.txt` and
   `requirements-build.txt`. `requirements-dev.txt` is intentionally excluded
@@ -1298,6 +1296,15 @@ Current packaging choices:
 - AWS Transcribe is no longer exposed in frontend or backend settings. The
   standard sidecar excludes `boto3`, `botocore`, `s3transfer`, `aioboto3`,
   `aiobotocore`, and Pipecat AWS service modules.
+- The post-Analysis data filter removes only upstream `nltk/test/` doctests and
+  `pipecat/cli/` project-generator templates, including files reintroduced by
+  hooks. The v0.5.115 payload inventory contains 131 such files / 966,180 bytes;
+  this is uncompressed payload savings, not a measured installer-time claim.
+  English/German Punkt, Silero, SmartTurn, ONNX preprocessors and legal notices
+  remain. Explicit `mypy`, `mypyc` and Pydantic mypy-plugin exclusions prevent
+  optional compiled developer tools from contaminating a local frozen build.
+  Real provider initialization is tested with those imports blocked. This spec
+  change requires one fresh frozen-runtime product before future reuse.
 - Gemini summaries and Gemini 3.5 Transcribe use direct HTTP/WebSocket adapters,
   so `google-generativeai` and Google Cloud Text-to-Speech are excluded from the
   standard sidecar. Google Cloud STT

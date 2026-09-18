@@ -136,6 +136,17 @@ def exclude_pure_modules(pure, excluded_module_prefixes):
     return filtered
 
 
+def exclude_development_datas(datas):
+    # Analysis hooks collect package data recursively. These two exact trees
+    # contain upstream doctests and project generators, never runtime models.
+    excluded = ("nltk/test/", "pipecat/cli/")
+    return [
+        entry
+        for entry in datas
+        if not (str(entry[0]).replace("\\", "/").rstrip("/") + "/").startswith(excluded)
+    ]
+
+
 DEEPGRAM_REQUIRED_MODULES = frozenset(
     {
         "deepgram",
@@ -419,6 +430,12 @@ a = Analysis(
         *HUGGINGFACE_HUB_EXCLUDED_MODULES,
         "pytest",
         "_pytest",
+        # Pydantic's collect-all hook otherwise imports the optional checker
+        # plugins and can bundle mypy's compiled modules from a developer venv.
+        "mypy",
+        "mypyc",
+        "pydantic.mypy",
+        "pydantic.v1.mypy",
         "IPython",
         "jedi",
         "parso",
@@ -475,6 +492,10 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
+# Filter after Analysis as the NLTK contrib hook adds its own package data.
+# Keep notices, locked Punkt languages, Silero and SmartTurn data intact.
+a.datas[:] = exclude_development_datas(a.datas)
 
 # The contrib NLTK hook scans every default/user NLTK search path. Discard all
 # of those results and rebuild the data TOC exclusively from the locked work-root

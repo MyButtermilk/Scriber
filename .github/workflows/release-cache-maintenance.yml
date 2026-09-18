@@ -28,6 +28,193 @@ env:
   SCRIBER_RUST_DIARIZATION_SIDECAR_ARTIFACT_TAG: release-cache-rust-diarization-sidecar-v1
 
 jobs:
+  publish-build-dependencies:
+    name: Refresh default-branch build dependencies
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      # This independent maintenance job runs on the default-branch ref. Saving
+      # an Actions cache in the original tag run would hide it from future tags.
+      # Inspect only source-run metadata before checking out its trusted source;
+      # downloaded dependency files are never executed by this workflow.
+      - name: Authorize the completed producer and locate its passive dependency snapshot
+        id: dependency-source
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          SOURCE_TAG: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/actions/runs/$($env:SOURCE_RUN_ID)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not verify the completed dependency producer." }
+          $source = $runJson | ConvertFrom-Json
+          if (
+            [string]$source.id -ne $env:SOURCE_RUN_ID -or
+            [string]$source.repository.full_name -ne $env:SOURCE_REPOSITORY -or
+            [string]$source.head_repository.full_name -ne $env:SOURCE_REPOSITORY -or
+            [string]$source.head_sha -ne $env:SOURCE_SHA -or
+            [string]$source.head_branch -ne $env:SOURCE_TAG -or
+            [string]$source.head_branch -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$' -or
+            [string]$source.path -ne '.github/workflows/release-windows.yml' -or
+            [string]$source.event -ne 'push' -or
+            [string]$source.status -ne 'completed' -or
+            [string]$source.conclusion -ne 'success' -or
+            [int]$source.run_attempt -lt 1
+          ) { throw "Dependency producer identity does not match the successful tag workflow." }
+          # A successful workflow under a tag name is not enough authorization
+          # to execute its repository scripts. The tag must still identify this
+          # source, it must belong to canonical main, and its public release
+          # must already have passed the publication transaction.
+          $tagJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/commits/refs/tags/$($env:SOURCE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not resolve the completed release tag." }
+          $tagCommit = $tagJson | ConvertFrom-Json
+          if ([string]$tagCommit.sha -ne $env:SOURCE_SHA) {
+            throw "The release tag no longer identifies the dependency producer commit."
+          }
+          $mainJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/commits/main"
+          if ($LASTEXITCODE -ne 0) { throw "Could not resolve canonical main." }
+          $mainCommit = $mainJson | ConvertFrom-Json
+          if ([string]$mainCommit.sha -notmatch '^[0-9a-f]{40}$') { throw "Canonical main has no valid commit identity." }
+          $comparisonJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/compare/$($env:SOURCE_SHA)...$($mainCommit.sha)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not verify release membership in canonical main." }
+          $comparison = $comparisonJson | ConvertFrom-Json
+          if (
+            [string]$comparison.status -notin @('ahead', 'identical') -or
+            [string]$comparison.base_commit.sha -ne $env:SOURCE_SHA -or
+            [string]$comparison.merge_base_commit.sha -ne $env:SOURCE_SHA
+          ) { throw "Dependency producer source does not belong to canonical main." }
+          $releaseJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/releases/tags/$($env:SOURCE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw "The producer has no published release." }
+          $release = $releaseJson | ConvertFrom-Json
+          if (
+            [string]$release.tag_name -ne $env:SOURCE_TAG -or
+            $release.draft -isnot [bool] -or $release.draft -ne $false -or
+            $release.prerelease -isnot [bool] -or $release.prerelease -ne $false -or
+            [string]::IsNullOrWhiteSpace([string]$release.published_at)
+          ) { throw "Dependency producer release is not publicly published." }
+          $pagesJson = & gh api --paginate --slurp "repos/$($env:SOURCE_REPOSITORY)/actions/runs/$($env:SOURCE_RUN_ID)/artifacts?per_page=100"
+          if ($LASTEXITCODE -ne 0) { throw "Could not inspect dependency snapshot artifacts." }
+          $matches = @(
+            ($pagesJson | ConvertFrom-Json) | ForEach-Object { $_.artifacts } |
+              Where-Object { $_.name -eq 'scriber-release-build-dependencies' -and -not $_.expired }
+          )
+          if ($matches.Count -gt 1) { throw "Dependency snapshot artifact is ambiguous." }
+          "available=$(($matches.Count -eq 1).ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "source-attempt=$($source.run_attempt)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if ($matches.Count -eq 0) {
+            Write-Host "No dependency snapshot: the producer reused exact caches or optional cache export did not finish."
+          }
+
+      - name: Checkout exact completed dependency producer
+        if: steps.dependency-source.outputs.available == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Set up snapshot reader
+        if: steps.dependency-source.outputs.available == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}
+
+      - name: Recompute immutable dependency cache identities
+        if: steps.dependency-source.outputs.available == 'true'
+        shell: pwsh
+        run: |
+          if ((git rev-parse HEAD).Trim() -ne "${{ github.event.workflow_run.head_sha }}") {
+            throw "Dependency maintenance checkout does not match the completed source."
+          }
+          & .\scripts\ci\write_release_cache_keys.ps1 `
+            -PythonRuntimeFlavor $env:SCRIBER_RELEASE_PYTHON_RUNTIME_FLAVOR `
+            -PythonJitMode $env:SCRIBER_RELEASE_PYTHON_JIT_MODE
+          & .\scripts\ci\finalize_release_cache_keys.ps1 `
+            -SourceCommit "${{ github.event.workflow_run.head_sha }}" `
+            -RustToolchain $env:SCRIBER_RELEASE_RUST_TOOLCHAIN
+
+      - name: Check default-branch Rust dependency cache
+        id: dependency-rust-cache
+        if: steps.dependency-source.outputs.available == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          lookup-only: true
+          path: |
+            .cargo/registry/index
+            .cargo/registry/cache
+            .cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
+
+      - name: Check default-branch frontend dependency cache
+        id: dependency-frontend-cache
+        if: steps.dependency-source.outputs.available == 'true'
+        uses: actions/cache/restore@v6
+        with:
+          lookup-only: true
+          path: Frontend/node_modules
+          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+
+      - name: Download passive build dependencies
+        id: dependency-download
+        if: >-
+          steps.dependency-source.outputs.available == 'true' &&
+          (steps.dependency-rust-cache.outputs.cache-hit != 'true' ||
+           steps.dependency-frontend-cache.outputs.cache-hit != 'true')
+        uses: actions/download-artifact@v8
+        with:
+          name: scriber-release-build-dependencies
+          path: build/release-build-dependencies
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate and import passive build dependencies
+        id: dependency-import
+        if: steps.dependency-download.outcome == 'success'
+        shell: pwsh
+        run: |
+          python scripts/ci/release_build_dependency_snapshot.py import `
+            --snapshot build/release-build-dependencies `
+            --repository "${{ github.repository }}" `
+            --source-run-id "${{ github.event.workflow_run.id }}" `
+            --source-run-attempt "${{ steps.dependency-source.outputs.source-attempt }}" `
+            --source-sha "${{ github.event.workflow_run.head_sha }}" `
+            --source-ref "refs/tags/${{ github.event.workflow_run.head_branch }}" `
+            --rust-key "scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}" `
+            --frontend-key "scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}" `
+            --github-output $env:GITHUB_OUTPUT
+          if ($LASTEXITCODE -ne 0) { throw "Build dependency snapshot validation failed." }
+
+      - name: Save current Rust dependencies on the default branch
+        if: steps.dependency-import.outputs.rust-ready == 'true' && steps.dependency-rust-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            .cargo/registry/index
+            .cargo/registry/cache
+            .cargo/git/db
+            Frontend/src-tauri/target/release/.fingerprint
+            Frontend/src-tauri/target/release/build
+            Frontend/src-tauri/target/release/deps
+            Frontend/src-tauri/target/release/incremental
+          key: scriber-rust-dependencies-v1-${{ runner.os }}-${{ hashFiles('build/cache-keys/rust-dependencies.txt') }}
+
+      - name: Save current frontend dependencies on the default branch
+        if: steps.dependency-import.outputs.frontend-ready == 'true' && steps.dependency-frontend-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: Frontend/node_modules
+          key: scriber-frontend-node-modules-${{ runner.os }}-node-${{ hashFiles('.node-version') }}-${{ hashFiles('build/cache-keys/frontend-dependencies.txt') }}
+
   publish-finished-caches:
     name: Publish finished release caches
     if: >-

@@ -5513,6 +5513,7 @@ fn self_test_payload() -> Value {
     json!({
         "sidecar": SIDECAR_NAME,
         "ok": true,
+        "workerVersion": env!("CARGO_PKG_VERSION"),
         "protocolVersion": SIDECAR_PROTOCOL_VERSION,
         "capabilities": capabilities_payload(),
     })
@@ -6256,6 +6257,7 @@ mod tests {
 
         assert_eq!(payload["sidecar"], SIDECAR_NAME);
         assert_eq!(payload["ok"], true);
+        assert_eq!(payload["workerVersion"], env!("CARGO_PKG_VERSION"));
         assert_eq!(payload["protocolVersion"], SIDECAR_PROTOCOL_VERSION);
         assert_eq!(payload["capabilities"]["captureAvailable"], true);
         assert_eq!(payload["capabilities"]["prewarmAvailable"], true);

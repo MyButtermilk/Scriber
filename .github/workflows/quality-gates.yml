@@ -130,16 +130,29 @@ jobs:
             Frontend/src-tauri/target/debug/build
             Frontend/src-tauri/target/debug/deps
             Frontend/src-tauri/target/debug/incremental
-          key: scriber-rust-quality-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-quality-environment.outputs.identity }}-${{ hashFiles('.node-version', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/tauri.conf.json', 'Frontend/src-tauri/capabilities/**', '.cargo/config', '.cargo/config.toml', 'Frontend/src-tauri/.cargo/config', 'Frontend/src-tauri/.cargo/config.toml', '.github/workflows/quality-gates.yml') }}
+          key: scriber-rust-quality-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-quality-environment.outputs.identity }}-${{ hashFiles('.node-version', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/tauri.conf.json', 'Frontend/src-tauri/capabilities/**', '.cargo/config', '.cargo/config.toml', 'Frontend/src-tauri/.cargo/config', 'Frontend/src-tauri/.cargo/config.toml', 'native/scriber-audio-sidecar/Cargo.toml', 'native/scriber-audio-sidecar/Cargo.lock', 'native/scriber-audio-sidecar/build.rs', 'native/scriber-audio-sidecar/windows-app-manifest.xml', 'scripts/stage_audio_worker.mjs', '.github/workflows/quality-gates.yml') }}
       - name: Check Rust formatting
         working-directory: Frontend/src-tauri
         run: cargo fmt --all -- --check
+      - name: Check standalone audio formatting
+        run: cargo fmt --manifest-path native/scriber-audio-sidecar/Cargo.toml -- --check
+      - name: Build and stage the standalone audio worker
+        shell: pwsh
+        run: |
+          cargo build --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target
+          if ($LASTEXITCODE -ne 0) { throw "Standalone audio worker build failed." }
+          node scripts/stage_audio_worker.mjs --profile debug
+          if ($LASTEXITCODE -ne 0) { throw "Standalone audio worker identity or staging failed." }
       - name: Run Rust clippy
         working-directory: Frontend/src-tauri
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Run Rust tests
         working-directory: Frontend/src-tauri
         run: cargo test --locked --all-targets
+      - name: Run standalone audio clippy
+        run: cargo clippy --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target --all-targets -- -D warnings
+      - name: Run standalone audio tests
+        run: cargo test --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target
       - name: Save trusted Rust quality compilation cache
         if: >-
           success() &&

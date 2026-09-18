@@ -1432,24 +1432,24 @@ remains active.
 
 It:
 
-- starts the exact-revision quality gates and release planning concurrently.
-  On a planner-confirmed cold double miss, both cold producers may start as
-  soon as the release plan succeeds and therefore overlap the still-running
-  quality gates. Those jobs have read-only repository/cache permissions and
-  may only build, attest, and upload short-lived workflow artifacts. The final
-  installer job starts dependency preparation after both producer results while
-  independent checks may still run. Before assembly/signing, an explicit
-  current-run GitHub API barrier requires successful Ruff, frontend, Rust,
-  pytest, browser integration, and mypy jobs for the exact source SHA. Its
-  `release-quality-gates.json` records the effective job IDs/attempts and
-  outcomes. The barrier is also exercised through the real API in PR/main CI.
+- first selects canonical main quality evidence for the identical source SHA,
+  under 24 hours old, with both reusable workflows pinned to that SHA. Missing
+  or unavailable provenance runs the complete release suite; a known failed
+  matching run blocks release. On a cold double miss, both product producers
+  and final-job dependency preparation start immediately after planning. The
+  packager accepts each producer's successful build/upload steps and exact
+  artifact IDs without waiting for optional dependency-cache export. Before
+  assembly/signing, `release_quality_source.py` requires successful Ruff,
+  frontend, Rust, pytest, browser integration, and mypy jobs, rechecking the
+  selected run/attempt and current release identity. Its
+  `release-quality-gates.json` records the accepted source and job identities.
   A skipped or failed cold
   producer preserves the established single-runner fallback, while a failed
   quality gate cannot produce or publish an installer. Python pytest (four
   workers), real-browser integration, and mypy now run in independent jobs;
   retrying a browser job does not repeat an already-passed full suite. Exact
   Python environments and Rust debug compilation state are restored when
-  compatible, but every check still runs. Only canonical main pushes save
+  compatible. Different source SHAs still run every check. Only canonical main pushes save
   these caches; environment validation falls back to a fresh install on misses
   or invalid Python inventories,
 - never cancels an in-progress `v*` tag release because a second run starts;
@@ -1474,10 +1474,10 @@ It:
   version-only changes in `package-lock.json` and `src/version.py` do not
   invalidate dependency caches that do not actually depend on the app version.
   Cargo metadata is kept stable, and the release-only Tauri version is injected
-  through a generated config overlay. This normalization does not apply to the
-  exact Rust audio worker: `tauri_build` embeds the version from
-  `Frontend/package.json` in its PE resource, so its finished-product key must
-  change while Cargo dependency/incremental state stays reusable,
+  through a generated config overlay. The standalone audio worker has its own
+  package version and PE resources, so app-version changes also preserve its
+  exact finished-product cache. Its own source/dependency/toolchain changes
+  still invalidate the worker, and the installed basename remains unchanged,
 - uses one canonical key-file identity across the planner and Windows jobs.
   The planner probes finished products through the same direct single-file
   `hashFiles('build/cache-keys/<name>.txt')` expressions used by the Windows
@@ -1493,9 +1493,12 @@ It:
   refresh. A successful tag does promote a missing exact frozen backend,
   Profile B FFmpeg, or focused Rust sidecar snapshot to its internal cache
   release so sibling tags do not repeat the same unchanged build,
-- keeps full Actions-cache saves and multi-GB durable snapshots behind a
-  `main`-branch `refresh_release_cache_artifacts=true` maintenance run; bounded
-  finished-product self-healing is automatic for successful tags. Manual
+- hands newly populated Rust/frontend dependency caches from cold producers
+  to a detached main-branch maintenance job after publication. The passive
+  archive is hash/inventory checked, and the original successful tag run,
+  public release, main ancestry, source SHA and recomputed keys must match
+  before it can seed caches visible to future tags. Full environment/durable
+  snapshot refreshes still require explicit maintenance. Manual
   feature-branch diagnostics cannot replace shared caches. A normal release still compiles, packages,
   signs, verifies, and publishes exactly one installer in one tag-triggered
   workflow run,
@@ -1507,7 +1510,7 @@ It:
   delaying or invalidating the verified app release,
 - overlaps frontend type checking, sidecar preparation, and the Tauri
   `--no-bundle` compile. The compile uses a generated config overlay with
-  `bundle.resources: []`; after the join, `tauri bundle` uses the original full
+  `bundle.resources: []` and `bundle.externalBin: []`; after the join, `tauri bundle` uses the original full
   generated config and therefore revalidates and packages the staged backend,
 - restores release caches for Python `.venv`, Python wheels, frontend
   `node_modules`, Rust/Tauri, backend sidecars, and Profile B media tools. The
@@ -1537,6 +1540,12 @@ It:
 - restores Python `.venv` from the internal `release-cache-python-venv-v1`
   artifact when the ref-scoped Actions cache is cold, so unchanged Python
   requirements can skip pip installation entirely after `pip check`,
+- restores and validates the existing complete main quality environment early
+  for final installer smoke. With an attested backend/runtime and no explicit
+  refresh, it supplies the smoke interpreter directly and avoids a second pip
+  install. Inventory, `pip check`, and real smoke imports must pass; invalid
+  environments use the established full install path. No reduced dependency
+  list substitutes for the real File/YouTube/provider import closure,
 - makes an explicit
   `main`-branch `refresh_release_cache_artifacts=true` run enter the Python
   restore/validation path even when the exact backend is already reusable. The
@@ -1565,7 +1574,7 @@ It:
   Cargo registry, fingerprints, build outputs, dependencies, and incremental
   state as the cold Tauri producer, then runs
   `scripts\ci\prune_rust_dependency_cache.ps1` before building. A
-  version-bound Rust audio miss must use that restored shared
+  worker-input Rust audio miss must use that restored shared
   `Frontend\src-tauri\target` instead of a cold isolated target. The standalone
   diarization worker may still be prepared in parallel because it has a
   separate target and disjoint output,
@@ -1650,10 +1659,10 @@ It:
   `src/version.py` bytes and version manifest. The Rust supervisor still injects
   `SCRIBER_VERSION`, and `tests/test_version_contract.py` protects installed
   version reporting, but application/version changes must never be normalized
-  out of the application or complete-sidecar identity. The exact Tauri app and
-  Rust audio sidecar also carry the concrete version and must miss on a
-  version-only release; Cargo dependency/incremental layers and the standalone
-  diarization worker remain reusable,
+  out of the application or complete-sidecar identity. The exact Tauri app also
+  carries the concrete app version and must miss on a version-only release;
+  Cargo dependency/incremental layers and both standalone audio and diarization
+  workers remain reusable,
 - enables `CARGO_INCREMENTAL=1` for the main Tauri release binary and caches
   `Frontend\src-tauri\target\release\incremental` in both the Actions cache and
   the internal Rust release artifact. This gives version-bump and small
@@ -1737,11 +1746,10 @@ maintenance run; do not infer success only from the earlier cache-save step.
 Only the separately frozen Python runtime cache is version-neutral for
 `src/version.py`; it contains no `src` application code. The application layer
 and full backend sidecar carry the concrete version and exact file inventory.
-The exact Rust audio sidecar is version-bound too: `tauri_build` copies the
-`Frontend/package.json` version into its PE metadata. A version-only release
-must therefore rebuild that exact worker while reusing Cargo dependency and
-incremental layers. The separately built diarization worker remains reusable
-when its own inputs are unchanged.
+The standalone Rust audio sidecar has an independent worker version in its PE
+metadata and manifest. App-version changes preserve its exact product, just as
+they preserve the separately built diarization worker. Both still rebuild when
+their own source, dependency, resource, or toolchain inputs change.
 The Tauri supervisor still passes the installed app version through
 `SCRIBER_VERSION`, and `src.version.app_version()` reads that environment
 override, but this runtime contract is not permission to normalize the concrete
@@ -2302,8 +2310,11 @@ Run the focused deterministic gates before the full suite:
 cd Frontend
 npm run check
 npx tsx --test client/src/lib/meeting-playback.test.ts client/src/lib/meeting-controls.test.ts client/src/lib/meeting-cache.test.ts
-cd src-tauri
-cargo test --bin scriber-audio-sidecar
+cd ..
+cargo build --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target
+node scripts/stage_audio_worker.mjs --profile debug
+cargo test --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target
+cd Frontend/src-tauri
 cargo test --lib
 ```
 

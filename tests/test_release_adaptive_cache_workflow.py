@@ -64,7 +64,7 @@ def test_release_workflow_uses_adaptive_parallel_cold_producers_and_safe_warm_fa
     assert "Build and attest backend product" in raw
     assert "always() &&" in raw
     assert "Cold products were not requested or did not both validate; using the established single-runner path." in raw
-    assert "pattern: scriber-cold-*-product" in raw
+    assert "artifact-ids: ${{ steps.cold-products-ready.outputs.artifact-ids }}" in raw
     assert "merge-multiple: true" in raw
     assert backend_upload["uses"] == "actions/upload-artifact@v7"
     assert backend_upload["with"]["include-hidden-files"] is True
@@ -108,6 +108,8 @@ def test_release_quality_suite_blocks_signing_after_parallel_packaging_preparati
 
     assert jobs["quality-gates"] == {
         "name": "Exact-revision quality gates",
+        "needs": "release-plan",
+        "if": "needs.release-plan.outputs.reuse-quality != 'true'",
         "uses": "./.github/workflows/quality-gates.yml",
         "permissions": {"contents": "read"},
     }
@@ -124,18 +126,37 @@ def test_release_quality_suite_blocks_signing_after_parallel_packaging_preparati
 
     build = jobs["build-windows"]
     build_condition = " ".join(build["if"].split())
-    assert set(build["needs"]) == {
-        "release-plan",
-        "prepare-backend-cold",
-        "prepare-tauri-cold",
-    }
+    assert set(build["needs"]) == {"release-plan"}
     assert build_condition == "always() && !cancelled() && needs.release-plan.result == 'success'"
     steps = build["steps"]
     names = [step["name"] for step in steps]
+    product_gate = next(step for step in steps if step.get("id") == "cold-products-ready")
+    assert "scripts.ci.wait_release_cold_products" in product_gate["run"]
+    assert product_gate["continue-on-error"] is True
+    for identity in ("github.repository", "github.run_id", "github.run_attempt", "github.sha"):
+        assert "${{ " + identity + " }}" in product_gate["run"]
+    download = next(step for step in steps if step.get("id") == "cold-products-download")
+    assert "steps.cold-products-ready.outcome == 'success'" in download["if"]
+    assert download["with"]["artifact-ids"] == "${{ steps.cold-products-ready.outputs.artifact-ids }}"
+    assert "pattern" not in download["with"]
+    assert names.index("Validate reusable installer smoke environment") < names.index(product_gate["name"])
+    assert names.index(product_gate["name"]) < names.index(download["name"])
     gate = next(step for step in steps if step["name"] == "Require successful release quality gates")
     assert "if" not in gate
     assert not gate.get("continue-on-error", False)
-    assert "wait_release_quality_gates.py" in gate["run"]
+    assert "scripts.ci.release_quality_source wait" in gate["run"]
+    assert "needs.release-plan.outputs.quality-source-run-id" in gate["run"]
+    assert "needs.release-plan.outputs.quality-source-run-attempt" in gate["run"]
+    plan = jobs["release-plan"]
+    selector = next(step for step in plan["steps"] if step.get("id") == "quality-source")
+    planner_python = next(step for step in plan["steps"] if step.get("name") == "Set up release planning Python")
+    assert planner_python["with"]["python-version"] == "${{ env.SCRIBER_RELEASE_PYTHON_VERSION }}"
+    assert plan["steps"].index(planner_python) < plan["steps"].index(selector)
+    assert "scripts.ci.release_quality_source select" in selector["run"]
+    assert "continue-on-error" not in selector
+    assert "if ($LASTEXITCODE -ne 0)" in selector["run"]
+    for output in ("reuse-quality", "quality-source-run-id", "quality-source-run-attempt"):
+        assert plan["outputs"][output] == "${{ steps.quality-source.outputs." + output + " }}"
     for identity in ("github.repository", "github.run_id", "github.run_attempt", "github.sha"):
         assert "${{ " + identity + " }}" in gate["run"]
     assert "if ($LASTEXITCODE -ne 0)" in gate["run"]
@@ -265,8 +286,14 @@ def test_official_release_restores_exact_python_environment_for_installer_smoke(
         and "steps.python-wheelhouse-artifact.outputs.restored" in dependency_install
     )
     assert '$officialRelease = "${{ needs.release-plan.outputs.official-release }}" -eq "true"' in cache_report
-    assert "$pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh" in cache_report
-    assert '$pythonVenvEffective = if ($pythonEnvironmentRequired -and $pythonVenvValidated -eq "true")' in cache_report
+    assert (
+        "$pythonEnvironmentRequired = ($officialRelease -and -not $qualitySmokeEnvironmentSelected) -or $pythonCacheRefresh"
+        in cache_report
+    )
+    assert (
+        '$pythonVenvEffective = if ($qualitySmokeEnvironmentSelected) { "validated-quality-environment" }'
+        in cache_report
+    )
     assert "$pythonWheelhouseEffective = if ($pythonCacheRefresh)" in cache_report
     assert 'elseif ($officialRelease -and $pythonVenvValidated -eq "true")' in cache_report
     assert "$pythonPipStoreNotNeeded = if ($pythonCacheRefresh)" in cache_report
@@ -275,7 +302,7 @@ def test_official_release_restores_exact_python_environment_for_installer_smoke(
     smoke = by_name["Smoke downloaded installer candidate"]["run"]
     step_names = [step["name"] for step in steps]
     assert step_names.index("Install Python dependencies") < step_names.index("Smoke downloaded installer candidate")
-    assert '$smokePython = (Resolve-Path -LiteralPath ".\\.venv\\Scripts\\python.exe"' in smoke
+    assert '$smokePython = (Resolve-Path -LiteralPath "${{ steps.installer-python.outputs.python }}"' in smoke
     assert '& $smokePython -c "import aiohttp"' in smoke
     assert "-PythonExecutable $smokePython" in smoke
 
@@ -318,7 +345,10 @@ def test_explicit_main_refresh_repairs_python_caches_despite_exact_backend_hit()
     assert "\"venv-ready=$(if ($venvReady) { 'true' } else { 'false' })\"" in dependency_install
     assert "\"wheelhouse-ready=$(if ($wheelhouseReady) { 'true' } else { 'false' })\"" in dependency_install
     assert '$pythonCacheRefresh = $env:SCRIBER_REFRESH_RELEASE_CACHE_ARTIFACTS -eq "true"' in cache_report
-    assert "$pythonEnvironmentRequired = $officialRelease -or $pythonCacheRefresh" in cache_report
+    assert (
+        "$pythonEnvironmentRequired = ($officialRelease -and -not $qualitySmokeEnvironmentSelected) -or $pythonCacheRefresh"
+        in cache_report
+    )
     assert "$pythonWheelhouseEffective = if ($pythonCacheRefresh)" in cache_report
 
     venv_publication = by_name["Publish Python venv release artifact"]

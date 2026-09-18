@@ -366,6 +366,9 @@ def test_compression_repack_never_mutates_the_shared_release_payload() -> None:
     assert 'Join-Path $BuildRoot "cargo-target"' in body
     assert "$env:CARGO_TARGET_DIR = $isolatedTarget" in body
     assert "$repackConfig.bundle.resources" in body
+    assert "$repackConfig.bundle.externalBin = @($isolatedAudioSource)" in body
+    assert 'Join-Path $releaseRoot "scriber-audio-sidecar-x86_64-pc-windows-msvc.exe"' in body
+    assert "(Get-Sha256File -Path $isolatedAudioAlias)" in body
     assert "$isolatedBackendSource" in body
     assert "--remove-before-bundle-command" in body
     assert "--skip-updater-config" in body
@@ -606,6 +609,10 @@ def test_preexisting_candidate_holdout_is_never_accepted() -> None:
 
 def test_final_one_runs_the_exact_retained_full_suite_contract() -> None:
     body = _function_source("Invoke-FinalFullSuite")
+    assert '"native\\scriber-audio-sidecar\\Cargo.toml"' in body
+    assert '"scripts\\stage_audio_worker.mjs"' in body
+    for gate in ("build", "stage", "test", "fmt", "clippy"):
+        assert f"full_suite_audio_{gate}_failed" in body
     assert "InstallerResearchFullSuiteEvidenceV1" in body
     assert 'Join-Path $EvidenceRoot "full-suite-evidence.json"' in body
     assert "Write-FullSuiteGateArtifact" in body

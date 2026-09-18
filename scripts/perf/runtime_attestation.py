@@ -8,6 +8,7 @@ import os
 import struct
 import subprocess
 import tempfile
+import tomllib
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -15,7 +16,7 @@ from typing import Any
 
 MANIFEST_NAME = "scriber-autoresearch-runtime-attestation.json"
 MANIFEST_KIND = "scriber-autoresearch-runtime-attestation"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 COMPONENT_PATHS = {
     "desktop": "scriber-desktop.exe",
@@ -197,6 +198,19 @@ def _application_version(repo_root: Path) -> str:
     return version
 
 
+def _audio_worker_version(repo_root: Path) -> str:
+    path = repo_root / "native" / "scriber-audio-sidecar" / "Cargo.toml"
+    try:
+        payload = tomllib.loads(path.read_text(encoding="utf-8"))
+        version = payload["package"]["version"]
+        parts = version.split(".")
+        if len(parts) != 3 or any(not part.isascii() or not part.isdecimal() or int(part) > 65535 for part in parts):
+            raise ValueError("Audio worker requires three numeric PE version components")
+    except (OSError, KeyError, TypeError, AttributeError, ValueError) as exc:
+        raise AttestationError("invalid_audio_worker_version", f"Could not read {path}: {exc}") from exc
+    return version
+
+
 def _component_snapshot(
     install_root: Path,
     name: str,
@@ -246,19 +260,20 @@ def write_attestation(
         raise AttestationError("missing_install_root", f"Install root does not exist: {install_root}")
 
     expected_version = _application_version(repo_root)
+    expected_component_versions = {"desktop": expected_version, "audioSidecar": _audio_worker_version(repo_root)}
     source = source_identity(repo_root)
     components = {
         name: _component_snapshot(install_root, name, relative_path, version_reader)
         for name, relative_path in COMPONENT_PATHS.items()
     }
-    for name in ("desktop", "audioSidecar"):
+    for name, component_version in expected_component_versions.items():
         actual_version = components[name]["peVersion"]
         if os.name == "nt" and not actual_version:
             raise AttestationError("missing_component_version", f"Could not read the PE version for {name}")
-        if actual_version and actual_version != expected_version:
+        if actual_version and actual_version != component_version:
             raise AttestationError(
                 "component_version_mismatch",
-                f"{name} version {actual_version} does not match source version {expected_version}",
+                f"{name} version {actual_version} does not match source version {component_version}",
             )
 
     payload: dict[str, Any] = {
@@ -267,6 +282,7 @@ def write_attestation(
         "createdAtUtc": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "mode": "explicit-post-build-snapshot",
         "applicationVersion": expected_version,
+        "audioWorkerVersion": expected_component_versions["audioSidecar"],
         "source": source,
         "components": components,
     }
@@ -336,6 +352,7 @@ def verify_attestation(
     try:
         current_source = source_identity(repo_root)
         expected_version = _application_version(repo_root)
+        expected_component_versions = {"desktop": expected_version, "audioSidecar": _audio_worker_version(repo_root)}
     except AttestationError as exc:
         errors.append(_error(exc.code, str(exc)))
         return result
@@ -356,6 +373,10 @@ def verify_attestation(
             )
     if manifest.get("applicationVersion") != expected_version:
         errors.append(_error("application_version_mismatch", "Source application version differs from the attestation"))
+    if manifest.get("audioWorkerVersion") != expected_component_versions["audioSidecar"]:
+        errors.append(
+            _error("audio_worker_version_mismatch", "Source audio worker version differs from the attestation")
+        )
 
     recorded_components = manifest.get("components")
     if not isinstance(recorded_components, dict):
@@ -387,7 +408,11 @@ def verify_attestation(
             errors.append(
                 _error("component_version_changed", f"{name} PE version differs from the attestation", component=name)
             )
-        if name in {"desktop", "audioSidecar"} and actual_version and actual_version != expected_version:
+        if (
+            name in expected_component_versions
+            and actual_version
+            and actual_version != expected_component_versions[name]
+        ):
             errors.append(_error("component_version_mismatch", f"{name} version differs from source", component=name))
 
     result["ok"] = not errors
