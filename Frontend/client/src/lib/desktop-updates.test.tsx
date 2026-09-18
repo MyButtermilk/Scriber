@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   check: vi.fn(),
@@ -33,7 +33,122 @@ beforeEach(() => {
   mocks.tray.mockReset().mockResolvedValue(undefined);
 });
 
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
+describe("startup after the previous process installed or abandoned an update", () => {
+  it.each([
+    { target: "0.5.115", phase: "current", available: false },
+    { target: "0.5.119", phase: "available", available: true },
+  ])("does not restore an install admission from cached target $target", async ({ target, phase, available }) => {
+    vi.stubGlobal("__SCRIBER_APP_VERSION__", "0.5.115");
+    window.localStorage.setItem(
+      "scriber:desktop-update-cache:v2",
+      JSON.stringify({
+        phase: "installing",
+        enabled: true,
+        currentVersion: "0.5.114",
+        version: target,
+        lastCheckedAt: new Date().toISOString(),
+        message: "Installing update",
+      }),
+    );
+
+    // Tauri keeps localStorage across process restarts; its atomic install gate
+    // starts clear. Independent WebViews load separate JS module instances.
+    const mainWindow = await import("./desktop-updates");
+    vi.resetModules();
+    const trayWindow = await import("./desktop-updates");
+    expect(mainWindow.installDesktopUpdate).not.toBe(trayWindow.installDesktopUpdate);
+
+    const initial = mainWindow.getCachedDesktopUpdateStatus();
+    mainWindow.publishDesktopUpdateStatusToTray(initial);
+    expect(initial).toMatchObject({ phase, available, currentVersion: "0.5.115" });
+    expect(initial.message).not.toMatch(/installing|restarting/i);
+    expect(initial.lastCheckedAt).toBeUndefined();
+    expect(mocks.tray).toHaveBeenCalledWith(expect.objectContaining({ installing: false, available }));
+    expect(JSON.parse(window.localStorage.getItem("scriber:desktop-update-cache:v2")!)).toMatchObject({ phase });
+    const [mainCheck, trayCheck] = await Promise.all([
+      mainWindow.checkDesktopUpdateIfDue(),
+      trayWindow.checkDesktopUpdateIfDue(),
+    ]);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(mocks.check).toHaveBeenCalledTimes(2);
+    expect(mainCheck.reason).toBe("checked");
+    expect(trayCheck.reason).toBe("checked");
+    expect(mainCheck.status.phase).not.toBe("installing");
+    expect(trayCheck.status.phase).not.toBe("installing");
+  });
+});
+
 describe("shared main-window and tray update installation", () => {
+  it("keeps a real in-process admission exclusive across independent WebView modules", async () => {
+    let active = false;
+    let nativeInstalling = false;
+    let rejectDownload!: (reason: Error) => void;
+    const downloading = new Promise<void>((_resolve, reject) => {
+      rejectDownload = reject;
+    });
+    mocks.invoke.mockImplementation(async (command: string) => {
+      if (command === "begin_desktop_update_install") {
+        if (active) return false;
+        active = true;
+        nativeInstalling = true;
+        return true;
+      }
+      if (command === "finish_desktop_update_install") {
+        active = false;
+        nativeInstalling = false;
+      }
+      return undefined;
+    });
+    mocks.tray.mockImplementation(async (status: { installing: boolean }) => {
+      nativeInstalling = status.installing || active;
+    });
+    mocks.download.mockImplementation(async (progress) => {
+      progress({ event: "Started", data: { contentLength: 100 } });
+      progress({ event: "Progress", data: { chunkLength: 50 } });
+      await downloading;
+    });
+    const mainWindow = await import("./desktop-updates");
+    vi.resetModules();
+    const trayWindow = await import("./desktop-updates");
+    const mainProgress = vi.fn();
+    const trayProgress = vi.fn();
+    const results = Promise.allSettled([
+      mainWindow.installDesktopUpdate(mainProgress),
+      trayWindow.installDesktopUpdate(trayProgress),
+    ]);
+
+    await vi.waitFor(() => expect(mocks.close).toHaveBeenCalledOnce());
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "begin_desktop_update_install")).toHaveLength(2);
+    expect(mocks.download).toHaveBeenCalledOnce();
+    expect(active).toBe(true);
+    expect(nativeInstalling).toBe(true);
+    expect([mainProgress, trayProgress].filter((progress) => progress.mock.calls.length > 0)).toHaveLength(1);
+    const ownerWindow = mainProgress.mock.calls.length > 0 ? mainWindow : trayWindow;
+    const observingWindow = ownerWindow === mainWindow ? trayWindow : mainWindow;
+    expect(ownerWindow.getCachedDesktopUpdateStatus().phase).toBe("installing");
+    expect(ownerWindow.getCachedDesktopUpdateStatus().available).toBe(false);
+    expect(observingWindow.getCachedDesktopUpdateStatus().phase).toBe("available");
+    observingWindow.publishDesktopUpdateStatusToTray(observingWindow.getCachedDesktopUpdateStatus());
+    expect(nativeInstalling).toBe(true);
+    const persisted = JSON.parse(window.localStorage.getItem("scriber:desktop-update-cache:v2")!);
+    expect(persisted).toMatchObject({ phase: "available", version: "0.6.0" });
+    expect(persisted.message).not.toMatch(/installing|restarting/i);
+
+    rejectDownload(new Error("network disconnected"));
+    const settled = await results;
+    expect(settled.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(mocks.invoke.mock.calls.filter(([command]) => command === "finish_desktop_update_install")).toHaveLength(1);
+    expect(active).toBe(false);
+    expect(nativeInstalling).toBe(false);
+    expect(ownerWindow.getCachedDesktopUpdateStatus().phase).toBe("available");
+    expect(mocks.relaunch).not.toHaveBeenCalled();
+    expect(mocks.close).toHaveBeenCalledTimes(2);
+  });
+
   it("admits one native installation before downloading and reports progress", async () => {
     const order: string[] = [];
     mocks.invoke.mockImplementation(async (command: string) => {
@@ -54,6 +169,9 @@ describe("shared main-window and tray update installation", () => {
     expect(mocks.relaunch).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();
     expect(mocks.tray).toHaveBeenCalledWith(expect.objectContaining({ installing: true }));
+    const { getCachedDesktopUpdateStatus } = await import("./desktop-updates");
+    expect(getCachedDesktopUpdateStatus().phase).toBe("available");
+    expect(JSON.parse(window.localStorage.getItem("scriber:desktop-update-cache:v2")!).phase).toBe("available");
   });
 
   it("does not install or release another WebView's admitted update", async () => {
