@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -10,12 +9,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / "scripts/smoke_tauri_desktop.ps1").read_text(encoding="utf-8")
-
-
-def _function(name: str) -> str:
-    match = re.search(rf"(?ms)^function {re.escape(name)} \{{.*?(?=^function |\Z)", SOURCE)
-    assert match is not None
-    return match.group(0)
 
 
 def test_startup_diagnostics_capture_exit_and_bounded_redacted_logs_without_backend(tmp_path: Path) -> None:
@@ -37,33 +30,9 @@ def test_startup_diagnostics_capture_exit_and_bounded_redacted_logs_without_back
     (log_dir / "smoke-shell.stderr.log").write_text("native panic: failed to initialize\n")
     # A single oversized line must not leak an unrecognized credential suffix.
     (log_dir / "smoke-shell.stdout.log").write_text("api_key=" + "s" * 20000)
-    script = tmp_path / "diagnostics.ps1"
-    script.write_text(
-        "$ErrorActionPreference = 'Stop'\n"
-        + _function("Protect-SmokeDiagnosticText")
-        + _function("Get-SmokeStartupFailureDiagnostics")
-        + """
-function Get-ManagedBackendProcesses {
-    [pscustomobject]@{ ProcessId = 111; CommandLine = 'never serialize this' }
-    [pscustomobject]@{ ProcessId = 222; CommandLine = 'never serialize this either' }
-}
-$env:SCRIBER_TEST_API_KEY = 'sentinel-env-key'
-$current = Get-Process -Id $PID
-$running = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir $PSScriptRoot -AppProcess $current -BaselinePids @(111) -Token 'sentinel-session-value'
-$missing = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir (Join-Path $PSScriptRoot 'missing') -AppProcess $null -BaselinePids @(111,222)
-$child = Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList @('-NoProfile','-NonInteractive','-Command','exit 7') -WindowStyle Hidden -PassThru
-$child.WaitForExit()
-$exited = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir $PSScriptRoot -AppProcess $child -BaselinePids @(111,222) -Token 'sentinel-session-value'
-$locked = [System.IO.File]::Open((Join-Path $PSScriptRoot 'logs/tauri-shell.log'), 'Open', 'Read', 'None')
-try {
-    $unreadable = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir $PSScriptRoot -AppProcess $null -BaselinePids @(111,222) -Token 'sentinel-session-value'
-} finally { $locked.Dispose() }
-@{running=$running; missing=$missing; exited=$exited; unreadable=$unreadable} | ConvertTo-Json -Depth 8 -Compress
-""",
-        encoding="utf-8",
-    )
+    script = ROOT / "tests/powershell/test_tauri_startup_diagnostics.ps1"
     result = subprocess.run(
-        [shell, "-NoProfile", "-NonInteractive", "-File", str(script)],
+        [shell, "-NoProfile", "-NonInteractive", "-File", str(script), "-RuntimeDataDir", str(tmp_path)],
         check=False,
         capture_output=True,
         text=True,
@@ -88,6 +57,7 @@ try {
     assert "native panic" in logs["smoke-shell.stderr.log"]["text"]
     assert all(len(log["text"]) <= 16384 for log in logs.values())
     unreadable = {log["name"]: log for log in evidence["unreadable"]["logs"]}
+    assert evidence["unreadable"]["managedBackendCount"] is None
     assert unreadable["tauri-shell.log"]["error"] == "log_read_failed"
     assert "native panic" in unreadable["smoke-shell.stderr.log"]["text"]
 
@@ -95,7 +65,8 @@ try {
 def test_failure_evidence_is_collected_and_written_before_cleanup() -> None:
     catch = SOURCE[SOURCE.index("    $failure = $_\n") : SOURCE.index("} finally {\n    $cleanupFailure")]
     assert catch.index("Get-SmokeStartupFailureDiagnostics") < catch.index("if ($listener)")
-    assert "-AppProcess $app -BaselinePids $baseline -Token $SessionToken" in catch
+    assert "-AppProcess $app -ManagedBackendCount $managedBackendCount -Token $SessionToken" in catch
+    assert 'Import-Module (Join-Path $PSScriptRoot "SmokeStartupDiagnostics.psm1") -Force' in SOURCE
     assert "Write-SmokeJson -Payload $result -Path $OutputPath -Root $RepoRoot | Out-Null" in catch
     assert "-RedirectStandardOutput (Join-Path $shellOutputDir 'smoke-shell.stdout.log')" in SOURCE
     assert "-RedirectStandardError (Join-Path $shellOutputDir 'smoke-shell.stderr.log')" in SOURCE
