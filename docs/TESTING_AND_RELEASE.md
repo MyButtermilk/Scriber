@@ -329,8 +329,8 @@ opens the production `/ws` route, requires its initial `state` event, sends
 `ping`, receives `pong`, and verifies that composition resolves the extracted
 WebSocket handler. The provider worker is deliberately held at the queued
 boundary, so the result is not installed-Tauri or external-provider evidence.
-`python-full-suite.yml` runs this smoke and uploads its JSON result beside the
-JUnit report.
+`python-full-suite.yml` runs this smoke in its independent browser job and
+uploads a separate JSON artifact; pytest publishes its JUnit report separately.
 
 Frontend localization gates:
 
@@ -1437,10 +1437,21 @@ It:
   soon as the release plan succeeds and therefore overlap the still-running
   quality gates. Those jobs have read-only repository/cache permissions and
   may only build, attest, and upload short-lived workflow artifacts. The final
-  installer job still waits for successful quality gates and both producer
-  results before assembly, signing, or publication. A skipped or failed cold
+  installer job starts dependency preparation after both producer results while
+  independent checks may still run. Before assembly/signing, an explicit
+  current-run GitHub API barrier requires successful Ruff, frontend, Rust,
+  pytest, browser integration, and mypy jobs for the exact source SHA. Its
+  `release-quality-gates.json` records the effective job IDs/attempts and
+  outcomes. The barrier is also exercised through the real API in PR/main CI.
+  A skipped or failed cold
   producer preserves the established single-runner fallback, while a failed
-  quality gate cannot produce or publish an installer,
+  quality gate cannot produce or publish an installer. Python pytest (four
+  workers), real-browser integration, and mypy now run in independent jobs;
+  retrying a browser job does not repeat an already-passed full suite. Exact
+  Python environments and Rust debug compilation state are restored when
+  compatible, but every check still runs. Only canonical main pushes save
+  these caches; environment validation falls back to a fresh install on misses
+  or invalid Python inventories,
 - never cancels an in-progress `v*` tag release because a second run starts;
   diagnostic branch dispatches remain cancelable. The complete Windows
   build/sign/publish job for every `v*` tag shares one `queue: max` concurrency

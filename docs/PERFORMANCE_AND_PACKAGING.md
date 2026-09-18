@@ -793,9 +793,16 @@ Packaging/build:
   The backend upload includes hidden files because the exact
   attested runtime inventory contains package-template `.gitignore` files and
   the application-layer `src/assets/.gitkeep`; omitting any of them invalidates
-  the complete product at import. It remains hard-gated on every exact-revision
-  quality gate even when cold preparation finished earlier. A failed quality
-  gate therefore cannot assemble, sign, or publish an installer. A producer
+  the complete product at import. Dependency preparation now overlaps remaining
+  quality checks rather than waiting for their entire reusable workflow. The
+  explicit API-backed quality barrier still blocks final assembly/signing until
+  all six named checks for the exact run/revision succeed; effective retained
+  jobs from a failed-job rerun are verified through GitHub's latest-job view.
+  Python tests, browser integration, and typechecking run as separate jobs with
+  a validated shared environment cache; Rust checks reuse debug compilation
+  state while executing fresh clippy/tests. These changes reduce serial setup
+  and retry work without accepting cross-run test results. A failed quality
+  gate cannot assemble, sign, or publish an installer. A producer
   failure, corrupt artifact, or parity mismatch discards the cold products and
   safely runs the normal warm build instead.
 - The common warm path remains a single Windows build runner; it does not pay

@@ -1217,6 +1217,8 @@ def test_release_cache_gc_retains_one_main_quality_gate_npm_store() -> None:
     assert "'refs/heads/main'" in non_main
     assert "node-cache-" in non_main
     assert "inaccessible-completed-ref-cache" in non_main
+    for family in ("scriber-rust-quality-v1-", "scriber-python-quality-venv-v1-"):
+        assert f"Pattern = '^{family}'" in rolling
 
 
 def test_python_release_environment_is_exact_and_reproducible() -> None:

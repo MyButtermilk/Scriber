@@ -23,6 +23,45 @@ jobs:
     permissions:
       contents: read
 
+  release-quality-contract:
+    name: Verify release quality barrier
+    needs: quality-gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout exact source revision
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14.7"
+      - name: Verify current-run quality evidence through GitHub API
+        # GitHub's jobs API identifies PR runs by the head commit; checkout and
+        # the actual tests still use github.sha (the synthetic merge commit).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          python scripts/ci/wait_release_quality_gates.py
+          --repo "${{ github.repository }}"
+          --run-id "${{ github.run_id }}"
+          --run-attempt "${{ github.run_attempt }}"
+          --head-sha "${{ github.event.pull_request.head.sha || github.sha }}"
+          --job-prefix "Reusable quality gates"
+          --timeout-seconds 120
+          --evidence build/test-results/release-quality-gates.json
+      - name: Upload quality barrier evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-quality-barrier-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/release-quality-gates.json
+          if-no-files-found: error
+
   python-gates:
     name: Python hybrid gates
     runs-on: windows-latest

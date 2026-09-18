@@ -37,3 +37,81 @@ def test_quality_workflow_runs_every_requested_exact_revision_gate() -> None:
     assert "cargo fmt --all -- --check" in raw
     assert "cargo clippy --locked --all-targets -- -D warnings" in raw
     assert "cargo test --locked --all-targets" in raw
+
+
+def test_rust_quality_cache_cannot_publish_from_a_pr_or_replace_tests() -> None:
+    workflow = yaml.safe_load(QUALITY_WORKFLOW.read_text(encoding="utf-8"))
+    rust = workflow["jobs"]["rust"]
+    steps = {step["name"]: step for step in rust["steps"]}
+    restore = steps["Restore Rust quality compilation cache"]
+    save = steps["Save trusted Rust quality compilation cache"]
+
+    assert "needs" not in rust  # Do not serialize Rust behind the frontend gate.
+    assert restore["uses"] == "actions/cache/restore@v6"
+    assert "if" not in restore
+    assert save["uses"] == "actions/cache/save@v6"
+    assert " ".join(save["if"].split()) == (
+        "success() && github.repository == 'MyButtermilk/Scriber' && "
+        "github.event_name == 'push' && github.ref == 'refs/heads/main' && "
+        "steps.rust-quality-cache.outputs.cache-hit != 'true'"
+    )
+    assert save["with"]["key"] == "${{ steps.rust-quality-cache.outputs.cache-primary-key }}"
+    names = list(steps)
+    for name in ("Check Rust formatting", "Run Rust clippy", "Run Rust tests"):
+        assert not {"if", "continue-on-error"} & steps[name].keys()
+        assert names.index(restore["name"]) < names.index(name) < names.index(save["name"])
+
+
+def test_rust_quality_cache_binds_build_environment_and_excludes_release_or_credentials() -> None:
+    workflow = yaml.safe_load(QUALITY_WORKFLOW.read_text(encoding="utf-8"))
+    rust = workflow["jobs"]["rust"]
+    steps = {step["name"]: step for step in rust["steps"]}
+    environment = steps["Identify Rust quality compilation environment"]["run"]
+    restore = steps["Restore Rust quality compilation cache"]["with"]
+    save = steps["Save trusted Rust quality compilation cache"]["with"]
+
+    assert rust["env"]["CARGO_INCREMENTAL"] == "1"
+    for identity in (
+        "rustc --version --verbose",
+        "node --version",
+        "$env:RUNNER_OS",
+        "$env:RUNNER_ARCH",
+        "$env:ImageOS",
+        "$env:ImageVersion",
+        "$env:CARGO_INCREMENTAL",
+        "$env:RUSTFLAGS",
+        "$env:CARGO_ENCODED_RUSTFLAGS",
+        "$env:RUSTDOCFLAGS",
+    ):
+        assert identity in environment
+    assert "IsNullOrWhiteSpace" in environment
+    assert "throw" in environment
+    key = restore["key"]
+    assert "steps.rust-quality-environment.outputs.identity" in key
+    for path in (
+        ".node-version",
+        "Frontend/src-tauri/Cargo.toml",
+        "Frontend/src-tauri/Cargo.lock",
+        "Frontend/src-tauri/build.rs",
+        "Frontend/src-tauri/tauri.conf.json",
+        "Frontend/src-tauri/capabilities/**",
+        ".cargo/config",
+        ".cargo/config.toml",
+        "Frontend/src-tauri/.cargo/config",
+        "Frontend/src-tauri/.cargo/config.toml",
+        ".github/workflows/quality-gates.yml",
+    ):
+        assert f"'{path}'" in key
+    assert "github.sha" not in key
+    assert "restore-keys" not in restore
+    assert restore["path"] == save["path"]
+    assert set(restore["path"].splitlines()) == {
+        "~/.cargo/registry/index",
+        "~/.cargo/registry/cache",
+        "~/.cargo/registry/src",
+        "~/.cargo/git/db",
+        "Frontend/src-tauri/target/debug/.fingerprint",
+        "Frontend/src-tauri/target/debug/build",
+        "Frontend/src-tauri/target/debug/deps",
+        "Frontend/src-tauri/target/debug/incremental",
+    }

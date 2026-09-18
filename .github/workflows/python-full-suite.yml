@@ -18,32 +18,64 @@ jobs:
         with:
           ref: ${{ github.sha }}
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
+      - name: Prepare validated Python test environment
+        uses: ./.github/actions/setup-python-quality
         with:
           python-version: "3.14.7"
-          cache: pip
-          cache-dependency-path: |
-            requirements-base.txt
-            requirements-dev.txt
-            requirements-test.txt
-            requirements-test-constraints.txt
-            requirements-release-constraints.txt
+          publish-cache: "true"
 
-      - name: Create isolated test environment
+      - name: Restore locked FFmpeg test runtime
         shell: pwsh
-        run: python -m venv venv
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          & .\scripts\ffmpeg\restore_profile_b_release_artifact.ps1 `
+            -Repo MyButtermilk/Scriber `
+            -Tag ffmpeg-profile-b-n7.0-v4 `
+            -AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip
+          $mediaTools = (Resolve-Path `
+            "build\ffmpeg-profile-b-msys2\dist\scriber-ffmpeg-profile-b\bin").Path
+          & .\venv\Scripts\python.exe scripts\ffmpeg\validate_ffmpeg_profile.py `
+            --media-tools-dir $mediaTools `
+            --profile B `
+            --require-lgpl `
+            --output build\ffmpeg-profile-b-msys2\ffmpeg-profile-b-manifest.json
+          if ($LASTEXITCODE -ne 0) {
+            throw "Locked FFmpeg test runtime validation failed."
+          }
+          "SCRIBER_MEDIA_TOOLS_DIR=$mediaTools" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Install Python test dependencies
+      - name: Run complete Python test suite
         shell: pwsh
         run: |
-          .\venv\Scripts\python.exe -m pip install pip==26.1.2
-          .\venv\Scripts\python.exe -m pip install `
-            -c requirements-test-constraints.txt `
-            -c requirements-release-constraints.txt `
-            -r requirements-base.txt `
-            -r requirements-test.txt
-          .\venv\Scripts\python.exe -m pip check
+          New-Item -ItemType Directory -Force build\test-results | Out-Null
+          .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
+            --junitxml build\test-results\python-full-suite.xml
+
+      - name: Upload Python test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-full-suite-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/python-full-suite.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  python-real-browser:
+    name: Python real-browser integration
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Prepare validated Python test environment
+        uses: ./.github/actions/setup-python-quality
+        with:
+          python-version: "3.14.7"
 
       - name: Set up pinned Node for the real-browser File smoke
         uses: actions/setup-node@v6
@@ -78,18 +110,35 @@ jobs:
           "SCRIBER_MEDIA_TOOLS_DIR=$mediaTools" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Run complete Python test suite
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force build\test-results | Out-Null
-          .\venv\Scripts\python.exe -m pytest -n 4 --dist loadfile -ra `
-            --junitxml build\test-results\python-full-suite.xml
-
       - name: Run real-browser File upload against production composition
         shell: pwsh
         run: >-
           .\venv\Scripts\python.exe scripts\smoke_real_file_upload_browser.py
           --output build\test-results\real-file-browser-smoke.json
+
+      - name: Upload browser integration result
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-real-browser-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/test-results/real-file-browser-smoke.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  python-typecheck:
+    name: Python typecheck
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Prepare validated Python test environment
+        uses: ./.github/actions/setup-python-quality
+        with:
+          python-version: "3.14.7"
 
       - name: Typecheck extended Python tranche
         shell: pwsh
@@ -108,14 +157,3 @@ jobs:
           src\export.py
           src\post_processing.py
           src\meeting_export.py
-
-      - name: Upload Python test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-full-suite-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            build/test-results/python-full-suite.xml
-            build/test-results/real-file-browser-smoke.json
-          if-no-files-found: warn
-          retention-days: 14

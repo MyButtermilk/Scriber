@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 import yaml
@@ -9,6 +8,7 @@ from packaging.utils import canonicalize_name
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "python-full-suite.yml"
+SETUP = REPO_ROOT / ".github" / "actions" / "setup-python-quality" / "action.yml"
 
 
 def _workflow() -> tuple[str, dict[str, object]]:
@@ -102,60 +102,108 @@ def test_python_test_constraints_resolve_every_direct_requirement_exactly() -> N
     }
 
 
-def test_python_full_suite_is_bounded_read_only_and_reusable() -> None:
+def test_all_python_quality_lanes_run_independently_and_remain_required() -> None:
     raw, workflow = _workflow()
-    job = workflow["jobs"]["python-full-suite"]
-
     assert "workflow_call:" in raw
     assert workflow["permissions"] == {"contents": "read"}
-    assert job["runs-on"] == "windows-latest"
-    assert job["timeout-minutes"] == 30
     assert "secrets:" not in raw
+    expected = {
+        "python-full-suite": ("Python full suite", 30),
+        "python-real-browser": ("Python real-browser integration", 20),
+        "python-typecheck": ("Python typecheck", 15),
+    }
+    assert set(workflow["jobs"]) == expected.keys()
+    for job_id, (name, timeout) in expected.items():
+        job = workflow["jobs"][job_id]
+        assert job["name"] == name
+        assert job["runs-on"] == "windows-latest"
+        assert job["timeout-minutes"] == timeout
+        assert not {"needs", "if", "continue-on-error", "container", "defaults"} & job.keys()
+        assert job["steps"][0]["with"]["ref"] == "${{ github.sha }}"
+        setup = job["steps"][1]
+        assert setup["uses"] == "./.github/actions/setup-python-quality"
+        assert setup["with"]["python-version"] == "3.14.7"
+        assert setup["with"].get("publish-cache", "false") == ("true" if job_id == "python-full-suite" else "false")
+        for step in job["steps"]:
+            assert "continue-on-error" not in step
+            if "if" in step:
+                assert step["if"] == "always()"
+                assert step["uses"] == "actions/upload-artifact@v7"
 
 
-def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
+def test_pytest_lane_keeps_all_tests_and_file_isolation_without_browser_setup() -> None:
     _, workflow = _workflow()
     job = workflow["jobs"]["python-full-suite"]
-    ordered_steps = job["steps"]
-    step_names = [step["name"] for step in ordered_steps]
-    assert step_names == [
-        "Checkout",
-        "Set up Python",
-        "Create isolated test environment",
-        "Install Python test dependencies",
-        "Set up pinned Node for the real-browser File smoke",
-        "Install frontend dependencies for the real-browser File smoke",
-        "Restore locked FFmpeg test runtime",
-        "Run complete Python test suite",
-        "Run real-browser File upload against production composition",
-        "Typecheck extended Python tranche",
-        "Upload Python test results",
+    steps = {step["name"]: step for step in job["steps"]}
+    assert _pwsh_logical_commands(steps["Run complete Python test suite"]["run"]) == [
+        "New-Item -ItemType Directory -Force build\\test-results | Out-Null",
+        (
+            ".\\venv\\Scripts\\python.exe -m pytest -n 4 --dist loadfile -ra "
+            "--junitxml build\\test-results\\python-full-suite.xml"
+        ),
     ]
-    assert len(step_names) == len(set(step_names))
-    steps = {step["name"]: step for step in ordered_steps}
-    setup = steps["Set up Python"]
-    create_environment = steps["Create isolated test environment"]
-    install = steps["Install Python test dependencies"]["run"]
+    assert all("setup-node" not in step.get("uses", "") for step in job["steps"])
+    assert all("smoke_real_file_upload_browser" not in step.get("run", "") for step in job["steps"])
+    upload = steps["Upload Python test results"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "build/test-results/python-full-suite.xml"
+    assert upload["with"]["if-no-files-found"] == "warn"
+
+
+def test_browser_lane_preserves_real_production_composition_and_own_artifact() -> None:
+    _, workflow = _workflow()
+    job = workflow["jobs"]["python-real-browser"]
+    steps = {step["name"]: step for step in job["steps"]}
     setup_node = steps["Set up pinned Node for the real-browser File smoke"]
     install_frontend = steps["Install frontend dependencies for the real-browser File smoke"]
-    restore_ffmpeg = steps["Restore locked FFmpeg test runtime"]
-    run = steps["Run complete Python test suite"]["run"]
     browser_smoke = steps["Run real-browser File upload against production composition"]
-    typecheck = steps["Typecheck extended Python tranche"]
-    upload = steps["Upload Python test results"]
+    assert setup_node["uses"] == "actions/setup-node@v6"
+    assert setup_node["with"]["node-version-file"] == ".node-version"
+    assert setup_node["with"]["cache-dependency-path"] == "Frontend/package-lock.json"
+    assert install_frontend["working-directory"] == "Frontend"
+    assert install_frontend["run"] == "npm ci --no-audit --no-fund"
+    assert browser_smoke["shell"] == "pwsh"
+    assert "scripts\\smoke_real_file_upload_browser.py" in browser_smoke["run"]
+    assert "build\\test-results\\real-file-browser-smoke.json" in browser_smoke["run"]
+    assert all("pytest" not in step.get("run", "") for step in job["steps"])
+    upload = steps["Upload browser integration result"]
+    assert upload["if"] == "always()"
+    assert upload["with"]["path"] == "build/test-results/real-file-browser-smoke.json"
+    assert upload["with"]["name"].startswith("python-real-browser-")
 
-    assert (
-        not {
-            "if",
-            "continue-on-error",
-            "working-directory",
-            "container",
-            "defaults",
-        }
-        & job.keys()
-    )
+
+def test_media_lanes_both_use_the_verified_locked_ffmpeg_runtime() -> None:
+    _, workflow = _workflow()
+    for job_id in ("python-full-suite", "python-real-browser"):
+        steps = {step["name"]: step for step in workflow["jobs"][job_id]["steps"]}
+        restore = steps["Restore locked FFmpeg test runtime"]
+        assert restore["env"] == {"GH_TOKEN": "${{ github.token }}"}
+        assert "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1" in restore["run"]
+        assert "-Tag ffmpeg-profile-b-n7.0-v4" in restore["run"]
+        assert "-AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip" in restore["run"]
+        assert "validate_ffmpeg_profile.py" in restore["run"]
+        assert "SCRIBER_MEDIA_TOOLS_DIR=" in restore["run"]
+        assert "SCRIBER_FFMPEG_PATH=" not in restore["run"]
+        assert "SCRIBER_FFPROBE_PATH=" not in restore["run"]
+
+
+def test_typecheck_lane_retains_the_extended_python_tranche() -> None:
+    _, workflow = _workflow()
+    job = workflow["jobs"]["python-typecheck"]
+    typecheck = job["steps"][-1]
+    assert typecheck["shell"] == "pwsh"
+    assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\api src\\core src\\runtime src\\data")
+    assert "src\\native_overlay.py" in typecheck["run"]
+    assert "src\\meeting_export.py" in typecheck["run"]
+    assert all("npm " not in step.get("run", "") for step in job["steps"])
+
+
+def test_quality_environment_cache_is_exact_validated_and_only_saved_from_main() -> None:
+    action = yaml.safe_load(SETUP.read_text(encoding="utf-8"))
+    steps = {step["name"]: step for step in action["runs"]["steps"]}
+    setup = steps["Set up Python"]
     assert setup["uses"] == "actions/setup-python@v6"
-    assert setup["with"]["python-version"] == "3.14.7"
+    assert setup["with"]["python-version"] == "${{ inputs.python-version }}"
     assert setup["with"]["cache"] == "pip"
     assert setup["with"]["cache-dependency-path"].splitlines() == [
         "requirements-base.txt",
@@ -164,64 +212,23 @@ def test_python_full_suite_installs_checks_runs_and_uploads_results() -> None:
         "requirements-test-constraints.txt",
         "requirements-release-constraints.txt",
     ]
-    assert create_environment["run"] == "python -m venv venv"
-    assert ".\\venv\\Scripts\\python.exe -m pip install pip==26.1.2" in install
-    assert "-c requirements-test-constraints.txt" in install
-    assert "-r requirements-base.txt" in install
-    assert "-r requirements-test.txt" in install
-    assert ".\\venv\\Scripts\\python.exe -m pip check" in install
-    assert setup_node["uses"] == "actions/setup-node@v6"
-    assert setup_node["with"]["node-version-file"] == ".node-version"
-    assert setup_node["with"]["cache-dependency-path"] == "Frontend/package-lock.json"
-    assert install_frontend["working-directory"] == "Frontend"
-    assert install_frontend["run"] == "npm ci --no-audit --no-fund"
-    assert restore_ffmpeg["env"] == {"GH_TOKEN": "${{ github.token }}"}
-    assert "scripts\\ffmpeg\\restore_profile_b_release_artifact.ps1" in restore_ffmpeg["run"]
-    assert "-Tag ffmpeg-profile-b-n7.0-v4" in restore_ffmpeg["run"]
-    assert "-AssetName scriber-ffmpeg-profile-b-n7.0-v4-Windows.zip" in restore_ffmpeg["run"]
-    assert "validate_ffmpeg_profile.py" in restore_ffmpeg["run"]
-    assert "SCRIBER_MEDIA_TOOLS_DIR=" in restore_ffmpeg["run"]
-    assert "SCRIBER_FFMPEG_PATH=" not in restore_ffmpeg["run"]
-    assert "SCRIBER_FFPROBE_PATH=" not in restore_ffmpeg["run"]
-    assert _pwsh_logical_commands(run) == [
-        "New-Item -ItemType Directory -Force build\\test-results | Out-Null",
-        (
-            ".\\venv\\Scripts\\python.exe -m pytest -n 4 --dist loadfile -ra "
-            "--junitxml build\\test-results\\python-full-suite.xml"
-        ),
-    ]
-    assert browser_smoke["shell"] == "pwsh"
-    assert "scripts\\smoke_real_file_upload_browser.py" in browser_smoke["run"]
-    assert "build\\test-results\\real-file-browser-smoke.json" in browser_smoke["run"]
-    assert typecheck["shell"] == "pwsh"
-    assert typecheck["run"].startswith(".\\venv\\Scripts\\python.exe -m mypy src\\api src\\core src\\runtime src\\data")
-    assert "src\\native_overlay.py" in typecheck["run"]
-    assert "src\\meeting_export.py" in typecheck["run"]
-    assert step_names.index("Typecheck extended Python tranche") == (
-        step_names.index("Run real-browser File upload against production composition") + 1
+    restore = steps["Restore exact test environment"]
+    save = steps["Save trusted test environment"]
+    assert restore["uses"] == "actions/cache/restore@v6"
+    assert "restore-keys" not in restore["with"]
+    assert restore["with"] == save["with"]
+    assert restore["with"]["path"] == "venv"
+    assert save["uses"] == "actions/cache/save@v6"
+    assert save["if"] == (
+        "inputs.publish-cache == 'true' && github.repository == 'MyButtermilk/Scriber' "
+        "&& github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.cache.outputs.cache-hit != 'true'"
     )
-    assert all(not {"if", "continue-on-error"} & step.keys() for step in ordered_steps[:-1])
-    assert all(
-        "working-directory" not in step
-        or step["name"] == "Install frontend dependencies for the real-browser File smoke"
-        for step in ordered_steps[:-1]
+    validate = steps["Validate or create isolated test environment"]
+    assert "prepare_python_quality_environment.py prepare" in validate["run"]
+    assert "if" not in validate
+    assert list(steps).index("Validate or create isolated test environment") < list(steps).index(
+        "Save trusted test environment"
     )
-    install_index = step_names.index("Install Python test dependencies")
-    later_scripts = "\n".join(str(step.get("run", "")) for step in ordered_steps[install_index + 1 :])
-    assert (
-        re.search(
-            r"(?i)(?:python\s+-m\s+)?pip\s+install\b",
-            later_scripts,
-        )
-        is None
-    )
-    assert upload["if"] == "always()"
-    assert upload["uses"] == "actions/upload-artifact@v7"
-    assert upload["with"]["path"].splitlines() == [
-        "build/test-results/python-full-suite.xml",
-        "build/test-results/real-file-browser-smoke.json",
-    ]
-    assert upload["with"]["if-no-files-found"] == "warn"
 
 
 def test_python_quality_docs_install_the_pinned_local_ruff_tool() -> None:
