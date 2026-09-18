@@ -595,6 +595,7 @@ ${output}"""
     MEETING_HOTKEY = (
         os.getenv("SCRIBER_MEETING_HOTKEY") or _json_settings.get("meetingHotkey") or DEFAULT_MEETING_HOTKEY
     )
+    REMOTE_DESKTOP_HOTKEYS = _json_settings.get("remoteDesktopHotkeys") is True
     MEETING_FINAL_PROVIDER = (
         _json_settings.get("meetingFinalProvider") or os.getenv("SCRIBER_MEETING_FINAL_PROVIDER") or "soniox_async"
     )
@@ -727,6 +728,13 @@ ${output}"""
         os.environ["SCRIBER_MEETING_HOTKEY"] = cls.MEETING_HOTKEY
         global _json_settings
         _json_settings["meetingHotkey"] = cls.MEETING_HOTKEY
+
+    @classmethod
+    def set_remote_desktop_hotkeys(cls, enabled: bool) -> None:
+        if not isinstance(enabled, bool):
+            raise ValueError("Remote desktop hotkeys must be a boolean.")
+        cls.REMOTE_DESKTOP_HOTKEYS = enabled
+        _json_settings["remoteDesktopHotkeys"] = enabled
 
     @classmethod
     def set_meeting_final_provider(cls, provider: str) -> None:

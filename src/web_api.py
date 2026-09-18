@@ -17686,6 +17686,7 @@ class ScriberWebController:
             "postProcessingHotkeyRaw": Config.POST_PROCESSING_HOTKEY,
             "meetingHotkey": _hotkey_to_display(Config.MEETING_HOTKEY),
             "meetingHotkeyRaw": Config.MEETING_HOTKEY,
+            "remoteDesktopHotkeys": Config.REMOTE_DESKTOP_HOTKEYS,
             "meetingTranscriptionMode": Config.MEETING_TRANSCRIPTION_MODE,
             "meetingFinalProvider": Config.MEETING_FINAL_PROVIDER,
             "meetingAnalysisModel": Config.MEETING_ANALYSIS_MODEL,
@@ -17748,6 +17749,8 @@ class ScriberWebController:
         old_mode = Config.MODE
         old_mic_device = str(getattr(Config, "MIC_DEVICE", "default") or "default")
         old_favorite_mic = str(getattr(Config, "FAVORITE_MIC", "") or "")
+        if "remoteDesktopHotkeys" in payload and not isinstance(payload["remoteDesktopHotkeys"], bool):
+            raise ValueError("Remote desktop hotkeys must be a boolean.")
         validated_mode: str | None = None
         validated_service: str | None = None
         validated_soniox_mode: str | None = None
@@ -17908,6 +17911,9 @@ class ScriberWebController:
 
         if validated_mode is not None:
             Config.set_mode(validated_mode)
+
+        if "remoteDesktopHotkeys" in payload:
+            Config.set_remote_desktop_hotkeys(payload["remoteDesktopHotkeys"])
 
         if validated_service is not None:
             Config.set_default_service(validated_service)

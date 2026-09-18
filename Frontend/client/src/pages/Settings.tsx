@@ -1923,6 +1923,8 @@ export default function Settings() {
   const [hotkey, setHotkey] = useState("Ctrl + Shift + D");
   const [postProcessingHotkey, setPostProcessingHotkey] = useState("Ctrl + Shift + F");
   const [meetingHotkey, setMeetingHotkey] = useState("Ctrl + Shift + M");
+  const [remoteDesktopHotkeys, setRemoteDesktopHotkeys] = useState(false);
+  const [remoteDesktopHotkeysSaving, setRemoteDesktopHotkeysSaving] = useState(false);
   const [sonioxRealtimeModel, setSonioxRealtimeModel] = useState("stt-rt-v5");
   const [meetingTranscriptionMode, setMeetingTranscriptionMode] = useState<MeetingTranscriptionMode>("live_final");
   const [meetingFinalProvider, setMeetingFinalProvider] = useState("soniox_async");
@@ -2838,6 +2840,7 @@ export default function Settings() {
           settings.postProcessingHotkey || settings.postProcessingHotkeyRaw || "Ctrl + Shift + F",
         );
         setMeetingHotkey(settings.meetingHotkey || settings.meetingHotkeyRaw || "Ctrl + Shift + M");
+        setRemoteDesktopHotkeys(settings.remoteDesktopHotkeys === true);
         setSonioxRealtimeModel(settings.sonioxRealtimeModel || "stt-rt-v5");
         setTranscriptionProviderModels(settings.transcriptionProviderModels || {});
         setSonioxRegion(settings.sonioxRegion === "eu" ? "eu" : "us");
@@ -4004,6 +4007,35 @@ export default function Settings() {
         description: localizedSettingsError(e, "The requested settings action failed.", locale, t),
         duration: 5000,
       });
+    }
+  };
+
+  const handleRemoteDesktopHotkeysChange = async (enabled: boolean) => {
+    setRemoteDesktopHotkeysSaving(true);
+    try {
+      const updated = await updateSettings({ remoteDesktopHotkeys: enabled });
+      setRemoteDesktopHotkeys(updated.remoteDesktopHotkeys === true);
+    } catch (error) {
+      toast({
+        title: t("Save failed"),
+        description: localizedSettingsError(error, "The requested settings action failed.", locale, t),
+        variant: "destructive",
+      });
+      setRemoteDesktopHotkeysSaving(false);
+      return;
+    }
+    try {
+      await refreshGlobalHotkey();
+    } catch {
+      toast({
+        title: t("Saved, hotkey refresh failed"),
+        description: t(
+          "Remote Desktop hotkeys could not be enabled. Use a modifier with a letter, digit, function key, Space, Enter, Tab or Escape, then try again.",
+        ),
+        variant: "destructive",
+      });
+    } finally {
+      setRemoteDesktopHotkeysSaving(false);
     }
   };
 
@@ -5554,6 +5586,22 @@ export default function Settings() {
                     </DialogContent>
                   </Dialog>
                 </SettingLine>
+
+                {isTauriRuntime() && (
+                  <SettingLine
+                    label={t("Local dictation in Remote Desktop (experimental)")}
+                    description={t(
+                      "Windows: keep dictation hotkeys local in the classic Remote Desktop client, including full screen. Enable clipboard sharing to paste into the remote text field. Requires a modifier with a letter, digit, function key, Space, Enter, Tab or Escape.",
+                    )}
+                  >
+                    <Switch
+                      checked={remoteDesktopHotkeys}
+                      disabled={remoteDesktopHotkeysSaving}
+                      aria-label={t("Local dictation in Remote Desktop (experimental)")}
+                      onCheckedChange={(enabled) => void handleRemoteDesktopHotkeysChange(enabled)}
+                    />
+                  </SettingLine>
+                )}
 
                 <div className="space-y-2.5 py-3">
                   <div className="flex items-center gap-1">
