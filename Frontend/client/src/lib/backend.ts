@@ -4,6 +4,7 @@ import {
   type FrontendReadyRequest,
   type FrontendReadyResponse,
 } from "@/lib/api-types";
+import { targetsSameBackend } from "@/lib/backend-url";
 import { responseDetailMessage } from "@/lib/request-errors";
 import { fetchWithTimeout, withPromiseTimeout } from "@/lib/fetch-with-timeout";
 import { translateNow } from "@/i18n";
@@ -109,10 +110,7 @@ function appendSessionToken(url: string): string {
   try {
     const parsed = new URL(url, backendBaseUrl || window.location.origin);
     const backend = new URL(backendBaseUrl || window.location.origin);
-    // URL.port is "" for default ports, so normalize before comparing
-    // (e.g. "http://host" must match "http://host:80").
-    const effectivePort = (u: URL) => u.port || (u.protocol === "https:" || u.protocol === "wss:" ? "443" : "80");
-    const targetsBackend = parsed.hostname === backend.hostname && effectivePort(parsed) === effectivePort(backend);
+    const targetsBackend = targetsSameBackend(parsed, backend);
     if (targetsBackend && (parsed.pathname === "/ws" || parsed.pathname.startsWith("/api/"))) {
       parsed.searchParams.set("scriberToken", backendSessionToken);
       return parsed.toString();
