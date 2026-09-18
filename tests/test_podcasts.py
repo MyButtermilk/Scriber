@@ -640,9 +640,11 @@ async def test_remote_refresh_does_not_block_pause_or_unsubscribe_and_cannot_rev
     refreshing = asyncio.create_task(service._refresh())
     try:
         await asyncio.wait_for(fetching.wait(), 10)
-        assert await asyncio.wait_for(service.set_subscription(identifier, auto_process=False), 1)
+        # Completion while the remote feed is held proves independence. Keep a
+        # deadlock guard without imposing a one-second disk/thread-pool budget.
+        assert await asyncio.wait_for(service.set_subscription(identifier, auto_process=False), 10)
         assert (await service.library())["activeCount"] == 0
-        assert await asyncio.wait_for(service.unsubscribe(identifier), 1)
+        assert await asyncio.wait_for(service.unsubscribe(identifier), 10)
         assert not refreshing.done()
         release.set()
         await asyncio.wait_for(refreshing, 10)
