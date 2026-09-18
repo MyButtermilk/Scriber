@@ -419,6 +419,10 @@ Frontend and shell:
   strictly parsed `scriber://` browser handoff. A second Windows instance must
   queue only a validated, expiring YouTube request for the primary instance and
   must not log raw video metadata.
+  Bind the backend's package version and resource directory atomically at the
+  start of desktop setup. Tauri can create WebViews before the setup callback;
+  early backend commands must defer until configured, without probing or
+  spawning. Never use the stable internal Cargo version as an app-version fallback.
 - `Frontend/src-tauri/src/shell_ipc.rs`: private backend-to-shell named-pipe
   IPC for opt-in native shell work, including text injection, diagnostics, and
   the synchronous Windows fallback-model toast acknowledgement.

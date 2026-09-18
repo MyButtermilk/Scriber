@@ -80,6 +80,12 @@ feed/DTD-rejection probe in the frozen-runtime import check.
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
 
+Backend launch remains disabled until the first desktop setup action atomically
+binds Tauri's package version and resource directory. Tauri may create WebViews
+before that setup callback; early status/start/restart commands must therefore
+defer without probing, attaching to, or spawning a backend. The internal Cargo
+package version is never a fallback for the backend's application version.
+
 The existing native supervisor also emits an empty `backend-status-changed`
 event when readiness, running/starting state, or backend URL changes. The frontend
 registers its listener before querying authoritative status; events request a new
