@@ -25,7 +25,7 @@ vi.mock("@/lib/live-mic-control", () => ({
   presentLiveMicControlFailure: vi.fn(),
 }));
 vi.mock("@/hooks/use-toast", () => ({ useToast: () => ({ toast }) }));
-vi.mock("@/hooks/use-backend-status", () => ({ useBackendStatus: () => ({ checkNow: vi.fn() }) }));
+vi.mock("@/hooks/use-backend-status", () => ({ useBackendActions: () => ({ checkNow: vi.fn() }) }));
 vi.mock("@/hooks/use-transcript-auto-refresh", () => ({ useTranscriptAutoRefresh: () => ({ refreshNow: refresh }) }));
 vi.mock("@/hooks/use-transcript-history-query", () => ({
   transcriptHistoryQueryKey: () => ["/api/transcripts", "mic"],

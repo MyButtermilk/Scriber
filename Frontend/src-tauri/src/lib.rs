@@ -573,6 +573,27 @@ pub struct BackendStatus {
     launch_kind: String,
 }
 
+#[derive(Default)]
+struct BackendStatusChangeTracker {
+    previous: Option<BackendStatus>,
+}
+
+impl BackendStatusChangeTracker {
+    fn observe(&mut self, status: &BackendStatus) -> bool {
+        let unchanged = self.previous.as_ref().is_some_and(|previous| {
+            previous.ready == status.ready
+                && previous.running == status.running
+                && previous.starting == status.starting
+                && previous.base_url == status.base_url
+        });
+        if unchanged {
+            return false;
+        }
+        self.previous = Some(status.clone());
+        true
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackendAccess {
@@ -4379,11 +4400,17 @@ fn should_wait_for_hotkey_backend(ready: bool, starting: bool) -> bool {
 
 fn start_backend_supervisor(app: AppHandle) {
     std::thread::spawn(move || {
+        let mut backend_status_changes = BackendStatusChangeTracker::default();
         let mut hotkey_refreshed_after_ready = false;
         let mut last_hotkey_refresh_error: Option<String> = None;
         let mut tray_refreshed_after_ready = false;
         while let Some(manager) = app.try_state::<BackendManager>() {
             let status = manager.ensure_started();
+            if backend_status_changes.observe(&status) {
+                // The WebViews re-query the authoritative status/access. Never
+                // put credentials, paths, or process identities in this event.
+                let _ = app.emit("backend-status-changed", ());
+            }
             if should_refresh_hotkey_after_backend_ready(status.ready, hotkey_refreshed_after_ready)
             {
                 match refresh_global_hotkey_for_app(&app) {
@@ -5561,9 +5588,9 @@ mod tests {
         should_show_window_for_tray_click, should_wait_for_hotkey_backend, split_http_response,
         tray_icon_image, tray_icon_kind, tray_icon_size_for_scale_factor, tray_tooltip,
         wait_for_child_exit, youtube_deep_link_request_from_args, youtube_import_navigation_path,
-        BackendAccess, BackendCommandSpec, BackendStatus, DesktopHotkeyState,
-        NativeDeviceObserveOnlyLogState, ShellMenuSmokeAction, TrayIconKind, TrayStatus,
-        TrayStatusInner, UiLocale, YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV,
+        BackendAccess, BackendCommandSpec, BackendStatus, BackendStatusChangeTracker,
+        DesktopHotkeyState, NativeDeviceObserveOnlyLogState, ShellMenuSmokeAction, TrayIconKind,
+        TrayStatus, TrayStatusInner, UiLocale, YoutubeDeepLinkRequest, AUTOSTART_DEFAULT_ENV,
         BACKEND_START_TIMEOUT, BACKEND_START_TIMEOUT_ENV, DEFAULT_HOST, HOTKEY_DISPATCH_DEBOUNCE,
         MENU_ITEM_COPY_TRANSCRIPT_PREFIX, MENU_ITEM_QUIT, MENU_ITEM_REFRESH_RECENT,
         MENU_ITEM_RESTART_BACKEND, MENU_ITEM_SHOW_WINDOW,
@@ -5804,6 +5831,101 @@ mod tests {
 
         assert!(payload.get("pid").is_none());
         assert!(!payload.to_string().contains("424242"));
+    }
+
+    fn backend_status_fixture() -> BackendStatus {
+        BackendStatus {
+            base_url: "http://127.0.0.1:8765".to_string(),
+            running: false,
+            ready: false,
+            starting: false,
+            managed: true,
+            pid: None,
+            message: "Backend not started".to_string(),
+            runtime_mode: "tauri-supervised".to_string(),
+            launch_kind: "sidecar".to_string(),
+        }
+    }
+
+    #[test]
+    fn backend_status_changes_track_startup_failure_and_recovery() {
+        let mut tracker = BackendStatusChangeTracker::default();
+        let mut status = backend_status_fixture();
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.running = true;
+        status.starting = true;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.ready = true;
+        status.starting = false;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        // A failed health check is meaningful even while the child still runs.
+        status.ready = false;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.running = false;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.running = true;
+        status.starting = true;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.ready = true;
+        status.starting = false;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+    }
+
+    #[test]
+    fn backend_status_changes_ignore_diagnostic_message_and_process_metadata() {
+        let mut tracker = BackendStatusChangeTracker::default();
+        let mut status = backend_status_fixture();
+        status.running = true;
+        status.starting = true;
+        assert!(tracker.observe(&status));
+
+        for attempt in 1..=5 {
+            status.message = format!("Managed backend is starting (health attempt {attempt})");
+            status.pid = Some(attempt);
+            assert!(!tracker.observe(&status));
+        }
+    }
+
+    #[test]
+    fn backend_status_changes_track_backend_url_without_a_readiness_change() {
+        let mut tracker = BackendStatusChangeTracker::default();
+        let mut status = backend_status_fixture();
+        status.running = true;
+        status.ready = true;
+        assert!(tracker.observe(&status));
+
+        status.base_url = "http://127.0.0.1:8766".to_string();
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+    }
+
+    #[test]
+    fn backend_status_changes_track_starting_without_a_running_or_ready_change() {
+        let mut tracker = BackendStatusChangeTracker::default();
+        let mut status = backend_status_fixture();
+        status.running = true;
+        assert!(tracker.observe(&status));
+
+        status.starting = true;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
+
+        status.starting = false;
+        assert!(tracker.observe(&status));
+        assert!(!tracker.observe(&status));
     }
 
     #[cfg(windows)]

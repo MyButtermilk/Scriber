@@ -80,6 +80,18 @@ feed/DTD-rejection probe in the frozen-runtime import check.
 The installed app is local-first. The backend binds to loopback, and the Tauri
 supervisor injects a per-run session token for local control endpoints.
 
+The existing native supervisor also emits an empty `backend-status-changed`
+event when readiness, running/starting state, or backend URL changes. The frontend
+registers its listener before querying authoritative status; events request a new
+query rather than supplying trusted state. An event during a pending query
+reserves one follow-up. Listener setup has a bounded fallback, and periodic/focus
+checks remain available. Live Mic and Command Palette consume the stable health
+action context so timestamp-only updates do not force their context renders.
+
+Each WebView loads its initial locale catalog and selected main, tray, or overlay
+module concurrently. Rendering waits for both; overlay transparency markers are
+set before importing its module. No extra window module is preloaded.
+
 ## Main User Workflows
 
 Live mic:

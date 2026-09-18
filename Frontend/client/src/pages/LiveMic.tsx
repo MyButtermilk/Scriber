@@ -35,7 +35,7 @@ import {
   requestLiveMicStart,
   requestLiveMicStop,
 } from "@/lib/live-mic-control";
-import { useBackendStatus } from "@/hooks/use-backend-status";
+import { useBackendActions } from "@/hooks/use-backend-status";
 
 const MIC_VISUAL_NOISE_FLOOR = 0.00003;
 const MIC_VISUAL_DISPLAY_SCALE = 90;
@@ -561,7 +561,7 @@ const GlossyMicButton = memo(function GlossyMicButton({
 export default function LiveMic() {
   const { toast } = useToast();
   const { t } = useI18n();
-  const { checkNow: checkBackendStatus } = useBackendStatus();
+  const { checkNow: checkBackendStatus } = useBackendActions();
   const [isRecording, setIsRecording] = useState(false);
   const [recordingState, setRecordingState] = useState<LiveRecordingState>("idle");
   const [micStartPending, setMicStartPending] = useState(false);

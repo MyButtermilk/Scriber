@@ -115,6 +115,27 @@ and ffprobe remain about `5.11 MiB` and Gyan Essentials remains fallback-only.
 
 ## Implemented Performance Work
 
+### Startup and backend readiness (2026-09-18)
+
+The main, tray, and recording-overlay bootstrap overlaps initial locale loading
+with its selected window module. The first React render still waits for both,
+preserving localized startup and the overlay's transparent document setup.
+
+The native supervisor sends a payload-free status invalidation when readiness,
+running/starting state, or backend URL changes. The frontend subscribes before
+its initial query and coalesces events received during an in-flight query into
+one follow-up. This removes the additional wait for the five-second offline
+poll after the supervisor detects readiness. Existing supervisor cadence,
+periodic/focus recovery, and authoritative status queries are retained.
+
+Live Mic and Command Palette use a stable action-only context for `checkNow`;
+health-check timestamps and counters no longer trigger their context renders.
+Focused tests cover deferred startup dependencies, listener ordering, event
+coalescing, recovery, cleanup, and action-consumer render counts. These contract
+tests do not constitute an installed latency or memory benchmark. No Meeting
+implementation, provider/audio pipeline, or runtime dependency changes belong
+to this optimization.
+
 ### Diagnostic-console measurements (2026-09-08)
 
 The target for this change was at least a 50% reduction in repeated collection
