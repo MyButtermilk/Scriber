@@ -4,10 +4,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
 import src.config as config_module
+from src import web_api
 from src.config import Config
 from src.web_api import ScriberWebController
 
@@ -34,6 +36,27 @@ def test_remote_desktop_hotkeys_default_off_and_persist_across_restart(tmp_path,
         Config.set_remote_desktop_hotkeys(enabled)
         Config.persist_json_settings()
         assert fresh_enabled(tmp_path) is enabled
+
+
+@pytest.mark.asyncio
+async def test_settings_update_round_trips_the_opt_in(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(Config, "REMOTE_DESKTOP_HOTKEYS", False)
+    monkeypatch.setattr(Config, "persist_settings_files", Mock())
+    monkeypatch.setattr(Config, "persist_json_settings", Mock())
+    monkeypatch.setattr(config_module, "_json_settings", dict(config_module._json_settings))
+    controller = ScriberWebController(asyncio.get_running_loop())
+    try:
+        assert controller.get_settings()["remoteDesktopHotkeys"] is False
+        for enabled in (True, False):
+            updated = await controller.update_settings({"remoteDesktopHotkeys": enabled})
+            assert updated["remoteDesktopHotkeys"] is enabled
+            assert config_module._json_settings["remoteDesktopHotkeys"] is enabled
+    finally:
+        controller.shutdown()
 
 
 @pytest.mark.parametrize("invalid", ["true", "false", 1, None, []])

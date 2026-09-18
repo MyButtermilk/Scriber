@@ -59,6 +59,7 @@ impl Binding {
 struct Chords {
     bindings: Vec<Binding>,
     held: Vec<Binding>,
+    physical_down: Vec<u32>,
 }
 
 impl Chords {
@@ -75,6 +76,14 @@ impl Chords {
         if injected {
             return (false, None);
         }
+        let repeated = self.physical_down.contains(&vk);
+        if down {
+            if !repeated && self.bindings.iter().any(|b| b.vk == vk) {
+                self.physical_down.push(vk);
+            }
+        } else {
+            self.physical_down.retain(|key| *key != vk);
+        }
         if let Some(index) = self.held.iter().position(|b| b.vk == vk) {
             if down {
                 return (true, None);
@@ -82,7 +91,7 @@ impl Chords {
             let binding = self.held.remove(index);
             return (true, Some((binding.id, false)));
         }
-        if down && target {
+        if down && !repeated && target {
             if let Some(binding) = self
                 .bindings
                 .iter()
@@ -240,6 +249,7 @@ impl Monitor {
                         chords: Chords {
                             bindings,
                             held: Vec::new(),
+                            physical_down: Vec::new(),
                         },
                         target: mstsc_foreground(),
                         modifiers: MODIFIER_KEYS.map(|key| GetAsyncKeyState(key as i32) < 0),
@@ -281,6 +291,10 @@ impl Monitor {
                                     if target.is_null() && state.chords.held.is_empty() {
                                         state.modifiers = MODIFIER_KEYS
                                             .map(|key| GetAsyncKeyState(key as i32) < 0);
+                                        state
+                                            .chords
+                                            .physical_down
+                                            .retain(|key| GetAsyncKeyState(*key as i32) < 0);
                                     }
                                 }
                             });
@@ -352,6 +366,7 @@ mod tests {
         Chords {
             bindings: vec![Binding::parse("ctrl+space").unwrap()],
             held: Vec::new(),
+            physical_down: Vec::new(),
         }
     }
 
@@ -368,6 +383,7 @@ mod tests {
                 c.event(vk as u32, true, injected, target, mods),
                 (false, None)
             );
+            c.event(vk as u32, false, injected, target, mods);
         }
         assert_eq!(
             c.event(VK_SPACE as u32, true, false, true, Modifiers::CONTROL),
@@ -425,6 +441,24 @@ mod tests {
         assert_eq!(modifier_flags(&keys), Modifiers::CONTROL | Modifiers::SHIFT);
         keys[1] = false;
         assert_eq!(modifier_flags(&keys), Modifiers::SHIFT);
+    }
+
+    #[test]
+    fn focus_change_does_not_turn_an_existing_key_hold_into_a_new_shortcut() {
+        let mut c = chords();
+        assert_eq!(
+            c.event(VK_SPACE as u32, true, false, false, Modifiers::CONTROL),
+            (false, None)
+        );
+        assert_eq!(
+            c.event(VK_SPACE as u32, true, false, true, Modifiers::CONTROL),
+            (false, None)
+        );
+        c.event(VK_SPACE as u32, false, false, true, Modifiers::CONTROL);
+        assert!(
+            c.event(VK_SPACE as u32, true, false, true, Modifiers::CONTROL)
+                .0
+        );
     }
 
     #[test]
