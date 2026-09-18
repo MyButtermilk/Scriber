@@ -68,6 +68,37 @@ jobs:
             [string]$source.conclusion -ne 'success' -or
             [int]$source.run_attempt -lt 1
           ) { throw "Dependency producer identity does not match the successful tag workflow." }
+          # A successful workflow under a tag name is not enough authorization
+          # to execute its repository scripts. The tag must still identify this
+          # source, it must belong to canonical main, and its public release
+          # must already have passed the publication transaction.
+          $tagJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/commits/refs/tags/$($env:SOURCE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not resolve the completed release tag." }
+          $tagCommit = $tagJson | ConvertFrom-Json
+          if ([string]$tagCommit.sha -ne $env:SOURCE_SHA) {
+            throw "The release tag no longer identifies the dependency producer commit."
+          }
+          $mainJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/commits/main"
+          if ($LASTEXITCODE -ne 0) { throw "Could not resolve canonical main." }
+          $mainCommit = $mainJson | ConvertFrom-Json
+          if ([string]$mainCommit.sha -notmatch '^[0-9a-f]{40}$') { throw "Canonical main has no valid commit identity." }
+          $comparisonJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/compare/$($env:SOURCE_SHA)...$($mainCommit.sha)"
+          if ($LASTEXITCODE -ne 0) { throw "Could not verify release membership in canonical main." }
+          $comparison = $comparisonJson | ConvertFrom-Json
+          if (
+            [string]$comparison.status -notin @('ahead', 'identical') -or
+            [string]$comparison.base_commit.sha -ne $env:SOURCE_SHA -or
+            [string]$comparison.merge_base_commit.sha -ne $env:SOURCE_SHA
+          ) { throw "Dependency producer source does not belong to canonical main." }
+          $releaseJson = & gh api "repos/$($env:SOURCE_REPOSITORY)/releases/tags/$($env:SOURCE_TAG)"
+          if ($LASTEXITCODE -ne 0) { throw "The producer has no published release." }
+          $release = $releaseJson | ConvertFrom-Json
+          if (
+            [string]$release.tag_name -ne $env:SOURCE_TAG -or
+            $release.draft -isnot [bool] -or $release.draft -ne $false -or
+            $release.prerelease -isnot [bool] -or $release.prerelease -ne $false -or
+            [string]::IsNullOrWhiteSpace([string]$release.published_at)
+          ) { throw "Dependency producer release is not publicly published." }
           $pagesJson = & gh api --paginate --slurp "repos/$($env:SOURCE_REPOSITORY)/actions/runs/$($env:SOURCE_RUN_ID)/artifacts?per_page=100"
           if ($LASTEXITCODE -ne 0) { throw "Could not inspect dependency snapshot artifacts." }
           $matches = @(

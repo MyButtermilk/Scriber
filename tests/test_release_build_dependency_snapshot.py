@@ -269,7 +269,20 @@ def test_maintenance_publishes_only_source_bound_passive_dependencies_on_default
     assert "source.path -ne '.github/workflows/release-windows.yml'" in guard["run"]
     assert "source.head_sha -ne $env:SOURCE_SHA" in guard["run"]
     assert "source.conclusion -ne 'success'" in guard["run"]
+    assert "commits/refs/tags/$($env:SOURCE_TAG)" in guard["run"]
+    assert "tagCommit.sha -ne $env:SOURCE_SHA" in guard["run"]
+    assert "commits/main" in guard["run"]
+    assert "compare/$($env:SOURCE_SHA)...$($mainCommit.sha)" in guard["run"]
+    assert "comparison.status -notin @('ahead', 'identical')" in guard["run"]
+    assert "comparison.base_commit.sha -ne $env:SOURCE_SHA" in guard["run"]
+    assert "comparison.merge_base_commit.sha -ne $env:SOURCE_SHA" in guard["run"]
+    assert "releases/tags/$($env:SOURCE_TAG)" in guard["run"]
+    assert "release.tag_name -ne $env:SOURCE_TAG" in guard["run"]
+    assert "release.draft -ne $false" in guard["run"]
+    assert "release.prerelease -ne $false" in guard["run"]
+    assert "release.published_at" in guard["run"]
     checkout = next(step for step in steps if step.get("uses") == "actions/checkout@v7")
+    assert steps.index(guard) < steps.index(checkout)
     assert checkout["with"]["ref"] == "${{ github.event.workflow_run.head_sha }}"
     assert checkout["with"]["persist-credentials"] is False
     download = next(step for step in steps if step.get("uses") == "actions/download-artifact@v8")
