@@ -1427,18 +1427,29 @@ async def test_startup_prompt_migration_persists_json_without_rewriting_env(
 async def test_update_settings_debounces_env_persistence(monkeypatch, tmp_path):
     monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("SCRIBER_DISABLE_DEVICE_MONITOR", "1")
-    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "0.05")
+    # Expire the selected timer explicitly so a busy CI thread pool cannot
+    # turn a coalescing assertion into an 80 ms scheduling race.
+    monkeypatch.setenv("SCRIBER_SETTINGS_PERSIST_DEBOUNCE_SEC", "60")
     persist_mock = MagicMock()
     monkeypatch.setattr(web_api.Config, "persist_settings_files", persist_mock)
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
     await ctl.update_settings({"language": "en"})
+    first_timer = ctl._settings_persist_handle
+    assert first_timer is not None
     await ctl.update_settings({"customVocab": "alpha beta"})
 
     assert persist_mock.call_count == 0
+    assert first_timer.cancelled()
+    selected_timer = ctl._settings_persist_handle
+    assert selected_timer is not None and selected_timer is not first_timer
 
-    await asyncio.sleep(0.08)
+    selected_timer.cancel()
+    ctl._start_settings_persist_flush(ctl._settings_persist_generation)
+    task = ctl._settings_persist_task
+    assert task is not None
+    await asyncio.wait_for(task, timeout=5)
 
     assert persist_mock.call_count == 1
     ctl.shutdown()
