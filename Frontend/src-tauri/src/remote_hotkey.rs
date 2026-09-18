@@ -2,7 +2,15 @@
 //! The hook only consumes configured chords in a verified mstsc session window.
 //! It never records keyboard input; backend work runs outside the hook callback.
 
-use std::{cell::RefCell, ptr::null_mut, sync::mpsc, thread};
+use std::{
+    cell::RefCell,
+    ptr::null_mut,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    thread,
+};
 use tauri_plugin_global_shortcut::{Code, Modifiers, Shortcut};
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM},
@@ -227,6 +235,7 @@ unsafe fn mstsc_foreground() -> HWND {
 pub struct Monitor {
     thread_id: u32,
     thread: Option<thread::JoinHandle<()>>,
+    stopping: Arc<AtomicBool>,
 }
 
 impl Monitor {
@@ -239,6 +248,8 @@ impl Monitor {
             .map(|s| Binding::parse(s))
             .collect::<Result<Vec<_>, _>>()?;
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
+        let stopping = Arc::new(AtomicBool::new(false));
+        let thread_stopping = Arc::clone(&stopping);
         let thread = thread::Builder::new()
             .name("scriber-rdp-hotkeys".into())
             .spawn(move || unsafe {
@@ -262,6 +273,7 @@ impl Monitor {
                     0,
                 );
                 let timer = SetTimer(null_mut(), 0, 250, None);
+                let mut delivered = Vec::new();
                 if hook.is_null() || timer == 0 {
                     let _ =
                         ready_tx.send(Err("Could not enable remote desktop hotkeys".to_string()));
@@ -269,8 +281,18 @@ impl Monitor {
                     let _ = ready_tx.send(Ok(GetCurrentThreadId()));
                     let mut previous: (usize, i32, i32, i32, i32) = (0, 0, 0, 0, 0);
                     while GetMessageW(&mut message, null_mut(), 0, 0) > 0 {
+                        if thread_stopping.load(Ordering::Acquire) {
+                            break;
+                        }
                         if message.message == DISPATCH {
-                            dispatch(message.wParam as u32, message.lParam != 0);
+                            let id = message.wParam as u32;
+                            let pressed = message.lParam != 0;
+                            if pressed {
+                                delivered.push(id);
+                            } else {
+                                delivered.retain(|active| *active != id);
+                            }
+                            dispatch(id, pressed);
                         } else if message.message == WM_TIMER {
                             let target = mstsc_foreground();
                             let mut rect = std::mem::zeroed();
@@ -326,18 +348,20 @@ impl Monitor {
                     UnhookWindowsHookEx(hook);
                 }
                 STATE.with(|cell| {
-                    if let Some(state) = cell.borrow_mut().take() {
-                        for binding in state.chords.held {
-                            dispatch(binding.id, false);
-                        }
-                    }
+                    cell.borrow_mut().take();
                 });
+                // Release only presses actually delivered to the dispatcher,
+                // including a release still pending in the Windows queue.
+                for id in delivered {
+                    dispatch(id, false);
+                }
             })
             .map_err(|err| err.to_string())?;
         match ready_rx.recv() {
             Ok(Ok(thread_id)) => Ok(Self {
                 thread_id,
                 thread: Some(thread),
+                stopping,
             }),
             _ => {
                 let _ = thread.join();
@@ -349,6 +373,8 @@ impl Monitor {
 
 impl Drop for Monitor {
     fn drop(&mut self) {
+        // The timer also observes this flag if posting the wake-up fails.
+        self.stopping.store(true, Ordering::Release);
         unsafe {
             PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
         }
