@@ -279,6 +279,18 @@ Frontend and shell:
   compatible with YouTube SPA navigation and preserve the toolbar popup fallback.
 - `Frontend/client/src/App.tsx`: routes; the six primary user tabs are eager,
   while Debug Console, transcript detail, and not-found surfaces remain lazy.
+- `Frontend/client/src/main.tsx` starts the initial locale catalog and only the
+  selected main/tray/overlay module together, then waits for both before React
+  renders. Keep the overlay's transparent document markers ahead of its import.
+- `Frontend/client/src/hooks/use-backend-status.tsx` subscribes to the native
+  `backend-status-changed` invalidation before its initial authoritative query.
+  Coalesce concurrent checks and retain one follow-up for events received during
+  a check; bound listener setup and retain polling/focus recovery. Action-only
+  consumers use the stable `useBackendActions` context instead of subscribing to
+  every health-check timestamp. The native supervisor emits an empty event only
+  when readiness, running/starting state, or backend URL changes. `RuntimeShell`
+  consumes only the separate boolean `useBackendOnline` value so its parent
+  render cannot reintroduce timestamp-driven renders of the routed pages.
 - `Frontend/client/src/pages/`: Live Mic, Meetings, YouTube, File, Podcasts, Settings,
   Debug Console, Transcript Detail.
 - `Frontend/client/src/hooks/use-browser-youtube-import.ts` owns one-shot

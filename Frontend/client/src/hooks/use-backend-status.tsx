@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, useCallback, useRef, ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, useCallback, useMemo, useRef, ReactNode } from "react";
 import {
   apiUrl,
   backendSessionToken,
@@ -34,11 +34,15 @@ interface TauriBackendStatus {
 }
 
 const BackendStatusContext = createContext<BackendStatus | null>(null);
+const BackendOnlineContext = createContext<boolean | null>(null);
+type BackendActions = Pick<BackendStatus, "checkNow">;
+const BackendActionsContext = createContext<BackendActions | null>(null);
 
 const CHECK_INTERVAL_MS = 5000; // Check every 5 seconds when offline
 const ONLINE_CHECK_INTERVAL_MS = 30000; // Check every 30 seconds when online
 const TAURI_ACCESS_TIMEOUT_MS = 3000;
 const TAURI_SUPERVISOR_TIMEOUT_MS = 5000;
+const TAURI_LISTENER_TIMEOUT_MS = 3000;
 
 function withDeadline<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -79,6 +83,8 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const checkInFlightRef = useRef<Promise<boolean> | null>(null);
+  const recheckRequestedRef = useRef(false);
+  const healthChecksActiveRef = useRef(true);
 
   const runHealthCheck = useCallback(async (): Promise<boolean> => {
     setIsChecking(true);
@@ -198,24 +204,72 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const checkHealth = useCallback((): Promise<boolean> => {
-    const existing = checkInFlightRef.current;
-    if (existing) {
-      return existing;
-    }
-    const request = runHealthCheck();
-    checkInFlightRef.current = request;
-    void request.finally(() => {
-      if (checkInFlightRef.current === request) {
-        checkInFlightRef.current = null;
+  const checkHealth = useCallback(
+    function checkHealth(): Promise<boolean> {
+      const existing = checkInFlightRef.current;
+      if (existing) {
+        return existing;
       }
-    });
-    return request;
-  }, [runHealthCheck]);
+      const request = runHealthCheck();
+      checkInFlightRef.current = request;
+      void request.finally(() => {
+        if (checkInFlightRef.current === request) {
+          checkInFlightRef.current = null;
+          // An event can arrive while the native command is returning its old
+          // snapshot. Keep one follow-up instead of losing that invalidation.
+          if (healthChecksActiveRef.current && recheckRequestedRef.current) {
+            recheckRequestedRef.current = false;
+            void checkHealth();
+          }
+        }
+      });
+      return request;
+    },
+    [runHealthCheck],
+  );
 
-  // Initial check on mount
+  // Listen before reading the initial snapshot, so readiness changes cannot
+  // fall between that read and subscription. Events only invalidate: the
+  // existing native command remains the authority for URL and readiness.
   useEffect(() => {
-    checkHealth();
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    healthChecksActiveRef.current = true;
+    const invalidate = () => {
+      if (cancelled) return;
+      if (checkInFlightRef.current) {
+        recheckRequestedRef.current = true;
+      } else {
+        void checkHealth();
+      }
+    };
+    if (isTauriRuntime()) {
+      const registration = import("@tauri-apps/api/event")
+        .then(({ listen }) => listen("backend-status-changed", invalidate))
+        .then((stopListening) => {
+          if (cancelled) {
+            stopListening();
+            return;
+          }
+          unlisten = stopListening;
+        });
+      void withDeadline(registration, TAURI_LISTENER_TIMEOUT_MS, "Tauri backend status listener")
+        .catch((listenerError) => {
+          if (cancelled) return;
+          console.debug("Backend status listener unavailable; continuing with health checks.", listenerError);
+        })
+        .then(() => {
+          if (!cancelled) void checkHealth();
+        });
+    } else {
+      void checkHealth();
+    }
+    return () => {
+      cancelled = true;
+      healthChecksActiveRef.current = false;
+      recheckRequestedRef.current = false;
+      unlisten?.();
+    };
   }, [checkHealth]);
 
   // Periodic health checks
@@ -238,22 +292,28 @@ export function BackendStatusProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("focus", handleFocus);
   }, [checkHealth]);
 
+  const actions = useMemo(() => ({ checkNow: checkHealth }), [checkHealth]);
+
   return (
-    <BackendStatusContext.Provider
-      value={{
-        isOnline,
-        isChecking,
-        hasConnected,
-        backendStarting,
-        backendMessage,
-        checkCount,
-        lastChecked,
-        error,
-        checkNow: checkHealth,
-      }}
-    >
-      {children}
-    </BackendStatusContext.Provider>
+    <BackendActionsContext.Provider value={actions}>
+      <BackendOnlineContext.Provider value={isOnline}>
+        <BackendStatusContext.Provider
+          value={{
+            isOnline,
+            isChecking,
+            hasConnected,
+            backendStarting,
+            backendMessage,
+            checkCount,
+            lastChecked,
+            error,
+            checkNow: checkHealth,
+          }}
+        >
+          {children}
+        </BackendStatusContext.Provider>
+      </BackendOnlineContext.Provider>
+    </BackendActionsContext.Provider>
   );
 }
 
@@ -261,6 +321,22 @@ export function useBackendStatus(): BackendStatus {
   const context = useContext(BackendStatusContext);
   if (!context) {
     throw new Error("useBackendStatus must be used within a BackendStatusProvider");
+  }
+  return context;
+}
+
+export function useBackendActions(): BackendActions {
+  const context = useContext(BackendActionsContext);
+  if (!context) {
+    throw new Error("useBackendActions must be used within a BackendStatusProvider");
+  }
+  return context;
+}
+
+export function useBackendOnline(): boolean {
+  const context = useContext(BackendOnlineContext);
+  if (context === null) {
+    throw new Error("useBackendOnline must be used within a BackendStatusProvider");
   }
   return context;
 }

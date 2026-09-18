@@ -6,7 +6,7 @@ import { AppLayout } from "@/components/layout/AppLayout";
 import { AppErrorBoundary } from "@/components/AppErrorBoundary";
 import { RouteDocumentTitle } from "@/components/RouteDocumentTitle";
 import { ThemeProvider } from "@/components/theme-provider";
-import { BackendStatusProvider, useBackendStatus } from "@/hooks/use-backend-status";
+import { BackendStatusProvider, useBackendOnline } from "@/hooks/use-backend-status";
 import { useDeviceChangeRefresh } from "@/hooks/use-device-change-refresh";
 import { BackendOfflineBanner } from "@/components/BackendOfflineBanner";
 import { useSharedWebSocket, WebSocketProvider, type ScriberWebSocketMessage } from "@/contexts/WebSocketContext";
@@ -567,7 +567,7 @@ function DesktopUpdateAutoCheckBridge() {
 }
 
 function RuntimeShell() {
-  const { isOnline } = useBackendStatus();
+  const isOnline = useBackendOnline();
   const queryClient = useQueryClient();
   const websocketEnabled = isOnline;
 

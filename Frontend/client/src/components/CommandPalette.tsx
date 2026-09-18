@@ -19,7 +19,7 @@ import { useToast } from "@/hooks/use-toast";
 import { presentLiveMicControlFailure, requestLiveMicStart, requestLiveMicStop } from "@/lib/live-mic-control";
 import { createLiveMicSessionMessageGate } from "@/lib/runtime-message-state";
 import type { SettingsResponse } from "@/lib/api-types";
-import { useBackendStatus } from "@/hooks/use-backend-status";
+import { useBackendActions } from "@/hooks/use-backend-status";
 import { useI18n } from "@/i18n";
 
 interface CommandPaletteProps {
@@ -40,7 +40,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const [isRecording, setIsRecording] = useState(false);
   const [acceptSessionMessage] = useState(createLiveMicSessionMessageGate);
   const { toast } = useToast();
-  const { checkNow: checkBackendStatus } = useBackendStatus();
+  const { checkNow: checkBackendStatus } = useBackendActions();
   const { formatDate: formatLocalizedDate, t } = useI18n();
 
   // Track recording state via WebSocket
