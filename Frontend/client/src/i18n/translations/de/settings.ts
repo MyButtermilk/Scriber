@@ -1,6 +1,11 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const settingsTranslations = {
+  "Local dictation in Remote Desktop (experimental)": "Lokal diktieren in Remote Desktop (experimentell)",
+  "Windows: keep dictation hotkeys local in the classic Remote Desktop client, including full screen. Enable clipboard sharing to paste into the remote text field. Requires a modifier with a letter, digit, function key, Space, Enter, Tab or Escape.":
+    "Windows: Diktierkürzel im klassischen Remote-Desktop-Client lokal verwenden, auch im Vollbild. Aktiviere die Freigabe der Zwischenablage zum Einfügen ins entfernte Textfeld. Erfordert eine Zusatztaste mit Buchstabe, Ziffer, Funktionstaste, Leertaste, Enter, Tab oder Escape.",
+  "Remote Desktop hotkeys could not be enabled. Use a modifier with a letter, digit, function key, Space, Enter, Tab or Escape, then try again.":
+    "Remote-Desktop-Kürzel konnten nicht aktiviert werden. Verwende eine Zusatztaste mit Buchstabe, Ziffer, Funktionstaste, Leertaste, Enter, Tab oder Escape und versuche es erneut.",
   "Stop after silence": "Bei Stille stoppen",
   "Automatically stops Live Mic after you finish speaking. Applies to new recordings.":
     "Stoppt Live Mic automatisch, wenn du nicht mehr sprichst. Gilt für neue Aufnahmen.",

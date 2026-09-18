@@ -1124,6 +1124,7 @@ export interface SettingsResponse {
   postProcessingHotkeyRaw?: string;
   meetingHotkey?: string;
   meetingHotkeyRaw?: string;
+  remoteDesktopHotkeys?: boolean;
   meetingTranscriptionMode?: MeetingTranscriptionMode;
   meetingFinalProvider?: string;
   meetingAnalysisModel?: string;
@@ -1173,6 +1174,7 @@ export interface SettingsUpdatePayload {
   localPolishingVariant?: LocalPolishingVariant;
   postProcessingHotkey?: string;
   meetingHotkey?: string;
+  remoteDesktopHotkeys?: boolean;
   meetingTranscriptionMode?: MeetingTranscriptionMode;
   meetingFinalProvider?: string;
   meetingAnalysisModel?: string;

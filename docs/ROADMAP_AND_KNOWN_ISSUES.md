@@ -32,6 +32,21 @@ transcript detail, and the Podcast page.
 
 ## Recently Completed
 
+Remote Desktop dictation (#47): an experimental, default-off setting keeps the
+two Live Mic shortcuts local while classic Windows `mstsc.exe` owns a session
+window, including fullscreen. It requires a modifier plus a letter, digit,
+function key, Space, Enter, Tab or Escape. A dedicated Windows hook thread
+forwards shortcut identities to the existing toggle/push-to-talk handlers,
+suppresses repeats, ignores injected paste input, and releases held shortcuts
+when disabled. Shortcut capture suspends the hook. Foreground/fullscreen changes
+refresh hook precedence within 250 ms; no key or text history is retained.
+Meeting shortcuts and other remote clients are outside this feature's scope.
+Text uses the existing clipboard paste path, requiring RDP clipboard sharing.
+Actual fullscreen RDP hotkey routing and clipboard timing remain unverified:
+no connected test session was available. Before release, verify Ctrl+Space
+start/stop, repeated starts, push-to-talk release, clipboard paste, and focus
+changes in a real session, including starting mstsc after Scriber.
+
 Meta Muse Voice Transcribe integration (2026-09-02): separate Realtime and Async
 choices use the same `muse-voice-transcribe-1.0` model and Meta Model API key.
 Async means one non-blocking HTTP upload, not a separate Meta model or hosted

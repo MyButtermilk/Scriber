@@ -8,6 +8,8 @@ mod export_dialog;
 mod native_overlay;
 mod outlook_config;
 mod redaction;
+#[cfg(windows)]
+mod remote_hotkey;
 mod shell_ipc;
 
 use serde::{Deserialize, Serialize};
@@ -745,6 +747,8 @@ pub struct SingleInstanceGuard;
 struct DesktopHotkeyState {
     inner: Mutex<DesktopHotkeyStateInner>,
     registration: Mutex<()>,
+    #[cfg(windows)]
+    remote: Mutex<Option<(Vec<String>, remote_hotkey::Monitor)>>,
 }
 
 struct NativeDeviceEventsState {
@@ -807,6 +811,8 @@ impl DesktopHotkeyState {
     fn new() -> Self {
         Self {
             registration: Mutex::new(()),
+            #[cfg(windows)]
+            remote: Mutex::new(None),
             inner: Mutex::new(DesktopHotkeyStateInner {
                 registered_hotkey: None,
                 registered_hotkey_id: None,
@@ -918,6 +924,7 @@ impl DesktopHotkeyState {
     }
 
     fn set_unregistered(&self, mode: String, available: bool, message: String) {
+        self.stop_remote();
         let mut state = lock_unpoisoned(&self.inner);
         state.registered_hotkey = None;
         state.registered_hotkey_id = None;
@@ -937,6 +944,9 @@ impl DesktopHotkeyState {
     }
 
     fn set_capture_suspended(&self, suspended: bool, message: String) {
+        if suspended {
+            self.stop_remote();
+        }
         let mut state = lock_unpoisoned(&self.inner);
         state.capture_suspended = suspended;
         state.available = true;
@@ -951,6 +961,58 @@ impl DesktopHotkeyState {
             state.meeting_hotkey_id = None;
             state.last_dispatched_at = None;
         }
+    }
+
+    fn stop_remote(&self) {
+        #[cfg(windows)]
+        {
+            lock_unpoisoned(&self.remote).take();
+        }
+    }
+
+    fn configure_remote<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        enabled: bool,
+    ) -> Result<(), String> {
+        #[cfg(windows)]
+        {
+            let status = self.status();
+            let shortcuts = if enabled && status.registered && !status.capture_suspended {
+                [status.hotkey, status.post_processing_hotkey]
+                    .into_iter()
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let mut remote = lock_unpoisoned(&self.remote);
+            if remote
+                .as_ref()
+                .is_some_and(|(existing, _)| *existing == shortcuts)
+            {
+                return Ok(());
+            }
+            remote.take();
+            if !shortcuts.is_empty() {
+                let app = app.clone();
+                let monitor = remote_hotkey::Monitor::start(&shortcuts, move |id, pressed| {
+                    handle_shortcut_id_event(
+                        &app,
+                        id,
+                        if pressed {
+                            ShortcutState::Pressed
+                        } else {
+                            ShortcutState::Released
+                        },
+                    );
+                })?;
+                *remote = Some((shortcuts, monitor));
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = (app, enabled);
+        Ok(())
     }
 
     fn action_for_event(
@@ -1951,6 +2013,7 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
+            _app_handle.state::<DesktopHotkeyState>().stop_remote();
             let stopped = audio_sidecar_client::shutdown_all_audio_sidecars("shellExit");
             if stopped > 0 {
                 write_shell_log(&format!(
@@ -4073,9 +4136,11 @@ fn refresh_global_hotkey_for_app_locked<R: Runtime>(
         &config.meeting_hotkey,
         &config.mode,
     ) {
+        hotkey_state.configure_remote(app, config.remote_desktop_hotkeys)?;
         return Ok(hotkey_state.status());
     }
 
+    hotkey_state.stop_remote();
     if let Err(err) = app.global_shortcut().unregister_all() {
         let message = format!("Could not clear previous global shortcuts: {err}");
         hotkey_state.set_unregistered(config.mode, true, message.clone());
@@ -4137,6 +4202,7 @@ fn refresh_global_hotkey_for_app_locked<R: Runtime>(
         config.mode,
         message.clone(),
     );
+    hotkey_state.configure_remote(app, config.remote_desktop_hotkeys)?;
     // The primary shortcut is installed at this point. Optional shortcut
     // conflicts are a stable degraded state, not a startup/authentication
     // failure: returning success prevents the supervisor from tearing down and
@@ -4146,6 +4212,14 @@ fn refresh_global_hotkey_for_app_locked<R: Runtime>(
 }
 
 fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_state: ShortcutState) {
+    handle_shortcut_id_event(app, shortcut.id(), event_state);
+}
+
+fn handle_shortcut_id_event<R: Runtime>(
+    app: &AppHandle<R>,
+    shortcut_id: u32,
+    event_state: ShortcutState,
+) {
     // Capture QPC at the actual Tauri callback boundary. The marker is inert
     // unless the explicit benchmark run-id environment contract was present
     // when this installed process started.
@@ -4154,7 +4228,7 @@ fn handle_global_shortcut_event(app: &AppHandle, shortcut: &Shortcut, event_stat
         .and_then(|state| state.callback_qpc_snapshot());
     let Some(path) = app
         .try_state::<DesktopHotkeyState>()
-        .and_then(|state| state.action_for_event(shortcut.id(), event_state, Instant::now()))
+        .and_then(|state| state.action_for_event(shortcut_id, event_state, Instant::now()))
     else {
         return;
     };
@@ -4434,6 +4508,7 @@ fn shortcut_id_for_hotkey(hotkey: &str) -> Option<u32> {
 }
 
 struct BackendHotkeyConfig {
+    remote_desktop_hotkeys: bool,
     hotkey: String,
     post_processing_hotkey: String,
     post_processing_enabled: bool,
@@ -4561,6 +4636,10 @@ fn backend_hotkey_config_from_value(value: &Value) -> BackendHotkeyConfig {
         .unwrap_or(DEFAULT_MEETING_HOTKEY);
 
     BackendHotkeyConfig {
+        remote_desktop_hotkeys: value
+            .get("remoteDesktopHotkeys")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
         hotkey: normalize_global_shortcut(raw_hotkey),
         post_processing_hotkey: normalize_global_shortcut(raw_post_processing_hotkey),
         post_processing_enabled,
@@ -6317,6 +6396,24 @@ mod tests {
         assert_eq!(normalize_hotkey_mode("push_to_talk"), "push_to_talk");
         assert_eq!(normalize_hotkey_mode("toggle"), "toggle");
         assert_eq!(normalize_hotkey_mode("unexpected"), "toggle");
+    }
+
+    #[test]
+    fn remote_desktop_hotkeys_require_explicit_boolean_opt_in() {
+        use super::backend_hotkey_config_from_value;
+        use serde_json::json;
+
+        for value in [
+            json!({}),
+            json!({"remoteDesktopHotkeys": "true"}),
+            json!({"remoteDesktopHotkeys": false}),
+        ] {
+            assert!(!backend_hotkey_config_from_value(&value).remote_desktop_hotkeys);
+        }
+        assert!(
+            backend_hotkey_config_from_value(&json!({"remoteDesktopHotkeys": true}))
+                .remote_desktop_hotkeys
+        );
     }
 
     #[test]
