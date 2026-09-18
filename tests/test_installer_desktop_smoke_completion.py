@@ -132,7 +132,7 @@ def test_installer_orchestration_retains_both_launches_and_stops_on_first_failur
     data = tmp_path / "data"
     (install / "backend" / "app" / "src").mkdir(parents=True)
     data.mkdir()
-    body = SOURCE[SOURCE.index("$smoke = $null\n"):]
+    body = SOURCE[SOURCE.index("$smoke = $null\n") :]
     scripts = []
     fixtures = []
     for failed_stage in [None, "clean-install", "upgrade"]:
