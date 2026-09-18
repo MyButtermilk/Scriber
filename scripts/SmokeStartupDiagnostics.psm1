@@ -9,7 +9,7 @@ function Protect-SmokeDiagnosticText {
             $_.Name -match '(?i)(key|token|secret|password|credential|authorization|cookie|session)'
         } | ForEach-Object { [string]$_.Value }
     )
-    foreach ($secret in @($secrets | Where-Object { $_ } | Sort-Object Length -Descending -Unique)) {
+    foreach ($secret in @($secrets | Where-Object { $_ } | Sort-Object Length -Descending)) {
         $safe = $safe.Replace($secret, '[REDACTED]')
     }
     $safe = [regex]::Replace($safe, '(?im)^.*(?:api[_-]?key|speech[_-]?key|token|secret|password|credential|authorization|cookie|session)[\w"''-]*\s*[:=].*$', '[REDACTED_SECRET_LINE]')

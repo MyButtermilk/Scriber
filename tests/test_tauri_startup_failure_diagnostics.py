@@ -17,10 +17,17 @@ def test_startup_diagnostics_capture_exit_and_bounded_redacted_logs_without_back
         pytest.skip("PowerShell is unavailable")
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    secrets = ["sentinel-session-value", "sentinel-env-key", "unconfigured-password", "unconfigured-url-token"]
+    secrets = [
+        "sentinel-session-value",
+        "sentinel-env-key",
+        "sentinel-oth-key",
+        "unconfigured-password",
+        "unconfigured-url-token",
+    ]
+    assert len(secrets[1]) == len(secrets[2])
     (log_dir / "tauri-shell.log").write_text(
         "backend_layer_validation_failed\n"
-        + " ".join(secrets[:2])
+        + " ".join(secrets[:3])
         + '\npassword="unconfigured-password"\nhttps://host/?token=unconfigured-url-token\n'
         + 'File "C:\\Users\\private-person\\runtime.py"\n'
         + 'File "/home/private-person/runtime.py"\n',

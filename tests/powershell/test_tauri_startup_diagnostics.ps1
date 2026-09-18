@@ -9,6 +9,7 @@ if (-not $RuntimeDataDir) { throw 'RuntimeDataDir is required.' }
 
 Import-Module (Join-Path $PSScriptRoot '..\..\scripts\SmokeStartupDiagnostics.psm1') -Force
 $env:SCRIBER_TEST_API_KEY = 'sentinel-env-key'
+$env:SCRIBER_OTHER_API_KEY = 'sentinel-oth-key'
 $current = Get-Process -Id $PID
 $running = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir $RuntimeDataDir -AppProcess $current -ManagedBackendCount 1 -Token 'sentinel-session-value'
 $missing = Get-SmokeStartupFailureDiagnostics -RuntimeDataDir (Join-Path $RuntimeDataDir 'missing') -AppProcess $null -ManagedBackendCount 0
