@@ -5261,11 +5261,12 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
     The production incident completed Azure MAI in seconds, persisted
     ``provider_result_ready``, then spent five minutes in local diarization. The
     old provider-only heartbeat had already stopped, so the final commit lost
-    its 90-second lease. This compact clock proves that one guard now spans both
+    its 90-second lease. A simulated clock proves that one guard now spans both
     the pre-provider download and the post-provider speaker phase, including the
     state-version change between them.
     """
-    ctl = ScriberWebController(asyncio.get_running_loop())
+    loop = asyncio.get_running_loop()
+    ctl = ScriberWebController(loop)
     ctl._downloads_dir = tmp_path / "downloads"
     audio_path = tmp_path / "downloaded.webm"
     audio_path.write_bytes(b"synthetic audio")
@@ -5282,11 +5283,14 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
     class ExpiringAttemptStore:
         def __init__(self):
             self._lock = threading.Lock()
+            self.now = 0.0
             self.state = web_api.AttemptState.TRANSCRIBING
             self.version = 5
             self.owner = owner
             self.expires_at = 0.0
             self.renewed_versions: list[int] = []
+            self.renewed_at = 0.0
+            self.renewal_completed = asyncio.Event()
 
         def require_attempt(self, _attempt_id):
             with self._lock:
@@ -5298,12 +5302,33 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
 
         def renew_attempt_lease(self, _attempt_id, *, owner, expected_version, ttl_seconds):
             with self._lock:
-                if time.monotonic() >= self.expires_at:
+                if self.now >= self.expires_at:
                     raise web_api.ArtifactConflict("Attempt lease has expired")
                 if owner != self.owner or expected_version != self.version:
                     raise web_api.ArtifactConflict("Attempt lease renewal CAS lost")
-                self.expires_at = time.monotonic() + ttl_seconds
+                self.expires_at = self.now + ttl_seconds
                 self.renewed_versions.append(expected_version)
+                self.renewed_at = self.now
+            loop.call_soon_threadsafe(self.renewal_completed.set)
+
+        async def advance_phase(self, *, version, ticks):
+            # Expiry depends only on this clock, not CI pool scheduling. Each
+            # checkpoint still waits for the real heartbeat's worker-thread
+            # renewal before advancing another half of the production lease.
+            for _ in range(ticks):
+                with self._lock:
+                    self.now += web_api._TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS / 2
+                    target_time = self.now
+
+                async def wait_for_renewal(target_time=target_time):
+                    while True:
+                        self.renewal_completed.clear()
+                        with self._lock:
+                            if self.renewed_at >= target_time and self.renewed_versions[-1] == version:
+                                return
+                        await self.renewal_completed.wait()
+
+                await asyncio.wait_for(wait_for_renewal(), timeout=5)
 
         def enter_provider_result_ready(self):
             with self._lock:
@@ -5312,7 +5337,7 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
 
         def assert_live_and_complete(self):
             with self._lock:
-                assert time.monotonic() < self.expires_at
+                assert self.now < self.expires_at
                 self.state = web_api.AttemptState.COMPLETED
                 self.version = 7
                 self.owner = ""
@@ -5321,13 +5346,13 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
     ctl._transcript_artifacts = store
 
     async def begin_attempt(*_args, **_kwargs):
-        store.expires_at = time.monotonic() + web_api._TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS
+        store.expires_at = store.now + web_api._TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS
         return attempt, owner, None
 
     async def download_audio(*_args, **_kwargs):
-        # Longer than the complete synthetic lease: the guard must already be
+        # Longer than the complete lease: the guard must already be
         # running before source preparation starts.
-        await asyncio.sleep(0.07)
+        await store.advance_phase(version=5, ticks=3)
         return audio_path
 
     class Pipeline:
@@ -5337,6 +5362,7 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
             self._on_transcription = on_transcription
 
         async def transcribe_file_direct(self, _path):
+            await store.advance_phase(version=5, ticks=3)
             self._on_transcription("A durable provider transcript.", True)
 
     def create_pipeline(*_args, **kwargs):
@@ -5353,7 +5379,7 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
 
     async def slow_local_diarization(*_args, **_kwargs):
         # This models the five-minute Sherpa timeout that exposed the incident.
-        await asyncio.sleep(0.09)
+        await store.advance_phase(version=6, ticks=7)
         return []
 
     async def commit_artifact(*_args, **_kwargs):
@@ -5364,8 +5390,7 @@ async def test_youtube_attempt_lease_covers_download_and_long_local_diarization(
         record.status = "completed"
         record.step = "Completed"
 
-    monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_TTL_SECONDS", 0.05)
-    monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS", 0.01)
+    monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_HEARTBEAT_SECONDS", 0.001)
     monkeypatch.setattr(web_api, "_TRANSCRIPT_ARTIFACT_LEASE_RETRY_DELAYS_SECONDS", (0.0, 0.001))
     monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
 
