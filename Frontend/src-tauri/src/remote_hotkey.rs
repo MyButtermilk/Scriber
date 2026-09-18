@@ -71,6 +71,22 @@ struct Chords {
 }
 
 impl Chords {
+    /// Reconcile releases missed while another input desktop owned the keys.
+    /// The caller only samples outside mstsc, whose hook can mask async state.
+    fn reconcile(&mut self, mut is_down: impl FnMut(u32) -> bool) -> Vec<u32> {
+        self.physical_down.retain(|key| is_down(*key));
+        let mut released = Vec::new();
+        self.held.retain(|binding| {
+            if self.physical_down.contains(&binding.vk) {
+                true
+            } else {
+                released.push(binding.id);
+                false
+            }
+        });
+        released
+    }
+
     /// Return (consume, event). A swallowed down always owns its up, even after
     /// focus/modifiers change. Injected paste input never changes this state.
     fn event(
@@ -304,22 +320,28 @@ impl Monitor {
                                 rect.right,
                                 rect.bottom,
                             );
-                            STATE.with(|cell| {
+                            let released = STATE.with(|cell| {
                                 if let Some(state) = cell.borrow_mut().as_mut() {
                                     state.target = target;
                                     // Reconcile missed releases (for example across a
                                     // secure-desktop switch) only outside mstsc: its
                                     // hook may suppress the OS async modifier state.
-                                    if target.is_null() && state.chords.held.is_empty() {
+                                    if target.is_null() {
                                         state.modifiers = MODIFIER_KEYS
                                             .map(|key| GetAsyncKeyState(key as i32) < 0);
-                                        state
+                                        return state
                                             .chords
-                                            .physical_down
-                                            .retain(|key| GetAsyncKeyState(*key as i32) < 0);
+                                            .reconcile(|key| GetAsyncKeyState(key as i32) < 0);
                                     }
                                 }
+                                Vec::new()
                             });
+                            for id in released {
+                                if delivered.contains(&id) {
+                                    delivered.retain(|active| *active != id);
+                                    dispatch(id, false);
+                                }
+                            }
                             // mstsc installs its own hook on activation/fullscreen.
                             // Reinsert ours after that transition, not on every key.
                             if !target.is_null() && identity != previous {
@@ -495,5 +517,19 @@ mod tests {
             let monitor = Monitor::start(&["ctrl+shift+F24".into()], |_, _| {}).unwrap();
             drop(monitor);
         }
+    }
+
+    #[test]
+    fn missing_release_is_dispatched_once_and_next_press_is_accepted() {
+        let mut c = chords();
+        let id = c.bindings[0].id;
+        c.event(VK_SPACE as u32, true, false, true, Modifiers::CONTROL);
+        assert!(c.reconcile(|_| true).is_empty());
+        assert_eq!(c.reconcile(|_| false), vec![id]);
+        assert!(c.reconcile(|_| false).is_empty());
+        assert_eq!(
+            c.event(VK_SPACE as u32, true, false, true, Modifiers::CONTROL),
+            (true, Some((id, true)))
+        );
     }
 }

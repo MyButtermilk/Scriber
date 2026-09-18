@@ -215,12 +215,12 @@ async def test_successor_stop_is_accepted_and_injection_waits_for_prior_text(con
 
 
 @pytest.mark.asyncio
-async def test_gemini_completed_revision_releases_ready_successor_without_provider_timeout(continuation):
+async def test_gemini_ambiguous_revision_releases_ready_successor_after_safe_deadline(continuation):
     first, _ = await continuation.start("")
     first.callbacks["on_transcription"]("Erster Absatz.", True)
     continuation.injected.append("Erster Absatz.")
     first.callbacks["on_text_injected"]("Erster Absatz.")
-    service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01)
+    service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01, final_timeout_seconds=0.1)
     service.push_frame = AsyncMock()
 
     class WebSocket:
@@ -262,9 +262,13 @@ async def test_gemini_completed_revision_releases_ready_successor_without_provid
         finally:
             first.provider_gate.set()
 
-    # A completed SMART revision used to keep the predecessor open for the
-    # default 15 seconds, blocking a successor whose provider was already done.
-    await asyncio.wait_for(drain(), 1)
+    # No correlated turn ID exists, so even a ready successor must wait for
+    # the ambiguous predecessor's full deadline before inserting in order.
+    draining = asyncio.create_task(drain())
+    await asyncio.sleep(0.04)
+    assert not draining.done()
+    assert not second_stop.done()
+    await asyncio.wait_for(draining, 1)
     await asyncio.wait_for(asyncio.gather(first_stop, second_stop), 2)
     assert continuation.injected == ["Erster Absatz.", "Nachtrag."]
     assert not service._terminal_failure

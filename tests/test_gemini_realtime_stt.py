@@ -863,8 +863,9 @@ async def test_gemini_live_final_timeout_is_terminal_and_aborts_rotation():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("completion_order", ["before-final", "same-message", "after-final", "snake-case"])
-async def test_gemini_live_completed_revision_does_not_wait_for_another_final(completion_order):
-    service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01)
+@pytest.mark.parametrize("late_revision", [None, "Offen A erweitert", "Offen A erweitert nochmals"])
+async def test_gemini_live_ambiguous_revision_keeps_deadline_without_terminal_error(completion_order, late_revision):
+    service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01, final_timeout_seconds=0.1)
     service.push_frame = AsyncMock()
 
     class WebSocket:
@@ -882,6 +883,10 @@ async def test_gemini_live_completed_revision_does_not_wait_for_another_final(co
             if completion_order == "same-message":
                 content["generationComplete"] = True
             await service._handle_response(json.dumps({"serverContent": content}))
+            if late_revision:
+                await service._handle_response(
+                    json.dumps({"serverContent": {"interimInputTranscription": {"text": late_revision}}})
+                )
             if completion_order in {"after-final", "snake-case"}:
                 key = "generation_complete" if completion_order == "snake-case" else "generationComplete"
                 await service._handle_response(json.dumps({"serverContent": {key: True}}))
@@ -893,9 +898,10 @@ async def test_gemini_live_completed_revision_does_not_wait_for_another_final(co
     service._ws = websocket
     await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen A"}}}))
     service._pcm_buffer.extend(bytes(3200))
-    # The default 15-second strict timeout remains unchanged. A completed
-    # speculative revision must settle through the short late-final window.
-    await asyncio.wait_for(service._close(wait_for_final=True), 1)
+    closing = asyncio.create_task(service._close(wait_for_final=True))
+    await asyncio.sleep(0.04)
+    assert not closing.done()
+    await asyncio.wait_for(closing, 1)
     finals = [
         call.args[0].text for call in service.push_frame.await_args_list if isinstance(call.args[0], TranscriptionFrame)
     ]
@@ -905,7 +911,7 @@ async def test_gemini_live_completed_revision_does_not_wait_for_another_final(co
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("next_turn", ["distinct", "after-final", "shared-prefix"])
+@pytest.mark.parametrize("next_turn", ["distinct", "after-final", "shared-prefix", "shared-prefix-smart"])
 async def test_gemini_live_completion_preserves_known_next_turn_beyond_quiet_window(next_turn):
     service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01)
     service.push_frame = AsyncMock()
@@ -978,6 +984,22 @@ async def test_gemini_live_completion_preserves_known_next_turn_beyond_quiet_win
     ]
     assert finals == ["Offen A" if next_turn == "shared-prefix" else "Final A", "Final B"]
     assert not service._terminal_failure
+
+
+@pytest.mark.asyncio
+async def test_gemini_live_final_at_timeout_boundary_satisfies_drain():
+    service = GeminiTranscribeLiveSTTService(api_key="secret")
+    service.push_frame = AsyncMock()
+    await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen"}}}))
+    generation = service._arm_final_drain()
+
+    async def timeout_after_final(waiter, *, timeout):
+        waiter.close()
+        await service._handle_response(json.dumps({"serverContent": {"inputTranscription": {"text": "Final"}}}))
+        raise TimeoutError
+
+    with patch("src.gemini_realtime_stt.asyncio.wait_for", new=timeout_after_final):
+        assert await service._wait_for_final_drain(generation) is True
 
 
 @pytest.mark.asyncio

@@ -30,6 +30,16 @@ The complete native result for these episodes remains unverified until Azure
 accepts the request; manual episode retry is available from File history,
 transcript detail, and the Podcast page.
 
+## Gemini Live ambiguous final drain (#47)
+
+Ambiguous interim revisions can still delay the next dictation's insertion by
+the 15-second provider deadline. Input transcription has no correlated turn ID;
+shared-prefix text and `generationComplete` cannot safely prove that no second
+final is outstanding. The short-drain optimization was removed after review
+identified possible text loss. Late related revisions remain nonfatal, while
+distinct unfinished speech still requires a final. Only provider finals are
+inserted; the original latency issue is not fully resolved.
+
 ## Recently Completed
 
 Remote Desktop dictation (#47): an experimental, default-off setting keeps the
@@ -40,6 +50,8 @@ forwards shortcut identities to the existing toggle/push-to-talk handlers,
 suppresses repeats, ignores injected paste input, and releases held shortcuts
 when disabled. Shortcut capture suspends the hook. Foreground/fullscreen changes
 refresh hook precedence within 250 ms; no key or text history is retained.
+Outside mstsc, physical key state also reconciles held shortcuts, releasing a
+missed key-up once so the next press can work after a desktop/focus transition.
 Meeting shortcuts and other remote clients are outside this feature's scope.
 Text uses the existing clipboard paste path, requiring RDP clipboard sharing.
 Actual fullscreen RDP hotkey routing and clipboard timing remain unverified:
