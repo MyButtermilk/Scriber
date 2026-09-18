@@ -142,6 +142,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._direction = FrameDirection.DOWNSTREAM
         self._connected_at = 0.0
         self._final_generation = 0
+        self._completion_generation = 0
         self._interim_generation = 0
         self._has_audio_in_session = False
         self._pending_interim = False
@@ -152,6 +153,8 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._drain_final_generation: int | None = None
         self._drain_interim_text: str | None = None
         self._drain_is_inferred = False
+        self._drain_is_revision = False
+        self._drain_completion_generation = 0
         self._pcm_buffer = bytearray()
         self._rotate_after_final = False
         self._closing = False
@@ -300,6 +303,9 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             self._drain_final_generation = None
             self._drain_interim_text = None
             self._drain_is_inferred = False
+            self._drain_is_revision = False
+            self._completion_generation = 0
+            self._drain_completion_generation = 0
             self._pcm_buffer.clear()
             self._rotate_after_final = False
             logger.info("Gemini Transcribe Live websocket connected")
@@ -376,6 +382,18 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 self._pending_interim_text = interim_text
             self._latest_interim_text = interim_text
             self._pending_interim = True
+            if self._drain_is_inferred:
+                # Speech observed after the final is positive evidence of an
+                # unfinished turn, not merely a revision preceding that final.
+                # A completion marker must not shorten this turn's drain.
+                self._drain_is_inferred = False
+                self._drain_is_revision = False
+                self._drain_interim_generation = self._interim_generation
+                self._drain_interim_text = interim_text
+                self._drain_completion_generation = self._completion_generation
+                self._pending_interim = False
+                self._pending_interim_generation = None
+                self._pending_interim_text = None
             self._transcription_event.set()
             await self.push_frame(
                 InterimTranscriptionFrame(
@@ -414,6 +432,15 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                         self._drain_final_generation = self._final_generation
                         self._drain_interim_text = self._latest_interim_text
                         self._drain_is_inferred = True
+                        # If the final matches the older hypothesis, the newer
+                        # text may really be a separate unfinished turn even
+                        # when it shares the same opening words. Only an
+                        # unmatched SMART rewrite can use completion to settle.
+                        self._drain_is_revision = (
+                            active_match == 0
+                            and latest_match == 0
+                            and _transcription_match_score(active_text, self._latest_interim_text) > 0
+                        )
                         self._pending_interim = False
                         self._pending_interim_generation = None
                         self._pending_interim_text = None
@@ -437,6 +464,10 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 ),
                 self._direction,
             )
+
+        if content.get("generationComplete") is True or content.get("generation_complete") is True:
+            self._completion_generation += 1
+            self._transcription_event.set()
 
     async def _send_pcm_chunk(self, audio: bytes) -> bool:
         ws = self._ws
@@ -468,14 +499,31 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
     async def _wait_for_final_drain(self, generation: int) -> bool:
         """Wait for the final matching an already armed provider speech turn."""
         deadline = time.monotonic() + self._final_timeout_seconds
+        quiet_deadline: float | None = None
         while self._final_generation <= generation:
-            remaining = deadline - time.monotonic()
+            # Gemini can rewrite a hypothesis in SMART mode and then emit one
+            # authoritative final plus generationComplete. Do not wait for a
+            # nonexistent second final for the full provider timeout. Input
+            # transcriptions are independently ordered, so still observe the
+            # usual late-final window instead of closing on the marker itself.
+            completed_inference = (
+                self._drain_is_inferred
+                and self._drain_is_revision
+                and self._completion_generation > self._drain_completion_generation
+            )
+            if completed_inference and quiet_deadline is None:
+                quiet_deadline = time.monotonic() + self._final_quiet_seconds
+            effective_deadline = min(deadline, quiet_deadline) if completed_inference and quiet_deadline else deadline
+            remaining = effective_deadline - time.monotonic()
             if remaining <= 0:
                 return False
             try:
                 await asyncio.wait_for(self._transcription_event.wait(), timeout=remaining)
             except TimeoutError:
-                return False
+                # An interim can promote the drain at the same time the short
+                # timer expires. Re-evaluate the authoritative state before
+                # treating that timer as a final-transcript timeout.
+                continue
             self._transcription_event.clear()
         return True
 
@@ -494,6 +542,8 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._pending_interim_text = None
         self._drain_final_generation = self._final_generation
         self._drain_is_inferred = False
+        self._drain_is_revision = False
+        self._drain_completion_generation = self._completion_generation
         return self._drain_final_generation
 
     def _clear_final_drain(self) -> None:
@@ -505,6 +555,7 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
         self._drain_final_generation = None
         self._drain_interim_text = None
         self._drain_is_inferred = False
+        self._drain_is_revision = False
 
     async def _wait_for_possible_late_final(self, generation: int) -> int | None:
         """Return a drain baseline if provider speech appears during the quiet window."""
@@ -568,9 +619,9 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
                 if self._drain_is_inferred:
                     # Without a turn ID, a later interim can be either the next
                     # speech turn or another hypothesis for the final we just
-                    # received. Honor the configured drain deadline so a real
-                    # next turn is not dropped, but do not turn an unresolved
-                    # speculative update into an error.
+                    # received. Only generationComplete allows the shorter
+                    # late-final window; missing completion keeps the full
+                    # provider deadline. Neither makes speculation an error.
                     logger.info("Gemini Transcribe Live emitted no additional final for an ambiguous interim")
                     self._clear_final_drain()
                     return True

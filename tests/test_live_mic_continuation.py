@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,6 +12,7 @@ import pytest_asyncio
 
 from src import database, web_api
 from src.api.live_mic_routes import LiveMicStartCommand
+from src.gemini_realtime_stt import GeminiTranscribeLiveSTTService
 
 
 class _ContinuationPipeline:
@@ -210,6 +212,62 @@ async def test_successor_stop_is_accepted_and_injection_waits_for_prior_text(con
     assert second_record.content_text() == "Zwei."
     assert first_record.status == second_record.status == "completed"
     assert continuation.controller._persistent_audio_claim is None
+
+
+@pytest.mark.asyncio
+async def test_gemini_completed_revision_releases_ready_successor_without_provider_timeout(continuation):
+    first, _ = await continuation.start("")
+    first.callbacks["on_transcription"]("Erster Absatz.", True)
+    continuation.injected.append("Erster Absatz.")
+    first.callbacks["on_text_injected"]("Erster Absatz.")
+    service = GeminiTranscribeLiveSTTService(api_key="secret", final_quiet_seconds=0.01)
+    service.push_frame = AsyncMock()
+
+    class WebSocket:
+        closed = False
+
+        async def send_str(self, value):
+            if "audio" in json.loads(value).get("realtimeInput", {}):
+                await service._handle_response(
+                    json.dumps(
+                        {
+                            "serverContent": {
+                                "interimInputTranscription": {"text": "Offen A erweitert"},
+                                "inputTranscription": {"text": "Final A"},
+                                "generationComplete": True,
+                            }
+                        }
+                    )
+                )
+
+        async def close(self):
+            self.closed = True
+
+    service._ws = WebSocket()
+    await service._handle_response(json.dumps({"serverContent": {"interimInputTranscription": {"text": "Offen A"}}}))
+    service._pcm_buffer.extend(bytes(3200))
+    first_stop = continuation.stop()
+    await asyncio.wait_for(first.capture_stopped.wait(), 2)
+    second, _ = await continuation.start("Nachtrag.")
+    second_stop = continuation.stop()
+    await asyncio.wait_for(second.capture_stopped.wait(), 2)
+    second.provider_gate.set()
+    await asyncio.wait_for(second.provider_completed.wait(), 2)
+    assert continuation.injected == ["Erster Absatz."]
+    assert not second_stop.done()
+
+    async def drain():
+        try:
+            await service._close(wait_for_final=True)
+        finally:
+            first.provider_gate.set()
+
+    # A completed SMART revision used to keep the predecessor open for the
+    # default 15 seconds, blocking a successor whose provider was already done.
+    await asyncio.wait_for(drain(), 1)
+    await asyncio.wait_for(asyncio.gather(first_stop, second_stop), 2)
+    assert continuation.injected == ["Erster Absatz.", "Nachtrag."]
+    assert not service._terminal_failure
 
 
 @pytest.mark.asyncio
