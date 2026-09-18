@@ -489,7 +489,9 @@ class GeminiTranscribeLiveSTTService(FrameProcessor):
             try:
                 await asyncio.wait_for(self._transcription_event.wait(), timeout=remaining)
             except TimeoutError:
-                return False
+                # A final can land while wait_for cancels its event waiter.
+                # Recheck the generation before applying the same deadline.
+                continue
             self._transcription_event.clear()
         return True
 
