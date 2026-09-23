@@ -1,0 +1,173 @@
+name: PR 62 one-shot source edit
+on:
+  push:
+    branches: [fix/gemini-live-continuation-lag-47]
+    paths: [.github/workflows/pr62-source-edit.yml]
+permissions:
+  contents: read
+jobs:
+  patch:
+    if: github.repository == 'MyButtermilk/Scriber' && github.ref == 'refs/heads/fix/gemini-live-continuation-lag-47'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: fix/gemini-live-continuation-lag-47
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: 3.14.7
+      - name: Apply exact source edits on this PR branch only
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          import subprocess
+
+          p = Path('src/web_api.py')
+          assert subprocess.check_output(['git', 'hash-object', str(p)], text=True).strip() == 'de5b26033d01bf4f99ad510d4fc6d3cd92707ad6'
+          s = p.read_text(encoding='utf-8')
+
+          def replace(old, new):
+              global s
+              assert s.count(old) == 1, (old[:120], s.count(old))
+              s = s.replace(old, new, 1)
+
+          matches = re.findall(r'(?m)^        self\._live_mic_finalization_done[^\n]*$', s)
+          assert len(matches) == 1, matches
+          replace(matches[0], matches[0] + '\n        self._live_mic_insertion_done: dict[str, asyncio.Future[None]] = {}')
+          replace('predecessor = next(reversed(self._live_mic_finalization_done.values()), None)',
+                  'predecessor = next(reversed(self._live_mic_insertion_done.values()), None)')
+          replace('                self._live_mic_finalization_done[session_id] = self._loop.create_future()',
+                  '                self._live_mic_finalization_done[session_id] = self._loop.create_future()\n'
+                  '                self._live_mic_insertion_done[session_id] = self._loop.create_future()')
+          old = '    def _complete_live_mic_finalizer(self, task: asyncio.Task, *, session_id: str) -> None:\n'
+          helper = '''    def _complete_live_mic_insertion(self, *, session_id: str) -> None:
+                  """Release only sealed session output, independent of later persistence.
+
+                  A failed middle session must retain its predecessor in the insertion
+                  chain even after its own finalizer exits. Callbacks own no new tasks;
+                  shutdown continues to join the original finalizer tasks.
+                  """
+                  completed = self._live_mic_insertion_done.get(session_id)
+                  if completed is None:
+                      return
+                  predecessor = self._live_mic_injection_predecessors.get(session_id)
+
+                  def release(_predecessor: asyncio.Future[None] | None = None) -> None:
+                      if self._live_mic_insertion_done.get(session_id) is completed:
+                          self._live_mic_insertion_done.pop(session_id, None)
+                      if not completed.done():
+                          completed.set_result(None)
+
+                  if predecessor is not None and not predecessor.done():
+                      predecessor.add_done_callback(release)
+                  else:
+                      release()
+
+          '''
+          replace(old, helper + old + '        self._complete_live_mic_insertion(session_id=session_id)\n')
+          old = '''            elif predecessor is not None and current and not silent_early_exit:
+                          await self._inject_live_transcript_text(
+                              current.content_text(),
+                              record=current,
+                              session_id=session_id,
+                              provider=provider_used,
+                              post_processed=False,
+                          )
+          '''
+          replace(old, old + '''            # The provider stream and pipeline task are closed, and raw or
+                      # polished output is fully inserted. DB/UI cleanup must not hold
+                      # ready successors. Per-chunk paste callbacks never release this.
+                      if session_id is not None:
+                          self._complete_live_mic_insertion(session_id=session_id)
+          ''')
+          p.write_text(s, encoding='utf-8')
+
+          p = Path('tests/test_gemini_continuation_late_final.py')
+          s = p.read_text(encoding='utf-8')
+          old = '''class _CleanupBlocksInsertion(Exception):
+              """The known whole-finalizer fence still blocks already-complete text."""
+
+
+          '''
+          assert s.count(old) == 1
+          s = s.replace(old, '')
+          old = '''@pytest.mark.xfail(
+              strict=True,
+              raises=_CleanupBlocksInsertion,
+              reason="Issue #47: insertion still waits for predecessor persistence/cleanup; no runtime fix yet",
+          )
+          '''
+          assert s.count(old) == 1
+          s = s.replace(old, '')
+          old = '''        try:
+                      await asyncio.wait_for(live.paste_events["Zweiter Absatz."].wait(), 0.5)
+                  except TimeoutError as exc:
+                      raise _CleanupBlocksInsertion from exc
+          '''
+          assert s.count(old) == 1
+          s = s.replace(old, '''        await asyncio.wait_for(live.paste_events["Zweiter Absatz."].wait(), 3)
+          ''')
+          s += '''
+
+          @pytest.mark.asyncio
+          async def test_failed_middle_session_cannot_release_successor_ahead_of_first(continuation):
+              first, _ = await continuation.start("First.")
+              first_stop = continuation.stop()
+              await asyncio.wait_for(first.capture_stopped.wait(), 2)
+              second, _ = await continuation.start("Unsuccessful middle.")
+              second.failure = RuntimeError("controlled provider failure")
+              second_stop = continuation.stop()
+              await asyncio.wait_for(second.capture_stopped.wait(), 2)
+              second.provider_gate.set()
+              await asyncio.wait_for(second_stop, 2)
+
+              # B has finished and left the finalizer map, but still owes A's ordering.
+              third, _ = await continuation.start("Third.")
+              third_stop = continuation.stop()
+              await asyncio.wait_for(third.capture_stopped.wait(), 2)
+              third.provider_gate.set()
+              await asyncio.wait_for(third.provider_completed.wait(), 2)
+              assert continuation.injected == []
+              assert not third_stop.done()
+              first.provider_gate.set()
+              await asyncio.wait_for(asyncio.gather(first_stop, third_stop), 3)
+              assert continuation.injected == ["First.", "Third."]
+              assert not continuation.controller._live_mic_insertion_done
+          '''
+          p.write_text(s, encoding='utf-8')
+
+          p = Path('docs/ROADMAP_AND_KNOWN_ISSUES.md')
+          s = p.read_text(encoding='utf-8')
+          anchor = 'inserted; the original latency issue is not fully resolved.\n'
+          assert s.count(anchor) == 1
+          s = s.replace(anchor, anchor + '''
+          Continuation insertion now has a separate session-owned completion fence. It
+          releases only after the provider pipeline is stopped and all raw or polished
+          output has been inserted, before unrelated persistence and UI cleanup. Failed
+          middle sessions retain predecessor ordering; shutdown still joins all owned
+          finalizers. Per-chunk paste callbacks do not release successors. Production-path
+          Gemini tests cover late finals and blocked persistence, but the ambiguous
+          15-second provider drain above remains deliberately unchanged. This is not a
+          claim that Reaper's entire provider-tail delay is solved.
+          ''')
+          p.write_text(s, encoding='utf-8')
+          PY
+          python -m pip install ruff==0.15.22
+          python -m ruff check src/web_api.py tests/test_gemini_continuation_late_final.py
+          python -m ruff format src/web_api.py tests/test_gemini_continuation_late_final.py
+          python -m py_compile src/web_api.py tests/test_gemini_continuation_late_final.py
+          git diff --check
+          git diff --stat
+      - name: Commit only the reviewed scope without force pushing
+        shell: bash
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/web_api.py tests/test_gemini_continuation_late_final.py docs/ROADMAP_AND_KNOWN_ISSUES.md
+          git commit -m 'fix: separate completed dictation insertion from finalizer cleanup (#47)'
+          git push origin HEAD:fix/gemini-live-continuation-lag-47
