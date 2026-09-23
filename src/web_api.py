@@ -3492,6 +3492,7 @@ class ScriberWebController:
         self._live_mic_finalizer_owners: dict[object, tuple[str, asyncio.Task]] = {}
         self._live_mic_finalizing_records: dict[str, TranscriptRecord] = {}
         self._live_mic_finalization_done: dict[str, asyncio.Future[None]] = {}
+        self._live_mic_insertion_done: dict[str, asyncio.Future[None]] = {}
         self._live_mic_injection_predecessors: dict[str, asyncio.Future[None]] = {}
         self._live_mic_start_generation = 0
         self._live_mic_start_in_progress_generation: int | None = None
@@ -12084,7 +12085,7 @@ class ScriberWebController:
                     self._clear_hot_path_tracer(session_id)
                     raise ProviderReplayConflict("another provider replay is active")
 
-            predecessor = next(reversed(self._live_mic_finalization_done.values()), None)
+            predecessor = next(reversed(self._live_mic_insertion_done.values()), None)
             defer_injection = predecessor is not None and not predecessor.done()
 
             live_provider: str | None = None
@@ -12929,7 +12930,31 @@ class ScriberWebController:
             if self._pending_live_mic_start is not None and not self._shutting_down:
                 self._spawn_detached(self._start_pending_live_mic(), name="live_mic_continuation_start")
 
+    def _complete_live_mic_insertion(self, *, session_id: str) -> None:
+        """Release only sealed session output, independent of later persistence.
+
+        A failed middle session must retain its predecessor in the insertion
+        chain even after its own finalizer exits. Callbacks own no new tasks;
+        shutdown continues to join the original finalizer tasks.
+        """
+        completed = self._live_mic_insertion_done.get(session_id)
+        if completed is None:
+            return
+        predecessor = self._live_mic_injection_predecessors.get(session_id)
+
+        def release(_predecessor: asyncio.Future[None] | None = None) -> None:
+            if self._live_mic_insertion_done.get(session_id) is completed:
+                self._live_mic_insertion_done.pop(session_id, None)
+            if not completed.done():
+                completed.set_result(None)
+
+        if predecessor is not None and not predecessor.done():
+            predecessor.add_done_callback(release)
+        else:
+            release()
+
     def _complete_live_mic_finalizer(self, task: asyncio.Task, *, session_id: str) -> None:
+        self._complete_live_mic_insertion(session_id=session_id)
         self._live_mic_finalizer_tasks.discard(task)
         self._live_mic_finalizing_records.pop(session_id, None)
         self._live_mic_injection_predecessors.pop(session_id, None)
@@ -13265,6 +13290,7 @@ class ScriberWebController:
             if session_id is not None and task is not None:
                 self._live_mic_finalizer_owners[stop_owner] = (session_id, task)
                 self._live_mic_finalization_done[session_id] = self._loop.create_future()
+                self._live_mic_insertion_done[session_id] = self._loop.create_future()
                 if current is not None:
                     self._live_mic_finalizing_records[session_id] = current
             self._live_mic_stop_owner = stop_owner
@@ -13476,6 +13502,11 @@ class ScriberWebController:
                     provider=provider_used,
                     post_processed=False,
                 )
+            # The provider stream and pipeline task are closed, and raw or
+            # polished output is fully inserted. DB/UI cleanup must not hold
+            # ready successors. Per-chunk paste callbacks never release this.
+            if session_id is not None:
+                self._complete_live_mic_insertion(session_id=session_id)
         except Exception as exc:
             stop_error = exc
             stop_error_info = self._provider_user_error(exc, provider=provider_used)
