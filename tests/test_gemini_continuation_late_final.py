@@ -27,10 +27,6 @@ from src.runtime.office_text_insert import OfficeInsertOutcome
 pytest_plugins = ["test_live_mic_continuation"]
 
 
-class _CleanupBlocksInsertion(Exception):
-    """The known whole-finalizer fence still blocks already-complete text."""
-
-
 class _Socket:
     def __init__(self):
         self.closed = False
@@ -257,11 +253,6 @@ async def test_real_pipeline_keeps_late_predecessor_final_ahead_of_ready_success
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    strict=True,
-    raises=_CleanupBlocksInsertion,
-    reason="Issue #47: insertion still waits for predecessor persistence/cleanup; no runtime fix yet",
-)
 async def test_complete_text_should_not_wait_for_predecessor_persistence(live, monkeypatch):
     first, first_record, first_socket = await live.start()
     cleanup_started = asyncio.Event()
@@ -286,12 +277,35 @@ async def test_complete_text_should_not_wait_for_predecessor_persistence(live, m
     await asyncio.wait_for(live.insertion_reached[second_record.id].wait(), 3)
     assert second_socket.closed
     try:
-        try:
-            await asyncio.wait_for(live.paste_events["Zweiter Absatz."].wait(), 0.5)
-        except TimeoutError as exc:
-            raise _CleanupBlocksInsertion from exc
+        await asyncio.wait_for(live.paste_events["Zweiter Absatz."].wait(), 3)
         assert not release_cleanup.is_set()
         assert not first_stop.done()
     finally:
         release_cleanup.set()
         await asyncio.wait_for(asyncio.gather(first_stop, second_stop), 5)
+
+
+@pytest.mark.asyncio
+async def test_failed_middle_session_cannot_release_successor_ahead_of_first(continuation):
+    first, _ = await continuation.start("First.")
+    first_stop = continuation.stop()
+    await asyncio.wait_for(first.capture_stopped.wait(), 2)
+    second, _ = await continuation.start("Unsuccessful middle.")
+    second.failure = RuntimeError("controlled provider failure")
+    second_stop = continuation.stop()
+    await asyncio.wait_for(second.capture_stopped.wait(), 2)
+    second.provider_gate.set()
+    await asyncio.wait_for(second_stop, 2)
+
+    # B has finished and left the finalizer map, but still owes A's ordering.
+    third, _ = await continuation.start("Third.")
+    third_stop = continuation.stop()
+    await asyncio.wait_for(third.capture_stopped.wait(), 2)
+    third.provider_gate.set()
+    await asyncio.wait_for(third.provider_completed.wait(), 2)
+    assert continuation.injected == []
+    assert not third_stop.done()
+    first.provider_gate.set()
+    await asyncio.wait_for(asyncio.gather(first_stop, third_stop), 3)
+    assert continuation.injected == ["First.", "Third."]
+    assert not continuation.controller._live_mic_insertion_done

@@ -40,6 +40,15 @@ identified possible text loss. Late related revisions remain nonfatal, while
 distinct unfinished speech still requires a final. Only provider finals are
 inserted; the original latency issue is not fully resolved.
 
+Continuation insertion now has a separate session-owned completion fence. It
+releases only after the provider pipeline is stopped and all raw or polished
+output has been inserted, before unrelated persistence and UI cleanup. Failed
+middle sessions retain predecessor ordering; shutdown still joins all owned
+finalizers. Per-chunk paste callbacks do not release successors. Production-path
+Gemini tests cover late finals and blocked persistence, but the ambiguous
+15-second provider drain above remains deliberately unchanged. This is not a
+claim that Reaper's entire provider-tail delay is solved.
+
 ## Recently Completed
 
 Remote Desktop dictation (#47): an experimental, default-off setting keeps the
