@@ -11160,14 +11160,13 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            message = (
-                self._provider_user_error(exc, provider=provider).message
-                if isinstance(exc, ProviderTransportError)
-                else str(exc)
+            provider_error = (
+                self._provider_user_error(exc, provider=provider) if isinstance(exc, ProviderTransportError) else None
             )
+            message = provider_error.message if provider_error else str(exc)
             rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
-                message="YouTube job failed",
+                message=f"YouTube job failed: {message}" if provider_error else "YouTube job failed",
                 event="api.job.failed",
                 workflow="youtube",
                 stage="job_failed",
@@ -11176,8 +11175,11 @@ class ScriberWebController:
                 provider=provider,
                 milestone=True,
                 outcome="failure",
-                error_category=classify_error_message(str(exc)).value,
-                meta={"error_type": type(exc).__name__},
+                error_category=(provider_error.category if provider_error else classify_error_message(str(exc))).value,
+                meta={
+                    "error_type": type(exc).__name__,
+                    **(exc.diagnostic_metadata() if isinstance(exc, ProviderTransportError) else {}),
+                },
             )
         finally:
             await stop_current_attempt(canceled=None)
@@ -11962,14 +11964,13 @@ class ScriberWebController:
                 return
             rec.status = "failed"
             rec.step = "Failed"
-            message = (
-                self._provider_user_error(exc, provider=provider).message
-                if isinstance(exc, ProviderTransportError)
-                else str(exc)
+            provider_error = (
+                self._provider_user_error(exc, provider=provider) if isinstance(exc, ProviderTransportError) else None
             )
+            message = provider_error.message if provider_error else str(exc)
             rec.append_final_text(f"[Error] {message}")
             self._emit_workflow_event(
-                message="File job failed",
+                message=f"File job failed: {message}" if provider_error else "File job failed",
                 event="api.job.failed",
                 workflow="file",
                 stage="job_failed",
@@ -11978,8 +11979,11 @@ class ScriberWebController:
                 provider=provider,
                 milestone=True,
                 outcome="failure",
-                error_category=classify_error_message(str(exc)).value,
-                meta={"error_type": type(exc).__name__},
+                error_category=(provider_error.category if provider_error else classify_error_message(str(exc))).value,
+                meta={
+                    "error_type": type(exc).__name__,
+                    **(exc.diagnostic_metadata() if isinstance(exc, ProviderTransportError) else {}),
+                },
             )
         finally:
             if rec.status != "processing" and rec.duration.strip() in {"", "--", "--:--", "-:--"}:

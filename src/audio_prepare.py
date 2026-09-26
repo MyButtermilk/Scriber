@@ -31,6 +31,7 @@ from src.core.provider_audio_formats import (
     resolve_batch_provider_audio_capabilities,
     select_audio_input_format,
 )
+from src.core.provider_errors import provider_transport_error
 from src.runtime.ffmpeg_commands import (
     classify_ffmpeg_stderr,
     ffprobe_audio_format_args,
@@ -479,6 +480,10 @@ async def prepare_provider_audio_file(
             else None
         )
         if effective_limit is not None and byte_length > effective_limit:
+            if provider == "openrouter_stt":
+                raise provider_transport_error(
+                    provider, "audio_preparation", code="audio_limit_exceeded", retryable=False
+                )
             raise ProviderAudioPreparationError("Prepared provider audio exceeds the verified upload limit.")
         yield PreparedProviderAudio(
             path=output_path,

@@ -329,3 +329,43 @@ def test_json_escaped_credentials_are_redacted_after_decoding(nested_record):
     assert entry.component == "[REDACTED]"
     assert entry.timestamp == "[REDACTED]"
     assert synthetic_key not in json.dumps(entry.to_public())
+
+
+def test_provider_failure_details_reach_debug_console_without_raw_response(monkeypatch, tmp_path):
+    from src.core.provider_errors import provider_transport_error
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    monkeypatch.setattr(debug_logs, "logs_dir", lambda: logs)
+    monkeypatch.setattr(debug_logs, "data_dir", lambda: tmp_path / "data")
+    monkeypatch.setattr(debug_logs, "repo_root", lambda: tmp_path / "repo")
+    error = provider_transport_error(
+        "openrouter_stt",
+        "transcription",
+        status=413,
+        request_bytes=82_590_000,
+        response_body='{"error":{"code":413,"message":"Payload too large: private words"}}',
+    )
+    metadata = {"error_type": type(error).__name__, **error.diagnostic_metadata()}
+    (logs / "latest.structured.jsonl").write_text(
+        json.dumps(
+            {
+                "record": {
+                    "message": "File job failed: audio upload is too large (HTTP 413)",
+                    "level": {"name": "ERROR"},
+                    "extra": {
+                        "event": "api.job.failed",
+                        "workflow": "file",
+                        "provider": "openrouter_stt",
+                        "error_category": "audio_invalid",
+                        "meta": metadata,
+                    },
+                }
+            }
+        )
+        + "\n"
+    )
+    entry = debug_logs.collect_debug_logs(limit=10)["items"][0]
+    assert entry["context"]["errorCategory"] == "audio_invalid"
+    assert entry["context"]["meta"] == metadata
+    assert "private words" not in json.dumps(entry)

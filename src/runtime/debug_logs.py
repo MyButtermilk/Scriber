@@ -49,6 +49,8 @@ _PUBLIC_META_KEYS = {
     "post_processed",
     "provider",
     "provider_error_code",
+    "provider_operation",
+    "upstream_error_code",
     "reason",
     "region",
     "route",

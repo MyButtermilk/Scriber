@@ -336,3 +336,64 @@ def test_provider_json_parser_drops_invalid_document_and_exception_context():
     assert not hasattr(caught.value, "doc")
     assert private_marker not in str(caught.value)
     assert private_marker not in repr(caught.value)
+
+
+@pytest.mark.parametrize("status,code", [(413, "413"), (None, "audio_limit_exceeded")])
+def test_openrouter_oversize_error_explains_remedy_without_retry(status, code):
+    error = provider_transport_error(
+        "openrouter_stt",
+        "transcription",
+        status=status,
+        code=code,
+        response_body="private transcript and credential",
+    )
+    info = provider_user_error("openrouter_stt", error)
+    assert info.category is ErrorCategory.AUDIO_INVALID
+    assert info.retryable is False
+    assert "too large" in info.message
+    assert "MP3" in info.message
+    assert "split" in info.message
+    assert "private" not in info.message
+
+
+@pytest.mark.parametrize(
+    "response,expected_reason,upstream_code",
+    [
+        ("<html><h1>413 Request Entity Too Large</h1><p>private words</p></html>", "request_too_large", ""),
+        ('{"error":{"code":413,"message":"Payload too large: private words"}}', "request_too_large", ""),
+        (
+            '{"error":{"code":502,"message":"Provider returned error","metadata":{"raw":"{\\"error\\":{\\"code\\":\\"ServiceUnavailable\\",\\"message\\":\\"Gateway timeout: private words\\"}}"}}}',
+            "upstream_timeout",
+            "ServiceUnavailable",
+        ),
+        ('{"error":{"code":400,"message":"No endpoints found for private words"}}', "model_unavailable", ""),
+        ('{"error":{"code":500,"message":"private words","transcript":"payload too large"}}', "", ""),
+        ("not json: private words", "", ""),
+    ],
+)
+def test_provider_details_accept_router_json_html_and_nested_upstream_without_private_text(
+    response, expected_reason, upstream_code
+):
+    error = provider_transport_error(
+        "openrouter_stt", "transcription", status=502, response_body=response, request_bytes=1234
+    )
+    assert error.reason == expected_reason
+    assert error.upstream_code == upstream_code
+    assert error.diagnostic_metadata()["request_bytes"] == 1234
+    assert error.diagnostic_metadata()["response_bytes"] == len(response.encode())
+    assert "private words" not in str(error)
+    assert "private words" not in repr(vars(error))
+    assert "private words" not in provider_user_error(None, error).message
+
+
+def test_router_upstream_timeout_has_actionable_message_and_keeps_http_status_authoritative():
+    response = '{"error":{"code":502,"message":"Provider returned error","metadata":{"raw":"upstream timed out"}}}'
+    error = provider_transport_error("openrouter_stt", "transcription", status=502, response_body=response)
+    info = provider_user_error(None, error)
+    assert info.category is ErrorCategory.TRANSIENT_PROVIDER
+    assert "HTTP 502" in info.message
+    assert "upstream transcription provider timed out" in info.message
+    contradiction = provider_transport_error("openrouter_stt", "transcription", status=401, response_body=response)
+    info = provider_user_error(None, contradiction)
+    assert info.category is ErrorCategory.AUTH_INVALID
+    assert "timed out" not in info.message
