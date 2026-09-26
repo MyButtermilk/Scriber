@@ -30,7 +30,11 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from src.config import Config
-from src.core.provider_audio_formats import SPEECHMATICS_BATCH_DEFAULT_BASE_URL
+from src.core.provider_audio_formats import (
+    OPENROUTER_STT_MAX_AUDIO_BYTES,
+    OPENROUTER_STT_MAX_REQUEST_BYTES,
+    SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+)
 from src.core.provider_errors import (
     parse_provider_json_response,
     provider_transport_error,
@@ -154,19 +158,42 @@ def _build_openrouter_stt_json_body(
 
     body = tempfile.SpooledTemporaryFile(max_size=10 * 1024 * 1024, mode="w+b")  # noqa: SIM115
     try:
+        audio_bytes = 0
+
+        def write_audio(chunk: bytes | memoryview) -> None:
+            nonlocal audio_bytes
+            audio_bytes += len(chunk)
+            if audio_bytes > OPENROUTER_STT_MAX_AUDIO_BYTES:
+                raise provider_transport_error(
+                    "openrouter_stt", "audio_preparation", code="audio_limit_exceeded", retryable=False
+                )
+            body.write(base64.b64encode(chunk))
+
         body.write(prefix.encode("ascii"))
         body.write(b'"')
         if isinstance(audio_source, bytes):
             source_view = memoryview(audio_source)
             for offset in range(0, len(source_view), _OPENROUTER_BASE64_READ_BYTES):
-                body.write(base64.b64encode(source_view[offset : offset + _OPENROUTER_BASE64_READ_BYTES]))
+                write_audio(source_view[offset : offset + _OPENROUTER_BASE64_READ_BYTES])
         else:
+            pending = b""
             while chunk := audio_source.read(_OPENROUTER_BASE64_READ_BYTES):
                 if not isinstance(chunk, bytes):
                     raise TypeError("OpenRouter STT audio source must yield bytes.")
-                body.write(base64.b64encode(chunk))
+                # Binary streams can return short reads. Only the last base64
+                # block may contain padding, so carry up to two trailing bytes.
+                chunk = pending + chunk
+                boundary = len(chunk) - len(chunk) % 3
+                write_audio(chunk[:boundary])
+                pending = chunk[boundary:]
+            if pending:
+                write_audio(pending)
         body.write(b'"')
         body.write(suffix.encode("ascii"))
+        if body.tell() > OPENROUTER_STT_MAX_REQUEST_BYTES:
+            raise provider_transport_error(
+                "openrouter_stt", "audio_preparation", code="audio_limit_exceeded", retryable=False
+            )
         body.seek(0)
         return body
     except BaseException:
@@ -805,6 +832,9 @@ async def transcribe_with_openrouter_audio_transcription(
         language=language_code,
     )
     try:
+        body.seek(0, os.SEEK_END)
+        request_bytes = body.tell()
+        body.seek(0)
         _report_progress(on_progress, "Uploading audio...")
         _report_progress(on_progress, "Processing transcription...")
         async with session.post(
@@ -825,6 +855,7 @@ async def transcribe_with_openrouter_audio_transcription(
                     "transcription",
                     status=response.status,
                     response_body=raw,
+                    request_bytes=request_bytes,
                 )
             if not raw:
                 return {}

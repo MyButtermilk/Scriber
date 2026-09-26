@@ -407,9 +407,14 @@ async def test_file_preserves_received_azure_error_without_replaying(tmp_path: P
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "status,code,expected", [(408, "", "HTTP 408"), (503, "diarization_unavailable", "speaker diarization")]
+    "provider,status,code,expected,category",
+    [
+        ("azure_mai", 408, "", "HTTP 408", "transient_network"),
+        ("azure_mai", 503, "diarization_unavailable", "speaker diarization", "transient_provider"),
+        ("openrouter_stt", 413, "413", "too large", "audio_invalid"),
+    ],
 )
-async def test_failed_file_displays_received_provider_cause(tmp_path, status, code, expected):
+async def test_failed_file_displays_received_provider_cause(tmp_path, provider, status, code, expected, category):
     store = JobStore(db_path=tmp_path / "jobs.db")
     controller = ScriberWebController(asyncio.get_running_loop(), job_store=store)
     source = tmp_path / "source.mp3"
@@ -420,20 +425,26 @@ async def test_failed_file_displays_received_provider_cause(tmp_path, status, co
     assert store.mark_provider_request_may_be_committed(job.id)
     controller._remember_job_id(rec.id, job.id)
     call = AsyncMock(
-        side_effect=ProviderTransportError(provider="azure_mai", operation="transcription", status=status, code=code)
+        side_effect=ProviderTransportError(provider=provider, operation="transcription", status=status, code=code)
     )
     with (
         patch.object(controller, "_transcribe_file_to_canonical_artifact", new=call),
         patch.object(controller, "_save_transcript_to_db_async", new=AsyncMock()),
         patch.object(controller, "_broadcast_history_updated", new=AsyncMock()),
         patch.object(controller, "_cleanup_owned_file_source", new=AsyncMock()),
+        patch.object(controller, "_emit_workflow_event") as emit,
     ):
-        await controller._run_file_transcription(rec, source, provider="azure_mai")
+        await controller._run_file_transcription(rec, source, provider=provider)
     assert rec.status == "failed"
     assert expected in rec.content_text()
     assert "outcome is unknown" not in rec.content_text()
     assert call.await_count == 1
     assert store.get(job.id).next_retry_at == ""
+
+    failure = next(call.kwargs for call in emit.call_args_list if call.kwargs.get("event") == "api.job.failed")
+    assert failure["error_category"] == category
+    assert failure["meta"]["status"] == status
+    assert failure["meta"].get("provider_error_code", "") == code
 
 
 @pytest.mark.asyncio

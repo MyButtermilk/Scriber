@@ -28,15 +28,25 @@ class ProviderTransportError(RuntimeError):
         code: str = "",
         retryable: bool | None = None,
         response_bytes: int | None = None,
+        request_bytes: int | None = None,
+        reason: str = "",
+        upstream_code: str = "",
     ) -> None:
         self.provider = _bounded_identifier(provider, fallback="provider")
         self.operation = _bounded_identifier(operation, fallback="request")
         self.status = status if isinstance(status, int) and 100 <= status <= 599 else None
         self.code = code if _is_safe_code(code) else ""
         self.retryable = retryable
+        self.reason = reason if reason in _PROVIDER_REASON_MESSAGES else ""
+        self.upstream_code = upstream_code if _is_safe_code(upstream_code) else ""
         self.response_bytes = (
             max(0, int(response_bytes))
             if isinstance(response_bytes, int) and not isinstance(response_bytes, bool)
+            else None
+        )
+        self.request_bytes = (
+            max(0, int(request_bytes))
+            if isinstance(request_bytes, int) and not isinstance(request_bytes, bool)
             else None
         )
 
@@ -47,6 +57,18 @@ class ProviderTransportError(RuntimeError):
             details.append(f"code={self.code}")
         suffix = f" ({', '.join(details)})" if details else ""
         super().__init__(f"{self.provider} {self.operation} failed{suffix}")
+
+    def diagnostic_metadata(self) -> dict[str, Any]:
+        """Bounded protocol details that survive the public log projection."""
+        return {
+            "provider_operation": self.operation,
+            **({"status": self.status} if self.status is not None else {}),
+            **({"provider_error_code": self.code} if self.code else {}),
+            **({"reason": self.reason} if self.reason else {}),
+            **({"upstream_error_code": self.upstream_code} if self.upstream_code else {}),
+            **({"response_bytes": self.response_bytes} if self.response_bytes is not None else {}),
+            **({"request_bytes": self.request_bytes} if self.request_bytes is not None else {}),
+        }
 
 
 @dataclass(frozen=True)
@@ -141,6 +163,45 @@ _SAFE_PUBLIC_CODES = frozenset(
     code.casefold() for code in (*_KNOWN_CODES, *_SAFE_EXCEPTION_CODES, "1008", "4001", "4029")
 )
 
+# Canonical summaries only. Never retain a provider's free-form message: it
+# may contain credentials, filenames, prompts, or echoed private audio text.
+_PROVIDER_REASON_MESSAGES = {
+    "request_too_large": "The provider rejected the request because its payload is too large.",
+    "audio_too_long": "The provider rejected the recording duration.",
+    "unsupported_audio": "The provider could not decode the audio format.",
+    "model_unavailable": "No provider endpoint is available for the selected model.",
+    "insufficient_credits": "The provider reports insufficient credits.",
+    "rate_limited": "The provider's rate limit was reached.",
+    "authentication_failed": "The provider rejected the API credentials.",
+    "upstream_timeout": "The upstream transcription provider timed out.",
+    "upstream_unavailable": "The upstream transcription provider is unavailable.",
+}
+_PROVIDER_REASON_SIGNALS = (
+    (
+        "request_too_large",
+        (
+            "payload too large",
+            "request too large",
+            "entity too large",
+            "content too large",
+            "file too large",
+            "maximum request size",
+            "max request size",
+        ),
+    ),
+    ("audio_too_long", ("duration too long", "maximum audio duration", "audio duration exceeds")),
+    (
+        "unsupported_audio",
+        ("unsupported audio", "unsupported format", "unsupported codec", "could not decode", "cannot decode"),
+    ),
+    ("model_unavailable", ("no endpoints found", "no available provider", "model not found", "model not available")),
+    ("insufficient_credits", ("insufficient credits", "insufficient quota", "credit balance", "quota exceeded")),
+    ("rate_limited", ("rate limit", "too many requests")),
+    ("authentication_failed", ("invalid api key", "authentication failed", "unauthorized")),
+    ("upstream_timeout", ("gateway timeout", "timed out", "timeout")),
+    ("upstream_unavailable", ("service unavailable", "no healthy upstream", "bad gateway")),
+)
+
 
 def provider_user_error(provider: str | None, error: Exception | str) -> ProviderUserError:
     dependency_error = error if isinstance(error, ProviderRuntimeDependencyError) else None
@@ -167,6 +228,20 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
             ErrorCategory.CONFIG_INVALID,
             f"{label} runtime is missing from this Scriber build. Reinstall Scriber or switch transcription provider.",
             code="missing_provider_runtime",
+            retryable=False,
+        )
+
+    if status == 413 or (transport_error is not None and code == "audio_limit_exceeded" and status is None):
+        smaller_input = (
+            "a smaller compressed MP3" if normalized_provider == "openrouter_stt" else "a smaller supported audio file"
+        )
+        return _make_error(
+            normalized_provider,
+            label,
+            ErrorCategory.AUDIO_INVALID,
+            f"{label} audio upload is too large{(' (HTTP 413)' if status == 413 else '')}. Use {smaller_input}, "
+            "split the recording, or select another transcription provider.",
+            code=code or "413",
             retryable=False,
         )
 
@@ -225,11 +300,29 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
     category = classify_error_message(raw)
     if transport_error is not None:
         category = _transport_error_category(transport_error, fallback=category)
+    message = _generic_provider_message(label, category)
+    if normalized_provider == "openrouter_stt" and transport_error is not None:
+        if status is not None:
+            message += f" HTTP {status}."
+        # A body hint must not contradict the authoritative HTTP status.
+        allowed_statuses = {
+            "request_too_large": {400, 413},
+            "audio_too_long": {400, 413, 422},
+            "unsupported_audio": {400, 415, 422},
+            "model_unavailable": {400, 404, 503},
+            "insufficient_credits": {402, 429},
+            "rate_limited": {429},
+            "authentication_failed": {401, 403},
+            "upstream_timeout": {408, 502, 503, 504},
+            "upstream_unavailable": {500, 502, 503, 504},
+        }
+        if status in allowed_statuses.get(transport_error.reason, set()):
+            message += " " + _PROVIDER_REASON_MESSAGES[transport_error.reason]
     return _make_error(
         normalized_provider,
         label,
         category,
-        _generic_provider_message(label, category),
+        message,
         code=code,
         retryable=transport_error.retryable if transport_error is not None else None,
     )
@@ -243,10 +336,12 @@ def provider_transport_error(
     response_body: str | bytes | None = None,
     code: str = "",
     retryable: bool | None = None,
+    request_bytes: int | None = None,
 ) -> ProviderTransportError:
     """Build a sanitized provider error without retaining response content."""
 
     extracted_code = code if _is_safe_code(code) else _provider_code_from_body(response_body)
+    reason, upstream_code = _provider_response_details(response_body)
     if isinstance(response_body, bytes):
         response_bytes = len(response_body)
     elif isinstance(response_body, str):
@@ -260,7 +355,50 @@ def provider_transport_error(
         code=extracted_code,
         retryable=retryable,
         response_bytes=response_bytes,
+        request_bytes=request_bytes,
+        reason=reason,
+        upstream_code=upstream_code,
     )
+
+
+def _provider_response_details(response_body: str | bytes | None) -> tuple[str, str]:
+    """Read known JSON/HTML error shapes, including OpenRouter metadata.raw."""
+    if response_body is None or len(response_body) > 64 * 1024:
+        return "", ""
+    raw = response_body.decode("utf-8", errors="replace") if isinstance(response_body, bytes) else response_body
+    messages: list[str] = []
+    upstream_code = ""
+
+    def visit(value: Any, depth: int, *, upstream: bool = False) -> None:
+        nonlocal upstream_code
+        if depth > 6:
+            return
+        if isinstance(value, str):
+            try:
+                nested = json.loads(value)
+            except ValueError, TypeError:
+                messages.append(value.casefold())
+            else:
+                if isinstance(nested, dict):
+                    visit(nested, depth + 1, upstream=upstream)
+            return
+        if not isinstance(value, dict):
+            return
+        if upstream and not upstream_code:
+            upstream_code = provider_public_code(value.get("code") or value.get("status") or value.get("type"))
+        for key in ("message", "detail", "error"):
+            if key in value:
+                visit(value[key], depth + 1, upstream=upstream)
+        metadata = value.get("metadata")
+        if isinstance(metadata, dict) and "raw" in metadata:
+            visit(metadata["raw"], depth + 1, upstream=True)
+
+    visit(raw, 0)
+    combined = " ".join(messages)
+    for reason, signals in _PROVIDER_REASON_SIGNALS:
+        if any(signal in combined for signal in signals):
+            return reason, upstream_code
+    return "", upstream_code
 
 
 def parse_provider_json_response(

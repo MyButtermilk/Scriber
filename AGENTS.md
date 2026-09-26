@@ -1465,6 +1465,22 @@ Packaging and scripts:
   endpoint, preparation, and capability path.
   Already frozen `microsoft/mai-transcribe-1.5` work retains its exact legacy
   capability and request model; new work continues to select version 2.
+  Compressed imports requiring conversion use mono 64-kbit/s MP3 instead of
+  expanding to WAV before base64 encoding. Keep the route-local Scriber safety
+  budget of 18,000,000 audio bytes and 25,000,000 serialized JSON bytes; these
+  are conservative application budgets, not universal provider limits. Verified
+  originals within budget pass through unchanged; larger originals select MP3
+  before the route is frozen. A frozen oversized representation fails closed
+  without changing format or replaying a provider request. Preparation and the
+  JSON serializer both reject oversize input before HTTP; generated artifacts
+  and request spools are cleaned on failure. HTTP 413 is an `audio_invalid`
+  failure with compression/splitting guidance, not `internal_bug`.
+  File/YouTube failure events use the typed provider category and expose bounded
+  HTTP status, public error code, request/response byte counts, operation, and
+  canonical reason. Recognize JSON, plain/HTML gateway failures, and nested
+  OpenRouter `error.metadata.raw` upstream errors without retaining free-form
+  provider messages. Keep these fields in the debug-console allowlist; never
+  restore raw response bodies to exceptions, logs, or support bundles.
 - Meta language-model choices are `muse-spark-1.3` and
   `muse-spark-1.3-contributor`; exact persisted 1.2 built-in selections migrate
   to their matching 1.3 tier without rewriting custom model codes. This also

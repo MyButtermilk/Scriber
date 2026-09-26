@@ -19,6 +19,11 @@ from enum import StrEnum
 
 CAPABILITY_REVISION = "provider-audio-formats-v2"
 CAPABILITY_VERIFIED_AT = date(2026, 8, 26)
+# Scriber safety budget, not a claimed universal OpenRouter service limit.
+# Leave room for base64 expansion and JSON framing below a 25 MB request.
+# A 2026-09-26 support case rejected a ~83 MB WAV/base64 request with 413.
+OPENROUTER_STT_MAX_AUDIO_BYTES = 18_000_000
+OPENROUTER_STT_MAX_REQUEST_BYTES = 25_000_000
 SPEECHMATICS_BATCH_DEFAULT_BASE_URL = "https://asr.api.speechmatics.com/v2"
 SPEECHMATICS_REALTIME_DEFAULT_BASE_URL = "wss://eu2.rt.speechmatics.com/v2"
 
@@ -566,6 +571,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-2/providers"),
+        max_upload_bytes=OPENROUTER_STT_MAX_AUDIO_BYTES,
         verified_at=date(2026, 9, 4),
     ),
     # Frozen routes retain their original model and capability identity across
@@ -580,6 +586,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
+        max_upload_bytes=OPENROUTER_STT_MAX_AUDIO_BYTES,
     ),
     _capability(
         "gemini_stt",
@@ -1030,8 +1037,11 @@ _REALTIME_GENERATION_ORDER = (
 # Production format promotion is deliberately narrower than provider-native
 # acceptance. Azure's existing shipped control is mono 64-kbit/s MP3; retain it
 # until an installed end-to-end benchmark promotes WAV or FLAC for a duration
-# and network bucket. Other routes keep the conservative WAV control.
+# and network bucket. OpenRouter also needs MP3: expanding compressed imports
+# to WAV and then base64 can exceed the gateway's request limit.
 _PROMOTED_BATCH_GENERATION_ORDER: dict[str, tuple[AudioInputFormat, ...]] = {
+    "openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2": (AudioInputFormat.MP3,),
+    "openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5": (AudioInputFormat.MP3,),
     "azure_mai:llm_speech_batch:mai-transcribe-1.5": (
         AudioInputFormat.MP3,
         AudioInputFormat.WAV_PCM16,

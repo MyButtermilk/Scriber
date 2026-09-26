@@ -899,3 +899,117 @@ def test_speechmatics_payload_preserves_numeric_speaker_zero():
         speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=True)
         == "[Speaker 1]: First\n\n[Speaker 2]: Second"
     )
+
+
+def test_openrouter_short_reads_produce_one_valid_base64_value():
+    class ShortReads(io.BytesIO):
+        def read(self, size=-1):
+            return super().read(min(size, 5))
+
+    audio = bytes(range(255)) * 7
+    with _build_openrouter_stt_json_body(
+        ShortReads(audio),
+        model=OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        audio_format="mp3",
+        language="de",
+    ) as body:
+        payload = json.load(body)
+    assert base64.b64decode(payload["input_audio"]["data"], validate=True) == audio
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("limit_kind", ["audio", "json"])
+async def test_openrouter_oversize_body_never_posts_and_closes_spool(monkeypatch, stream, limit_kind):
+    from unittest.mock import Mock
+
+    from src import cloud_async_stt
+
+    spool = io.BytesIO()
+    monkeypatch.setattr(cloud_async_stt.tempfile, "SpooledTemporaryFile", lambda **_kwargs: spool)
+    if limit_kind == "audio":
+        monkeypatch.setattr(cloud_async_stt, "OPENROUTER_STT_MAX_AUDIO_BYTES", 6)
+    else:
+        monkeypatch.setattr(cloud_async_stt, "OPENROUTER_STT_MAX_REQUEST_BYTES", 10)
+    session = Mock()
+    audio = b"1234567"
+    with pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_openrouter_audio_transcription(
+            session=session,
+            api_key="never-send",
+            audio_source=io.BytesIO(audio) if stream else audio,
+            filename="audio.mp3",
+            content_type="audio/mpeg",
+            language="de",
+        )
+    assert caught.value.code == "audio_limit_exceeded"
+    assert caught.value.retryable is False
+    assert spool.closed
+    session.post.assert_not_called()
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_openrouter_exact_audio_budget_is_accepted(monkeypatch, stream):
+    from src import cloud_async_stt
+
+    monkeypatch.setattr(cloud_async_stt, "OPENROUTER_STT_MAX_AUDIO_BYTES", 7)
+    audio = b"1234567"
+    with _build_openrouter_stt_json_body(
+        io.BytesIO(audio) if stream else audio,
+        model=OPENROUTER_MAI_TRANSCRIBE_MODEL,
+        audio_format="mp3",
+        language="de",
+    ) as body:
+        assert base64.b64decode(json.load(body)["input_audio"]["data"], validate=True) == audio
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "response_text",
+    [
+        '{"error":{"code":413,"message":"Payload too large: private echo"}}',
+        "<html><h1>413 Request Entity Too Large</h1><p>private echo</p></html>",
+    ],
+)
+async def test_openrouter_rejection_preserves_safe_details_without_retry_and_closes_body(response_text):
+    class Response:
+        status = 413
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return response_text
+
+    class Session:
+        calls = 0
+        body = None
+        request_bytes = 0
+
+        def post(self, _url, **kwargs):
+            self.calls += 1
+            self.body = kwargs["data"]
+            self.request_bytes = len(self.body.read())
+            return Response()
+
+    session = Session()
+    with pytest.raises(ProviderTransportError) as caught:
+        await transcribe_with_openrouter_audio_transcription(
+            session=session,
+            api_key="never-send",
+            audio_source=b"fake-mp3",
+            filename="audio.mp3",
+            content_type="audio/mpeg",
+            language="de",
+        )
+    error = caught.value
+    assert error.status == 413
+    assert error.reason == "request_too_large"
+    assert error.request_bytes == session.request_bytes > len(b"fake-mp3")
+    assert error.response_bytes == len(response_text.encode())
+    assert session.calls == 1
+    assert session.body.closed
+    assert "private echo" not in repr(vars(error))
