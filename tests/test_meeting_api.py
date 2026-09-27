@@ -2249,13 +2249,26 @@ async def test_cancelled_capture_command_settles_native_stop_and_recorder_before
 
 
 @pytest.mark.asyncio
-async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(monkeypatch, tmp_path):
+@pytest.mark.parametrize("action", ["pause", "stop"])
+@pytest.mark.parametrize("recorder_fails", [False, True])
+async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(
+    monkeypatch, tmp_path, action, recorder_fails
+):
     controller, store, meeting, recorder = _recording_meeting_control_controller(
         monkeypatch, tmp_path, "stop-capture-end.db"
     )
     controller._persistent_audio_claim = _test_audio_claim("meeting", meeting["id"])
     native_end = datetime(2026, 9, 25, 11, 23, 38, tzinfo=UTC)
     clock = native_end
+
+    if recorder_fails:
+
+        def failed_recorder_stop(**_kwargs):
+            recorder.stop_count += 1
+            raise RuntimeError("Meeting audio reader did not stop before the timeout.")
+
+        recorder.stop = failed_recorder_stop
+        recorder.snapshot = lambda: {"microphone": {"chunks": 1, "errorCode": "reader_stop_timeout"}}
 
     class Clock:
         @staticmethod
@@ -2281,13 +2294,15 @@ async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(mo
     )
     monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
     app = web_api.create_app(controller)
-    handler = _route_handler(app, "POST", "/api/meetings/{id}/stop")
+    handler = _route_handler(app, "POST", f"/api/meetings/{{id}}/{action}")
     try:
         response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
-        assert response.status == 202
+        assert response.status == (503 if recorder_fails else 202 if action == "stop" else 200)
         result = json.loads(response.body)
-        assert result["state"] == "finalizing"
-        assert result["endedAt"] == "2026-09-25T11:23:38Z"
+        if recorder_fails:
+            result = result["meeting"]
+        assert result["state"] == ("capture_failed" if recorder_fails else "finalizing" if action == "stop" else "paused")
+        assert result["endedAt"] == ("2026-09-25T11:23:38Z" if action == "stop" or recorder_fails else None)
         assert result["updatedAt"] == "2026-09-27T18:58:09Z"
         assert store.get(meeting["id"])["endedAt"] == result["endedAt"]
     finally:

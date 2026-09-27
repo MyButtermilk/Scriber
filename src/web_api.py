@@ -16776,9 +16776,10 @@ class ScriberWebController:
                     )
                 )
 
-            # Freeze a successful Stop before recorder/provider draining can
-            # delay persistence of the state transition.
-            capture_ended_at = datetime.now(UTC) if command == "audioMeetingStop" else None
+            # Both Stop and Pause stop native audio. Retain that boundary if
+            # subsequent recorder/provider cleanup turns Pause into a failure;
+            # an ordinary paused transition does not persist an end timestamp.
+            capture_ended_at = datetime.now(UTC)
             native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
             native_stop = _meeting_native_stop_snapshot(native_payload)
             if native_stop:
