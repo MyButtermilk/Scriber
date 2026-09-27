@@ -431,6 +431,10 @@ bytes.
    explicit `crash-recovery` gap. A process exit during `stopping` or
    `finalizing` becomes `finalization_failed` instead, so the UI retries from
    saved audio and never offers to append new capture to a stopped meeting.
+   `endedAt` records the capture end, never the processing completion time.
+   Successful Stop captures this boundary before recorder/provider draining;
+   finalization, analysis, retries, and recovery preserve it. Only an actual
+   transition back to recording clears it so the next Stop records a new end.
    A completed Meeting in either `ready` or `analysis_failed` may be processed
    again from retained evidence. Speaker-only refresh never calls an STT
    provider: it verifies the persisted Opus playback asset and its SHA-256,

@@ -15,9 +15,9 @@ export function meetingControlVisibility(state: MeetingState): MeetingControlVis
   };
 }
 
-/** Freeze processing-state clocks at the durable capture end boundary. */
+/** Freeze every stopped clock at the durable capture end boundary. */
 export function meetingTimerNowMs(state: MeetingState, endedAt: string | null, nowMs: number): number {
-  if (!["stopping", "finalizing", "analyzing"].includes(state) || !endedAt) {
+  if (["starting", "recording", "paused"].includes(state) || !endedAt) {
     return nowMs;
   }
   const endedAtMs = new Date(endedAt).getTime();

@@ -25,11 +25,21 @@ test("Meeting controls are exposed only for recording and paused source states",
   }
 });
 
-test("processing clocks freeze at endedAt while active states use the live clock", () => {
-  const now = Date.parse("2026-07-17T10:05:00.000Z");
+test("stopped clocks retain the capture end even when processing resumes days later", () => {
+  const now = Date.parse("2026-07-19T22:00:00.000Z");
   const endedAt = "2026-07-17T10:04:00.000Z";
 
-  for (const state of ["stopping", "finalizing", "analyzing"] as const) {
+  for (const state of [
+    "stopping",
+    "finalizing",
+    "analyzing",
+    "ready",
+    "capture_failed",
+    "finalization_failed",
+    "analysis_failed",
+    "interrupted",
+    "discarded",
+  ] as const) {
     assert.equal(meetingTimerNowMs(state, endedAt, now), Date.parse(endedAt));
   }
   assert.equal(meetingTimerNowMs("recording", endedAt, now), now);

@@ -16776,6 +16776,10 @@ class ScriberWebController:
                     )
                 )
 
+            # Both Stop and Pause stop native audio. Retain that boundary if
+            # subsequent recorder/provider cleanup turns Pause into a failure;
+            # an ordinary paused transition does not persist an end timestamp.
+            capture_ended_at = datetime.now(UTC)
             native_payload = response.get("payload") if isinstance(response.get("payload"), dict) else {}
             native_stop = _meeting_native_stop_snapshot(native_payload)
             if native_stop:
@@ -16838,6 +16842,7 @@ class ScriberWebController:
                             error_code=failure_code,
                             error_message=failure_message,
                             capture_metadata=capture_metadata,
+                            capture_ended_at=capture_ended_at,
                         )
                     )
                     pending_cancel = pending_cancel or transition_cancel
@@ -16865,6 +16870,7 @@ class ScriberWebController:
                             meeting_id,
                             target_state,
                             capture_metadata=capture_metadata,
+                            capture_ended_at=capture_ended_at,
                         )
                     )
                     pending_cancel = pending_cancel or transition_cancel

@@ -43,6 +43,76 @@ def create_request(**overrides):
     return MeetingCreate(**values)
 
 
+@pytest.mark.parametrize("paused", [False, True])
+def test_capture_end_survives_processing_retries_recovery_and_reprocessing(store, monkeypatch, paused):
+    now = "2026-09-25T07:04:46Z"
+    monkeypatch.setattr("src.data.meeting_store._utc_now", lambda: now)
+    meeting_id = store.create(create_request())["id"]
+    store.transition(meeting_id, "recording")
+    if paused:
+        store.transition(meeting_id, "paused")
+    now = "2026-09-25T11:23:38Z"
+    stopped = store.transition(meeting_id, "stopping")
+    assert stopped["endedAt"] == now
+
+    now = "2026-09-27T18:58:09Z"
+    for state in ("stopping", "finalizing"):
+        assert store.transition(meeting_id, state)["endedAt"] == stopped["endedAt"]
+    assert store.recover_interrupted() == 1
+    assert store.get(meeting_id)["endedAt"] == stopped["endedAt"]
+    for state in (
+        "finalizing",
+        "finalization_failed",
+        "finalizing",
+        "analyzing",
+        "analysis_failed",
+        "analyzing",
+        "ready",
+    ):
+        result = store.transition(meeting_id, state)
+        assert result["endedAt"] == stopped["endedAt"]
+        assert result["updatedAt"] == now
+    reprocessing = store.reserve_full_reprocess(
+        meeting_id, final_provider="soniox_async", analysis_model="test-model", voice_library_enabled=False
+    )
+    assert reprocessing["endedAt"] == stopped["endedAt"]
+    for state in ("ready", "analyzing", "ready", "discarded"):
+        assert store.transition(meeting_id, state)["endedAt"] == stopped["endedAt"]
+
+
+def test_resumed_capture_reopens_end_but_keeps_original_start(store, monkeypatch):
+    now = "2026-09-25T07:00:00Z"
+    monkeypatch.setattr("src.data.meeting_store._utc_now", lambda: now)
+    meeting_id = store.create(create_request())["id"]
+    original = store.transition(meeting_id, "recording")
+    now = "2026-09-25T08:00:00Z"
+    assert store.recover_interrupted() == 1
+    assert store.get(meeting_id)["endedAt"] == now
+
+    now = "2026-09-25T09:00:00Z"
+    resumed = store.transition(meeting_id, "recording")
+    assert resumed["startedAt"] == original["startedAt"]
+    assert resumed["endedAt"] is None
+    now = "2026-09-25T11:00:00Z"
+    stopped = store.transition(meeting_id, "stopping")
+    assert stopped["endedAt"] == now
+    now = "2026-09-27T19:00:00Z"
+    assert store.transition(meeting_id, "finalizing")["endedAt"] == stopped["endedAt"]
+
+
+@pytest.mark.parametrize("state", ["stopping", "capture_failed"])
+def test_capture_end_uses_native_stop_time_before_delayed_cleanup(store, monkeypatch, state):
+    now = "2026-09-25T07:00:00Z"
+    monkeypatch.setattr("src.data.meeting_store._utc_now", lambda: now)
+    meeting_id = store.create(create_request())["id"]
+    store.transition(meeting_id, "recording")
+    native_end = datetime(2026, 9, 25, 11, 23, 38, tzinfo=UTC)
+    now = "2026-09-27T18:58:09Z"
+    stopped = store.transition(meeting_id, state, capture_ended_at=native_end)
+    assert stopped["endedAt"] == "2026-09-25T11:23:38Z"
+    assert store.transition(meeting_id, "finalizing")["endedAt"] == stopped["endedAt"]
+
+
 def test_origin_is_first_class_without_fabricating_consent(store: MeetingStore):
     captured = store.create(MeetingCreate(title="Private call"))
     assert captured["origin"] == "captured"

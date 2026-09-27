@@ -1427,6 +1427,7 @@ class MeetingStore:
         error_message: str = "",
         capture_metadata: dict[str, Any] | None = None,
         analysis_model: str | None = None,
+        capture_ended_at: datetime | None = None,
     ) -> dict[str, Any]:
         if new_state not in MEETING_STATES:
             raise InvalidMeetingTransition(f"Unknown meeting state: {new_state}")
@@ -1435,9 +1436,14 @@ class MeetingStore:
             raise InvalidMeetingTransition(f"Cannot transition {current['state']} to {new_state}.")
         now = _utc_now()
         started_at = now if new_state == "recording" and not current.get("startedAt") else current.get("startedAt")
-        ended_at = (
-            now if new_state in TERMINAL_STATES or new_state in {"stopping", "finalizing"} else current.get("endedAt")
-        )
+        # This is the capture boundary, not the processing completion time.
+        # Only actual capture resumption may reopen it; retries and recovery
+        # must retain the original end even when processing takes days.
+        ended_at = current.get("endedAt")
+        if new_state == "recording":
+            ended_at = None
+        elif ended_at is None and (new_state in TERMINAL_STATES or new_state in {"stopping", "finalizing"}):
+            ended_at = capture_ended_at.astimezone(UTC).isoformat().replace("+00:00", "Z") if capture_ended_at else now
         metadata = capture_metadata if capture_metadata is not None else current.get("captureMetadata", {})
         # A progress value belongs to exactly one processing run.  Preserve the
         # finalization -> analysis hand-off because it is one continuous
