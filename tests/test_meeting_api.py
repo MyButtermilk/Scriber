@@ -2301,7 +2301,9 @@ async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(
         result = json.loads(response.body)
         if recorder_fails:
             result = result["meeting"]
-        assert result["state"] == ("capture_failed" if recorder_fails else "finalizing" if action == "stop" else "paused")
+        assert result["state"] == (
+            "capture_failed" if recorder_fails else "finalizing" if action == "stop" else "paused"
+        )
         assert result["endedAt"] == ("2026-09-25T11:23:38Z" if action == "stop" or recorder_fails else None)
         assert result["updatedAt"] == "2026-09-27T18:58:09Z"
         assert store.get(meeting["id"])["endedAt"] == result["endedAt"]
