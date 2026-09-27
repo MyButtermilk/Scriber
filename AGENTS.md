@@ -1457,7 +1457,7 @@ Packaging and scripts:
 - `openrouter_stt` is the separate active OpenRouter route for Microsoft
   MAI-Transcribe-2. Keep its exact model fixed to
   `microsoft/mai-transcribe-2`, reuse the existing `OPENROUTER_API_KEY` used
-  by OpenRouter summaries and post-processing, and send WAV, MP3, or FLAC audio
+  by OpenRouter summaries and post-processing, and send MP3 audio
   to `/api/v1/audio/transcriptions` as JSON with base64 `input_audio`. This route
   returns final text only: request normal JSON, do not claim native timestamps
   or diarization, and do not forward `SCRIBER_CUSTOM_VOCAB` or an Azure
@@ -1465,13 +1465,15 @@ Packaging and scripts:
   endpoint, preparation, and capability path.
   Already frozen `microsoft/mai-transcribe-1.5` work retains its exact legacy
   capability and request model; new work continues to select version 2.
-  Compressed imports requiring conversion use mono 64-kbit/s MP3 instead of
-  expanding to WAV before base64 encoding. Keep the route-local Scriber safety
+  All new file/YouTube and buffered live uploads use MP3 regardless of duration.
+  Non-MP3 imports and live WAV spools use mono 64-kbit/s MP3 before base64
+  encoding. Keep the route-local Scriber safety
   budget of 18,000,000 audio bytes and 25,000,000 serialized JSON bytes; these
   are conservative application budgets, not universal provider limits. Verified
-  originals within budget pass through unchanged; larger originals select MP3
+  MP3 originals within budget pass through unchanged; larger originals select MP3
   before the route is frozen. A frozen oversized representation fails closed
-  without changing format or replaying a provider request. Preparation and the
+  without changing format or replaying a provider request. In-budget frozen
+  WAV/FLAC jobs retain their exact persisted representation. Preparation and the
   JSON serializer both reject oversize input before HTTP; generated artifacts
   and request spools are cleaned on failure. HTTP 413 is an `audio_invalid`
   failure with compression/splitting guidance, not `internal_bug`.

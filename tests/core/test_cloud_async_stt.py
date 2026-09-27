@@ -4,6 +4,7 @@ import io
 import json
 import threading
 import wave
+from functools import partial
 
 import pytest
 from pipecat.frames.frames import EndFrame, InputAudioRawFrame, TranscriptionFrame
@@ -12,6 +13,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from src.cloud_async_stt import (
     OPENROUTER_MAI_TRANSCRIBE_MODEL,
     OPENROUTER_STT_URL,
+    OpenRouterSTTProcessor,
     SpeechmaticsAsyncProcessor,
     _build_openrouter_stt_json_body,
     _delete_speechmatics_job,
@@ -31,6 +33,7 @@ from src.config import Config
 from src.core.provider_errors import ProviderTransportError
 from src.microphone import RustCaptureWavArtifact
 from src.runtime.audio_spool import create_pcm_spool
+from src.runtime.media_tools import find_media_tool
 
 
 def test_pcm_stream_to_wav_reads_source_in_bounded_chunks():
@@ -183,6 +186,83 @@ async def test_openrouter_stt_rejects_unverified_models_before_upload():
             model="microsoft/mai-transcribe-custom",
             language="de",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "rejected", "cancelled"])
+async def test_openrouter_live_wav_uploads_real_mp3_and_cleans_on_every_exit(monkeypatch, tmp_path, outcome):
+    from src import cloud_async_stt
+    from src.audio_prepare import probe_audio_input_file
+    from src.core.provider_audio_formats import AudioInputFormat
+
+    if not find_media_tool("ffmpeg") or not find_media_tool("ffprobe"):
+        pytest.skip("FFmpeg and ffprobe are unavailable")
+
+    monkeypatch.setattr(
+        cloud_async_stt.tempfile,
+        "TemporaryDirectory",
+        partial(cloud_async_stt.tempfile.TemporaryDirectory, dir=tmp_path),
+    )
+    source = io.BytesIO()
+    with wave.open(source, "wb") as writer:
+        writer.setnchannels(1)
+        writer.setsampwidth(2)
+        writer.setframerate(16_000)
+        writer.writeframes(b"\x01\x00" * 16_000)
+    original = source.getvalue()
+
+    class Response:
+        status = 413 if outcome == "rejected" else 200
+
+        async def __aenter__(self):
+            if outcome == "cancelled":
+                raise asyncio.CancelledError
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def text(self):
+            return '{"error":{"code":413}}' if outcome == "rejected" else '{"text":"Hallo"}'
+
+    class Session:
+        calls = 0
+        body = None
+
+        def post(self, url, **kwargs):
+            self.calls += 1
+            self.body = kwargs["data"]
+            request = json.loads(self.body.read())
+            assert url == OPENROUTER_STT_URL
+            assert request["input_audio"]["format"] == "mp3"
+            audio = base64.b64decode(request["input_audio"]["data"], validate=True)
+            assert len(audio) < len(original)
+            # Inspect the real encoded payload, not merely its filename/label.
+            uploaded = tmp_path / "uploaded.mp3"
+            uploaded.write_bytes(audio)
+            probe = probe_audio_input_file(uploaded)
+            assert probe.audio_format == AudioInputFormat.MP3
+            assert probe.channels == 1
+            assert 950 <= probe.duration_ms <= 1_200
+            uploaded.unlink()
+            return Response()
+
+    session = Session()
+    processor = OpenRouterSTTProcessor(api_key="inert-test-key", language="de", session=session)
+    try:
+        if outcome == "success":
+            assert await processor._transcribe_wav(source) == "Hallo"
+        else:
+            with pytest.raises(ProviderTransportError if outcome == "rejected" else asyncio.CancelledError):
+                await processor._transcribe_wav(source)
+        assert session.calls == 1
+        assert session.body.closed
+        assert not source.closed
+        assert source.getvalue() == original
+        assert list(tmp_path.iterdir()) == []
+    finally:
+        source.close()
+        processor._buffer.close()
 
 
 @pytest.mark.asyncio
