@@ -63,15 +63,15 @@ def test_modulate_meeting_route_uses_bounded_mp3_derivative(tmp_path, provider):
     [
         (
             "deepgram_async",
-            AudioInputFormat.FLAC,
-            AudioSelectionMode.ORIGINAL_PASSTHROUGH,
-            "original_passthrough",
+            AudioInputFormat.MP3,
+            AudioSelectionMode.GENERATED,
+            "current_ffmpeg_mp3_fallback",
         ),
         (
             "openai_async",
-            AudioInputFormat.WAV_PCM16,
+            AudioInputFormat.MP3,
             AudioSelectionMode.GENERATED,
-            "ffmpeg_wav_pcm16_control",
+            "current_ffmpeg_mp3_fallback",
         ),
     ],
 )
