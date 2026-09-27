@@ -2249,6 +2249,52 @@ async def test_cancelled_capture_command_settles_native_stop_and_recorder_before
 
 
 @pytest.mark.asyncio
+async def test_stop_keeps_native_capture_end_through_delayed_provider_cleanup(monkeypatch, tmp_path):
+    controller, store, meeting, recorder = _recording_meeting_control_controller(
+        monkeypatch, tmp_path, "stop-capture-end.db"
+    )
+    controller._persistent_audio_claim = _test_audio_claim("meeting", meeting["id"])
+    native_end = datetime(2026, 9, 25, 11, 23, 38, tzinfo=UTC)
+    clock = native_end
+
+    class Clock:
+        @staticmethod
+        def now(_tz):
+            return clock
+
+    class DelayedLiveTranscriber(FakeLiveTranscriber):
+        async def stop(self):
+            nonlocal clock
+            assert recorder.stop_count == 1
+            clock = datetime(2026, 9, 27, 18, 58, 9, tzinfo=UTC)
+            await super().stop()
+
+    async def release_audio(changed_controller, _claim):
+        changed_controller._persistent_audio_claim = None
+        return True
+
+    controller._meeting_live_transcribers[meeting["id"]] = DelayedLiveTranscriber()
+    monkeypatch.setattr(web_api, "datetime", Clock)
+    monkeypatch.setattr("src.data.meeting_store._utc_now", lambda: clock.isoformat().replace("+00:00", "Z"))
+    monkeypatch.setattr(
+        web_api, "call_shell_ipc", lambda *_args, **_kwargs: {"success": True, "payload": {"stopped": True}}
+    )
+    monkeypatch.setattr(web_api, "_release_persistent_audio", release_audio)
+    app = web_api.create_app(controller)
+    handler = _route_handler(app, "POST", "/api/meetings/{id}/stop")
+    try:
+        response = await handler(_DirectRequest(app, meeting_id=meeting["id"]))
+        assert response.status == 202
+        result = json.loads(response.body)
+        assert result["state"] == "finalizing"
+        assert result["endedAt"] == "2026-09-25T11:23:38Z"
+        assert result["updatedAt"] == "2026-09-27T18:58:09Z"
+        assert store.get(meeting["id"])["endedAt"] == result["endedAt"]
+    finally:
+        database._close_all_connections()
+
+
+@pytest.mark.asyncio
 async def test_stop_reserves_finalizer_before_committing_finalizing(monkeypatch, tmp_path):
     controller, store, meeting, recorder = _recording_meeting_control_controller(
         monkeypatch,
