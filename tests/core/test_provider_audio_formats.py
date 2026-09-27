@@ -182,7 +182,7 @@ def test_openrouter_mai_is_active_with_exact_formats_and_never_inherits_generic_
         AudioInputFormat.MP3,
         AudioInputFormat.FLAC,
     }
-    assert capability.direct_passthrough_formats == capability.batch_formats
+    assert capability.direct_passthrough_formats == {AudioInputFormat.MP3}
     assert AudioInputFormat.OGG_OPUS not in capability.batch_formats
     assert AudioInputFormat.WEBM_OPUS not in capability.batch_formats
     selection = select_audio_input_format(

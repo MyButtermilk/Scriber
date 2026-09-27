@@ -3446,7 +3446,7 @@ class ScriberPipeline:
             )
             require_exact_audio_input_format(
                 capability,
-                AudioInputFormat.WAV_PCM16,
+                AudioInputFormat.MP3,
                 route_kind=ProviderAudioRouteKind.BATCH,
             )
             self._bind_execution_provider_endpoint(OPENROUTER_STT_URL)

@@ -323,15 +323,32 @@ def test_openrouter_long_import_uses_compact_mp3(model, source_format, source_by
     assert selection.mode == AudioSelectionMode.GENERATED
 
 
-@pytest.mark.parametrize("source_format", [AudioInputFormat.MP3, AudioInputFormat.WAV_PCM16, AudioInputFormat.FLAC])
-def test_openrouter_small_verified_original_remains_unchanged(source_format):
+@pytest.mark.parametrize("model", ["microsoft/mai-transcribe-2", "microsoft/mai-transcribe-1.5"])
+@pytest.mark.parametrize("source_bytes", [128, 18_000_000])
+def test_openrouter_mp3_within_budget_remains_unchanged(model, source_bytes):
     _, selection = audio_prepare.resolve_provider_audio_selection(
         provider="openrouter_stt",
-        model="microsoft/mai-transcribe-2",
-        probe=_probe(source_format, byte_length=18_000_000),
+        model=model,
+        probe=_probe(AudioInputFormat.MP3, byte_length=source_bytes),
     )
-    assert selection.audio_format == source_format
+    assert selection.audio_format == AudioInputFormat.MP3
     assert selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
+
+
+@pytest.mark.parametrize("model", ["microsoft/mai-transcribe-2", "microsoft/mai-transcribe-1.5"])
+@pytest.mark.parametrize(
+    "source_format",
+    [AudioInputFormat.WAV_PCM16, AudioInputFormat.FLAC, AudioInputFormat.WEBM_OPUS, AudioInputFormat.M4A_AAC],
+)
+@pytest.mark.parametrize("duration_ms", [None, 1_000, 1_935_700])
+def test_openrouter_non_mp3_uses_mp3_even_below_budget_at_any_duration(model, source_format, duration_ms):
+    _, selection = audio_prepare.resolve_provider_audio_selection(
+        provider="openrouter_stt",
+        model=model,
+        probe=replace(_probe(source_format), duration_ms=duration_ms),
+    )
+    assert selection.audio_format == AudioInputFormat.MP3
+    assert selection.mode == AudioSelectionMode.GENERATED
 
 
 @pytest.mark.asyncio
@@ -372,7 +389,7 @@ async def test_openrouter_preparation_rejects_oversize_output_and_cleans_only_ge
 
 @pytest.mark.asyncio
 async def test_openrouter_frozen_oversize_wav_fails_without_silently_changing_route(monkeypatch, tmp_path):
-    from src.core.provider_audio_formats import ProviderAudioRouteKind, select_audio_input_format
+    from src.core.provider_audio_formats import AudioInputSelection
     from src.core.provider_errors import ProviderTransportError
 
     source = tmp_path / "legacy.wav"
@@ -385,10 +402,11 @@ async def test_openrouter_frozen_oversize_wav_fails_without_silently_changing_ro
         model="microsoft/mai-transcribe-1.5",
         probe=probe,
     )
-    frozen = select_audio_input_format(
-        capability,
-        route_kind=ProviderAudioRouteKind.BATCH,
-        original_format=AudioInputFormat.WAV_PCM16,
+    frozen = AudioInputSelection(
+        audio_format=AudioInputFormat.WAV_PCM16,
+        mode=AudioSelectionMode.ORIGINAL_PASSTHROUGH,
+        capability_id=capability.capability_id,
+        capability_revision=capability.revision,
     )
     with pytest.raises(ProviderTransportError, match="audio_limit_exceeded"):
         async with audio_prepare.prepare_provider_audio_file(

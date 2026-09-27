@@ -1829,6 +1829,11 @@ not claim native timestamps, diarization, or custom-vocabulary support. Direct
 `azure_mai` remains a separate Azure credential, endpoint, audio-preparation,
 and capability path. The OpenRouter route is not marked five-hour-capable
 without exact long-input evidence.
+New OpenRouter file/YouTube and buffered live requests always upload MP3:
+in-budget MP3 originals pass through, while other inputs use mono 64-kbit/s
+MP3 at every duration. WAV/FLAC acceptance is retained for frozen legacy jobs.
+The audio and serialized-request byte budgets remain enforced after preparation;
+they are not duration thresholds.
 Exact MAI 1.5 capabilities remain available for frozen Azure/OpenRouter jobs
 and explicit Azure overrides. Recovery preserves their original capability
 identity and request model, including locally durable provider results.

@@ -10,8 +10,10 @@ import asyncio
 import base64
 import json
 import os
+import shutil
 import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, BinaryIO
 
 import aiohttp
@@ -29,6 +31,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import prepare_provider_audio_file
 from src.config import Config
 from src.core.provider_audio_formats import (
     OPENROUTER_STT_MAX_AUDIO_BYTES,
@@ -52,6 +55,7 @@ from src.runtime.audio_spool import (
 from src.runtime.audio_spool import (
     pcm_stream_to_wav as _pcm_stream_to_wav,
 )
+from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
@@ -1369,22 +1373,39 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
         self._language = language
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+        async def _call(session: aiohttp.ClientSession, mp3_source: BinaryIO) -> dict[str, Any]:
             return await transcribe_with_openrouter_audio_transcription(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
+                audio_source=mp3_source,
+                filename="audio.mp3",
+                content_type="audio/mpeg",
                 model=self._model,
                 language=self._language,
                 on_progress=self._on_progress,
             )
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
+        # The capture lease/spool remains caller-owned. Use the same verified
+        # MP3 preparation as file uploads without materializing the WAV in RAM.
+        with tempfile.TemporaryDirectory(prefix="scriber-openrouter-") as directory:
+            source_path = Path(directory) / "capture.wav"
+
+            def copy_capture() -> None:
+                wav_source.seek(0)
+                with source_path.open("wb") as target:
+                    shutil.copyfileobj(wav_source, target, length=1024 * 1024)
+
+            await to_thread_cancellation_barrier(copy_capture)
+            async with prepare_provider_audio_file(
+                source_path, provider=self.provider_name, model=self._model
+            ) as prepared:
+                self._audio_preparation_implementation = prepared.implementation
+                with prepared.path.open("rb") as mp3_source:
+                    if self._session is not None:
+                        payload = await _call(self._session, mp3_source)
+                    else:
+                        async with aiohttp.ClientSession() as session:
+                            payload = await _call(session, mp3_source)
         return openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
 
 

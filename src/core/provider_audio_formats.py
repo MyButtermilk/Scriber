@@ -567,7 +567,9 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         "microsoft/mai-transcribe-2",
         ProviderAudioRouteKind.BATCH,
         batch_formats=_WAV_MP3_FLAC,
-        direct_passthrough_formats=_WAV_MP3_FLAC,
+        # New uploads use MP3 at every duration. Retain WAV/FLAC acceptance
+        # only for exact representations already frozen into older jobs.
+        direct_passthrough_formats=(AudioInputFormat.MP3,),
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-2/providers"),
@@ -582,7 +584,7 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         "microsoft/mai-transcribe-1.5",
         ProviderAudioRouteKind.BATCH,
         batch_formats=_WAV_MP3_FLAC,
-        direct_passthrough_formats=_WAV_MP3_FLAC,
+        direct_passthrough_formats=(AudioInputFormat.MP3,),
         preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.FLAC,
         evidence_reference=("https://openrouter.ai/microsoft/mai-transcribe-1.5/providers"),
