@@ -159,7 +159,7 @@ Backend and runtime:
   shutdown joins every finalizer before closing the shared polisher.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
   provider/route/model audio-format registry, ffprobe container+codec
-  validation, pass-through-first batch selection, bounded ffmpeg preparation,
+  validation, compressed batch selection, bounded ffmpeg preparation,
   and task-scoped cleanup of generated upload artifacts.
 - `src/modulate_stt.py`: Modulate multilingual batch and streaming adapters.
   Both paths expose final transcript text only; they explicitly disable
@@ -1233,9 +1233,21 @@ Packaging and scripts:
   evidence reference, exact container+codec format, upload bound, and explicit
   direct-pass-through allowlist.
 - File-backed direct STT probes both container and codec before selecting
-  provider input. Preserve an accepted original byte-for-byte before generating
-  a replacement, and generate only formats with an implemented preparation
-  command. Generated provider artifacts are task-scoped, size-checked, and
+  provider input. New batch encodes prefer mono 64-kbit/s MP3 when the exact
+  route accepts it; convert lossless inputs instead of uploading large WAVs.
+  Preserve allowed lossy originals byte-for-byte, including MP3 and verified
+  Opus/AAC, to avoid increasing size or adding another lossy encode. Azure MAI
+  and OpenRouter retain their narrower MP3-only original policy. Meta Voice
+  remains WAV-only. Generate only implemented, verified representations.
+  `prepare_provider_wav_stream` applies this same policy to buffered final-only
+  cloud processors and owns their temporary upload files, without closing the
+  borrowed capture spool. Speechmatics public SaaS MP3 support was verified
+  against its current Batch Input documentation on 2026-09-27; injected replay
+  transports and custom endpoints retain their exact WAV contract. Soniox's
+  existing buffered 32-kbit/s Opus path, segmented Pipecat requests, native
+  realtime PCM, and local inference are unchanged. Smaller requests do not
+  establish lower end-to-end latency: encoding and provider decoding also cost
+  time. Generated provider artifacts are task-scoped, size-checked, and
   deleted when their async context exits. File/YouTube jobs persist the frozen
   provider route, exact format, capability id/revision, selection mode, and
   implementation before the provider request; recovery must not switch any of
@@ -2009,7 +2021,8 @@ Already implemented and should not be regressed:
 - JobStore and latency metrics store connection reuse.
 - App-owned aiohttp provider connection reuse with DNS caching and bounded
   privacy-safe connection/chunk timing.
-- Provider-aware file preparation is pass-through first and records its exact
+- Provider-aware file preparation preserves allowed compressed originals,
+  prefers MP3 for new batch encodes, and records its exact
   format/capability decision before upload; generated derivatives are cleaned
   without becoming canonical source evidence.
 - CORS origin decision cache.

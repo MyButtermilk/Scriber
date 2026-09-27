@@ -22,6 +22,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import prepare_provider_wav_stream
 from src.core.provider_errors import (
     parse_provider_json_response,
     provider_transport_error,
@@ -379,29 +380,34 @@ class AssemblyAIUniversal35ProAsyncProcessor(FrameProcessor):
         close_pcm_spool(getattr(self, "_buffer", None))
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_assemblyai_pre_recorded(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                language=self._language,
-                custom_vocab=self._custom_vocab,
-                speaker_labels=self._speaker_labels,
-                model=self._model,
-                on_progress=self._on_progress,
-                timeout_secs=900.0,
+        async with prepare_provider_wav_stream(wav_source, provider="assemblyai", model=self._model) as (
+            audio_source,
+            _prepared,
+        ):
+
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_assemblyai_pre_recorded(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    language=self._language,
+                    custom_vocab=self._custom_vocab,
+                    speaker_labels=self._speaker_labels,
+                    model=self._model,
+                    on_progress=self._on_progress,
+                    timeout_secs=900.0,
+                )
+
+            if self._session:
+                payload = await _call(self._session)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+
+            return assemblyai_transcript_payload_to_text(
+                payload,
+                prefer_speaker_labels=self._speaker_labels,
             )
-
-        if self._session:
-            payload = await _call(self._session)
-        else:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-
-        return assemblyai_transcript_payload_to_text(
-            payload,
-            prefer_speaker_labels=self._speaker_labels,
-        )
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         wav_source = await asyncio.to_thread(

@@ -1295,7 +1295,7 @@ Key modules:
   mic resolution, direct/async transcription helpers.
 - `src/core/provider_audio_formats.py` and `src/audio_prepare.py`: exact
   provider/route/model media capabilities, container+codec probing, and
-  pass-through-first file-backed upload preparation.
+  compressed file-backed upload preparation.
 - `src/microphone.py`: Python boundary for the Rust/WASAPI frame-pipe capture,
   stream lifecycle, channel selection, and audio-level callback throttling.
 - `src/mic_prewarm.py`: idle always-on mic prewarm and rolling raw-audio
@@ -1839,9 +1839,11 @@ and explicit Azure overrides. Recovery preserves their original capability
 identity and request model, including locally durable provider results.
 
 File-backed direct transcription probes the real stream with ffprobe before
-selection. If the exact original is in the pass-through allowlist and below the
-effective upload bound, `src/audio_prepare.py` borrows that path unchanged.
-Otherwise it creates one implemented WAV PCM16, MP3, FLAC, OGG/Opus, or
+selection. An allowed lossy original below the effective upload bound is
+borrowed unchanged, preserving compact MP3/Opus/AAC without another lossy encode.
+New batch encodes prefer mono 64-kbit/s MP3 where the exact route accepts it;
+lossless originals also use this preparation. Meta Voice remains WAV-only.
+Otherwise preparation creates one implemented WAV PCM16, MP3, FLAC, OGG/Opus, or
 WebM/Opus derivative through the resolved ffmpeg tool, validates its nonzero
 size and limit, supplies an exact content type, and deletes it when the async
 preparation scope ends. The pipeline revalidates frozen capability id/revision,

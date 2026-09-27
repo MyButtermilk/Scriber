@@ -28,6 +28,7 @@ from pipecat.services.stt_service import SegmentedSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import prepare_provider_wav_stream
 from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
@@ -328,38 +329,42 @@ class MistralAsyncProcessor(FrameProcessor):
             logger.debug("Mistral progress callback failed: {}", type(exc).__name__)
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        language = self._language if self._language != "auto" else None
+        async with prepare_provider_wav_stream(wav_source, provider="mistral_async", model=self._model) as (
+            audio_source,
+            prepared,
+        ):
+            language = self._language if self._language != "auto" else None
 
-        async def _transcribe(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_mistral(
-                session=session,
-                api_key=self._api_key,
-                model=self._model,
-                file_content=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                language=language,
-                context_bias=self._context_bias,
-                diarize=self._diarize,
-                timestamp_granularities=["segment"] if self._diarize else None,
-                timeout_secs=240,
-            )
-
-        if self._session:
-            payload = await _transcribe(self._session)
-        else:
-            async with aiohttp.ClientSession() as session:
-                payload = await _transcribe(session)
-
-        if self._diarize:
-            segments = payload.get("segments")
-            if isinstance(segments, list):
-                diarized = format_mistral_segments_with_speakers(
-                    [segment for segment in segments if isinstance(segment, dict)]
+            async def _transcribe(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_mistral(
+                    session=session,
+                    api_key=self._api_key,
+                    model=self._model,
+                    file_content=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    language=language,
+                    context_bias=self._context_bias,
+                    diarize=self._diarize,
+                    timestamp_granularities=["segment"] if self._diarize else None,
+                    timeout_secs=240,
                 )
-                if diarized:
-                    return diarized
-        return _extract_text(payload)
+
+            if self._session:
+                payload = await _transcribe(self._session)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _transcribe(session)
+
+            if self._diarize:
+                segments = payload.get("segments")
+                if isinstance(segments, list):
+                    diarized = format_mistral_segments_with_speakers(
+                        [segment for segment in segments if isinstance(segment, dict)]
+                    )
+                    if diarized:
+                        return diarized
+            return _extract_text(payload)
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         wav_source = await asyncio.to_thread(

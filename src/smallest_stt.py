@@ -28,6 +28,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import prepare_provider_wav_stream
 from src.core.provider_errors import provider_transport_error, provider_user_error
 from src.runtime.audio_spool import append_pcm_frame, close_pcm_spool, create_pcm_spool, pcm_stream_to_wav
 from src.runtime.http_response import read_response_text_limited
@@ -234,28 +235,33 @@ class SmallestAsyncProcessor(FrameProcessor):
         close_pcm_spool(getattr(self, "_buffer", None))
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_smallest_pre_recorded(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                language=self._language,
-                word_timestamps=self._diarize,
-                diarize=self._diarize,
-                on_progress=self._on_progress,
-                timeout_secs=900.0,
+        async with prepare_provider_wav_stream(wav_source, provider="smallest_async", model="pulse") as (
+            audio_source,
+            _prepared,
+        ):
+
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_smallest_pre_recorded(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    language=self._language,
+                    word_timestamps=self._diarize,
+                    diarize=self._diarize,
+                    on_progress=self._on_progress,
+                    timeout_secs=900.0,
+                )
+
+            if self._session:
+                payload = await _call(self._session)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+
+            return smallest_transcript_payload_to_text(
+                payload,
+                prefer_speaker_labels=self._diarize,
             )
-
-        if self._session:
-            payload = await _call(self._session)
-        else:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-
-        return smallest_transcript_payload_to_text(
-            payload,
-            prefer_speaker_labels=self._diarize,
-        )
 
     async def _transcribe_bytes(self, audio_bytes: bytes) -> str:
         wav_source = await asyncio.to_thread(

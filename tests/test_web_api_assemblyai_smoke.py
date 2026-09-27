@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from src.audio_prepare import ProbedAudioInput, probe_audio_input_file
 from src.config import Config
+from src.core.provider_audio_formats import AudioInputFormat
 from src.web_api import ScriberWebController
 
 
@@ -24,6 +26,7 @@ def _write_five_second_wav(path: Path) -> None:
 class _FakeAssemblyPipeline:
     created_services: list[str] = []
     direct_paths: list[str] = []
+    direct_audio: list[ProbedAudioInput] = []
     fallback_paths: list[str] = []
 
     def __init__(
@@ -58,6 +61,7 @@ class _FakeAssemblyPipeline:
 
     async def transcribe_file_direct(self, path: str, *, prepared_audio=None):
         type(self).direct_paths.append(path)
+        type(self).direct_audio.append(probe_audio_input_file(Path(path)))
         if self.on_progress:
             self.on_progress("Processing transcription...")
         if self.on_transcription:
@@ -117,6 +121,7 @@ async def test_assemblyai_file_transcription_smoke(monkeypatch, tmp_path):
     monkeypatch.setattr(Config, "DEFAULT_STT_SERVICE", "assemblyai")
     monkeypatch.setattr(Config, "AUTO_SUMMARIZE", False)
     _FakeAssemblyPipeline.direct_paths = []
+    _FakeAssemblyPipeline.direct_audio = []
     _FakeAssemblyPipeline.fallback_paths = []
 
     with patch("src.web_api.DeviceMonitor.start", return_value=None):
@@ -125,6 +130,7 @@ async def test_assemblyai_file_transcription_smoke(monkeypatch, tmp_path):
     file_dir.mkdir(parents=True, exist_ok=True)
     sample_file = file_dir / "sample.wav"
     _write_five_second_wav(sample_file)
+    original_size = sample_file.stat().st_size
 
     with (
         patch("src.web_api.ScriberPipeline", _FakeAssemblyPipeline),
@@ -142,7 +148,14 @@ async def test_assemblyai_file_transcription_smoke(monkeypatch, tmp_path):
     assert rec.status == "completed"
     assert "[Speaker 1]: Hello" in rec.content
     assert _FakeAssemblyPipeline.direct_paths
-    assert str(sample_file) in _FakeAssemblyPipeline.direct_paths[0]
+    uploaded_path = Path(_FakeAssemblyPipeline.direct_paths[0])
+    uploaded = _FakeAssemblyPipeline.direct_audio[0]
+    assert uploaded_path.suffix == ".mp3"
+    assert uploaded.audio_format == AudioInputFormat.MP3
+    assert uploaded.byte_length < original_size
+    assert uploaded.channels == 1
+    assert 4_950 <= uploaded.duration_ms <= 5_200
+    assert not uploaded_path.exists()
     assert _FakeAssemblyPipeline.fallback_paths == []
 
 

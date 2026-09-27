@@ -10,10 +10,8 @@ import asyncio
 import base64
 import json
 import os
-import shutil
 import tempfile
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any, BinaryIO
 
 import aiohttp
@@ -31,12 +29,13 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from src.audio_prepare import prepare_provider_audio_file
+from src.audio_prepare import prepare_provider_wav_stream
 from src.config import Config
 from src.core.provider_audio_formats import (
     OPENROUTER_STT_MAX_AUDIO_BYTES,
     OPENROUTER_STT_MAX_REQUEST_BYTES,
     SPEECHMATICS_BATCH_DEFAULT_BASE_URL,
+    speechmatics_batch_endpoint_is_custom,
 )
 from src.core.provider_errors import (
     parse_provider_json_response,
@@ -55,7 +54,6 @@ from src.runtime.audio_spool import (
 from src.runtime.audio_spool import (
     pcm_stream_to_wav as _pcm_stream_to_wav,
 )
-from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
@@ -1292,25 +1290,31 @@ class DeepgramAsyncProcessor(_BufferedAsyncProcessor):
         self._custom_vocab = custom_vocab
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_deepgram_pre_recorded(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                model=self._model,
-                language=self._language,
-                custom_vocab=self._custom_vocab,
-                diarize=self._diarize,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="deepgram_async", model=self._model) as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return deepgram_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_deepgram_pre_recorded(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    model=self._model,
+                    language=self._language,
+                    custom_vocab=self._custom_vocab,
+                    diarize=self._diarize,
+                    on_progress=self._on_progress,
+                )
+
+            payload = await _call(self._session) if self._session else None
+            if payload is None:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return deepgram_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
 
 
 class OpenAIAsyncProcessor(_BufferedAsyncProcessor):
@@ -1334,25 +1338,31 @@ class OpenAIAsyncProcessor(_BufferedAsyncProcessor):
         self._custom_vocab = custom_vocab
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_openai_audio_transcription(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                model=self._model,
-                language=self._language,
-                custom_vocab=self._custom_vocab,
-                diarize=self._diarize,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="openai_async", model=self._model) as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return openai_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_openai_audio_transcription(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    model=self._model,
+                    language=self._language,
+                    custom_vocab=self._custom_vocab,
+                    diarize=self._diarize,
+                    on_progress=self._on_progress,
+                )
+
+            payload = await _call(self._session) if self._session else None
+            if payload is None:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return openai_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
 
 
 class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
@@ -1373,40 +1383,30 @@ class OpenRouterSTTProcessor(_BufferedAsyncProcessor):
         self._language = language
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession, mp3_source: BinaryIO) -> dict[str, Any]:
-            return await transcribe_with_openrouter_audio_transcription(
-                session=session,
-                api_key=self._api_key,
-                audio_source=mp3_source,
-                filename="audio.mp3",
-                content_type="audio/mpeg",
-                model=self._model,
-                language=self._language,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="openrouter_stt", model=self._model) as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
 
-        # The capture lease/spool remains caller-owned. Use the same verified
-        # MP3 preparation as file uploads without materializing the WAV in RAM.
-        with tempfile.TemporaryDirectory(prefix="scriber-openrouter-") as directory:
-            source_path = Path(directory) / "capture.wav"
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_openrouter_audio_transcription(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    model=self._model,
+                    language=self._language,
+                    on_progress=self._on_progress,
+                )
 
-            def copy_capture() -> None:
-                wav_source.seek(0)
-                with source_path.open("wb") as target:
-                    shutil.copyfileobj(wav_source, target, length=1024 * 1024)
-
-            await to_thread_cancellation_barrier(copy_capture)
-            async with prepare_provider_audio_file(
-                source_path, provider=self.provider_name, model=self._model
-            ) as prepared:
-                self._audio_preparation_implementation = prepared.implementation
-                with prepared.path.open("rb") as mp3_source:
-                    if self._session is not None:
-                        payload = await _call(self._session, mp3_source)
-                    else:
-                        async with aiohttp.ClientSession() as session:
-                            payload = await _call(session, mp3_source)
-        return openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
+            if self._session is not None:
+                payload = await _call(self._session)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return openai_transcript_payload_to_text(payload, prefer_speaker_labels=False)
 
 
 class GeminiAsyncProcessor(_BufferedAsyncProcessor):
@@ -1430,25 +1430,31 @@ class GeminiAsyncProcessor(_BufferedAsyncProcessor):
         self._custom_vocab = custom_vocab
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_gemini_audio(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                model=self._model,
-                language=self._language,
-                custom_vocab=self._custom_vocab,
-                diarize=self._diarize,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="gemini_stt", model=self._model) as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return gemini_transcript_payload_to_text(payload)
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_gemini_audio(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    model=self._model,
+                    language=self._language,
+                    custom_vocab=self._custom_vocab,
+                    diarize=self._diarize,
+                    on_progress=self._on_progress,
+                )
+
+            payload = await _call(self._session) if self._session else None
+            if payload is None:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return gemini_transcript_payload_to_text(payload)
 
 
 class GladiaAsyncProcessor(_BufferedAsyncProcessor):
@@ -1470,24 +1476,30 @@ class GladiaAsyncProcessor(_BufferedAsyncProcessor):
         self._custom_vocab = custom_vocab
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_gladia_pre_recorded(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                language=self._language,
-                custom_vocab=self._custom_vocab,
-                diarize=self._diarize,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="gladia_async", model="default") as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return gladia_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_gladia_pre_recorded(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    language=self._language,
+                    custom_vocab=self._custom_vocab,
+                    diarize=self._diarize,
+                    on_progress=self._on_progress,
+                )
+
+            payload = await _call(self._session) if self._session else None
+            if payload is None:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return gladia_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
 
 
 class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
@@ -1515,13 +1527,15 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
         self._on_response_complete = on_response_complete
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+        async def _call(
+            session: aiohttp.ClientSession, audio_source: BinaryIO, filename: str, content_type: str
+        ) -> dict[str, Any]:
             return await transcribe_with_speechmatics_batch(
                 session=session,
                 api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
+                audio_source=audio_source,
+                filename=filename,
+                content_type=content_type,
                 language=self._language,
                 custom_vocab=self._custom_vocab,
                 diarize=self._diarize,
@@ -1532,8 +1546,22 @@ class SpeechmaticsAsyncProcessor(_BufferedAsyncProcessor):
                 audio_preparation_implementation=(self._audio_preparation_implementation),
             )
 
-        payload = await _call(self._session) if self._session else None
-        if payload is None:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+        async def _transcribe(audio_source: BinaryIO, filename: str, content_type: str) -> str:
+            if self._session is not None:
+                payload = await _call(self._session, audio_source, filename, content_type)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session, audio_source, filename, content_type)
+            return speechmatics_transcript_payload_to_text(payload, prefer_speaker_labels=self._diarize)
+
+        endpoint = self._base_url or os.getenv("SCRIBER_SPEECHMATICS_BATCH_BASE_URL")
+        if self._raw_transport is not None or speechmatics_batch_endpoint_is_custom(endpoint):
+            # An injected replay/custom endpoint owns its existing exact WAV
+            # contract; it cannot inherit public SaaS format capabilities.
+            return await _transcribe(wav_source, "audio.wav", "audio/wav")
+        async with prepare_provider_wav_stream(wav_source, provider="speechmatics_async", model="enhanced") as (
+            audio_source,
+            prepared,
+        ):
+            self._audio_preparation_implementation = prepared.implementation
+            return await _transcribe(audio_source, f"audio{prepared.path.suffix}", prepared.content_type)
