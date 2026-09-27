@@ -1,8 +1,8 @@
 """Exact provider-aware preparation for file-backed STT audio.
 
 The source is probed by both container and codec.  Selection then uses the
-route/model capability registry and preserves an accepted original unchanged
-before considering a generated representation.  Generated artifacts are
+route/model capability registry, preserves accepted lossy originals, and
+prefers MP3 for new batch encodes where supported. Generated artifacts are
 created under an explicit work directory and are always cleaned by the async
 context manager.
 """
@@ -12,12 +12,14 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import shutil
 import subprocess
+import tempfile
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from uuid import uuid4
 
 from src.core.provider_audio_formats import (
@@ -32,6 +34,7 @@ from src.core.provider_audio_formats import (
     select_audio_input_format,
 )
 from src.core.provider_errors import provider_transport_error
+from src.runtime.cancellation import to_thread_cancellation_barrier
 from src.runtime.ffmpeg_commands import (
     classify_ffmpeg_stderr,
     ffprobe_audio_format_args,
@@ -502,6 +505,31 @@ async def prepare_provider_audio_file(
             generated_path.unlink(missing_ok=True)
 
 
+@asynccontextmanager
+async def prepare_provider_wav_stream(
+    wav_source: BinaryIO,
+    *,
+    provider: str,
+    model: str,
+) -> AsyncIterator[tuple[BinaryIO, PreparedProviderAudio]]:
+    """Borrow a live WAV spool and scope its verified upload representation."""
+
+    with tempfile.TemporaryDirectory(prefix="scriber-provider-stream-") as directory:
+        source_path = Path(directory) / "capture.wav"
+
+        def copy_capture() -> None:
+            wav_source.seek(0)
+            with source_path.open("wb") as target:
+                shutil.copyfileobj(wav_source, target, length=1024 * 1024)
+
+        # Cancellation must not delete the destination or close the borrowed
+        # source while the copying thread still owns either stream.
+        await to_thread_cancellation_barrier(copy_capture)
+        async with prepare_provider_audio_file(source_path, provider=provider, model=model) as prepared:
+            with prepared.path.open("rb") as audio_source:
+                yield audio_source, prepared
+
+
 __all__ = [
     "AudioFormatProbeError",
     "PreparedProviderAudio",
@@ -509,6 +537,7 @@ __all__ = [
     "ProviderAudioPreparationError",
     "audio_preparation_implementation",
     "prepare_provider_audio_file",
+    "prepare_provider_wav_stream",
     "probe_audio_input_file",
     "resolve_provider_audio_selection",
 ]

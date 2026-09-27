@@ -57,7 +57,7 @@ def _frozen_route(provider: str, *, audio_format: AudioInputFormat | None = None
 
 
 @pytest.mark.asyncio
-async def test_openai_flac_is_prepared_as_wav_before_request(
+async def test_openai_flac_is_prepared_as_mp3_before_request(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -68,14 +68,14 @@ async def test_openai_flac_is_prepared_as_wav_before_request(
         audio_prepare,
         "probe_audio_input_file",
         lambda path: _probe(
-            AudioInputFormat.FLAC if Path(path) == source else AudioInputFormat.WAV_PCM16,
+            AudioInputFormat.FLAC if Path(path) == source else AudioInputFormat.MP3,
             byte_length=Path(path).stat().st_size,
         ),
     )
     monkeypatch.setattr(audio_prepare, "require_media_tool", lambda _tool: "ffmpeg")
 
     async def _generate(_command: list[str], target: Path) -> None:
-        target.write_bytes(b"prepared-wav")
+        target.write_bytes(b"prepared-mp3")
 
     monkeypatch.setattr(audio_prepare, "_run_generated_preparation", _generate)
     captured: dict[str, object] = {}
@@ -99,9 +99,9 @@ async def test_openai_flac_is_prepared_as_wav_before_request(
 
     await pipeline.transcribe_file_direct(str(source))
 
-    assert str(captured["filename"]).endswith(".wav")
-    assert captured["content_type"] == "audio/wav"
-    assert captured["body"] == b"prepared-wav"
+    assert str(captured["filename"]).endswith(".mp3")
+    assert captured["content_type"] == "audio/mpeg"
+    assert captured["body"] == b"prepared-mp3"
     assert source.read_bytes() == b"original-flac"
     assert transport.providers == ["openai_async"]
     assert pipeline._provider_request_started is True

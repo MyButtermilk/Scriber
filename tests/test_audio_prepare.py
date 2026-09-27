@@ -286,7 +286,7 @@ async def test_frozen_passthrough_must_match_probed_source(monkeypatch, tmp_path
     _capability, selection = audio_prepare.resolve_provider_audio_selection(
         provider="deepgram_async",
         model="nova-3",
-        probe=_probe(AudioInputFormat.FLAC),
+        probe=_probe(AudioInputFormat.OGG_OPUS),
     )
     assert selection.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
     with pytest.raises(

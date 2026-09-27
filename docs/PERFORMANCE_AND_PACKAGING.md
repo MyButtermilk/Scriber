@@ -512,8 +512,13 @@ Data and frontend:
 I/O:
 
 - Direct batch audio is selected by exact provider/route/model capability and
-  exact probed container+codec. Accepted originals pass through unchanged;
-  otherwise preparation uses a supported ffmpeg WAV/MP3/FLAC/Ogg-Opus/WebM-Opus
+  exact probed container+codec. Allowed lossy originals pass through unchanged;
+  new encodes and lossless inputs use mono 64-kbit/s MP3 where supported.
+  Buffered final-only cloud processors share this preparation. Soniox retains
+  its already smaller 32-kbit/s Opus encoder; realtime and segmented request
+  contracts remain separate. MP3 reduces PCM upload bytes but is not a promise
+  of lower end-to-end latency, since encoding and decoding also take time.
+  Other routes use a supported ffmpeg WAV/MP3/FLAC/Ogg-Opus/WebM-Opus
   control path, enforces the effective upload limit, and removes the temporary
   derivative after provider ownership ends. Job execution routes persist the
   exact capability and preparation decision before upload.

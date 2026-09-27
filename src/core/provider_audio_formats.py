@@ -284,6 +284,7 @@ _SONIOX_BATCH = (
 _SONIOX_VERIFIED_PASSTHROUGH = (
     AudioInputFormat.WAV_PCM16,
     AudioInputFormat.WEBM_OPUS,
+    AudioInputFormat.MP3,
 )
 _SMALLEST_BATCH = (
     AudioInputFormat.WAV_PCM16,
@@ -657,14 +658,13 @@ PROVIDER_AUDIO_CAPABILITY_MATRIX: tuple[ProviderAudioInputCapabilities, ...] = (
         "batch_v2",
         "enhanced",
         ProviderAudioRouteKind.BATCH,
-        # The public exhaustive list is legacy.  Keep only the representation
-        # exercised by Scriber's current batch adapter until SaaS revalidation.
-        batch_formats=(AudioInputFormat.WAV_PCM16,),
-        direct_passthrough_formats=(AudioInputFormat.WAV_PCM16,),
+        batch_formats=(AudioInputFormat.WAV_PCM16, AudioInputFormat.MP3),
+        direct_passthrough_formats=(AudioInputFormat.WAV_PCM16, AudioInputFormat.MP3),
         batch_generic_containers=(AudioContainer.OGG,),
+        preferred_lossy_format=AudioInputFormat.MP3,
         preferred_lossless_format=AudioInputFormat.WAV_PCM16,
-        evidence_kind=CapabilityEvidenceKind.SCRIBER_INTEGRATION_TEST,
-        evidence_reference="src/cloud_async_stt.py Speechmatics WAV batch route",
+        evidence_reference="https://docs.speechmatics.com/speech-to-text/batch/input",
+        verified_at=date(2026, 9, 27),
     ),
     _capability(
         "speechmatics",
@@ -1019,10 +1019,10 @@ def require_exact_audio_input_format(
 
 
 _BATCH_GENERATION_ORDER = (
+    AudioInputFormat.MP3,
     AudioInputFormat.WAV_PCM16,
     AudioInputFormat.OGG_OPUS,
     AudioInputFormat.WEBM_OPUS,
-    AudioInputFormat.MP3,
     AudioInputFormat.FLAC,
 )
 _REALTIME_GENERATION_ORDER = (
@@ -1036,25 +1036,20 @@ _REALTIME_GENERATION_ORDER = (
     AudioInputFormat.FLAC,
 )
 
-# Production format promotion is deliberately narrower than provider-native
-# acceptance. Azure's existing shipped control is mono 64-kbit/s MP3; retain it
-# until an installed end-to-end benchmark promotes WAV or FLAC for a duration
-# and network bucket. OpenRouter also needs MP3: expanding compressed imports
-# to WAV and then base64 can exceed the gateway's request limit.
-_PROMOTED_BATCH_GENERATION_ORDER: dict[str, tuple[AudioInputFormat, ...]] = {
-    "openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-2": (AudioInputFormat.MP3,),
-    "openrouter_stt:audio_transcriptions:microsoft/mai-transcribe-1.5": (AudioInputFormat.MP3,),
-    "azure_mai:llm_speech_batch:mai-transcribe-1.5": (
-        AudioInputFormat.MP3,
+# New batch uploads prefer compact audio. Already accepted lossy originals
+# (including Opus/AAC) remain byte-for-byte intact: transcoding those to MP3
+# can increase size and adds a second lossy encode. Frozen jobs still validate
+# against the full acceptance matrix and retain their exact representation.
+_LOSSLESS_BATCH_FORMATS = frozenset(
+    {
         AudioInputFormat.WAV_PCM16,
+        AudioInputFormat.WAV_PCM24,
+        AudioInputFormat.WAV_PCM32,
         AudioInputFormat.FLAC,
-    ),
-    "azure_mai:llm_speech_batch:MAI-Transcribe-2": (
-        AudioInputFormat.MP3,
-        AudioInputFormat.WAV_PCM16,
-        AudioInputFormat.FLAC,
-    ),
-}
+        AudioInputFormat.AIFF_PCM,
+        AudioInputFormat.M4A_ALAC,
+    }
+)
 
 
 def select_audio_input_format(
@@ -1064,7 +1059,7 @@ def select_audio_input_format(
     original_format: AudioInputFormat | str | None = None,
     allow_inactive: bool = False,
 ) -> AudioInputSelection:
-    """Choose one verified representation, with exact pass-through first."""
+    """Keep accepted compressed originals; prefer MP3 for new batch encodes."""
 
     kind = _coerce_route_kind(route_kind)
     if not capability.active and not allow_inactive:
@@ -1079,6 +1074,7 @@ def select_audio_input_format(
             kind == ProviderAudioRouteKind.BATCH
             and exact_original in accepted
             and exact_original in capability.direct_passthrough_formats
+            and not (AudioInputFormat.MP3 in accepted and exact_original in _LOSSLESS_BATCH_FORMATS)
         ):
             return AudioInputSelection(
                 audio_format=exact_original,
@@ -1087,14 +1083,7 @@ def select_audio_input_format(
                 capability_revision=capability.revision,
             )
 
-    order = (
-        _PROMOTED_BATCH_GENERATION_ORDER.get(
-            capability.capability_id,
-            _BATCH_GENERATION_ORDER,
-        )
-        if kind == ProviderAudioRouteKind.BATCH
-        else _REALTIME_GENERATION_ORDER
-    )
+    order = _BATCH_GENERATION_ORDER if kind == ProviderAudioRouteKind.BATCH else _REALTIME_GENERATION_ORDER
     for candidate in order:
         if candidate in accepted:
             return AudioInputSelection(

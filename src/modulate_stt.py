@@ -40,6 +40,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from src.audio_prepare import prepare_provider_wav_stream
 from src.runtime.audio_spool import (
     append_pcm_frame,
     close_pcm_spool,
@@ -223,23 +224,28 @@ class ModulateAsyncProcessor(FrameProcessor):
         close_pcm_spool(getattr(self, "_buffer", None))
 
     async def _transcribe_wav(self, wav_source: BinaryIO) -> str:
-        async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
-            return await transcribe_with_modulate_multilingual(
-                session=session,
-                api_key=self._api_key,
-                audio_source=wav_source,
-                filename="audio.wav",
-                content_type="audio/wav",
-                language=self._language,
-                on_progress=self._on_progress,
-            )
+        async with prepare_provider_wav_stream(wav_source, provider="modulate_async", model="multilingual") as (
+            audio_source,
+            prepared,
+        ):
 
-        if self._session:
-            payload = await _call(self._session)
-        else:
-            async with aiohttp.ClientSession() as session:
-                payload = await _call(session)
-        return modulate_transcript_payload_to_text(payload)
+            async def _call(session: aiohttp.ClientSession) -> dict[str, Any]:
+                return await transcribe_with_modulate_multilingual(
+                    session=session,
+                    api_key=self._api_key,
+                    audio_source=audio_source,
+                    filename=f"audio{prepared.path.suffix}",
+                    content_type=prepared.content_type,
+                    language=self._language,
+                    on_progress=self._on_progress,
+                )
+
+            if self._session:
+                payload = await _call(self._session)
+            else:
+                async with aiohttp.ClientSession() as session:
+                    payload = await _call(session)
+            return modulate_transcript_payload_to_text(payload)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

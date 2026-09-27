@@ -61,18 +61,18 @@ def test_generic_ogg_and_webm_evidence_does_not_grant_opus():
         route_kind=ProviderAudioRouteKind.BATCH,
         original_format=AudioInputFormat.OGG_OPUS,
     )
-    assert selected.audio_format == AudioInputFormat.WAV_PCM16
+    assert selected.audio_format == AudioInputFormat.MP3
     assert selected.mode == AudioSelectionMode.GENERATED
 
 
-def test_exact_original_passthrough_precedes_generated_preferences():
+def test_exact_compressed_original_passthrough_precedes_generated_preferences():
     capability = resolve_batch_provider_audio_capabilities("smallest_async", "pulse")
     selected = select_audio_input_format(
         capability,
         route_kind=ProviderAudioRouteKind.BATCH,
-        original_format=AudioInputFormat.FLAC,
+        original_format=AudioInputFormat.OGG_OPUS,
     )
-    assert selected.audio_format == AudioInputFormat.FLAC
+    assert selected.audio_format == AudioInputFormat.OGG_OPUS
     assert selected.mode == AudioSelectionMode.ORIGINAL_PASSTHROUGH
     assert selected.capability_id == capability.capability_id
     assert selected.capability_revision == CAPABILITY_REVISION
@@ -233,6 +233,8 @@ def test_matrix_entries_carry_evidence_date_and_revision():
             expected_date = date(2026, 9, 4)
         elif capability.provider in {"meta_stt", "meta_stt_async"}:
             expected_date = date(2026, 9, 2)
+        elif capability.provider == "speechmatics_async":
+            expected_date = date(2026, 9, 27)
         else:
             expected_date = date(2026, 8, 26)
         assert capability.verified_at == expected_date
