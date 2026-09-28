@@ -1,6 +1,13 @@
 import type { TranslationCatalog } from "@/i18n/types";
 
 export const transcriptionTranslations = {
+  "Waiting before retrying transcription...": "Kurze Wartezeit vor dem nächsten Transkriptionsversuch…",
+  "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.":
+    "Microsoft MAI Transcribe über OpenRouter ist vorübergehend ausgelastet oder durch ein Ratenlimit begrenzt (HTTP 429). Warte kurz oder wechsle den Transkriptionsanbieter.",
+  "Microsoft MAI Transcribe via OpenRouter reports insufficient credits or a spending limit (HTTP 402). Check the provider billing limits.":
+    "Microsoft MAI Transcribe über OpenRouter meldet fehlendes Guthaben oder ein Ausgabenlimit (HTTP 402). Prüfe die Abrechnungslimits beim Anbieter.",
+  "Microsoft MAI Transcribe via OpenRouter reports insufficient credits or a spending limit (HTTP 429). Check the provider billing limits.":
+    "Microsoft MAI Transcribe über OpenRouter meldet fehlendes Guthaben oder ein Ausgabenlimit (HTTP 429). Prüfe die Abrechnungslimits beim Anbieter.",
   "Preparing next recording": "Nächste Aufnahme wird vorbereitet",
   "Starts as soon as the microphone is ready": "Startet, sobald das Mikrofon bereit ist",
   "You can start your next recording now": "Du kannst jetzt die nächste Aufnahme starten",

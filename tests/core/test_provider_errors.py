@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from src.core.error_taxonomy import ErrorCategory
@@ -397,3 +399,32 @@ def test_router_upstream_timeout_has_actionable_message_and_keeps_http_status_au
     info = provider_user_error(None, contradiction)
     assert info.category is ErrorCategory.AUTH_INVALID
     assert "timed out" not in info.message
+
+
+@pytest.mark.parametrize("message", ["Provider returned error", "quota exceeded", "rate limit reached"])
+def test_openrouter_429_does_not_claim_insufficient_credits(message):
+    error = provider_transport_error(
+        "openrouter_stt",
+        "transcription",
+        status=429,
+        response_body=json.dumps({"error": {"code": 429, "message": message}}),
+    )
+    info = provider_user_error("openrouter_stt", error)
+    assert "temporarily rate limited" in info.message
+    assert "credit" not in info.message.lower()
+    assert info.retryable
+    # Live Mic currently carries the safe message through its terminal frame.
+    assert provider_user_error("openrouter_stt", RuntimeError(info.message)).message == info.message
+
+
+@pytest.mark.parametrize("status", [402, 429])
+def test_openrouter_explicit_credit_failure_is_not_retryable(status):
+    error = provider_transport_error(
+        "openrouter_stt",
+        "transcription",
+        status=status,
+        response_body='{"error":{"message":"Insufficient credits"}}',
+    )
+    info = provider_user_error("openrouter_stt", error)
+    assert "insufficient credits" in info.message
+    assert not info.retryable

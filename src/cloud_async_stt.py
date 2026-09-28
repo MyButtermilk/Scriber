@@ -10,8 +10,11 @@ import asyncio
 import base64
 import json
 import os
+import random
 import tempfile
 from collections.abc import Callable
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, BinaryIO
 
 import aiohttp
@@ -38,6 +41,7 @@ from src.core.provider_audio_formats import (
     speechmatics_batch_endpoint_is_custom,
 )
 from src.core.provider_errors import (
+    ProviderTransportError,
     parse_provider_json_response,
     provider_transport_error,
     provider_user_error,
@@ -54,10 +58,13 @@ from src.runtime.audio_spool import (
 from src.runtime.audio_spool import (
     pcm_stream_to_wav as _pcm_stream_to_wav,
 )
+from src.runtime.cancellation import await_with_delayed_cancellation, to_thread_cancellation_barrier
 from src.runtime.env_values import env_float
 from src.runtime.http_response import read_response_text_limited
 
 OPENROUTER_STT_URL = "https://openrouter.ai/api/v1/audio/transcriptions"
+_OPENROUTER_STT_MAX_ATTEMPTS = 3
+_OPENROUTER_STT_RETRY_WINDOW_SECONDS = 5.0
 OPENROUTER_MAI_TRANSCRIBE_MODEL = Config.DEFAULT_OPENROUTER_STT_MODEL
 # The legacy model is accepted only when explicitly supplied by a frozen
 # execution route. Current admissions and the transport default stay on 2.
@@ -805,6 +812,21 @@ async def transcribe_with_openai_audio_transcription(
         return parsed if isinstance(parsed, dict) else {"text": raw}
 
 
+def _openrouter_retry_delay(header: str | None, attempt: int) -> float:
+    """Honor seconds or an HTTP date; malformed hints use bounded backoff."""
+    value = str(header or "").strip()
+    if value.isascii() and value.isdecimal():
+        return float(value) if len(value) <= 10 else float("inf")
+    if value:
+        try:
+            retry_at = parsedate_to_datetime(value)
+            if retry_at.tzinfo is not None:
+                return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+        except TypeError, ValueError, OverflowError:
+            pass
+    return 0.5 * (2**attempt) + random.uniform(0.0, 0.25)
+
+
 async def transcribe_with_openrouter_audio_transcription(
     *,
     session: aiohttp.ClientSession,
@@ -825,50 +847,95 @@ async def transcribe_with_openrouter_audio_transcription(
     audio_format = openrouter_audio_format(filename, content_type)
     language_code = provider_language_code(language)
 
-    _report_progress(on_progress, "Preparing audio...")
-    body = await asyncio.to_thread(
-        _build_openrouter_stt_json_body,
-        audio_source,
-        model=selected_model,
-        audio_format=audio_format,
-        language=language_code,
-    )
-    try:
-        body.seek(0, os.SEEK_END)
-        request_bytes = body.tell()
-        body.seek(0)
-        _report_progress(on_progress, "Uploading audio...")
-        _report_progress(on_progress, "Processing transcription...")
-        async with session.post(
-            OPENROUTER_STT_URL,
-            data=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://scriber.local",
-                "X-OpenRouter-Title": "Scriber",
-            },
-            timeout=aiohttp.ClientTimeout(total=timeout_secs),
-        ) as response:
-            raw = await read_response_text_limited(response, 64 * 1024 * 1024)
-            if response.status >= 400:
-                raise provider_transport_error(
-                    "openrouter_stt",
-                    "transcription",
-                    status=response.status,
-                    response_body=raw,
-                    request_bytes=request_bytes,
+    source_position = None
+    if not isinstance(audio_source, bytes):
+        try:
+            if audio_source.seekable():
+                source_position = audio_source.tell()
+        except AttributeError, OSError:
+            pass
+    replayable = isinstance(audio_source, bytes) or source_position is not None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_secs
+    retry_deadline = None
+    error: ProviderTransportError | None = None
+
+    # One deadline covers all attempts, including preparation and backoff. The
+    # caller's Live Mic stop deadline may cancel this operation earlier.
+    async with asyncio.timeout_at(deadline):
+        for attempt in range(_OPENROUTER_STT_MAX_ATTEMPTS):
+            if attempt and source_position is not None:
+                await to_thread_cancellation_barrier(audio_source.seek, source_position)
+            _report_progress(on_progress, "Preparing audio...")
+            # aiohttp owns/closes each uploaded body. Rebuild from the retained
+            # audio, never reuse the first request's possibly closed file handle.
+            body, pending_cancel = await await_with_delayed_cancellation(
+                asyncio.to_thread(
+                    _build_openrouter_stt_json_body,
+                    audio_source,
+                    model=selected_model,
+                    audio_format=audio_format,
+                    language=language_code,
                 )
-            if not raw:
-                return {}
-            parsed = parse_provider_json_response(
-                "openrouter_stt",
-                "transcription_response",
-                raw,
             )
-            return parsed if isinstance(parsed, dict) else {"text": raw}
-    finally:
-        await asyncio.to_thread(body.close)
+            try:
+                if pending_cancel is not None:
+                    raise pending_cancel
+                if error is not None and retry_deadline is not None and loop.time() >= retry_deadline:
+                    raise error
+                body.seek(0, os.SEEK_END)
+                request_bytes = body.tell()
+                body.seek(0)
+                _report_progress(on_progress, "Uploading audio...")
+                _report_progress(on_progress, "Processing transcription...")
+                async with session.post(
+                    OPENROUTER_STT_URL,
+                    data=body,
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                        "HTTP-Referer": "https://scriber.local",
+                        "X-OpenRouter-Title": "Scriber",
+                    },
+                    timeout=aiohttp.ClientTimeout(total=max(0.001, deadline - loop.time())),
+                ) as response:
+                    raw = await read_response_text_limited(response, 64 * 1024 * 1024)
+                    if response.status < 400:
+                        if not raw:
+                            return {}
+                        parsed = parse_provider_json_response("openrouter_stt", "transcription_response", raw)
+                        return parsed if isinstance(parsed, dict) else {"text": raw}
+                    error = provider_transport_error(
+                        "openrouter_stt",
+                        "transcription",
+                        status=response.status,
+                        response_body=raw,
+                        request_bytes=request_bytes,
+                    )
+                    if (
+                        response.status != 429
+                        or error.reason == "insufficient_credits"
+                        or not replayable
+                        or attempt + 1 == _OPENROUTER_STT_MAX_ATTEMPTS
+                    ):
+                        raise error
+                    delay = _openrouter_retry_delay(getattr(response, "headers", {}).get("Retry-After"), attempt)
+            finally:
+                await to_thread_cancellation_barrier(body.close)
+
+            # Release the response/connection and request file before waiting.
+            # Never shorten a server hint to fit the interactive retry budget.
+            if retry_deadline is None:
+                retry_deadline = min(deadline, loop.time() + _OPENROUTER_STT_RETRY_WINDOW_SECONDS)
+            if loop.time() + delay >= retry_deadline:
+                raise error
+            logger.warning(
+                "OpenRouter STT HTTP 429: retry {}/{} after {:.2f}s", attempt + 2, _OPENROUTER_STT_MAX_ATTEMPTS, delay
+            )
+            _report_progress(on_progress, "Waiting before retrying transcription...")
+            await asyncio.sleep(delay)
+
+    raise AssertionError("OpenRouter STT attempt limit must produce a result or error")
 
 
 def speechmatics_transcript_payload_to_text(

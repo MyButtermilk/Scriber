@@ -3522,6 +3522,8 @@ async def test_on_pipeline_done_persists_failed_live_session():
     assert ctl._session_id is None
     assert rec in ctl._history
     save_mock.assert_awaited_once_with(rec)
+    assert rec.content_text() == ""
+    assert rec.step == ctl._provider_user_error(RuntimeError("boom")).message
 
 
 class _StopOkPipeline:
@@ -3786,12 +3788,14 @@ class _QuietTimeoutPipeline:
 
 
 @pytest.mark.asyncio
-async def test_stop_listening_marks_failed_when_stop_raises():
+@pytest.mark.parametrize("retained_speech", ["", "Already recognized speech."])
+async def test_stop_listening_marks_failed_when_stop_raises(retained_speech, failed_session_database):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
     session_id = "stop-fail-session"
     rec = _make_record(session_id)
+    rec.append_final_text(retained_speech)
     ctl._current = rec
     ctl._session_id = session_id
     ctl._is_listening = True
@@ -3823,12 +3827,30 @@ async def test_stop_listening_marks_failed_when_stop_raises():
     assert error_payloads[-1]["providerLabel"] == "Microsoft MAI Transcribe"
     assert error_payloads[-1]["category"] == "transient_provider"
     assert error_payloads[-1]["code"] == "ServiceUnavailable"
-    assert (
-        "[Error] Microsoft MAI Transcribe is temporarily unavailable. Retry shortly; if it repeats, check the Azure region and service status."
-        in rec.content
-    )
+    assert rec.content_text() == retained_speech
+    assert rec.step == error_payloads[-1]["message"]
+    saved = failed_session_database.get_transcript(rec.id)
+    assert saved is not None
+    assert saved["content"] == retained_speech
+    assert saved["step"] == rec.step
     assert ctl._status == "Error"
     assert rec in ctl._history
+    await ctl.drain_background_tasks_for_shutdown(timeout_seconds=1.0)
+    ctl.shutdown()
+
+
+@pytest.fixture
+def failed_session_database(monkeypatch, tmp_path):
+    # Other lifecycle tests temporarily rebind the database. Retire their
+    # memoized connections so both the worker write and this read use one DB.
+    web_api.db._close_all_connections()
+    monkeypatch.setenv("SCRIBER_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(web_api.db, "_DB_PATH", tmp_path / "transcripts.db")
+    web_api.db.init_database()
+    try:
+        yield web_api.db
+    finally:
+        web_api.db._close_all_connections()
 
 
 @pytest.mark.asyncio

@@ -1503,6 +1503,20 @@ Packaging and scripts:
   OpenRouter `error.metadata.raw` upstream errors without retaining free-form
   provider messages. Keep these fields in the debug-console allowlist; never
   restore raw response bodies to exceptions, logs, or support bundles.
+  Retry confirmed HTTP 429 responses at most twice, within a five-second
+  retry-admission window and the original overall request deadline. Respect
+  `Retry-After` seconds and HTTP dates; do not shorten a server wait to fit that
+  window. Without a valid hint, use bounded exponential backoff with jitter.
+  Retain the original audio and rebuild each JSON body because aiohttp closes
+  uploaded streams. Non-seekable audio, explicit credit/spending failures,
+  other HTTP errors, ambiguous response timeouts, and cancellation must never
+  trigger an automatic replay. HTTP 429 alone does not establish missing
+  OpenRouter credit; keep its temporary rate-limit message distinct from 402.
+- Failed Live Mic records persist their safe provider message in `step`, with
+  only recognized speech in transcript content. Preserve partial speech and
+  empty failed history entries. Transcript Detail shows the failure separately
+  and excludes legacy error-only content from word counts and copy/export
+  actions; never add an error string as a transcript segment.
 - Meta language-model choices are `muse-spark-1.3` and
   `muse-spark-1.3-contributor`; exact persisted 1.2 built-in selections migrate
   to their matching 1.3 tier without rewriting custom model codes. This also
