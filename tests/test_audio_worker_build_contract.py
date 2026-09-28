@@ -29,7 +29,9 @@ def test_audio_worker_has_one_shared_source_and_no_tauri_application_build_depen
     assert "tauri-build" not in worker.get("build-dependencies", {})
     assert "tauri" not in worker.get("dependencies", {})
     assert "aec3" not in desktop["dependencies"]
-    assert worker["dependencies"]["aec3"] == "=0.2.0"
+    assert "aec3" not in worker["dependencies"]
+    assert "scriber-localvqe" not in desktop["dependencies"]
+    assert worker["dependencies"]["scriber-localvqe"] == {"path": "../scriber-localvqe"}
     assert worker["features"]["default"] == []
 
 
@@ -45,6 +47,10 @@ def test_audio_cache_only_validation_does_not_require_a_local_rust_compiler(tmp_
         pytest.skip("PowerShell 7 is required for the release staging regression")
     required = [
         "backend_runtime/contract.py",
+        *(
+            f"native/scriber-localvqe/{name}"
+            for name in ("Cargo.toml", "build.rs", "inputs.json", "CMakeLists.txt", "bridge.cpp", "src/lib.rs")
+        ),
         "native/scriber-audio-sidecar/Cargo.toml",
         "native/scriber-audio-sidecar/Cargo.lock",
         "native/scriber-audio-sidecar/build.rs",
@@ -87,5 +93,5 @@ def test_audio_cache_only_validation_does_not_require_a_local_rust_compiler(tmp_
         check=False,
     )
     assert result.returncode != 0
-    assert "cache is missing, stale, or does not match worker version 0.1.0" in result.stderr
+    assert "cache is missing, stale, or does not match worker version 0.2.0" in result.stderr
     assert "rustc" not in result.stderr

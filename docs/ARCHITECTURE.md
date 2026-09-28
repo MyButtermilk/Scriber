@@ -216,9 +216,14 @@ Meetings:
    final pass; `final_only` records locally and opens no live STT connection.
 2. One crash-isolated Rust audio-sidecar process opens WASAPI microphone and
    loopback sources at 48 kHz in shared mode; it never opens a camera/video
-   device. Pinned `aec3-rs` consumes the loopback render
-   reference and produces a cleaned microphone stream before all three tracks
-   are downsampled to 16 kHz and stamped on one monotonic timeline.
+   device. The microphone and loopback frames are downsampled to 16 kHz before
+   the single pinned LocalVQE v1.3 model reduces echo, noise, and reverberation.
+   Its 256-sample inference hops are adapted to the 160-sample transport frames;
+   the relay holds at most four frames, removes the native one-hop pre-roll,
+   and flushes the final partial hop before EOF. All three tracks retain the
+   original capture timestamps and sample counts. The old `aecEnabled` switch
+   controls this joint enhancement; the legacy `aecDelayMs` input is accepted
+   for compatibility but LocalVQE estimates delay internally.
    Its private endpoint inventory covers capture and render flows; the
    token-protected Meeting API exposes only friendly labels and hashed IDs for
    explicit route selection. Its explicit local device test reuses the same
@@ -331,7 +336,7 @@ Meetings:
 
 Audio format is intentionally tiered rather than conflated with model input:
 
-- AEC3, Silero, Smart Turn, live STT, and the durable capture boundary consume
+- LocalVQE v1.3, Silero, Smart Turn, live STT, and the durable capture boundary consume
   PCM frames. Compression is never inserted into this latency-sensitive branch.
 - Recoverable 30-second work chunks remain 16-kHz mono PCM until their two-phase
   publication and the canonical transcript commit are proven durable.
@@ -2019,7 +2024,7 @@ is enabled, session teardown schedules a background refill with brand-new
 instances so later hotkeys retain the warm-start benefit.
 
 The Settings page has a dedicated Meetings section. It snapshots the selected
-final STT provider, analysis model, Smart Turn, AEC3, automatic-analysis, and
+final STT provider, analysis model, Smart Turn, LocalVQE v1.3, automatic-analysis, and
 audio-retention defaults into each new meeting. Final STT choices expose the
 exact model plus native timestamp and diarization capability; changing a
 default never mutates an existing meeting's pipeline snapshot.

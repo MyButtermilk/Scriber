@@ -1,0 +1,18 @@
+{
+  "source": {
+    "revision": "f53063c9eb2a85f96479867d1dd911dc3bf6319b",
+    "url": "https://codeload.github.com/localai-org/LocalVQE/tar.gz/f53063c9eb2a85f96479867d1dd911dc3bf6319b",
+    "sha256": "2b2cc18ddfcf1d5b49f503ab0f066ea045a6624f212be96535a936476cd62a8b"
+  },
+  "ggml": {
+    "revision": "c044a8eeae2591faa0950c8b5e514cbc4bbfc4ca",
+    "url": "https://codeload.github.com/ggml-org/ggml/tar.gz/c044a8eeae2591faa0950c8b5e514cbc4bbfc4ca",
+    "sha256": "d5bdf6f42a60368ee6a73076492a880d66f9e4435bffc82992ea6dd28b70bb0d"
+  },
+  "model": {
+    "version": "1.3",
+    "revision": "29ca38495cba9d6393a92a4dd890f28dd81f758d",
+    "url": "https://huggingface.co/LocalAI-io/LocalVQE/resolve/29ca38495cba9d6393a92a4dd890f28dd81f758d/localvqe-v1.3-4.8M-f32.gguf",
+    "sha256": "c4f7912485c32cfc206c536f2f050b52513f2f613fdbc616391f6b26ab1d51ec"
+  }
+}

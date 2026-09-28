@@ -6019,15 +6019,15 @@ export default function Settings() {
                   </InfoTooltip>
                 </div>
                 <SettingLine
-                  label={t("Reduce speaker echo")}
+                  label={t("Clean up meeting audio")}
                   description={t(
-                    "Helps prevent voices from your speakers being recorded again through your microphone.",
+                    "Reduces speaker echo, background noise, and reverberation locally on your computer.",
                   )}
                 >
                   <Switch
                     checked={meetingAecEnabled}
                     onCheckedChange={(enabled) => void updateMeetingPreferences({ meetingAecEnabled: enabled })}
-                    aria-label={t("Reduce speaker echo in meetings")}
+                    aria-label={t("Clean up meeting audio")}
                   />
                 </SettingLine>
               </div>

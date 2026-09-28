@@ -568,10 +568,9 @@ export const settingsTranslations = {
   "Why Scriber does not upload one-minute pieces": "Warum Scriber keine einminütigen Abschnitte hochlädt",
   "Small cloud requests do not reduce the audio duration you pay for and can reset speaker labels or cut words at the boundary. Scriber instead protects audio locally every 30 seconds, then gives the final service the longest supported context.":
     "Kleine Cloud-Anfragen verringern nicht die berechnete Audiodauer und können Sprecherbezeichnungen zurücksetzen oder Wörter an Abschnittsgrenzen abschneiden. Scriber sichert das Audio stattdessen alle 30 Sekunden lokal und übergibt dem finalen Dienst anschließend den längsten unterstützten Kontext.",
-  "Reduce speaker echo": "Lautsprecherecho reduzieren",
-  "Helps prevent voices from your speakers being recorded again through your microphone.":
-    "Verhindert, dass Stimmen aus deinen Lautsprechern erneut über dein Mikrofon aufgenommen werden.",
-  "Reduce speaker echo in meetings": "Lautsprecherecho in Meetings reduzieren",
+  "Clean up meeting audio": "Meeting-Audio bereinigen",
+  "Reduces speaker echo, background noise, and reverberation locally on your computer.":
+    "Reduziert Lautsprecherechos, Hintergrundgeräusche und Hall lokal auf deinem Computer.",
   "Summaries and storage": "Zusammenfassungen und Speicherung",
   "Choose how Scriber creates the meeting brief and how long it keeps local audio.":
     "Lege fest, wie Scriber die Meeting-Zusammenfassung erstellt und wie lange lokales Audio aufbewahrt wird.",

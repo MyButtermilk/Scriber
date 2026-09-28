@@ -3069,7 +3069,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                   {[
                     { icon: Mic2, label: "Microphone", detail: "Your voice" },
                     { icon: Headphones, label: "System audio", detail: "Other participants" },
-                    { icon: Waves, label: "Echo control", detail: "Reduces speaker echo" },
+                    { icon: Waves, label: "Audio cleanup", detail: "Reduces echo, noise, and reverberation" },
                   ].map(({ icon: Icon, label, detail }) => (
                     <div key={label} className="flex min-w-0 items-center gap-2.5">
                       <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10">
@@ -3425,7 +3425,7 @@ export default function Meetings({ params }: { params?: { id?: string } }) {
                             {deviceTestMutation.data.testTonePlayed
                               ? t("Speaker sound played")
                               : t("Speaker sound unavailable")}{" "}
-                            · {t("Echo reduction")} {deviceTestMutation.data.aecActive ? t("ready") : t("unavailable")}
+                            · {t("Audio cleanup")} {deviceTestMutation.data.aecActive ? t("ready") : t("unavailable")}
                           </p>
                         </div>
                       )}

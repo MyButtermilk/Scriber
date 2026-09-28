@@ -116,8 +116,8 @@ test("localizes legacy relative date labels", () => {
 test("dynamic interface labels have complete German translations", () => {
   assert.equal(translate("de", "Your voice"), "Deine Stimme");
   assert.equal(translate("de", "Other participants"), "Andere Teilnehmende");
-  assert.equal(translate("de", "Echo control"), "Echounterdrückung");
-  assert.equal(translate("de", "Reduces speaker echo"), "Reduziert Lautsprecherechos");
+  assert.equal(translate("de", "Audio cleanup"), "Audiobereinigung");
+  assert.equal(translate("de", "Reduces echo, noise, and reverberation"), "Reduziert Echo, Rauschen und Hall");
   assert.equal(translate("de", "Preparing audio"), "Audio wird vorbereitet");
   assert.equal(translate("de", "Preparing audio download..."), "Audiodownload wird vorbereitet …");
   assert.equal(

@@ -1,0 +1,12 @@
+[package]
+name = "scriber-localvqe"
+version = "0.1.0"
+edition = "2021"
+links = "scriber_localvqe"
+
+[dependencies]
+tempfile = "3"
+
+[build-dependencies]
+cmake = "0.1"
+serde_json = "1"

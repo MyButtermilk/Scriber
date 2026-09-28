@@ -235,7 +235,7 @@ Meetings:
   Meeting notes use a serialized, coalescing save lane with retry and
   page-teardown flushing.
 - Native meeting capture uses one Rust audio sidecar for mic plus loopback,
-  pinned `aec3-rs` echo cancellation, a shared monotonic timeline, three durable
+  pinned LocalVQE v1.3 joint audio enhancement, a shared monotonic timeline, three durable
   tracks, health monitoring, pause/resume gaps, and checksum-validated chunks.
 - Pause, stop, cleanup, and device reconnect now arm the recorder before native
   pipes close, so Windows `OSError` disconnects commit the valid partial chunk
@@ -917,7 +917,7 @@ routes, sleep/resume, long meetings, network loss/recovery, Outlook tenant
 types, and installer upgrade/uninstall retention. The optional WeSpeaker model
 also remains behind a commercial/legal review because of its VoxCeleb training
 data terms. These are release evidence gates, not missing fallback capture
-paths; the normal Live Mic workflow intentionally does not enable AEC3 without
+paths; the normal Live Mic workflow intentionally does not enable LocalVQE v1.3 without
 a render reference. `scripts\run_meeting_release_matrix.ps1` now prepares 19
 atomic non-passing operator drafts and
 `scripts\validate_meeting_release_matrix.py` validates completed evidence; the
@@ -947,7 +947,7 @@ screen-reader conformance, 200% zoom, localization, or release readiness.
 
 #### Do not rebuild the existing baseline
 
-The current product already has Mic/System/AEC3 capture, the explicit route
+The current product already has Mic/System/LocalVQE v1.3 capture, the explicit route
 test, pause/resume/stop, 30-second checkpoints, reconnect health, durable import
 and recovery, Outlook connect/status, transparent live/final/analysis model
 labels, Voice Library controls, Overview/Decisions/Actions/Questions/Notes/Ask
@@ -1304,7 +1304,7 @@ of code, prompts, assets, or schemas.
 | Axis | Meetily evidence | Scriber evidence and decision |
 | --- | --- | --- |
 | Product boundary | Local Whisper/Parakeet transcription, optional local or cloud summary providers, import/retranscription, transcript recovery, templates, and a compact two-pane Meeting view | Scriber already covers bot-free capture, local/cloud transcription, import/reprocessing, recovery, speaker review, Outlook context, notes, Ask, exports, email drafts, and delivery. Preserve that broader workflow; borrow only interactions that shorten review. |
-| Audio capture | One in-process Rust `RecordingManager`, process-global `Mutex<Option<...>>` plus a separate atomic recording flag, CPAL mic/system streams, an unbounded channel, and a simple 50 ms ring-buffer mix ([commands](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/recording_commands.rs), [pipeline](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/pipeline.rs)) | Scriber deliberately keeps physical WASAPI capture in a supervised Rust sidecar, uses one shared clock for raw mic/system/AEC3-clean tracks, and admits it through a durable cross-process lease. Do not replace this with a process-global frontend manager or mixed-only capture. |
+| Audio capture | One in-process Rust `RecordingManager`, process-global `Mutex<Option<...>>` plus a separate atomic recording flag, CPAL mic/system streams, an unbounded channel, and a simple 50 ms ring-buffer mix ([commands](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/recording_commands.rs), [pipeline](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/pipeline.rs)) | Scriber deliberately keeps physical WASAPI capture in a supervised Rust sidecar, uses one shared clock for raw mic/system/LocalVQE v1.3-clean tracks, and admits it through a durable cross-process lease. Do not replace this with a process-global frontend manager or mixed-only capture. |
 | Lifecycle ownership | Start/stop/pause/resume mutate several globals and listeners; `RecordingManager` contains an `unsafe impl Send` ([manager](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/recording_manager.rs)) | Scriber owns lifecycle in `ScriberWebController`, exposes strict route commands/outcomes, reserves finalization before irreversible stop, and retains native ownership until stop is confirmed. Keep that deep owner; do not move orchestration into React or shallow route adapters. |
 | Crash recovery | The browser mirrors transcript events into IndexedDB while Rust encodes 30-second MP4 files. Recovery later scans filenames, estimates every chunk as 30 seconds, and concatenates them ([incremental saver](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src-tauri/src/audio/incremental_saver.rs), [recovery hook](https://github.com/Zackriya-Solutions/meetily/blob/0281737d87d26352fb0adc78c8c0975f691b23d1/frontend/src/hooks/useTranscriptRecovery.ts)) | Scriber uses prepared/complete audio-chunk commits, hashes, shared-timeline metadata, base/delta transcript checkpoints, durable Meeting states, corruption fallback, and restart recovery in SQLite. The single durable authority is materially stronger than a browser/filesystem join and stays unchanged. |
 | Transcription | Local Whisper and Parakeet engines are first-class and can use platform GPU features; transcript events are buffered and reordered in React | Scriber supports multiple frozen provider routes plus local ONNX, separates live preview from canonical final artifacts, and snapshots route/model evidence. Retain the provider-neutral artifact boundary; a future local GPU route must enter through it rather than fork Meeting semantics. |

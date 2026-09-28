@@ -320,8 +320,8 @@ function Test-InstalledMeetingResources {
         throw "Installed third-party notices file is missing: $noticePath"
     }
     $notice = Get-Content -LiteralPath $noticePath -Raw
-    if ($notice -notmatch 'aec3 0\.2\.0') {
-        throw "Installed third-party notices do not contain the pinned aec3 notice."
+    if ($notice -notmatch 'LocalVQE 1\.3') {
+        throw "Installed third-party notices do not contain the pinned LocalVQE notice."
     }
     $bundledVoiceModels = @(
         Get-ChildItem -LiteralPath $Root -Recurse -File -ErrorAction Stop |
@@ -346,7 +346,7 @@ function Test-InstalledMeetingResources {
     return [pscustomobject]@{
         verified = $true
         noticePath = Convert-ToRelativePath -Root $Root -Path $noticePath
-        aec3NoticePresent = $true
+        localVqeNoticePresent = $true
         optionalWeSpeakerModelAbsent = $true
         diarizationWorker = $diarizationWorker
     }

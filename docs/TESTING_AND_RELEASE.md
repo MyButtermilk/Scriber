@@ -2401,7 +2401,7 @@ For an installed-package build, add
 
 The physical installed Meeting stability gate is deliberately separate from
 that deterministic short test. It runs exactly 60 seconds through the real
-WASAPI microphone + loopback + AEC3 path, keeps the native-audio admission
+WASAPI microphone + loopback + LocalVQE v1.3 path, keeps the native-audio admission
 lease alive, requires continuous frames from all three pipes, samples the full
 process tree for CPU/working-set/private-bytes growth, plays one bounded
 loopback tone, rejects transport errors or new audio artifacts, and requires a

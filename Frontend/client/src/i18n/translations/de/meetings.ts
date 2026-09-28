@@ -491,8 +491,8 @@ export const meetingsTranslations = {
   "System audio": "Systemaudio",
   "Your voice": "Deine Stimme",
   "Other participants": "Andere Teilnehmende",
-  "Echo control": "Echounterdrückung",
-  "Reduces speaker echo": "Reduziert Lautsprecherechos",
+  "Audio cleanup": "Audiobereinigung",
+  "Reduces echo, noise, and reverberation": "Reduziert Echo, Rauschen und Hall",
   "Audio playback could not start.": "Die Audiowiedergabe konnte nicht gestartet werden.",
   "Saved audio is not available for this meeting.": "Für dieses Meeting ist kein gespeichertes Audio verfügbar.",
   "No saved voice sample is available for this speaker.":
