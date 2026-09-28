@@ -437,13 +437,15 @@ export default function TranscriptDetail() {
   const summaryMarkdown = useMemo(() => normalizeSummaryMarkdown(summarySource), [summarySource]);
   const summaryCopyText = summaryFormat === "html" ? preparedSummaryHtml.plainText : summaryMarkdown;
   const hasSummary = summarySource.length > 0;
+  const isFailedTranscript = transcript.status === "failed";
+  const failedContentLooksLikeErrorOnly =
+    isFailedTranscript &&
+    /^\[(error|timeout|download error|storage error)\]/i.test(String(transcript.content || "").trim());
+  const transcriptContent = failedContentLooksLikeErrorOnly ? "" : String(transcript.content || "");
+  const hasExportableContent = !failedContentLooksLikeErrorOnly && Boolean(transcriptContent.trim() || hasSummary);
   const transcriptWordCount = useMemo(
-    () =>
-      String(transcript.content || "")
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean).length,
-    [transcript.content],
+    () => transcriptContent.trim().split(/\s+/).filter(Boolean).length,
+    [transcriptContent],
   );
   const summaryStatus = String(transcript?.summaryStatus || (hasSummary ? "completed" : "idle")).toLowerCase();
   const summaryStepLower = String(transcript?.step || "").toLowerCase();
@@ -462,12 +464,15 @@ export default function TranscriptDetail() {
     transcript.status === "completed" && !hasSummary && !isSummaryInProgress && !isSummaryFailed;
   const isFailedYoutubeTranscript = transcript?.status === "failed" && transcript?.type === "youtube";
   const rawFailureMessage = useMemo(
-    () => extractFailureMessage(String(transcript?.content || ""), String(transcript?.step || "")),
-    [transcript?.content, transcript?.step],
+    () =>
+      transcript.type === "mic" && !failedContentLooksLikeErrorOnly
+        ? String(transcript.step || "")
+        : extractFailureMessage(String(transcript.content || ""), String(transcript.step || "")),
+    [failedContentLooksLikeErrorOnly, transcript.content, transcript.step, transcript.type],
   );
   const failedMessage = useMemo(
-    () => (isFailedYoutubeTranscript ? t(friendlyRequestMessage(rawFailureMessage, t("Transcription failed."))) : ""),
-    [isFailedYoutubeTranscript, rawFailureMessage, t],
+    () => (isFailedTranscript ? t(friendlyRequestMessage(rawFailureMessage, t("Transcription failed."))) : ""),
+    [isFailedTranscript, rawFailureMessage, t],
   );
   const technicalFailureMessage = useMemo(() => {
     if (!isFailedYoutubeTranscript) return "";
@@ -475,11 +480,6 @@ export default function TranscriptDetail() {
     if (!technical || technical === failedMessage) return "";
     return technical;
   }, [failedMessage, isFailedYoutubeTranscript, rawFailureMessage]);
-  const failedContentLooksLikeErrorOnly = useMemo(() => {
-    if (!isFailedYoutubeTranscript) return false;
-    const content = String(transcript?.content || "").trim();
-    return /^\[(error|timeout|download error)\]/i.test(content);
-  }, [isFailedYoutubeTranscript, transcript?.content]);
 
   const retryYoutubeTranscription = useCallback(async () => {
     if (!id || isRetryingYoutube) return;
@@ -568,7 +568,7 @@ export default function TranscriptDetail() {
       if (!navigator.clipboard?.writeText) {
         throw new Error(t("Clipboard API unavailable"));
       }
-      await navigator.clipboard.writeText(transcript?.content || "");
+      await navigator.clipboard.writeText(transcriptContent);
       setCopied(true);
       if (copyResetTimerRef.current !== null) {
         window.clearTimeout(copyResetTimerRef.current);
@@ -587,7 +587,7 @@ export default function TranscriptDetail() {
         variant: "destructive",
       });
     }
-  }, [t, toast, transcript?.content]);
+  }, [t, toast, transcriptContent]);
 
   const handleCopySummary = useCallback(async () => {
     try {
@@ -617,7 +617,7 @@ export default function TranscriptDetail() {
 
   const handleExport = useCallback(
     async (format: "pdf" | "docx") => {
-      if (!id || isExporting) return;
+      if (!id || isExporting || !hasExportableContent) return;
       setIsExporting(true);
       try {
         const result = await saveTranscriptExport(
@@ -642,7 +642,7 @@ export default function TranscriptDetail() {
         setIsExporting(false);
       }
     },
-    [id, isExporting, t, toast, transcript?.title],
+    [hasExportableContent, id, isExporting, t, toast, transcript?.title],
   );
 
   const getBackLink = () => {
@@ -720,7 +720,7 @@ export default function TranscriptDetail() {
                 </a>
               </Button>
             )}
-            {transcript.content && (
+            {transcriptContent && (
               <Button
                 variant="default"
                 size="sm"
@@ -751,13 +751,17 @@ export default function TranscriptDetail() {
                   size="sm"
                   className="hidden md:flex data-[state=open]:bg-accent"
                   style={{ transform: "none" }}
+                  disabled={!hasExportableContent}
                   type="button"
                 >
                   <Download className="w-4 h-4 mr-2" /> {t("Export")}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("pdf")}>
+                <DropdownMenuItem
+                  disabled={isExporting || !hasExportableContent}
+                  onSelect={() => void handleExport("pdf")}
+                >
                   {isExporting ? (
                     <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
@@ -765,7 +769,10 @@ export default function TranscriptDetail() {
                   )}{" "}
                   {t("Export as PDF")}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("docx")}>
+                <DropdownMenuItem
+                  disabled={isExporting || !hasExportableContent}
+                  onSelect={() => void handleExport("docx")}
+                >
                   {isExporting ? (
                     <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
@@ -807,7 +814,7 @@ export default function TranscriptDetail() {
                     </a>
                   </DropdownMenuItem>
                 )}
-                {transcript.content && (
+                {transcriptContent && (
                   <DropdownMenuItem onClick={handleCopyTranscript}>
                     <Copy className="w-4 h-4 mr-2" /> {t("Copy transcript")}
                   </DropdownMenuItem>
@@ -817,7 +824,10 @@ export default function TranscriptDetail() {
                     <Copy className="w-4 h-4 mr-2" /> {t("Copy summary")}
                   </DropdownMenuItem>
                 )}
-                <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("pdf")}>
+                <DropdownMenuItem
+                  disabled={isExporting || !hasExportableContent}
+                  onSelect={() => void handleExport("pdf")}
+                >
                   {isExporting ? (
                     <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
@@ -825,7 +835,10 @@ export default function TranscriptDetail() {
                   )}{" "}
                   {t("Export as PDF")}
                 </DropdownMenuItem>
-                <DropdownMenuItem disabled={isExporting} onSelect={() => void handleExport("docx")}>
+                <DropdownMenuItem
+                  disabled={isExporting || !hasExportableContent}
+                  onSelect={() => void handleExport("docx")}
+                >
                   {isExporting ? (
                     <WavePhysicsLoader className="mr-2" size="inline" />
                   ) : (
@@ -896,14 +909,19 @@ export default function TranscriptDetail() {
             </div>
           )}
 
-          {isFailedYoutubeTranscript && (
+          {isFailedTranscript && (
             <div className="space-y-2">
               <QueryErrorState
-                title={t("YouTube transcription failed")}
+                title={t(isFailedYoutubeTranscript ? "YouTube transcription failed" : "Transcription failed")}
+                className="text-foreground [&>svg]:text-red-500 dark:[&>svg]:text-red-400"
                 description={failedMessage || t("The transcription failed. Please try again.")}
-                onRetry={() => {
-                  void retryYoutubeTranscription();
-                }}
+                onRetry={
+                  isFailedYoutubeTranscript
+                    ? () => {
+                        void retryYoutubeTranscription();
+                      }
+                    : undefined
+                }
               />
               {technicalFailureMessage && (
                 <p className="text-xs text-muted-foreground px-1">
@@ -1007,12 +1025,8 @@ export default function TranscriptDetail() {
                       t("Loading…")
                     ) : transcript.status === "processing" ? (
                       <span className="text-muted-foreground italic"></span>
-                    ) : isFailedYoutubeTranscript && failedContentLooksLikeErrorOnly ? (
-                      <span className="text-muted-foreground italic">
-                        {failedMessage || t("No transcript text captured.")}
-                      </span>
-                    ) : transcript.content ? (
-                      <SpeakerFormattedText content={transcript.content} />
+                    ) : transcriptContent ? (
+                      <SpeakerFormattedText content={transcriptContent} />
                     ) : (
                       t("No transcript text captured.")
                     )}

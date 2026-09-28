@@ -12,7 +12,7 @@ const TIMEOUT_ERROR_TOKENS = ["timeout", "timed out", "aborted", "aborterror"];
 const CORS_ERROR_TOKENS = ["cors", "cross-origin"];
 const INVALID_ARGUMENT_TOKENS = ["errno 22", "invalid argument"];
 
-const PREFIX_PATTERN = /^\[(error|timeout|download error)\]\s*/i;
+const PREFIX_PATTERN = /^\[(error|timeout|download error|storage error)\]\s*/i;
 const STATUS_PREFIX_PATTERN = /^\d{3}:\s*/;
 
 function stripLowLevelPrefixes(rawMessage: string): string {
@@ -89,7 +89,7 @@ export async function responseErrorMessage(res: Response): Promise<string> {
 export function extractFailureMessage(content: string, step: string): string {
   const rawContent = (content || "").trim();
   if (rawContent) {
-    const matches = Array.from(rawContent.matchAll(/\[(error|timeout|download error)\]\s*([^\n]+)/gi));
+    const matches = Array.from(rawContent.matchAll(/\[(error|timeout|download error|storage error)\]\s*([^\n]+)/gi));
     if (matches.length > 0) {
       const last = matches[matches.length - 1];
       const reason = (last?.[2] || "").trim();

@@ -9258,15 +9258,13 @@ class ScriberWebController:
                     failed_current = self._current
                     self._current = None
             if failed_current:
-                if not failed_current.content_text().strip() and info.category is not ErrorCategory.CONFIG_INVALID:
-                    failed_current.append_final_text(f"[Error] {user_msg}")
-                if failed_current.content_text().strip():
-                    self._add_to_history(failed_current)
-                    self._schedule_transcript_save(failed_current)
-                    self._spawn_detached_threadsafe(
-                        lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
-                        name="pipeline_failure_history_broadcast",
-                    )
+                failed_current.step = user_msg
+                self._add_to_history(failed_current)
+                self._schedule_transcript_save(failed_current)
+                self._spawn_detached_threadsafe(
+                    lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
+                    name="pipeline_failure_history_broadcast",
+                )
         finally:
             # Schedule safe cleanup on the event loop
             self._spawn_detached_threadsafe(
@@ -13552,8 +13550,9 @@ class ScriberWebController:
                 current.finish("failed" if stop_error else "completed")
                 if stop_error:
                     info = stop_error_info or self._provider_user_error(stop_error, provider=provider_used)
-                    err_line = f"[Error] {info.message}"
-                    current.append_final_text(err_line)
+                    # Failure details belong to the durable status, never the
+                    # words that are counted, copied, summarized, or exported.
+                    current.step = info.message
                 self._add_to_history(current)
                 await self._save_transcript_to_db_async(current)
                 finished_payload = session_finished_event(

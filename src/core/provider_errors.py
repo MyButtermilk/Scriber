@@ -195,7 +195,7 @@ _PROVIDER_REASON_SIGNALS = (
         ("unsupported audio", "unsupported format", "unsupported codec", "could not decode", "cannot decode"),
     ),
     ("model_unavailable", ("no endpoints found", "no available provider", "model not found", "model not available")),
-    ("insufficient_credits", ("insufficient credits", "insufficient quota", "credit balance", "quota exceeded")),
+    ("insufficient_credits", ("insufficient credits", "credit balance", "spending limit")),
     ("rate_limited", ("rate limit", "too many requests")),
     ("authentication_failed", ("invalid api key", "authentication failed", "unauthorized")),
     ("upstream_timeout", ("gateway timeout", "timed out", "timeout")),
@@ -253,6 +253,26 @@ def provider_user_error(provider: str | None, error: Exception | str) -> Provide
             f"{label} API key is missing. Add it in Settings.",
             code="missing_api_key",
             retryable=False,
+        )
+
+    if normalized_provider == "openrouter_stt" and status in {402, 429}:
+        credit_failure = (
+            status == 402
+            or (transport_error is not None and transport_error.reason == "insufficient_credits")
+            or _has(combined, "insufficient credits", "spending limit")
+        )
+        message = (
+            f"{label} reports insufficient credits or a spending limit (HTTP {status}). Check the provider billing limits."
+            if credit_failure
+            else f"{label} is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider."
+        )
+        return _make_error(
+            normalized_provider,
+            label,
+            ErrorCategory.PROVIDER_LIMIT,
+            message,
+            code=code or str(status),
+            retryable=not credit_failure,
         )
 
     family = _provider_family(normalized_provider)
