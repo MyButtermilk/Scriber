@@ -388,6 +388,8 @@ Frontend and shell:
   Preserve the 16 kHz 256-sample hop adapter, one-hop delay compensation,
   bounded shared-timeline queue, and Stop/Pause/EOF tail flush. Model construction
   must emit no stdout because that channel carries the sidecar JSON protocol.
+  Initialize the model and connect output consumers before opening upstream
+  capture pipes; opening those pipes starts bounded producer writes.
   The token-protected Meeting device test must reuse this path, remain explicit
   and local-only, return only bounded level/activity statistics, and always stop
   its ephemeral sidecar capture without persisting or uploading PCM. Product

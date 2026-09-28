@@ -3754,6 +3754,20 @@ fn run_meeting_aec_relay(
         .map(|handle| *handle as HANDLE)
         .collect();
     let result = (|| -> Result<(), String> {
+        // Connecting upstream pipes starts bounded capture writes. Prepare the
+        // model and all consumers first so a cold model cannot fill those pipes.
+        let mut aec = if aec_enabled {
+            // Force the real pipe regression beyond its buffer/write deadline
+            // in tests; production performs no artificial wait.
+            #[cfg(test)]
+            thread::sleep(Duration::from_millis(1500));
+            Some(MeetingEnhancer::new()?)
+        } else {
+            None
+        };
+        for handle in &outputs {
+            wait_for_meeting_output_pipe_client(*handle, &stop_rx)?;
+        }
         let microphone = open_frame_pipe_reader(&microphone_pipe)?;
         let system = match open_frame_pipe_reader(&system_pipe) {
             Ok(handle) => handle,
@@ -3765,14 +3779,6 @@ fn run_meeting_aec_relay(
             }
         };
         let processing = (|| -> Result<(), String> {
-            for handle in &outputs {
-                wait_for_meeting_output_pipe_client(*handle, &stop_rx)?;
-            }
-            let mut aec = if aec_enabled {
-                Some(MeetingEnhancer::new()?)
-            } else {
-                None
-            };
             let mut relay_sequence = 0u64;
             let mut microphone_frame = Some(read_meeting_frame(microphone, &stop_rx)?);
             let mut system_frame = Some(read_meeting_frame(system, &stop_rx)?);
@@ -6732,10 +6738,13 @@ mod tests {
                 })
             })
             .collect();
-        for _ in 0..3 {
-            ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        }
         let capture_id = response["payload"]["meetingCaptureId"].as_str().unwrap();
+        for _ in 0..3 {
+            if let Err(error) = ready_rx.recv_timeout(Duration::from_secs(10)) {
+                let stopped = state.stop_meeting_capture(capture_id, "testFailureCleanup");
+                panic!("Meeting frames not ready: {error}; stopped={stopped}");
+            }
+        }
         let stopped = state.stop_meeting_capture(capture_id, "meetingCaptureStop");
         assert_eq!(stopped["stopped"], true);
         assert_eq!(stopped["relay"]["relayError"], Value::Null, "{stopped}");
