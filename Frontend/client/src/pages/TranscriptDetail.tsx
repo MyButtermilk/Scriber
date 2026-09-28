@@ -439,7 +439,8 @@ export default function TranscriptDetail() {
   const hasSummary = summarySource.length > 0;
   const isFailedTranscript = transcript.status === "failed";
   const failedContentLooksLikeErrorOnly =
-    isFailedTranscript && /^\[(error|timeout|download error)\]/i.test(String(transcript.content || "").trim());
+    isFailedTranscript &&
+    /^\[(error|timeout|download error|storage error)\]/i.test(String(transcript.content || "").trim());
   const transcriptContent = failedContentLooksLikeErrorOnly ? "" : String(transcript.content || "");
   const hasExportableContent = !failedContentLooksLikeErrorOnly && Boolean(transcriptContent.trim() || hasSummary);
   const transcriptWordCount = useMemo(

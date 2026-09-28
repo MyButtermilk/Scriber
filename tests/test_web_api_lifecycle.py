@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from src import web_api
+from src.core.provider_errors import provider_transport_error
 from src.web_api import ScriberWebController, TranscriptRecord
 
 
@@ -3491,7 +3492,14 @@ async def test_audio_level_updates_overlay_without_ws_clients():
 
 
 @pytest.mark.asyncio
-async def test_on_pipeline_done_persists_failed_live_session():
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("boom"),
+        provider_transport_error("openrouter_stt", "transcription", status=400, response_body="Invalid request"),
+    ],
+)
+async def test_on_pipeline_done_persists_failed_live_session(failure):
     loop = asyncio.get_running_loop()
     ctl = ScriberWebController(loop)
 
@@ -3500,9 +3508,11 @@ async def test_on_pipeline_done_persists_failed_live_session():
     ctl._current = rec
     ctl._session_id = session_id
     ctl._is_listening = True
+    ctl._active_provider = "openrouter_stt"
+    expected_message = ctl._provider_user_error(failure, provider="openrouter_stt").message
 
     async def _boom():
-        raise RuntimeError("boom")
+        raise failure
 
     task = asyncio.create_task(_boom())
     await asyncio.sleep(0)
@@ -3523,7 +3533,7 @@ async def test_on_pipeline_done_persists_failed_live_session():
     assert rec in ctl._history
     save_mock.assert_awaited_once_with(rec)
     assert rec.content_text() == ""
-    assert rec.step == ctl._provider_user_error(RuntimeError("boom")).message
+    assert rec.step == expected_message
 
 
 class _StopOkPipeline:

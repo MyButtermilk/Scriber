@@ -9259,13 +9259,12 @@ class ScriberWebController:
                     self._current = None
             if failed_current:
                 failed_current.step = user_msg
-                if failed_current.content_text().strip() or info.category is not ErrorCategory.CONFIG_INVALID:
-                    self._add_to_history(failed_current)
-                    self._schedule_transcript_save(failed_current)
-                    self._spawn_detached_threadsafe(
-                        lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
-                        name="pipeline_failure_history_broadcast",
-                    )
+                self._add_to_history(failed_current)
+                self._schedule_transcript_save(failed_current)
+                self._spawn_detached_threadsafe(
+                    lambda: self._broadcast_history_updated(record=failed_current, reason="pipeline_failed"),
+                    name="pipeline_failure_history_broadcast",
+                )
         finally:
             # Schedule safe cleanup on the event loop
             self._spawn_detached_threadsafe(

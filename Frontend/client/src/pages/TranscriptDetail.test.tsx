@@ -15,13 +15,13 @@ vi.mock("@/hooks/use-mobile", () => ({ useIsMobile: () => false }));
 const rateLimitMessage =
   "Microsoft MAI Transcribe via OpenRouter is temporarily rate limited (HTTP 429). Wait briefly or switch transcription provider.";
 
-function mount(content = "", step = rateLimitMessage, summary = "") {
+function mount(content = "", step = rateLimitMessage, summary = "", type: TranscriptDetailResponse["type"] = "mic") {
   const record: TranscriptDetailResponse = {
     id: "failed-mic",
     title: "Live Mic",
     date: "Today",
     duration: "00:03",
-    type: "mic",
+    type,
     status: "failed",
     content,
     step,
@@ -44,7 +44,7 @@ function mount(content = "", step = rateLimitMessage, summary = "") {
   );
 }
 
-describe("failed Live Mic transcript", () => {
+describe("failed transcript", () => {
   beforeEach(() => {
     window.localStorage.setItem(LANGUAGE_STORAGE_KEY, "en");
   });
@@ -68,9 +68,17 @@ describe("failed Live Mic transcript", () => {
     expect(screen.getByRole("button", { name: "Export" })).toBeEnabled();
   });
 
-  it("does not count or offer to copy a legacy error-only transcript", async () => {
-    mount(`[Error] ${rateLimitMessage}`, "Transcribing...", "Earlier summary");
-    expect(await screen.findByRole("alert")).toHaveTextContent(rateLimitMessage);
+  it.each([
+    ["Error", "mic"],
+    ["Timeout", "mic"],
+    ["Download error", "youtube"],
+    ["Storage error", "file"],
+    ["Storage error", "youtube"],
+  ] as const)("excludes legacy %s content from a %s transcript", async (prefix, type) => {
+    mount(`[${prefix}] ${rateLimitMessage}`, "Transcribing...", "Earlier summary", type);
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(rateLimitMessage);
+    expect(alert).not.toHaveTextContent(`[${prefix}]`);
     expect(screen.queryByText(/\d+ words/)).toBeNull();
     expect(screen.queryByRole("button", { name: "Copy transcript" })).toBeNull();
     expect(screen.getByText("No transcript text captured.")).toBeInTheDocument();
