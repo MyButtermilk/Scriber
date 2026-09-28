@@ -93,5 +93,8 @@ def test_audio_cache_only_validation_does_not_require_a_local_rust_compiler(tmp_
         check=False,
     )
     assert result.returncode != 0
-    assert "cache is missing, stale, or does not match worker version 0.2.0" in result.stderr
+    worker_version = tomllib.loads((ROOT / "native/scriber-audio-sidecar/Cargo.toml").read_text(encoding="utf-8"))[
+        "package"
+    ]["version"]
+    assert f"cache is missing, stale, or does not match worker version {worker_version}" in result.stderr
     assert "rustc" not in result.stderr

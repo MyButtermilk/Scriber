@@ -1,6 +1,6 @@
 [package]
 name = "scriber-audio-sidecar"
-version = "0.2.0"
+version = "0.2.1"
 description = "Scriber audio capture worker"
 authors = ["Scriber"]
 edition = "2021"

@@ -218,6 +218,8 @@ Meetings:
    loopback sources at 48 kHz in shared mode; it never opens a camera/video
    device. The microphone and loopback frames are downsampled to 16 kHz before
    the single pinned LocalVQE v1.3 model reduces echo, noise, and reverberation.
+   The relay initializes the model and connects consumers before opening its
+   upstream capture pipes, so cold model startup cannot overflow producer buffers.
    Its 256-sample inference hops are adapted to the 160-sample transport frames;
    the relay holds at most four frames, removes the native one-hop pre-roll,
    and flushes the final partial hop before EOF. All three tracks retain the
