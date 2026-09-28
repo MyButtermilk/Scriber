@@ -2180,7 +2180,7 @@ def test_meeting_workspace_uses_focus_canvas_and_gpu_only_live_progress() -> Non
     assert 't("What matters now")' in source
     assert 't("Key outcome")' in source
     assert 't("Render-active attenuation")' in source
-    assert 'detail: "Reduces speaker echo"' in source
+    assert 'detail: "Reduces echo, noise, and reverberation"' in source
     assert "{t(detail)}" in source
     assert "I confirm I am permitted to record" not in source
     assert "Recording conversations without permission" not in source
@@ -2357,7 +2357,7 @@ def test_meeting_defaults_and_voice_library_live_only_in_meeting_settings() -> N
     assert 'title={t("Transcription")}' in meeting_settings
     assert 'title={t("Summaries and storage")}' in meeting_settings
     assert 't("Protected every 30 seconds.")' in meeting_settings
-    assert 'label={t("Reduce speaker echo")}' in meeting_settings
+    assert 'label={t("Clean up meeting audio")}' in meeting_settings
     assert "checkpointed audio" not in meeting_settings
     assert "AEC3 echo control" not in meeting_settings
     assert "Voice embeddings" not in meeting_settings

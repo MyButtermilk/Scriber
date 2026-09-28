@@ -29,7 +29,8 @@
 ## Latest highlights
 
 - **Bot-free Meetings:** record microphone and Windows system audio on one
-  timeline, remove speaker echo with AEC3, and create transcripts, summaries,
+  timeline, reduce echo, noise, and reverberation with LocalVQE v1.3, and create
+  transcripts, summaries,
   decisions, action items, cited answers, and reusable exports.
 - **Smarter speaker workflows:** use provider-native speaker turns or optional
   offline Sherpa-ONNX diarization, then confirm names with Meeting-local labels,
@@ -159,8 +160,10 @@ Drop in audio, video, or several files at once. Scriber extracts audio, compress
 ### 👥 Capture meetings without a joining bot
 
 The Meetings workspace records microphone and Windows system audio locally while
-the call is in progress. WebRTC AEC3 uses the system-audio reference to remove
-speaker echo from the microphone track; the raw source is still retained for
+the call is in progress. LocalVQE v1.3 uses the system-audio reference to reduce
+speaker echo, background noise, and reverberation in the microphone track. The
+single model runs locally on the CPU and is included in the app; the raw source
+is retained for
 recovery. After stop, Scriber creates a timestamped canonical transcript,
 summary, decisions, action items, cited chat answers, and reusable exports.
 

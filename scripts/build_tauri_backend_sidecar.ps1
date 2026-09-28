@@ -1772,7 +1772,13 @@ function Get-RustAudioSidecarInputManifest {
         "Frontend\src-tauri\src\audio_frame_pipe.rs",
         "Frontend\src-tauri\src\audio_prepare.rs",
         "Frontend\src-tauri\src\meeting_aec.rs",
-        "Frontend\src-tauri\src\redaction.rs"
+        "Frontend\src-tauri\src\redaction.rs",
+        "native\scriber-localvqe\Cargo.toml",
+        "native\scriber-localvqe\build.rs",
+        "native\scriber-localvqe\inputs.json",
+        "native\scriber-localvqe\CMakeLists.txt",
+        "native\scriber-localvqe\bridge.cpp",
+        "native\scriber-localvqe\src\lib.rs"
     )
     $knownPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($relative in $relativePaths) {

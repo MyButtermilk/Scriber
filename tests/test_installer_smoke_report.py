@@ -89,7 +89,7 @@ def smoke(tmp_path):
         },
         "meetingResources": {
             "verified": True,
-            "aec3NoticePresent": True,
+            "localVqeNoticePresent": True,
             "optionalWeSpeakerModelAbsent": True,
             "diarizationWorker": {
                 "ok": True,

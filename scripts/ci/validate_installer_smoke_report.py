@@ -122,7 +122,7 @@ def validate_report(report: Any, *, installer: Path) -> None:
         _require(report, prefix + "localPolishingRuntime.primaryBackend", "vulkan")
         _require(report, prefix + "localPolishingRuntime.version.exitCode", 0)
 
-    _true(report, "meetingResources.", ("verified", "aec3NoticePresent", "optionalWeSpeakerModelAbsent"))
+    _true(report, "meetingResources.", ("verified", "localVqeNoticePresent", "optionalWeSpeakerModelAbsent"))
     _true(report, "meetingResources.diarizationWorker.", ("ok", "optionalModelsAbsent"))
     _require(report, "meetingResources.diarizationWorker.selfTest.loadsModels", False)
     _require(report, "meetingResources.diarizationWorker.selfTest.loadsUserAudio", False)

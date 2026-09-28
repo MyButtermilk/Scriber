@@ -12,7 +12,7 @@ use audio_frame_pipe::{
     AUDIO_FRAME_HEADER_LEN, AUDIO_FRAME_VERSION,
 };
 use audio_prepare::{AudioPreparationSubmit, AudioPreparationWorker, CaptureArtifactTarget};
-use meeting_aec::{MeetingAec3, MEETING_AEC_FRAME_SAMPLES};
+use meeting_aec::{MeetingEnhancer, MEETING_AEC_FRAME_SAMPLES, MEETING_OUTPUT_SAMPLES};
 use redaction::hash_sensitive_identifier;
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -520,6 +520,14 @@ impl AudioSidecarState {
     fn start_meeting_capture(&mut self, payload: &Value) -> Result<Value, String> {
         if !wasapi_capture_enabled() && !synthetic_capture_enabled() {
             return Err("Rust meeting capture is unavailable".to_string());
+        }
+        if payload
+            .get("aecEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+            && !scriber_localvqe::cpu_supported()
+        {
+            return Err("LocalVQE requires an AVX2/FMA/F16C-capable CPU".into());
         }
         let meeting_clock_origin = Instant::now();
         let mut microphone_request = CaptureRequest::from_payload(payload);
@@ -1339,7 +1347,7 @@ fn start_meeting_aec_relay(
     let (stop_tx, stop_rx) = mpsc::channel();
     let thread_handles: Vec<isize> = handles.iter().map(|handle| *handle as isize).collect();
     let join_handle = thread::Builder::new()
-        .name("scriber-meeting-aec3-relay".to_string())
+        .name("scriber-meeting-localvqe-relay".to_string())
         .spawn(move || {
             run_meeting_aec_relay(
                 microphone_pipe,
@@ -1356,7 +1364,7 @@ fn start_meeting_aec_relay(
                     CloseHandle(handle);
                 }
             }
-            format!("meeting AEC3 relay thread spawn failed: {error}")
+            format!("meeting LocalVQE relay thread spawn failed: {error}")
         })?;
     let session = MeetingCaptureSession {
         meeting_capture_id: meeting_capture_id.to_string(),
@@ -1387,7 +1395,7 @@ fn start_meeting_aec_relay(
     _delay_ms: i32,
     _aec_enabled: bool,
 ) -> Result<(MeetingCaptureSession, Value), String> {
-    Err("meeting AEC3 relay is only implemented on Windows".to_string())
+    Err("meeting LocalVQE relay is only implemented on Windows".to_string())
 }
 
 #[derive(Debug, Default)]
@@ -3612,7 +3620,7 @@ fn meeting_frame_energy(samples: &[i16]) -> f64 {
 }
 
 fn meeting_render_active_energy_threshold() -> f64 {
-    64.0_f64.powi(2) * MEETING_AEC_FRAME_SAMPLES as f64
+    64.0_f64.powi(2) * MEETING_OUTPUT_SAMPLES as f64
 }
 
 #[cfg(windows)]
@@ -3679,12 +3687,65 @@ fn meeting_alignment_action(
 }
 
 #[cfg(windows)]
+struct PendingMeetingFrame {
+    header: AudioFrameHeader,
+    microphone: [i16; MEETING_OUTPUT_SAMPLES],
+    system: [i16; MEETING_OUTPUT_SAMPLES],
+}
+
+#[cfg(windows)]
+fn emit_meeting_frame(
+    outputs: &[HANDLE],
+    frame: PendingMeetingFrame,
+    clean: &[i16],
+    enhanced: bool,
+    stats: &mut MeetingRelayStats,
+    payload: &mut Vec<u8>,
+) -> Result<(), String> {
+    let energy = meeting_frame_energy(&frame.system);
+    if enhanced && energy >= meeting_render_active_energy_threshold() {
+        stats.aec_render_active_frames = stats.aec_render_active_frames.saturating_add(1);
+        stats.aec_render_energy += energy;
+        stats.aec_raw_mic_energy += meeting_frame_energy(&frame.microphone);
+        stats.aec_clean_mic_energy += meeting_frame_energy(clean);
+    }
+    for (handle, samples) in
+        outputs
+            .iter()
+            .zip([frame.microphone.as_slice(), frame.system.as_slice(), clean])
+    {
+        pcm_bytes_into(samples, payload);
+        stats.bytes_forwarded += write_meeting_frame(*handle, frame.header, payload)?;
+    }
+    stats.frames_processed += 1;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn drain_meeting_enhancement(
+    processor: &mut MeetingEnhancer,
+    pending: &mut VecDeque<PendingMeetingFrame>,
+    outputs: &[HANDLE],
+    stats: &mut MeetingRelayStats,
+    clean: &mut Vec<i16>,
+    payload: &mut Vec<u8>,
+) -> Result<(), String> {
+    while processor.pop(clean) {
+        let frame = pending
+            .pop_front()
+            .ok_or("LocalVQE output exceeded capture timeline")?;
+        emit_meeting_frame(outputs, frame, clean, true, stats, payload)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn run_meeting_aec_relay(
     microphone_pipe: String,
     system_pipe: String,
     output_handles: Vec<isize>,
     stop_rx: mpsc::Receiver<()>,
-    delay_ms: i32,
+    _delay_ms: i32,
     aec_enabled: bool,
 ) -> MeetingRelayStats {
     let mut stats = MeetingRelayStats::default();
@@ -3708,7 +3769,7 @@ fn run_meeting_aec_relay(
                 wait_for_meeting_output_pipe_client(*handle, &stop_rx)?;
             }
             let mut aec = if aec_enabled {
-                Some(MeetingAec3::new(delay_ms)?)
+                Some(MeetingEnhancer::new()?)
             } else {
                 None
             };
@@ -3719,189 +3780,223 @@ fn run_meeting_aec_relay(
             let mut system_done = false;
             let mut mic_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
             let mut system_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
-            let mut clean_samples = Vec::with_capacity(MEETING_AEC_FRAME_SAMPLES);
             let output_samples = MEETING_AEC_FRAME_SAMPLES / 3;
             let mut microphone_16k = Vec::with_capacity(output_samples);
             let mut system_16k = Vec::with_capacity(output_samples);
             let mut clean_16k = Vec::with_capacity(output_samples);
-            let mut microphone_payload = Vec::with_capacity(output_samples * 2);
-            let mut system_payload = Vec::with_capacity(output_samples * 2);
-            let mut clean_payload = Vec::with_capacity(output_samples * 2);
+            let mut payload = Vec::with_capacity(output_samples * 2);
+            let mut pending = VecDeque::with_capacity(4);
             let mut relay_terminal_timestamp_micros = 0_u64;
-            loop {
-                if microphone_frame.as_ref().is_some_and(|(header, payload)| {
-                    header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
-                        && header.frame_count == 0
-                        && payload.is_empty()
-                }) {
-                    relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
-                        microphone_frame
-                            .as_ref()
-                            .map(|(header, _)| header.timestamp_micros)
-                            .unwrap_or_default(),
-                    );
-                    microphone_done = true;
-                    microphone_frame = None;
-                }
-                if system_frame.as_ref().is_some_and(|(header, payload)| {
-                    header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
-                        && header.frame_count == 0
-                        && payload.is_empty()
-                }) {
-                    relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
-                        system_frame
-                            .as_ref()
-                            .map(|(header, _)| header.timestamp_micros)
-                            .unwrap_or_default(),
-                    );
-                    system_done = true;
-                    system_frame = None;
-                }
-                if microphone_done && system_done {
-                    let terminal = AudioFrameHeader::new(
-                        0,
-                        relay_sequence,
-                        relay_terminal_timestamp_micros,
-                        0,
-                        1,
-                        AUDIO_FRAME_FLAG_END_OF_STREAM,
-                    )
-                    .map_err(|error| error.to_string())?;
-                    for handle in &outputs {
-                        stats.bytes_forwarded += write_meeting_frame(*handle, terminal, &[])?;
+            let relay_result = (|| -> Result<(), String> {
+                loop {
+                    if microphone_frame.as_ref().is_some_and(|(header, payload)| {
+                        header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                            && header.frame_count == 0
+                            && payload.is_empty()
+                    }) {
+                        relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
+                            microphone_frame
+                                .as_ref()
+                                .map(|(header, _)| header.timestamp_micros)
+                                .unwrap_or_default(),
+                        );
+                        microphone_done = true;
+                        microphone_frame = None;
                     }
-                    break;
-                }
-                let microphone_timestamp = microphone_frame
-                    .as_ref()
-                    .map(|(header, _)| header.timestamp_micros);
-                let system_timestamp = system_frame
-                    .as_ref()
-                    .map(|(header, _)| header.timestamp_micros);
-                let Some(action) = meeting_alignment_action(microphone_timestamp, system_timestamp)
-                else {
-                    break;
-                };
-                if let (Some(microphone), Some(system)) = (microphone_timestamp, system_timestamp) {
-                    stats.max_input_skew_micros =
-                        stats.max_input_skew_micros.max(microphone.abs_diff(system));
-                }
-                let consume_microphone = matches!(
-                    action,
-                    MeetingAlignmentAction::Pair | MeetingAlignmentAction::MicrophoneOnly
-                );
-                let consume_system = matches!(
-                    action,
-                    MeetingAlignmentAction::Pair | MeetingAlignmentAction::SystemOnly
-                );
-                let microphone_item = if consume_microphone {
-                    microphone_frame.take()
-                } else {
-                    stats.microphone_padding_frames =
-                        stats.microphone_padding_frames.saturating_add(1);
-                    None
-                };
-                let system_item = if consume_system {
-                    system_frame.take()
-                } else {
-                    stats.system_padding_frames = stats.system_padding_frames.saturating_add(1);
-                    None
-                };
-                if let Some((_, payload)) = microphone_item.as_ref() {
-                    pcm_i16_into(payload, &mut mic_samples)?;
-                } else {
-                    mic_samples.clear();
-                    mic_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
-                }
-                if let Some((_, payload)) = system_item.as_ref() {
-                    pcm_i16_into(payload, &mut system_samples)?;
-                } else {
-                    system_samples.clear();
-                    system_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
-                }
-                if mic_samples.len() != MEETING_AEC_FRAME_SAMPLES
-                    || system_samples.len() != MEETING_AEC_FRAME_SAMPLES
-                {
-                    return Err("meeting AEC3 received a non-10ms source frame".to_string());
-                }
-                if let Some(processor) = aec.as_mut() {
-                    processor.process_into(&system_samples, &mic_samples, &mut clean_samples)?;
-                } else {
-                    clean_samples.clear();
-                    clean_samples.extend_from_slice(&mic_samples);
-                }
-                let system_energy = meeting_frame_energy(&system_samples);
-                if aec_enabled && system_energy >= meeting_render_active_energy_threshold() {
-                    stats.aec_render_active_frames =
-                        stats.aec_render_active_frames.saturating_add(1);
-                    stats.aec_render_energy += system_energy;
-                    stats.aec_raw_mic_energy += meeting_frame_energy(&mic_samples);
-                    stats.aec_clean_mic_energy += meeting_frame_energy(&clean_samples);
-                }
-                downsample_meeting_48k_to_16k_into(&mic_samples, &mut microphone_16k)?;
-                downsample_meeting_48k_to_16k_into(&system_samples, &mut system_16k)?;
-                downsample_meeting_48k_to_16k_into(&clean_samples, &mut clean_16k)?;
-                pcm_bytes_into(&microphone_16k, &mut microphone_payload);
-                pcm_bytes_into(&system_16k, &mut system_payload);
-                pcm_bytes_into(&clean_16k, &mut clean_payload);
-                let timestamp_micros = match action {
-                    MeetingAlignmentAction::Pair => microphone_timestamp
-                        .unwrap_or_default()
-                        .max(system_timestamp.unwrap_or_default()),
-                    MeetingAlignmentAction::MicrophoneOnly => {
-                        microphone_timestamp.unwrap_or_default()
+                    if system_frame.as_ref().is_some_and(|(header, payload)| {
+                        header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                            && header.frame_count == 0
+                            && payload.is_empty()
+                    }) {
+                        relay_terminal_timestamp_micros = relay_terminal_timestamp_micros.max(
+                            system_frame
+                                .as_ref()
+                                .map(|(header, _)| header.timestamp_micros)
+                                .unwrap_or_default(),
+                        );
+                        system_done = true;
+                        system_frame = None;
                     }
-                    MeetingAlignmentAction::SystemOnly => system_timestamp.unwrap_or_default(),
-                };
-                relay_terminal_timestamp_micros =
-                    relay_terminal_timestamp_micros.max(timestamp_micros);
-                let microphone_eos = microphone_item
-                    .as_ref()
-                    .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
-                let system_eos = system_item
-                    .as_ref()
-                    .is_some_and(|(header, _)| header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0);
-                let mut combined_flags = microphone_item
-                    .as_ref()
-                    .map(|(header, _)| header.flags)
-                    .unwrap_or_default()
-                    | system_item
+                    if microphone_done && system_done {
+                        break;
+                    }
+                    let microphone_timestamp = microphone_frame
+                        .as_ref()
+                        .map(|(header, _)| header.timestamp_micros);
+                    let system_timestamp = system_frame
+                        .as_ref()
+                        .map(|(header, _)| header.timestamp_micros);
+                    let Some(action) =
+                        meeting_alignment_action(microphone_timestamp, system_timestamp)
+                    else {
+                        break;
+                    };
+                    if let (Some(microphone), Some(system)) =
+                        (microphone_timestamp, system_timestamp)
+                    {
+                        stats.max_input_skew_micros =
+                            stats.max_input_skew_micros.max(microphone.abs_diff(system));
+                    }
+                    let consume_microphone = matches!(
+                        action,
+                        MeetingAlignmentAction::Pair | MeetingAlignmentAction::MicrophoneOnly
+                    );
+                    let consume_system = matches!(
+                        action,
+                        MeetingAlignmentAction::Pair | MeetingAlignmentAction::SystemOnly
+                    );
+                    let microphone_item = if consume_microphone {
+                        microphone_frame.take()
+                    } else {
+                        stats.microphone_padding_frames =
+                            stats.microphone_padding_frames.saturating_add(1);
+                        None
+                    };
+                    let system_item = if consume_system {
+                        system_frame.take()
+                    } else {
+                        stats.system_padding_frames = stats.system_padding_frames.saturating_add(1);
+                        None
+                    };
+                    if let Some((_, payload)) = microphone_item.as_ref() {
+                        pcm_i16_into(payload, &mut mic_samples)?;
+                    } else {
+                        mic_samples.clear();
+                        mic_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
+                    }
+                    if let Some((_, payload)) = system_item.as_ref() {
+                        pcm_i16_into(payload, &mut system_samples)?;
+                    } else {
+                        system_samples.clear();
+                        system_samples.resize(MEETING_AEC_FRAME_SAMPLES, 0);
+                    }
+                    if mic_samples.len() != MEETING_AEC_FRAME_SAMPLES
+                        || system_samples.len() != MEETING_AEC_FRAME_SAMPLES
+                    {
+                        return Err("meeting LocalVQE received a non-10ms source frame".to_string());
+                    }
+                    downsample_meeting_48k_to_16k_into(&mic_samples, &mut microphone_16k)?;
+                    downsample_meeting_48k_to_16k_into(&system_samples, &mut system_16k)?;
+                    let timestamp_micros = match action {
+                        MeetingAlignmentAction::Pair => microphone_timestamp
+                            .unwrap_or_default()
+                            .max(system_timestamp.unwrap_or_default()),
+                        MeetingAlignmentAction::MicrophoneOnly => {
+                            microphone_timestamp.unwrap_or_default()
+                        }
+                        MeetingAlignmentAction::SystemOnly => system_timestamp.unwrap_or_default(),
+                    };
+                    relay_terminal_timestamp_micros =
+                        relay_terminal_timestamp_micros.max(timestamp_micros);
+                    let microphone_eos = microphone_item.as_ref().is_some_and(|(header, _)| {
+                        header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                    });
+                    let system_eos = system_item.as_ref().is_some_and(|(header, _)| {
+                        header.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0
+                    });
+                    let mut combined_flags = microphone_item
                         .as_ref()
                         .map(|(header, _)| header.flags)
-                        .unwrap_or_default();
-                combined_flags &= !AUDIO_FRAME_FLAG_END_OF_STREAM;
-                let common_header = AudioFrameHeader::new(
-                    clean_payload.len() as u32,
-                    relay_sequence,
-                    timestamp_micros,
-                    160,
-                    1,
-                    combined_flags,
-                )
-                .map_err(|error| error.to_string())?;
-                stats.bytes_forwarded +=
-                    write_meeting_frame(outputs[0], common_header, &microphone_payload)?;
-                stats.bytes_forwarded +=
-                    write_meeting_frame(outputs[1], common_header, &system_payload)?;
-                let clean_header = common_header;
-                stats.bytes_forwarded +=
-                    write_meeting_frame(outputs[2], clean_header, &clean_payload)?;
-                stats.frames_processed += 1;
-                relay_sequence = relay_sequence.saturating_add(1);
-                if consume_microphone {
-                    if microphone_eos {
-                        microphone_done = true;
+                        .unwrap_or_default()
+                        | system_item
+                            .as_ref()
+                            .map(|(header, _)| header.flags)
+                            .unwrap_or_default();
+                    combined_flags &= !AUDIO_FRAME_FLAG_END_OF_STREAM;
+                    let common_header = AudioFrameHeader::new(
+                        (MEETING_OUTPUT_SAMPLES * 2) as u32,
+                        relay_sequence,
+                        timestamp_micros,
+                        160,
+                        1,
+                        combined_flags,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    let frame = PendingMeetingFrame {
+                        header: common_header,
+                        microphone: microphone_16k
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| "invalid microphone frame")?,
+                        system: system_16k
+                            .as_slice()
+                            .try_into()
+                            .map_err(|_| "invalid system frame")?,
+                    };
+                    if let Some(processor) = aec.as_mut() {
+                        if pending.len() >= 4 {
+                            return Err("LocalVQE exceeded bounded timeline buffer".into());
+                        }
+                        processor.push(&system_16k, &microphone_16k)?;
+                        pending.push_back(frame);
+                        drain_meeting_enhancement(
+                            processor,
+                            &mut pending,
+                            &outputs,
+                            &mut stats,
+                            &mut clean_16k,
+                            &mut payload,
+                        )?;
                     } else {
-                        microphone_frame = Some(read_meeting_frame(microphone, &stop_rx)?);
+                        emit_meeting_frame(
+                            &outputs,
+                            frame,
+                            &microphone_16k,
+                            false,
+                            &mut stats,
+                            &mut payload,
+                        )?;
+                    }
+                    relay_sequence = relay_sequence.saturating_add(1);
+                    if consume_microphone {
+                        if microphone_eos {
+                            microphone_done = true;
+                        } else {
+                            microphone_frame = Some(read_meeting_frame(microphone, &stop_rx)?);
+                        }
+                    }
+                    if consume_system {
+                        if system_eos {
+                            system_done = true;
+                        } else {
+                            system_frame = Some(read_meeting_frame(system, &stop_rx)?);
+                        }
                     }
                 }
-                if consume_system {
-                    if system_eos {
-                        system_done = true;
-                    } else {
-                        system_frame = Some(read_meeting_frame(system, &stop_rx)?);
-                    }
+                Ok(())
+            })();
+            if let Err(error) = relay_result {
+                if error != "meetingRelayStopped" {
+                    return Err(error);
                 }
+            }
+            // Explicit Stop/Pause interrupts the source read before source EOF.
+            // Flush accepted audio on that path too, before closing any output.
+            if let Some(processor) = aec.as_mut() {
+                processor.finish()?;
+                drain_meeting_enhancement(
+                    processor,
+                    &mut pending,
+                    &outputs,
+                    &mut stats,
+                    &mut clean_16k,
+                    &mut payload,
+                )?;
+            }
+            if !pending.is_empty() {
+                return Err("LocalVQE did not flush the complete capture timeline".into());
+            }
+            let terminal = AudioFrameHeader::new(
+                0,
+                relay_sequence,
+                relay_terminal_timestamp_micros,
+                0,
+                1,
+                AUDIO_FRAME_FLAG_END_OF_STREAM,
+            )
+            .map_err(|error| error.to_string())?;
+            for handle in &outputs {
+                stats.bytes_forwarded += write_meeting_frame(*handle, terminal, &[])?;
             }
             Ok(())
         })();
@@ -5510,9 +5605,21 @@ fn wide_null(value: &str) -> Vec<u16> {
 }
 
 fn self_test_payload() -> Value {
+    let enhancement = (|| -> Result<(), String> {
+        let mut processor = MeetingEnhancer::new()?;
+        processor.push(&[0; MEETING_OUTPUT_SAMPLES], &[0; MEETING_OUTPUT_SAMPLES])?;
+        processor.finish()?;
+        let mut output = Vec::with_capacity(MEETING_OUTPUT_SAMPLES);
+        if !processor.pop(&mut output) || output.len() != MEETING_OUTPUT_SAMPLES {
+            return Err("LocalVQE self-test did not produce a complete frame".into());
+        }
+        Ok(())
+    })();
     json!({
         "sidecar": SIDECAR_NAME,
-        "ok": true,
+        "ok": enhancement.is_ok(),
+        "meetingEnhancementVerified": enhancement.is_ok(),
+        "error": enhancement.err(),
         "workerVersion": env!("CARGO_PKG_VERSION"),
         "protocolVersion": SIDECAR_PROTOCOL_VERSION,
         "capabilities": capabilities_payload(),
@@ -5546,7 +5653,18 @@ fn capabilities_payload() -> Value {
         "wasapiCaptureAvailable": wasapi_capture_enabled(),
         "wasapiLoopbackAvailable": wasapi_capture_enabled(),
         "meetingCaptureAvailable": wasapi_capture_enabled() || synthetic_capture_enabled(),
-        "meetingAec3": {"available": true, "implementation": "aec3-rs", "version": "0.2.0"},
+        "meetingEnhancement": {
+            "available": scriber_localvqe::cpu_supported(),
+            "implementation": "LocalVQE",
+            "version": scriber_localvqe::MODEL_VERSION,
+            "modelSha256": scriber_localvqe::MODEL_SHA256,
+            "sampleRate": 16000,
+            "hopSamples": 256,
+            "echoCancellation": true,
+            "noiseSuppression": true,
+            "dereverberation": true,
+            "modelEmbedded": true
+        },
         "wasapiCaptureEnv": WASAPI_CAPTURE_ENV,
         "syntheticFramePipeAvailable": synthetic_capture_enabled(),
         "syntheticFramePipeEnv": SYNTHETIC_CAPTURE_ENV,
@@ -6577,10 +6695,12 @@ mod tests {
         assert_eq!(response["payload"]["aecActive"], true);
         let sources = response["payload"]["sources"].as_array().unwrap();
         assert_eq!(sources.len(), 3);
+        let (ready_tx, ready_rx) = mpsc::channel();
         let readers: Vec<_> = sources
             .iter()
             .map(|source| {
                 let path = source["framePipe"].as_str().unwrap().to_string();
+                let ready = ready_tx.clone();
                 thread::spawn(move || {
                     let mut file = loop {
                         match std::fs::File::open(&path) {
@@ -6588,31 +6708,51 @@ mod tests {
                             Err(_) => thread::sleep(Duration::from_millis(5)),
                         }
                     };
-                    (0..8)
-                        .map(|_| {
-                            let mut header = [0u8; AUDIO_FRAME_HEADER_LEN];
-                            file.read_exact(&mut header).unwrap();
-                            let decoded = AudioFrameHeader::decode(&header).unwrap();
-                            let mut payload = vec![0u8; decoded.payload_len as usize];
-                            file.read_exact(&mut payload).unwrap();
-                            let peak = payload
-                                .chunks_exact(2)
-                                .map(|sample| {
-                                    i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs()
-                                })
-                                .max()
-                                .unwrap_or(0);
-                            (decoded, payload.len(), peak)
-                        })
-                        .collect::<Vec<_>>()
+                    let mut frames = Vec::new();
+                    loop {
+                        let mut header = [0u8; AUDIO_FRAME_HEADER_LEN];
+                        file.read_exact(&mut header).unwrap();
+                        let decoded = AudioFrameHeader::decode(&header).unwrap();
+                        let mut payload = vec![0u8; decoded.payload_len as usize];
+                        file.read_exact(&mut payload).unwrap();
+                        let peak = payload
+                            .chunks_exact(2)
+                            .map(|sample| i16::from_le_bytes([sample[0], sample[1]]).unsigned_abs())
+                            .max()
+                            .unwrap_or(0);
+                        frames.push((decoded, payload.len(), peak));
+                        if frames.len() == 8 {
+                            ready.send(()).unwrap();
+                        }
+                        if decoded.flags & AUDIO_FRAME_FLAG_END_OF_STREAM != 0 {
+                            break;
+                        }
+                    }
+                    frames
                 })
             })
             .collect();
+        for _ in 0..3 {
+            ready_rx.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        let capture_id = response["payload"]["meetingCaptureId"].as_str().unwrap();
+        let stopped = state.stop_meeting_capture(capture_id, "meetingCaptureStop");
+        assert_eq!(stopped["stopped"], true);
+        assert_eq!(stopped["relay"]["relayError"], Value::Null, "{stopped}");
         let mut received = Vec::new();
         for reader in readers {
             let frames = reader.join().unwrap();
-            assert_eq!(frames.len(), 8);
-            for (header, payload_len, _) in &frames {
+            assert!(frames.len() >= 9);
+            let (terminal, terminal_bytes, _) = frames.last().unwrap();
+            assert_eq!(*terminal_bytes, 0);
+            assert_eq!(terminal.frame_count, 0);
+            assert_ne!(terminal.flags & AUDIO_FRAME_FLAG_END_OF_STREAM, 0);
+            assert_eq!(terminal.sequence, (frames.len() - 1) as u64);
+            assert_eq!(
+                stopped["relay"]["framesProcessed"],
+                (frames.len() - 1) as u64
+            );
+            for (header, payload_len, _) in &frames[..frames.len() - 1] {
                 assert_eq!(header.frame_count, 160);
                 assert_eq!(*payload_len, 320);
             }
@@ -6622,26 +6762,19 @@ mod tests {
             );
             received.push(frames);
         }
-        for frame_index in 0..8 {
+        assert!(received
+            .windows(2)
+            .all(|pair| pair[0].len() == pair[1].len()));
+        for frame_index in 0..received[0].len() {
             assert!(received.windows(2).all(|pair| {
                 pair[0][frame_index].0.sequence == pair[1][frame_index].0.sequence
                     && pair[0][frame_index].0.timestamp_micros
                         == pair[1][frame_index].0.timestamp_micros
             }));
         }
-        let capture_id = response["payload"]["meetingCaptureId"].as_str().unwrap();
-        let stop = json!({
-            "protocolVersion": SIDECAR_PROTOCOL_VERSION,
-            "requestId": "meeting-stop",
-            "command": "meetingCaptureStop",
-            "payload": {"meetingCaptureId": capture_id}
-        });
-        let stopped = state.handle_sidecar_request(&stop.to_string());
-        assert_eq!(stopped["success"], true);
-        assert_eq!(stopped["payload"]["stopped"], true);
-        assert!(stopped["payload"]["relay"]["aecMetrics"].is_object());
+        assert!(stopped["relay"]["aecMetrics"].is_object());
         assert_eq!(
-            stopped["payload"]["relay"]["aecMetrics"]["measurement"],
+            stopped["relay"]["aecMetrics"]["measurement"],
             "render-active-raw-to-clean-energy-ratio"
         );
     }

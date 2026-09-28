@@ -268,6 +268,15 @@ $cargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "Frontend/src-tauri/C
 $audioCargoToml = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.toml") -Raw
 $audioCargoLock = Get-Content -LiteralPath (Join-Path $repoRoot "native/scriber-audio-sidecar/Cargo.lock") -Raw
 
+$localVqeInputs = @(
+    "native/scriber-localvqe/Cargo.toml",
+    "native/scriber-localvqe/build.rs",
+    "native/scriber-localvqe/inputs.json",
+    "native/scriber-localvqe/CMakeLists.txt",
+    "native/scriber-localvqe/bridge.cpp",
+    "native/scriber-localvqe/src/lib.rs"
+)
+
 $rustDependencyEntries = New-EntryList
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.toml" -Content (Normalize-CargoToml -Text $cargoToml)
 Add-ContentEntry -Entries $rustDependencyEntries -Path "Frontend/src-tauri/Cargo.lock" -Content (Normalize-CargoLock -Text $cargoLock)
@@ -275,6 +284,7 @@ Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sid
 Add-ContentEntry -Entries $rustDependencyEntries -Path "native/scriber-audio-sidecar/Cargo.lock" -Content (Normalize-CargoLock -Text $audioCargoLock -PackageName "scriber-audio-sidecar")
 $rustDependencyEntries.Add("constant`ttarget`tx86_64-pc-windows-msvc")
 $rustDependencyEntries.Add("constant`tprofile`trelease-incremental")
+Add-RawFileEntry -Entries $rustDependencyEntries -Path "native/scriber-localvqe/Cargo.toml"
 Write-KeyFile -Name "rust-dependencies.txt" -Entries $rustDependencyEntries
 
 $rustEntries = New-EntryList
@@ -291,6 +301,7 @@ Add-RawFileEntry -Entries $rustEntries -Path "THIRD_PARTY_NOTICES.md"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/capabilities" -Filter "*.json"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/icons" -Filter "*"
 Add-FileGlobEntries -Entries $rustEntries -Root "Frontend/src-tauri/src" -Filter "*.rs"
+foreach ($path in $localVqeInputs) { Add-RawFileEntry -Entries $rustEntries -Path $path }
 Write-KeyFile -Name "rust-release.txt" -Entries $rustEntries
 
 $tauriAppEntries = New-EntryList
@@ -355,6 +366,7 @@ foreach ($path in @(
         Add-RawFileEntry -Entries $rustAudioEntries -Path $path
     }
 }
+foreach ($path in $localVqeInputs) { Add-RawFileEntry -Entries $rustAudioEntries -Path $path }
 Write-KeyFile -Name "rust-audio-sidecar.txt" -Entries $rustAudioEntries
 
 $rustDiarizationEntries = New-EntryList

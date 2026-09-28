@@ -198,6 +198,9 @@ def test_version_bump_only_invalidates_application_products_and_keeps_all_depend
     [
         "native/scriber-audio-sidecar/Cargo.toml",
         "native/scriber-audio-sidecar/build.rs",
+        "native/scriber-localvqe/inputs.json",
+        "native/scriber-localvqe/bridge.cpp",
+        "native/scriber-localvqe/src/lib.rs",
         "Frontend/src-tauri/src/audio_sidecar.rs",
     ],
 )
@@ -210,7 +213,7 @@ def test_audio_finished_product_invalidates_when_its_own_inputs_change(
     changed = root / changed_path
     source = changed.read_text(encoding="utf-8")
     if changed.suffix == ".toml":
-        source, count = re.subn(r'^version\s*=\s*"[^"]+"', 'version = "0.2.0"', source, count=1, flags=re.MULTILINE)
+        source, count = re.subn(r'^version\s*=\s*"[^"]+"', 'version = "99.88.77"', source, count=1, flags=re.MULTILINE)
         assert count == 1
     else:
         source += "\n// Regression: changed worker build/source input.\n"

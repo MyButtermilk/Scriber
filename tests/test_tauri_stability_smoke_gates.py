@@ -189,7 +189,7 @@ def test_installer_smoke_gates_meeting_notices_and_optional_model_absence() -> N
 
     assert "function Test-InstalledMeetingResources" in installer
     assert 'Join-Path $Root "THIRD_PARTY_NOTICES.md"' in installer
-    assert "aec3 0\\.2\\.0" in installer
+    assert "LocalVQE 1\\.3" in installer
     assert "Optional WeSpeaker model must not be bundled" in installer
     assert "meetingResources = $meetingResources" in installer
 
@@ -344,6 +344,8 @@ def test_sidecar_build_requires_and_validates_bundled_media_tools() -> None:
     assert "function Copy-FileIfChanged" in sidecar
     assert "function Get-RustAudioSidecarInputManifest" in sidecar
     assert r"Frontend\src-tauri\src\meeting_aec.rs" in sidecar
+    for dependency in ("Cargo.toml", "build.rs", "inputs.json", "CMakeLists.txt", "bridge.cpp", r"src\lib.rs"):
+        assert rf"native\scriber-localvqe\{dependency}" in sidecar
     assert "function Write-SidecarBuildMetadata" in sidecar
     assert "PySide6" not in sidecar
     assert "[switch]$UseProfileBFfmpeg" in sidecar

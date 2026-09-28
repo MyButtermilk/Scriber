@@ -130,7 +130,7 @@ jobs:
             Frontend/src-tauri/target/debug/build
             Frontend/src-tauri/target/debug/deps
             Frontend/src-tauri/target/debug/incremental
-          key: scriber-rust-quality-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-quality-environment.outputs.identity }}-${{ hashFiles('.node-version', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/tauri.conf.json', 'Frontend/src-tauri/capabilities/**', '.cargo/config', '.cargo/config.toml', 'Frontend/src-tauri/.cargo/config', 'Frontend/src-tauri/.cargo/config.toml', 'native/scriber-audio-sidecar/Cargo.toml', 'native/scriber-audio-sidecar/Cargo.lock', 'native/scriber-audio-sidecar/build.rs', 'native/scriber-audio-sidecar/windows-app-manifest.xml', 'scripts/stage_audio_worker.mjs', '.github/workflows/quality-gates.yml') }}
+          key: scriber-rust-quality-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.rust-quality-environment.outputs.identity }}-${{ hashFiles('.node-version', 'Frontend/src-tauri/Cargo.toml', 'Frontend/src-tauri/Cargo.lock', 'Frontend/src-tauri/build.rs', 'Frontend/src-tauri/tauri.conf.json', 'Frontend/src-tauri/capabilities/**', '.cargo/config', '.cargo/config.toml', 'Frontend/src-tauri/.cargo/config', 'Frontend/src-tauri/.cargo/config.toml', 'native/scriber-localvqe/**', 'native/scriber-audio-sidecar/Cargo.toml', 'native/scriber-audio-sidecar/Cargo.lock', 'native/scriber-audio-sidecar/build.rs', 'native/scriber-audio-sidecar/windows-app-manifest.xml', 'scripts/stage_audio_worker.mjs', '.github/workflows/quality-gates.yml') }}
       - name: Check Rust formatting
         working-directory: Frontend/src-tauri
         run: cargo fmt --all -- --check
@@ -153,6 +153,8 @@ jobs:
         run: cargo clippy --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target --all-targets -- -D warnings
       - name: Run standalone audio tests
         run: cargo test --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target
+      - name: Verify LocalVQE against pinned upstream reference
+        run: cargo test --locked --manifest-path native/scriber-audio-sidecar/Cargo.toml --target-dir Frontend/src-tauri/target -p scriber-localvqe
       - name: Save trusted Rust quality compilation cache
         if: >-
           success() &&

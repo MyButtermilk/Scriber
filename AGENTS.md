@@ -381,7 +381,13 @@ Frontend and shell:
   bounded 16 kHz mono signed-16 PCM fixture; it has the same play-once and
   test-only constraints.
   Meeting capture uses one sidecar process for 48 kHz microphone plus loopback,
-  pinned AEC3 processing, and shared-timeline raw mic/system/clean mic pipes.
+  pinned LocalVQE v1.3 processing, and shared-timeline raw mic/system/clean mic pipes.
+  `native/scriber-localvqe` owns the single embedded 4.8M F32 model and static
+  GGML bridge; source/model revisions and hashes live in its `inputs.json`.
+  x64 enhancement requires AVX2/FMA/F16C, checked before native inference.
+  Preserve the 16 kHz 256-sample hop adapter, one-hop delay compensation,
+  bounded shared-timeline queue, and Stop/Pause/EOF tail flush. Model construction
+  must emit no stdout because that channel carries the sidecar JSON protocol.
   The token-protected Meeting device test must reuse this path, remain explicit
   and local-only, return only bounded level/activity statistics, and always stop
   its ephemeral sidecar capture without persisting or uploading PCM. Product
@@ -1694,7 +1700,7 @@ Packaging and scripts:
   and `paused` become resumable `interrupted` capture. `stopping` and
   `finalizing` become `finalization_failed`, and `analyzing` becomes
   `analysis_failed`; never offer capture resume for a post-capture crash.
-- Keep audio format layers separate. AEC3, Silero, Smart Turn, live STT, and
+- Keep audio format layers separate. LocalVQE v1.3, Silero, Smart Turn, live STT, and
   checkpoint capture use PCM. The verified long-lived archive is lossless
   Matroska/FLAC; timeline-aligned mix, clean-microphone, and system Opus files
   are playback derivatives, not canonical inference input. Persist and validate

@@ -1763,11 +1763,13 @@ route remains below its documented 2-GB boundary and has no audio-duration cap.
 **Implemented allocation-reuse slice**
 
 - Caller-owned `Vec<i16>` buffers are reused for microphone, system, and clean
-  AEC samples. AEC3 writes into the caller's existing output buffer.
-- Three 48-to-16-kHz downsample buffers and their three PCM byte buffers are
-  allocated once per relay session and cleared without releasing capacity.
+  audio samples. LocalVQE v1.3 uses bounded hop buffers; the relay retains at
+  most four transport frames while waiting for aligned enhancement output.
+- Two 48-to-16-kHz downsample buffers, the clean output buffer, and one shared
+  PCM byte buffer are allocated once per relay session and reused.
 - A 10,000-frame regression test verifies stable backing allocations and exact
-  output sizes; the AEC adapter has an independent 1,000-frame reuse test.
+  output sizes; the enhancement adapter separately tests all 10/16-ms tail
+  alignments, short captures, and a 10,003-frame stream without sample loss.
 - Upstream frame payload ownership and `WasapiPcmConverter` compaction remain
   candidates for a future measured pass. The long installed CPU/jitter gate is
   still required before claiming a device-level percentage improvement.
@@ -3480,7 +3482,7 @@ Free-threaded CPython is intentionally outside this profile: it excludes the
 3.14 JIT and would require a separate complete `cp314t` native-wheel graph.
 
 The installed Meeting hot-path qualification includes an exact 60-second
-physical WASAPI/AEC3 soak. Its Python level probe no longer loops over every
+physical WASAPI/LocalVQE v1.3 soak. Its Python level probe no longer loops over every
 signed-16 sample with `int.from_bytes`; shared `audioop-lts` PCM metrics perform
 RMS and peak work in C while preserving the existing signed little-endian and
 trailing-partial-byte semantics. The gate additionally reports payload bytes,
@@ -3489,9 +3491,30 @@ growth, three-source frame continuity, and zero persisted/provider audio.
 
 ## Meeting Audio Packaging
 
-- `aec3 = 0.2.0` is compiled into the existing crash-isolated Rust audio
-  sidecar; meeting capture does not add another executable or a GStreamer/Clang
-  runtime dependency.
+- `native/scriber-localvqe` statically links LocalVQE v1.3 and its pinned GGML
+  CPU backend into the existing crash-isolated audio sidecar. Its only model is
+  the Apache-2.0 4.8M F32 model (about 19 MB), embedded in the executable.
+  `inputs.json` locks both source archives and the model by revision and SHA-256;
+  CMake fetches them only at build time. No account or runtime download is needed.
+  The file-only model loader uses a temporary copy of the embedded public weights
+  during construction and deletes it after weights are loaded into memory.
+  The native build disables runtime backend discovery, hash-bypass overrides,
+  OpenMP, GPU backends, and host-specific instruction tuning. It supports UTF-8
+  Windows model paths and keeps model initialization off the JSON stdout channel.
+  No additional executable or inference DLL is installed. Build prerequisites
+  now include CMake 3.24+ and a C++17 compiler alongside the Windows SDK.
+  The fixed x64 inference target requires AVX2, FMA, and F16C; Rust checks these
+  before starting enhanced capture and reports unavailability on older CPUs.
+  The C++ standard library and exception support are linked statically so no
+  new inference or C++ redistributable DLL is required.
+- Local validation on 2026-09-28: the Windows release build passes the pinned
+  upstream v1.3 F32 regression fixture (maximum absolute error about 2.05e-7).
+  On a Ryzen AI 9 HX 370, the 992-ms fixture took about 191 ms for CPU inference
+  with up to four threads, excluding model initialization. This short synthetic
+  reference check is not a physical-meeting quality or long-duration CPU gate.
+  The release binary's self-test loads the embedded model and performs inference;
+  Rust pipe tests cover synchronized three-track output and Stop-tail flushing.
+  Physical Teams/Zoom/Meet qualification remains required before release.
 - `meeting_aec.rs` is part of the Rust-audio-sidecar cache key, so AEC changes
   invalidate that focused artifact without unnecessarily invalidating the
   Python backend cache.

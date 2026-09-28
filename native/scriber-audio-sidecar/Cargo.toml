@@ -1,6 +1,6 @@
 [package]
 name = "scriber-audio-sidecar"
-version = "0.1.0"
+version = "0.2.0"
 description = "Scriber audio capture worker"
 authors = ["Scriber"]
 edition = "2021"
@@ -27,7 +27,7 @@ codec-experimental-shine = []
 tauri-winres = "=0.3.6"
 
 [dependencies]
-aec3 = "=0.2.0"
+scriber-localvqe = { path = "../scriber-localvqe" }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 
